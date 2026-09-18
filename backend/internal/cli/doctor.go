@@ -18,7 +18,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
@@ -75,20 +74,7 @@ type harnessProbeSpec struct {
 // binary name or version flags differ from the default convention (where BinaryName
 // defaults to the harness ID and VersionArg is empty for PATH-only probing).
 var harnessProbeSpecs = map[string]harnessProbeSpec{
-	"claude-code": {BinaryName: "claude", VersionArg: "--version"},
-	"codex":       {BinaryName: "codex", VersionArg: "--version"},
-	"opencode":    {BinaryName: "opencode", VersionArg: "--version"},
-	"muse":        {BinaryName: "muse", VersionArg: "--version", ExpectedVersionPrefix: "Muse Code "},
-	"aider":       {BinaryName: "aider", VersionArg: "--version"},
-	"goose":       {BinaryName: "goose", VersionArg: "--version"},
-	"grok":        {BinaryName: "grok", VersionArg: "--version"},
-	"devin":       {BinaryName: "devin", VersionArg: "--version"},
-	"kimi":        {BinaryName: "kimi", VersionArg: "--version"},
-	"kiro":        {BinaryName: "kiro-cli", VersionArg: "--version"},
-	"kilocode":    {BinaryName: "kilocode", VersionArg: "--version"},
-	"omp":         {BinaryName: "omp", VersionArg: "--version"},
-	"cursor":      {BinaryName: "cursor-agent"},
-	"continue":    {BinaryName: "cn"},
+	"opencode": {BinaryName: "opencode", VersionArg: "--version"},
 }
 
 func newDoctorCommand(ctx *commandContext) *cobra.Command {
@@ -216,7 +202,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 			ExpectedVersionPrefix: spec.ExpectedVersionPrefix,
 		}))
 	}
-	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
+	checks = append(checks, c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
 }
 
@@ -453,39 +439,6 @@ func (c *commandContext) checkHarness(ctx context.Context, harness harnessProbe)
 		}
 	}
 	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: harness.Name, Message: fmt.Sprintf("%s resolves to %s (%s)", harness.BinaryName, path, version)}
-}
-
-// checkCodexLaunchFlags smoke-tests AO's codex launch surface against the
-// installed binary: the hook-trust bypass flag and the `-c` session-flag
-// config AO injects at spawn (activity hooks, worktree trust, nudge
-// suppression). Codex has no stable hook-config contract, so a codex upgrade
-// can silently break activity tracking; this canary turns that breakage into
-// a doctor warning. The probes come from the codex adapter itself so they
-// cannot drift from the real spawn argv.
-func (c *commandContext) checkCodexLaunchFlags(ctx context.Context) doctorCheck {
-	const name = "codex-launch-flags"
-	path, err := c.deps.LookPath("codex")
-	if err != nil || path == "" {
-		return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "skipped: codex not found in PATH"}
-	}
-	for _, probe := range codex.DoctorLaunchProbes() {
-		reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-		out, err := c.deps.CommandOutput(reqCtx, path, probe...)
-		cancel()
-		if err != nil {
-			return doctorCheck{
-				Level: doctorWarn, Section: doctorSectionAgents, Name: name,
-				Message: fmt.Sprintf("codex rejected AO's launch flags (`codex %s`: %v) — codex sessions may spawn without activity hooks; a codex CLI update likely changed its flag/config surface", strings.Join(probe, " "), err),
-			}
-		}
-		if strings.Contains(string(out), "unknown configuration field") {
-			return doctorCheck{
-				Level: doctorWarn, Section: doctorSectionAgents, Name: name,
-				Message: fmt.Sprintf("codex no longer recognizes one of AO's config overrides (%s) — codex sessions may spawn without activity hooks", firstOutputLine(out)),
-			}
-		}
-	}
-	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "codex accepts AO's hook/trust launch flags"}
 }
 
 func (c *commandContext) checkGitHubToken(ctx context.Context) doctorCheck {

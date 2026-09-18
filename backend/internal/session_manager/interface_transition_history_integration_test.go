@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 
-	claudeagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -22,7 +21,7 @@ import (
 // Exercise production launch selection, lifecycle, Chat and SQLite together.
 // Only external runtime and provider I/O are controlled.
 func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
-	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessQwen} {
+	for _, harness := range []domain.AgentHarness{domain.HarnessOpenCode} {
 		t.Run(string(harness), func(t *testing.T) {
 			for _, tc := range []struct {
 				name                   string
@@ -39,33 +38,21 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 					ctx := context.Background()
 					dir := t.TempDir()
 					workspace := filepath.Join(dir, "workspace")
-					configDir := filepath.Join(dir, "claude")
-					binDir := filepath.Join(dir, "bin")
-					for _, path := range []string{workspace, filepath.Join(configDir, "projects", "scratch"), binDir} {
+					configDir := filepath.Join(dir, "agent")
+					for _, path := range []string{workspace, filepath.Join(configDir, "projects", "scratch")} {
 						if err := os.MkdirAll(path, 0700); err != nil {
 							t.Fatal(err)
 						}
 					}
-					if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("test executable"), 0700); err != nil {
-						t.Fatal(err)
-					}
-					t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-					t.Setenv("CLAUDE_CONFIG_DIR", configDir)
 					st := sqlitetest.MustOpenAt(t, dir)
 					project := domain.ProjectRecord{ID: "history", Path: workspace, RegisteredAt: time.Now(), Config: testRoleAgents()}
 					project.Config.Orchestrator.Harness = harness
-					project.Config.Env = map[string]string{"CLAUDE_CONFIG_DIR": configDir}
 					if err := st.UpsertProject(ctx, project); err != nil {
 						t.Fatal(err)
 					}
-					original := "bb786e64-3b86-44cb-8d34-eafae933d8e4"
-					freshID := claudeagent.SessionUUID
-					var agent ports.Agent = claudeagent.New()
-					if harness != domain.HarnessClaudeCode {
-						original = "opaque-native-original"
-						freshID = func(id string) string { return "opaque-native-" + id }
-						agent = nativeOwnershipAgent{configDir: configDir}
-					}
+					original := "opaque-native-original"
+					freshID := func(id string) string { return "opaque-native-" + id }
+					var agent ports.Agent = nativeOwnershipAgent{configDir: configDir}
 					originalTranscript := filepath.Join(configDir, "projects", "scratch", original+".jsonl")
 					if err := os.WriteFile(originalTranscript, []byte("{\"type\":\"user\",\"message\":\"terminal question\"}\n"), 0600); err != nil {
 						t.Fatal(err)
@@ -124,7 +111,7 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 					})
 					useFastInterfaceTransitionTimings(m)
 					if _, err := m.resumeChatController(ctx, "initial Chat", sess, project,
-						ports.WorkspaceInfo{Path: workspace, Branch: "main"}, false, "", domain.SessionInterfaceTransitionHistoryStrict); err != nil {
+						ports.WorkspaceInfo{Path: workspace, Branch: "main"}, false, domain.SessionInterfaceTransitionHistoryStrict); err != nil {
 						t.Fatal(err)
 					}
 					getSession := func() domain.SessionRecord {
@@ -277,7 +264,7 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 						t.Fatal(err)
 					}
 					if _, err := m.resumeChatController(ctx, "retry", getSession(), project,
-						ports.WorkspaceInfo{Path: workspace, Branch: "main"}, false, "", domain.SessionInterfaceTransitionHistoryStrict); err != nil {
+						ports.WorkspaceInfo{Path: workspace, Branch: "main"}, false, domain.SessionInterfaceTransitionHistoryStrict); err != nil {
 						t.Fatal(err)
 					}
 					assertHistory()
@@ -287,8 +274,8 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 	}
 }
 
-// A non-Claude handoff-capable adapter with opaque IDs. It deliberately uses
-// no Claude identity, UUID derivation, or production adapter implementation.
+// A non-ACP handoff-capable adapter with opaque IDs. It deliberately uses no
+// provider identity or production adapter implementation.
 type nativeOwnershipAgent struct {
 	transitionAgent
 	configDir string

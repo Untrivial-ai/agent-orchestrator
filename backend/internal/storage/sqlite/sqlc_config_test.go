@@ -32,7 +32,6 @@ func TestSQLCBooleanOverrides(t *testing.T) {
 		t.Fatalf("parse sqlc.yaml: %v", err)
 	}
 	for _, column := range []string{
-		"agent_switch_failure_policy.enabled",
 		"app_settings.cloud_offering",
 	} {
 		t.Run(column, func(t *testing.T) {

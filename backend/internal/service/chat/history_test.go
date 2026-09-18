@@ -696,7 +696,7 @@ func newEditHarnessWithOptions(
 	workspace := t.TempDir()
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: workspace,
+		Harness: domain.HarnessOpenCode, WorkspacePath: workspace,
 		Env:          map[string]string{"AO_EDIT_TEST": "yes", "AO_BROWSER_CAPABILITY": "stale"},
 		SystemPrompt: "preserved prompt", PrepareControllerEnv: prepare,
 	})
@@ -1105,7 +1105,7 @@ func TestStartRestoresSourceAfterCrashBeforeEditedPromptWasRecorded(t *testing.T
 	restarted := newRestartedEditService(t, h, restartDriver, "empty-edit-restart-id")
 	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: record.Metadata.ProviderConversationID,
 	}); err != nil {
 		t.Fatalf("Start after empty edit crash: %v", err)
@@ -1180,7 +1180,7 @@ func TestStartLinksDurableEditedPromptAfterCrashBeforeBranchLink(t *testing.T) {
 	restarted := newRestartedEditService(t, h, restartDriver, "linked-edit-restart-id")
 	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: record.Metadata.ProviderConversationID,
 	}); err != nil {
 		t.Fatalf("Start after unlinked edit crash: %v", err)
@@ -1285,7 +1285,7 @@ func TestEditMessageAmbiguousApproximateFailureRemainsNavigableAcrossRestart(t *
 	t.Cleanup(func() { _ = restarted.Stop(context.Background(), testSession) })
 	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: record.Metadata.ProviderConversationID,
 	}); err != nil {
 		t.Fatalf("Start after failed edit: %v", err)
@@ -1331,7 +1331,7 @@ func TestReservedEditRecoversAfterControllerStopAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := h.svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
 	}); err != nil {
 		t.Fatal(err)
@@ -1471,7 +1471,7 @@ func restartEditServiceWithDriverCalls(
 		Now: h.now,
 	})
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: providerConversationID,
 	}); err != nil {
 		t.Fatalf("restart edit service: %v", err)
@@ -2698,7 +2698,7 @@ func TestApproximateBranchScopePersistsAcrossServiceRestartAndSwitching(t *testi
 	t.Cleanup(func() { _ = restarted.Stop(context.Background(), testSession) })
 	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: record.Metadata.ProviderConversationID,
 	}); err != nil {
 		t.Fatalf("Start after restart: %v", err)
@@ -2786,7 +2786,7 @@ func TestProviderBoundaryRejectsSourceProviderBranchAndEdit(t *testing.T) {
 
 	_, err = svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderScopeID: "target-provider-boundary", ControllerGeneration: "target-generation",
 		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if err := st.CreateAndActivateConversationBranch(ctx, testSession, domain.ConversationBranch{

@@ -81,7 +81,7 @@ func TestEditedFirstMessageResumesNativeHistoryAfterTerminalHooks(t *testing.T) 
 					rec.Metadata.LatestAssistantUpdateAt = time.Time{}
 				}
 				if tc.trustedCheckpoint {
-					rec.Harness = domain.HarnessCodex
+					rec.Harness = domain.HarnessOpenCode
 					rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
 					rec.Metadata.ConversationCheckpointGeneration = "native-launch"
 					rec.Metadata.ConversationCheckpointNativeID = "thread-fresh"
@@ -120,7 +120,7 @@ func TestEditedFirstMessageResumesNativeHistoryAfterTerminalHooks(t *testing.T) 
 			})
 			t.Cleanup(func() { resumed.StopAll(context.Background()) })
 			_, err = resumed.Start(ctx, chatsvc.StartConfig{
-				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessClaudeCode,
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 				ProviderConversationID: "thread-fresh", HistoryMode: ports.ChatHistoryRequired,
 			})
 			if !errors.Is(err, tc.wantErr) {

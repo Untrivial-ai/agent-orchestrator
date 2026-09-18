@@ -43,7 +43,7 @@ func (r *recordingCommandRunner) Run(ctx context.Context, argv []string, stdout,
 	if r.run != nil {
 		return r.run(ctx, argv, stdout, stderr)
 	}
-	_, _ = io.WriteString(stdout, "codex-cli 1.2.3\n")
+	_, _ = io.WriteString(stdout, "opencode 1.2.3\n")
 	return nil
 }
 
@@ -52,17 +52,17 @@ func TestVerifierUsesAdapterResolvedBinaryWithoutAuthProbe(t *testing.T) {
 	var authCalls atomic.Int32
 	runner := &recordingCommandRunner{}
 	verifier := NewVerifier(verifierResolver{
-		domain.HarnessCodex: verifierAgent{path: "/custom/bin/codex", authCalls: &authCalls},
+		domain.HarnessOpenCode: verifierAgent{path: "/custom/bin/opencode", authCalls: &authCalls},
 	}, runner)
 
-	result, err := verifier.Verify(context.Background(), TargetCodex)
+	result, err := verifier.Verify(context.Background(), TargetOpencode)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if result.ResolvedPath != "/custom/bin/codex" || result.Output != "codex-cli 1.2.3\n" {
+	if result.ResolvedPath != "/custom/bin/opencode" || result.Output != "opencode 1.2.3\n" {
 		t.Fatalf("result = %+v", result)
 	}
-	if !reflect.DeepEqual(runner.argv, []string{"/custom/bin/codex", "--version"}) {
+	if !reflect.DeepEqual(runner.argv, []string{"/custom/bin/opencode", "--version"}) {
 		t.Fatalf("argv = %v, want exact resolved binary version probe", runner.argv)
 	}
 	if authCalls.Load() != 0 {
@@ -77,10 +77,10 @@ func TestVerifierRejectsMissingAdapterOrBinaryResolver(t *testing.T) {
 		resolver verifierResolver
 	}{
 		{name: "adapter missing", resolver: verifierResolver{}},
-		{name: "binary capability missing", resolver: verifierResolver{domain.HarnessCodex: struct{ ports.Agent }{}}},
+		{name: "binary capability missing", resolver: verifierResolver{domain.HarnessOpenCode: struct{ ports.Agent }{}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewVerifier(tt.resolver, &recordingCommandRunner{}).Verify(context.Background(), TargetCodex)
+			_, err := NewVerifier(tt.resolver, &recordingCommandRunner{}).Verify(context.Background(), TargetOpencode)
 			if err == nil {
 				t.Fatal("Verify error = nil")
 			}
@@ -95,11 +95,11 @@ func TestVerifierBoundsVersionProbe(t *testing.T) {
 		return ctx.Err()
 	}}
 	verifier := NewVerifier(verifierResolver{
-		domain.HarnessCodex: verifierAgent{path: "/custom/bin/codex", authCalls: &atomic.Int32{}},
+		domain.HarnessOpenCode: verifierAgent{path: "/custom/bin/opencode", authCalls: &atomic.Int32{}},
 	}, runner)
 	verifier.timeout = 20 * time.Millisecond
 
-	_, err := verifier.Verify(context.Background(), TargetCodex)
+	_, err := verifier.Verify(context.Background(), TargetOpencode)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Verify error = %v, want deadline exceeded", err)
 	}

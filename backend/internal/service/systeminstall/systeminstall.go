@@ -39,34 +39,7 @@ type Target string
 const (
 	TargetTmux       Target = "tmux"
 	TargetGH         Target = "gh"
-	TargetClaude     Target = "claude"
-	TargetClaudeCode Target = "claude-code"
-	TargetCodex      Target = "codex"
-	TargetCursor     Target = "cursor"
 	TargetOpencode   Target = "opencode"
-	TargetAider      Target = "aider"
-	TargetCopilot    Target = "copilot"
-	TargetGrok       Target = "grok"
-	TargetKimi       Target = "kimi"
-	TargetPi         Target = "pi"
-	TargetAmp        Target = "amp"
-	TargetAuggie     Target = "auggie"
-	TargetDroid      Target = "droid"
-	TargetCrush      Target = "crush"
-	TargetCline      Target = "cline"
-	TargetGoose      Target = "goose"
-	TargetQwen       Target = "qwen"
-	TargetContinue   Target = "continue"
-	TargetDevin      Target = "devin"
-	TargetKiro       Target = "kiro"
-	TargetKilocode   Target = "kilocode"
-	TargetVibe       Target = "vibe"
-	TargetMuse       Target = "muse"
-	TargetAgy        Target = "agy"
-	TargetAutohand   Target = "autohand"
-	TargetKimchi     Target = "kimchi"
-	TargetPrimeAgent Target = "prime-agent"
-	TargetOMP        Target = "omp"
 	// TargetCloudflared is the optional connector that makes a paired phone
 	// reachable from outside the local network.
 	TargetCloudflared Target = "cloudflared"
@@ -74,12 +47,7 @@ const (
 
 // agentTargets is the stable settings-page order.
 var agentTargets = []Target{
-	TargetClaudeCode, TargetCodex, TargetCursor, TargetOpencode, TargetAider,
-	TargetCopilot, TargetGrok, TargetKimi, TargetPi, TargetAmp, TargetAuggie,
-	TargetDroid, TargetCrush, TargetCline, TargetGoose, TargetQwen,
-	TargetContinue, TargetDevin, TargetKiro, TargetKilocode, TargetVibe,
-	TargetMuse, TargetAgy, TargetAutohand, TargetKimchi, TargetPrimeAgent,
-	TargetOMP,
+	TargetOpencode,
 }
 
 var agentTargetSet = func() map[Target]bool {
@@ -93,8 +61,7 @@ var agentTargetSet = func() map[Target]bool {
 // systemTargetSet is the stable contract of the legacy /system/install route.
 // Agent-only targets use /agents/{agent}/install instead.
 var systemTargetSet = map[Target]bool{
-	TargetTmux: true, TargetGH: true, TargetClaude: true, TargetCloudflared: true,
-	TargetCodex: true, TargetOpencode: true, TargetCopilot: true,
+	TargetTmux: true, TargetGH: true, TargetOpencode: true, TargetCloudflared: true,
 }
 
 // knownTargets is the exhaustive allowlist backing Valid.
@@ -240,7 +207,7 @@ const defaultPersistenceTimeout = 2 * time.Second
 
 // Job is the tracked state of one install run for a Target.
 type Job struct {
-	Target              Target `json:"target" enum:"tmux,gh,claude,claude-code,codex,cursor,opencode,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,cloudflared" description:"Fixed install target this job ran (or is running) for."`
+	Target              Target `json:"target" enum:"tmux,gh,opencode,cloudflared" description:"Fixed install target this job ran (or is running) for."`
 	Status              Status `json:"status" enum:"idle,running,installing,verifying,succeeded,failed,unsupported,interrupted" description:"Current lifecycle state of the job."`
 	Method              string `json:"method,omitempty" description:"Server-owned installation method selected for this harness job."`
 	Command             string `json:"command,omitempty" description:"Human-readable install command, e.g. \"brew install tmux\", for display even before/without output."`
@@ -263,17 +230,10 @@ type HarnessVerifier interface {
 	Verify(ctx context.Context, target Target) (VerifyResult, error)
 }
 
-// SessionLister exposes durable lifecycle facts used to keep the Droid vendor
-// installer away from active Droid processes.
-type SessionLister interface {
-	ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error)
-}
-
 // Deps are the durable and adapter-backed dependencies used for harness jobs.
 type Deps struct {
 	JobStore ports.AgentInstallJobStore
 	Verifier HarnessVerifier
-	Sessions SessionLister
 }
 
 // Service runs real install commands for the fixed Target allowlist.
@@ -284,7 +244,6 @@ type Service struct {
 	stop              context.CancelFunc
 	stopping          bool
 	workers           sync.WaitGroup
-	droidGate         sync.RWMutex
 
 	executables         ports.ExecutableFinder
 	commands            ports.CommandRunner
@@ -293,7 +252,6 @@ type Service struct {
 	installCapabilities ports.InstallCapabilityProbe
 	jobStore            ports.AgentInstallJobStore
 	verifier            HarnessVerifier
-	sessions            SessionLister
 	// goos selects the platform branch in planFor. Real use is always
 	// runtime.GOOS; tests override it to exercise every OS branch from one
 	// machine, the same seam lookPath provides for PATH probing.
@@ -358,7 +316,6 @@ func NewWithDeps(executables ports.ExecutableFinder, commands ports.CommandRunne
 		installCapabilities: installCapabilities,
 		jobStore:            deps.JobStore,
 		verifier:            deps.Verifier,
-		sessions:            deps.Sessions,
 		goos:                runtime.GOOS,
 		installTimeout:      defaultInstallTimeout,
 		persistenceTimeout:  defaultPersistenceTimeout,
@@ -526,35 +483,6 @@ func (s *Service) StartAgentOperation(ctx context.Context, target Target, method
 	if !IsAgentTarget(target) {
 		return Job{}, fmt.Errorf("systeminstall: unknown harness target %q", target)
 	}
-	var releaseDroid func()
-	if target == TargetDroid {
-		s.mu.Lock()
-		if current, ok := s.jobs[target]; ok && activeStatus(current.Status) {
-			s.mu.Unlock()
-			return Job{}, ErrInstallActive
-		}
-		s.mu.Unlock()
-		if !s.droidGate.TryLock() {
-			return Job{}, fmt.Errorf("%w: a Droid session is starting", ErrHarnessActive)
-		}
-		releaseDroid = s.droidGate.Unlock
-		defer func() {
-			if releaseDroid != nil {
-				releaseDroid()
-			}
-		}()
-		if s.sessions != nil {
-			sessions, err := s.sessions.ListAllSessions(ctx)
-			if err != nil {
-				return Job{}, fmt.Errorf("systeminstall: list sessions before droid install: %w", err)
-			}
-			for _, session := range sessions {
-				if session.Harness == domain.HarnessDroid && !session.IsTerminated {
-					return Job{}, fmt.Errorf("%w: end Droid session %s before installing or reinstalling Droid", ErrHarnessActive, session.ID)
-				}
-			}
-		}
-	}
 
 	var plan Plan
 	var err error
@@ -614,28 +542,19 @@ func (s *Service) StartAgentOperation(ctx context.Context, target Target, method
 		s.finishAgentJob(job, StatusInterrupted, "", "daemon shutdown interrupted the install", "")
 		return initial, nil
 	}
-	workerRelease := releaseDroid
-	releaseDroid = nil
 	go func() { //nolint:gosec // bounded daemon-owned worker intentionally outlives the request.
 		defer s.workers.Done()
-		if workerRelease != nil {
-			defer workerRelease()
-		}
 		s.runAgentInstall(s.backgroundContext, plan, job)
 	}()
 	return initial, nil
 }
 
-// TryBeginHarnessUse prevents a Droid session launch from racing replacement
-// of the Droid executable. The returned release must be called after launch.
-func (s *Service) TryBeginHarnessUse(harness domain.AgentHarness) (func(), bool) {
-	if harness != domain.HarnessDroid {
-		return func() {}, true
-	}
-	if !s.droidGate.TryRLock() {
-		return nil, false
-	}
-	return s.droidGate.RUnlock, true
+// TryBeginHarnessUse prevents a harness session launch from racing replacement
+// of the harness executable. AO never auto-replaces opencode's binary during a
+// launch, so the gate never blocks; it exists to keep the session manager's
+// harness-use boundary uniform.
+func (s *Service) TryBeginHarnessUse(domain.AgentHarness) (func(), bool) {
+	return func() {}, true
 }
 
 // Status returns the current or last known Job for target. A target that has
@@ -1107,12 +1026,6 @@ func (s *Service) planFor(target Target) Plan {
 		return s.planTmux()
 	case TargetGH:
 		return s.planGH()
-	case TargetClaude:
-		return s.planNPM(TargetClaude, "@anthropic-ai/claude-code")
-	case TargetCodex:
-		return s.planNPM(TargetCodex, "@openai/codex")
-	case TargetCopilot:
-		return s.planNPM(TargetCopilot, "@github/copilot")
 	case TargetOpencode:
 		return s.planOpencode()
 	case TargetCloudflared:
@@ -1241,17 +1154,8 @@ func (p requestPlanner) planNPM(target Target, pkg string) Plan {
 	return plan
 }
 
-func minimumNodeVersionForTarget(target Target) [3]int {
-	switch target {
-	case TargetAuggie, TargetDroid:
-		return [3]int{20, 0, 0}
-	case TargetClaudeCode, TargetQwen, TargetAutohand:
-		return [3]int{22, 0, 0}
-	case TargetPi:
-		return [3]int{22, 19, 0}
-	default:
-		return [3]int{16, 0, 0}
-	}
+func minimumNodeVersionForTarget(Target) [3]int {
+	return [3]int{16, 0, 0}
 }
 
 func formatToolVersion(version [3]int) string {
@@ -1311,23 +1215,8 @@ func (s *Service) planBrew(target Target, pkg string) Plan {
 	return planner.planBrew(target, pkg)
 }
 
-func (s *Service) planBrewCask(target Target, pkg string) Plan {
-	if !IsAgentTarget(target) {
-		return (requestPlanner{Service: s}).planBrewCask(target, pkg)
-	}
-	planner, err := s.newRequestPlanner(context.Background())
-	if err != nil {
-		return Plan{Target: target, Unsupported: true, Method: "homebrew", Reason: "Homebrew packages could not be inspected."}
-	}
-	return planner.planBrewCask(target, pkg)
-}
-
 func (p requestPlanner) planBrew(target Target, pkg string) Plan {
 	return p.planHomebrew(target, pkg, false)
-}
-
-func (p requestPlanner) planBrewCask(target Target, pkg string) Plan {
-	return p.planHomebrew(target, pkg, true)
 }
 
 func (p requestPlanner) planHomebrew(target Target, pkg string, cask bool) Plan {
@@ -1393,11 +1282,6 @@ func (s *Service) planWinget(target Target, id string) Plan {
 		return Plan{Target: target, Command: command, Method: "winget"}
 	}
 	return Plan{Target: target, Command: command}
-}
-
-func withDocs(plan Plan, docsURL string) Plan {
-	plan.DocsURL = docsURL
-	return plan
 }
 
 // linuxPackageManagers is probed in this fixed order; the first one found on

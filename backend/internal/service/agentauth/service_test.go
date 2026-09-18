@@ -24,8 +24,7 @@ func TestStartRejectsUnstartablePlans(t *testing.T) {
 		code    string
 	}{
 		{name: "unknown target", agentID: "not-a-harness", code: "AGENT_AUTH_TARGET_UNKNOWN"},
-		{name: "unavailable command", agentID: "codex", code: "AGENT_AUTH_UNAVAILABLE"},
-		{name: "documentation setup", agentID: "aider", code: "AGENT_AUTH_DOCUMENTATION_ONLY"},
+		{name: "unavailable command", agentID: "opencode", code: "AGENT_AUTH_UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -41,19 +40,19 @@ func TestStartRejectsUnstartablePlans(t *testing.T) {
 	}
 }
 
-func TestStartOpensDevinNativeLogin(t *testing.T) {
+func TestStartOpensOpenCodeNativeLogin(t *testing.T) {
 	t.Parallel()
 
 	opener := &recordingTerminalOpener{}
-	svc := New(foundExecutable("devin"), opener)
+	svc := New(foundExecutable("opencode"), opener)
 
-	_, err := svc.Start(context.Background(), "devin")
+	_, err := svc.Start(context.Background(), "opencode")
 	if err != nil {
-		t.Fatalf("Start(devin): %v", err)
+		t.Fatalf("Start(opencode): %v", err)
 	}
 	want := shellterm.OpenCommandTerminalInput{
-		Argv:  []string{"/test/bin/devin", "auth", "login"},
-		Title: "Log in to Devin",
+		Argv:  []string{"/test/bin/opencode", "auth", "login"},
+		Title: "Log in to OpenCode",
 	}
 	if !reflect.DeepEqual(opener.input, want) {
 		t.Fatalf("OpenCommandTerminal input = %#v, want %#v", opener.input, want)
@@ -63,33 +62,33 @@ func TestStartOpensDevinNativeLogin(t *testing.T) {
 func TestStartOpensResolvedPlanAndReturnsSafeTerminal(t *testing.T) {
 	t.Parallel()
 
-	terminal := shellterm.ShellTerminal{HandleID: "shellterm-123", Title: "Log in to Pi"}
+	terminal := shellterm.ShellTerminal{HandleID: "shellterm-123", Title: "Log in to OpenCode"}
 	opener := &recordingTerminalOpener{terminal: terminal}
-	svc := New(foundExecutable("pi"), opener)
+	svc := New(foundExecutable("opencode"), opener)
 
-	got, err := svc.Start(context.Background(), "pi")
+	got, err := svc.Start(context.Background(), "opencode")
 	if err != nil {
-		t.Fatalf("Start(pi): %v", err)
+		t.Fatalf("Start(opencode): %v", err)
 	}
 	if opener.calls != 1 {
 		t.Fatalf("OpenCommandTerminal calls = %d, want 1", opener.calls)
 	}
 	wantInput := shellterm.OpenCommandTerminalInput{
-		Argv:  []string{"/test/bin/pi"},
-		Title: "Log in to Pi",
+		Argv:  []string{"/test/bin/opencode", "auth", "login"},
+		Title: "Log in to OpenCode",
 	}
 	if !reflect.DeepEqual(opener.input, wantInput) {
 		t.Fatalf("OpenCommandTerminal input = %#v, want %#v", opener.input, wantInput)
 	}
-	if got.AgentID != "pi" || got.Action != ActionLogin || got.Guidance != "Select Open login after Pi finishes starting" || got.TerminalInput != "/login\r" || got.Terminal != terminal {
-		t.Fatalf("Start(pi) = %#v, want display-safe Pi result with terminal %#v", got, terminal)
+	if got.AgentID != "opencode" || got.Action != ActionLogin || got.Guidance != "Native provider chooser" || got.TerminalInput != "" || got.Terminal != terminal {
+		t.Fatalf("Start(opencode) = %#v, want display-safe result with terminal %#v", got, terminal)
 	}
 	data, err := json.Marshal(got)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "argv") || strings.Contains(string(data), "initialInput") {
-		t.Fatalf("Start(pi) serialized trusted terminal input: %s", data)
+		t.Fatalf("Start(opencode) serialized trusted terminal input: %s", data)
 	}
 }
 
@@ -97,15 +96,15 @@ func TestStartFallsBackToAgentResolvedBinaryOutsidePATH(t *testing.T) {
 	t.Parallel()
 
 	opener := &recordingTerminalOpener{}
-	resolver := managedExecutableResolver{agentID: "claude-code", path: "/Users/test/.claude/local/claude"}
+	resolver := managedExecutableResolver{agentID: "opencode", path: "/Users/test/.opencode/bin/opencode"}
 	svc := NewWithAgentResolver(resolver, resolver, opener)
 
-	_, err := svc.Start(context.Background(), "claude-code")
+	_, err := svc.Start(context.Background(), "opencode")
 	if err != nil {
-		t.Fatalf("Start(claude-code): %v", err)
+		t.Fatalf("Start(opencode): %v", err)
 	}
-	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/Users/test/.claude/local/claude", "auth", "login"}) {
-		t.Fatalf("terminal argv = %#v, want adapter-resolved Claude binary", got)
+	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/Users/test/.opencode/bin/opencode", "auth", "login"}) {
+		t.Fatalf("terminal argv = %#v, want adapter-resolved opencode binary", got)
 	}
 }
 
@@ -113,15 +112,15 @@ func TestStartPrefersAdapterResolvedBinaryOverGenericPATHMatch(t *testing.T) {
 	t.Parallel()
 
 	opener := &recordingTerminalOpener{}
-	resolver := managedExecutableResolver{agentID: "muse", path: "/validated/meta/muse"}
-	svc := NewWithAgentResolver(foundExecutable("muse"), resolver, opener)
+	resolver := managedExecutableResolver{agentID: "opencode", path: "/validated/anomalyco/opencode"}
+	svc := NewWithAgentResolver(foundExecutable("opencode"), resolver, opener)
 
-	_, err := svc.Start(context.Background(), "muse")
+	_, err := svc.Start(context.Background(), "opencode")
 	if err != nil {
-		t.Fatalf("Start(muse): %v", err)
+		t.Fatalf("Start(opencode): %v", err)
 	}
-	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/validated/meta/muse", "login"}) {
-		t.Fatalf("terminal argv = %#v, want adapter-validated Muse binary", got)
+	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/validated/anomalyco/opencode", "auth", "login"}) {
+		t.Fatalf("terminal argv = %#v, want adapter-validated opencode binary", got)
 	}
 }
 

@@ -152,6 +152,8 @@ var shippedMigrations = map[int64]string{
 	145: "0145_native_checkpoint_evidence.sql",
 	146: "0146_codex_account_management_simplification.sql",
 	147: "0147_native_history_provenance.sql",
+	148: "0148_allow_opencode_usage.sql",
+	149: "0149_drop_agent_switching.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
@@ -311,7 +313,7 @@ INSERT INTO projects (
 	rec := domain.SessionRecord{
 		ProjectID: "mer",
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessClaudeCode,
+		Harness:   domain.HarnessOpenCode,
 		Activity:  domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{
 			Branch:        "ao/mer-1/root",
@@ -341,7 +343,7 @@ INSERT INTO projects (
 		ID:               "review-1",
 		SessionID:        created.ID,
 		ProjectID:        "mer",
-		Harness:          domain.ReviewerCodex,
+		Harness:          domain.ReviewerOpenCode,
 		ReviewerHandleID: "review-mer-1",
 		AgentSessionID:   "reviewer-native-1",
 		CreatedAt:        now,
@@ -349,7 +351,7 @@ INSERT INTO projects (
 	}); err != nil {
 		t.Fatalf("upsert review on repaired schema: %v", err)
 	}
-	review, ok, err := store.GetReviewBySessionAndHarness(ctx, created.ID, domain.ReviewerCodex)
+	review, ok, err := store.GetReviewBySessionAndHarness(ctx, created.ID, domain.ReviewerOpenCode)
 	if err != nil {
 		t.Fatalf("get review on repaired schema: %v", err)
 	}

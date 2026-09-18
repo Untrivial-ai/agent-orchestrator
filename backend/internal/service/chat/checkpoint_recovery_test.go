@@ -52,7 +52,7 @@ func TestInterfaceHandoffRecoversLegacyCheckpointFromUnsettledChatTurn(t *testin
 			})
 			t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 			cfg := chatsvc.StartConfig{
-				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 				HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 			}
@@ -174,7 +174,7 @@ func TestInterfaceHandoffNewTrustedTUIPromptCannotBorrowOldFailedChatOutcome(t *
 		domain.SessionInterfaceTransitionHistoryStrict, domain.SessionInterfaceTransitionHistoryProvider,
 	} {
 		_, err := svc.Start(ctx, chatsvc.StartConfig{
-			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 			WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 			HistoryPolicy: policy,
 		})

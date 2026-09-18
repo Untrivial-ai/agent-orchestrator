@@ -8,10 +8,10 @@ import (
 
 func TestPersistentChatHostKeepSetUsesDurableOwnership(t *testing.T) {
 	records := []domain.SessionRecord{
-		{ID: "live-chat", Mode: domain.SessionModeChat, Harness: domain.HarnessCodex},
-		{ID: "terminated-chat", Mode: domain.SessionModeChat, Harness: domain.HarnessCodex, IsTerminated: true},
-		{ID: "tui", Mode: domain.SessionModeTUI, Harness: domain.HarnessCodex},
-		{ID: "other-provider", Mode: domain.SessionModeChat, Harness: domain.HarnessClaudeCode},
+		{ID: "live-chat", Mode: domain.SessionModeChat, Harness: domain.HarnessOpenCode},
+		{ID: "terminated-chat", Mode: domain.SessionModeChat, Harness: domain.HarnessOpenCode, IsTerminated: true},
+		{ID: "tui", Mode: domain.SessionModeTUI, Harness: domain.HarnessOpenCode},
+		{ID: "other-provider", Mode: domain.SessionModeChat, Harness: domain.HarnessOpenCode},
 	}
 	keep := persistentChatHostKeepSet(records)
 	if len(keep) != 2 {

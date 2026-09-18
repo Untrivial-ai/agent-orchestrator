@@ -10,7 +10,7 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	// Clear every recognised var so we observe pure defaults regardless of the
 	// surrounding environment.
-	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_ALLOWED_ORIGINS", "AO_TELEMETRY_EVENTS", "AO_TELEMETRY_METRICS", "AO_TELEMETRY_REMOTE", "AO_TELEMETRY_POSTHOG_KEY", "AO_TELEMETRY_POSTHOG_HOST", "AO_TELEMETRY_DISABLED_EVENTS", "AO_TELEMETRY_APP_VERSION"} {
+	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_ALLOWED_ORIGINS"} {
 		t.Setenv(k, "")
 	}
 
@@ -50,12 +50,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if wantStateDir := filepath.Join(homeDir, ".ao"); cfg.StateDir != wantStateDir {
 		t.Errorf("StateDir = %q, want %q", cfg.StateDir, wantStateDir)
-	}
-	if cfg.Telemetry.Remote != TelemetryRemoteOff || cfg.Telemetry.PostHogHost != DefaultTelemetryPostHogHost {
-		t.Fatalf("Telemetry defaults = %+v", cfg.Telemetry)
-	}
-	if cfg.Telemetry.EventsExplicit {
-		t.Fatal("Telemetry.EventsExplicit = true for an absent setting")
 	}
 }
 
@@ -101,11 +95,6 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("AO_SHUTDOWN_TIMEOUT", "3s")
 	t.Setenv("AO_RUN_FILE", runFilePath)
 	t.Setenv("AO_DATA_DIR", dataDir)
-	t.Setenv("AO_TELEMETRY_EVENTS", "on")
-	t.Setenv("AO_TELEMETRY_METRICS", "off")
-	t.Setenv("AO_TELEMETRY_REMOTE", "posthog")
-	t.Setenv("AO_TELEMETRY_POSTHOG_KEY", "phc_test")
-	t.Setenv("AO_TELEMETRY_POSTHOG_HOST", "https://eu.i.posthog.com")
 
 	cfg, err := Load()
 	if err != nil {
@@ -129,15 +118,6 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.StateDir != dataDir {
 		t.Errorf("StateDir = %q, want explicit DataDir %q", cfg.StateDir, dataDir)
 	}
-	if !cfg.Telemetry.Events || cfg.Telemetry.Metrics {
-		t.Fatalf("Telemetry toggles = %+v", cfg.Telemetry)
-	}
-	if !cfg.Telemetry.EventsExplicit {
-		t.Fatal("Telemetry.EventsExplicit = false for AO_TELEMETRY_EVENTS=on")
-	}
-	if cfg.Telemetry.Remote != TelemetryRemotePostHog || cfg.Telemetry.PostHogKey != "phc_test" || cfg.Telemetry.PostHogHost != "https://eu.i.posthog.com" {
-		t.Fatalf("Telemetry remote = %+v", cfg.Telemetry)
-	}
 }
 
 func TestLoadInvalid(t *testing.T) {
@@ -155,9 +135,6 @@ func TestLoadInvalid(t *testing.T) {
 		{"negative shutdown timeout", map[string]string{"AO_SHUTDOWN_TIMEOUT": "-5s"}},
 		{"null origin", map[string]string{"AO_ALLOWED_ORIGINS": "app://renderer,null"}},
 		{"wildcard origin", map[string]string{"AO_ALLOWED_ORIGINS": "*"}},
-		{"bad telemetry events", map[string]string{"AO_TELEMETRY_EVENTS": "maybe"}},
-		{"bad telemetry metrics", map[string]string{"AO_TELEMETRY_METRICS": "maybe"}},
-		{"bad telemetry remote", map[string]string{"AO_TELEMETRY_REMOTE": "otlp"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -205,49 +182,6 @@ func TestLoadAllowedOrigins(t *testing.T) {
 			}
 		}
 	})
-}
-
-// The kill switch and the supervisor-supplied version are user-visible
-// boundaries: the daemon reads them from the environment the desktop app hands
-// it, so a parsing regression here silently disables the switch.
-func TestLoadTelemetryDisabledEventsAndAppVersion(t *testing.T) {
-	t.Setenv("AO_TELEMETRY_DISABLED_EVENTS", " ao.v2.app.active , ao.renderer.* ,, ")
-	t.Setenv("AO_TELEMETRY_APP_VERSION", "  0.11.2  ")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	want := []string{"ao.v2.app.active", "ao.renderer.*"}
-	if len(cfg.Telemetry.DisabledEvents) != len(want) {
-		t.Fatalf("DisabledEvents = %#v, want %#v", cfg.Telemetry.DisabledEvents, want)
-	}
-	for i, name := range want {
-		if cfg.Telemetry.DisabledEvents[i] != name {
-			t.Fatalf("DisabledEvents[%d] = %q, want %q", i, cfg.Telemetry.DisabledEvents[i], name)
-		}
-	}
-	if cfg.Telemetry.AppVersion != "0.11.2" {
-		t.Fatalf("AppVersion = %q, want trimmed 0.11.2", cfg.Telemetry.AppVersion)
-	}
-}
-
-// An unparseable or blank list must never stop the daemon booting: the switch
-// has to be usable in a hurry, so a bad entry is inert rather than fatal.
-func TestLoadTelemetryDisabledEventsBlankIsInert(t *testing.T) {
-	t.Setenv("AO_TELEMETRY_DISABLED_EVENTS", " , , ")
-	t.Setenv("AO_TELEMETRY_APP_VERSION", "")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(cfg.Telemetry.DisabledEvents) != 0 {
-		t.Fatalf("DisabledEvents = %#v, want empty", cfg.Telemetry.DisabledEvents)
-	}
-	if cfg.Telemetry.AppVersion != "" {
-		t.Fatalf("AppVersion = %q, want empty", cfg.Telemetry.AppVersion)
-	}
 }
 
 func TestLoadOfferingDefaults(t *testing.T) {

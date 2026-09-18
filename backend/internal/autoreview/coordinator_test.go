@@ -121,7 +121,7 @@ func TestEvaluateSessionEligibility(t *testing.T) {
 			if result.Triggered != tt.want || (trigger.calls == 1) != tt.want {
 				t.Fatalf("triggered=%v calls=%d, want %v (reason=%s)", result.Triggered, trigger.calls, tt.want, result.Reason)
 			}
-			if tt.want && trigger.harness != domain.ReviewerCodex {
+			if tt.want && trigger.harness != domain.ReviewerOpenCode {
 				t.Fatalf("harness=%q, want codex", trigger.harness)
 			}
 		})
@@ -138,35 +138,35 @@ func TestExistingHeadReasonCapsFailedAutoRetriesPerHead(t *testing.T) {
 		{
 			name: "two failed auto runs do not block",
 			runs: []domain.ReviewRun{
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
 			},
 			want: "",
 		},
 		{
 			name: "three failed auto runs hit the retry limit",
 			runs: []domain.ReviewRun{
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
 			},
 			want: "failed_same_sha_retry_limit",
 		},
 		{
 			name: "other sha does not count",
 			runs: []domain.ReviewRun{
-				{PRURL: prURL, TargetSHA: "old", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
-				{PRURL: prURL, TargetSHA: "old", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
-				{PRURL: prURL, TargetSHA: "old", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "old", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "old", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "old", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerAuto, Status: domain.ReviewRunFailed},
 			},
 			want: "",
 		},
 		{
 			name: "manual failures do not count",
 			runs: []domain.ReviewRun{
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerManual, Status: domain.ReviewRunFailed},
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerManual, Status: domain.ReviewRunFailed},
-				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerCodex, TriggerSource: domain.ReviewTriggerManual, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerManual, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerManual, Status: domain.ReviewRunFailed},
+				{PRURL: prURL, TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, TriggerSource: domain.ReviewTriggerManual, Status: domain.ReviewRunFailed},
 			},
 			want: "",
 		},
@@ -182,9 +182,9 @@ func TestExistingHeadReasonCapsFailedAutoRetriesPerHead(t *testing.T) {
 
 func TestEvaluateSessionRoutesSoleRunningReviewThroughEngine(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
-	running := domain.ReviewRun{PRURL: "pr1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunRunning, CreatedAt: now}
+	running := domain.ReviewRun{PRURL: "pr1", TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, Status: domain.ReviewRunRunning, CreatedAt: now}
 	store := &fakeStore{
-		session: domain.SessionRecord{ID: "s1", ProjectID: "p1", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AutoReviewEnabled: true, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}},
+		session: domain.SessionRecord{ID: "s1", ProjectID: "p1", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode, AutoReviewEnabled: true, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}},
 		project: domain.ProjectRecord{ID: "p1"},
 		prs:     []domain.PullRequest{{URL: "pr1", Number: 1, HeadSHA: "sha1"}},
 		runs:    []domain.ReviewRun{running},
@@ -206,12 +206,12 @@ func TestEvaluateSessionRoutesSoleRunningReviewThroughEngine(t *testing.T) {
 func TestEvaluateSessionReportsCancelledAfterStaleRunningReconciliation(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{
-		session: domain.SessionRecord{ID: "s1", ProjectID: "p1", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AutoReviewEnabled: true, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}},
+		session: domain.SessionRecord{ID: "s1", ProjectID: "p1", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode, AutoReviewEnabled: true, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}},
 		project: domain.ProjectRecord{ID: "p1"},
 		prs:     []domain.PullRequest{{URL: "pr1", Number: 1, HeadSHA: "sha1"}},
-		runs:    []domain.ReviewRun{{PRURL: "pr1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunRunning}},
+		runs:    []domain.ReviewRun{{PRURL: "pr1", TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, Status: domain.ReviewRunRunning}},
 	}
-	cancelled := domain.ReviewRun{PRURL: "pr1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunCancelled}
+	cancelled := domain.ReviewRun{PRURL: "pr1", TargetSHA: "sha1", Harness: domain.ReviewerOpenCode, Status: domain.ReviewRunCancelled}
 	trigger := &fakeTrigger{result: reviewcore.TriggerResult{
 		Reviews: []reviewcore.PRReviewState{{PRURL: "pr1", TargetSHA: "sha1", Status: reviewcore.ReviewStateNeedsReview}},
 		Runs:    []domain.ReviewRun{cancelled},
@@ -235,11 +235,10 @@ func TestEvaluateSessionReviewerHarnessPrecedence(t *testing.T) {
 		worker   domain.AgentHarness
 		expected domain.ReviewerHarness
 	}{
-		{name: "session wins", session: domain.ReviewerOpenCode, project: domain.ReviewerClaudeCode, worker: domain.AgentHarness("codex"), expected: domain.ReviewerOpenCode},
-		{name: "project fallback", project: domain.ReviewerOpenCode, worker: domain.AgentHarness("codex"), expected: domain.ReviewerOpenCode},
-		{name: "safe worker inheritance", worker: domain.HarnessCodex, expected: domain.ReviewerCodex},
-		{name: "known reviewer outside safe inheritance set", worker: domain.HarnessKimi, expected: domain.ReviewerClaudeCode},
-		{name: "non-reviewer worker fallback", worker: domain.HarnessAider, expected: domain.ReviewerClaudeCode},
+		{name: "session wins", session: domain.ReviewerOpenCode, project: domain.ReviewerOpenCode, worker: domain.AgentHarness("nope"), expected: domain.ReviewerOpenCode},
+		{name: "project fallback", project: domain.ReviewerOpenCode, worker: domain.AgentHarness("nope"), expected: domain.ReviewerOpenCode},
+		{name: "safe worker inheritance", worker: domain.HarnessOpenCode, expected: domain.ReviewerOpenCode},
+		{name: "non-reviewer worker fallback", worker: domain.AgentHarness("nope"), expected: domain.ReviewerOpenCode},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -275,7 +274,7 @@ func (f *notifyingTrigger) TriggerAuto(_ context.Context, id domain.SessionID, _
 func TestCoordinatorPeriodicallyEvaluatesPersistedFacts(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{
-		session: domain.SessionRecord{ID: "s1", ProjectID: "p1", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AutoReviewEnabled: true, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}},
+		session: domain.SessionRecord{ID: "s1", ProjectID: "p1", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode, AutoReviewEnabled: true, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}},
 		project: domain.ProjectRecord{ID: "p1"},
 		prs:     []domain.PullRequest{{URL: "pr1", Number: 1, HeadSHA: "sha1"}},
 	}

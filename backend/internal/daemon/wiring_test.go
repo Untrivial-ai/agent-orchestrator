@@ -15,7 +15,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/tmux"
-	telemetryadapter "github.com/aoagents/agent-orchestrator/backend/internal/adapters/telemetry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -57,11 +56,11 @@ func TestReviewerAgentAuthUsesLaunchReadinessAndPreservesStrictStates(t *testing
 			provider := &wiringReadinessProvider{snapshot: domain.AgentReadinessSnapshot{
 				Authentication: domain.AgentAuthenticationObservation{State: test.state},
 			}}
-			got, supported, err := (reviewerAgentAuth{readiness: provider}).AuthStatus(context.Background(), domain.ReviewerCodex)
+			got, supported, err := (reviewerAgentAuth{readiness: provider}).AuthStatus(context.Background(), domain.ReviewerOpenCode)
 			if err != nil || !supported || got != test.want {
 				t.Fatalf("AuthStatus() = (%q, %v, %v), want (%q, true, nil)", got, supported, err, test.want)
 			}
-			if provider.agentID != "codex" || provider.purpose != domain.AgentReadinessPurposeLaunch {
+			if provider.agentID != "opencode" || provider.purpose != domain.AgentReadinessPurposeLaunch {
 				t.Fatalf("readiness request = (%q, %q)", provider.agentID, provider.purpose)
 			}
 		})
@@ -74,16 +73,10 @@ func TestInstalledAgentHarnessMapsManagedHarnessInstalls(t *testing.T) {
 		harness string
 		ok      bool
 	}{
-		{target: systeminstall.TargetClaude, harness: "claude-code", ok: true},
-		{target: systeminstall.TargetClaudeCode, harness: "claude-code", ok: true},
-		{target: systeminstall.TargetCodex, harness: "codex", ok: true},
 		{target: systeminstall.TargetOpencode, harness: "opencode", ok: true},
-		{target: systeminstall.TargetCopilot, harness: "copilot", ok: true},
-		{target: systeminstall.TargetKiro, harness: "kiro", ok: true},
-		{target: systeminstall.TargetPi, harness: "pi", ok: true},
-		{target: systeminstall.TargetVibe, harness: "vibe", ok: true},
 		{target: systeminstall.TargetTmux},
 		{target: systeminstall.TargetGH},
+		{target: systeminstall.TargetCloudflared},
 	} {
 		got, ok := installedAgentHarness(test.target)
 		if got != test.harness || ok != test.ok {
@@ -153,7 +146,7 @@ func TestWiring_WriteFlowsToBroadcaster(t *testing.T) {
 // matching registered adapter, while empty and unknown harnesses miss.
 func TestWiring_AgentResolverResolvesRealAdapters(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	resolver, err := buildAgentResolver("", log) // empty default → claude-code
+	resolver, err := buildAgentResolver("", log) // empty default → opencode
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,31 +154,7 @@ func TestWiring_AgentResolverResolvesRealAdapters(t *testing.T) {
 		harness domain.AgentHarness
 		wantID  string
 	}{
-		{domain.HarnessClaudeCode, "claude-code"},
-		{domain.HarnessCodex, "codex"},
 		{domain.HarnessOpenCode, "opencode"},
-		{domain.HarnessGrok, "grok"},
-		{domain.HarnessCursor, "cursor"},
-		{domain.HarnessQwen, "qwen"},
-		{domain.HarnessCopilot, "copilot"},
-		{domain.HarnessKimi, "kimi"},
-		{domain.HarnessMuse, "muse"},
-		{domain.HarnessDroid, "droid"},
-		{domain.HarnessAmp, "amp"},
-		{domain.HarnessAgy, "agy"},
-		{domain.HarnessCrush, "crush"},
-		{domain.HarnessAider, "aider"},
-		{domain.HarnessGoose, "goose"},
-		{domain.HarnessAuggie, "auggie"},
-		{domain.HarnessContinue, "continue"},
-		{domain.HarnessDevin, "devin"},
-		{domain.HarnessCline, "cline"},
-		{domain.HarnessKiro, "kiro"},
-		{domain.HarnessKilocode, "kilocode"},
-		{domain.HarnessVibe, "vibe"},
-		{domain.HarnessPi, "pi"},
-		{domain.HarnessPrimeAgent, "prime-agent"},
-		{domain.HarnessAutohand, "autohand"},
 	} {
 		agent, ok := resolver.Agent(tc.harness)
 		if !ok {
@@ -207,6 +176,28 @@ func TestWiring_AgentResolverResolvesRealAdapters(t *testing.T) {
 	}
 }
 
+// capabilityAgent is a ports.Agent whose only behavior is the optional adapter
+// capabilities the lifecycle wiring probes. Embedding the interface keeps the
+// fake from implementing every agent method; the capabilities are controlled by
+// fields so a single fake can prove the positive and negative plumbing.
+type capabilityAgent struct {
+	ports.Agent
+	steersActiveTurn     bool
+	startupInputReady    bool
+	emitsBlockedActivity bool
+}
+
+func (c capabilityAgent) SteersActiveTurn() bool            { return c.steersActiveTurn }
+func (c capabilityAgent) FirstSignalProvesInputReady() bool { return c.startupInputReady }
+func (c capabilityAgent) EmitsBlockedActivity() bool        { return c.emitsBlockedActivity }
+
+type capabilityResolver map[domain.AgentHarness]ports.Agent
+
+func (r capabilityResolver) Agent(harness domain.AgentHarness) (ports.Agent, bool) {
+	agent, ok := r[harness]
+	return agent, ok
+}
+
 // TestWiring_ActiveTurnSteeringComesFromAdapters asserts the active-turn
 // steering policy lifecycle consumes is resolved from the agent adapters
 // (ports.ActiveTurnSteerer) rather than from any harness knowledge baked into
@@ -221,19 +212,25 @@ func TestWiring_ActiveTurnSteeringComesFromAdapters(t *testing.T) {
 	}
 	steers := activeTurnSteering(agents)
 
-	if !steers(domain.HarnessCodex) {
-		t.Error("codex declares SteersActiveTurn; want true from the adapter-backed policy")
+	// The shipped opencode adapter does not declare active-turn steering.
+	if steers(domain.HarnessOpenCode) {
+		t.Error("opencode must not declare SteersActiveTurn")
 	}
-	if !steers(domain.HarnessPrimeAgent) {
-		t.Error("prime-agent declares SteersActiveTurn; want true from the adapter-backed policy")
-	}
-	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessAider, "definitely-not-an-agent", ""} {
+	for _, harness := range []domain.AgentHarness{"definitely-not-an-agent", ""} {
 		if steers(harness) {
 			t.Errorf("harness %q must not be steerable mid-turn", harness)
 		}
 	}
-	if activeTurnSteering(nil)(domain.HarnessCodex) {
+	if activeTurnSteering(nil)(domain.HarnessOpenCode) {
 		t.Error("a nil resolver must answer false, not steer")
+	}
+
+	// The policy reads the adapter capability, not harness identity.
+	fake := activeTurnSteering(capabilityResolver{
+		domain.HarnessOpenCode: capabilityAgent{steersActiveTurn: true},
+	})
+	if !fake(domain.HarnessOpenCode) {
+		t.Error("an adapter declaring SteersActiveTurn must answer true")
 	}
 }
 
@@ -245,16 +242,25 @@ func TestWiring_StartupSignalGateComesFromAdapters(t *testing.T) {
 	}
 	gates := startupSignalGatesInput(agents)
 
-	if !gates(domain.HarnessCursor) {
-		t.Error("cursor declares startup-ready signaling; want its TUI input gated")
+	// The shipped opencode adapter does not gate input on a startup signal.
+	if gates(domain.HarnessOpenCode) {
+		t.Error("opencode must not declare startup-ready signaling")
 	}
-	for _, harness := range []domain.AgentHarness{domain.HarnessAider, domain.HarnessOMP, "definitely-not-an-agent", ""} {
+	for _, harness := range []domain.AgentHarness{"definitely-not-an-agent", ""} {
 		if gates(harness) {
 			t.Errorf("harness %q must not require a startup signal", harness)
 		}
 	}
-	if startupSignalGatesInput(nil)(domain.HarnessCursor) {
+	if startupSignalGatesInput(nil)(domain.HarnessOpenCode) {
 		t.Error("a nil resolver must leave startup input ungated")
+	}
+
+	// The policy reads the adapter capability, not harness identity.
+	fake := startupSignalGatesInput(capabilityResolver{
+		domain.HarnessOpenCode: capabilityAgent{startupInputReady: true},
+	})
+	if !fake(domain.HarnessOpenCode) {
+		t.Error("an adapter declaring startup-ready signaling must gate input")
 	}
 }
 
@@ -262,9 +268,7 @@ func TestWiring_StartupSignalGateComesFromAdapters(t *testing.T) {
 // nudge is fail-closed at a waiting_input prompt: it is only safe on a harness
 // that reports a permission dialog AS blocked (ports.BlockedActivitySignaler),
 // so a waiting_input prompt there is a genuine idle composer rather than a
-// masked permission decision. Codex, Droid, and the shared-hook harnesses all
-// fold permission prompts into waiting_input and must stay suppressed; only
-// blocked-signalling adapters (claude-code, kimchi) open the boundary.
+// masked permission decision.
 func TestWiring_UrgentNudgeGateComesFromAdapters(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	agents, err := buildAgentResolver(config.DefaultAgent, log)
@@ -273,25 +277,25 @@ func TestWiring_UrgentNudgeGateComesFromAdapters(t *testing.T) {
 	}
 	safe := urgentNudgeWaitingInputSafe(agents)
 
-	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessKimchi} {
-		if !safe(harness) {
-			t.Errorf("harness %q reports permission dialogs as blocked; urgent nudge must be allowed at waiting_input", harness)
-		}
+	// The shipped opencode adapter does not declare a blocked-activity signal.
+	if safe(domain.HarnessOpenCode) {
+		t.Error("opencode must not open the waiting_input boundary")
 	}
-	// Codex maps permission-request to waiting_input; Droid folds both permission
-	// decisions and idle notifications into waiting_input; Goose/Devin ride the
-	// shared name-only StandardDeriveActivityState with no blocked signal. All
-	// must keep urgent delivery suppressed at a waiting_input prompt.
-	for _, harness := range []domain.AgentHarness{
-		domain.HarnessCodex, domain.HarnessDroid, domain.HarnessGoose, domain.HarnessDevin,
-		"definitely-not-an-agent", "",
-	} {
+	for _, harness := range []domain.AgentHarness{"definitely-not-an-agent", ""} {
 		if safe(harness) {
 			t.Errorf("harness %q cannot distinguish a masked permission prompt from an idle composer; urgent nudge must stay fail-closed", harness)
 		}
 	}
-	if urgentNudgeWaitingInputSafe(nil)(domain.HarnessClaudeCode) {
+	if urgentNudgeWaitingInputSafe(nil)(domain.HarnessOpenCode) {
 		t.Error("a nil resolver must fail closed, not open the waiting_input boundary")
+	}
+
+	// The policy reads the adapter capability, not harness identity.
+	fake := urgentNudgeWaitingInputSafe(capabilityResolver{
+		domain.HarnessOpenCode: capabilityAgent{emitsBlockedActivity: true},
+	})
+	if !fake(domain.HarnessOpenCode) {
+		t.Error("an adapter reporting permission dialogs as blocked must allow the urgent nudge")
 	}
 }
 
@@ -316,7 +320,7 @@ func TestWiring_StartSessionBuildsSessionService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildAgentResolver: %v", err)
 	}
-	svc, reviewSvc, lc, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, reviewSvc, lc, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, agents, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -340,8 +344,8 @@ func TestWiring_StartSessionSpawnsScratchWithoutGitRepo(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	binDir := t.TempDir()
-	writeFakeExecutable(t, filepath.Join(binDir, "claude"))
-	writeFakeExecutable(t, filepath.Join(binDir, "claude.cmd"))
+	writeFakeExecutable(t, filepath.Join(binDir, "opencode"))
+	writeFakeExecutable(t, filepath.Join(binDir, "opencode.cmd"))
 	writeFakeExecutable(t, filepath.Join(binDir, "tmux"))
 	writeFakeExecutable(t, filepath.Join(binDir, "tmux.cmd"))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -361,8 +365,8 @@ func TestWiring_StartSessionSpawnsScratchWithoutGitRepo(t *testing.T) {
 		Kind:         domain.ProjectKindScratch,
 		RegisteredAt: time.Now(),
 		Config: domain.ProjectConfig{
-			Worker:       domain.RoleOverride{Harness: domain.HarnessClaudeCode},
-			Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode},
+			Worker:       domain.RoleOverride{Harness: domain.HarnessOpenCode},
+			Orchestrator: domain.RoleOverride{Harness: domain.HarnessOpenCode},
 		},
 	}); err != nil {
 		t.Fatalf("UpsertProject: %v", err)
@@ -371,13 +375,13 @@ func TestWiring_StartSessionSpawnsScratchWithoutGitRepo(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lcm := lifecycle.New(store, nil)
 	runtime := &selectableRuntime{}
-	cfg := config.Config{DataDir: dataDir, Agent: string(domain.HarnessClaudeCode)}
+	cfg := config.Config{DataDir: dataDir, Agent: string(domain.HarnessOpenCode)}
 	messenger := newSessionMessenger(store, runtime, log)
-	agents, err := buildAgentResolver(string(domain.HarnessClaudeCode), log)
+	agents, err := buildAgentResolver(string(domain.HarnessOpenCode), log)
 	if err != nil {
 		t.Fatalf("buildAgentResolver: %v", err)
 	}
-	svc, _, _, err := startSession(context.Background(), cfg, runtime, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, _, _, err := startSession(context.Background(), cfg, runtime, store, lcm, messenger, agents, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -434,7 +438,7 @@ func TestStartSession_SpawnDoesNotPanicWhenNoTrackerToken(t *testing.T) {
 	if agentsErr != nil {
 		t.Fatalf("buildAgentResolver: %v", agentsErr)
 	}
-	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, agents, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -467,7 +471,7 @@ func TestStartTrackerIntake_RunsEvenWithoutEnabledProjects(t *testing.T) {
 	if agentsErr != nil {
 		t.Fatalf("buildAgentResolver: %v", agentsErr)
 	}
-	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, telemetryadapter.NoopSink{}, agents, nil, nil, nil, nil, nil, nil, nil, nil, nil, log)
+	svc, _, _, err := startSession(context.Background(), cfg, rt, store, lcm, messenger, agents, nil, nil, nil, nil, nil, nil, nil, log)
 	if err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
@@ -672,7 +676,7 @@ func TestWiring_StartLifecycleThreadsMessengerIntoLCM(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 
@@ -744,7 +748,7 @@ func TestWiring_MergeConflictNudgeReArmsAfterConflictClears(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 
@@ -841,57 +845,6 @@ type fakeSessionLifecycle struct {
 	restoreErr                error
 }
 
-type recordingAgentSwitchDaemonFaultStore struct {
-	inputs []ports.AgentSwitchDaemonFault
-}
-
-func (s *recordingAgentSwitchDaemonFaultStore) EnqueueAgentSwitchDaemonFault(_ context.Context, input ports.AgentSwitchDaemonFault) (ports.AgentSwitchMutationResult, error) {
-	s.inputs = append(s.inputs, input)
-	return ports.AgentSwitchMutationResult{Enrollment: domain.AgentSwitchEnrollmentEnrolled}, nil
-}
-
-type fixedAgentSwitchReportingPolicy struct {
-	authorization domain.AgentSwitchReportingAuthorization
-}
-
-func (p fixedAgentSwitchReportingPolicy) Authorization() domain.AgentSwitchReportingAuthorization {
-	return p.authorization
-}
-
-func TestEnqueueAgentSwitchWorkerShutdownTimeoutCreatesOneDaemonAggregate(t *testing.T) {
-	store := &recordingAgentSwitchDaemonFaultStore{}
-	authorization := domain.AgentSwitchReportingAuthorization{
-		Enabled: true, ConsentGeneration: "consent-generation", DestinationFingerprint: "destination-fingerprint",
-	}
-	at := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
-	if err := enqueueAgentSwitchWorkerShutdownTimeout(context.Background(), store, fixedAgentSwitchReportingPolicy{authorization}, "daemon-run-1", at); err != nil {
-		t.Fatalf("enqueue shutdown timeout: %v", err)
-	}
-	if len(store.inputs) != 1 {
-		t.Fatalf("daemon fault inputs = %d, want 1", len(store.inputs))
-	}
-	got := store.inputs[0]
-	if got.DaemonRunID != "daemon-run-1" || got.Authorization != authorization {
-		t.Fatalf("daemon fault scope = %+v", got)
-	}
-	if got.Fault.ReportKind != domain.AgentSwitchReportDaemonLifecycleFailure ||
-		got.Fault.FailurePoint != domain.AgentSwitchFailureShutdownWorkerTimeout ||
-		got.Fault.FaultCode != domain.AgentSwitchFaultShutdownWorkersTimedOut ||
-		got.Fault.Execution != domain.AgentSwitchExecutionDaemonShutdown ||
-		got.Fault.CallOutcome != domain.AgentSwitchCallTimedOut {
-		t.Fatalf("daemon fault = %+v", got.Fault)
-	}
-}
-
-func TestAgentSwitchWorkerWaitCancellationIsNotReportable(t *testing.T) {
-	if agentSwitchWorkerWaitTimedOut(context.Canceled) {
-		t.Fatal("ordinary shutdown cancellation was classified as a timeout")
-	}
-	if !agentSwitchWorkerWaitTimedOut(context.DeadlineExceeded) {
-		t.Fatal("worker deadline was not classified as a timeout")
-	}
-}
-
 func (f *fakeSessionLifecycle) Send(context.Context, domain.SessionID, string, *ports.SpawnAttachment) error {
 	return nil
 }
@@ -919,8 +872,6 @@ func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 	f.restoreAllCalled = true
 	return f.restoreErr
 }
-
-func (*fakeSessionLifecycle) WaitAgentSwitchWorkers(context.Context) error { return nil }
 
 func (f *fakeSessionLifecycle) SetShellTerminalCloser(sessionmanager.ShellTerminalCloser) {}
 func (f *fakeSessionLifecycle) SetTerminalInputGate(sessionmanager.TerminalInputGate)     {}

@@ -228,8 +228,7 @@ func (s *Store) ListWatchableUsageSources(ctx context.Context) ([]domain.UsageSo
 }
 
 // HasPendingUsageDiscovery reports whether a live binding has a durable reason
-// to retry source discovery. Healthy active bindings are excluded unless their
-// provider has a dynamic child inventory, such as Kimi agents.
+// to retry source discovery. Healthy active bindings are excluded.
 func (s *Store) HasPendingUsageDiscovery(ctx context.Context) (bool, error) {
 	pending, err := s.qr.HasPendingUsageDiscovery(ctx)
 	if err != nil {
@@ -238,44 +237,12 @@ func (s *Store) HasPendingUsageDiscovery(ctx context.Context) (bool, error) {
 	return pending != 0, nil
 }
 
-// ListLatestRetiredCodexReplacementClaimsByPath returns durable replacement
-// claims for one exact provider artifact path on resumable bindings.
-func (s *Store) ListLatestRetiredCodexReplacementClaimsByPath(
-	ctx context.Context,
-	artifactPath string,
-) ([]domain.UsageSourceRecord, error) {
-	rows, err := s.qr.ListLatestRetiredCodexReplacementClaimsByPath(ctx, artifactPath)
-	if err != nil {
-		return nil, fmt.Errorf("list retired Codex replacement claims: %w", err)
-	}
-	out := make([]domain.UsageSourceRecord, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, usageSourceFromGen(row))
-	}
-	return out, nil
-}
-
 // ListUsageDiscoveryBindings returns live-session bindings that may need a
 // main source, a relocated source, or newly-created subagent sources.
 func (s *Store) ListUsageDiscoveryBindings(ctx context.Context, limit int64) ([]domain.UsageBindingRecord, error) {
 	rows, err := s.qr.ListUsageDiscoveryBindings(ctx, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list usage discovery bindings: %w", err)
-	}
-	out := make([]domain.UsageBindingRecord, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, usageBindingFromGen(row))
-	}
-	return out, nil
-}
-
-// ListUsageBindingsForCodexParent returns live bindings whose latest source
-// matches one exact Codex parent native session. The collector validates the
-// child edge from that source's parser state before registration.
-func (s *Store) ListUsageBindingsForCodexParent(ctx context.Context, parentNativeSessionID string) ([]domain.UsageBindingRecord, error) {
-	rows, err := s.qr.ListUsageBindingsForCodexParent(ctx, parentNativeSessionID)
-	if err != nil {
-		return nil, fmt.Errorf("list usage bindings for Codex parent: %w", err)
 	}
 	out := make([]domain.UsageBindingRecord, 0, len(rows))
 	for _, row := range rows {
@@ -975,11 +942,7 @@ func usageAggregateFromGen(row gen.AggregateUsageBySessionHarnessModelRow) domai
 }
 
 func validateUsageEvent(harness domain.AgentHarness, event domain.ModelUsageEvent) error {
-	expectedProvider := domain.UsageProviderAnthropic
-	if harness == domain.HarnessCodex {
-		expectedProvider = domain.UsageProviderOpenAI
-	}
-	if event.ProviderID != expectedProvider || event.ModelID == "" || event.SourceEventKey == "" {
+	if event.ProviderID == "" || event.ModelID == "" || event.SourceEventKey == "" {
 		return fmt.Errorf("invalid usage event identity for %s", harness)
 	}
 	switch event.MeasurementKind {

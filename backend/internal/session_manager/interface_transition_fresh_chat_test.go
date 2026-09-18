@@ -4,18 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
-	claudeagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
-	codexagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 type freshChatTransitionStore struct {
@@ -48,153 +40,6 @@ func withFreshChatHistory(manager *Manager, store *transitionStore) *freshChatTr
 	}
 	manager.store = history
 	return history
-}
-
-func TestInterfaceTransitionUnpromptedChatRoundTrip(t *testing.T) {
-	// Keep production argv generation without requiring installed providers.
-	// The fake runtime records these paths but never executes the files.
-	binDir := t.TempDir()
-	for _, name := range []string{"claude", "codex"} {
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		if err := os.WriteFile(filepath.Join(binDir, name), []byte("test executable"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", binDir)
-	for _, tc := range []struct {
-		name         string
-		harness      domain.AgentHarness
-		agent        ports.Agent
-		providerTurn bool
-		terminalTurn bool
-	}{
-		{"claude", domain.HarnessClaudeCode, claudeagent.New(), false, false},
-		{"codex", domain.HarnessCodex, codexagent.New(), false, false},
-		{"claude with provider turn but no text", domain.HarnessClaudeCode, claudeagent.New(), true, false},
-		{"codex with provider turn but no text", domain.HarnessCodex, codexagent.New(), true, false},
-		{"claude after terminal message", domain.HarnessClaudeCode, claudeagent.New(), false, true},
-		{"codex after terminal message", domain.HarnessCodex, codexagent.New(), false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			claudeConfig, codexHome := t.TempDir(), t.TempDir()
-			t.Setenv("CLAUDE_CONFIG_DIR", claudeConfig)
-			t.Setenv("CODEX_HOME", codexHome)
-			manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeChat)
-			useFastInterfaceTransitionTimings(manager)
-			manager.agents = singleAgent{agent: tc.agent}
-			manager.dataDir = t.TempDir()
-			rec := store.sessions["session-1"]
-			rec.Harness = tc.harness
-			rec.Metadata.WorkspacePath = t.TempDir()
-			rec.Metadata.AgentSessionID = ""
-			rec.Metadata.ProviderConversationID = "019fc430-1234-7abc-8def-0123456789ab"
-			store.sessions[rec.ID] = rec
-			// Exercise the production conversation/branch reads. Runtime and
-			// lifecycle effects stay in the existing handoff fixture.
-			ctx := context.Background()
-			history := sqlitetest.MustOpenAt(t, t.TempDir())
-			if err := history.UpsertProject(ctx, store.projects["proj"]); err != nil {
-				t.Fatal(err)
-			}
-			created, err := history.CreateSession(ctx, rec)
-			if err != nil {
-				t.Fatal(err)
-			}
-			delete(store.sessions, rec.ID)
-			rec.ID = created.ID
-			store.sessions[rec.ID] = rec
-			if _, err := history.CreateConversation(ctx, "conversation-1", domain.ConversationScopeSession,
-				rec.ProjectID, rec.ID, time.Now()); err != nil {
-				t.Fatal(err)
-			}
-			manager.store = struct {
-				*transitionStore
-				chatHandoffHistoryStore
-			}{store, history}
-			if tc.providerTurn {
-				if err := history.AdoptProviderTurn(ctx, "conversation-1", rec.ID,
-					rec.Metadata.ControllerGeneration, "turn-1", "provider-turn-1", time.Now()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			transition, err := manager.StartInterfaceTransition(context.Background(), rec.ID,
-				domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
-			if tc.providerTurn {
-				if !errors.Is(err, ErrNativeConversationMissing) || len(*log) != 0 {
-					t.Fatalf("provider turn without text was treated as untouched: err=%v log=%v", err, *log)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unprompted Chat-to-terminal switch was refused: %v", err)
-			}
-			settled := awaitTransition(t, store, transition.ID)
-			if settled.Phase != domain.SessionInterfaceTransitionCompleted {
-				t.Fatalf("switch = %s (%s): %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
-			}
-			if settled.NativeConversationID != "" {
-				t.Fatalf("reserved id was passed to resume: %q", settled.NativeConversationID)
-			}
-			if got := fmt.Sprint(*log); got != "[prepare:chat:interrupt stop:chat start:tui]" {
-				t.Fatalf("controller order = %s", got)
-			}
-			if runtime.created != 1 || strings.Contains(strings.Join(runtime.lastCfg.Argv, " "), "resume") {
-				t.Fatalf("expected one fresh terminal launch: %+v", runtime.lastCfg)
-			}
-			// SessionStart reserves a transcript path before the first prompt
-			// creates that file. Exercise the immediate reverse handoff too.
-			rec = store.sessions[rec.ID]
-			rec.Metadata.AgentSessionID = "019fc430-1234-7abc-8def-0123456789ab"
-			rec.Metadata.AgentSessionIDLaunchID = rec.Metadata.RuntimeLaunchID
-			rec.Metadata.NativeTranscriptPath = filepath.Join(t.TempDir(), "reserved.jsonl")
-			wantNativeID := ""
-			if tc.terminalTurn {
-				wantNativeID = rec.Metadata.AgentSessionID
-				rec.Metadata.LatestUserPrompt = "hello"
-				rec.Metadata.LatestAssistantUpdate = "hello back"
-				path := filepath.Join(claudeConfig, "projects", "workspace", wantNativeID+".jsonl")
-				if tc.harness == domain.HarnessCodex {
-					path = filepath.Join(codexHome, "sessions", "2026", "09", "08", "rollout-2026-09-08T10-00-00-"+wantNativeID+".jsonl")
-				}
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte("{\"type\":\"user\",\"message\":\"hello\"}\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				rec.Metadata.NativeTranscriptPath = path
-			}
-			store.sessions[rec.ID] = rec
-			runtime.outputForCall = func(int) string {
-				if tc.harness == domain.HarnessClaudeCode {
-					return " ▐▛███▜▌   Claude Code v2.1.233\n" +
-						"▝▜█████▛▘  Opus · Claude Team\n  ▘▘ ▝▝    /workspace\n\n" +
-						strings.Repeat("─", 48) + "\n❯ \n" + strings.Repeat("─", 48) + "\n⏵⏵ auto mode on"
-				}
-				return "│ >_ OpenAI Codex (v0.153.4) │\n\n" +
-					"\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\x1b[0m\n\ngpt-6-astra · /workspace\n"
-			}
-			transition, err = manager.StartInterfaceTransition(ctx, rec.ID,
-				domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
-			if err != nil {
-				t.Fatalf("unprompted terminal-to-Chat return was refused: %v", err)
-			}
-			settled = awaitTransition(t, store, transition.ID)
-			if settled.Phase != domain.SessionInterfaceTransitionCompleted {
-				t.Fatalf("return = %s (%s): %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
-			}
-			if settled.NativeConversationID != wantNativeID || chat.start.ProviderConversationID != wantNativeID ||
-				(chat.start.HistoryMode == ports.ChatHistoryRequired) != tc.terminalTurn {
-				t.Fatalf("return identity=%q, target=%q, requireHistory=%v; want identity=%q, requireHistory=%v",
-					settled.NativeConversationID, chat.start.ProviderConversationID, (chat.start.HistoryMode == ports.ChatHistoryRequired), wantNativeID, tc.terminalTurn)
-			}
-			if got := fmt.Sprint(*log); got != "[prepare:chat:interrupt stop:chat start:tui stop:tui:h1 start:chat]" {
-				t.Fatalf("round-trip controller order = %s", got)
-			}
-		})
-	}
 }
 
 func TestInterfaceTransitionUnpromptedChatWithoutNativeID(t *testing.T) {

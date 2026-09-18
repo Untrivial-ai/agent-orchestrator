@@ -2,12 +2,10 @@ package lifecycle
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -29,12 +27,6 @@ func (s *promptConflictStore) UpdateSessionFromActivitySignal(ctx context.Contex
 		current := s.sessions[rec.ID]
 		current.Metadata.ConversationCheckpointState = domain.ConversationCheckpointPrompt
 		current.Metadata.LatestUserPrompt = "human prompt"
-		if current.Harness == domain.HarnessClaudeCode {
-			current.Metadata.NativeCheckpointEvidence = domain.AppendNativeCheckpoint(
-				current.Metadata.NativeCheckpointEvidence, current.Metadata.AgentSessionID,
-				domain.NativeCheckpointObservation{Generation: current.Metadata.RuntimeLaunchID,
-					Submission: true, SubmissionID: "concurrent-submission", Text: "human prompt"})
-		}
 		current.Revision = expected + 1
 		s.sessions[rec.ID] = current
 		return false, nil
@@ -72,34 +64,3 @@ func TestActivityProjectionExhaustionReturnsError(t *testing.T) {
 	}
 }
 
-func TestActivityProjectionRetryUsesOriginalStopSignal(t *testing.T) {
-	s := &promptConflictStore{fakeStore: newFakeStore(), conflict: true}
-	now := time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)
-	s.sessions["mer-1"] = domain.SessionRecord{
-		ID: "mer-1", ProjectID: "mer", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
-		Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: now}, UpdatedAt: now,
-		Metadata: domain.SessionMetadata{
-			RuntimeLaunchID: "launch-1", AgentSessionID: "native-1", AgentSessionIDLaunchID: "launch-1",
-			ConversationCheckpointState:      domain.ConversationCheckpointCoordination,
-			ConversationCheckpointGeneration: "launch-1", ConversationCheckpointNativeID: "native-1",
-		},
-	}
-	m := New(s, nil)
-	if err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
-		Valid: true, State: domain.ActivityIdle, Event: "stop", Timestamp: now.Add(time.Second),
-		LaunchID: "launch-1", AgentSessionID: "native-1", LatestAssistantUpdate: "human answer",
-		ProviderTurnID: "native-prompt",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	after := s.sessions["mer-1"].Metadata
-	var evidence domain.NativeCheckpointEvidence
-	if err := json.Unmarshal([]byte(after.NativeCheckpointEvidence), &evidence); err != nil {
-		t.Fatal(err)
-	}
-	// Claude answers are retained as native observations, not paired with the
-	// current display prompt. A CAS retry must still preserve the original Stop.
-	if s.conflict || len(evidence.Events) != 2 || evidence.Events[1].Text != "human answer" || evidence.Invalid {
-		t.Fatalf("retry lost original Stop payload: conflict=%v checkpoint=%+v", s.conflict, after)
-	}
-}

@@ -29,7 +29,8 @@ func (r *recordingBrowserAuthority) Issue(id domain.SessionID) (string, string, 
 
 // newChatManager mirrors newManager() with a chat launcher injected, so both
 // branches can be exercised against the same fakes.
-func newChatManager(chat ChatLauncher) (*Manager, *fakeStore, *fakeRuntime) {
+func newChatManager(t *testing.T, chat ChatLauncher) (*Manager, *fakeStore, *fakeRuntime) {
+	t.Helper()
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
 	rt := &fakeRuntime{}
@@ -42,7 +43,7 @@ func newChatManager(chat ChatLauncher) (*Manager, *fakeStore, *fakeRuntime) {
 		Messenger: &fakeMessenger{},
 		Chat:      chat,
 		Lifecycle: &fakeLCM{store: st},
-		DataDir:   "/ao-test-data",
+		DataDir:   t.TempDir(),
 		LookPath:  lookPath,
 	})
 	return m, st, rt
@@ -239,12 +240,12 @@ func (l *generationClaimFailureLauncher) StartChat(ctx context.Context, cfg Chat
 
 func TestReconcileLive_ChatReconnectPreservesActivity(t *testing.T) {
 	launcher := &recordingLauncher{liveReconnect: true}
-	m, st, _ := newChatManager(launcher)
+	m, st, _ := newChatManager(t, launcher)
 	m.browserCapabilities = browsersvc.NewAuthority()
 	before := time.Unix(100, 0).UTC()
 	m.clock = func() time.Time { return before.Add(time.Minute) }
 	rec := domain.SessionRecord{ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityBlocked, LastActivityAt: before}, UpdatedAt: before,
 		Metadata: domain.SessionMetadata{Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1", ProviderConversationID: "thread-1"}}
 	st.sessions[rec.ID] = rec
@@ -264,12 +265,12 @@ func TestReconcileLive_ChatReconnectPreservesActivity(t *testing.T) {
 
 func TestReconcileLive_ChatRelaunchesInExistingWorktree(t *testing.T) {
 	launcher := &recordingLauncher{}
-	m, st, rt := newChatManager(launcher)
+	m, st, rt := newChatManager(t, launcher)
 	ws := m.workspace.(*fakeWorkspace)
 	lcm := m.lcm.(*fakeLCM)
 	rec := domain.SessionRecord{
 		ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Metadata: domain.SessionMetadata{
 			Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1",
 			ProviderConversationID: "thread-existing",
@@ -299,12 +300,12 @@ func TestReconcileLive_ChatRelaunchesInExistingWorktree(t *testing.T) {
 
 func TestReconcileLive_StandaloneChatRelaunchesInExistingWorkspace(t *testing.T) {
 	launcher := &recordingLauncher{}
-	m, st, rt := newChatManager(launcher)
+	m, st, rt := newChatManager(t, launcher)
 	ws := m.workspace.(*fakeWorkspace)
 	lcm := m.lcm.(*fakeLCM)
 	rec := domain.SessionRecord{
 		ID: "standalone-1", Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{
 			WorkspacePath:          "/ws/standalone-1",
@@ -336,12 +337,12 @@ func TestReconcileLive_StandaloneChatRelaunchesInExistingWorkspace(t *testing.T)
 
 func TestReconcileLive_StandaloneChatFailureRemainsRecoverable(t *testing.T) {
 	launcher := &recordingLauncher{startErr: fmt.Errorf("read Codex version: exit status 127: %w", ports.ErrChatDriverIncompatible)}
-	m, st, rt := newChatManager(launcher)
+	m, st, rt := newChatManager(t, launcher)
 	ws := m.workspace.(*fakeWorkspace)
 	lcm := m.lcm.(*fakeLCM)
 	rec := domain.SessionRecord{
 		ID: "standalone-1", Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{
 			WorkspacePath:          "/ws/standalone-1",
@@ -369,12 +370,12 @@ func TestReconcileLive_StandaloneChatFailureRemainsRecoverable(t *testing.T) {
 
 func TestReconcileLive_ChatCompatibilityFailureLeavesNativeResumeRecoverable(t *testing.T) {
 	launcher := &recordingLauncher{startErr: fmt.Errorf("read Codex version: exit status 127: %w", ports.ErrChatDriverIncompatible)}
-	m, st, rt := newChatManager(launcher)
+	m, st, rt := newChatManager(t, launcher)
 	ws := m.workspace.(*fakeWorkspace)
 	lcm := m.lcm.(*fakeLCM)
 	rec := domain.SessionRecord{
 		ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{
 			Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1",
@@ -407,7 +408,7 @@ func TestReconcileLive_ChatCompatibilityFailureLeavesNativeResumeRecoverable(t *
 
 func TestReconcileLive_ChatFailureAfterGenerationClaimLeavesSessionExited(t *testing.T) {
 	base := &recordingLauncher{}
-	m, st, rt := newChatManager(base)
+	m, st, rt := newChatManager(t, base)
 	launcher := &generationClaimFailureLauncher{
 		recordingLauncher: base,
 		store:             st,
@@ -420,7 +421,7 @@ func TestReconcileLive_ChatFailureAfterGenerationClaimLeavesSessionExited(t *tes
 	now := time.Date(2026, time.August, 27, 16, 54, 0, 0, time.UTC)
 	rec := domain.SessionRecord{
 		ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityActive}, UpdatedAt: now,
 		Metadata: domain.SessionMetadata{
 			Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1",
@@ -454,10 +455,10 @@ func TestReconcileLive_ChatFailureAfterGenerationClaimLeavesSessionExited(t *tes
 
 func TestRestoreTerminatedChatOrchestratorAfterCompatibilityRecoveryKeepsIdentity(t *testing.T) {
 	launcher := &recordingLauncher{startErr: fmt.Errorf("read Codex version: exit status 127: %w", ports.ErrChatDriverIncompatible)}
-	m, st, rt := newChatManager(launcher)
+	m, st, rt := newChatManager(t, launcher)
 	rec := domain.SessionRecord{
 		ID: "mer-176", ProjectID: chatTestProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		IsTerminated: true, Activity: domain.Activity{State: domain.ActivityExited},
 		Metadata: domain.SessionMetadata{
 			Branch: "main", WorkspacePath: "/ws/mer-176",
@@ -511,7 +512,7 @@ func TestHistoricalChatHandoffRequiresLatestCompletedMatchingTransition(t *testi
 	}
 	record := domain.SessionRecord{
 		ID: sessionID, ProjectID: chatTestProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, IsTerminated: true,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat, IsTerminated: true,
 		Metadata: domain.SessionMetadata{ProviderConversationID: provider},
 	}
 	now := time.Date(2026, 8, 28, 7, 0, 0, 0, time.UTC)
@@ -610,7 +611,7 @@ func TestRestoreTerminatedChatOrchestratorPassesProvenProviderBoundary(t *testin
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
 	rec := domain.SessionRecord{
 		ID: sessionID, ProjectID: chatTestProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, IsTerminated: true,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat, IsTerminated: true,
 		Activity: domain.Activity{State: domain.ActivityExited},
 		Metadata: domain.SessionMetadata{
 			Branch: "ao/orchestrator", WorkspacePath: "/ws/mer-248",
@@ -630,7 +631,7 @@ func TestRestoreTerminatedChatOrchestratorPassesProvenProviderBoundary(t *testin
 	m := New(Deps{
 		Runtime: &fakeRuntime{}, Agents: fakeAgents{}, Workspace: &fakeWorkspace{},
 		Store: st, Messenger: &fakeMessenger{}, Chat: launcher,
-		Lifecycle: &fakeLCM{store: st.fakeStore}, DataDir: "/ao-test-data",
+		Lifecycle: &fakeLCM{store: st.fakeStore}, DataDir: t.TempDir(),
 	})
 
 	if _, err := m.RestoreWithMode(context.Background(), sessionID); !errors.Is(err, providerErr) {
@@ -654,7 +655,7 @@ func seedChatResumeSession(store *fakeStore, state domain.ActivityState) {
 		ID:        "mer-1",
 		ProjectID: chatTestProject,
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Mode:      domain.SessionModeChat,
 		Activity:  domain.Activity{State: state},
 		Metadata: domain.SessionMetadata{
@@ -667,7 +668,7 @@ func seedChatResumeSession(store *fakeStore, state domain.ActivityState) {
 
 func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, runtime := newChatManager(launcher)
+	mgr, store, runtime := newChatManager(t, launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
 
 	result, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
@@ -690,7 +691,7 @@ func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T
 
 func TestResumeChatRotatesBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, _ := newChatManager(launcher)
+	mgr, store, _ := newChatManager(t, launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
 	rec := store.sessions["mer-1"]
 	authority := browsersvc.NewAuthority()
@@ -732,7 +733,7 @@ func TestResumeChatRotatesBrowserCapabilityBeforeControllerStart(t *testing.T) {
 
 func TestResumeChatKeepsExitReportedBeforeStartReturns(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, _ := newChatManager(launcher)
+	mgr, store, _ := newChatManager(t, launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
 	launcher.afterReady = func() {
 		rec := store.sessions["mer-1"]
@@ -751,7 +752,7 @@ func TestResumeChatKeepsExitReportedBeforeStartReturns(t *testing.T) {
 
 func TestResumeStaleChatSessionWhenNoControllerIsLive(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, _ := newChatManager(launcher)
+	mgr, store, _ := newChatManager(t, launcher)
 	seedChatResumeSession(store, domain.ActivityIdle)
 
 	if _, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1"); err != nil {
@@ -766,7 +767,7 @@ func TestResumeChatSessionRejectsLiveController(t *testing.T) {
 	for _, state := range []domain.ActivityState{domain.ActivityIdle, domain.ActivityExited} {
 		t.Run(string(state), func(t *testing.T) {
 			launcher := &recordingLauncher{live: true}
-			mgr, store, _ := newChatManager(launcher)
+			mgr, store, _ := newChatManager(t, launcher)
 			seedChatResumeSession(store, state)
 
 			if _, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1"); !errors.Is(err, ErrAgentNotExited) {
@@ -781,13 +782,13 @@ func TestResumeChatSessionRejectsLiveController(t *testing.T) {
 
 func TestResumeBranchlessScratchChatSession(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, _ := newChatManager(launcher)
+	mgr, store, _ := newChatManager(t, launcher)
 	store.projects["scratch"] = domain.ProjectRecord{
 		ID: "scratch", Kind: domain.ProjectKindScratch, Config: testRoleAgents(),
 	}
 	store.sessions["scratch-1"] = domain.SessionRecord{
 		ID: "scratch-1", ProjectID: "scratch", Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityExited},
 		Metadata: domain.SessionMetadata{
 			WorkspacePath:          "/ws/scratch-1",
@@ -805,7 +806,7 @@ func TestResumeBranchlessScratchChatSession(t *testing.T) {
 
 func TestResumeChatSessionRequiresProviderConversation(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, _ := newChatManager(launcher)
+	mgr, store, _ := newChatManager(t, launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
 	rec := store.sessions["mer-1"]
 	rec.Metadata.ProviderConversationID = ""
@@ -821,7 +822,7 @@ func TestResumeChatSessionRequiresProviderConversation(t *testing.T) {
 
 func TestRestoreChatSessionRequiresProviderConversation(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, _ := newChatManager(launcher)
+	mgr, store, _ := newChatManager(t, launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
 	rec := store.sessions["mer-1"]
 	rec.IsTerminated = true
@@ -839,13 +840,13 @@ func TestRestoreChatSessionRequiresProviderConversation(t *testing.T) {
 // An unsupported chat request must be refused before anything durable exists: no
 // session row, no worktree, nothing to clean up.
 func TestChatSpawnRejectedBeforeDurableStateWhenUnsupported(t *testing.T) {
-	mgr, store, _ := newChatManager(&recordingLauncher{preflightErr: ports.ErrChatUnsupported})
+	mgr, store, _ := newChatManager(t, &recordingLauncher{preflightErr: ports.ErrChatUnsupported})
 	launcher := mgr.chat.(*recordingLauncher)
 
 	_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		Prompt:        "do the thing",
 		RequestedMode: domain.SessionModeChat,
 	})
@@ -868,12 +869,12 @@ func TestChatSpawnRejectedBeforeDurableStateWhenUnsupported(t *testing.T) {
 // Chat mode with no launcher wired must fail, never silently become a TUI session
 // in a terminal the user did not ask for.
 func TestChatSpawnWithoutLauncherIsRefusedNotDowngraded(t *testing.T) {
-	mgr, _, runtime := newChatManager(nil)
+	mgr, _, runtime := newChatManager(t, nil)
 
 	_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		RequestedMode: domain.SessionModeChat,
 	})
 	if !errors.Is(err, ports.ErrChatUnsupported) {
@@ -903,13 +904,13 @@ func TestDefaultChatSpawnFallsBackToTUIWhenUnavailable(t *testing.T) {
 			if tt.withoutLauncher {
 				chat = nil
 			}
-			mgr, _, runtime := newChatManager(chat)
+			mgr, _, runtime := newChatManager(t, chat)
 			mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
 
 			rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 				ProjectID: chatTestProject,
 				Kind:      domain.KindWorker,
-				Harness:   domain.HarnessCodex,
+				Harness:   domain.HarnessOpenCode,
 			})
 			if err != nil {
 				t.Fatalf("Spawn: %v", err)
@@ -927,44 +928,16 @@ func TestDefaultChatSpawnFallsBackToTUIWhenUnavailable(t *testing.T) {
 	}
 }
 
-func TestDefaultChatSpawnFallbackSkipsChatTuningResolution(t *testing.T) {
-	launcher := &recordingLauncher{preflightErr: ports.ErrChatDriverUnavailable}
-	mgr, store, runtime := newChatManager(launcher)
-	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
-	mgr.modelCatalog = tuningCatalog{err: errors.New("model discovery unavailable")}
-	project := store.projects[string(chatTestProject)]
-	project.Config.Worker.AgentConfig.Effort = "high"
-	store.projects[string(chatTestProject)] = project
-
-	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
-		ProjectID: chatTestProject,
-		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
-	})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	if rec.Mode != domain.SessionModeTUI {
-		t.Fatalf("mode = %q, want TUI fallback", rec.Mode)
-	}
-	if runtime.created == 0 {
-		t.Fatal("TUI fallback created no terminal runtime")
-	}
-	if len(launcher.started) != 0 {
-		t.Fatalf("fallback started %d Chat controllers, want 0", len(launcher.started))
-	}
-}
-
 func TestDefaultChatSpawnReturnsUnexpectedPreflightError(t *testing.T) {
 	preflightErr := errors.New("probe state corrupted")
 	launcher := &recordingLauncher{preflightErr: preflightErr}
-	mgr, store, runtime := newChatManager(launcher)
+	mgr, store, runtime := newChatManager(t, launcher)
 	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
 
 	_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID: chatTestProject,
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 	})
 	if !errors.Is(err, preflightErr) {
 		t.Fatalf("Spawn error = %v, want unexpected preflight error", err)
@@ -983,7 +956,7 @@ func TestDefaultChatSpawnReturnsUnexpectedPreflightError(t *testing.T) {
 
 func TestDefaultChatSpawnUsesChatWhenAvailable(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, runtime := newChatManager(launcher)
+	mgr, store, runtime := newChatManager(t, launcher)
 	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
 	project := store.projects[string(chatTestProject)]
 	project.Config.AgentConfig.Permissions = ports.PermissionModeBypassPermissions
@@ -992,7 +965,7 @@ func TestDefaultChatSpawnUsesChatWhenAvailable(t *testing.T) {
 	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID: chatTestProject,
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -1016,12 +989,12 @@ func TestDefaultChatSpawnUsesChatWhenAvailable(t *testing.T) {
 // A TUI spawn must never reach the chat launcher, even when one is wired.
 func TestTUISpawnNeverTouchesTheChatLauncher(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, _, runtime := newChatManager(launcher)
+	mgr, _, runtime := newChatManager(t, launcher)
 
 	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID: chatTestProject,
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessClaudeCode,
+		Harness:   domain.HarnessOpenCode,
 		Prompt:    "hello",
 		// No requested mode: resolution must land on TUI.
 	})
@@ -1044,12 +1017,12 @@ func TestTUISpawnNeverTouchesTheChatLauncher(t *testing.T) {
 // deliver the initial prompt as a turn.
 func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, _, runtime := newChatManager(launcher)
+	mgr, _, runtime := newChatManager(t, launcher)
 
 	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindOrchestrator,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		Prompt:        "coordinate the work",
 		RequestedMode: domain.SessionModeChat,
 	})
@@ -1071,8 +1044,8 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 	if start.WorkspacePath == "" {
 		t.Error("controller started with no workspace path")
 	}
-	if start.DataDir != "/ao-test-data" {
-		t.Errorf("controller data dir = %q, want manager-owned data dir", start.DataDir)
+	if start.DataDir != mgr.dataDir || start.DataDir == "" {
+		t.Errorf("controller data dir = %q, want manager-owned data dir %q", start.DataDir, mgr.dataDir)
 	}
 	// The controller must receive the session env, which is what carries the
 	// HookPATH pin in production and is how the agent's own shell commands find
@@ -1110,7 +1083,7 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 
 func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, runtime := newChatManager(launcher)
+	mgr, store, runtime := newChatManager(t, launcher)
 	mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{{
 		token: "chat-token", verifier: "chat-verifier",
 	}}}
@@ -1131,7 +1104,7 @@ func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		RequestedMode: domain.SessionModeChat,
 	})
 	if err != nil {
@@ -1167,14 +1140,14 @@ func TestChatSpawnCapabilityFailurePreventsControllerStart(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			launcher := &recordingLauncher{}
-			mgr, store, runtime := newChatManager(launcher)
+			mgr, store, runtime := newChatManager(t, launcher)
 			mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{tt.issue}}
 			store.updateSessionErr = tt.persistErr
 
 			_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 				ProjectID:     chatTestProject,
 				Kind:          domain.KindWorker,
-				Harness:       domain.HarnessCodex,
+				Harness:       domain.HarnessOpenCode,
 				RequestedMode: domain.SessionModeChat,
 			})
 			if !errors.Is(err, ErrSpawnBrowser) {
@@ -1200,11 +1173,11 @@ func TestChatSpawnCommitsReservedProviderBoundaryWithLifecycleOwner(t *testing.T
 		ProviderScopeID: "fresh-provider-boundary",
 	}
 	launcher := &recordingLauncher{providerBoundary: boundary}
-	mgr, _, _ := newChatManager(launcher)
+	mgr, _, _ := newChatManager(t, launcher)
 	lcm := mgr.lcm.(*fakeLCM)
 
 	if _, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
-		ProjectID: chatTestProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		ProjectID: chatTestProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessOpenCode,
 		RequestedMode: domain.SessionModeChat,
 	}); err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -1219,7 +1192,7 @@ func TestChatSpawnCommitsReservedProviderBoundaryWithLifecycleOwner(t *testing.T
 
 func TestChatSpawnAppliesRequestAgentConfigOverProjectDefaults(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, _ := newChatManager(launcher)
+	mgr, store, _ := newChatManager(t, launcher)
 	project := store.projects[string(chatTestProject)]
 	project.Config.AgentConfig.Model = "project-model"
 	store.projects[string(chatTestProject)] = project
@@ -1227,7 +1200,7 @@ func TestChatSpawnAppliesRequestAgentConfigOverProjectDefaults(t *testing.T) {
 	_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		AgentConfig:   ports.AgentConfig{Model: "request-model"},
 		RequestedMode: domain.SessionModeChat,
 	})
@@ -1244,12 +1217,12 @@ func TestChatSpawnAppliesRequestAgentConfigOverProjectDefaults(t *testing.T) {
 
 // A controller that fails to start must leave nothing running and no live row.
 func TestChatSpawnRollsBackWhenControllerFailsToStart(t *testing.T) {
-	mgr, store, runtime := newChatManager(&recordingLauncher{startErr: errors.New("app-server exited")})
+	mgr, store, runtime := newChatManager(t, &recordingLauncher{startErr: errors.New("app-server exited")})
 
 	_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		RequestedMode: domain.SessionModeChat,
 	})
 	if err == nil {
@@ -1274,13 +1247,13 @@ func TestChatSpawnRollsBackWhenControllerFailsToStart(t *testing.T) {
 // A chat controller owns an app-server child process, so skipping this leaks it.
 func TestKillClosesTheChatControllerAndTouchesNoRuntime(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, _, runtime := newChatManager(launcher)
+	mgr, _, runtime := newChatManager(t, launcher)
 	ctx := context.Background()
 
 	rec, _, _, err := mgr.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		RequestedMode: domain.SessionModeChat,
 	})
 	if err != nil {
@@ -1303,13 +1276,13 @@ func TestKillClosesTheChatControllerAndTouchesNoRuntime(t *testing.T) {
 // was not created with.
 func TestRestoreResumesChatRatherThanRelaunchingATerminal(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, store, runtime := newChatManager(launcher)
+	mgr, store, runtime := newChatManager(t, launcher)
 	ctx := context.Background()
 
 	rec, _, _, err := mgr.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		RequestedMode: domain.SessionModeChat,
 	})
 	if err != nil {
@@ -1362,13 +1335,13 @@ func TestRestoreResumesChatRatherThanRelaunchingATerminal(t *testing.T) {
 // AO's own automation.
 func TestSendRoutesIntoTheChatConversation(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, _, runtime := newChatManager(launcher)
+	mgr, _, runtime := newChatManager(t, launcher)
 	ctx := context.Background()
 
 	rec, _, _, err := mgr.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		Prompt:        "initial brief",
 		RequestedMode: domain.SessionModeChat,
 	})
@@ -1399,13 +1372,13 @@ func TestSendRoutesIntoTheChatConversation(t *testing.T) {
 // ever deliver.
 func TestSendRefusedForTerminatedChatSession(t *testing.T) {
 	launcher := &recordingLauncher{}
-	mgr, _, _ := newChatManager(launcher)
+	mgr, _, _ := newChatManager(t, launcher)
 	ctx := context.Background()
 
 	rec, _, _, err := mgr.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		RequestedMode: domain.SessionModeChat,
 	})
 	if err != nil {

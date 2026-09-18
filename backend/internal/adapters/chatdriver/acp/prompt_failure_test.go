@@ -43,7 +43,7 @@ func TestACPDriverPromptResponseFailure(t *testing.T) {
 				Usage: &acpsdk.Usage{InputTokens: 12, OutputTokens: 3, TotalTokens: 15},
 			}}
 			driver := New(Config{
-				Harness:      domain.HarnessClaudeCode,
+				Harness:      domain.HarnessOpenCode,
 				Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 				Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
 			}, slog.New(slog.NewTextHandler(io.Discard, nil)))

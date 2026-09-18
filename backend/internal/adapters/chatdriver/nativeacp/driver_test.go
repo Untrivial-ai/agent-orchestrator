@@ -89,7 +89,7 @@ func TestBindingLaunchesExactUserInstalledBinary(t *testing.T) {
 
 func TestBindingMapsPluginDiscoveryAndAuth(t *testing.T) {
 	t.Run("incomplete provider binding", func(t *testing.T) {
-		cfg := buildConfig(fakePlugin{binary: "/user/provider"}, Config{Harness: domain.HarnessDroid}, nil)
+		cfg := buildConfig(fakePlugin{binary: "/user/provider"}, Config{Harness: domain.HarnessOpenCode}, nil)
 		if err := cfg.Probe(context.Background()); !errors.Is(err, ports.ErrChatDriverUnavailable) {
 			t.Fatalf("Probe error = %v", err)
 		}
@@ -100,7 +100,7 @@ func TestBindingMapsPluginDiscoveryAndAuth(t *testing.T) {
 
 	t.Run("missing user binary", func(t *testing.T) {
 		cfg := buildConfig(fakePlugin{binErr: ports.ErrAgentBinaryNotFound}, Config{
-			Harness: domain.HarnessDroid, Configure: func(context.Context, acpdriver.LaunchConfig) ([]string, map[string]string, error) {
+			Harness: domain.HarnessOpenCode, Configure: func(context.Context, acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 				return []string{"exec"}, nil, nil
 			},
 		}, nil)
@@ -112,7 +112,7 @@ func TestBindingMapsPluginDiscoveryAndAuth(t *testing.T) {
 
 	t.Run("installed but logged out", func(t *testing.T) {
 		cfg := buildConfig(fakePlugin{binary: "/user/droid", status: ports.AgentAuthStatusUnauthorized}, Config{
-			Harness: domain.HarnessDroid, Configure: func(context.Context, acpdriver.LaunchConfig) ([]string, map[string]string, error) {
+			Harness: domain.HarnessOpenCode, Configure: func(context.Context, acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 				return []string{"exec"}, nil, nil
 			},
 		}, nil)
@@ -138,7 +138,7 @@ func TestBindingReusesPluginRuntimeEnvironment(t *testing.T) {
 		binary: "/user/provider", status: ports.AgentAuthStatusAuthorized,
 	}}
 	cfg := buildConfig(plugin, Config{
-		Harness: domain.HarnessCursor,
+		Harness: domain.HarnessOpenCode,
 		Configure: func(context.Context, acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 			return []string{"acp"}, nil, nil
 		},

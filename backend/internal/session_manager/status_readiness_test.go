@@ -12,7 +12,7 @@ import (
 
 func TestStatusReadinessWaitsForRecoveryAndAllowsRetry(t *testing.T) {
 	m, st, rt, _ := newManager()
-	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
+	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessOpenCode,
 		Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Unix(100, 0)},
 		Metadata: domain.SessionMetadata{Branch: "ao/s1", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1"}}
 	st.sessions[rec.ID] = rec
@@ -56,7 +56,7 @@ func (r *stubbornAliveRuntime) IsAlive(_ context.Context, handle ports.RuntimeHa
 
 func TestStatusReadinessDoesNotOfferRetryWhileRecoveryOwnsSession(t *testing.T) {
 	m, st, rt, _ := newManager()
-	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
+	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessOpenCode,
 		Activity: domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{Branch: "ao/s1", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1"}}
 	st.sessions[rec.ID] = rec
@@ -95,7 +95,7 @@ func (r *deadlineAwareRuntime) IsAlive(ctx context.Context, _ ports.RuntimeHandl
 
 func TestStatusReadinessDeadlineReleasesSessionForRetry(t *testing.T) {
 	m, st, rt, _ := newManager()
-	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
+	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessOpenCode,
 		Activity: domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{Branch: "ao/s1", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1"}}
 	st.sessions[rec.ID] = rec

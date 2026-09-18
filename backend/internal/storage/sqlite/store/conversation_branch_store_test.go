@@ -1173,7 +1173,7 @@ func TestRepairIncompleteProjectEditDoesNotTransferProviderOwnerToReboundSession
 	sourceRecord := sampleRecord("edit-rebind")
 	sourceRecord.Mode = domain.SessionModeChat
 	sourceRecord.Kind = domain.KindOrchestrator
-	sourceRecord.Harness = domain.HarnessClaudeCode
+	sourceRecord.Harness = domain.HarnessOpenCode
 	sourceRecord.Metadata.ProviderConversationID = "claude-source-thread"
 	sourceRecord.Metadata.ControllerGeneration = "claude-source-generation"
 	source, err := s.CreateSession(ctx, sourceRecord)
@@ -1201,7 +1201,7 @@ func TestRepairIncompleteProjectEditDoesNotTransferProviderOwnerToReboundSession
 	targetRecord := sampleRecord("edit-rebind")
 	targetRecord.Mode = domain.SessionModeChat
 	targetRecord.Kind = domain.KindOrchestrator
-	targetRecord.Harness = domain.HarnessCodex
+	targetRecord.Harness = domain.HarnessOpenCode
 	target, err := s.CreateSession(ctx, targetRecord)
 	if err != nil {
 		t.Fatalf("Create target session: %v", err)

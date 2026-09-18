@@ -19,8 +19,6 @@ ON CONFLICT (session_id, harness, native_root_id) DO UPDATE SET
         ELSE excluded.state
     END,
     last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
         WHEN usage_bindings.state IN ('finalizing', 'complete', 'partial')
           AND excluded.state IN ('discovering', 'active')
         THEN usage_bindings.last_error_code
@@ -43,11 +41,7 @@ ORDER BY updated_at, id;
 -- name: FinalizeUsageBindingsForSessionLaunch :many
 UPDATE usage_bindings
 SET state = 'finalizing',
-    last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
-        ELSE ''
-    END,
+    last_error_code = '',
     updated_at = sqlc.arg(finalized_at)
 WHERE usage_bindings.session_id = sqlc.arg(session_id)
   AND EXISTS (
@@ -111,16 +105,9 @@ SELECT CAST(EXISTS (
     FROM usage_bindings ub
     JOIN sessions s ON s.id = ub.session_id
     WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-      AND ub.harness IN ('claude-code', 'codex', 'kimi')
       AND (
-          ub.harness = 'kimi'
-          OR ub.state = 'discovering'
+          ub.state = 'discovering'
           OR ub.last_error_code = 'source_discovery_pending'
-          OR EXISTS (
-              SELECT 1
-              FROM usage_codex_pending_children pending
-              WHERE pending.binding_id = ub.id
-          )
           OR EXISTS (
               SELECT 1
               FROM usage_sources source
@@ -139,86 +126,14 @@ SELECT CAST(EXISTS (
       )
 ) AS INTEGER);
 
--- name: ListLatestRetiredCodexReplacementClaimsByPath :many
-SELECT us.*
-FROM usage_bindings ub
-JOIN sessions s ON s.id = ub.session_id
-JOIN usage_sources us ON us.id = (
-    SELECT latest.id
-    FROM usage_sources latest
-    WHERE latest.binding_id = ub.id
-      AND latest.artifact_path = sqlc.arg(artifact_path)
-    ORDER BY latest.generation DESC, latest.id DESC
-    LIMIT 1
-)
-WHERE us.kind = 'codex_rollout'
-  AND us.state = 'complete'
-  AND us.last_error_code = 'artifact_replaced'
-  AND (s.is_terminated = 0 OR ub.state = 'finalizing')
-ORDER BY us.binding_id, us.generation, us.id;
-
 -- name: ListUsageDiscoveryBindings :many
 SELECT ub.*
 FROM usage_bindings ub
 JOIN sessions s ON s.id = ub.session_id
 WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-  AND ub.harness IN ('claude-code', 'codex', 'kimi')
-  AND (
-      ub.state IN ('discovering', 'active', 'finalizing')
-      OR (ub.state = 'partial' AND ub.last_error_code = 'codex_source_budget_exceeded')
-  )
-  AND (
-      ub.harness IN ('claude-code', 'kimi')
-      OR ub.state = 'discovering'
-      OR ub.state = 'finalizing'
-      OR ub.last_error_code = 'codex_source_budget_exceeded'
-      OR ub.last_error_code = 'source_discovery_pending'
-      OR NOT EXISTS (
-          SELECT 1
-          FROM usage_sources us
-          WHERE us.binding_id = ub.id
-            AND us.kind = 'codex_rollout'
-      )
-      OR EXISTS (
-          SELECT 1
-          FROM usage_sources us
-          WHERE us.binding_id = ub.id
-            AND us.kind = 'codex_rollout'
-            AND us.state = 'error'
-            AND us.last_error_code IN ('artifact_missing', 'source_read_failed')
-      )
-	  OR EXISTS (
-	      SELECT 1
-	      FROM usage_codex_pending_children
-	      WHERE binding_id = ub.id
-	  )
-  )
+  AND ub.state = 'discovering'
 ORDER BY ub.updated_at, ub.id
 LIMIT ?;
-
--- name: ListUsageBindingsForCodexParent :many
-SELECT DISTINCT ub.*
-FROM usage_bindings ub
-JOIN sessions s ON s.id = ub.session_id
-JOIN usage_sources parent ON parent.binding_id = ub.id
-WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-  AND ub.harness = 'codex'
-  AND (
-      ub.state IN ('discovering', 'active', 'finalizing')
-      OR (ub.state = 'partial' AND ub.last_error_code = 'codex_source_budget_exceeded')
-  )
-  AND parent.kind = 'codex_rollout'
-  AND parent.native_session_id = sqlc.arg(parent_native_session_id)
-  AND parent.id = (
-      SELECT latest.id
-      FROM usage_sources latest
-      WHERE latest.binding_id = parent.binding_id
-        AND latest.kind = 'codex_rollout'
-        AND latest.native_session_id = parent.native_session_id
-      ORDER BY latest.generation DESC, latest.id DESC
-      LIMIT 1
-  )
-ORDER BY ub.updated_at, ub.id;
 
 -- name: GetUsageSourceWithBindingAndSession :one
 SELECT
@@ -275,19 +190,14 @@ UPDATE usage_bindings SET
         WHEN sqlc.arg(state) = '' THEN usage_bindings.state
         ELSE sqlc.arg(state)
     END,
-    last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
-        ELSE sqlc.arg(last_error_code)
-    END,
+    last_error_code = sqlc.arg(last_error_code),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id);
 
 -- name: CompleteUsageBindingIfSettled :execrows
 UPDATE usage_bindings
 SET state = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-          OR EXISTS (
+        WHEN EXISTS (
             SELECT 1
             FROM usage_sources
             WHERE usage_sources.binding_id = sqlc.arg(usage_binding_id)
@@ -296,11 +206,7 @@ SET state = CASE
         ) THEN 'partial'
         ELSE 'complete'
     END,
-    last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
-        ELSE ''
-    END,
+    last_error_code = '',
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(usage_binding_id)
   AND state = 'finalizing'
@@ -314,29 +220,6 @@ WHERE id = sqlc.arg(usage_binding_id)
       FROM usage_sources
       WHERE usage_sources.binding_id = sqlc.arg(usage_binding_id)
         AND state <> 'complete'
-	)
-	AND (
-	    usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-	    OR NOT EXISTS (
-	        SELECT 1
-	        FROM usage_codex_pending_children
-	        WHERE binding_id = sqlc.arg(usage_binding_id)
-	    )
-	)
-	AND NOT EXISTS (
-	    SELECT 1
-	    FROM usage_codex_source_discovery malformed
-	    WHERE malformed.binding_id = sqlc.arg(usage_binding_id)
-	      AND malformed.source_id = (
-	          SELECT latest.id
-	          FROM usage_sources latest
-	          WHERE latest.binding_id = malformed.binding_id
-	            AND latest.kind = 'codex_rollout'
-	            AND latest.native_session_id = malformed.native_session_id
-	          ORDER BY latest.generation DESC, latest.id DESC
-	          LIMIT 1
-	      )
-	      AND malformed.has_mixed_child_types = 1
   );
 
 -- name: GetModelUsageEventByKey :one

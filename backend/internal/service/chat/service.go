@@ -45,7 +45,6 @@ type Service struct {
 	newID                  IDFactory
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
-	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	stopProviderHost       func(context.Context, domain.SessionID) error
 
 	mu           sync.RWMutex
@@ -98,10 +97,6 @@ type Options struct {
 	// OnAccountChanged invalidates daemon-owned account readiness for the
 	// harness that emitted an account/updated notification.
 	OnAccountChanged func(domain.SessionID, string, domain.AgentHarness)
-	// OnCodexCapacityChanged attributes a structured provider update to the one
-	// globally active AO Codex account. The callback owns profile-independent
-	// account state; conversation rows are not the authority for Codex capacity.
-	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
@@ -128,7 +123,6 @@ func New(opts Options) *Service {
 		newID:                  opts.NewID,
 		now:                    now,
 		onAccountChanged:       opts.OnAccountChanged,
-		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		stopProviderHost:       opts.StopProviderHost,
 		controllers:            make(map[domain.SessionID]*Controller),
 		startConfigs:           make(map[domain.SessionID]StartConfig),
@@ -285,9 +279,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			rec.Metadata.ConversationCheckpointNativeID != ""
 		trusted := trustedProvenance &&
 			rec.Metadata.ConversationCheckpointNativeID == cfg.ProviderConversationID
-		if rec.Harness == domain.HarnessClaudeCode && trustedProvenance && nativeEvidence == "" {
-			replayCheckpoint.hardMismatches = append(replayCheckpoint.hardMismatches, ports.ChatHistoryMismatchUnsettledBoundary)
-		}
 		if rec.Metadata.ConversationCheckpointUnsettled ||
 			(checkpointState == domain.ConversationCheckpointComplete &&
 				strings.TrimSpace(rec.Metadata.LatestUserPrompt) == "" &&
@@ -669,7 +660,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged)
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
@@ -1742,28 +1733,9 @@ func (s *Service) StopChat(ctx context.Context, id domain.SessionID) error {
 	return s.Stop(ctx, id)
 }
 
-// permissionConfigOptions annotates only provider controls whose semantics are
-// known. In particular, plan and dontAsk are not AO approval policies.
+// permissionConfigOptions returns the provider options unchanged. The claude
+// "mode" permission mapping that previously annotated these choices was
+// harness-specific and is no longer applied for opencode.
 func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatConfigOption) []ports.ChatConfigOption {
-	out := append([]ports.ChatConfigOption(nil), options...)
-	for i := range out {
-		out[i].Choices = append([]ports.ChatConfigOptionChoice(nil), out[i].Choices...)
-		for j := range out[i].Choices {
-			out[i].Choices[j].PermissionMode = ""
-			if harness != domain.HarnessClaudeCode || out[i].ID != "mode" {
-				continue
-			}
-			switch out[i].Choices[j].Value {
-			case "manual", "default":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeDefault
-			case "acceptEdits":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAcceptEdits
-			case "auto":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAuto
-			case "bypassPermissions":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeBypassPermissions
-			}
-		}
-	}
-	return out
+	return append([]ports.ChatConfigOption(nil), options...)
 }

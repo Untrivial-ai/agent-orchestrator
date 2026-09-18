@@ -114,8 +114,7 @@ type SessionMetadata struct {
 	// Chat handoff must fail closed until a newer canonical prompt supersedes it.
 	ConversationCheckpointUnsettled bool `json:"-"`
 	// NativeTranscriptPath is the read-only transcript path for the currently
-	// active native agent session when its provider exposes one. Retained
-	// provider-specific paths also live on AgentNativeSession records.
+	// active native agent session when its provider exposes one.
 	NativeTranscriptPath string `json:"nativeTranscriptPath,omitempty"`
 	// ProviderConversationID is the opaque handle a Chat driver needs to resume
 	// this session's provider conversation after a restart (a Codex thread id
@@ -159,7 +158,7 @@ type SessionRecord struct {
 	Harness   AgentHarness `json:"harness,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
-	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"opencode"`
 	ReviewerConfig    AgentConfig     `json:"reviewerConfig,omitempty"`
 	AutoReviewEnabled bool            `json:"autoReviewEnabled"`
 	DisplayName       string          `json:"displayName,omitempty"`
@@ -249,9 +248,8 @@ type Session struct {
 	// important current fact about the session at the stage it sits in. It is
 	// derived after the column, from the facts that column reads, and ships in
 	// renderable form so clients print it without a mapping table of their own.
-	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
-	TerminalHandleID  string        `json:"terminalHandleId,omitempty"`
-	ActiveAgentSwitch *AgentSwitch  `json:"-"`
+	DisplayStatus    DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
+	TerminalHandleID string        `json:"terminalHandleId,omitempty"`
 	// PRs are the session's attributed pull requests (one session can own many).
 	// They feed status derivation and are surfaced on the API read model. Not
 	// serialized here: the HTTP boundary maps them to the curated wire shape.

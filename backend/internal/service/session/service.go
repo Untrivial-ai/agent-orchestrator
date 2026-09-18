@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,11 +13,8 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
-	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
-	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 // Store is the read-only persistence surface needed to assemble controller-facing session read models.
@@ -26,8 +22,6 @@ type Store interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
 	ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error)
-	GetActiveAgentSwitch(ctx context.Context, sessionID domain.SessionID) (domain.AgentSwitch, bool, error)
-	ListActiveAgentSwitches(ctx context.Context) ([]domain.AgentSwitch, error)
 	RenameSession(ctx context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error)
 	SetSessionPreviewURL(ctx context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error)
 	SetSessionTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool, updatedAt time.Time) (bool, error)
@@ -63,10 +57,6 @@ type ListFilter struct {
 // *sessionmanager.Manager in production, a fake in tests.
 type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
-	SwitchAgent(ctx context.Context, id domain.SessionID, cfg sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error)
-	RecoverAgentSwitch(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error)
-	ListAgentSwitches(ctx context.Context, id domain.SessionID) ([]domain.AgentSwitch, error)
-	SubmitAgentHandoff(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID, sourceGenerationID domain.AgentGenerationID, handoff json.RawMessage) (domain.AgentSwitch, error)
 	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
 	ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
@@ -173,7 +163,6 @@ type Service struct {
 	tracker             ports.Tracker
 	clock               func() time.Time
 	dataDir             string
-	telemetry           ports.EventSink
 	logger              *slog.Logger
 	backgroundContext   context.Context
 	agentReadiness      ports.AgentReadinessProvider
@@ -217,7 +206,6 @@ type Deps struct {
 	Tracker   ports.Tracker
 	Clock     func() time.Time
 	DataDir   string
-	Telemetry ports.EventSink
 	Logger    *slog.Logger
 	// AgentReadiness coordinates advisory native harness checks before launch.
 	AgentReadiness ports.AgentReadinessProvider
@@ -237,7 +225,7 @@ func NewWithDeps(d Deps) *Service {
 	if backgroundContext == nil {
 		backgroundContext = context.Background()
 	}
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -295,28 +283,12 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		if readiness.Installation.State == domain.AgentInstallationNotInstalled {
 			return domain.Session{}, 0, 0, apierr.Invalid("AGENT_BINARY_NOT_FOUND", "The selected agent harness is not installed", map[string]any{"agentId": cfg.Harness})
 		}
-		if cfg.Harness == domain.HarnessCodex &&
-			readiness.Authentication.State == domain.AgentAuthenticationUnauthorized &&
-			readiness.Authentication.Freshness == domain.AgentReadinessFresh {
-			return domain.Session{}, 0, 0, apierr.Conflict("CODEX_ACCOUNT_AUTH_UNVERIFIED", "Add or sign in to a Codex account in Settings before starting a Codex session", nil)
-		}
-	}
-	start := s.now()
-	firstSession, err := s.isFirstSession(ctx)
-	if err != nil {
-		return domain.Session{}, 0, 0, fmt.Errorf("count sessions: %w", err)
 	}
 	cfg = s.withIssueContext(ctx, cfg, project)
 	rec, promptBytes, systemPromptBytes, err := s.manager.Spawn(ctx, cfg)
 	if err != nil {
 		s.invalidateAgentReadinessAfterLaunchFailure(cfg.Harness, err)
-		apiErr := toSpawnAPIError(err)
-		s.emitSpawnFailed(ctx, cfg, apiErr, s.now().Sub(start).Milliseconds())
-		return domain.Session{}, 0, 0, apiErr
-	}
-	s.emitSpawned(ctx, rec, s.now().Sub(start).Milliseconds())
-	if firstSession {
-		s.emitFirstSessionSpawned(ctx, rec, project)
+		return domain.Session{}, 0, 0, toSpawnAPIError(err)
 	}
 	sess, err := s.toSession(ctx, rec)
 	if err != nil {
@@ -362,94 +334,6 @@ func (s *Service) requireProject(ctx context.Context, id domain.ProjectID) (doma
 		return domain.ProjectRecord{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project. Register it with `ao project add`")
 	}
 	return rec, nil
-}
-
-func (s *Service) isFirstSession(ctx context.Context) (bool, error) {
-	if s.store == nil {
-		return false, nil
-	}
-	rows, err := s.store.ListAllSessions(ctx)
-	if err != nil {
-		return false, err
-	}
-	return len(rows) == 0, nil
-}
-
-func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, durationMs int64) {
-	if s.telemetry == nil {
-		return
-	}
-	projectID := rec.ProjectID
-	sessionID := rec.ID
-	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       "ao.session.spawned",
-		Source:     "session_service",
-		OccurredAt: s.now(),
-		Level:      ports.TelemetryLevelInfo,
-		ProjectID:  &projectID,
-		SessionID:  &sessionID,
-		RequestID:  reqid.FromContext(ctx),
-		Payload: map[string]any{
-			"kind":        string(rec.Kind),
-			"harness":     string(rec.Harness),
-			"duration_ms": durationMs,
-		},
-	})
-}
-
-func (s *Service) emitFirstSessionSpawned(ctx context.Context, rec domain.SessionRecord, project domain.ProjectRecord) {
-	if s.telemetry == nil {
-		return
-	}
-	projectID := rec.ProjectID
-	sessionID := rec.ID
-	payload := map[string]any{
-		"kind":    string(rec.Kind),
-		"harness": string(rec.Harness),
-	}
-	if !project.RegisteredAt.IsZero() {
-		payload["since_first_project_ms"] = s.now().Sub(project.RegisteredAt).Milliseconds()
-	}
-	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       "ao.onboarding.first_session_spawned",
-		Source:     "session_service",
-		OccurredAt: s.now(),
-		Level:      ports.TelemetryLevelInfo,
-		ProjectID:  &projectID,
-		SessionID:  &sessionID,
-		RequestID:  reqid.FromContext(ctx),
-		Payload:    payload,
-	})
-}
-
-func (s *Service) emitSpawnFailed(ctx context.Context, cfg ports.SpawnConfig, err error, durationMs int64) {
-	if s.telemetry == nil {
-		return
-	}
-	projectID := cfg.ProjectID
-	apiErr := toSpawnAPIError(err)
-	errorKind, errorCode := telemetrymeta.ErrorKindAndCode(apiErr)
-	payload := map[string]any{
-		"component":   "session_service",
-		"operation":   "spawn_session",
-		"kind":        string(cfg.Kind),
-		"harness":     string(cfg.Harness),
-		"duration_ms": durationMs,
-		"error_kind":  errorKind,
-		"fingerprint": telemetrymeta.Fingerprint("session_service", "spawn_session", string(cfg.Kind), string(cfg.Harness), errorKind, errorCode),
-	}
-	if errorCode != "" {
-		payload["error_code"] = errorCode
-	}
-	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       "ao.session.spawn_failed",
-		Source:     "session_service",
-		OccurredAt: s.now(),
-		Level:      ports.TelemetryLevelError,
-		ProjectID:  &projectID,
-		RequestID:  reqid.FromContext(ctx),
-		Payload:    payload,
-	})
 }
 
 // SpawnOrchestrator spawns an orchestrator session for a project. When clean is
@@ -945,14 +829,6 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 	if err != nil {
 		return nil, err
 	}
-	activeSwitches, err := s.store.ListActiveAgentSwitches(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list active agent switches: %w", err)
-	}
-	activeBySession := make(map[domain.SessionID]domain.AgentSwitch, len(activeSwitches))
-	for _, agentSwitch := range activeSwitches {
-		activeBySession[agentSwitch.SessionID] = agentSwitch
-	}
 	filtered := make([]domain.SessionRecord, 0, len(recs))
 	ids := make([]domain.SessionID, 0, len(recs))
 	for _, rec := range recs {
@@ -974,9 +850,6 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 		sess, err := s.toSessionWithFacts(rec, prsBySession[rec.ID], runsBySession[rec.ID])
 		if err != nil {
 			return nil, err
-		}
-		if agentSwitch, ok := activeBySession[rec.ID]; ok {
-			sess.ActiveAgentSwitch = &agentSwitch
 		}
 		out = append(out, sess)
 	}
@@ -1038,13 +911,6 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	if err != nil {
 		return domain.Session{}, err
 	}
-	activeSwitch, ok, err := s.store.GetActiveAgentSwitch(ctx, id)
-	if err != nil {
-		return domain.Session{}, fmt.Errorf("get active agent switch for %s: %w", id, err)
-	}
-	if ok {
-		sess.ActiveAgentSwitch = &activeSwitch
-	}
 	if s.statusRecoveryRevision() != recoveryRevision {
 		sess.StatusReadiness = "checking"
 	}
@@ -1082,8 +948,7 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 // toAPIError maps the session engine's sentinel errors to their REST API
 // equivalents; an unrecognized error passes through and surfaces as a 500.
 func toAPIError(err error) error {
-	original := ownership.Own(err, ownership.OwnerHTTP)
-	return ownership.Preserve(original, mapSessionError(original))
+	return mapSessionError(err)
 }
 
 func mapSessionError(err error) error {
@@ -1154,47 +1019,6 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("HARNESS_INSTALL_ACTIVE", "The selected harness is currently being installed", nil)
 	case errors.Is(err, sessionmanager.ErrUnsupportedModel):
 		return apierr.Invalid("UNSUPPORTED_MODEL", err.Error(), nil)
-	case errors.Is(err, sessionmanager.ErrTargetAgentUnauthorized):
-		return apierr.Invalid("TARGET_AGENT_UNAUTHORIZED",
-			"The target agent is not authenticated; authenticate it before switching", nil)
-	case errors.Is(err, sessionmanager.ErrUnsupportedSwitchKind):
-		return apierr.Invalid("WORKER_SESSION_REQUIRED",
-			"Only worker sessions support agent switching", nil)
-	case errors.Is(err, sessionmanager.ErrUnsupportedSwitchHarness):
-		return apierr.Invalid("UNSUPPORTED_SWITCH_HARNESS",
-			"Agent switching is not supported for the requested harness", nil)
-	case errors.Is(err, sessionmanager.ErrAlreadyUsingHarness):
-		return apierr.Conflict("ALREADY_USING_HARNESS",
-			"The session is already using the requested harness", nil)
-	case errors.Is(err, sessionmanager.ErrSwitchNotFound):
-		return apierr.NotFound("AGENT_SWITCH_NOT_FOUND", "Unknown agent switch")
-	case errors.Is(err, sessionmanager.ErrSwitchRecoveryNotRequired):
-		return apierr.Conflict("AGENT_SWITCH_RECOVERY_NOT_REQUIRED",
-			"This agent switch does not require source restoration", nil)
-	case errors.Is(err, sessionmanager.ErrStaleHandoff):
-		return apierr.Conflict("STALE_AGENT_HANDOFF",
-			"The handoff is stale or its collection window has closed", nil)
-	case errors.Is(err, sessionmanager.ErrInvalidAgentHandoff):
-		return apierr.Invalid("INVALID_AGENT_HANDOFF",
-			"The handoff does not satisfy AO's semantic handoff schema", nil)
-	case errors.Is(err, sessionmanager.ErrSwitchDeliveryUnconfirmed):
-		return apierr.Conflict("AGENT_SWITCH_DELIVERY_UNCONFIRMED",
-			"The target agent started, but AO could not confirm that it accepted the continuation", nil)
-	case errors.Is(err, sessionmanager.ErrSwitchInProgress):
-		return apierr.Conflict("AGENT_SWITCH_IN_PROGRESS",
-			"This session already has an agent switch in progress", nil)
-	case errors.Is(err, sessionmanager.ErrSwitchShuttingDown):
-		return apierr.Conflict("AGENT_SWITCH_UNAVAILABLE",
-			"AO is shutting down and cannot start another agent switch", nil)
-	case errors.Is(err, sessionmanager.ErrSwitchUnavailable):
-		return apierr.Conflict("AGENT_SWITCH_UNAVAILABLE",
-			"Agent switching is unavailable in this AO instance", nil)
-	case errors.Is(err, domain.ErrAgentSwitchIdempotencyConflict):
-		return apierr.Conflict("AGENT_SWITCH_IDEMPOTENCY_CONFLICT",
-			"The idempotency key is already associated with a different agent switch", nil)
-	case errors.Is(err, domain.ErrAgentSwitchInProgress):
-		return apierr.Conflict("AGENT_SWITCH_IN_PROGRESS",
-			"This session already has an agent switch in progress", nil)
 	case errors.Is(err, sessionmanager.ErrScratchBranchUnsupported):
 		return apierr.Invalid("SCRATCH_BRANCH_UNSUPPORTED", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceBranchCheckedOutElsewhere):

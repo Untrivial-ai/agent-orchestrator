@@ -80,7 +80,7 @@ func TestChatUIRegressionProviderHistoryRecoveryDeduplicatesReplayWithoutWorktre
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 	start := func() *chatsvc.Controller {
 		ctrl, err := svc.Start(ctx, chatsvc.StartConfig{
-			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 			WorkspacePath: worktree, ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 			HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
 		})

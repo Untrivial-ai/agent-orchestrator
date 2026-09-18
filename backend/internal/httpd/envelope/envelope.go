@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
-	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -19,12 +18,10 @@ import (
 // log reads the captured error back so the daemon log keeps the diagnosis.
 type errCapture struct{ captured CapturedError }
 
-// CapturedError is request-local observability metadata recorded when an error
-// is rendered. Err remains available for structured logging; ReportingOwner
-// decides which layer owns the Sentry report.
+// CapturedError is request-local metadata recorded when an error is rendered.
+// Err remains available for structured logging.
 type CapturedError struct {
-	Err            error
-	ReportingOwner ownership.Owner
+	Err error
 }
 
 type errCaptureKey struct{}
@@ -41,18 +38,17 @@ func WithErrorCapture(r *http.Request) (*http.Request, func() CapturedError) {
 // captureError records err for the request if a capture slot is present.
 func captureError(r *http.Request, err error) {
 	if c, ok := r.Context().Value(errCaptureKey{}).(*errCapture); ok {
-		c.captured = CapturedError{Err: err, ReportingOwner: ownership.OwnerOf(err)}
+		c.captured = CapturedError{Err: err}
 	}
 }
 
 // APIError is the locked wire shape for every non-2xx response.
 type APIError struct {
-	Error          string          `json:"error"`
-	Code           string          `json:"code"`
-	Message        string          `json:"message"`
-	RequestID      string          `json:"requestId,omitempty"`
-	Details        map[string]any  `json:"details,omitempty"`
-	ReportingOwner ownership.Owner `json:"reporting_owner,omitempty" enum:"http,agent_switch_saga"`
+	Error     string         `json:"error"`
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	RequestID string         `json:"requestId,omitempty"`
+	Details   map[string]any `json:"details,omitempty"`
 }
 
 // WriteJSON serialises v as JSON with the given status.
@@ -64,17 +60,12 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 
 // WriteAPIError emits the locked envelope for any non-2xx response.
 func WriteAPIError(w http.ResponseWriter, r *http.Request, status int, kind, code, message string, details map[string]any) {
-	writeAPIError(w, r, status, kind, code, message, details, "")
-}
-
-func writeAPIError(w http.ResponseWriter, r *http.Request, status int, kind, code, message string, details map[string]any, reportingOwner ownership.Owner) {
 	WriteJSON(w, status, APIError{
-		Error:          kind,
-		Code:           code,
-		Message:        message,
-		RequestID:      middleware.GetReqID(r.Context()),
-		Details:        details,
-		ReportingOwner: reportingOwner,
+		Error:     kind,
+		Code:      code,
+		Message:   message,
+		RequestID: middleware.GetReqID(r.Context()),
+		Details:   details,
 	})
 }
 
@@ -84,11 +75,10 @@ func writeAPIError(w http.ResponseWriter, r *http.Request, status int, kind, cod
 // only place an apierr.Kind is translated into an HTTP status and wire word.
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	captureError(r, err)
-	reportingOwner := ownership.OwnerOf(err)
 	var e *apierr.Error
 	if errors.As(err, &e) {
 		status, kind := httpStatus(e.Kind)
-		writeAPIError(w, r, status, kind, e.Code, e.Message, e.Details, reportingOwner)
+		WriteAPIError(w, r, status, kind, e.Code, e.Message, e.Details)
 		return
 	}
 	// A transient failure (the database was momentarily busy/locked, or a
@@ -96,8 +86,8 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	// 503 with a stable code so it is not counted or alerted as an
 	// INTERNAL_ERROR 500 and so clients can back off and retry.
 	if isTransient(err) {
-		writeAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "SERVICE_UNAVAILABLE",
-			"The service is momentarily unavailable, please retry.", nil, reportingOwner)
+		WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "SERVICE_UNAVAILABLE",
+			"The service is momentarily unavailable, please retry.", nil)
 		return
 	}
 	// A project whose source repository has been deleted from disk turns any
@@ -108,11 +98,11 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	// the same sentinel (ports.ErrWorkspaceRepoUnavailable) with %w, so
 	// errors.Is matches it through any wrapping.
 	if errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
-		writeAPIError(w, r, http.StatusNotFound, "not_found", "PROJECT_FOLDER_MISSING",
-			"Project repository is missing from disk", nil, reportingOwner)
+		WriteAPIError(w, r, http.StatusNotFound, "not_found", "PROJECT_FOLDER_MISSING",
+			"Project repository is missing from disk", nil)
 		return
 	}
-	writeAPIError(w, r, http.StatusInternalServerError, "internal", "INTERNAL_ERROR", "Internal server error", nil, reportingOwner)
+	WriteAPIError(w, r, http.StatusInternalServerError, "internal", "INTERNAL_ERROR", "Internal server error", nil)
 }
 
 // SQLite primary result codes for a busy/locked database. Extended codes (e.g.

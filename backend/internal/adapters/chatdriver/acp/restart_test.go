@@ -16,7 +16,7 @@ func restartFixture(t *testing.T, env map[string]string) (Config, ports.ChatStar
 	t.Helper()
 	env["AO_TEST_PERSISTENT_ACP_PROVIDER"] = "1"
 	cfg := Config{
-		Harness: domain.HarnessOMP,
+		Harness: domain.HarnessOpenCode,
 		Launch: func(context.Context, LaunchConfig) (Launch, error) {
 			return Launch{Command: os.Args[0], Args: []string{"-test.run=TestPersistentACPProviderHelper"}, Env: env}, nil
 		},
@@ -123,7 +123,7 @@ func TestPersistentACPAdoptionRetainsLaunchPermissionFence(t *testing.T) {
 }
 
 func TestPersistentACPRequiresDurableSessionIdentity(t *testing.T) {
-	driver := New(Config{Harness: domain.HarnessClaudeCode, Launch: func(context.Context, LaunchConfig) (Launch, error) {
+	driver := New(Config{Harness: domain.HarnessOpenCode, Launch: func(context.Context, LaunchConfig) (Launch, error) {
 		t.Fatal("invalid session identity invoked launch side effects")
 		return Launch{}, nil
 	}}, nil)

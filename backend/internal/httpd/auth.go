@@ -161,10 +161,7 @@ func maybeSetPreviewAuthCookie(w http.ResponseWriter, r *http.Request, tok strin
 }
 
 // authMiddleware authenticates LAN requests against the current connection
-// password. connected, which may be nil, is notified of the source address of
-// every request that authenticates; it exists so telemetry can observe that a
-// phone actually reached this desktop, and it must not block the request, since
-// it runs inline on every authenticated call.
+// password.
 // identityProbePath is the one route the LAN listener serves without the
 // connection password. The phone races several endpoints, and a private
 // address is not an identity: 192.168.1.42 exists on most networks. Verifying
@@ -184,7 +181,7 @@ func isIdentityProbe(r *http.Request) bool {
 	return r.Method == http.MethodGet && r.URL.Path == identityProbePath
 }
 
-func authMiddleware(state *authState, lock *lockout, connected *mobileConnectReporter) func(http.Handler) http.Handler {
+func authMiddleware(state *authState, lock *lockout) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isIdentityProbe(r) {
@@ -199,7 +196,6 @@ func authMiddleware(state *authState, lock *lockout, connected *mobileConnectRep
 			}
 			if tok := connectionToken(r); mobilebridge.PasswordMatches(state.currentHash(), tok) {
 				lock.reset(src)
-				connected.report(src)
 				maybeSetPreviewAuthCookie(w, r, tok)
 				next.ServeHTTP(w, r)
 				return

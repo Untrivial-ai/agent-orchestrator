@@ -3,19 +3,14 @@ package integration
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
-	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
@@ -138,41 +133,6 @@ func (c *captureMessenger) Send(_ context.Context, _ domain.SessionID, msg strin
 	return nil
 }
 
-type retryingCodexAccountFactory struct{ opens atomic.Int32 }
-
-func (f *retryingCodexAccountFactory) Open(context.Context, ports.CodexAccountContext) (ports.CodexAccountClient, error) {
-	if f.opens.Add(1) == 1 {
-		return nil, errors.New("secret credential /private/path")
-	}
-	return stubCodexAccountClient{}, nil
-}
-
-func (*retryingCodexAccountFactory) Capabilities(context.Context) domain.CodexAccountCapabilities {
-	return domain.CodexAccountCapabilities{}
-}
-
-type stubCodexAccountClient struct{}
-
-func (stubCodexAccountClient) Read(context.Context, bool) (ports.CodexAccountObservation, error) {
-	return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}, nil
-}
-func (stubCodexAccountClient) Logout(context.Context) error { return nil }
-func (stubCodexAccountClient) ReadCapacity(context.Context) (ports.CodexCapacityObservation, error) {
-	return ports.CodexCapacityObservation{}, nil
-}
-func (stubCodexAccountClient) ReadUsage(context.Context) (ports.CodexUsageObservation, error) {
-	return ports.CodexUsageObservation{}, nil
-}
-func (stubCodexAccountClient) ConsumeResetCredit(context.Context, string) (domain.CodexResetCreditOutcome, error) {
-	return "", nil
-}
-func (stubCodexAccountClient) Events() <-chan ports.CodexAccountEvent {
-	events := make(chan ports.CodexAccountEvent)
-	close(events)
-	return events
-}
-func (stubCodexAccountClient) Close() error { return nil }
-
 type stack struct {
 	store *sqlite.Store
 	sm    *sessionsvc.Service
@@ -197,8 +157,8 @@ func newStack(t *testing.T) *stack {
 		Path:         "/repo/mer",
 		RegisteredAt: time.Now(),
 		Config: domain.ProjectConfig{
-			Worker:       domain.RoleOverride{Harness: domain.HarnessClaudeCode},
-			Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode},
+			Worker:       domain.RoleOverride{Harness: domain.HarnessOpenCode},
+			Orchestrator: domain.RoleOverride{Harness: domain.HarnessOpenCode},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -214,10 +174,9 @@ func newStack(t *testing.T) *stack {
 	return &stack{store: store, sm: sm, mgr: mgr, lcm: lcm, prm: prm, rt: rt, ws: ws, msg: msg}
 }
 
-func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) {
+func TestDelegateEndpointSpawnsOrchestrator(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	store, err := sqlitetest.Open(filepath.Join(root, "db"))
+	store, err := sqlitetest.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,37 +185,16 @@ func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	var now atomic.Int64
-	now.Store(100)
-	factory := &retryingCodexAccountFactory{}
-	gate := codexops.NewGate()
-	globalHome := filepath.Join(root, "global")
-	if err := os.MkdirAll(globalHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(globalHome, "auth.json"), []byte(`{"tokens":{"access_token":"test-only"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	agents := agentsvc.NewWithDeps(agentsvc.Deps{
-		Context:                ctx,
-		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
-		CodexAccountRoot:       filepath.Join(root, "accounts"),
-		CodexPendingRoot:       filepath.Join(root, "pending"),
-		CodexSwitchStagingRoot: filepath.Join(root, "staging"),
-		CodexGlobalHome:        globalHome,
-		CodexAccounts:          factory,
-		CodexOperationGate:     gate,
-		Clock:                  func() time.Time { return time.Unix(now.Load(), 0) },
-	})
 	runtime := &stubRuntime{}
 	workspace := &stubWorkspace{}
 	lcm := lifecycle.New(store, &captureMessenger{})
 	manager := sessionmanager.New(sessionmanager.Deps{
 		Runtime: runtime, Agents: stubAgents{}, Workspace: workspace, Store: store,
 		Lifecycle: lcm, LookPath: func(string) (string, error) { return "/usr/bin/true", nil },
-		CodexOperationGate: gate,
 	})
-	manager.SetAgentReadiness(agents)
+	manager.SetAgentReadiness(agentsvc.NewWithDeps(agentsvc.Deps{
+		Context: ctx, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}))
 	lcm.SetCompletionTerminator(manager)
 	sessions := sessionsvc.New(manager, store)
 	router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Sessions: sessions}, httpd.ControlDeps{})
@@ -265,7 +203,7 @@ func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) 
 
 	delegate := func() (int, []byte) {
 		t.Helper()
-		request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/orchestrators/delegate", bytes.NewBufferString(`{"projectId":"mer","brief":"Fix it","agent":"codex","mode":"tui"}`))
+		request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/orchestrators/delegate", bytes.NewBufferString(`{"projectId":"mer","brief":"Fix it","agent":"opencode","mode":"tui"}`))
 		if requestErr != nil {
 			t.Fatal(requestErr)
 		}
@@ -284,30 +222,10 @@ func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) 
 
 	status, body := delegate()
 	if status != http.StatusAccepted {
-		t.Fatalf("delegate = %d, want 202 while device reconciliation is unavailable; body=%s", status, body)
+		t.Fatalf("delegate = %d, want 202; body=%s", status, body)
 	}
 	if runtime.created != 1 {
 		t.Fatalf("runtime Create calls = %d, want 1", runtime.created)
-	}
-	if factory.opens.Load() != 0 {
-		t.Fatalf("ordinary launch opened account-management client %d times", factory.opens.Load())
-	}
-
-	if err := agents.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
-		t.Fatalf("local device reconciliation: %v", err)
-	}
-	if factory.opens.Load() != 0 {
-		t.Fatalf("local reconciliation opened account-management client %d times", factory.opens.Load())
-	}
-	accounts, err := agents.CachedCodexAccounts(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if accounts.ActiveAccountID == "" || !accounts.DeviceReconciliation.ActiveAccountVerified {
-		t.Fatalf("locally imported device account was not active: %#v", accounts)
-	}
-	if runtime.created != 1 {
-		t.Fatalf("reconciliation restarted sessions: runtime Create calls=%d", runtime.created)
 	}
 }
 
@@ -434,7 +352,7 @@ func TestReconcile_PreservesFailedLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	recA := domain.SessionRecord{
 		ProjectID:    "mer",
 		Kind:         domain.KindWorker,
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		IsTerminated: false,
 		Metadata: domain.SessionMetadata{
 			Branch:          "ao/mer-a/root",
@@ -454,7 +372,7 @@ func TestReconcile_PreservesFailedLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	recB := domain.SessionRecord{
 		ProjectID:    "mer",
 		Kind:         domain.KindWorker,
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		IsTerminated: true,
 		Metadata: domain.SessionMetadata{
 			Branch:          "ao/mer-b/root",

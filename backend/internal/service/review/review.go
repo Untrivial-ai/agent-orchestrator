@@ -15,9 +15,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
-	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 // ErrInvalid and ErrNotFound re-export the engine sentinels so the HTTP
@@ -27,28 +25,6 @@ var (
 	ErrNotFound            = reviewcore.ErrNotFound
 	ErrAgentBinaryNotFound = ports.ErrAgentBinaryNotFound
 )
-
-// reviewErrorKind reduces a trigger failure to a safe category. Raw error text
-// can carry repository paths and agent binary locations, so only the kind and a
-// stable code ever leave the process.
-func reviewErrorKind(err error) string {
-	// The engine returns its own sentinels (reviewcore.ErrInvalid / ErrNotFound)
-	// and ports.ErrAgentBinaryNotFound, wrapped with %w. Those are mapped to API
-	// error kinds only at the HTTP controller boundary, after Trigger has already
-	// returned here, so telemetrymeta.ErrorKindAndCode (which only classifies
-	// *apierr.Error) would collapse every trigger failure to "internal" and the
-	// field could never say why a trigger failed. Classify the sentinels first.
-	switch {
-	case errors.Is(err, reviewcore.ErrInvalid):
-		return "invalid"
-	case errors.Is(err, reviewcore.ErrNotFound):
-		return "not_found"
-	case errors.Is(err, ports.ErrAgentBinaryNotFound):
-		return "agent_unavailable"
-	}
-	kind, _ := telemetrymeta.ErrorKindAndCode(err)
-	return kind
-}
 
 // Manager is the reviews surface the HTTP controller depends on.
 type Manager interface {
@@ -69,14 +45,12 @@ type Manager interface {
 
 // Service is the API-facing review service. It delegates to the core engine.
 type Service struct {
-	engine             *reviewcore.Engine
-	store              Store
-	requester          ports.SCMReviewRequester
-	resolver           ports.SCMReviewResolver
-	lifecycle          Reducer
-	clock              func() time.Time
-	telemetry          ports.EventSink
-	codexOperationGate ports.CodexOperationGate
+	engine   *reviewcore.Engine
+	store    Store
+	requester ports.SCMReviewRequester
+	resolver  ports.SCMReviewResolver
+	lifecycle Reducer
+	clock     func() time.Time
 	// engineTrigger indirects the engine's source-tagged trigger so the
 	// instrumented path can be exercised without standing up a full engine and
 	// its eighteen-method store. Defaulted in New; only tests replace it.
@@ -126,44 +100,6 @@ func WithReviewRequester(requester ports.SCMReviewRequester) Option {
 // WithReviewResolver wires provider-backed review-thread resolution.
 func WithReviewResolver(resolver ports.SCMReviewResolver) Option {
 	return func(s *Service) { s.resolver = resolver }
-}
-
-// WithTelemetry records review outcomes.
-//
-// Code review is a headline feature with no telemetry at all, so there is no way
-// to answer whether reviewers are used, whether they approve or request changes,
-// or how long a pass takes. Optional so the service still works unwired, which
-// is how every existing test constructs it.
-func WithTelemetry(sink ports.EventSink) Option {
-	return func(s *Service) { s.telemetry = sink }
-}
-
-// WithCodexAccountOperationGate prevents new Codex reviewer controllers from
-// entering while the device-global Codex credential is changing.
-func WithCodexAccountOperationGate(gate ports.CodexOperationGate) Option {
-	return func(s *Service) { s.codexOperationGate = gate }
-}
-
-// emit reports an event when a sink is wired.
-//
-// Only enum-like fields are ever passed in. Never the review body, the PR URL,
-// or the target SHA: the body is reviewer prose about someone's code, and the URL
-// and SHA identify the repository. The daemon's remote allowlist would drop
-// unknown keys anyway, but the intent belongs at the call site.
-func (s *Service) emit(ctx context.Context, name string, sessionID domain.SessionID, payload map[string]any) {
-	if s.telemetry == nil {
-		return
-	}
-	session := sessionID
-	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       name,
-		Source:     "review_service",
-		OccurredAt: s.clock(),
-		Level:      ports.TelemetryLevelInfo,
-		SessionID:  &session,
-		RequestID:  reqid.FromContext(ctx),
-		Payload:    payload,
-	})
 }
 
 // New wraps a core review engine as the API-facing service.
@@ -233,9 +169,6 @@ func (s *Service) RequestRereview(ctx context.Context, workerID domain.SessionID
 		}
 		return err
 	}
-	s.emit(ctx, "ao.review.rereview_requested", workerID, map[string]any{
-		"provider": pr.Provider,
-	})
 	return nil
 }
 
@@ -388,7 +321,6 @@ func (s *Service) ResolveReviewComment(ctx context.Context, workerID domain.Sess
 	} else if !updated {
 		return fmt.Errorf("%w: review comment is not tracked for this PR", ErrNotFound)
 	}
-	s.emit(ctx, "ao.review.comment_resolved", workerID, map[string]any{"provider": pr.Provider})
 	return nil
 }
 
@@ -410,11 +342,8 @@ func (s *Service) TriggerAuto(ctx context.Context, workerID domain.SessionID, ha
 	return s.triggerWithSource(ctx, workerID, harness, domain.AgentConfig{}, domain.ReviewTriggerAuto)
 }
 
-// triggerWithSource is the single instrumented trigger path. Both entry points
-// route through it so an automatic pass is never invisible: before this, only
-// the manual Trigger emitted, which made auto-review indistinguishable from
-// manual review in every downstream funnel even though the two answer
-// completely different product questions.
+// triggerWithSource is the single trigger path shared by the manual and
+// automatic entry points.
 func (s *Service) triggerWithSource(
 	ctx context.Context,
 	workerID domain.SessionID,
@@ -422,59 +351,15 @@ func (s *Service) triggerWithSource(
 	config domain.AgentConfig,
 	source domain.ReviewTriggerSource,
 ) (reviewcore.TriggerResult, error) {
-	triggeredPayload := map[string]any{"trigger": string(source)}
 	if err := config.Validate(); err != nil {
-		err = fmt.Errorf("%w: reviewer config: %w", ErrInvalid, err)
-		s.emit(ctx, "ao.review.trigger_failed", workerID, map[string]any{
-			"error_kind": reviewErrorKind(err),
-			"trigger":    string(source),
-		})
-		s.emit(ctx, "ao.review.triggered", workerID, triggeredPayload)
-		return reviewcore.TriggerResult{}, err
+		return reviewcore.TriggerResult{}, fmt.Errorf("%w: reviewer config: %w", ErrInvalid, err)
 	}
-	usesCodex := s.codexReviewUsesCodex(ctx, workerID, harness)
-	var release func()
-	if usesCodex && s.codexOperationGate != nil {
-		var err error
-		release, err = s.codexOperationGate.AcquireSharedWait(ctx)
-		if err != nil {
-			return reviewcore.TriggerResult{}, err
-		}
-		defer release()
-	}
-	result, err := s.engineTrigger(ctx, workerID, harness, config, source)
-	if err != nil {
-		s.emit(ctx, "ao.review.trigger_failed", workerID, map[string]any{
-			"error_kind": reviewErrorKind(err),
-			"trigger":    string(source),
-		})
-		s.emit(ctx, "ao.review.triggered", workerID, triggeredPayload)
-		return result, err
-	}
-	if result.Run.Harness != "" {
-		triggeredPayload["harness"] = string(result.Run.Harness)
-	}
-	// ao.review.triggered counts every attempt. created_runs still counts only
-	// brand-new rows, while Created also covers restart flows that relaunch a
-	// pass against an existing row after a reviewer config change. reused must
-	// stay false for those restarts even though created_runs is zero.
-	createdOrRestarted := result.Created || len(result.CreatedRuns) > 0
-	triggeredPayload["created_runs"] = len(result.CreatedRuns)
-	triggeredPayload["reused"] = !createdOrRestarted
-	s.emit(ctx, "ao.review.triggered", workerID, triggeredPayload)
-	return result, nil
+	return s.engineTrigger(ctx, workerID, harness, config, source)
 }
 
 // Cancel stops the live reviewer pane and marks running review passes as failed.
 func (s *Service) Cancel(ctx context.Context, workerID domain.SessionID) (reviewcore.CancelResult, error) {
-	result, err := s.engine.Cancel(ctx, workerID)
-	if err != nil {
-		return result, err
-	}
-	s.emit(ctx, "ao.review.cancelled", workerID, map[string]any{
-		"cancelled_runs": len(result.CancelledRuns),
-	})
-	return result, nil
+	return s.engine.Cancel(ctx, workerID)
 }
 
 // TerminateReviewer hard-destroys the reviewer pane for worker lifecycle
@@ -492,42 +377,14 @@ func (s *Service) TeardownReviewerTerminal(ctx context.Context, workerID domain.
 
 // RestoreReviewer relaunches an idle reviewer pane after its worker has been restored.
 func (s *Service) RestoreReviewer(ctx context.Context, workerID domain.SessionID) error {
-	release, err := s.acquireReviewerCodexAdmission(ctx, workerID, "")
-	if err != nil {
-		return err
-	}
-	defer release()
-	_, err = s.engine.RestoreReviewer(ctx, workerID)
+	_, err := s.engine.RestoreReviewer(ctx, workerID)
 	return err
 }
 
 // SwitchReviewer atomically persists a worker's reviewer preference and returns
 // the authoritative post-switch review state.
 func (s *Service) SwitchReviewer(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.SessionReviews, error) {
-	release, err := s.acquireReviewerCodexAdmission(ctx, workerID, harness)
-	if err != nil {
-		return reviewcore.SessionReviews{}, err
-	}
-	defer release()
 	return s.engine.SwitchReviewer(ctx, workerID, harness, config)
-}
-
-func (s *Service) codexReviewUsesCodex(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) bool {
-	if harness == domain.ReviewerCodex {
-		return true
-	}
-	if harness != "" {
-		return false
-	}
-	rec, ok, err := s.store.GetSession(ctx, workerID)
-	return err == nil && ok && (rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex)
-}
-
-func (s *Service) acquireReviewerCodexAdmission(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (func(), error) {
-	if s.codexOperationGate == nil || !s.codexReviewUsesCodex(ctx, workerID, harness) {
-		return func() {}, nil
-	}
-	return s.codexOperationGate.AcquireSharedWait(ctx)
 }
 
 // ActivitySignal is reviewer-owned hook metadata.
@@ -680,26 +537,6 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 		run.Body = body
 		run.GithubReviewID = githubReviewID
 		run.AutoInjectReview = session.AutoInjectReview
-		// Only on the real running -> complete transition. Re-submitting an
-		// already-complete run returns early below, so telemetry stays idempotent
-		// the same way the store does.
-		s.emit(ctx, "ao.review.submitted", workerID, map[string]any{
-			"harness":            string(run.Harness),
-			"verdict":            string(verdict),
-			"duration_ms":        s.clock().Sub(run.CreatedAt).Milliseconds(),
-			"posted_to_provider": githubReviewID != "",
-			// Which pass produced this verdict. A manual and an automatic review
-			// mean different things about how the feature is being used, and the
-			// verdict split between them is the whole question.
-			"trigger": string(run.TriggerSource),
-			// A size, never the text. Review depth is otherwise unobservable: a
-			// changes-requested verdict with a two-line body and one with a full
-			// findings list are the same event without it.
-			"body_bytes": len(body),
-			// Whether the session policy will let this result reach the worker at
-			// all, recorded at the moment it is snapshotted onto the run.
-			"auto_inject": session.AutoInjectReview,
-		})
 	case domain.ReviewRunComplete:
 		if run.Verdict != verdict {
 			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q already recorded verdict %q", ErrInvalid, runID, run.Verdict)

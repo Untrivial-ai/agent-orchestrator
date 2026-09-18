@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,7 +16,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
-	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 // Execute runs the ao CLI with process stdio.
@@ -29,11 +27,7 @@ func executeWithDeps(deps Deps, args []string) error {
 	deps = deps.withDefaults()
 	cmd := NewRootCommand(deps)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
-	if err != nil && ExitCode(err) == 2 {
-		(&commandContext{deps: deps}).emitCLIUsageError(context.Background(), args, err)
-	}
-	return err
+	return cmd.Execute()
 }
 
 // usageError marks a command-line misuse (bad flag, wrong arg count). It lets
@@ -71,8 +65,6 @@ type Deps struct {
 	LookPath              func(file string) (string, error)
 	CommandOutput         func(ctx context.Context, name string, args ...string) ([]byte, error)
 	CommandOutputInDir    func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
-	RunInteractiveCommand func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error
-	ReadSecret            func(io.Reader) ([]byte, error)
 	// DoctorGitHubRESTBase lets tests point the doctor GitHub token probe at
 	// httptest without mutating package-global state.
 	DoctorGitHubRESTBase string
@@ -96,8 +88,6 @@ func DefaultDeps() Deps {
 		LookPath:              exec.LookPath,
 		CommandOutput:         commandOutput,
 		CommandOutputInDir:    commandOutputInDir,
-		RunInteractiveCommand: runInteractiveCommand,
-		ReadSecret:            readSecret,
 		DoctorGitHubRESTBase:  defaultDoctorGitHubRESTBase,
 		DoctorGitLabRESTBase:  defaultDoctorGitLabRESTBase,
 		Now:                   time.Now,
@@ -147,12 +137,6 @@ func (d Deps) withDefaults() Deps {
 	if d.CommandOutputInDir == nil {
 		d.CommandOutputInDir = def.CommandOutputInDir
 	}
-	if d.RunInteractiveCommand == nil {
-		d.RunInteractiveCommand = def.RunInteractiveCommand
-	}
-	if d.ReadSecret == nil {
-		d.ReadSecret = def.ReadSecret
-	}
 	if d.DoctorGitHubRESTBase == "" {
 		d.DoctorGitHubRESTBase = def.DoctorGitHubRESTBase
 	}
@@ -180,12 +164,6 @@ func NewRootCommand(deps Deps) *cobra.Command {
 		Version:       VersionString(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			if shouldEmitCLIInvocation(cmd) {
-				ctx.emitCLIInvoked(cmd.Context(), cmd)
-			}
-			return nil
-		},
 	}
 	root.SetIn(deps.In)
 	root.SetOut(deps.Out)
@@ -212,7 +190,6 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newChatHostCommand())
 	root.AddCommand(newLaunchCommand(ctx))
 	root.AddCommand(newPtyHostCommand())
-	root.AddCommand(newCodexLoginCommand(ctx))
 	root.AddCommand(newImportCommand(ctx))
 	root.AddCommand(newDevCommand(ctx))
 	root.AddCommand(newProjectCommand(ctx))
@@ -228,85 +205,6 @@ func NewRootCommand(deps Deps) *cobra.Command {
 
 type commandContext struct {
 	deps Deps
-}
-
-func shouldEmitCLIInvocation(cmd *cobra.Command) bool {
-	commandPath := telemetrymeta.NormalizeCommandPath(cmd.CommandPath())
-	if telemetrymeta.IsRoutineInternalCLICommand(commandPath) {
-		return false
-	}
-	switch commandPath {
-	// "ao daemon"/"ao start" are supervisor-driven bootstrapping, and
-	// "ao completion"/"ao help" are shell setup and self-documentation.
-	// "ao pty-host" and "ao agent-process" are internal runtime processes.
-	// None reflect user activity.
-	case "ao daemon", "ao start", "ao completion", "ao help", "ao pty-host", "ao chat-host", "ao codex-login", "ao agent-process", "ao agent-process supervise":
-		return false
-	default:
-		return true
-	}
-}
-
-func (c *commandContext) emitCLIInvoked(ctx context.Context, cmd *cobra.Command) {
-	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-	_ = c.postLoopbackJSON(reqCtx, "/internal/telemetry/cli-invoked", map[string]string{
-		"command":     cmd.Name(),
-		"commandPath": cmd.CommandPath(),
-		"actorType":   cliInvocationActorType(cmd),
-	})
-}
-
-func cliInvocationActorType(cmd *cobra.Command) string {
-	if strings.TrimSpace(cmd.CommandPath()) == "ao hooks" {
-		return "agent"
-	}
-	if sessionIDPattern.MatchString(strings.TrimSpace(os.Getenv("AO_SESSION_ID"))) {
-		return "agent"
-	}
-	return "user"
-}
-
-func (c *commandContext) emitCLIUsageError(ctx context.Context, args []string, err error) {
-	command, commandPath := usageErrorCommand(args)
-	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-	_ = c.postLoopbackJSON(reqCtx, "/internal/telemetry/cli-usage-error", map[string]string{
-		"command":     command,
-		"commandPath": commandPath,
-		"error":       err.Error(),
-	})
-}
-
-func usageErrorCommand(args []string) (string, string) {
-	// Only tokens that match registered subcommands may enter the reported
-	// path: anything past the deepest match is user data (session names,
-	// prompts, orchestrator names) and must never ride into telemetry.
-	current := NewRootCommand(Deps{})
-	tokens := []string{"ao"}
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
-			break
-		}
-		var next *cobra.Command
-		for _, sub := range current.Commands() {
-			if sub.Name() == arg || sub.HasAlias(arg) {
-				next = sub
-				break
-			}
-		}
-		if next == nil {
-			break
-		}
-		tokens = append(tokens, arg)
-		current = next
-	}
-	commandPath := strings.Join(tokens, " ")
-	command := "ao"
-	if len(tokens) > 1 {
-		command = tokens[len(tokens)-1]
-	}
-	return command, commandPath
 }
 
 func usageArgs(validate cobra.PositionalArgs) cobra.PositionalArgs {

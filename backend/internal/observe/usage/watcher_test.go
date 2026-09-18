@@ -14,6 +14,13 @@ import (
 
 const watcherTestTimeout = 5 * time.Second
 
+func mustNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTranscriptWatcherExistingRootWrite(t *testing.T) {
 	root := t.TempDir()
 	transcript := filepath.Join(root, "session.jsonl")

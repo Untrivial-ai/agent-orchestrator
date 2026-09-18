@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	codexagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/terminalui"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -338,6 +339,89 @@ func (transitionAgent) NativeConversationID(_ context.Context, session ports.Ses
 	return id, id != "", nil
 }
 
+// codexTransitionAgent reproduces the parts of the removed Codex adapter that
+// the interface-transition tests exercised: the rollout-transcript probe that
+// distinguishes a reserved native id from a resumable conversation, and the
+// initial-composer surface detection that proves an untouched conversation.
+type codexTransitionAgent struct{ transitionAgent }
+
+func (codexTransitionAgent) NativeConversationExists(
+	_ context.Context, _ ports.SessionRef, nativeConversationID string, env map[string]string,
+) (bool, error) {
+	nativeConversationID = strings.TrimSpace(nativeConversationID)
+	if nativeConversationID == "" {
+		return false, nil
+	}
+	codexHome := strings.TrimSpace(env["CODEX_HOME"])
+	if codexHome == "" {
+		codexHome = strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	}
+	if codexHome == "" {
+		return false, nil
+	}
+	found := false
+	err := filepath.WalkDir(filepath.Join(codexHome, "sessions"), func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "-"+nativeConversationID+".jsonl") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() && info.Size() > 0 {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
+func (codexTransitionAgent) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
+	if codexTerminalSurface(output).Work == ports.TerminalSurfaceWorkIdle {
+		return domain.ActivityIdle, true
+	}
+	return "", false
+}
+
+func (codexTransitionAgent) InspectTerminalSurface(output string) ports.TerminalSurfaceObservation {
+	return codexTerminalSurface(output)
+}
+
+// codexTerminalSurface mirrors the removed adapter's initial-composer probe: an
+// "OpenAI Codex (v…)" header with exactly one prompt row is untouched.
+func codexTerminalSurface(output string) ports.TerminalSurfaceObservation {
+	observation := ports.TerminalSurfaceObservation{Composer: ports.TerminalComposerEmpty}
+	header := false
+	prompts := 0
+	for _, raw := range terminalui.PlainTerminalLines(output) {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "OpenAI Codex (v") {
+			header = true
+		}
+		if strings.HasPrefix(line, "›") {
+			prompts++
+		}
+	}
+	if prompts > 0 {
+		observation.Work = ports.TerminalSurfaceWorkIdle
+	}
+	observation.NativeConversationNotStarted = header && prompts == 1
+	return observation
+}
+
 type failingRestoreTransitionAgent struct {
 	transitionAgent
 	err error
@@ -622,24 +706,6 @@ func (l *sqliteTransitionLifecycle) RestoreControllerEpoch(
 		ctx, id, source, target, nativeConversationID, time.Now(),
 	)
 }
-func (l *sqliteTransitionLifecycle) ConfirmAgentSwitchSourceStopped(
-	ctx context.Context,
-	confirmation domain.AgentSwitchSourceStopConfirmation,
-) (bool, error) {
-	return l.store.ConfirmAgentSwitchSourceStopped(ctx, confirmation)
-}
-func (l *sqliteTransitionLifecycle) ActivateAgentSwitchTarget(
-	ctx context.Context,
-	activation domain.AgentSwitchTargetActivation,
-) (bool, error) {
-	return l.store.ActivateAgentSwitchTarget(ctx, activation)
-}
-func (l *sqliteTransitionLifecycle) ActivateChatAgentSwitchTarget(
-	ctx context.Context,
-	activation domain.AgentSwitchChatTargetActivation,
-) (bool, error) {
-	return l.store.ActivateChatAgentSwitchTarget(ctx, activation)
-}
 func (l *sqliteTransitionLifecycle) MarkTerminated(
 	ctx context.Context,
 	id domain.SessionID,
@@ -838,7 +904,7 @@ func newTransitionManager(t *testing.T, mode domain.SessionMode) (*Manager, *tra
 	}
 	store.sessions["session-1"] = domain.SessionRecord{
 		ID: "session-1", ProjectID: "proj", Kind: domain.KindWorker,
-		Harness: domain.HarnessClaudeCode, Mode: mode, Metadata: metadata,
+		Harness: domain.HarnessOpenCode, Mode: mode, Metadata: metadata,
 		Activity:      domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()},
 		FirstSignalAt: time.Now(),
 	}
@@ -1031,7 +1097,7 @@ func TestInterfaceTransitionStatusAllowsReservedNativeIDWithUntouchedTerminalPro
 
 func TestInterfaceTransitionStatusBlocksFreshStartWhenConversationMetadataExists(t *testing.T) {
 	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
-	manager.agents = singleAgent{agent: codexagent.New()}
+	manager.agents = singleAgent{agent: codexTransitionAgent{}}
 	runtime.outputForCall = func(int) string {
 		return "╭────────────────────────╮\n" +
 			"│ >_ OpenAI Codex (v0.147.0) │\n" +
@@ -1041,7 +1107,7 @@ func TestInterfaceTransitionStatusBlocksFreshStartWhenConversationMetadataExists
 			"gpt-5.6-sol low · /ws/session-1\n"
 	}
 	rec := store.sessions["session-1"]
-	rec.Harness = domain.HarnessCodex
+	rec.Harness = domain.HarnessOpenCode
 	rec.Metadata.AgentSessionID = ""
 	rec.Metadata.AgentSessionIDLaunchID = ""
 	rec.Metadata.LatestUserPrompt = "implement the feature"
@@ -1486,7 +1552,7 @@ func TestInterfaceTransitionProviderHistoryRecoverySurvivesDaemonRestart(t *test
 	}
 	created, err := beforeRestart.CreateSession(ctx, domain.SessionRecord{
 		ID: "session-1", ProjectID: "proj", Kind: domain.KindWorker,
-		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeTUI,
 		Metadata: domain.SessionMetadata{
 			WorkspacePath: "/ws/session-1", Branch: "ao/session-1",
 			RuntimeHandleID: "runtime-1", RuntimeLaunchID: "tui-generation-1",
@@ -2432,12 +2498,12 @@ func TestInterfaceTransitionTUIToChatStartsFreshWithPositiveUntouchedSurfaceProo
 	}
 }
 
-func TestInterfaceTransitionTUIToChatRejectsExistingCodexIDWhenRolloutIsMissing(t *testing.T) {
+func TestInterfaceTransitionTUIToChatRejectsExistingIDWhenRolloutIsMissing(t *testing.T) {
 	manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
 	t.Setenv("CODEX_HOME", t.TempDir())
-	manager.agents = singleAgent{agent: codexagent.New()}
+	manager.agents = singleAgent{agent: codexTransitionAgent{}}
 	rec := store.sessions["session-1"]
-	rec.Harness = domain.HarnessCodex
+	rec.Harness = domain.HarnessOpenCode
 	rec.Metadata.AgentSessionID = "019fc430-1234-7abc-8def-0123456789ab"
 	rec.Metadata.LatestUserPrompt = "keep the completed terminal work"
 	store.sessions["session-1"] = rec
@@ -2448,14 +2514,14 @@ func TestInterfaceTransitionTUIToChatRejectsExistingCodexIDWhenRolloutIsMissing(
 		t.Fatalf("StartInterfaceTransition error = %v, want ErrNativeConversationMissing", err)
 	}
 	if runtime.destroyed != 0 || chat.start.ProviderConversationID != "" {
-		t.Fatalf("missing Codex rollout destroyed=%d or started Chat=%q",
+		t.Fatalf("missing provider rollout destroyed=%d or started Chat=%q",
 			runtime.destroyed, chat.start.ProviderConversationID)
 	}
 }
 
-func TestInterfaceTransitionPromptlessCodexStartsFreshWithoutNativeID(t *testing.T) {
+func TestInterfaceTransitionPromptlessTUIStartsFreshWithoutNativeID(t *testing.T) {
 	manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
-	manager.agents = singleAgent{agent: codexagent.New()}
+	manager.agents = singleAgent{agent: codexTransitionAgent{}}
 	useFastInterfaceTransitionTimings(manager)
 	t.Setenv("CODEX_HOME", t.TempDir())
 
@@ -2467,7 +2533,7 @@ func TestInterfaceTransitionPromptlessCodexStartsFreshWithoutNativeID(t *testing
 		"gpt-5.6-sol low · /ws/session-1\n"
 	runtime.outputForCall = func(int) string { return initialSurface }
 	rec := store.sessions["session-1"]
-	rec.Harness = domain.HarnessCodex
+	rec.Harness = domain.HarnessOpenCode
 	rec.Metadata.AgentSessionID = ""
 	rec.Metadata.AgentSessionIDLaunchID = ""
 	rec.Metadata.Prompt = ""
@@ -2478,7 +2544,7 @@ func TestInterfaceTransitionPromptlessCodexStartsFreshWithoutNativeID(t *testing
 		t.Fatal(err)
 	}
 	if !status.Supported {
-		t.Fatalf("promptless initial Codex TUI should be switchable: %+v", status)
+		t.Fatalf("promptless initial TUI should be switchable: %+v", status)
 	}
 
 	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
@@ -2491,14 +2557,14 @@ func TestInterfaceTransitionPromptlessCodexStartsFreshWithoutNativeID(t *testing
 		t.Fatalf("phase = %s, code = %s, error = %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
 	}
 	if settled.NativeConversationID != "" || chat.start.ProviderConversationID != "" {
-		t.Fatalf("promptless Codex handoff did not start fresh: transition=%q target=%q",
+		t.Fatalf("promptless TUI handoff did not start fresh: transition=%q target=%q",
 			settled.NativeConversationID, chat.start.ProviderConversationID)
 	}
 }
 
 func TestInterfaceTransitionRefreshesNativeIDAfterPromptlessAdmission(t *testing.T) {
 	manager, store, runtime, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
-	manager.agents = singleAgent{agent: codexagent.New()}
+	manager.agents = singleAgent{agent: codexTransitionAgent{}}
 	useFastInterfaceTransitionTimings(manager)
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
@@ -2534,7 +2600,7 @@ func TestInterfaceTransitionRefreshesNativeIDAfterPromptlessAdmission(t *testing
 		return initialSurface
 	}
 	rec := store.sessions["session-1"]
-	rec.Harness = domain.HarnessCodex
+	rec.Harness = domain.HarnessOpenCode
 	rec.Metadata.AgentSessionID = ""
 	rec.Metadata.AgentSessionIDLaunchID = ""
 	store.sessions["session-1"] = rec
@@ -2559,7 +2625,7 @@ func TestInterfaceTransitionRefreshesNativeIDAfterPromptlessAdmission(t *testing
 
 func TestInterfaceTransitionPromptlessAdmissionFailsBeforeStoppingWhenTurnStartsWithoutNativeID(t *testing.T) {
 	manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeTUI)
-	manager.agents = singleAgent{agent: codexagent.New()}
+	manager.agents = singleAgent{agent: codexTransitionAgent{}}
 	useFastInterfaceTransitionTimings(manager)
 	t.Setenv("CODEX_HOME", t.TempDir())
 
@@ -2582,7 +2648,7 @@ func TestInterfaceTransitionPromptlessAdmissionFailsBeforeStoppingWhenTurnStarts
 		return completedTurnSurface
 	}
 	rec := store.sessions["session-1"]
-	rec.Harness = domain.HarnessCodex
+	rec.Harness = domain.HarnessOpenCode
 	rec.Metadata.AgentSessionID = ""
 	rec.Metadata.AgentSessionIDLaunchID = ""
 	store.sessions["session-1"] = rec
@@ -2604,14 +2670,14 @@ func TestInterfaceTransitionPromptlessAdmissionFailsBeforeStoppingWhenTurnStarts
 	}
 }
 
-func TestInterfaceTransitionTUIToChatReusesPersistedCodexRollout(t *testing.T) {
+func TestInterfaceTransitionTUIToChatReusesPersistedRollout(t *testing.T) {
 	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
-	manager.agents = singleAgent{agent: codexagent.New()}
+	manager.agents = singleAgent{agent: codexTransitionAgent{}}
 	id := "019fc430-1234-7abc-8def-0123456789ab"
 	rec := store.sessions["session-1"]
-	rec.Harness = domain.HarnessCodex
+	rec.Harness = domain.HarnessOpenCode
 	rec.Metadata.AgentSessionID = id
 	store.sessions["session-1"] = rec
 	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "08", "08")
@@ -2636,25 +2702,25 @@ func TestInterfaceTransitionTUIToChatReusesPersistedCodexRollout(t *testing.T) {
 		t.Fatalf("native conversation = %q, want %q", settled.NativeConversationID, id)
 	}
 	if chat.start.ProviderConversationID != id {
-		t.Fatalf("Chat resumed %q, want persisted Codex rollout %q",
+		t.Fatalf("Chat resumed %q, want persisted provider rollout %q",
 			chat.start.ProviderConversationID, id)
 	}
 }
 
 // TestInterfaceTransitionFreshTUISessionResumesAfterHookCapture is a regression
 // test for a fresh TUI session where the SessionStart hook captures the native
-// session id. The transition must resume the persisted Codex conversation
+// session id. The transition must resume the persisted provider conversation
 // rather than starting fresh, proving the identifiers are populated before
 // transition and the original conversation is resumed afterward.
 func TestInterfaceTransitionFreshTUISessionResumesAfterHookCapture(t *testing.T) {
 	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
-	manager.agents = singleAgent{agent: codexagent.New()}
+	manager.agents = singleAgent{agent: codexTransitionAgent{}}
 
 	id := "019fc430-1234-7abc-8def-0123456789ab"
 	rec := store.sessions["session-1"]
-	rec.Harness = domain.HarnessCodex
+	rec.Harness = domain.HarnessOpenCode
 	rec.Metadata.AgentSessionID = ""
 	store.sessions["session-1"] = rec
 
@@ -2694,7 +2760,7 @@ func TestInterfaceTransitionFreshTUISessionResumesAfterHookCapture(t *testing.T)
 			settled.NativeConversationID, id)
 	}
 	if chat.start.ProviderConversationID != id {
-		t.Fatalf("Chat resumed %q, want persisted Codex rollout %q (fresh-started instead of resuming)",
+		t.Fatalf("Chat resumed %q, want persisted provider rollout %q (fresh-started instead of resuming)",
 			chat.start.ProviderConversationID, id)
 	}
 }
@@ -3190,7 +3256,7 @@ func TestRecoverInterruptedClaudeTUIToChatPreservesPoisonedCheckpointThroughResu
 	}
 	created, err := st.CreateSession(ctx, domain.SessionRecord{
 		ID: "session-1", ProjectID: "proj", Kind: domain.KindWorker,
-		Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat,
+		Harness: domain.HarnessOpenCode, Mode: domain.SessionModeChat,
 		Metadata: domain.SessionMetadata{
 			WorkspacePath: "/ws/session-1", Branch: "ao/session-1",
 			AgentSessionID: "native-1", ProviderConversationID: "native-1",

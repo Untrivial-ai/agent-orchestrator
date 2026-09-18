@@ -204,14 +204,14 @@ func TestAggregateStackedChildSignals(t *testing.T) {
 // Without an injected capability predicate the service must never claim
 // no_signal; with one, capability follows the predicate per harness.
 func TestHarnessSignalsCapabilityGate(t *testing.T) {
-	if (&Service{}).harnessSignals(domain.HarnessCodex) {
+	if (&Service{}).harnessSignals(domain.HarnessOpenCode) {
 		t.Fatal("zero-value Service reports signal-capable; want incapable (never no_signal)")
 	}
-	s := NewWithDeps(Deps{SignalCapable: func(h domain.AgentHarness) bool { return h == domain.HarnessCodex }})
-	if !s.harnessSignals(domain.HarnessCodex) {
-		t.Fatal("harnessSignals(codex) = false with codex-capable predicate")
+	s := NewWithDeps(Deps{SignalCapable: func(h domain.AgentHarness) bool { return h == domain.HarnessOpenCode }})
+	if !s.harnessSignals(domain.HarnessOpenCode) {
+		t.Fatal("harnessSignals(opencode) = false with opencode-capable predicate")
 	}
-	if s.harnessSignals(domain.HarnessAmp) {
-		t.Fatal("harnessSignals(amp) = true with codex-only predicate")
+	if s.harnessSignals("amp") {
+		t.Fatal("harnessSignals(amp) = true with opencode-only predicate")
 	}
 }

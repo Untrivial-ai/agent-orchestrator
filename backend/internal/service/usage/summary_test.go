@@ -83,19 +83,19 @@ func TestSummaryReaderGetPreservesStrongestPartialLowerBoundWithoutDoubleCountin
 	store := &usageSummaryStoreStub{
 		found:      true,
 		incomplete: true,
-		session:    domain.SessionRecord{ID: "reverb-12", Harness: domain.HarnessCodex},
+		session:    domain.SessionRecord{ID: "reverb-12", Harness: domain.HarnessOpenCode},
 		models: []domain.UsageModelAggregate{
 			{
-				Harness: domain.HarnessClaudeCode, ModelID: "<synthetic>",
+				Harness: domain.HarnessOpenCode, ModelID: "<synthetic>",
 				Tokens: testUsageMetrics(0, 0, 0, 0),
 			},
 			{
-				Harness: domain.HarnessCodex, ModelID: "gpt-5.6",
+				Harness: domain.HarnessOpenCode, ModelID: "gpt-5.6",
 				Tokens: testUsageMetrics(1000, 400, 600, 200),
 				Cost:   completeCostAggregate(1, 100, 20, 10, 70),
 			},
 			{
-				Harness: domain.HarnessClaudeCode, ModelID: "claude-sonnet",
+				Harness: domain.HarnessOpenCode, ModelID: "claude-sonnet",
 				Tokens: testUsageMetrics(100, 20, 80, 25),
 				Cost: domain.UsageCostAggregate{
 					EventCount:               1,
@@ -132,15 +132,15 @@ func TestSummaryReaderGetPreservesStrongestPartialLowerBoundWithoutDoubleCountin
 		cost.OutputNanos == nil || *cost.OutputNanos != 75 {
 		t.Fatalf("session component coverage = %+v", cost)
 	}
-	if len(got.Harnesses) != 2 || len(got.Harnesses[0].Models) != 1 || len(got.Harnesses[1].Models) != 1 ||
+	if len(got.Harnesses) != 1 || len(got.Harnesses[0].Models) != 2 ||
 		got.Harnesses[0].Models[0].ModelID != "gpt-5.6" ||
-		got.Harnesses[1].Models[0].ModelID != "claude-sonnet" {
+		got.Harnesses[0].Models[1].ModelID != "claude-sonnet" {
 		t.Fatalf("model grouping = %+v", got.Harnesses)
 	}
 	if got.Harnesses[0].Models[0].Totals.EstimatedCost == nil ||
 		got.Harnesses[0].Models[0].Totals.EstimatedCost.Coverage != domain.EstimatedCostCoverageComplete ||
-		got.Harnesses[1].Models[0].Totals.EstimatedCost == nil ||
-		got.Harnesses[1].Models[0].Totals.EstimatedCost.TotalNanos != 35 {
+		got.Harnesses[0].Models[1].Totals.EstimatedCost == nil ||
+		got.Harnesses[0].Models[1].Totals.EstimatedCost.TotalNanos != 35 {
 		t.Fatalf("model costs = %+v", got.Harnesses)
 	}
 	for _, harness := range got.Harnesses {
@@ -150,9 +150,9 @@ func TestSummaryReaderGetPreservesStrongestPartialLowerBoundWithoutDoubleCountin
 			}
 		}
 	}
-	if got.Harnesses[0].Totals.ProcessedTokens == nil || *got.Harnesses[0].Totals.ProcessedTokens != 1200 ||
+	if got.Harnesses[0].Totals.ProcessedTokens == nil || *got.Harnesses[0].Totals.ProcessedTokens != 1325 ||
 		got.Harnesses[0].Models[0].Totals.ProcessedTokens == nil || *got.Harnesses[0].Models[0].Totals.ProcessedTokens != 1200 ||
-		got.Harnesses[1].Totals.ProcessedTokens == nil || *got.Harnesses[1].Totals.ProcessedTokens != 125 {
+		got.Harnesses[0].Models[1].Totals.ProcessedTokens == nil || *got.Harnesses[0].Models[1].Totals.ProcessedTokens != 125 {
 		t.Fatalf("processed totals by scope = %+v", got.Harnesses)
 	}
 	if store.calls != [4]int{0, 1, 1, 1} {
@@ -170,10 +170,10 @@ func TestSummaryReaderReportsCostProviderAttributionAtEveryScope(t *testing.T) {
 	inferred.InferredCostEventCount = 1
 	store := &usageSummaryStoreStub{
 		found:   true,
-		session: domain.SessionRecord{ID: "reverb-12", Harness: domain.HarnessClaudeCode},
+		session: domain.SessionRecord{ID: "reverb-12", Harness: domain.HarnessOpenCode},
 		models: []domain.UsageModelAggregate{
-			{Harness: domain.HarnessClaudeCode, ModelID: "claude-observed", Tokens: testUsageMetrics(1, 0, 1, 1), Cost: observed},
-			{Harness: domain.HarnessClaudeCode, ModelID: "claude-inferred", Tokens: testUsageMetrics(1, 0, 1, 1), Cost: inferred},
+			{Harness: domain.HarnessOpenCode, ModelID: "claude-observed", Tokens: testUsageMetrics(1, 0, 1, 1), Cost: observed},
+			{Harness: domain.HarnessOpenCode, ModelID: "claude-inferred", Tokens: testUsageMetrics(1, 0, 1, 1), Cost: inferred},
 		},
 	}
 
@@ -227,12 +227,12 @@ func TestSummaryReaderRejectsAggregateOverflow(t *testing.T) {
 	t.Run("detail cost groups", func(t *testing.T) {
 		store := &usageSummaryStoreStub{found: true, models: []domain.UsageModelAggregate{
 			{
-				Harness: domain.HarnessCodex, ModelID: "one",
+				Harness: domain.HarnessOpenCode, ModelID: "one",
 				Tokens: testUsageMetrics(1, 0, 1, 0),
 				Cost:   completeCostAggregate(1, math.MaxInt64, 0, 0, 0),
 			},
 			{
-				Harness: domain.HarnessCodex, ModelID: "two",
+				Harness: domain.HarnessOpenCode, ModelID: "two",
 				Tokens: testUsageMetrics(1, 0, 1, 0),
 				Cost:   completeCostAggregate(1, 1, 0, 0, 0),
 			},

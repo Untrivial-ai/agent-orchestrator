@@ -22,7 +22,7 @@ import (
 func TestUsageBindingAndSourceIdempotency(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 
 	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
@@ -49,7 +49,7 @@ func TestUsageBindingAndSourceIdempotency(t *testing.T) {
 
 	src := mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
 		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceCodexRollout,
+		Kind:            domain.UsageSourceKind("codex_rollout"),
 		NativeSessionID: "child-thread",
 		ArtifactPath:    "/tmp/codex/rollout.jsonl",
 		FileIdentity:    "dev:ino",
@@ -57,7 +57,7 @@ func TestUsageBindingAndSourceIdempotency(t *testing.T) {
 	})
 	srcAgain := mustInsertUsageSource(t, s, now.Add(time.Hour), domain.UsageSourceRecord{
 		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceCodexRollout,
+		Kind:            domain.UsageSourceKind("codex_rollout"),
 		NativeSessionID: "child-thread-updated",
 		ArtifactPath:    "/tmp/codex/rollout.jsonl",
 		FileIdentity:    "dev:ino:updated",
@@ -105,115 +105,9 @@ func TestUsageBindingAndSourceIdempotency(t *testing.T) {
 	}
 }
 
-// TestActiveKimiBindingRemainsDiscoverable catches removing live Kimi
-// bindings from the bounded reconciliation queue after the main source exists.
-func TestActiveKimiBindingRemainsDiscoverable(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessKimi)
-	now := time.Unix(1700000000, 0).UTC()
-	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
-		NativeRootID: "kimi-live",
-		State:        domain.UsageBindingActive,
-	})
-	mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
-		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceKimiWire,
-		NativeSessionID: binding.NativeRootID,
-		ArtifactPath:    "/tmp/kimi/main/wire.jsonl",
-		FileIdentity:    "kimi-main",
-		State:           domain.UsageSourceActive,
-	})
-
-	pending, err := s.HasPendingUsageDiscovery(ctx)
-	mustNoError(t, err)
-	if !pending {
-		t.Fatal("active Kimi binding did not keep bounded child discovery active")
-	}
-	discovery, err := s.ListUsageDiscoveryBindings(ctx, 8)
-	mustNoError(t, err)
-	if len(discovery) != 1 || discovery[0].ID != binding.ID {
-		t.Fatalf("discovery bindings = %+v, want Kimi binding %d", discovery, binding.ID)
-	}
-}
-
-func TestListLatestRetiredCodexReplacementClaimsByPath(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
-	now := time.Unix(1700000000, 0).UTC()
-	target := seedUsageSource(t, s, sess, now)
-	if _, err := s.MarkUsageSourceState(
-		ctx,
-		target.ID,
-		domain.UsageSourceComplete,
-		domain.UsageErrorArtifactReplaced,
-		nil,
-		now,
-	); err != nil {
-		t.Fatalf("retire target source: %v", err)
-	}
-	watchable, err := s.ListWatchableUsageSources(ctx)
-	mustNoError(t, err, "list watchable sources")
-	for _, source := range watchable {
-		if source.ID == target.ID {
-			t.Fatalf("retired replacement claim remained watchable: %+v", source)
-		}
-	}
-	mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
-		BindingID:       target.BindingID,
-		Kind:            domain.UsageSourceCodexRollout,
-		NativeSessionID: "unrelated-thread",
-		ArtifactPath:    "/tmp/codex/unrelated.jsonl",
-		FileIdentity:    "dev:unrelated",
-		State:           domain.UsageSourceComplete,
-		LastErrorCode:   domain.UsageErrorArtifactReplaced,
-	})
-
-	assertClaims := func(wantIDs ...int64) {
-		t.Helper()
-		got, err := s.ListLatestRetiredCodexReplacementClaimsByPath(ctx, target.ArtifactPath)
-		mustNoError(t, err, "list replacement claims")
-		if len(got) != len(wantIDs) {
-			t.Fatalf("replacement claims = %+v, want ids %v", got, wantIDs)
-		}
-		for i, wantID := range wantIDs {
-			if got[i].ID != wantID || got[i].State != domain.UsageSourceComplete ||
-				got[i].LastErrorCode != domain.UsageErrorArtifactReplaced {
-				t.Fatalf("replacement claim[%d] = %+v, want retired source %d", i, got[i], wantID)
-			}
-		}
-	}
-
-	assertClaims(target.ID)
-	sess.IsTerminated = true
-	mustNoError(t, s.UpdateSession(ctx, sess), "terminate session")
-	assertClaims()
-	if _, err := s.UpdateUsageBindingState(
-		ctx,
-		target.BindingID,
-		domain.UsageBindingFinalizing,
-		"",
-		now.Add(time.Second),
-	); err != nil {
-		t.Fatalf("finalize binding: %v", err)
-	}
-	assertClaims(target.ID)
-	mustInsertUsageSource(t, s, now.Add(2*time.Second), domain.UsageSourceRecord{
-		BindingID:       target.BindingID,
-		Kind:            domain.UsageSourceCodexRollout,
-		NativeSessionID: target.NativeSessionID,
-		ArtifactPath:    target.ArtifactPath,
-		FileIdentity:    "dev:new",
-		Generation:      target.Generation + 1,
-		State:           domain.UsageSourcePending,
-	})
-	assertClaims()
-}
-
 func TestUsageBindingUpsertDoesNotRegressSettledLifecycle(t *testing.T) {
 	s := newTestStore(t)
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
 		NativeRootID:  "root-thread",
@@ -233,7 +127,7 @@ func TestUsageBindingUpsertDoesNotRegressSettledLifecycle(t *testing.T) {
 func TestFinalizeUsageBindingsForSessionLaunchIsGenerationAndRevisionFenced(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	sess.Metadata.RuntimeLaunchID = "launch-current"
 	mustNoError(t, s.UpdateSession(ctx, sess))
 	now := time.Unix(1700000000, 0).UTC()
@@ -322,7 +216,7 @@ func TestFinalizeUsageBindingsForSessionLaunchIsGenerationAndRevisionFenced(t *t
 func TestInsertUsageSourceErrorRedactsArtifactPath(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 	secretPath := "/private/transcripts/customer-session.jsonl"
@@ -345,7 +239,7 @@ func TestInsertUsageSourceErrorRedactsArtifactPath(t *testing.T) {
 func TestInsertUsageSourceRejectsNonObjectParserState(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
 		NativeRootID: "root-thread",
@@ -353,7 +247,7 @@ func TestInsertUsageSourceRejectsNonObjectParserState(t *testing.T) {
 	})
 	_, err := s.InsertUsageSource(ctx, domain.UsageSourceRecord{
 		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceCodexRollout,
+		Kind:            domain.UsageSourceKind("codex_rollout"),
 		ArtifactPath:    "/tmp/codex/rollout.jsonl",
 		ParserStateJSON: `[]`,
 		State:           domain.UsageSourcePending,
@@ -367,7 +261,7 @@ func TestInsertUsageSourceRejectsNonObjectParserState(t *testing.T) {
 func TestReplaceUsageSourceRollsBackRetirementWhenInsertFails(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 
@@ -398,7 +292,7 @@ func TestReplaceUsageSourceRollsBackRetirementWhenInsertFails(t *testing.T) {
 func TestUsageMutationsEmitSessionUpdatedCDC(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	base, err := s.LatestSeq(ctx)
 	mustNoError(t, err)
@@ -413,7 +307,7 @@ func TestUsageMutationsEmitSessionUpdatedCDC(t *testing.T) {
 	mustNoError(t, err)
 	source := mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
 		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceCodexRollout,
+		Kind:            domain.UsageSourceKind("codex_rollout"),
 		NativeSessionID: "child-thread",
 		ArtifactPath:    "/tmp/codex/rollout.jsonl",
 		FileIdentity:    "dev:ino",
@@ -481,7 +375,7 @@ func assertUsageSessionUpdatedEvents(
 func TestApplyUsageChunkAtomicReplayAndTokenAggregates(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 
@@ -531,7 +425,7 @@ func TestApplyUsageChunkPersistsProviderSplitsAndPassiveCosts(t *testing.T) {
 	dataDir := t.TempDir()
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessClaudeCode)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
 		NativeRootID:   "root-thread",
@@ -541,7 +435,7 @@ func TestApplyUsageChunkPersistsProviderSplitsAndPassiveCosts(t *testing.T) {
 	})
 	source := mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
 		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceClaudeMain,
+		Kind:            domain.UsageSourceKind("claude_main"),
 		NativeSessionID: "root-thread",
 		ArtifactPath:    "/tmp/claude/transcript.jsonl",
 		State:           domain.UsageSourcePending,
@@ -612,7 +506,7 @@ func TestListUsageCostCandidatesReturnsStableCanonicalBatch(t *testing.T) {
 	dataDir := t.TempDir()
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db"))
@@ -701,9 +595,9 @@ func TestApplyUsageCostUpdatesCommitsBatchAndTouchesEachBindingOnce(t *testing.T
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	firstSession := seedUsageSession(t, s, domain.HarnessCodex)
+	firstSession := seedUsageSession(t, s, domain.HarnessOpenCode)
 	firstSource := seedUsageSource(t, s, firstSession, now)
-	secondSession := seedUsageSession(t, s, domain.HarnessCodex)
+	secondSession := seedUsageSession(t, s, domain.HarnessOpenCode)
 	secondSource := seedUsageSource(t, s, secondSession, now)
 
 	for _, seeded := range []struct {
@@ -793,7 +687,7 @@ func TestApplyUsageCostUpdatesRefusesStaleFactsVersionAndKnownZero(t *testing.T)
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	source := seedUsageSource(t, s, sess, now)
 	events := []domain.ModelUsageEvent{
 		pricedCandidateEvent("version-race"),
@@ -857,7 +751,7 @@ func TestApplyLegacyUsageRepairsUsesExactSourceFactsAndPreservesCursor(t *testin
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	sess := seedUsageSession(t, s, domain.HarnessClaudeCode)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	source := seedUsageSource(t, s, sess, now)
 	event := anthropicUsageEvent("legacy-repair", 5, 10, 5, 4)
 	event.ModelID = "claude-test"
@@ -937,7 +831,7 @@ func TestApplyLegacyUsageRepairsRefusesStaleSourceAndRawFacts(t *testing.T) {
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	source := seedUsageSource(t, s, sess, now)
 
 	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db"))
@@ -986,7 +880,7 @@ WHERE source_event_key = 'legacy-stale'`).Scan(&billingProvider))
 func TestApplyUsageChunkReplayComparesNewSourceFactsButNotCosts(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessClaudeCode)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 	fiveMinutes, oneHour := int64(7), int64(3)
@@ -1031,7 +925,7 @@ func TestApplyUsageChunkLegacyNullProviderReplayUsesGenericTokenFacts(t *testing
 	dataDir := t.TempDir()
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db"))
@@ -1060,7 +954,7 @@ INSERT INTO model_usage_events (
 func TestApplyUsageChunkRejectsBlankProviderOnNewEvent(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 	event := usageEvent("event-blank-provider", canonicalUsageTokens(1, 0, 1, 1))
@@ -1076,7 +970,7 @@ func TestApplyUsageChunkRejectsBlankProviderOnNewEvent(t *testing.T) {
 func TestApplyUsageChunkRejectsConflictsAndPreservesCursor(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	source := seedUsageSource(t, s, sess, now)
 
@@ -1123,7 +1017,7 @@ func TestApplyUsageChunkProviderUsageConflictsRollback(t *testing.T) {
 		conflicting func(string) domain.ModelUsageEvent
 	}{
 		{
-			name: "OpenAI", harness: domain.HarnessCodex, wantInput: 10, wantOutput: 1,
+			name: "OpenAI", harness: domain.HarnessOpenCode, wantInput: 10, wantOutput: 1,
 			baseEvent: func(key string) domain.ModelUsageEvent {
 				return usageEvent(key, canonicalUsageTokens(10, 0, 10, 1))
 			},
@@ -1134,7 +1028,7 @@ func TestApplyUsageChunkProviderUsageConflictsRollback(t *testing.T) {
 			},
 		},
 		{
-			name: "Anthropic", harness: domain.HarnessClaudeCode, wantInput: 20, wantOutput: 4,
+			name: "Anthropic", harness: domain.HarnessOpenCode, wantInput: 20, wantOutput: 4,
 			baseEvent: func(key string) domain.ModelUsageEvent {
 				return anthropicUsageEvent(key, 10, 3, 7, 4)
 			},
@@ -1188,7 +1082,7 @@ func TestApplyUsageChunkProviderUsageEnrichmentAdvancesCursorWithoutDuplicate(t 
 		richer     func() domain.ModelUsageEvent
 	}{
 		{
-			name: "OpenAI", harness: domain.HarnessCodex, wantInput: 10, wantOutput: 1,
+			name: "OpenAI", harness: domain.HarnessOpenCode, wantInput: 10, wantOutput: 1,
 			richer: func() domain.ModelUsageEvent {
 				event := usageEvent("event-1", canonicalUsageTokens(10, 0, 10, 1))
 				event.ProviderUsageJSON = codexProviderUsage(0, 1)
@@ -1196,7 +1090,7 @@ func TestApplyUsageChunkProviderUsageEnrichmentAdvancesCursorWithoutDuplicate(t 
 			},
 		},
 		{
-			name: "Anthropic", harness: domain.HarnessClaudeCode, wantInput: 20, wantOutput: 4,
+			name: "Anthropic", harness: domain.HarnessOpenCode, wantInput: 20, wantOutput: 4,
 			richer: func() domain.ModelUsageEvent {
 				fiveM, oneH := int64(2), int64(1)
 				event := anthropicUsageEvent("event-1", 10, 3, 7, 4)
@@ -1257,62 +1151,10 @@ func readStoredProviderUsage(t *testing.T, dataDir, sourceEventKey string) strin
 	return stored.String
 }
 
-func TestUsageBindingWaitsForPersistedCodexChildren(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
-	now := time.Unix(1700000000, 0).UTC()
-	const childID = "22222222-2222-4222-8222-222222222222"
-	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
-		NativeRootID: "11111111-1111-4111-8111-111111111111",
-		State:        domain.UsageBindingActive,
-	})
-	mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
-		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceCodexRollout,
-		NativeSessionID: binding.NativeRootID,
-		ArtifactPath:    "/tmp/codex/parent.jsonl",
-		FileIdentity:    "parent",
-		ParserStateJSON: `{"version":1,"source_kind":"codex_rollout","codex":{"baseline":{},"pending_spawn_call_ids":[],"discovered_child_ids":["` + childID + `"]}}`,
-		State:           domain.UsageSourceComplete,
-	})
-
-	discovery, err := s.ListUsageDiscoveryBindings(ctx, 8)
-	if err != nil || len(discovery) != 1 || discovery[0].ID != binding.ID {
-		t.Fatalf("startup discovery bindings = %+v, err=%v", discovery, err)
-	}
-	if _, err := s.UpdateUsageBindingState(ctx, binding.ID, domain.UsageBindingFinalizing, "", now); err != nil {
-		t.Fatal(err)
-	}
-	completed, err := s.CompleteUsageBindingIfSettled(ctx, binding.ID, now)
-	mustNoError(t, err)
-	if completed {
-		t.Fatal("binding completed before its persisted Codex child was registered")
-	}
-	got, ok, err := s.GetUsageBinding(ctx, sess.ID, sess.Harness, binding.NativeRootID)
-	if err != nil || !ok || got.State != domain.UsageBindingFinalizing {
-		t.Fatalf("binding while child missing = %+v, ok=%v err=%v", got, ok, err)
-	}
-
-	mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
-		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceCodexRollout,
-		NativeSessionID: childID,
-		SubagentID:      childID,
-		ArtifactPath:    "/tmp/codex/child.jsonl",
-		FileIdentity:    "child",
-		State:           domain.UsageSourceComplete,
-	})
-	completed, err = s.CompleteUsageBindingIfSettled(ctx, binding.ID, now)
-	if err != nil || !completed {
-		t.Fatalf("complete after child registration = %v, err=%v", completed, err)
-	}
-}
-
 func TestUsageBindingIgnoresChildrenFromSupersededCodexGeneration(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	const (
 		rootID  = "11111111-1111-4111-8111-111111111111"
@@ -1327,7 +1169,7 @@ func TestUsageBindingIgnoresChildrenFromSupersededCodexGeneration(t *testing.T) 
 	for generation, state := range []string{oldState, emptyState} {
 		mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
 			BindingID:       binding.ID,
-			Kind:            domain.UsageSourceCodexRollout,
+			Kind:            domain.UsageSourceKind("codex_rollout"),
 			NativeSessionID: rootID,
 			ArtifactPath:    "/tmp/codex/root.jsonl",
 			FileIdentity:    fmt.Sprintf("root-%d", generation),
@@ -1345,58 +1187,6 @@ func TestUsageBindingIgnoresChildrenFromSupersededCodexGeneration(t *testing.T) 
 	}
 }
 
-func TestUsageBindingValidatesCodexDiscoveryStateShapes(t *testing.T) {
-	const childID = "22222222-2222-4222-8222-222222222222"
-	tests := []struct {
-		name          string
-		state         string
-		wantCompleted bool
-	}{
-		{name: "scalar discovered ids", state: `{"version":1,"source_kind":"codex_rollout","codex":{"discovered_child_ids":"` + childID + `"}}`, wantCompleted: true},
-		{name: "object discovered ids", state: `{"version":1,"source_kind":"codex_rollout","codex":{"discovered_child_ids":{"child":"` + childID + `"}}}`, wantCompleted: true},
-		{name: "future version", state: `{"version":2,"source_kind":"codex_rollout","codex":{"discovered_child_ids":["` + childID + `"]}}`, wantCompleted: true},
-		{name: "wrong source kind", state: `{"version":1,"source_kind":"claude_main","codex":{"discovered_child_ids":["` + childID + `"]}}`, wantCompleted: true},
-		{name: "non object codex payload", state: `{"version":1,"source_kind":"codex_rollout","codex":"not-an-object"}`, wantCompleted: true},
-		{name: "noncanonical child", state: `{"version":1,"source_kind":"codex_rollout","codex":{"discovered_child_ids":["22222222-2222-4222-8222-22222222222A"]}}`, wantCompleted: true},
-		{name: "mixed-type child array", state: `{"version":1,"source_kind":"codex_rollout","codex":{"discovered_child_ids":["` + childID + `",7]}}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := newTestStore(t)
-			ctx := context.Background()
-			sess := seedUsageSession(t, s, domain.HarnessCodex)
-			now := time.Unix(1700000000, 0).UTC()
-			binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
-				NativeRootID: "11111111-1111-4111-8111-111111111111",
-				State:        domain.UsageBindingActive,
-			})
-			mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
-				BindingID:       binding.ID,
-				Kind:            domain.UsageSourceCodexRollout,
-				NativeSessionID: binding.NativeRootID,
-				ArtifactPath:    "/tmp/codex/root.jsonl",
-				FileIdentity:    "root",
-				ParserStateJSON: tt.state,
-				State:           domain.UsageSourceComplete,
-			})
-
-			discovery, err := s.ListUsageDiscoveryBindings(ctx, 8)
-			mustNoError(t, err)
-			if len(discovery) != 0 {
-				t.Fatalf("invalid state invented discovery bindings: %+v", discovery)
-			}
-			if _, err := s.UpdateUsageBindingState(ctx, binding.ID, domain.UsageBindingFinalizing, "", now); err != nil {
-				t.Fatal(err)
-			}
-			completed, err := s.CompleteUsageBindingIfSettled(ctx, binding.ID, now)
-			mustNoError(t, err)
-			if completed != tt.wantCompleted {
-				t.Fatalf("completed = %v, want %v", completed, tt.wantCompleted)
-			}
-		})
-	}
-}
-
 func TestUsageRowsCascadeWhenSeedSessionDeleted(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1405,7 +1195,7 @@ func TestUsageRowsCascadeWhenSeedSessionDeleted(t *testing.T) {
 	sess, err := s.CreateSession(ctx, domain.SessionRecord{
 		ProjectID: "usage",
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1437,7 +1227,7 @@ func TestUsageAggregatesMergeProvidersPerModelAndPreserveCostCoverageFacts(t *te
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	source := seedUsageSource(t, s, sess, now)
 	value := func(n int64) *int64 { return &n }
 	events := []domain.ModelUsageEvent{
@@ -1508,7 +1298,7 @@ func TestUsageAggregatesReturnSQLiteIntegerOverflow(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	source := seedUsageSource(t, s, sess, now)
 	if err := s.ApplyUsageChunk(ctx, source.ID, 0, source.UpdatedAt, domain.SourceCursorState{
 		ByteOffset: 10, State: domain.UsageSourceComplete, UpdatedAt: now,
@@ -1534,7 +1324,7 @@ func TestListCompactSessionUsageAggregatesAndFiltersByProject(t *testing.T) {
 	seedProject(t, s, "other")
 
 	usageRec := sampleRecord("usage")
-	usageRec.Harness = domain.HarnessCodex
+	usageRec.Harness = domain.HarnessOpenCode
 	usageSession, err := s.CreateSession(ctx, usageRec)
 	mustNoError(t, err, "create usage session")
 	otherSession, err := s.CreateSession(ctx, sampleRecord("other"))
@@ -1586,7 +1376,7 @@ func TestListCompactSessionUsageSeparatesRetriesFromIntegrityFailures(t *testing
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	transientSession := seedUsageSession(t, s, domain.HarnessCodex)
+	transientSession := seedUsageSession(t, s, domain.HarnessOpenCode)
 	transientSource := seedUsageSource(t, s, transientSession, now)
 	if err := s.ApplyUsageChunk(ctx, transientSource.ID, 0, transientSource.UpdatedAt, domain.SourceCursorState{
 		ByteOffset: 1,
@@ -1608,7 +1398,7 @@ func TestListCompactSessionUsageSeparatesRetriesFromIntegrityFailures(t *testing
 		t.Fatalf("mark transient failure: %v", err)
 	}
 
-	incompleteSession := seedUsageSession(t, s, domain.HarnessCodex)
+	incompleteSession := seedUsageSession(t, s, domain.HarnessOpenCode)
 	incompleteSource := seedUsageSource(t, s, incompleteSession, now)
 	if err := s.ApplyUsageChunk(ctx, incompleteSource.ID, 0, incompleteSource.UpdatedAt, domain.SourceCursorState{
 		ByteOffset: 1,
@@ -1648,7 +1438,7 @@ func TestUsageSessionAggregatesParentChildAndMultipleBindingsExactlyOnce(t *test
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
-	sess := seedUsageSession(t, s, domain.HarnessCodex)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 
 	newBinding := func(nativeRootID string) domain.UsageBindingRecord {
 		t.Helper()
@@ -1662,7 +1452,7 @@ func TestUsageSessionAggregatesParentChildAndMultipleBindingsExactlyOnce(t *test
 		t.Helper()
 		return mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
 			BindingID:       binding.ID,
-			Kind:            domain.UsageSourceCodexRollout,
+			Kind:            domain.UsageSourceKind("codex_rollout"),
 			NativeSessionID: nativeID,
 			SubagentID:      subagentID,
 			ArtifactPath:    path,
@@ -1731,14 +1521,14 @@ func seedUsageSession(t *testing.T, s *sqlite.Store, harness domain.AgentHarness
 func TestKimiUsageEventRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	session := seedUsageSession(t, s, domain.HarnessKimi)
+	session := seedUsageSession(t, s, domain.HarnessOpenCode)
 	binding := mustUpsertUsageBinding(t, s, session, now, domain.UsageBindingRecord{
 		NativeRootID: "kimi-session",
 		State:        domain.UsageBindingActive,
 	})
 	source := mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
 		BindingID:       binding.ID,
-		Kind:            domain.UsageSourceKimiWire,
+		Kind:            domain.UsageSourceKind("kimi_wire"),
 		NativeSessionID: "kimi-session",
 		ArtifactPath:    "/tmp/kimi/sessions/kimi-session/agents/main/wire.jsonl",
 		FileIdentity:    "dev:ino",
@@ -1755,7 +1545,7 @@ func TestKimiUsageEventRoundTrip(t *testing.T) {
 
 	models, err := s.ListUsageModelAggregates(context.Background(), session.ID)
 	mustNoError(t, err)
-	if len(models) != 1 || models[0].Harness != domain.HarnessKimi || models[0].ModelID != "kimi-for-coding" ||
+	if len(models) != 1 || models[0].Harness != domain.HarnessOpenCode || models[0].ModelID != "kimi-for-coding" ||
 		usageTokenValue(models[0].Tokens.InputTokens) != 42 ||
 		usageTokenValue(models[0].Tokens.CachedInputTokens) != 21 ||
 		usageTokenValue(models[0].Tokens.UncachedInputTokens) != 21 ||
@@ -1767,13 +1557,8 @@ func TestKimiUsageEventRoundTrip(t *testing.T) {
 func seedUsageSource(t *testing.T, s *sqlite.Store, sess domain.SessionRecord, now time.Time) domain.UsageSourceRecord {
 	t.Helper()
 	initialModelID := "gpt-5"
-	sourceKind := domain.UsageSourceCodexRollout
+	sourceKind := domain.UsageSourceKind("codex_rollout")
 	artifactPath := "/tmp/codex/rollout.jsonl"
-	if sess.Harness == domain.HarnessClaudeCode {
-		initialModelID = "claude-x"
-		sourceKind = domain.UsageSourceClaudeMain
-		artifactPath = "/tmp/claude/transcript.jsonl"
-	}
 	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
 		NativeRootID:   "root-thread",
 		InitialModelID: initialModelID,
@@ -1925,7 +1710,7 @@ func mustNoError(t testing.TB, err error, context ...string) {
 func TestApplyUsageChunkRehomesAnOpenDuplicateToTheReplacementSource(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessClaudeCode)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	retired := seedUsageSource(t, s, sess, now)
 
@@ -1990,7 +1775,7 @@ func TestApplyUsageChunkRehomesAnOpenDuplicateToTheReplacementSource(t *testing.
 func TestApplyUsageChunkRehomesAnInferredDuplicateToTheReplacementSource(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessClaudeCode)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	retired := seedUsageSource(t, s, sess, now)
 
@@ -2036,7 +1821,7 @@ func TestApplyUsageChunkPromotesRehomedInferenceToObservedProvider(t *testing.T)
 	dataDir := t.TempDir()
 	s := sqlitetest.MustOpenAt(t, dataDir)
 	ctx := context.Background()
-	sess := seedUsageSession(t, s, domain.HarnessClaudeCode)
+	sess := seedUsageSession(t, s, domain.HarnessOpenCode)
 	now := time.Unix(1700000000, 0).UTC()
 	retired := seedUsageSource(t, s, sess, now)
 

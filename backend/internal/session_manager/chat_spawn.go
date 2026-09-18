@@ -99,12 +99,6 @@ type chatSpawn struct {
 // first so no app-server process is left behind holding the worktree.
 func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domain.SessionRecord, error) {
 	id := in.record.ID
-	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, in.cfg.Harness)
-	if err != nil {
-		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
-		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
-	}
-	defer releaseCodexAdmission()
 	agentConfig := in.cfg.AgentConfig
 	if !in.cfg.AgentConfigResolved {
 		agentConfig = applySpawnAgentConfig(effectiveAgentConfig(in.cfg.Kind, in.project.Config), in.cfg.AgentConfig)
@@ -126,7 +120,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		controllerCommitted bool
 		completionErr       error
 	)
-	_, err = m.chat.StartChat(ctx, ChatStart{
+	_, err := m.chat.StartChat(ctx, ChatStart{
 		SessionID:               id,
 		ProjectID:               in.cfg.ProjectID,
 		Kind:                    in.cfg.Kind,
@@ -302,28 +296,18 @@ func (m *Manager) resumeChatController(
 	project domain.ProjectRecord,
 	ws ports.WorkspaceInfo,
 	requireNativeHistory bool,
-	controllerGeneration string,
 	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (RestoreResult, error) {
 	if m.chat == nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: chat mode is not available in this build",
 			operation, rec.ID, ports.ErrChatUnsupported)
 	}
-	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, rec.Harness)
-	if err != nil {
-		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
-	}
-	defer releaseCodexAdmission()
 
 	// Recomputed rather than persisted, matching the terminal path: a restored
 	// session keeps its standing instructions across the relaunch.
 	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.ProjectID)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt: %w", operation, rec.ID, err)
-	}
-	systemPrompt, err = m.systemPromptForNativeRestore(ctx, rec, systemPrompt)
-	if err != nil {
-		return RestoreResult{}, fmt.Errorf("%s %s: switched continuation: %w", operation, rec.ID, err)
 	}
 
 	agentConfig := restoredAgentConfig(rec, project.Config)
@@ -380,10 +364,8 @@ func (m *Manager) resumeChatController(
 		// The handle that makes this a resume rather than a new conversation.
 		ProviderConversationID: rec.Metadata.ProviderConversationID,
 		ProviderHandoff:        providerHandoff,
-		// Ordinary resumes allocate a fresh generation. Switch recovery reuses
-		// the saga's reserved generation until delivery is durably settled so a
-		// second restart can still prove exact target ownership.
-		ControllerGeneration: controllerGeneration,
+		// Ordinary resumes allocate a fresh controller generation.
+		ControllerGeneration: "",
 		HistoryMode:          historyMode,
 		HistoryPolicy:        historyPolicy,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {

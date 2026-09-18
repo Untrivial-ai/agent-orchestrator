@@ -26,7 +26,7 @@ func TestInterfaceTransitionPromptlessHookCannotAuthorizeFreshConversation(t *te
 		{name: "submitted prompt", events: []string{"user-prompt-submit"},
 			origin: domain.ConversationCheckpointOriginHuman, state: domain.ConversationCheckpointPrompt},
 		{name: "completed turn", events: []string{"user-prompt-submit", "stop"},
-			origin: domain.ConversationCheckpointOriginHuman, state: domain.ConversationCheckpointPrompt, unsettled: true},
+			origin: domain.ConversationCheckpointOriginHuman, state: domain.ConversationCheckpointComplete},
 		{name: "unpaired stop", events: []string{"stop"}, unsettled: true},
 		{name: "coordination turn", events: []string{"user-prompt-submit"},
 			origin: domain.ConversationCheckpointOriginCoordination, state: domain.ConversationCheckpointCoordination},

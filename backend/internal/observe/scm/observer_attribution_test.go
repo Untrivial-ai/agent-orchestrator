@@ -100,7 +100,7 @@ func TestPoll_ExistingAndExplicitAttachmentsStayStable(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, err := store.CreateSession(ctx, domain.SessionRecord{
-		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessFake,
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode,
 		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
 		Metadata:  domain.SessionMetadata{Branch: "feat/root", WorkspacePath: t.TempDir()},
 		CreatedAt: now, UpdatedAt: now,

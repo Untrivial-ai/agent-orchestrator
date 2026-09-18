@@ -116,7 +116,7 @@ func TestUsageAPIShowsDetailedEstimatedCostAndProviderAttribution(t *testing.T) 
 			},
 		},
 		Harnesses: []domain.HarnessUsageSummary{{
-			Harness: domain.HarnessCodex,
+			Harness: domain.HarnessOpenCode,
 			Models: []domain.ModelUsageSummary{{
 				ModelID: "gpt-5.6",
 				Totals: domain.UsageMetricTotals{EstimatedCost: &domain.EstimatedCost{

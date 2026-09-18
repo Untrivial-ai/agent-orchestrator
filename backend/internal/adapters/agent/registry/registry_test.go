@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -24,16 +23,10 @@ func TestGetAgentHooksFootprintIsGitignored(t *testing.T) {
 	for _, ha := range Harnessed() {
 		t.Run(string(ha.Harness), func(t *testing.T) {
 			ws := t.TempDir()
-			if ha.Harness == "autohand" {
-				t.Setenv("AUTOHAND_CONFIG", filepath.Join(t.TempDir(), "config.json"))
-			}
 			cfg := ports.WorkspaceHookConfig{
 				SessionID:     "proj-1",
 				WorkspacePath: ws,
 				DataDir:       t.TempDir(),
-			}
-			if ha.Harness == "kimi" {
-				cfg.Env = map[string]string{"KIMI_CODE_HOME": filepath.Join(cfg.DataDir, "kimi")}
 			}
 			ensureAgentBinary(t, string(ha.Harness))
 			if err := ha.Agent.GetAgentHooks(context.Background(), cfg); err != nil {
@@ -68,53 +61,9 @@ func TestEveryHarnessReportsAuthStatus(t *testing.T) {
 	}
 }
 
-func TestRegistryIncludesPrimeAgent(t *testing.T) {
-	reg, err := Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter, ok := reg.Get("prime-agent")
-	if !ok {
-		t.Fatal("registry does not contain prime-agent")
-	}
-	manifest := adapter.Manifest()
-	if manifest.Name != "Prime Agent" {
-		t.Fatalf("prime-agent manifest name = %q, want Prime Agent", manifest.Name)
-	}
-
-	for _, item := range Harnessed() {
-		if item.Harness == "prime-agent" {
-			return
-		}
-	}
-	t.Fatal("Harnessed does not contain prime-agent")
-}
-
-func TestRegistryIncludesOMP(t *testing.T) {
-	reg, err := Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter, ok := reg.Get("omp")
-	if !ok {
-		t.Fatal("registry does not contain omp")
-	}
-	manifest := adapter.Manifest()
-	if manifest.Name != "OMP" {
-		t.Fatalf("omp manifest name = %q, want OMP", manifest.Name)
-	}
-
-	for _, item := range Harnessed() {
-		if item.Harness == domain.HarnessOMP {
-			return
-		}
-	}
-	t.Fatal("Harnessed does not contain omp")
-}
-
 func TestHarnessedExcludesFakeHarness(t *testing.T) {
 	for _, ha := range Harnessed() {
-		if ha.Harness == domain.HarnessFake {
+		if ha.Harness == "fake" {
 			t.Fatal("fake harness must not be returned as a shipped selectable agent")
 		}
 	}
@@ -165,9 +114,6 @@ func ensureAgentBinary(t *testing.T, name string) {
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, name)
 	version := "0.80.6"
-	if name == "omp" {
-		version = "17.1.0"
-	}
 	script := "#!/usr/bin/env sh\nif [ \"${1:-}\" = \"--version\" ]; then\n  echo \"" + name + " " + version + "\"\nfi\nexit 0\n"
 	if err := os.WriteFile(binPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write fake agent binary %q: %v", binPath, err)

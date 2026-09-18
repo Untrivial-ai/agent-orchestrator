@@ -134,8 +134,7 @@ func (q *Queries) AggregateUsageBySessionHarnessModel(ctx context.Context, sessi
 const completeUsageBindingIfSettled = `-- name: CompleteUsageBindingIfSettled :execrows
 UPDATE usage_bindings
 SET state = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-          OR EXISTS (
+        WHEN EXISTS (
             SELECT 1
             FROM usage_sources
             WHERE usage_sources.binding_id = ?1
@@ -144,11 +143,7 @@ SET state = CASE
         ) THEN 'partial'
         ELSE 'complete'
     END,
-    last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
-        ELSE ''
-    END,
+    last_error_code = '',
     updated_at = ?2
 WHERE id = ?1
   AND state = 'finalizing'
@@ -162,29 +157,6 @@ WHERE id = ?1
       FROM usage_sources
       WHERE usage_sources.binding_id = ?1
         AND state <> 'complete'
-	)
-	AND (
-	    usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-	    OR NOT EXISTS (
-	        SELECT 1
-	        FROM usage_codex_pending_children
-	        WHERE binding_id = ?1
-	    )
-	)
-	AND NOT EXISTS (
-	    SELECT 1
-	    FROM usage_codex_source_discovery malformed
-	    WHERE malformed.binding_id = ?1
-	      AND malformed.source_id = (
-	          SELECT latest.id
-	          FROM usage_sources latest
-	          WHERE latest.binding_id = malformed.binding_id
-	            AND latest.kind = 'codex_rollout'
-	            AND latest.native_session_id = malformed.native_session_id
-	          ORDER BY latest.generation DESC, latest.id DESC
-	          LIMIT 1
-	      )
-	      AND malformed.has_mixed_child_types = 1
   )
 `
 
@@ -226,11 +198,7 @@ func (q *Queries) EnrichModelUsageEventProviderUsage(ctx context.Context, arg En
 const finalizeUsageBindingsForSessionLaunch = `-- name: FinalizeUsageBindingsForSessionLaunch :many
 UPDATE usage_bindings
 SET state = 'finalizing',
-    last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
-        ELSE ''
-    END,
+    last_error_code = '',
     updated_at = ?1
 WHERE usage_bindings.session_id = ?2
   AND EXISTS (
@@ -494,16 +462,9 @@ SELECT CAST(EXISTS (
     FROM usage_bindings ub
     JOIN sessions s ON s.id = ub.session_id
     WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-      AND ub.harness IN ('claude-code', 'codex', 'kimi')
       AND (
-          ub.harness = 'kimi'
-          OR ub.state = 'discovering'
+          ub.state = 'discovering'
           OR ub.last_error_code = 'source_discovery_pending'
-          OR EXISTS (
-              SELECT 1
-              FROM usage_codex_pending_children pending
-              WHERE pending.binding_id = ub.id
-          )
           OR EXISTS (
               SELECT 1
               FROM usage_sources source
@@ -768,65 +729,6 @@ func (q *Queries) ListCompactSessionUsage(ctx context.Context, projectID interfa
 	return items, nil
 }
 
-const listLatestRetiredCodexReplacementClaimsByPath = `-- name: ListLatestRetiredCodexReplacementClaimsByPath :many
-SELECT us.id, us.binding_id, us.kind, us.native_session_id, us.subagent_id, us.artifact_path, us.file_identity, us.generation, us.byte_offset, us.parser_state_json, us.state, us.failure_count, us.anomaly_count, us.next_retry_at, us.last_error_code, us.updated_at
-FROM usage_bindings ub
-JOIN sessions s ON s.id = ub.session_id
-JOIN usage_sources us ON us.id = (
-    SELECT latest.id
-    FROM usage_sources latest
-    WHERE latest.binding_id = ub.id
-      AND latest.artifact_path = ?1
-    ORDER BY latest.generation DESC, latest.id DESC
-    LIMIT 1
-)
-WHERE us.kind = 'codex_rollout'
-  AND us.state = 'complete'
-  AND us.last_error_code = 'artifact_replaced'
-  AND (s.is_terminated = 0 OR ub.state = 'finalizing')
-ORDER BY us.binding_id, us.generation, us.id
-`
-
-func (q *Queries) ListLatestRetiredCodexReplacementClaimsByPath(ctx context.Context, artifactPath string) ([]UsageSource, error) {
-	rows, err := q.db.QueryContext(ctx, listLatestRetiredCodexReplacementClaimsByPath, artifactPath)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []UsageSource{}
-	for rows.Next() {
-		var i UsageSource
-		if err := rows.Scan(
-			&i.ID,
-			&i.BindingID,
-			&i.Kind,
-			&i.NativeSessionID,
-			&i.SubagentID,
-			&i.ArtifactPath,
-			&i.FileIdentity,
-			&i.Generation,
-			&i.ByteOffset,
-			&i.ParserStateJson,
-			&i.State,
-			&i.FailureCount,
-			&i.AnomalyCount,
-			&i.NextRetryAt,
-			&i.LastErrorCode,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listLegacyUsageEvents = `-- name: ListLegacyUsageEvents :many
 SELECT
     event.id,
@@ -931,64 +833,6 @@ func (q *Queries) ListLegacyUsageSourceIDs(ctx context.Context) ([]int64, error)
 			return nil, err
 		}
 		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listUsageBindingsForCodexParent = `-- name: ListUsageBindingsForCodexParent :many
-SELECT DISTINCT ub.id, ub.session_id, ub.harness, ub.native_root_id, ub.initial_model_id, ub.state, ub.last_error_code, ub.updated_at, ub.provider_hint
-FROM usage_bindings ub
-JOIN sessions s ON s.id = ub.session_id
-JOIN usage_sources parent ON parent.binding_id = ub.id
-WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-  AND ub.harness = 'codex'
-  AND (
-      ub.state IN ('discovering', 'active', 'finalizing')
-      OR (ub.state = 'partial' AND ub.last_error_code = 'codex_source_budget_exceeded')
-  )
-  AND parent.kind = 'codex_rollout'
-  AND parent.native_session_id = ?1
-  AND parent.id = (
-      SELECT latest.id
-      FROM usage_sources latest
-      WHERE latest.binding_id = parent.binding_id
-        AND latest.kind = 'codex_rollout'
-        AND latest.native_session_id = parent.native_session_id
-      ORDER BY latest.generation DESC, latest.id DESC
-      LIMIT 1
-  )
-ORDER BY ub.updated_at, ub.id
-`
-
-func (q *Queries) ListUsageBindingsForCodexParent(ctx context.Context, parentNativeSessionID string) ([]UsageBinding, error) {
-	rows, err := q.db.QueryContext(ctx, listUsageBindingsForCodexParent, parentNativeSessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []UsageBinding{}
-	for rows.Next() {
-		var i UsageBinding
-		if err := rows.Scan(
-			&i.ID,
-			&i.SessionID,
-			&i.Harness,
-			&i.NativeRootID,
-			&i.InitialModelID,
-			&i.State,
-			&i.LastErrorCode,
-			&i.UpdatedAt,
-			&i.ProviderHint,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -1131,37 +975,7 @@ SELECT ub.id, ub.session_id, ub.harness, ub.native_root_id, ub.initial_model_id,
 FROM usage_bindings ub
 JOIN sessions s ON s.id = ub.session_id
 WHERE (s.is_terminated = 0 OR ub.state = 'finalizing')
-  AND ub.harness IN ('claude-code', 'codex', 'kimi')
-  AND (
-      ub.state IN ('discovering', 'active', 'finalizing')
-      OR (ub.state = 'partial' AND ub.last_error_code = 'codex_source_budget_exceeded')
-  )
-  AND (
-      ub.harness IN ('claude-code', 'kimi')
-      OR ub.state = 'discovering'
-      OR ub.state = 'finalizing'
-      OR ub.last_error_code = 'codex_source_budget_exceeded'
-      OR ub.last_error_code = 'source_discovery_pending'
-      OR NOT EXISTS (
-          SELECT 1
-          FROM usage_sources us
-          WHERE us.binding_id = ub.id
-            AND us.kind = 'codex_rollout'
-      )
-      OR EXISTS (
-          SELECT 1
-          FROM usage_sources us
-          WHERE us.binding_id = ub.id
-            AND us.kind = 'codex_rollout'
-            AND us.state = 'error'
-            AND us.last_error_code IN ('artifact_missing', 'source_read_failed')
-      )
-	  OR EXISTS (
-	      SELECT 1
-	      FROM usage_codex_pending_children
-	      WHERE binding_id = ub.id
-	  )
-  )
+  AND ub.state = 'discovering'
 ORDER BY ub.updated_at, ub.id
 LIMIT ?
 `
@@ -1529,11 +1343,7 @@ UPDATE usage_bindings SET
         WHEN ?1 = '' THEN usage_bindings.state
         ELSE ?1
     END,
-    last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
-        ELSE ?2
-    END,
+    last_error_code = ?2,
     updated_at = ?3
 WHERE id = ?4
 `
@@ -1721,8 +1531,6 @@ ON CONFLICT (session_id, harness, native_root_id) DO UPDATE SET
         ELSE excluded.state
     END,
     last_error_code = CASE
-        WHEN usage_bindings.last_error_code = 'codex_source_budget_exceeded'
-        THEN usage_bindings.last_error_code
         WHEN usage_bindings.state IN ('finalizing', 'complete', 'partial')
           AND excluded.state IN ('discovering', 'active')
         THEN usage_bindings.last_error_code

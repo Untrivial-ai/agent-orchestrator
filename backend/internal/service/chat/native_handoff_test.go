@@ -40,7 +40,7 @@ func TestNativeChatHandoffAtomicPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.target.IsTerminated = false
-			f.target.Harness = domain.HarnessQwen
+			f.target.Harness = domain.HarnessOpenCode
 			f.target.CreatedAt = f.source.CreatedAt.Add(time.Hour)
 			var err error
 			f.target, err = f.store.CreateSession(ctx, f.target)
@@ -137,7 +137,7 @@ func TestNativeChatHandoffAtomicPublication(t *testing.T) {
 			svc := chatsvc.New(chatsvc.Options{Store: f.store, Sessions: f.store, Reader: snapshotReader(f.store), Drivers: fakeRegistry{driver: driver}, NewID: uuid.NewString})
 			t.Cleanup(func() { svc.StopAll(ctx) })
 			cfg := chatsvc.StartConfig{
-				SessionID: f.target.ID, ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessQwen,
+				SessionID: f.target.ID, ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessOpenCode,
 				ProviderConversationID: historicalTargetThread, ProviderHandoff: handoff,
 				ExpectedControllerOwner: f.target.ControllerOwner(),
 				ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
