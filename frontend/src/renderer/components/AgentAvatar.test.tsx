@@ -8,7 +8,10 @@ describe("AgentAvatar", () => {
 
 		expect(screen.getByRole("img", { name: "opencode" })).toHaveAttribute(
 			"src",
-			expect.stringContaining("opencode.svg"),
+			expect.stringContaining("data:image/svg+xml"),
 		);
+		// The inlined asset carries the opencode brand title, so this is the
+		// real logo rather than the lettered fallback tile.
+		expect(screen.getByRole("img", { name: "opencode" })).toHaveAttribute("src", expect.stringContaining("opencode"));
 	});
 });

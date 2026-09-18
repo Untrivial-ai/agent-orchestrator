@@ -444,9 +444,9 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByLabelText("Chat")).toHaveAttribute("data-session-role", "worker");
 		expect(screen.getByTestId("session-workspace-topbar")).toBeInTheDocument();
 		expect(screen.getByTestId("session-terminal-region")).toBeInTheDocument();
-		const workerTab = screen.getByRole("tab", { name: "Reviewer chat · Codex · Working" });
+		const workerTab = screen.getByRole("tab", { name: "Reviewer chat · OpenCode · Working" });
 		expect(workerTab).toHaveTextContent(chatSession.title);
-		expect(workerTab).not.toHaveTextContent("Codex");
+		expect(workerTab).not.toHaveTextContent("OpenCode");
 		expect(workerTab.querySelector('img[aria-hidden="true"]')).toBeInTheDocument();
 
 		view.rerender(
@@ -462,7 +462,7 @@ describe("ChatWorkspace timeline", () => {
 		const actionRegion = screen.getByTestId("session-action-region");
 		expect(actionRegion).toHaveClass("pl-2", "pr-3");
 		expect(actionRegion).not.toHaveClass("px-3");
-		expect(screen.getByRole("tab", { name: "Orchestrator · Codex · Working" })).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Orchestrator · OpenCode · Working" })).toBeInTheDocument();
 
 		view.rerender(
 			<ChatWorkspace
@@ -470,7 +470,7 @@ describe("ChatWorkspace timeline", () => {
 				session={{ ...chatSession, id: "legacy-orchestrator", kind: undefined }}
 			/>,
 		);
-		expect(screen.getByRole("tab", { name: "Orchestrator · Codex · Working" })).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Orchestrator · OpenCode · Working" })).toBeInTheDocument();
 	});
 
 	it("refreshes the owning workspace after renaming the primary chat tab", async () => {
@@ -485,7 +485,7 @@ describe("ChatWorkspace timeline", () => {
 			/>,
 		);
 
-		await user.dblClick(screen.getByRole("tab", { name: "Reviewer chat · Codex · Working" }));
+		await user.dblClick(screen.getByRole("tab", { name: "Reviewer chat · OpenCode · Working" }));
 		const input = screen.getByRole("textbox", { name: "Rename Reviewer chat" });
 		await user.clear(input);
 		await user.type(input, "Focused review{Enter}");
@@ -2932,7 +2932,7 @@ describe("ChatWorkspace message actions", () => {
 });
 
 describe("ChatWorkspace reviewer tabs", () => {
-	const reviewerTerminal = { handleId: "review-1", harness: "codex" };
+	const reviewerTerminal = { handleId: "review-1", harness: "opencode" };
 	const reviewerTarget = {
 		kind: "reviewer" as const,
 		...reviewerTerminal,
@@ -3276,7 +3276,7 @@ describe("ChatWorkspace shell tabs", () => {
 		const view = render(
 			<ChatWorkspace
 				{...common}
-				reviewerTerminal={{ handleId: "review-1", harness: "codex" }}
+				reviewerTerminal={{ handleId: "review-1", harness: "opencode" }}
 				onOpenReviewerTerminal={onOpenReviewerTerminal}
 			/>,
 		);
@@ -3289,12 +3289,12 @@ describe("ChatWorkspace shell tabs", () => {
 		view.rerender(
 			<ChatWorkspace
 				{...common}
-				reviewerTerminal={{ handleId: "review-1", harness: "codex" }}
+				reviewerTerminal={{ handleId: "review-1", harness: "opencode" }}
 				onOpenReviewerTerminal={onOpenReviewerTerminal}
 				reviewerTarget={{
 					kind: "reviewer",
 					handleId: "review-1",
-					harness: "codex",
+					harness: "opencode",
 					sessionId: chatFixture.sessionId,
 				}}
 			/>,
@@ -3334,7 +3334,7 @@ describe("ChatWorkspace shell tabs", () => {
 		const common = {
 			snapshot: idleSnapshot(),
 			session: chatSession,
-			reviewerTerminal: { handleId: "review-1", harness: "codex" },
+			reviewerTerminal: { handleId: "review-1", harness: "opencode" },
 			onOpenReviewerTerminal,
 			shellTerminals: shells,
 			onSelectShellTerminal,
@@ -3345,7 +3345,7 @@ describe("ChatWorkspace shell tabs", () => {
 		act(() => [...previousTabListeners][0]?.());
 		expect(onOpenReviewerTerminal).toHaveBeenCalledWith({
 			handleId: "review-1",
-			harness: "codex",
+			harness: "opencode",
 		});
 
 		view.rerender(
@@ -3354,7 +3354,7 @@ describe("ChatWorkspace shell tabs", () => {
 				reviewerTarget={{
 					kind: "reviewer",
 					handleId: "review-1",
-					harness: "codex",
+					harness: "opencode",
 					sessionId: chatFixture.sessionId,
 				}}
 			/>,

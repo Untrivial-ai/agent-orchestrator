@@ -18,7 +18,7 @@ function snapshotFor(sessionId: string): ConversationSnapshot & { capabilities: 
 		capabilities: [],
 		conversationId: `conv-${sessionId}`,
 		sessionId,
-		harness: "codex",
+		harness: "opencode",
 		mode: "chat",
 		controller: { state: "ready" },
 		items: [],
@@ -442,9 +442,12 @@ describe("SessionChatSurface link routing", () => {
 				createdAt: "2026-08-08T00:00:01Z",
 			}],
 		};
+		// The surface is memoized; the app's conversation subscription re-renders
+		// it with a fresh session identity. Model that through the memo boundary
+		// so the auto-open effect re-reads the new snapshot.
 		view.rerender(
 			<Wrapper client={queryClient}>
-				<SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} />
+				<SessionChatSurface session={{ ...session }} onOpenLinkInBrowser={openInBrowser} />
 			</Wrapper>,
 		);
 
@@ -460,7 +463,7 @@ describe("SessionChatSurface link routing", () => {
 		};
 		view.rerender(
 			<Wrapper client={queryClient}>
-				<SessionChatSurface session={session} onOpenLinkInBrowser={openInBrowser} />
+				<SessionChatSurface session={{ ...session }} onOpenLinkInBrowser={openInBrowser} />
 			</Wrapper>,
 		);
 		expect(openInBrowser).toHaveBeenCalledTimes(1);
@@ -510,9 +513,12 @@ describe("SessionChatSurface link routing", () => {
 			items: [oldAssistant, currentUser],
 			latestSequence: 2,
 		};
+		// The surface is memoized; the app's conversation subscription re-renders
+		// it with a fresh session identity. Model that through the memo boundary
+		// so the snapshots above are re-read.
 		view.rerender(
 			<Wrapper client={queryClient}>
-				<SessionChatSurface session={localSession} onOpenLinkInBrowser={openInBrowser} />
+				<SessionChatSurface session={{ ...localSession }} onOpenLinkInBrowser={openInBrowser} />
 			</Wrapper>,
 		);
 		expect(openInBrowser).not.toHaveBeenCalled();
@@ -538,7 +544,7 @@ describe("SessionChatSurface link routing", () => {
 		};
 		view.rerender(
 			<Wrapper client={queryClient}>
-				<SessionChatSurface session={localSession} onOpenLinkInBrowser={openInBrowser} />
+				<SessionChatSurface session={{ ...localSession }} onOpenLinkInBrowser={openInBrowser} />
 			</Wrapper>,
 		);
 
@@ -556,7 +562,7 @@ describe("SessionChatSurface link routing", () => {
 			capabilities: [],
 			items: [{ kind: "message", id: "assistant-html", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Done: [`test-ui.html`](/tmp/worktree/test-ui.html)", streaming: false, createdAt: "2026-08-08T00:00:01Z" }],
 		};
-		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={localSession} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
+		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={{ ...localSession }} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
 		await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith(
 			expect.stringContaining("/api/v1/sessions/session-local-html/preview/files/test-ui.html"),
 		));

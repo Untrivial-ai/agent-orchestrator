@@ -9,8 +9,8 @@ describe("createProjectConfig", () => {
 				orchestratorAgent: "opencode",
 			}),
 		).toEqual({
-			worker: { agent: "codex" },
-			orchestrator: { agent: "claude-code" },
+			worker: { agent: "opencode" },
+			orchestrator: { agent: "opencode" },
 		});
 	});
 

@@ -282,7 +282,7 @@ function renderSidebar({
 	});
 	if (seedAgents) {
 		queryClient.setQueryData(agentReadinessQueryKey, {
-			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+			agents: [agentReadiness("opencode", "OpenCode")],
 		});
 	}
 	render(
@@ -345,8 +345,8 @@ async function openCreateProjectDialog(
 	await user.click(screen.getByLabelText("New project"));
 	await user.click(screen.getByRole("button", { name: /^Import an existing project$/i }));
 	await screen.findByRole("dialog", { name: "Set up project" });
-	await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "Codex");
-	await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+	await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "OpenCode");
+	await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 	return user;
 }
 
@@ -389,7 +389,7 @@ beforeEach(() => {
 	getMock.mockReset();
 	getMock.mockResolvedValue({
 		data: {
-			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+			agents: [agentReadiness("opencode", "OpenCode")],
 		},
 		error: undefined,
 	});
@@ -1075,18 +1075,17 @@ describe("Sidebar", () => {
 		expect(onCloneProject).not.toHaveBeenCalled();
 	});
 
-	it("prioritizes authorized project agents by preferred agent order", async () => {
+	it("prioritizes opencode as the preferred project agent", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler;
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/new-project");
 		getMock.mockResolvedValueOnce({
 			data: {
 				agents: [
+					// Listed first on purpose: the preference ranking, not the
+					// catalog order, decides the default and the option order.
 					agentReadiness("goose", "Goose"),
-					agentReadiness("devin", "Devin"),
-					agentReadiness("aider", "Aider"),
 					agentReadiness("opencode", "OpenCode"),
-					agentReadiness("cursor", "Cursor"),
 				],
 			},
 			error: undefined,
@@ -1096,16 +1095,14 @@ describe("Sidebar", () => {
 		await user.click(screen.getByLabelText("New project"));
 		await user.click(screen.getByRole("button", { name: /^Import an existing project$/i }));
 		expect(await screen.findByRole("dialog", { name: "Set up project" })).toBeInTheDocument();
-		expect(screen.getByRole("combobox", { name: "Worker agent" })).toHaveTextContent(/cursor/i);
-		expect(screen.getByRole("combobox", { name: "Orchestrator agent" })).toHaveTextContent(/cursor/i);
+		expect(screen.getByRole("combobox", { name: "Worker agent" })).toHaveTextContent(/opencode/i);
+		expect(screen.getByRole("combobox", { name: "Orchestrator agent" })).toHaveTextContent(/opencode/i);
 
 		await user.click(screen.getByRole("combobox", { name: "Worker agent" }));
 		expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
-			"Cursor",
 			"OpenCode",
-			"Aider",
-			"Devin",
-			"Goose",
+			// Unknown agents render a first-letter tile avatar ("G" + label).
+			"GGoose",
 		]);
 		await user.keyboard("{Escape}");
 
@@ -1113,8 +1110,8 @@ describe("Sidebar", () => {
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith(
 				expect.objectContaining({
-					workerAgent: "cursor",
-					orchestratorAgent: "cursor",
+					workerAgent: "opencode",
+					orchestratorAgent: "opencode",
 				}),
 			),
 		);
@@ -1216,8 +1213,8 @@ describe("Sidebar", () => {
 		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith("Choose a workspace folder");
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "Codex");
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "OpenCode");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() =>
@@ -1246,7 +1243,7 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
@@ -1306,7 +1303,7 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(useUiStore.getState().globalToast?.body).toBe("workspace not registered"));
@@ -1464,7 +1461,7 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(useUiStore.getState().globalToast).toMatchObject({
@@ -1507,7 +1504,7 @@ describe("Sidebar", () => {
 				"If this folder needs Git setup, AO will initialize it and create the first commit before starting.",
 			),
 		).toBeInTheDocument();
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
@@ -1527,17 +1524,13 @@ describe("Sidebar", () => {
 		expect(await screen.findByRole("menuitem", { name: /settings/i })).toBeInTheDocument();
 	});
 
-	it("shows needs-auth agents as unavailable while keeping authorized agents selectable", async () => {
+	it("keeps the authorized opencode agent selectable when creating a project", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler;
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/new-project");
 		getMock.mockResolvedValueOnce({
 			data: {
-				agents: [
-					agentReadiness("claude-code", "Claude Code"),
-					agentReadiness("cursor", "Cursor", { authentication: "unauthorized" }),
-					agentReadiness("aider", "Aider", { installation: "not_installed", authentication: "unknown" }),
-				],
+				agents: [agentReadiness("opencode", "OpenCode")],
 			},
 			error: undefined,
 		});
@@ -1549,13 +1542,8 @@ describe("Sidebar", () => {
 
 		await user.click(screen.getByRole("combobox", { name: "Orchestrator agent" }));
 		const options = await screen.findAllByRole("option");
-		expect(options.map((option) => option.textContent)).toEqual([
-			"Claude Code",
-			"CursorNeeds auth",
-			"AiderNeeds install",
-		]);
-		expect(options[1]).toHaveAttribute("aria-disabled", "true");
-		expect(options[2]).toHaveAttribute("aria-disabled", "true");
+		expect(options.map((option) => option.textContent)).toEqual(["OpenCode"]);
+		expect(options[0]).not.toHaveAttribute("aria-disabled", "true");
 		await user.keyboard("{Escape}");
 
 		await user.click(screen.getByRole("button", { name: "Create and start" }));
@@ -1587,12 +1575,12 @@ describe("Sidebar", () => {
 
 		resolveAgents({
 			data: {
-				agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+				agents: [agentReadiness("opencode", "OpenCode")],
 			},
 			error: undefined,
 		});
 
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create and start" }));
 
 		await waitFor(() =>

@@ -202,7 +202,7 @@ describe("CenterPane toolbar session label", () => {
 			"bg-overlay",
 		);
 		expect(sessionFrame).not.toHaveClass("session-primary-tab", "rounded-md");
-		expect(sessionTab).toHaveAccessibleName("do the thing · Claude Code · Working");
+		expect(sessionTab).toHaveAccessibleName("do the thing · OpenCode · Working");
 		expect(sessionTab.querySelector('[title="Working"]')).not.toBeInTheDocument();
 		expect(sessionTab.querySelector('img[aria-hidden="true"]')).toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "review the change" })).not.toBeInTheDocument();
@@ -336,8 +336,8 @@ describe("CenterPane toolbar session label", () => {
 	it("removes the active highlight from the reviewer while a workspace file is selected", () => {
 		renderCenterPane({
 			session: worker,
-			reviewerTerminal: { handleId: "review-sess-1", harness: "codex" },
-			terminalTarget: { kind: "reviewer", handleId: "review-sess-1", harness: "codex", sessionId: worker.id },
+			reviewerTerminal: { handleId: "review-sess-1", harness: "opencode" },
+			terminalTarget: { kind: "reviewer", handleId: "review-sess-1", harness: "opencode", sessionId: worker.id },
 			workspaceActiveTabKey: "file:README.md",
 			workspaceTabs: [
 				{
@@ -398,9 +398,9 @@ describe("CenterPane toolbar session label", () => {
 		const [shell] = makeShells(1);
 		renderCenterPane({
 			session: worker,
-			reviewerTerminal: { handleId: "review-sess-1", harness: "codex" },
+			reviewerTerminal: { handleId: "review-sess-1", harness: "opencode" },
 			shellTerminals: [shell],
-			terminalTarget: { kind: "reviewer", handleId: "review-sess-1", harness: "codex", sessionId: worker.id },
+			terminalTarget: { kind: "reviewer", handleId: "review-sess-1", harness: "opencode", sessionId: worker.id },
 		});
 
 		const reviewerTab = screen.getByRole("tab", { name: "Reviewer" });
@@ -432,7 +432,7 @@ describe("CenterPane toolbar session label", () => {
 		const onSelectReviewerTerminal = vi.fn();
 		renderCenterPane({
 			session: worker,
-			reviewerTerminal: { handleId: "review-sess-1", harness: "codex" },
+			reviewerTerminal: { handleId: "review-sess-1", harness: "opencode" },
 			onSelectReviewerTerminal,
 		});
 
@@ -443,7 +443,7 @@ describe("CenterPane toolbar session label", () => {
 		expect(reviewerTab.parentElement).not.toHaveClass("px-2", "w-shell-tab-connected");
 
 		fireEvent.click(reviewerTab);
-		expect(onSelectReviewerTerminal).toHaveBeenCalledWith({ handleId: "review-sess-1", harness: "codex" });
+		expect(onSelectReviewerTerminal).toHaveBeenCalledWith({ handleId: "review-sess-1", harness: "opencode" });
 	});
 
 	it("leaves terminal creation out of the terminal strip", () => {
@@ -456,7 +456,7 @@ describe("CenterPane toolbar session label", () => {
 		renderCenterPane({
 			session: { ...worker, id: "sess-orch", kind: "orchestrator" },
 		});
-		const orchestratorTab = screen.getByRole("tab", { name: "Orchestrator · Claude Code · Working" });
+		const orchestratorTab = screen.getByRole("tab", { name: "Orchestrator · OpenCode · Working" });
 		expect(orchestratorTab).toHaveTextContent("Orchestrator");
 		expect(orchestratorTab).not.toHaveTextContent(worker.title);
 		expect(orchestratorTab.querySelector('img[aria-hidden="true"]')).toBeInTheDocument();
@@ -589,7 +589,7 @@ describe("CenterPane toolbar session label", () => {
 	it("reorders reviewer and shell terminals together while keeping the owner terminal first", () => {
 		const shells = makeShells(2);
 		renderCenterPane({
-			reviewerTerminal: { handleId: "review-sess-1", harness: "codex" },
+			reviewerTerminal: { handleId: "review-sess-1", harness: "opencode" },
 			session: worker,
 			shellTerminals: shells,
 		});

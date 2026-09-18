@@ -108,7 +108,7 @@ describe("useWorkspaceQuery", () => {
 							displayName: "fix-bug",
 							issueId: "github:acme/project-one#42",
 							harness: "claude-code",
-							reviewerHarness: "agy",
+							reviewerHarness: "opencode",
 							branch: "qa/modal-worker",
 							status: "mergeable",
 							scmStatus: "review_pending",
@@ -123,7 +123,7 @@ describe("useWorkspaceQuery", () => {
 						},
 						{
 							// Unknown harness/status and no displayName/issueId: falls back
-							// to codex / unknown / the session id.
+							// to opencode / unknown / the session id.
 							id: "sess-2",
 							projectId: "proj-1",
 							harness: "mystery-agent",
@@ -148,7 +148,7 @@ describe("useWorkspaceQuery", () => {
 			id: "proj-1",
 			name: "my-app",
 			path: "/home/me/my-app",
-			orchestratorAgent: "codex",
+			orchestratorAgent: "opencode",
 		});
 		expect(workspace.sessions).toHaveLength(2);
 		expect(workspace.sessions[0]).toMatchObject({
@@ -158,7 +158,7 @@ describe("useWorkspaceQuery", () => {
 			title: "fix-bug",
 			issueId: "github:acme/project-one#42",
 			provider: "opencode",
-			reviewerHarness: "agy",
+			reviewerHarness: "opencode",
 			branch: "qa/modal-worker",
 			status: "mergeable",
 			scmStatus: "review_pending",

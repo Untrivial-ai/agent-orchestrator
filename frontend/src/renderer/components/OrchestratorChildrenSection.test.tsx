@@ -4,8 +4,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { OrchestratorChildView } from "../hooks/useOrchestratorChildren";
 import type { WorkspaceSession } from "../types/workspace";
 
-const { captureRendererEvent, navigate, childrenQuery } = vi.hoisted(() => ({
-	captureRendererEvent: vi.fn(),
+const { navigate, childrenQuery } = vi.hoisted(() => ({
 	navigate: vi.fn(),
 	childrenQuery: {
 		data: undefined as OrchestratorChildView[] | undefined,
@@ -14,7 +13,6 @@ const { captureRendererEvent, navigate, childrenQuery } = vi.hoisted(() => ({
 	},
 }));
 
-vi.mock("../lib/telemetry", () => ({ captureRendererEvent }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
 vi.mock("../hooks/useOrchestratorChildren", async (importOriginal) => ({
 	...(await importOriginal<object>()),
@@ -44,7 +42,6 @@ const childView = (overrides: Partial<OrchestratorChildView>): OrchestratorChild
 
 describe("OrchestratorChildrenSection", () => {
 	beforeEach(() => {
-		captureRendererEvent.mockClear();
 		navigate.mockClear();
 		childrenQuery.data = undefined;
 		childrenQuery.isLoading = false;
@@ -98,7 +95,7 @@ describe("OrchestratorChildrenSection", () => {
 		expect(rows[1].className).toContain("opacity-60");
 	});
 
-	test("row click navigates to the worker and reports telemetry", async () => {
+	test("row click navigates to the worker", async () => {
 		childrenQuery.data = [childView({})];
 		render(<OrchestratorChildrenSection session={session} />);
 		await userEvent.click(screen.getByText("Fix CI"));
@@ -106,14 +103,5 @@ describe("OrchestratorChildrenSection", () => {
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "project-1", sessionId: "child-1" },
 		});
-		expect(captureRendererEvent).toHaveBeenCalledWith("ao.renderer.cloud_worker_opened", { has_pr: false });
-	});
-
-	test("reports the workers-viewed event once with the count", () => {
-		childrenQuery.data = [childView({}), childView({ id: "child-2" })];
-		const { rerender } = render(<OrchestratorChildrenSection session={session} />);
-		rerender(<OrchestratorChildrenSection session={session} />);
-		const viewed = captureRendererEvent.mock.calls.filter((c) => c[0] === "ao.renderer.cloud_workers_viewed");
-		expect(viewed).toEqual([["ao.renderer.cloud_workers_viewed", { worker_count: 2 }]]);
 	});
 });

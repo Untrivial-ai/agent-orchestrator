@@ -941,18 +941,17 @@ describe("TaskComposer", () => {
 		);
 	});
 
-	it("inherits worker effort visually but sends only explicit task overrides", async () => {
+	it("does not surface worker effort tuning on the opencode model picker", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
 					data: {
-						agent: "codex",
+						agent: "opencode",
 						selectionMode: "catalog",
 						models: [{
 							id: "gpt-test",
 							label: "GPT Test",
 							isDefault: true,
-							efforts: ["low", "high"],
 						}],
 						allowCustom: true,
 						refreshRecommended: false,
@@ -960,7 +959,7 @@ describe("TaskComposer", () => {
 				};
 			}
 			return {
-				data: { status: "ok", project: { config: { worker: { agent: "codex", agentConfig: {
+				data: { status: "ok", project: { config: { worker: { agent: "opencode", agentConfig: {
 					model: "gpt-test", effort: "high",
 				} } } } },
 			};
@@ -969,25 +968,14 @@ describe("TaskComposer", () => {
 
 		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
 		const picker = await screen.findByRole("button", { name: "Model" });
-		expect(picker).toHaveTextContent("GPT Test · High");
+		// OpenCode has no reasoning-effort levels, so the picker shows the model
+		// label only — the inherited worker effort is never surfaced.
+		expect(picker).toHaveTextContent("GPT Test");
+		expect(picker).not.toHaveTextContent("· High");
 		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
 
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
-
-		await userEvent.click(picker);
-		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
-		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Low" }));
-		fireEvent.click(screen.getByText("Start task"));
-		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
-		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low" }));
-
-		await userEvent.click(picker);
-		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
-		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Provider default" }));
-		fireEvent.click(screen.getByText("Start task"));
-		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
-		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "" }));
 	});
 });

@@ -2398,7 +2398,9 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId={sessionId} />);
 
-		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
+		// With the interface switch as the menu's only action, hiding it removes
+		// the actions menu entirely — no switch control is reachable.
+		expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: "Switch to chat UI" })).not.toBeInTheDocument();
 	});
 
