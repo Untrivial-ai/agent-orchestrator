@@ -471,7 +471,6 @@ func TestManager_CloneCleansUpFailedAndEmptyCheckouts(t *testing.T) {
 	}
 }
 
-
 func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlitetest.Open(t.TempDir())

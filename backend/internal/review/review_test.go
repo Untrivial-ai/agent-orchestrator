@@ -945,7 +945,7 @@ func TestRestoreReviewerUsesSelectedHarnessSessionAndKillsOtherActivePane(t *tes
 	store := &fakeStore{
 		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: legacyHarness, ReviewerHandleID: "codex-pane", AgentSessionID: "codex-native"},
 		reviews: map[domain.ReviewerHarness]domain.Review{
-			legacyHarness:            {ID: "rev-1", SessionID: "mer-1", Harness: legacyHarness, ReviewerHandleID: "codex-pane", AgentSessionID: "codex-native"},
+			legacyHarness:           {ID: "rev-1", SessionID: "mer-1", Harness: legacyHarness, ReviewerHandleID: "codex-pane", AgentSessionID: "codex-native"},
 			domain.ReviewerOpenCode: {ID: "rev-open", SessionID: "mer-1", ProjectID: "mer", Harness: domain.ReviewerOpenCode, AgentSessionID: "opencode-native"},
 		},
 		runs: []domain.ReviewRun{

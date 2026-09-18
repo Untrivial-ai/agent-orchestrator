@@ -72,7 +72,9 @@ func (d detectorAgent) DetectTerminalActivity(output string) (domain.ActivitySta
 
 func (d detectorAgent) ContinuouslyDetectTerminalActivity() bool { return d.continuous }
 
-func (d detectorAgent) ContinuouslyDetectTerminalActivityWhileWaiting() bool { return d.waitingDetector }
+func (d detectorAgent) ContinuouslyDetectTerminalActivityWhileWaiting() bool {
+	return d.waitingDetector
+}
 
 func activeSession(now time.Time, harness domain.AgentHarness) domain.SessionRecord {
 	return domain.SessionRecord{

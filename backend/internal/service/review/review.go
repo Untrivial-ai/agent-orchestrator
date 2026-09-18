@@ -45,8 +45,8 @@ type Manager interface {
 
 // Service is the API-facing review service. It delegates to the core engine.
 type Service struct {
-	engine   *reviewcore.Engine
-	store    Store
+	engine    *reviewcore.Engine
+	store     Store
 	requester ports.SCMReviewRequester
 	resolver  ports.SCMReviewResolver
 	lifecycle Reducer

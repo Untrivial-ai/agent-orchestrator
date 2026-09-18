@@ -2754,7 +2754,6 @@ func TestSpawnInvalidatesReadinessAfterTypedLaunchFailure(t *testing.T) {
 	}
 }
 
-
 type fakeTracker struct {
 	issue domain.Issue
 	err   error

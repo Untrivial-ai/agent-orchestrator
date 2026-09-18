@@ -63,4 +63,3 @@ func TestActivityProjectionExhaustionReturnsError(t *testing.T) {
 		t.Fatalf("rejected projection leaked tool state: %+v", m.flights["mer-1"])
 	}
 }
-

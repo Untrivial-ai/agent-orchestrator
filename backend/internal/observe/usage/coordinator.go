@@ -36,30 +36,30 @@ type transcriptWatcher interface {
 
 // CoordinatorConfig configures the event-driven usage pipeline.
 type CoordinatorConfig struct {
-	Workers       int
-	QueueSize     int
-	Clock         func() time.Time
-	RetryDelay    time.Duration
-	Logger        *slog.Logger
-	Initialize    func(context.Context) error
-	Reconcile     func(context.Context) error
+	Workers    int
+	QueueSize  int
+	Clock      func() time.Time
+	RetryDelay time.Duration
+	Logger     *slog.Logger
+	Initialize func(context.Context) error
+	Reconcile  func(context.Context) error
 }
 
 // Coordinator turns filesystem, hook, startup, and retry signals into bounded
 // source ingestion work.
 type Coordinator struct {
-	store         coordinatorStore
-	ingestor      sourceIngestor
-	watcher       transcriptWatcher
-	workers       int
-	queueSize     int
-	now           func() time.Time
-	retryDelay    time.Duration
-	logger        *slog.Logger
-	initialize    func(context.Context) error
-	reconcile     func(context.Context) error
-	refresh       chan struct{}
-	inventory     chan struct{}
+	store      coordinatorStore
+	ingestor   sourceIngestor
+	watcher    transcriptWatcher
+	workers    int
+	queueSize  int
+	now        func() time.Time
+	retryDelay time.Duration
+	logger     *slog.Logger
+	initialize func(context.Context) error
+	reconcile  func(context.Context) error
+	refresh    chan struct{}
+	inventory  chan struct{}
 }
 
 // NewCoordinator constructs an event-driven usage coordinator.
@@ -85,18 +85,18 @@ func NewCoordinator(
 		cfg.Logger = slog.Default()
 	}
 	return &Coordinator{
-		store:         store,
-		ingestor:      ingestor,
-		watcher:       watcher,
-		workers:       cfg.Workers,
-		queueSize:     cfg.QueueSize,
-		now:           cfg.Clock,
-		retryDelay:    cfg.RetryDelay,
-		logger:        cfg.Logger,
-		initialize:    cfg.Initialize,
-		reconcile:     cfg.Reconcile,
-		refresh:       make(chan struct{}, 1),
-		inventory:     make(chan struct{}, 1),
+		store:      store,
+		ingestor:   ingestor,
+		watcher:    watcher,
+		workers:    cfg.Workers,
+		queueSize:  cfg.QueueSize,
+		now:        cfg.Clock,
+		retryDelay: cfg.RetryDelay,
+		logger:     cfg.Logger,
+		initialize: cfg.Initialize,
+		reconcile:  cfg.Reconcile,
+		refresh:    make(chan struct{}, 1),
+		inventory:  make(chan struct{}, 1),
 	}
 }
 

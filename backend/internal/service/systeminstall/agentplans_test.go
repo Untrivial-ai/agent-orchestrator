@@ -233,7 +233,7 @@ func TestReinstallUsesPackageManagerReinstallCommands(t *testing.T) {
 	}
 	plans := planner.agentMethodPlans(TargetOpencode, AgentOperationReinstall)
 	want := map[string]string{
-		"npm":   "npm install -g opencode-ai@latest --force",
+		"npm":      "npm install -g opencode-ai@latest --force",
 		"homebrew": "brew install anomalyco/tap/opencode",
 	}
 	for _, plan := range plans {
@@ -293,7 +293,7 @@ func TestNPMPlanUsesTargetNodeFloor(t *testing.T) {
 				prefix: "/Users/test/.npm", writable: true,
 				nodeVersion: tt.nodeVersion, npmVersion: "9.0.0",
 			}
-			plan := s.planNPM(tt.target, "opencode-ai@latest")
+			plan := s.planNPM(tt.target)
 			if tt.wantAllowed && plan.Unsupported {
 				t.Fatalf("plan = %+v, want available", plan)
 			}
@@ -317,7 +317,7 @@ func TestNPMPlanRequiresWritableGlobalPrefix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newTestService("darwin", "npm")
 			s.installCapabilities = tt.caps
-			plan := s.planNPM(TargetOpencode, "opencode-ai@latest")
+			plan := s.planNPM(TargetOpencode)
 			if !plan.Unsupported || !strings.Contains(plan.Reason, tt.wantReason) {
 				t.Fatalf("plan = %+v, want unavailable reason containing %q", plan, tt.wantReason)
 			}
@@ -326,7 +326,7 @@ func TestNPMPlanRequiresWritableGlobalPrefix(t *testing.T) {
 
 	s := newTestService("darwin", "npm")
 	s.installCapabilities = installCapabilitiesStub{prefix: "/Users/test/.npm", writable: true}
-	plan := s.planNPM(TargetOpencode, "opencode-ai@latest")
+	plan := s.planNPM(TargetOpencode)
 	if plan.Unsupported || plan.ExpectedDestination != "/Users/test/.npm/bin" {
 		t.Fatalf("plan = %+v, want writable npm destination", plan)
 	}
@@ -349,7 +349,7 @@ func TestNPMPlanRequiresParseableNodeAndNPMVersions(t *testing.T) {
 				prefix: "/Users/test/.npm", writable: true,
 				nodeVersion: tt.nodeVersion, npmVersion: tt.npmVersion,
 			}
-			plan := s.planNPM(TargetOpencode, "opencode-ai@latest")
+			plan := s.planNPM(TargetOpencode)
 			if !plan.Unsupported || !strings.Contains(plan.Reason, tt.wantReason) {
 				t.Fatalf("plan = %+v, want unavailable reason containing %q", plan, tt.wantReason)
 			}

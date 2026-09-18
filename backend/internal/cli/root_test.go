@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -334,14 +333,3 @@ func closedPort(t *testing.T) int {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
-func jsonResponse(status int, body string) *http.Response {
-	if body == "" {
-		body = "{}"
-	}
-	return &http.Response{
-		StatusCode: status,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(body)),
-	}
-}

@@ -35,17 +35,17 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
-	store                  Store
-	reader                 SnapshotReader
-	pageReader             SnapshotPageReader
-	sessions               SessionReader
-	drivers                ports.ChatDriverRegistry
-	activity               ActivityRecorder
-	log                    *slog.Logger
-	newID                  IDFactory
-	now                    Clock
-	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
-	stopProviderHost       func(context.Context, domain.SessionID) error
+	store            Store
+	reader           SnapshotReader
+	pageReader       SnapshotPageReader
+	sessions         SessionReader
+	drivers          ports.ChatDriverRegistry
+	activity         ActivityRecorder
+	log              *slog.Logger
+	newID            IDFactory
+	now              Clock
+	onAccountChanged func(domain.SessionID, string, domain.AgentHarness)
+	stopProviderHost func(context.Context, domain.SessionID) error
 
 	mu           sync.RWMutex
 	controllers  map[domain.SessionID]*Controller
@@ -113,21 +113,21 @@ func New(opts Options) *Service {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{
-		store:                  opts.Store,
-		reader:                 opts.Reader,
-		pageReader:             opts.PageReader,
-		sessions:               opts.Sessions,
-		drivers:                opts.Drivers,
-		activity:               opts.Activity,
-		log:                    log,
-		newID:                  opts.NewID,
-		now:                    now,
-		onAccountChanged:       opts.OnAccountChanged,
-		stopProviderHost:       opts.StopProviderHost,
-		controllers:            make(map[domain.SessionID]*Controller),
-		startConfigs:           make(map[domain.SessionID]StartConfig),
-		gates:                  make(map[domain.SessionID]controllerGate),
-		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
+		store:            opts.Store,
+		reader:           opts.Reader,
+		pageReader:       opts.PageReader,
+		sessions:         opts.Sessions,
+		drivers:          opts.Drivers,
+		activity:         opts.Activity,
+		log:              log,
+		newID:            opts.NewID,
+		now:              now,
+		onAccountChanged: opts.OnAccountChanged,
+		stopProviderHost: opts.StopProviderHost,
+		controllers:      make(map[domain.SessionID]*Controller),
+		startConfigs:     make(map[domain.SessionID]StartConfig),
+		gates:            make(map[domain.SessionID]controllerGate),
+		probed:           make(map[domain.AgentHarness]ports.ChatCapabilities),
 	}
 }
 
@@ -1487,8 +1487,7 @@ func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.Chat
 // the connected conversation so model entitlements and model-dependent choices
 // cannot go stale in an AO table.
 func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]ports.ChatConfigOption, error) {
-	record, err := s.requireChatSession(ctx, id)
-	if err != nil {
+	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return nil, err
 	}
 	controller, err := s.Controller(id)
@@ -1500,7 +1499,7 @@ func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]por
 		return nil, ErrConfigOptionsUnsupported
 	}
 	options, err := configurer.ListConfigOptions(ctx)
-	return permissionConfigOptions(record.Harness, options), err
+	return permissionConfigOptions(options), err
 }
 
 // SetConfigOption applies one provider-advertised value and returns the complete
@@ -1530,7 +1529,7 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
-	options = permissionConfigOptions(record.Harness, options)
+	options = permissionConfigOptions(options)
 	previous := controller.Settings()
 	settings, _ := settingsFromConfigOptions(previous, options)
 	if record.Harness == domain.HarnessOpenCode && configID == "mode" {
@@ -1736,6 +1735,6 @@ func (s *Service) StopChat(ctx context.Context, id domain.SessionID) error {
 // permissionConfigOptions returns the provider options unchanged. The claude
 // "mode" permission mapping that previously annotated these choices was
 // harness-specific and is no longer applied for opencode.
-func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatConfigOption) []ports.ChatConfigOption {
+func permissionConfigOptions(options []ports.ChatConfigOption) []ports.ChatConfigOption {
 	return append([]ports.ChatConfigOption(nil), options...)
 }

@@ -283,33 +283,27 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 func TestResolveChatAgentConfigKeepsModelAndDropsEffort(t *testing.T) {
 	m := &Manager{}
 	project := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "old", Effort: "high"}}}
-	resolved, err := m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+	resolved := m.resolveChatAgentConfig(ports.SpawnConfig{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode,
 		AgentConfig: ports.AgentConfig{Model: "new"},
 	}, project)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if resolved.Model != "new" || resolved.Effort != "" {
 		t.Fatalf("resolved = %#v, want new model with provider defaults", resolved)
 	}
 	// A role-level effort never leaks into the launch.
-	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+	resolved = m.resolveChatAgentConfig(ports.SpawnConfig{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode,
 	}, project)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if resolved.Model != "old" || resolved.Effort != "" {
 		t.Fatalf("role config = %#v, want inherited model and no effort", resolved)
 	}
 	// An explicit spawn effort and custom model resolve, with effort stripped.
-	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+	resolved = m.resolveChatAgentConfig(ports.SpawnConfig{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode,
 		AgentConfig: ports.AgentConfig{Model: "custom", Effort: "high"}, EffortOverride: true,
 	}, project)
-	if err != nil || resolved.Model != "custom" || resolved.Effort != "" {
-		t.Fatalf("custom model = %#v, %v", resolved, err)
+	if resolved.Model != "custom" || resolved.Effort != "" {
+		t.Fatalf("custom model = %#v", resolved)
 	}
 }
 

@@ -251,7 +251,6 @@ func (l fixedLifecycleInputLease) AcquireSessionInput(domain.SessionID) (func(),
 	return func() {}, true
 }
 
-
 func (f *fakeMessenger) Send(_ context.Context, id domain.SessionID, msg string) error {
 	if f.err != nil {
 		return f.err
@@ -1097,7 +1096,6 @@ func TestPrepareLaunchRejectsOverlappingGeneration(t *testing.T) {
 	m.CancelLaunch("mer-1", "launch-1")
 }
 
-
 func TestActivity_MainPromptStartsNewConversationCheckpoint(t *testing.T) {
 	m, store, _ := newManager()
 	rec := working("mer-1")
@@ -1872,7 +1870,6 @@ func TestMarkSpawned_StampsUTCActivity(t *testing.T) {
 		t.Fatalf("LastActivityAt location = %v, want UTC", loc)
 	}
 }
-
 
 func TestPRObservation_CIFailingNudgesAgentWithLogs(t *testing.T) {
 	m, st, msg := newManager()

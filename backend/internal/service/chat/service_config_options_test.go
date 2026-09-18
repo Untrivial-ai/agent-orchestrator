@@ -28,7 +28,7 @@ func TestPermissionConfigOptionsLeaveProviderCatalogUntouched(t *testing.T) {
 		Current: ports.ChatConfigOptionValue{Select: "manual"},
 		Choices: []ports.ChatConfigOptionChoice{{Value: "manual"}, {Value: "acceptEdits"}, {Value: "bypassPermissions"}},
 	}}
-	got := permissionConfigOptions(domain.HarnessOpenCode, input)
+	got := permissionConfigOptions(input)
 	if len(got) != 1 || len(got[0].Choices) != 3 {
 		t.Fatalf("options = %+v, want provider catalog passed through", got)
 	}

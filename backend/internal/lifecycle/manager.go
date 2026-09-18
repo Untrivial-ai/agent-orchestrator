@@ -216,10 +216,10 @@ type Manager struct {
 	operationGateMu  sync.RWMutex
 	operationGate    sessionOperationGate
 
-	mu        sync.Mutex
-	window    time.Duration
-	clock     func() time.Time
-	react     reactionState
+	mu     sync.Mutex
+	window time.Duration
+	clock  func() time.Time
+	react  reactionState
 	// flights tracks, per session, the in-flight tool executions and the
 	// pending permission dialog's identity (see toolFlight). Guarded by mu.
 	flights map[domain.SessionID]*toolFlight

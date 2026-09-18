@@ -45,11 +45,11 @@ type IngestResult struct {
 // opencode-only transition are deliberately left untouched rather than replayed
 // against a pipeline that no longer understands their format.
 type Ingestor struct {
-	store  ingestorStore
-	now    func() time.Time
-	pricing *pricing.Manager
-	onPricingError   func(error)
-	requestRepair    func()
+	store          ingestorStore
+	now            func() time.Time
+	pricing        *pricing.Manager
+	onPricingError func(error)
+	requestRepair  func()
 }
 
 // NewIngestor constructs the dormant transcript ingestor.

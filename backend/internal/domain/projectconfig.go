@@ -103,8 +103,7 @@ func (c ProjectConfig) ResolveReviewerHarness(worker AgentHarness) ReviewerHarne
 	if len(c.Reviewers) > 0 {
 		return c.Reviewers[0].Harness
 	}
-	switch worker {
-	case HarnessOpenCode:
+	if worker == HarnessOpenCode {
 		return ReviewerOpenCode
 	}
 	return FallbackReviewerHarness

@@ -545,7 +545,6 @@ func nestedGitRepositoryPaths(root string) ([]string, error) {
 	return nested, nil
 }
 
-
 // UpdateSettings atomically replaces the project's stored display name and
 // config. Both values are validated before a single database update.
 func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in UpdateSettingsInput) (Project, error) {

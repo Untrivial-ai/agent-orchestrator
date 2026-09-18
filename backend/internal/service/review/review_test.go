@@ -594,7 +594,6 @@ func TestSubmitCompletedRetryRejectsDifferentRecordedFields(t *testing.T) {
 	}
 }
 
-
 func TestTriggerRejectsInvalidReviewerConfigBeforeEngine(t *testing.T) {
 	svc := New(nil, &fakeStore{})
 	called := false

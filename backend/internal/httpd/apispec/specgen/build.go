@@ -350,12 +350,12 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersUsageHarnessResponse":             "UsageHarnessResponse",
 	"ControllersSessionUsageResponse":             "SessionUsageResponse",
 	// httpd/controllers — standalone shell terminal wire envelopes
-	"ControllersShellTerminalHandleIDParam":            "ShellTerminalHandleIDParam",
-	"ControllersOpenShellTerminalRequest":              "OpenShellTerminalRequest",
-	"ControllersUpdateShellTerminalRequest":            "UpdateShellTerminalRequest",
-	"ControllersShellTerminalResponse":                 "ShellTerminalResponse",
-	"ControllersListShellTerminalsResponse":            "ListShellTerminalsResponse",
-	"ControllersShellTerminalEnvelope":                 "ShellTerminalEnvelope",
+	"ControllersShellTerminalHandleIDParam": "ShellTerminalHandleIDParam",
+	"ControllersOpenShellTerminalRequest":   "OpenShellTerminalRequest",
+	"ControllersUpdateShellTerminalRequest": "UpdateShellTerminalRequest",
+	"ControllersShellTerminalResponse":      "ShellTerminalResponse",
+	"ControllersListShellTerminalsResponse": "ListShellTerminalsResponse",
+	"ControllersShellTerminalEnvelope":      "ShellTerminalEnvelope",
 	// httpd/controllers — PR wire envelopes
 	"ControllersMergePRRequest":          "MergePRRequest",
 	"ControllersMergePRResponse":         "MergePRResponse",

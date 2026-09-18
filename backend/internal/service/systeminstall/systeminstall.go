@@ -37,9 +37,9 @@ type Target string
 
 // The exhaustive set of installable targets. No other value is ever accepted.
 const (
-	TargetTmux       Target = "tmux"
-	TargetGH         Target = "gh"
-	TargetOpencode   Target = "opencode"
+	TargetTmux     Target = "tmux"
+	TargetGH       Target = "gh"
+	TargetOpencode Target = "opencode"
 	// TargetCloudflared is the optional connector that makes a paired phone
 	// reachable from outside the local network.
 	TargetCloudflared Target = "cloudflared"
@@ -1094,18 +1094,18 @@ func (s *Service) planCloudflared() Plan {
 	}
 }
 
-func (s *Service) planNPM(target Target, pkg string) Plan {
+func (s *Service) planNPM(target Target) Plan {
 	if !IsAgentTarget(target) {
-		return (requestPlanner{Service: s}).planNPM(target, pkg)
+		return (requestPlanner{Service: s}).planNPM(target)
 	}
 	planner, err := s.newRequestPlanner(context.Background())
 	if err != nil {
 		return Plan{Target: target, Unsupported: true, Method: "npm", Reason: "npm and Node.js capabilities could not be inspected."}
 	}
-	return planner.planNPM(target, pkg)
+	return planner.planNPM(target)
 }
 
-func (p requestPlanner) planNPM(target Target, pkg string) Plan {
+func (p requestPlanner) planNPM(target Target) Plan {
 	s := p.Service
 	if _, err := s.executables.LookPath("npm"); err != nil {
 		return Plan{
@@ -1113,7 +1113,7 @@ func (p requestPlanner) planNPM(target Target, pkg string) Plan {
 			Method: "npm", Reason: "npm was not found on PATH. Install Node.js from https://nodejs.org first, then retry.",
 		}
 	}
-	plan := Plan{Target: target, Command: []string{"npm", "install", "-g", pkg}, Method: "npm"}
+	plan := Plan{Target: target, Command: []string{"npm", "install", "-g", "opencode-ai@latest"}, Method: "npm"}
 	if IsAgentTarget(target) {
 		if p.capabilities == nil || p.capabilities.NPM.Err != nil {
 			plan.Unsupported = true

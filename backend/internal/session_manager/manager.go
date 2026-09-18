@@ -188,12 +188,6 @@ const (
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
 )
 
-// hookBinaryName is the executable name the workspace hook commands invoke:
-// every agent adapter installs a bare `ao hooks <agent> <event>`. The session
-// PATH pin (hookPATH) only works when the daemon's own executable carries this
-// name, since prepending its directory must change what `ao` resolves to.
-const hookBinaryName = "ao"
-
 type lifecycleRecorder interface {
 	PrepareLaunch(id domain.SessionID, launchID string) error
 	CancelLaunch(id domain.SessionID, launchID string)
@@ -329,12 +323,12 @@ type conversationSettingsStore interface {
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
-	runtime   runtimeController
-	agents    ports.AgentResolver
-	workspace ports.Workspace
-	store     Store
-	daemonRunID          string
-	agentReadiness       ports.AgentReadinessProvider
+	runtime        runtimeController
+	agents         ports.AgentResolver
+	workspace      ports.Workspace
+	store          Store
+	daemonRunID    string
+	agentReadiness ports.AgentReadinessProvider
 	// messenger is a sessionguard.Guard wrapping the raw messenger, so every
 	// pane write is guarded (re-read state, refuse a blocked session) without
 	// each call site re-deriving the check. Send/confirmActive use Deliver for
@@ -347,8 +341,8 @@ type Manager struct {
 	// defaults resolves the daemon-owned default session interface for a spawn
 	// that names no mode. Nil falls back to the compatibility default, so a build
 	// without it behaves exactly as before.
-	defaults     SessionModeDefaults
-	chat         ChatLauncher
+	defaults                    SessionModeDefaults
+	chat                        ChatLauncher
 	lcm                         lifecycleRecorder
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
@@ -606,12 +600,12 @@ const (
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
 type Deps struct {
-	Runtime         runtimeController
-	Agents          ports.AgentResolver
-	Workspace       ports.Workspace
-	Store           Store
-	DaemonRunID     string
-	Messenger       ports.AgentMessenger
+	Runtime     runtimeController
+	Agents      ports.AgentResolver
+	Workspace   ports.Workspace
+	Store       Store
+	DaemonRunID string
+	Messenger   ports.AgentMessenger
 	// Defaults supplies the daemon-owned default session interface for spawns that
 	// name no mode. Nil means always use the compatibility default.
 	Defaults SessionModeDefaults
@@ -683,8 +677,8 @@ func New(d Deps) *Manager {
 		agentOperations:                make(map[domain.SessionID]agentOperationKind),
 		inputLeases:                    make(map[domain.SessionID]int),
 		inputDrained:                   make(map[domain.SessionID]chan struct{}),
-		transitions:            make(map[domain.SessionID]*interfaceTransitionRun),
-		transitionDeliveryWake: make(chan struct{}, 1),
+		transitions:                    make(map[domain.SessionID]*interfaceTransitionRun),
+		transitionDeliveryWake:         make(chan struct{}, 1),
 		sendConfirm: sendConfirmConfig{
 			pollInterval:    sendConfirmPollInterval,
 			attemptDeadline: sendConfirmAttemptDeadline,
@@ -818,11 +812,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			mode = domain.SessionModeTUI
 		}
 		if mode == domain.SessionModeChat {
-			resolved, err := m.resolveChatAgentConfig(ctx, cfg, project.Config)
-			if err != nil {
-				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
-			}
-			cfg.AgentConfig = resolved
+			cfg.AgentConfig = m.resolveChatAgentConfig(cfg, project.Config)
 			cfg.AgentConfigResolved = true
 		}
 	}
@@ -1033,14 +1023,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
-func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
+func (m *Manager) resolveChatAgentConfig(cfg ports.SpawnConfig, project domain.ProjectConfig) ports.AgentConfig {
 	base := effectiveAgentConfig(cfg.Kind, project)
 	requested := cfg.AgentConfig
 	resolved := applySpawnAgentConfig(base, requested)
 	// Effort is a legacy reasoning knob from the codex adapter. opencode is the
 	// only supported harness, so spawn never applies it.
 	resolved.Effort = ""
-	return resolved, nil
+	return resolved
 }
 
 // inheritedSpawnPermissions derives a worker override from its requesting chat
@@ -3527,19 +3517,6 @@ func (m *Manager) confirmActive(ctx context.Context, guard *sessionguard.Guard, 
 }
 
 type confirmationStopCheck func(context.Context) (bool, error)
-
-// confirmActiveUnderMutation is the switch-safe form of confirmActive. Agent
-// switching deliberately closes the ordinary input lease, so a catch-up Enter
-// must bypass that gate while retaining stricter activity checks: only an idle
-// or waiting-input composer may receive it. Active and blocked targets are
-// suppressed at the write boundary so the retry cannot steer a running turn or
-// answer a permission dialog. stop is checked before waiting and immediately
-// before every Enter so a completed target acknowledgement always wins.
-func (m *Manager) confirmActiveUnderMutation(ctx context.Context, guard *sessionguard.Guard, id domain.SessionID, stop confirmationStopCheck) {
-	m.confirmActiveWithNudge(ctx, id, stop, func(nudgeCtx context.Context) (sessionguard.Outcome, error) {
-		return guard.CoordinationUnderMutation(nudgeCtx, id, "", m.harnessNudgeSafe, nil)
-	})
-}
 
 func (m *Manager) confirmActiveWithNudge(ctx context.Context, id domain.SessionID, stop confirmationStopCheck, nudge func(context.Context) (sessionguard.Outcome, error)) {
 	for attempt := 1; ; attempt++ {

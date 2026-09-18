@@ -19,11 +19,11 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 		case "windows":
 			plans = []Plan{s.planWinget(target, "SST.opencode")}
 		case "darwin":
-			plans = []Plan{s.planBrew(target, "anomalyco/tap/opencode"), s.planNPM(target, "opencode-ai@latest"), s.planShellInstaller(target, "https://opencode.ai/install", "bash")}
+			plans = []Plan{s.planBrew(target, "anomalyco/tap/opencode"), s.planNPM(target), s.planShellInstaller(target, "https://opencode.ai/install", "bash")}
 		case "linux":
-			plans = []Plan{s.planNPM(target, "opencode-ai@latest"), s.planShellInstaller(target, "https://opencode.ai/install", "bash")}
+			plans = []Plan{s.planNPM(target), s.planShellInstaller(target, "https://opencode.ai/install", "bash")}
 		default:
-			plans = []Plan{s.planNPM(target, "opencode-ai@latest")}
+			plans = []Plan{s.planNPM(target)}
 		}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}

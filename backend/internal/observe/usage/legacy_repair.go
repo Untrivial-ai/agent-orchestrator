@@ -14,7 +14,6 @@ const (
 	defaultChunkBytes    = 8 << 20
 	defaultRecordBytes   = 1 << 20
 	defaultRaceRetry     = 30 * time.Second
-	maxRaceRetry         = 5 * time.Minute
 	defaultStartupSettle = 30 * time.Second
 )
 
@@ -29,7 +28,7 @@ type LegacyRepairerConfig struct {
 	Clock       func() time.Time
 	OnError     func(error)
 	// RaceRetry is the first delay before retrying a pass that lost its cursor
-	// guard to concurrent ingestion. It doubles up to maxRaceRetry.
+	// guard to concurrent ingestion.
 	RaceRetry time.Duration
 	// StartupSettle delays one follow-up pass after the first. Startup
 	// ingestion begins after the repairer does, so the first pass can read the
@@ -100,10 +99,9 @@ func (r *LegacyRepairer) Start(ctx context.Context) error {
 				settleTimer.Stop()
 			}
 		}()
-		retry := r.config.RaceRetry
 		startupPending := true
 		for {
-			raced, err := r.run(ctx)
+			err := r.run(ctx)
 			if err != nil && ctx.Err() == nil {
 				r.config.OnError(err)
 			}
@@ -111,25 +109,14 @@ func (r *LegacyRepairer) Start(ctx context.Context) error {
 				settleTimer.Stop()
 				settleTimer = nil
 			}
-			// A pass that lost its cursor guard is not finished, it was
-			// outrun. Backing off lets a busy source settle instead of
-			// spinning on it; a clean pass resets the delay.
+			// The first pass runs immediately after startup ingestion begins,
+			// so a single settle delay parks the loop until the rows it exists
+			// to visit have been written.
 			var settle <-chan time.Time
-			switch {
-			case raced && ctx.Err() == nil:
-				settleTimer = time.NewTimer(retry)
-				settle = settleTimer.C
-				retry *= 2
-				if retry > maxRaceRetry {
-					retry = maxRaceRetry
-				}
-			case startupPending && ctx.Err() == nil:
+			if startupPending && ctx.Err() == nil {
 				startupPending = false
 				settleTimer = time.NewTimer(r.config.StartupSettle)
 				settle = settleTimer.C
-				retry = r.config.RaceRetry
-			default:
-				retry = r.config.RaceRetry
 			}
 			select {
 			case <-ctx.Done():
@@ -165,20 +152,15 @@ func (r *LegacyRepairer) Wait() {
 
 // Run performs one synchronous repair pass.
 func (r *LegacyRepairer) Run(ctx context.Context) error {
-	_, err := r.run(ctx)
-	return err
+	return r.run(ctx)
 }
 
 // run visits legacy provider rows. There is no certified transcript pipeline
 // to replay them against, so they are deliberately left untouched.
-func (r *LegacyRepairer) run(ctx context.Context) (raced bool, err error) {
+func (r *LegacyRepairer) run(ctx context.Context) error {
 	if r.store == nil {
-		return false, errors.New("legacy usage repairer requires store")
+		return errors.New("legacy usage repairer requires store")
 	}
-	sources, err := r.store.ListLegacyUsageSources(ctx)
-	if err != nil {
-		return false, err
-	}
-	_ = sources
-	return false, nil
+	_, err := r.store.ListLegacyUsageSources(ctx)
+	return err
 }

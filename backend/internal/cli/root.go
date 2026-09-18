@@ -58,13 +58,13 @@ type Deps struct {
 	Out io.Writer
 	Err io.Writer
 
-	HTTPClient            *http.Client
-	Executable            func() (string, error)
-	StartProcess          func(processStartConfig) error
-	ProcessAlive          func(pid int) bool
-	LookPath              func(file string) (string, error)
-	CommandOutput         func(ctx context.Context, name string, args ...string) ([]byte, error)
-	CommandOutputInDir    func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
+	HTTPClient         *http.Client
+	Executable         func() (string, error)
+	StartProcess       func(processStartConfig) error
+	ProcessAlive       func(pid int) bool
+	LookPath           func(file string) (string, error)
+	CommandOutput      func(ctx context.Context, name string, args ...string) ([]byte, error)
+	CommandOutputInDir func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
 	// DoctorGitHubRESTBase lets tests point the doctor GitHub token probe at
 	// httptest without mutating package-global state.
 	DoctorGitHubRESTBase string
@@ -78,20 +78,20 @@ type Deps struct {
 // DefaultDeps returns production dependencies.
 func DefaultDeps() Deps {
 	return Deps{
-		In:                    os.Stdin,
-		Out:                   os.Stdout,
-		Err:                   os.Stderr,
-		HTTPClient:            &http.Client{Timeout: 2 * time.Second},
-		Executable:            os.Executable,
-		StartProcess:          startProcess,
-		ProcessAlive:          processalive.Alive,
-		LookPath:              exec.LookPath,
-		CommandOutput:         commandOutput,
-		CommandOutputInDir:    commandOutputInDir,
-		DoctorGitHubRESTBase:  defaultDoctorGitHubRESTBase,
-		DoctorGitLabRESTBase:  defaultDoctorGitLabRESTBase,
-		Now:                   time.Now,
-		Sleep:                 time.Sleep,
+		In:                   os.Stdin,
+		Out:                  os.Stdout,
+		Err:                  os.Stderr,
+		HTTPClient:           &http.Client{Timeout: 2 * time.Second},
+		Executable:           os.Executable,
+		StartProcess:         startProcess,
+		ProcessAlive:         processalive.Alive,
+		LookPath:             exec.LookPath,
+		CommandOutput:        commandOutput,
+		CommandOutputInDir:   commandOutputInDir,
+		DoctorGitHubRESTBase: defaultDoctorGitHubRESTBase,
+		DoctorGitLabRESTBase: defaultDoctorGitLabRESTBase,
+		Now:                  time.Now,
+		Sleep:                time.Sleep,
 	}
 }
 

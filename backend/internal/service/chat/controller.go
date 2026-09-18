@@ -176,13 +176,13 @@ type Controller struct {
 	generation   string
 	harness      domain.AgentHarness
 
-	conv                   ports.ChatConversation
-	store                  Store
-	activity               ActivityRecorder
-	log                    *slog.Logger
-	newID                  IDFactory
-	now                    Clock
-	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
+	conv             ports.ChatConversation
+	store            Store
+	activity         ActivityRecorder
+	log              *slog.Logger
+	newID            IDFactory
+	now              Clock
+	onAccountChanged func(domain.SessionID, string, domain.AgentHarness)
 
 	// sendMu serializes command dispatch so only one operation mutates the
 	// provider conversation at a time.
@@ -300,21 +300,21 @@ func newController(
 	onAccountChanged func(domain.SessionID, string, domain.AgentHarness),
 ) *Controller {
 	c := &Controller{
-		sessionID:              sessionID,
-		conversation:           conversation,
-		generation:             generation,
-		harness:                harness,
-		conv:                   conv,
-		store:                  store,
-		activity:               activity,
-		log:                    log,
-		newID:                  newID,
-		now:                    now,
-		onAccountChanged:       onAccountChanged,
-		state:                  ports.ChatControllerReady,
-		settings:               conversation.Settings,
-		mcpServers:             map[string]domain.ConversationMCPServer{},
-		stopped:                make(chan struct{}),
+		sessionID:        sessionID,
+		conversation:     conversation,
+		generation:       generation,
+		harness:          harness,
+		conv:             conv,
+		store:            store,
+		activity:         activity,
+		log:              log,
+		newID:            newID,
+		now:              now,
+		onAccountChanged: onAccountChanged,
+		state:            ports.ChatControllerReady,
+		settings:         conversation.Settings,
+		mcpServers:       map[string]domain.ConversationMCPServer{},
+		stopped:          make(chan struct{}),
 	}
 	// Seeded from the durable row so a reconnect merges onto what is already known
 	// rather than starting from blank and reporting a conversation as having no
