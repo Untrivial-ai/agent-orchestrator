@@ -56,6 +56,12 @@ const (
 	fallbackTerminalRows    = 24
 )
 
+// Review commands need a brief boot window before their first prompt is
+// written. Unlike the primary agent, a reviewer has no browser attachment to
+// hold input until the TUI has initialized; Codex can otherwise discard the
+// first prompt while it is still starting.
+const reviewStartupDelay = 2 * time.Second
+
 type Supervisor struct {
 	Control         Control
 	Workspace       string
@@ -356,6 +362,8 @@ func (s *Supervisor) handle(
 		if err == nil {
 			if input.TerminalID == s.AgentTerminalID {
 				err = s.writeAgentPrompt(input.TerminalID, input.Data)
+			} else if input.Review {
+				err = s.writeReviewPrompt(input.TerminalID, input.Data)
 			} else {
 				err = s.writeTerminal(input)
 			}
@@ -548,6 +556,11 @@ func (s *Supervisor) writeAgentPrompt(terminalID string, data []byte) error {
 	return s.writeTerminal(worker.TerminalCommand{
 		TerminalID: terminalID, Data: []byte("\r"),
 	})
+}
+
+func (s *Supervisor) writeReviewPrompt(terminalID string, data []byte) error {
+	time.Sleep(reviewStartupDelay)
+	return s.writeTerminal(worker.TerminalCommand{TerminalID: terminalID, Data: data})
 }
 
 func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
