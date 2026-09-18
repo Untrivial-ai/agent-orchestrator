@@ -36,6 +36,7 @@ const {
 	getTelemetryPolicy,
 	setTelemetryEvents,
 	onTelemetryPolicy,
+	isWindowsPlatform,
 } = vi.hoisted(() => ({
 	getUpdate: vi.fn(),
 	setUpdate: vi.fn(),
@@ -64,6 +65,7 @@ const {
 	getTelemetryPolicy: vi.fn().mockResolvedValue(undefined),
 	setTelemetryEvents: vi.fn(),
 	onTelemetryPolicy: vi.fn(),
+	isWindowsPlatform: vi.fn(() => true),
 }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -76,7 +78,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 vi.mock("../lib/platform", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/platform")>();
-	return { ...actual, isWindowsPlatform: () => true };
+	return { ...actual, isWindowsPlatform };
 });
 
 vi.mock("../lib/bridge", () => ({
@@ -146,9 +148,11 @@ beforeEach(async () => {
 		getTelemetryPolicy,
 		setTelemetryEvents,
 		onTelemetryPolicy,
+		isWindowsPlatform,
 	]) {
 		m.mockReset();
 	}
+	isWindowsPlatform.mockReturnValue(true);
 	getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 	setUpdate.mockResolvedValue(undefined);
 	getUiSettings.mockResolvedValue({ locale: "en", soundNotificationsEnabled: true, terminalShell: { kind: "auto" } });
@@ -695,7 +699,7 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.getByLabelText("What happened?")).toHaveValue("");
 	});
 
-	it("opens Discord with an official invite and email with the support mailbox", async () => {
+	it("opens Discord support and lets Windows users choose an email provider", async () => {
 		const user = userEvent.setup();
 		const open = vi.spyOn(window, "open").mockReturnValue(null);
 		getVersion.mockRejectedValue(new Error("version unavailable"));
@@ -719,14 +723,29 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.queryByText("Discord draft copied.")).not.toBeInTheDocument();
 		await user.type(screen.getByLabelText("What happened?"), "The setup flow stalls after the first prompt.");
 		await user.click(screen.getByRole("button", { name: /copy & open email/i }));
+		await user.click(await screen.findByRole("menuitem", { name: "Gmail" }));
 
 		await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
 		expect(writeText.mock.calls[0][0]).toContain("Daemon: unknown");
 		expect(writeText.mock.calls[1][0]).toContain("To: prasad@untrivial.ai");
 		expect(writeText.mock.calls[1][0]).toContain("AO feedback");
-		expect(openExternal).toHaveBeenCalledWith("https://discord.com/invite/UZv7JjxbwG");
-		expect(openExternal).toHaveBeenCalledWith(expect.stringContaining("mailto:prasad@untrivial.ai"));
+		expect(openExternal).toHaveBeenCalledWith("https://discord.gg/WjKNa7EbB8");
+		expect(openExternal).toHaveBeenCalledWith(expect.stringContaining("https://mail.google.com/mail/"));
 		expect(open).not.toHaveBeenCalled();
+	});
+
+	it("keeps the direct system email handoff outside Windows", async () => {
+		const user = userEvent.setup();
+		isWindowsPlatform.mockReturnValue(false);
+		renderForm();
+
+		await user.type(await screen.findByLabelText("Title"), "Need help with setup");
+		await user.type(screen.getByLabelText("What happened?"), "The setup flow stalls after the first prompt.");
+		await user.click(screen.getByRole("button", { name: /copy & open email/i }));
+
+		await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+		expect(openExternal).toHaveBeenCalledWith(expect.stringContaining("mailto:prasad@untrivial.ai"));
+		expect(screen.queryByRole("menuitem", { name: "Gmail" })).not.toBeInTheDocument();
 	});
 
 	it("keeps the report form to title and details while tailoring placeholder guidance", async () => {

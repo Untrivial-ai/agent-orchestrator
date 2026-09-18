@@ -42,7 +42,7 @@ func TestAuthStatusDoesNotTrustUnvalidatedAPIKey(t *testing.T) {
 
 func TestClaudeConfigAuthStatusReadsSynchronously(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"userID":"user-1"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"oauthAccount":{"accountUuid":"account-1"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -76,7 +76,7 @@ func TestConfigAuthVerdictNeverReportsAuthorized(t *testing.T) {
 		content string
 		want    ports.AgentAuthStatus
 	}{
-		{"user id only", `{"userID":"user-1"}`, ports.AgentAuthStatusConfigured},
+		{"user id only", `{"userID":"user-1","installMethod":"native"}`, ports.AgentAuthStatusUnknown},
 		{"oauth account", `{"oauthAccount":{"accountUuid":"account-1"}}`, ports.AgentAuthStatusConfigured},
 		{
 			"oauth subscription",
@@ -111,6 +111,28 @@ func TestConfigAuthVerdictMissingFileIsUnknown(t *testing.T) {
 	}
 	if status != ports.AgentAuthStatusUnknown {
 		t.Fatalf("state = %q, want %q", status, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestAuthStatusPrefersCLIOverStaleUserID(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+	path, err := claudeConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"userID":"user-1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := claudeAuthCommand
+	claudeAuthCommand = func(context.Context, string, string, map[string]string) (claudeCommandOutput, error) {
+		return claudeCommandOutput{Stdout: []byte(`{"loggedIn":false,"apiProvider":"firstParty"}`)}, nil
+	}
+	t.Cleanup(func() { claudeAuthCommand = previous })
+	status, err := (&Plugin{resolvedBinary: "/fixture/claude"}).AuthStatus(context.Background())
+	if err != nil || status != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("AuthStatus = %q, err = %v, want signed-out CLI report to win over stale userID", status, err)
 	}
 }
 

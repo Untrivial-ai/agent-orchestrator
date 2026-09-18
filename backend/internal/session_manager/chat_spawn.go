@@ -187,9 +187,9 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	})
 	if err != nil {
 		if completionErr != nil || controllerCommitted {
-			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
-			m.markSpawnFailedTerminated(ctx, id)
+			m.stopChatAfterSpawnFailure(ctx, id)
+			m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, in.record, in.workspace, in.workspaceProject, true)
+			m.markSpawnFailedTerminatedAfterFailure(ctx, id, false)
 			if completionErr != nil {
 				return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnCommit, completionErr)
 			}
@@ -206,14 +206,20 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	// provider either accepts the turn or reports why.
 	if in.prompt != "" {
 		if _, err := m.chat.StartChatTurn(ctx, id, in.prompt); err != nil {
-			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
-			m.markSpawnFailedTerminated(ctx, id)
+			m.stopChatAfterSpawnFailure(ctx, id)
+			m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, in.record, in.workspace, in.workspaceProject, true)
+			m.markSpawnFailedTerminatedAfterFailure(ctx, id, false)
 			return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err)
 		}
 	}
 
 	return m.getRecord(ctx, id)
+}
+
+func (m *Manager) stopChatAfterSpawnFailure(ctx context.Context, id domain.SessionID) {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	defer cancel()
+	m.stopChatBestEffort(cleanupCtx, id)
 }
 
 // stopChatBestEffort closes a controller during rollback. A failure here is

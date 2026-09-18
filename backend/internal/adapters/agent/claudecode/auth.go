@@ -262,9 +262,9 @@ func claudeLocalAuthStatus(ctx context.Context, opts agentcreds.ResolveOptions) 
 }
 
 // claudeConfigAuthStatus reads the durable markers Claude Code writes into
-// ~/.claude.json. userID in particular is written once at first login and is
-// never removed on logout or revocation, so it says only "this machine has
-// signed in at some point" — a configured signal, never an authorized one.
+// ~/.claude.json. Bare userID is install/analytics identity and can survive
+// logout or precede login, so only OAuth account markers count as configured.
+// No durable marker proves that a credential remains authorized.
 func claudeConfigAuthStatus(ctx context.Context, path string) (ports.AgentAuthStatus, error) {
 	_ = ctx
 	data, err := os.ReadFile(path)
@@ -284,13 +284,6 @@ func claudeConfigAuthStatus(ctx context.Context, path string) (ports.AgentAuthSt
 	var hasSubscription bool
 	if raw := root["hasAvailableSubscription"]; len(raw) > 0 {
 		_ = json.Unmarshal(raw, &hasSubscription)
-	}
-	var userID string
-	if raw := root["userID"]; len(raw) > 0 {
-		_ = json.Unmarshal(raw, &userID)
-	}
-	if strings.TrimSpace(userID) != "" {
-		return ports.AgentAuthStatusConfigured, nil
 	}
 	var oauthAccount map[string]any
 	if raw := root["oauthAccount"]; len(raw) > 0 {

@@ -1423,12 +1423,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						active={fileTabs.activePath === path}
 						dirty={Boolean(dirtyFiles[path])}
 						onActivate={() => activateCenterFile(path)}
-						onAddFeedback={() => fileAnnotation.begin({
-							path,
-							scope: activeCenterFileRequest?.scope ?? "combined",
-							side: "file",
-							surface: "focused",
-						})}
 						onClose={() => closeCenterFile(path)}
 						path={path}
 					/>
@@ -1436,7 +1430,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				onSelect: () => activateCenterFile(path),
 				onClose: () => closeCenterFile(path),
 			})),
-		[activeCenterFileRequest?.scope, activateCenterFile, closeCenterFile, dirtyFiles, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
+		[activateCenterFile, closeCenterFile, dirtyFiles, fileTabs.activePath, fileTabs.openPaths],
 	);
 	const activeWorkspaceTabKey = fileTabs.activePath ? `file:${fileTabs.activePath}` : undefined;
 	const previewUrl = session?.previewUrl?.trim() || undefined;
