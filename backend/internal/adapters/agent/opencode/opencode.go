@@ -387,7 +387,10 @@ type opencodeAgentSettings struct {
 }
 
 // opencodePermissionConfig maps AO's approval vocabulary to OpenCode's native
-// permission rules. Tools not listed here preserve the user's OpenCode config:
+// permission rules. OpenCode loads this per-session overlay before the
+// worktree's opencode.json, so a repository policy remains authoritative and
+// can override these rules. Tools not listed here preserve the user's OpenCode
+// config:
 //   - default: use OpenCode configuration unchanged.
 //   - accept-edits: allow edits; other permission requests keep their config.
 //   - auto: allow edits and shell commands; other permission requests keep their config.
