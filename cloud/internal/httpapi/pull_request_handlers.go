@@ -152,20 +152,21 @@ func (s *Server) listSessionPullRequests(w http.ResponseWriter, r *http.Request)
 }
 
 type aoReviewRunResponse struct {
-	ID               string     `json:"id"`
-	ReviewID         string     `json:"reviewId"`
-	SessionID        string     `json:"sessionId"`
-	BatchID          string     `json:"batchId"`
-	Harness          string     `json:"harness"`
-	PullRequestURL   string     `json:"pullRequestUrl"`
-	TargetSHA        string     `json:"targetSha"`
-	Status           string     `json:"status"`
-	Verdict          string     `json:"verdict"`
-	Body             string     `json:"body"`
-	ProviderReviewID string     `json:"providerReviewId"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	DeliveredAt      *time.Time `json:"deliveredAt,omitempty"`
-	AutoInjectReview bool       `json:"autoInjectReview"`
+	ID                 string     `json:"id"`
+	ReviewID           string     `json:"reviewId"`
+	SessionID          string     `json:"sessionId"`
+	BatchID            string     `json:"batchId"`
+	Harness            string     `json:"harness"`
+	PullRequestURL     string     `json:"pullRequestUrl"`
+	TargetSHA          string     `json:"targetSha"`
+	Status             string     `json:"status"`
+	Verdict            string     `json:"verdict"`
+	Body               string     `json:"body"`
+	ProviderReviewID   string     `json:"providerReviewId"`
+	ReviewerTerminalID string     `json:"reviewerTerminalId,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	DeliveredAt        *time.Time `json:"deliveredAt,omitempty"`
+	AutoInjectReview   bool       `json:"autoInjectReview"`
 }
 
 func toAOReviewRunResponse(run domain.ReviewRunPullRequest, harness string) aoReviewRunResponse {
@@ -176,16 +177,17 @@ func toAOReviewRunResponse(run domain.ReviewRunPullRequest, harness string) aoRe
 		// Cloud runs are one-pass batches. Keep the stable run ID here rather
 		// than inventing a second grouping record just to satisfy the shared
 		// inspector's history model.
-		BatchID:          run.ID,
-		Harness:          harness,
-		PullRequestURL:   run.PullRequestURL,
-		TargetSHA:        run.TargetSHA,
-		Status:           string(run.Status),
-		Verdict:          string(run.Verdict),
-		Body:             run.Body,
-		ProviderReviewID: run.ProviderReviewID,
-		CreatedAt:        run.CreatedAt,
-		DeliveredAt:      run.DeliveredAt,
+		BatchID:            run.ID,
+		Harness:            harness,
+		PullRequestURL:     run.PullRequestURL,
+		TargetSHA:          run.TargetSHA,
+		Status:             string(run.Status),
+		Verdict:            string(run.Verdict),
+		Body:               run.Body,
+		ProviderReviewID:   run.ProviderReviewID,
+		ReviewerTerminalID: run.ReviewTerminalID,
+		CreatedAt:          run.CreatedAt,
+		DeliveredAt:        run.DeliveredAt,
 	}
 }
 

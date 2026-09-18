@@ -290,6 +290,7 @@ export interface CloudCpAOReviewRun {
 	verdict: CloudCpAOReviewVerdict;
 	body: string;
 	providerReviewId: string;
+	reviewerTerminalId?: string;
 	createdAt: string;
 	deliveredAt?: string;
 	autoInjectReview: boolean;

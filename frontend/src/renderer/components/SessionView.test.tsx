@@ -935,6 +935,34 @@ describe("SessionView", () => {
 		await waitFor(() => expect(screen.getByTestId("terminal-target")).toHaveTextContent("reviewer"));
 	});
 
+	it("keeps a delivered Cloud reviewer terminal selected long enough to show its completion", async () => {
+		const session = workerSession("sess-2");
+		session.cloud = { orgId: "cloud-org" };
+		cloudReviewGetMock.mockResolvedValue({
+			sessionId: "sess-2",
+			reviewerHandleId: "cloud-reviewer-7",
+			reviewerHarness: "codex",
+			reviews: [{ status: "running" }],
+			runs: [{ id: "run-7", reviewerTerminalId: "cloud-reviewer-7", status: "running" }],
+		});
+
+		const view = render(<SessionView sessionId="sess-2" />);
+		await waitFor(() => expect(screen.getByTestId("terminal-target")).toHaveTextContent("reviewer"));
+
+		act(() => {
+			view.client.setQueryData(["cloud-session-reviews", "https://cloud.example.test", "cloud-org", "sess-2"], {
+				sessionId: "sess-2",
+				reviewerHandleId: "",
+				reviewerHarness: "codex",
+				reviews: [{ status: "up_to_date" }],
+				runs: [{ id: "run-7", reviewerTerminalId: "cloud-reviewer-7", status: "delivered" }],
+			});
+		});
+
+		await waitFor(() => expect(screen.getByTestId("terminal-target")).toHaveTextContent("reviewer"));
+		expect(screen.getByTestId("reviewer-harness")).toHaveTextContent("codex");
+	});
+
 	it("resumes a cloud session only after its detail view is opened", async () => {
 		const session = workerSession("sess-2");
 		session.runtimeConnected = false;
