@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Repeat2, TriangleAlert, X } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	agentSwitchesQueryKey,
@@ -33,6 +33,7 @@ import {
 	DialogTitle,
 } from "./ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { onMenuTeardownComplete } from "./ui/menu-focus";
 
 export const SWITCH_AGENT_OPTIONS = [
 	{ value: "claude-code", label: "Claude Code" },
@@ -43,6 +44,79 @@ const ALL_SWITCH_AGENT_OPTIONS = AGENT_OPTIONS.map((value) => ({ value, label: A
 
 export function canSwitchAgentHarness(value: string): value is SwitchAgentHarness {
 	return SWITCH_AGENT_OPTIONS.some((option) => option.value === value);
+}
+
+// SwitchAgentDialog is opened from a DropdownMenuItem ("Switch agent" in the
+// session actions menu). Radix closes that dropdown on the same click that
+// opens this dialog; since the dialog is non-modal (see below), its
+// DismissableLayer would otherwise treat the dropdown's residual pointer/
+// focus activity as an outside interaction and dismiss the dialog right
+// after it opens. Ignore only outside events that originate from the
+// just-dismissed menu/trigger so a genuine outside click still closes it.
+function isFromDismissedMenuTrigger(target: EventTarget | null): boolean {
+	if (!(target instanceof Element)) return false;
+	return Boolean(target.closest('[role="menuitem"], [role="menu"], [data-session-actions-trigger]'));
+}
+
+// Longest teardown this can still be covering: Radix keeps a closing menu
+// mounted for the 100ms `animate-popover-out` exit, and its FocusScope defers
+// the focus restore one more tick after that. Safety net only — for opens with
+// no menu behind them (the toolbar icon button, an auto-open from a switch
+// error), where no teardown event will ever arrive.
+const OPENING_RACE_FALLBACK_MS = 300;
+
+// The exemption covers the opening interaction only, and only when the dialog
+// was genuinely opened from a menu: it is armed while the caret still sits on
+// the clicked menu item, and stays armed until that menu reports its teardown
+// as complete — content unmounted after the exit animation, deferred focus
+// restore dispatched. Radix keeps a closing menu mounted through its whole
+// exit animation, and only when that ends does its FocusScope restore focus to
+// the trigger, so any time-based window either expires too early (the real
+// renderer) or suppresses too long. After the teardown settles, the menu and
+// trigger are ordinary outside elements again: suppressing outside events from
+// them for the dialog's whole lifetime would swallow later actions-menu
+// interactions and leave keyboard focus stranded outside the non-modal dialog.
+function useSuppressOpeningRace(open: boolean) {
+	const suppressRef = useRef(false);
+	const armedMenuRef = useRef<Element | null>(null);
+	// Layout effect on purpose: the dialog's own FocusScope claims the caret
+	// from a passive effect, so by the time an ordinary effect ran, the clicked
+	// menu item would no longer be focused and the open could no longer be
+	// traced back to a menu.
+	useLayoutEffect(() => {
+		const disarm = () => {
+			suppressRef.current = false;
+			armedMenuRef.current = null;
+		};
+		if (!open) {
+			disarm();
+			return;
+		}
+		const active = document.activeElement;
+		if (!(active instanceof Element)) return;
+		const armed = active.closest('[role="menu"]');
+		if (!armed || !active.closest('[role="menuitem"], [role="menu"]')) return;
+		armedMenuRef.current = armed;
+		suppressRef.current = true;
+		const unsubscribe = onMenuTeardownComplete(({ menu }) => {
+			const current = armedMenuRef.current;
+			if (current === null) return;
+			// Either the menu that opened this dialog finished its teardown, or it
+			// was replaced by another menu the user opened over the dialog and the
+			// armed one is already gone. Both mean the opening interaction is over.
+			if (menu !== current && current.isConnected) return;
+			// Microtask, not synchronous: an unprevented restore focuses the
+			// trigger inside this same macrotask, right after the dispatch, and
+			// that focusin is exactly what the guard exists to swallow.
+			queueMicrotask(disarm);
+		});
+		const fallback = window.setTimeout(disarm, OPENING_RACE_FALLBACK_MS);
+		return () => {
+			unsubscribe();
+			window.clearTimeout(fallback);
+		};
+	}, [open]);
+	return suppressRef;
 }
 
 function SwitchTargetPicker({
@@ -161,6 +235,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 	);
 	const [refreshingRecovery, setRefreshingRecovery] = useState(false);
 	const operationPending = admissionPending || recoverAgentSwitch.isPending;
+	const suppressOpeningRace = useSuppressOpeningRace(open);
 	useEffect(() => {
 		setTargetHarness(session.provider === "claude-code" ? "codex" : "claude-code");
 		setModel("");
@@ -228,6 +303,12 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 						data-testid="switch-agent-terminal-backdrop"
 					/>
 				}
+				onFocusOutside={(event) => {
+					if (suppressOpeningRace.current && isFromDismissedMenuTrigger(event.target)) event.preventDefault();
+				}}
+				onPointerDownOutside={(event) => {
+					if (suppressOpeningRace.current && isFromDismissedMenuTrigger(event.target)) event.preventDefault();
+				}}
 				showCloseButton={false}
 				className="absolute left-1/2 top-1/2 z-overlay w-[min(var(--size-dialog-md),calc(100%-var(--space-8)))] max-w-none -translate-x-1/2 -translate-y-1/2 gap-0 overflow-hidden rounded-xl border border-border-strong bg-surface/95 p-0 text-foreground shadow-xl shadow-black/20 data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none"
 			>
