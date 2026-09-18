@@ -5,13 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { CloudCredentialDialog } from "./CloudCredentialDialog";
 
-const { getAvailableAgentsMock } = vi.hoisted(() => ({
-	getAvailableAgentsMock: vi.fn(),
+const { putAgentConnectionMock } = vi.hoisted(() => ({
+	putAgentConnectionMock: vi.fn(),
 }));
 
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({
-		client: { getAvailableAgents: getAvailableAgentsMock },
+		client: { putAgentConnection: putAgentConnectionMock },
 		ready: true,
 		baseUrl: "http://127.0.0.1:8081",
 	}),
@@ -34,39 +34,35 @@ function renderDialog() {
 
 describe("CloudCredentialDialog", () => {
 	beforeEach(() => {
-		getAvailableAgentsMock.mockReset();
+		putAgentConnectionMock.mockReset();
 		useCredentialDialogStore.setState({ open: true });
 	});
 
-	it("shows a loading state instead of an empty agent selector", () => {
-		getAvailableAgentsMock.mockReturnValue(new Promise(() => undefined));
-
+	it("offers all supported harnesses without loading them from the control plane", async () => {
 		renderDialog();
 
-		expect(screen.getByRole("status")).toHaveTextContent("Loading coding agents");
-		expect(screen.queryByLabelText("Coding agent")).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+		await userEvent.click(screen.getByLabelText("Coding agent"));
+
+		expect(await screen.findByRole("menuitem", { name: "Claude Code" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Codex" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Cursor" })).toBeInTheDocument();
 	});
 
-	it("explains an agent-loading failure and retries the request", async () => {
-		getAvailableAgentsMock
-			.mockRejectedValueOnce(new Error("control plane unavailable"))
-			.mockResolvedValueOnce({
-				agents: [
-					{ id: "claude-code", provider: "anthropic", hasValidCred: false, validationState: "missing" },
-				],
-			});
+	it("connects a new credential after a harness has been removed", async () => {
+		putAgentConnectionMock.mockResolvedValueOnce({
+			providerConnection: { validationState: "valid" },
+		});
 
 		renderDialog();
 
-		expect(await screen.findByRole("alert")).toHaveTextContent("Could not load coding agents");
-		expect(screen.queryByLabelText("Coding agent")).not.toBeInTheDocument();
+		await userEvent.type(screen.getByLabelText("Setup token or API key"), "new-test-token");
+		await userEvent.click(screen.getByRole("button", { name: "Connect" }));
 
-		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-
-		expect(await screen.findByLabelText("Coding agent")).toBeEnabled();
-		expect(getAvailableAgentsMock).toHaveBeenCalledTimes(2);
-		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(putAgentConnectionMock).toHaveBeenCalledWith("org-1", "claude-code", {
+			credentialType: "oauth_token",
+			secret: "new-test-token",
+		});
+		expect(await screen.findByRole("status")).toHaveTextContent("Credential connected");
 	});
 
 	it("should define agent metadata with all required agents", () => {
