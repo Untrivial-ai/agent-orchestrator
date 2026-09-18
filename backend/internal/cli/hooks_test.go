@@ -732,11 +732,11 @@ func TestHooks_NonSwitchingHarnessDoesNotReportConversationFacts(t *testing.T) {
 	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
 	writeRunFileFor(t, cfg, srv)
 
-	payload := `{"prompt":"private cursor prompt","last_assistant_message":"private cursor response","transcript_path":"/tmp/cursor/session.jsonl"}`
+	payload := `{"prompt":"private kimi prompt","last_assistant_message":"private kimi response","transcript_path":"/tmp/kimi/session.jsonl"}`
 	_, _, err := executeCLI(t, Deps{
 		In:           strings.NewReader(payload),
 		ProcessAlive: func(int) bool { return true },
-	}, "hooks", "cursor", "stop")
+	}, "hooks", "kimi", "stop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,6 +746,94 @@ func TestHooks_NonSwitchingHarnessDoesNotReportConversationFacts(t *testing.T) {
 	}
 	if req.LatestUserPrompt != "" || req.LatestAssistantUpdate != "" || req.TranscriptPath != "" {
 		t.Fatalf("non-switching harness reported conversation facts: %#v", req)
+	}
+}
+
+func TestHooks_CursorDoesNotReportUnverifiedConversationFacts(t *testing.T) {
+	// Cursor 2026.09.02-c22c1a3's installed bundle emits generation_id on
+	// beforeSubmitPrompt and stop, but its JSONL transcript discards native
+	// message IDs and generation IDs. These are sanitized static-schema
+	// fixtures, not evidence that the live cross-interface contract passed.
+	for _, tt := range []struct {
+		name    string
+		event   string
+		payload string
+	}{
+		{
+			name:    "submission generation is not a native user identity",
+			event:   "user-prompt-submit",
+			payload: `{"conversation_id":"cursor-native-1","generation_id":"generation-1","model":"model","prompt":"continue","attachments":[],"transcript_path":"/tmp/cursor/native.jsonl"}`,
+		},
+		{
+			name:    "completed stop has no native message boundary",
+			event:   "stop",
+			payload: `{"conversation_id":"cursor-native-1","generation_id":"generation-1","model":"model","status":"completed","loop_count":0,"transcript_path":"/tmp/cursor/native.jsonl"}`,
+		},
+		{
+			name:    "aborted stop",
+			event:   "stop",
+			payload: `{"conversation_id":"cursor-native-1","generation_id":"generation-1","status":"aborted","loop_count":0,"transcript_path":"/tmp/cursor/native.jsonl"}`,
+		},
+		{
+			name:    "foreign provider fields",
+			event:   "user-prompt-submit",
+			payload: `{"prompt":"continue","prompt_id":"claude-prompt","turn_id":"codex-turn","last_assistant_message":"done","transcript_path":"/tmp/foreign.jsonl"}`,
+		},
+		{
+			name:    "subagent payload",
+			event:   "stop",
+			payload: `{"conversation_id":"cursor-child","generation_id":"child-generation","agent_id":"child","status":"completed","transcript_path":"/tmp/cursor/subagents/child.jsonl"}`,
+		},
+		{
+			name:    "control characters in generation",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"bad\u001b[0mid","prompt":"continue"}`,
+		},
+		{
+			name:    "oversized generation",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"` + strings.Repeat("a", 257) + `","prompt":"continue"}`,
+		},
+		{
+			name:    "coordination submission",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"generation-1","prompt":"<ao-handoff-request>prepare context"}`,
+		},
+		{
+			name:    "malformed payload",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"generation-1","prompt":"continue",`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-1")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+
+			stdout, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(tt.payload),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "cursor", tt.event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req setActivityAPIRequest
+			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+				t.Fatal(err)
+			}
+			if capture.hits != 1 || req.Event != tt.event || req.LaunchID != "launch-1" {
+				t.Fatalf("ordinary activity reporting changed: hits=%d request=%+v", capture.hits, req)
+			}
+			if req.ProviderTurnID != "" || req.SubmissionID != "" || req.LatestUserPrompt != "" ||
+				req.LatestAssistantUpdate != "" || req.TranscriptPath != "" || req.ConversationCheckpointOrigin != "" {
+				t.Fatalf("Cursor reported unverified conversation facts: %+v", req)
+			}
+			if stdout != "" {
+				t.Fatalf("Cursor emitted unverified submission context: %q", stdout)
+			}
+		})
 	}
 }
 
