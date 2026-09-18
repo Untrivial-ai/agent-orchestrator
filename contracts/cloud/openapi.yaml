@@ -1777,7 +1777,7 @@ components:
     UpdateProjectInput:
       type: object
       additionalProperties: false
-      required: [displayName, defaultBranch]
+      required: [displayName, defaultBranch, config]
       properties:
         displayName:
           type: string
@@ -1787,6 +1787,9 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+        config:
+          type: object
+          additionalProperties: true
     DeleteProjectResponse:
       type: object
       additionalProperties: false

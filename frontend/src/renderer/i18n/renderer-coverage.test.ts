@@ -20,6 +20,7 @@ const approvedLiterals: Record<string, readonly string[]> = {
 		"Local: http://localhost:5173/",
 	],
 	"components/CenterPane.tsx": ["px"],
+	"components/CloudProjectSettingsForm.tsx": ["Claude Code", "Codex", "Cursor"],
 	"components/CreateProjectFlow.tsx": ["my-workspace/", "web-app", "main", "github_pat_…"],
 	"components/DaemonStartupLoader.tsx": ["Agent Orchestrator"],
 	"components/ProjectSettingsForm.tsx": [

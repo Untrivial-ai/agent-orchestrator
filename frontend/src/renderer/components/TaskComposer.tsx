@@ -126,8 +126,9 @@ export function TaskComposer({
 	// offers more than one); omitted lets the control plane use its default.
 	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
 	const cloudProjects = useCloudProjectsQuery();
+	const cloudProject = (cloudProjects.data ?? []).find((project) => project.id === projectId);
 	const isCloudProject =
-		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+		cloudProject !== undefined;
 	const isStandalone = projectId === STANDALONE_WORKSPACE_ID;
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
@@ -142,8 +143,8 @@ export function TaskComposer({
 				const { session } = await cloudClient.createSession(cloudOrg.id, {
 					projectId: input.projectId,
 					kind: "worker",
-					harness: input.agent ?? "claude-code",
-					displayName: input.brief.trim().slice(0, 80) || (input.agent ?? "claude-code"),
+					harness: input.agent ?? cloudProject?.config.worker?.agent ?? "claude-code",
+					displayName: input.brief.trim().slice(0, 80) || (input.agent ?? cloudProject?.config.worker?.agent ?? "claude-code"),
 					prompt: input.brief,
 					...(selectedProvider ? { provider: selectedProvider } : {}),
 				});
@@ -157,7 +158,7 @@ export function TaskComposer({
 				throw err instanceof Error ? err : new Error(t("newTask.unableToStart"));
 			}
 		},
-		[cloudClient, cloudOrg, queryClient, selectedProvider, t],
+		[cloudClient, cloudOrg, cloudProject?.config.worker?.agent, queryClient, selectedProvider, t],
 	);
 
 	const createLocalTask = useCallback(
@@ -257,7 +258,7 @@ export function TaskComposer({
 	// The composer preselects the agent and model a spawn would actually use
 	// instead of parking the controls on a "default" label the user has to
 	// remember. Both resolved values remain directly editable.
-	const projectWorkerAgent = projectQuery.data?.config?.worker?.agent ?? "";
+	const projectWorkerAgent = cloudProject?.config.worker?.agent ?? projectQuery.data?.config?.worker?.agent ?? "";
 	const globalDefaultAgent = projectQuery.data?.agent ?? "";
 	const defaultWorkerAgent = projectWorkerAgent || globalDefaultAgent;
 	const selectedAgent = agent || defaultWorkerAgent;
@@ -268,11 +269,11 @@ export function TaskComposer({
 		purpose: "launch",
 	});
 	const defaultWorkerModel =
-		projectQuery.data?.config?.worker?.agentConfig?.model ?? projectQuery.data?.config?.agentConfig?.model ?? "";
+		cloudProject?.config.worker?.agentConfig?.model ?? projectQuery.data?.config?.worker?.agentConfig?.model ?? projectQuery.data?.config?.agentConfig?.model ?? "";
 	const defaultWorkerMode =
-		projectQuery.data?.config?.worker?.agentConfig?.mode ?? projectQuery.data?.config?.agentConfig?.mode ?? "";
+		cloudProject?.config.worker?.agentConfig?.mode ?? projectQuery.data?.config?.worker?.agentConfig?.mode ?? projectQuery.data?.config?.agentConfig?.mode ?? "";
 	const defaultWorkerEffort =
-		projectQuery.data?.config?.worker?.agentConfig?.effort ?? projectQuery.data?.config?.agentConfig?.effort ?? "";
+		cloudProject?.config.worker?.agentConfig?.effort ?? projectQuery.data?.config?.worker?.agentConfig?.effort ?? projectQuery.data?.config?.agentConfig?.effort ?? "";
 	const projectModelForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerModel : "";
 	const projectModeForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerMode : "";
 	const agentCatalog = agentsQuery.data;

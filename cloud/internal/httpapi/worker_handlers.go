@@ -236,6 +236,12 @@ func launchContextFrom(launch domain.WorkerLaunch) worker.LaunchContext {
 		DeniedCommands:  launch.DeniedCommands,
 		RepositoryURL:   launch.RepositoryURL,
 		DefaultBranch:   launch.DefaultBranch,
+		AgentConfig: worker.AgentConfig{
+			Model:       launch.AgentConfig.Model,
+			Effort:      launch.AgentConfig.Effort,
+			Mode:        launch.AgentConfig.Mode,
+			Permissions: launch.AgentConfig.Permissions,
+		},
 	}
 }
 

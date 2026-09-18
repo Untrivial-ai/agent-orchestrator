@@ -111,12 +111,14 @@ func (s *Store) UpdateProject(
 			`UPDATE ao_projects
 			SET display_name = $1,
 				default_branch = $2,
+				config = $3,
 				updated_at = now()
-			WHERE org_id = $3 AND id = $4 AND archived_at IS NULL
+			WHERE org_id = $4 AND id = $5 AND archived_at IS NULL
 			RETURNING id, org_id, display_name, repository_url, default_branch,
 				github_repository_id, config, created_at, updated_at`,
 			input.DisplayName,
 			input.DefaultBranch,
+			input.Config,
 			orgID,
 			projectID,
 		), &project)
@@ -137,6 +139,34 @@ func (s *Store) UpdateProject(
 		return err
 	})
 	return project, err
+}
+
+// ProjectConfigForSession returns the cloud project settings for a live
+// session. Background services use this to respect project-scoped behavior
+// such as automatic PR review without accepting a caller-provided project ID.
+func (s *Store) ProjectConfigForSession(
+	ctx context.Context,
+	orgID, sessionID string,
+) (json.RawMessage, error) {
+	var config json.RawMessage
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT project.config
+			FROM ao_sessions session
+			JOIN ao_projects project
+			  ON project.org_id = session.org_id AND project.id = session.project_id
+			WHERE session.org_id = $1 AND session.id = $2 AND session.is_terminated = false`,
+			orgID, sessionID,
+		).Scan(&config)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return config, nil
 }
 
 func (s *Store) ArchiveProject(

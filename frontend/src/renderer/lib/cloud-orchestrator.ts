@@ -54,14 +54,17 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 	// #4960: pick the orchestrator harness from the user's connected Cloud
 	// coding-agent credentials (Codex -> Claude Code -> Cursor) instead of
 	// hardcoding claude-code.
-	const [orgCredentials, personalCredentials] = await Promise.all([
+	const [orgCredentials, personalCredentials, projects] = await Promise.all([
 		client.listProviderConnections(orgId),
 		client.listUserProviderConnections(),
+		client.listProjects(orgId, { limit: 100 }),
 	]);
-	const harness = selectCloudOrchestratorHarness([
+	const connected = selectCloudOrchestratorHarness([
 		...orgCredentials.providerConnections,
 		...personalCredentials.providerConnections,
 	]);
+	const configured = projects.items.find((project) => project.id === projectId)?.config.orchestrator?.agent;
+	const harness = configured ?? connected;
 	if (!harness) throw new Error("Connect a Cloud coding agent before spawning an orchestrator.");
 	try {
 		const { session } = await client.createSession(orgId, {

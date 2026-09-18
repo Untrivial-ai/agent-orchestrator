@@ -1031,6 +1031,9 @@ export interface components {
         UpdateProjectInput: {
             displayName: string;
             defaultBranch: string;
+            config: {
+                [key: string]: unknown;
+            };
         };
         DeleteProjectResponse: {
             project: {

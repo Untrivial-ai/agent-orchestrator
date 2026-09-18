@@ -113,10 +113,37 @@ export interface CloudCpProject {
 	repositoryUrl: string;
 	defaultBranch: string;
 	githubRepositoryId?: string;
-	config: Record<string, unknown>;
+	config: CloudCpProjectConfig;
 	createdAt: string;
 	updatedAt: string;
 }
+
+/** Role defaults shared by cloud project settings and worker launch. */
+export interface CloudCpAgentConfig {
+	model?: string;
+	effort?: string;
+	mode?: string;
+	permissions?: string;
+}
+
+export interface CloudCpRoleSettings {
+	agent?: CloudCpAgentProvider;
+	agentConfig?: CloudCpAgentConfig;
+}
+
+export interface CloudCpReviewerSettings {
+	harness: CloudCpAgentProvider;
+	agentConfig?: CloudCpAgentConfig;
+}
+
+/** Cloud project settings. Unknown keys are retained when settings are saved. */
+export type CloudCpProjectConfig = Record<string, unknown> & {
+	sessionPrefix?: string;
+	worker?: CloudCpRoleSettings;
+	orchestrator?: CloudCpRoleSettings;
+	reviewers?: CloudCpReviewerSettings[];
+	autoReview?: boolean;
+};
 
 /** POST /orgs/{orgId}/projects (requires an Idempotency-Key header). */
 export interface CloudCpCreateProjectRequest {
@@ -133,6 +160,8 @@ export interface CloudCpCreateProjectRequest {
 export interface CloudCpUpdateProjectRequest {
 	displayName: string;
 	defaultBranch: string;
+	/** Project-scoped defaults for cloud workers and orchestrators. */
+	config: CloudCpProjectConfig;
 }
 
 export interface CloudCpProjectResponse {

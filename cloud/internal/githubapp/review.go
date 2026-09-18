@@ -12,6 +12,14 @@ import (
 
 // triggerReview starts a best-effort review in a dedicated sandbox process.
 func (s *Service) triggerReview(ctx context.Context, orgID, sessionID string, pr domain.PullRequest) {
+	config, err := s.store.ProjectConfigForSession(ctx, orgID, sessionID)
+	if err != nil {
+		s.logger.Error("load project auto-review setting", "error", err, "pull_request_id", pr.ID)
+		return
+	}
+	if !domain.ParseProjectSettings(config).AutoReview {
+		return
+	}
 	run, created, err := s.store.CreateReviewRun(ctx, orgID, pr.ID, sessionID, pr.HeadSHA)
 	if err != nil {
 		s.logger.Error("create review run", "error", err, "pull_request_id", pr.ID)

@@ -99,6 +99,7 @@ describe("CloudClient", () => {
       client.updateProject("org one", "project one", {
         displayName: "Cloud API",
         defaultBranch: "develop",
+		config: { worker: { agent: "codex" } },
       }),
     ).resolves.toEqual({ project });
 
@@ -109,6 +110,7 @@ describe("CloudClient", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       displayName: "Cloud API",
       defaultBranch: "develop",
+		config: { worker: { agent: "codex" } },
     });
   });
 

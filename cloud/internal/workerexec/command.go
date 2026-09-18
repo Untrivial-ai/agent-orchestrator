@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,10 +88,19 @@ func (b HarnessBuilder) BuildInteractive(
 	case "cursor":
 		providerArgs = []string{"--trust"}
 	}
+	if launch.Harness == "codex" && strings.TrimSpace(launch.AgentConfig.Effort) != "" {
+		providerArgs = append(
+			providerArgs,
+			"-c", "model_reasoning_effort="+strconv.Quote(strings.TrimSpace(launch.AgentConfig.Effort)),
+		)
+	}
 	harness := agentruntime.Harness(launch.Harness)
 	permission := agentruntime.PermissionPolicyForMode(
 		agentruntime.SessionMode(launch.Mode),
 	)
+	if configured := agentruntime.PermissionPolicy(strings.TrimSpace(launch.AgentConfig.Permissions)); validPermissionPolicy(configured) {
+		permission = configured
+	}
 	var argv []string
 	var err error
 	if identity := b.interactiveRestoreIdentity(launch); identity != "" {
@@ -101,6 +111,7 @@ func (b HarnessBuilder) BuildInteractive(
 			SessionID:     launch.SessionID,
 			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
 			WorkspacePath: workspace,
+			Model:         launch.AgentConfig.Model,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
 			Permission:    permission,
@@ -114,6 +125,7 @@ func (b HarnessBuilder) BuildInteractive(
 			Binary:        binary,
 			SessionID:     launch.SessionID,
 			WorkspacePath: workspace,
+			Model:         launch.AgentConfig.Model,
 			Prompt:        launch.Prompt,
 			SystemPrompt:  systemPrompt,
 			ProviderArgs:  providerArgs,
@@ -152,6 +164,16 @@ func (b HarnessBuilder) BuildInteractive(
 		}
 	}
 	return command, nil
+}
+
+func validPermissionPolicy(policy agentruntime.PermissionPolicy) bool {
+	switch policy {
+	case agentruntime.PermissionDefault, agentruntime.PermissionAcceptEdits,
+		agentruntime.PermissionAuto, agentruntime.PermissionBypassPermissions:
+		return true
+	default:
+		return false
+	}
 }
 
 func (b HarnessBuilder) interactiveRestoreIdentity(

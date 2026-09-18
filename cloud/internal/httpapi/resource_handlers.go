@@ -33,8 +33,9 @@ type createProjectRequest struct {
 }
 
 type updateProjectRequest struct {
-	DisplayName   string `json:"displayName"`
-	DefaultBranch string `json:"defaultBranch"`
+	DisplayName   string         `json:"displayName"`
+	DefaultBranch string         `json:"defaultBranch"`
+	Config        map[string]any `json:"config"`
 }
 
 type projectResponse struct {
@@ -304,6 +305,14 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Project name or default branch is invalid.")
 		return
 	}
+	if request.Config == nil {
+		request.Config = map[string]any{}
+	}
+	config, err := json.Marshal(request.Config)
+	if err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Project configuration is invalid.")
+		return
+	}
 	project, err := s.store.UpdateProject(
 		r.Context(),
 		principalFrom(r),
@@ -312,6 +321,7 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		domain.UpdateProject{
 			DisplayName:   request.DisplayName,
 			DefaultBranch: request.DefaultBranch,
+			Config:        config,
 		},
 	)
 	if err != nil {

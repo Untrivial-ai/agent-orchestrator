@@ -136,4 +136,5 @@ type WorkerLaunch struct {
 	DeniedCommands  []string
 	RepositoryURL   string
 	DefaultBranch   string
+	AgentConfig     AgentConfig
 }
