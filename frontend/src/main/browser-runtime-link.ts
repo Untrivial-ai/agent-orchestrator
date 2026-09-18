@@ -24,6 +24,10 @@ type BrowserRuntimeCancel = {
 	requestId: string;
 };
 
+type BrowserRuntimePing = {
+	type: "ping";
+};
+
 export type BrowserRuntimeCommandError = {
 	code: string;
 	message: string;
@@ -184,9 +188,9 @@ export function connectBrowserRuntime(
 
 	const consumeLine = (line: string, target: net.Socket, epoch: number) => {
 		if (!line.trim()) return;
-		let message: BrowserRuntimeCommand | BrowserRuntimeCancel;
+		let message: BrowserRuntimeCommand | BrowserRuntimeCancel | BrowserRuntimePing;
 		try {
-			message = JSON.parse(line) as BrowserRuntimeCommand | BrowserRuntimeCancel;
+			message = JSON.parse(line) as BrowserRuntimeCommand | BrowserRuntimeCancel | BrowserRuntimePing;
 		} catch {
 			return;
 		}
