@@ -7,11 +7,13 @@ import { Button } from "../ui/button";
 import { useCloudGate } from "../../hooks/useCloudGate";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import { useCloudOrg } from "../../hooks/useCloudOrg";
-import { hasValidAgentConnection, useProviderConnections } from "../../hooks/useProviderConnections";
+import { hasValidAgentConnection, providerConnectionsQueryKey, useProviderConnections } from "../../hooks/useProviderConnections";
+import { cloudAvailableAgentsQueryKey } from "../../hooks/useCloudAvailableAgents";
 import { useCloudSession } from "../../lib/cloud-session";
 import { useCredentialDialogStore } from "../../stores/credential-dialog-store";
 import { SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
+import type { CloudCpAgentProvider } from "../../lib/cloud-cp";
 
 // Proper nouns; deliberately not translated.
 const AGENT_LABELS: Record<string, string> = {
@@ -20,6 +22,10 @@ const AGENT_LABELS: Record<string, string> = {
 	cursor: "Cursor",
 	github: "GitHub",
 };
+
+function isAgentProvider(provider: string): provider is CloudCpAgentProvider {
+	return provider === "claude-code" || provider === "codex" || provider === "cursor";
+}
 
 /**
  * Cloud coding-agent credentials in global settings. The outer component only
@@ -51,6 +57,9 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 	const [githubPAT, setGitHubPAT] = useState("");
 	const [githubPATBusy, setGitHubPATBusy] = useState(false);
 	const [githubPATError, setGitHubPATError] = useState<string | null>(null);
+	const [confirmingAgent, setConfirmingAgent] = useState<CloudCpAgentProvider | null>(null);
+	const [removingAgent, setRemovingAgent] = useState<CloudCpAgentProvider | null>(null);
+	const [agentCredentialError, setAgentCredentialError] = useState<string | null>(null);
 
 	// Managing credentials needs the signed-in org. The Cloud settings page is
 	// reachable while signed out, so say why it is empty instead of rendering a
@@ -93,18 +102,64 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 			setGitHubPATBusy(false);
 		}
 	};
+	const removeAgentCredential = async (agent: CloudCpAgentProvider) => {
+		if (org === undefined) return;
+		setRemovingAgent(agent);
+		setAgentCredentialError(null);
+		try {
+			await client.deleteAgentConnection(org.id, agent);
+			setConfirmingAgent(null);
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			await queryClient.invalidateQueries({ queryKey: cloudAvailableAgentsQueryKey(org.id) });
+		} catch (error) {
+			setAgentCredentialError(error instanceof Error ? error.message : t("settings.cloudAgents.removeError"));
+		} finally {
+			setRemovingAgent(null);
+		}
+	};
 	return (
 		<SettingsSection title={t("settings.cloudAgents")} sectionId="cloud-agents" titleHidden={titleHidden}>
 			<div className="flex w-full flex-col gap-1.5">
-				{rows.filter((connection) => connection.provider !== "github").map((connection) => (
-					<SettingsRow key={connection.id} icon={KeyRound} label={AGENT_LABELS[connection.provider] ?? connection.provider}>
-						<span className="text-sm leading-5 text-settings-muted">
-							{connection.validationState === "valid"
-								? t("settings.cloudAgents.valid")
-								: connection.validationState}
-						</span>
-					</SettingsRow>
-				))}
+				{rows.filter((connection) => connection.provider !== "github").map((connection) => {
+					const agent = isAgentProvider(connection.provider) ? connection.provider : null;
+					const label = AGENT_LABELS[connection.provider] ?? connection.provider;
+					return (
+						<SettingsRow key={connection.id} icon={KeyRound} label={label}>
+							<div className="flex items-center gap-2">
+								<span className="text-sm leading-5 text-settings-muted">
+									{connection.validationState === "valid"
+										? t("settings.cloudAgents.valid")
+										: connection.validationState}
+								</span>
+								{agent !== null ? (
+									confirmingAgent === agent ? (
+										<Button
+											type="button"
+											variant="footer"
+											className="text-error"
+											disabled={removingAgent !== null}
+											onClick={() => void removeAgentCredential(agent)}
+										>
+											{removingAgent === agent ? t("settings.cloudAgents.removing") : t("settings.cloudAgents.confirmRemove")}
+										</Button>
+									) : (
+										<Button
+											type="button"
+											variant="footer"
+											className="text-error"
+											disabled={removingAgent !== null}
+											aria-label={t("settings.cloudAgents.removeAria", { agent: label })}
+											onClick={() => setConfirmingAgent(agent)}
+										>
+											{t("settings.cloudAgents.remove")}
+										</Button>
+									)
+								) : null}
+							</div>
+						</SettingsRow>
+					);
+				})}
+				{agentCredentialError ? <p role="alert" className="px-3 text-xs text-error">{agentCredentialError}</p> : null}
 				{connections.isSuccess && !hasValidAgentConnection(rows) ? (
 					<p className="px-3 text-xs leading-relaxed text-muted-foreground">{t("settings.cloudAgents.empty")}</p>
 				) : null}
