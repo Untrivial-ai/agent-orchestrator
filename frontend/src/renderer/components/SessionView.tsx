@@ -1169,6 +1169,26 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				: current,
 		);
 	}, [availableReviewerTerminal, cloudReviewerQuery.isFetched, reviewerQuery.isFetched, session?.cloud]);
+	// A Cloud trigger can replace a previously ended reviewer with a new terminal
+	// while the inspector remains mounted. Make that replacement visible even if
+	// the trigger response raced the inspector callback: the shared Cloud review
+	// query is the durable source of truth for the active reviewer handle.
+	const cloudReviewIsRunning = Boolean(
+		session?.cloud && cloudReviewerQuery.data?.reviews.some((review) => review.status === "running"),
+	);
+	useEffect(() => {
+		if (!session?.cloud || !reviewerTerminal || !cloudReviewIsRunning) return;
+		setTerminalTarget((current) =>
+			current.kind === "reviewer" && current.handleId === reviewerTerminal.handleId
+				? current
+				: {
+						kind: "reviewer",
+						handleId: reviewerTerminal.handleId,
+						harness: reviewerTerminal.harness,
+						sessionId,
+					},
+		);
+	}, [cloudReviewIsRunning, reviewerTerminal, session?.cloud, sessionId]);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
 	const hasInspector = Boolean(session);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);
