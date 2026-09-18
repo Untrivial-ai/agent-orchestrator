@@ -228,7 +228,12 @@ func TestBuildInteractiveCursorBuildsWithoutPrompt(t *testing.T) {
 }
 
 func TestBuildInteractiveUsesCloudProjectAgentConfig(t *testing.T) {
-	command := buildInteractive(t, worker.LaunchContext{
+	command, err := (HarnessBuilder{
+		DataDir: t.TempDir(),
+		CodexLogin: func(_, _, _, _ string) error {
+			return nil
+		},
+	}).BuildInteractive(worker.LaunchContext{
 		SessionID: "11111111-1111-4111-8111-111111111111",
 		Kind:      "worker",
 		Harness:   "codex",
@@ -238,7 +243,15 @@ func TestBuildInteractiveUsesCloudProjectAgentConfig(t *testing.T) {
 			Effort:      "high",
 			Permissions: "bypass-permissions",
 		},
-	})
+	}, worker.CredentialResponse{
+		Provider: "codex", CredentialType: "api_key", Secret: "test-secret",
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("BuildInteractive: %v", err)
+	}
+	if command.Cleanup != nil {
+		t.Cleanup(command.Cleanup)
+	}
 	if !containsAdjacent(command.Args, "--model", "gpt-5") {
 		t.Fatalf("configured model missing from %#v", command.Args)
 	}
