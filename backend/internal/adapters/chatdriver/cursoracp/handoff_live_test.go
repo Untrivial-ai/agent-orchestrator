@@ -52,6 +52,67 @@ func TestLiveCursorInterfaceHandoff(t *testing.T) {
 	harness.run(ctx)
 }
 
+func TestValidateCursorHandoffDataDirAcceptsRealTemporaryDirectory(t *testing.T) {
+	root := t.TempDir()
+	got, err := validateCursorHandoffDataDir(root)
+	if err != nil {
+		t.Fatalf("validateCursorHandoffDataDir: %v", err)
+	}
+	if got != filepath.Clean(root) {
+		t.Fatalf("data dir = %q, want %q", got, filepath.Clean(root))
+	}
+	profile, err := os.Lstat(filepath.Join(root, "cursor"))
+	if err != nil || !profile.IsDir() || profile.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("cursor profile = (%v, %v), want real directory", profile, err)
+	}
+}
+
+func TestValidateCursorHandoffDataDirRejectsSymlinkedScratchPaths(t *testing.T) {
+	t.Run("ancestor", func(t *testing.T) {
+		parent := t.TempDir()
+		target := t.TempDir()
+		if err := os.Mkdir(filepath.Join(target, "scratch"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(parent, "linked-parent")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := validateCursorHandoffDataDir(filepath.Join(link, "scratch")); err == nil {
+			t.Fatal("scratch root beneath a symlinked component was accepted")
+		}
+	})
+
+	t.Run("root", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "scratch-link")
+		if err := os.Symlink(t.TempDir(), root); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := validateCursorHandoffDataDir(root); err == nil {
+			t.Fatal("symlinked scratch root was accepted")
+		}
+	})
+
+	t.Run("cursor profile", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Symlink(t.TempDir(), filepath.Join(root, "cursor")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := validateCursorHandoffDataDir(root); err == nil {
+			t.Fatal("symlinked cursor profile was accepted")
+		}
+	})
+}
+
+func TestValidateCursorHandoffDataDirRejectsNonScratchPaths(t *testing.T) {
+	if _, err := validateCursorHandoffDataDir(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing scratch root was accepted")
+	}
+	if _, err := validateCursorHandoffDataDir(string(filepath.Separator)); err == nil {
+		t.Fatal("non-temporary root was accepted")
+	}
+}
+
 type cursorHandoffHarness struct {
 	t         *testing.T
 	plugin    *cursor.Plugin
@@ -93,6 +154,7 @@ func newCursorHandoffHarness(t *testing.T, plugin *cursor.Plugin) *cursorHandoff
 	env["AO_CURSOR_HANDOFF_HOOK_DIR"] = hookDir
 	env["PATH"] = binDir + string(os.PathListSeparator) + env["PATH"]
 	plugin.AugmentRuntimeEnv(env, dataDir)
+	t.Setenv("CURSOR_DATA_DIR", env["CURSOR_DATA_DIR"])
 	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
 		DataDir: dataDir, Env: env, SessionID: "live-cursor-handoff", WorkspacePath: workspace,
 	}); err != nil {
@@ -111,16 +173,61 @@ func cursorHandoffDataDir(t *testing.T) string {
 	t.Helper()
 	dataDir, configured := os.LookupEnv("AO_CURSOR_HANDOFF_DATA_DIR")
 	if !configured {
-		return t.TempDir()
+		dataDir = t.TempDir()
 	}
 	dataDir = strings.TrimSpace(dataDir)
-	if dataDir == "" || !filepath.IsAbs(dataDir) {
-		t.Fatal("AO_CURSOR_HANDOFF_DATA_DIR must be a non-empty absolute scratch path")
+	validated, err := validateCursorHandoffDataDir(dataDir)
+	if err != nil {
+		t.Fatalf("AO_CURSOR_HANDOFF_DATA_DIR is not a real temporary scratch root: %v", err)
 	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		t.Fatal("Cursor handoff setup failed: create configured scratch data directory")
+	return validated
+}
+
+func validateCursorHandoffDataDir(dataDir string) (string, error) {
+	dataDir = filepath.Clean(strings.TrimSpace(dataDir))
+	if dataDir == "." || !filepath.IsAbs(dataDir) {
+		return "", errors.New("path must be non-empty and absolute")
 	}
-	return filepath.Clean(dataDir)
+	info, err := os.Lstat(dataDir)
+	if err != nil {
+		return "", errors.New("scratch root must already exist")
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", errors.New("scratch root must be a real directory")
+	}
+	realRoot, err := filepath.EvalSymlinks(dataDir)
+	if err != nil {
+		return "", errors.New("scratch root cannot be resolved")
+	}
+	realTemp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		return "", errors.New("system temporary root cannot be resolved")
+	}
+	tempPath := filepath.Clean(os.TempDir())
+	rel, err := filepath.Rel(tempPath, dataDir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("scratch root must be a child of the system temporary directory")
+	}
+	if filepath.Join(realTemp, rel) != realRoot {
+		return "", errors.New("scratch root path must not contain symlinked components")
+	}
+
+	profile := filepath.Join(dataDir, "cursor")
+	profileInfo, err := os.Lstat(profile)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(profile, 0o700); err != nil {
+			return "", errors.New("cursor profile directory cannot be created")
+		}
+		profileInfo, err = os.Lstat(profile)
+	}
+	if err != nil || profileInfo.Mode()&os.ModeSymlink != 0 || !profileInfo.IsDir() {
+		return "", errors.New("cursor profile must be a real directory")
+	}
+	realProfile, err := filepath.EvalSymlinks(profile)
+	if err != nil || filepath.Dir(realProfile) != realRoot {
+		return "", errors.New("cursor profile must remain inside the scratch root")
+	}
+	return dataDir, nil
 }
 
 func (h *cursorHandoffHarness) run(ctx context.Context) {
@@ -140,6 +247,7 @@ func (h *cursorHandoffHarness) run(ctx context.Context) {
 		}
 		h.t.Fatalf("Cursor %s ACP start failed", h.version)
 	}
+	stopConversation := h.registerConversationCleanup(conversation)
 	providerID := strings.TrimSpace(conversation.ProviderConversationID())
 	if providerID == "" {
 		h.t.Fatalf("Cursor %s native conversation id is empty", h.version)
@@ -152,21 +260,24 @@ func (h *cursorHandoffHarness) run(ctx context.Context) {
 	if !strings.Contains(answer, acknowledgement) {
 		h.t.Fatalf("Cursor %s ACP turn A completed without its in-memory acknowledgement", h.version)
 	}
-	h.terminate(conversation, "ACP turn A")
+	h.stopConversation(stopConversation, "ACP turn A")
 
 	firstSessionStarts := len(h.hookRecords("session-start"))
 	tui := h.startTUI(ctx, providerID, firstSessionStarts)
 	h.assertSessionStartIDs(providerID)
 	tui.clearOutput()
 	stopCount := len(h.hookRecords("stop"))
-	tui.writePrompt(h.t, "Recall the private code from the previous turn, then include this second code: "+h.markers[1]+".")
+	bOpen, bClose := randomCursorHandoffDelimiter(h.t), randomCursorHandoffDelimiter(h.t)
+	bRecallSentinel := bOpen + h.markers[0] + bClose
+	tui.writePrompt(h.t, "Recall the private code from the previous turn and place it directly between "+bOpen+
+		" and "+bClose+", with no spaces. Then include this second code: "+h.markers[1]+".")
 	h.waitForHookCount("stop", stopCount+1, cursorHandoffTurnTimeout)
-	if !tui.waitForOutput([]string{h.markers[0]}, 5*time.Second) {
+	if !tui.waitForOutput([]string{bRecallSentinel}, 5*time.Second) {
 		h.t.Fatalf("Cursor %s TUI turn B did not recall the ACP marker; native id=%s", h.version, providerID)
 	}
 	h.stopTUI(tui)
 
-	resumed := h.resumeACP(ctx, providerID)
+	resumed, stopResumed := h.resumeACP(ctx, providerID)
 	history := h.waitForReplay(ctx, resumed, h.markers[:2])
 	h.assertStableReplay(ctx, resumed, history, h.markers[:2])
 
@@ -178,23 +289,37 @@ func (h *cursorHandoffHarness) run(ctx context.Context) {
 			h.t.Fatalf("Cursor %s ACP turn C omitted an in-memory prior marker; native id=%s", h.version, providerID)
 		}
 	}
-	h.terminate(resumed, "ACP turn C")
+	h.stopConversation(stopResumed, "ACP turn C")
 
 	secondSessionStarts := len(h.hookRecords("session-start"))
 	tui = h.startTUI(ctx, providerID, secondSessionStarts)
 	h.assertSessionStartIDs(providerID)
 	tui.clearOutput()
 	stopCount = len(h.hookRecords("stop"))
-	tui.writePrompt(h.t, "State all three private codes from this conversation, without explanation.")
+	var expected []string
+	var instruction strings.Builder
+	instruction.WriteString("State all three private codes from this conversation. For each code in order, place it directly between its assigned delimiters with no spaces: ")
+	for index, marker := range h.markers {
+		open, close := randomCursorHandoffDelimiter(h.t), randomCursorHandoffDelimiter(h.t)
+		expected = append(expected, open+marker+close)
+		if index > 0 {
+			instruction.WriteString("; ")
+		}
+		fmt.Fprintf(&instruction, "code %d between %s and %s", index+1, open, close)
+	}
+	tui.writePrompt(h.t, instruction.String()+".")
 	h.waitForHookCount("stop", stopCount+1, cursorHandoffTurnTimeout)
-	if !tui.waitForOutput(h.markers[:], 5*time.Second) {
+	if !tui.waitForOutput(expected, 5*time.Second) {
 		h.t.Fatalf("Cursor %s final TUI turn omitted a prior marker; native id=%s", h.version, providerID)
 	}
 	h.stopTUI(tui)
 	h.assertSessionStartIDs(providerID)
 }
 
-func (h *cursorHandoffHarness) resumeACP(ctx context.Context, providerID string) ports.ChatConversation {
+func (h *cursorHandoffHarness) resumeACP(
+	ctx context.Context,
+	providerID string,
+) (ports.ChatConversation, func() error) {
 	h.t.Helper()
 	conversation, err := h.driver.Resume(ctx, ports.ChatResumeConfig{
 		SessionID: "live-cursor-handoff", ProviderConversationID: providerID,
@@ -205,19 +330,20 @@ func (h *cursorHandoffHarness) resumeACP(ctx context.Context, providerID string)
 	if err != nil {
 		h.t.Fatalf("Cursor %s ACP resume failed; native id=%s", h.version, providerID)
 	}
+	stopConversation := h.registerConversationCleanup(conversation)
 	if got := strings.TrimSpace(conversation.ProviderConversationID()); got != providerID {
-		h.terminate(conversation, "mismatched ACP resume")
+		h.stopConversation(stopConversation, "mismatched ACP resume")
 		h.t.Fatalf("Cursor %s ACP resume native id=%s, want=%s", h.version, got, providerID)
 	}
 	if _, ok := conversation.(ports.ChatHistoryReader); !ok {
-		h.terminate(conversation, "missing history reader")
+		h.stopConversation(stopConversation, "missing history reader")
 		h.t.Fatalf("Cursor %s ACP resume has no ChatHistoryReader; native id=%s", h.version, providerID)
 	}
 	if _, ok := conversation.(ports.ChatHistoryRefresher); !ok {
-		h.terminate(conversation, "missing history refresher")
+		h.stopConversation(stopConversation, "missing history refresher")
 		h.t.Fatalf("Cursor %s ACP resume has no ChatHistoryRefresher; native id=%s", h.version, providerID)
 	}
-	return conversation
+	return conversation, stopConversation
 }
 
 func (h *cursorHandoffHarness) waitForReplay(
@@ -537,14 +663,27 @@ func cursorHookFieldNames(fields map[string]json.RawMessage) []string {
 	return names
 }
 
-func (h *cursorHandoffHarness) terminate(conversation ports.ChatConversation, stage string) {
+func (h *cursorHandoffHarness) registerConversationCleanup(conversation ports.ChatConversation) func() error {
 	h.t.Helper()
-	terminator, ok := conversation.(ports.ChatProviderTerminator)
-	if !ok {
-		_ = conversation.Close()
-		h.t.Fatalf("Cursor %s %s has no ChatProviderTerminator", h.version, stage)
+	var once sync.Once
+	var stopErr error
+	stop := func() error {
+		once.Do(func() {
+			if terminator, ok := conversation.(ports.ChatProviderTerminator); ok {
+				stopErr = terminator.Terminate()
+				return
+			}
+			stopErr = conversation.Close()
+		})
+		return stopErr
 	}
-	if err := terminator.Terminate(); err != nil {
+	h.t.Cleanup(func() { _ = stop() })
+	return stop
+}
+
+func (h *cursorHandoffHarness) stopConversation(stop func() error, stage string) {
+	h.t.Helper()
+	if err := stop(); err != nil {
 		h.t.Fatalf("Cursor %s %s stop failed", h.version, stage)
 	}
 }
@@ -581,6 +720,15 @@ func randomCursorHandoffMarker(t *testing.T) string {
 		t.Fatal("Cursor handoff setup failed: random marker")
 	}
 	return "ao-cursor-handoff-" + hex.EncodeToString(value)
+}
+
+func randomCursorHandoffDelimiter(t *testing.T) string {
+	t.Helper()
+	value := make([]byte, 6)
+	if _, err := rand.Read(value); err != nil {
+		t.Fatal("Cursor handoff setup failed: random recall delimiter")
+	}
+	return "d" + hex.EncodeToString(value) + "_"
 }
 
 func cursorHandoffEnvList(env map[string]string) []string {
