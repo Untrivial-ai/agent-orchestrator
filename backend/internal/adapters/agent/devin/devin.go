@@ -21,6 +21,7 @@
 package devin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -241,10 +242,16 @@ func ensureDevinNativeWorkspaceTrusted(configPath, workspacePath string) error {
 	data, err := os.ReadFile(configPath)
 	switch {
 	case err == nil:
-		if len(data) > 0 {
-			if err := json.Unmarshal(data, &root); err != nil {
-				return fmt.Errorf("devin: parse %s: %w", configPath, err)
-			}
+		if len(bytes.TrimSpace(data)) == 0 {
+			// A zero-byte read means we may have caught some other writer
+			// mid-truncate. Treat it like a corrupt file, not a missing one:
+			// refuse to write rather than silently replacing the user's real
+			// config (oauthAccount, projects history, etc.) with one containing
+			// only the trust entry.
+			return fmt.Errorf("devin: %s is empty; refusing to overwrite", configPath)
+		}
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("devin: parse %s: %w", configPath, err)
 		}
 	case os.IsNotExist(err):
 		// Treat as empty config; we'll create it.
@@ -274,10 +281,16 @@ func ensureDevinWorkspaceTrusted(configPath, workspacePath string) error {
 	data, err := os.ReadFile(configPath)
 	switch {
 	case err == nil:
-		if len(data) > 0 {
-			if err := json.Unmarshal(data, &root); err != nil {
-				return fmt.Errorf("devin: parse %s: %w", configPath, err)
-			}
+		if len(bytes.TrimSpace(data)) == 0 {
+			// A zero-byte read means we may have caught some other writer
+			// mid-truncate. Treat it like a corrupt file, not a missing one:
+			// refuse to write rather than silently replacing the user's real
+			// config (oauthAccount, projects history, etc.) with one containing
+			// only the trust entry.
+			return fmt.Errorf("devin: %s is empty; refusing to overwrite", configPath)
+		}
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("devin: parse %s: %w", configPath, err)
 		}
 	case os.IsNotExist(err):
 		// Treat as empty config; we'll create it.
