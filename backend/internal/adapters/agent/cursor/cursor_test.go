@@ -11,8 +11,294 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestNativeConversationIDUsesModeSpecificCursorIdentity(t *testing.T) {
+	plugin := &Plugin{}
+	tests := []struct {
+		name                   string
+		session                ports.SessionRef
+		mode                   domain.SessionMode
+		providerConversationID string
+		wantID                 string
+		wantOK                 bool
+	}{
+		{
+			name: "chat uses provider conversation id",
+			session: ports.SessionRef{
+				ID:       "ao-session-1",
+				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "stale-tui-id"},
+			},
+			mode:                   domain.SessionModeChat,
+			providerConversationID: "  cursor-chat-1  ",
+			wantID:                 "cursor-chat-1",
+			wantOK:                 true,
+		},
+		{
+			name: "TUI uses captured agent session id",
+			session: ports.SessionRef{
+				ID:       "ao-session-1",
+				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "  cursor-native-1  "},
+			},
+			mode:                   domain.SessionModeTUI,
+			providerConversationID: "ignored-chat-id",
+			wantID:                 "cursor-native-1",
+			wantOK:                 true,
+		},
+		{
+			name:                   "blank chat provider id",
+			mode:                   domain.SessionModeChat,
+			providerConversationID: "  ",
+		},
+		{
+			name: "TUI does not fall back to AO or provider id",
+			session: ports.SessionRef{
+				ID:       "ao-session-1",
+				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "  "},
+			},
+			mode:                   domain.SessionModeTUI,
+			providerConversationID: "cursor-chat-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotID, gotOK, err := plugin.NativeConversationID(
+				context.Background(), tt.session, tt.mode, tt.providerConversationID,
+			)
+			if err != nil {
+				t.Fatalf("NativeConversationID: %v", err)
+			}
+			if gotID != tt.wantID || gotOK != tt.wantOK {
+				t.Fatalf("NativeConversationID = (%q, %v), want (%q, %v)", gotID, gotOK, tt.wantID, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestNativeConversationIDHonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := (&Plugin{}).NativeConversationID(ctx, ports.SessionRef{
+		Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "cursor-native-1"},
+	}, domain.SessionModeTUI, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("NativeConversationID error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCursorNativeHistoryRequiresExactlyOneOwnedTranscript(t *testing.T) {
+	plugin := &Plugin{}
+	id := "cursor-native-1"
+	dataDir := t.TempDir()
+	env := map[string]string{cursorDataDirEnv: dataDir}
+
+	exists, err := plugin.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+	if err != nil || exists {
+		t.Fatalf("missing transcript: exists=%v err=%v", exists, err)
+	}
+
+	first := filepath.Join(dataDir, "projects", "project-a", "agent-transcripts", id, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(first), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(first, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exists, err = plugin.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+	if err != nil || exists {
+		t.Fatalf("empty transcript: exists=%v err=%v", exists, err)
+	}
+
+	if err := os.WriteFile(first, []byte("{\"type\":\"user\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exists, err = plugin.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+	if err != nil || !exists {
+		t.Fatalf("single non-empty transcript: exists=%v err=%v", exists, err)
+	}
+
+	second := filepath.Join(dataDir, "projects", "project-b", "agent-transcripts", id, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(second), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("{\"type\":\"assistant\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exists, err = plugin.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+	if err == nil || exists {
+		t.Fatalf("duplicate transcripts: exists=%v err=%v, want bounded ambiguity error", exists, err)
+	}
+	if strings.Contains(err.Error(), dataDir) {
+		t.Fatalf("ambiguity error leaked provider-state path: %v", err)
+	}
+}
+
+func TestCursorNativeHistoryRejectsUnsafeCandidates(t *testing.T) {
+	plugin := &Plugin{}
+	id := "cursor-native-1"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, dataDir string)
+	}{
+		{
+			name: "transcript symlink",
+			setup: func(t *testing.T, dataDir string) {
+				outside := filepath.Join(t.TempDir(), id+".jsonl")
+				if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				candidate := filepath.Join(dataDir, "projects", "project-a", "agent-transcripts", id, id+".jsonl")
+				if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, candidate); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlinked transcript directory",
+			setup: func(t *testing.T, dataDir string) {
+				outside := filepath.Join(t.TempDir(), id)
+				if err := os.MkdirAll(outside, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(outside, id+".jsonl"), []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				parent := filepath.Join(dataDir, "projects", "project-a", "agent-transcripts")
+				if err := os.MkdirAll(parent, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(parent, id)); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlinked projects directory",
+			setup: func(t *testing.T, dataDir string) {
+				outsideProjects := filepath.Join(t.TempDir(), "outside-projects")
+				candidate := filepath.Join(outsideProjects, "project-a", "agent-transcripts", id, id+".jsonl")
+				if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(candidate, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outsideProjects, filepath.Join(dataDir, "projects")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlinked project directory",
+			setup: func(t *testing.T, dataDir string) {
+				outsideProject := filepath.Join(t.TempDir(), "outside-project")
+				candidate := filepath.Join(outsideProject, "agent-transcripts", id, id+".jsonl")
+				if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(candidate, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				projects := filepath.Join(dataDir, "projects")
+				if err := os.MkdirAll(projects, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outsideProject, filepath.Join(projects, "project-link")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			tt.setup(t, dataDir)
+			exists, err := plugin.NativeConversationExists(context.Background(), ports.SessionRef{}, id,
+				map[string]string{cursorDataDirEnv: dataDir})
+			if err != nil || exists {
+				t.Fatalf("NativeConversationExists = (%v, %v), want (false, nil)", exists, err)
+			}
+		})
+	}
+}
+
+func TestCursorNativeHistoryRejectsSymlinkedDataRoot(t *testing.T) {
+	id := "cursor-native-1"
+	outsideDataDir := t.TempDir()
+	candidate := filepath.Join(outsideDataDir, "projects", "project-a", "agent-transcripts", id, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(candidate, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(t.TempDir(), "cursor-link")
+	if err := os.Symlink(outsideDataDir, dataDir); err != nil {
+		t.Fatal(err)
+	}
+
+	exists, err := (&Plugin{}).NativeConversationExists(context.Background(), ports.SessionRef{}, id,
+		map[string]string{cursorDataDirEnv: dataDir})
+	if err != nil || exists {
+		t.Fatalf("NativeConversationExists = (%v, %v), want (false, nil)", exists, err)
+	}
+}
+
+func TestCursorNativeHistoryUsesOnlyExplicitCursorDataDir(t *testing.T) {
+	id := "cursor-native-1"
+	ambientDataDir := t.TempDir()
+	ambientTranscript := filepath.Join(ambientDataDir, "projects", "ambient", "agent-transcripts", id, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(ambientTranscript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ambientTranscript, []byte("ambient"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cursorDataDirEnv, ambientDataDir)
+
+	home := t.TempDir()
+	homeTranscript := filepath.Join(home, ".cursor", "projects", "home", "agent-transcripts", id, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(homeTranscript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(homeTranscript, []byte("home"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	for _, env := range []map[string]string{nil, {}, {cursorDataDirEnv: t.TempDir()}} {
+		exists, err := (&Plugin{}).NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+		if err != nil || exists {
+			t.Fatalf("explicit env %#v: exists=%v err=%v, want false nil", env, exists, err)
+		}
+	}
+}
+
+func TestCursorNativeHistoryRejectsInvalidIDAndHonorsCancellation(t *testing.T) {
+	plugin := &Plugin{}
+	env := map[string]string{cursorDataDirEnv: t.TempDir()}
+	for _, id := range []string{"", "  ", "../outside", `..\\outside`, "cursor-*", "cursor-?", "cursor-[1]"} {
+		exists, err := plugin.NativeConversationExists(context.Background(), ports.SessionRef{}, id, env)
+		if err != nil || exists {
+			t.Fatalf("id %q: exists=%v err=%v, want false nil", id, exists, err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := plugin.NativeConversationExists(ctx, ports.SessionRef{}, "cursor-native-1", env)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("NativeConversationExists error = %v, want context.Canceled", err)
+	}
+}
 
 func TestResolveCursorBinaryFindsWinGetLinkOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
