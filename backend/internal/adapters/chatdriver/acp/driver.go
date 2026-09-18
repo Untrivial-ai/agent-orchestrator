@@ -69,6 +69,14 @@ type Config struct {
 	SessionMode func(ports.PermissionMode) string
 	// SessionOptions maps AO's per-turn choices onto ACP config option ids.
 	SessionOptions func(ports.ChatTurnSettings) []SessionOption
+	// LaunchSessionOptions maps one resolved launch onto ACP config option ids
+	// whose value is fixed for the whole session rather than chosen per turn.
+	// It exists for providers that expose session state AO can only select by id
+	// after the session exists — Copilot ignores --agent under --acp and takes
+	// the persona through session/set_config_option instead. The options are
+	// applied with the per-turn ones, so a provider that resets them recovers on
+	// the next turn.
+	LaunchSessionOptions func(LaunchConfig) []SessionOption
 	// PermissionPolicy lets a provider binding resolve permission requests that
 	// have an exact AO policy mapping before the generic client parks them for a
 	// human. Returning handled=false preserves the ordinary approval flow.
@@ -166,6 +174,26 @@ func (d *Driver) discoverConfigOptions(ctx context.Context, workingDir string) (
 	return normalizeConfigOptions(resp.ConfigOptions), nil
 }
 
+// sessionOptionsFor binds a resolved launch to the per-turn option mapper so a
+// binding can also select session state that does not vary per turn.
+func (d *Driver) sessionOptionsFor(launchCfg LaunchConfig) func(ports.ChatTurnSettings) []SessionOption {
+	perTurn := d.cfg.SessionOptions
+	if d.cfg.LaunchSessionOptions == nil {
+		return perTurn
+	}
+	launchOptions := d.cfg.LaunchSessionOptions(launchCfg)
+	if len(launchOptions) == 0 {
+		return perTurn
+	}
+	return func(settings ports.ChatTurnSettings) []SessionOption {
+		out := append([]SessionOption(nil), launchOptions...)
+		if perTurn != nil {
+			out = append(out, perTurn(settings)...)
+		}
+		return out
+	}
+}
+
 // Harness identifies the AO harness this ACP transport adapts.
 func (d *Driver) Harness() domain.AgentHarness { return d.cfg.Harness }
 
@@ -246,7 +274,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	conv.start(
 		string(resp.SessionId), conversationCapabilities(d.cfg.Capabilities, init),
-		d.cfg.SessionMode, d.cfg.SessionOptions, d.cfg.PermissionPolicy,
+		d.cfg.SessionMode, d.sessionOptionsFor(launchCfg), d.cfg.PermissionPolicy,
 		cfg.Permissions, d.cfg.ValidateTurnSettings, resp.ConfigOptions,
 		conv.legacyWire.modelState(), resp.Modes,
 	)
@@ -388,7 +416,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	}
 	conv.start(
 		cfg.ProviderConversationID, conversationCapabilities(d.cfg.Capabilities, init),
-		d.cfg.SessionMode, d.cfg.SessionOptions, d.cfg.PermissionPolicy,
+		d.cfg.SessionMode, d.sessionOptionsFor(launchCfg), d.cfg.PermissionPolicy,
 		cfg.Permissions, d.cfg.ValidateTurnSettings, configOptions,
 		conv.legacyWire.modelState(), modes,
 	)

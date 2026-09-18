@@ -3766,3 +3766,75 @@ func TestACPCompactionRestoredOnLiveReconnect(t *testing.T) {
 		t.Errorf("compactingTurnID = %q, want durable-compaction-turn", compacting)
 	}
 }
+
+// TestACPDriverAppliesLaunchScopedSessionOptions covers the binding surface
+// Copilot needs: a config option whose value is fixed for the session and known
+// only from the launch config, applied alongside the per-turn options.
+func TestACPDriverAppliesLaunchScopedSessionOptions(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessCopilot,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		LaunchSessionOptions: func(cfg LaunchConfig) []SessionOption {
+			return []SessionOption{{ID: "agent", Value: "ao-" + string(cfg.SessionID)}}
+		},
+		SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+			if settings.Model == "" {
+				return nil
+			}
+			return []SessionOption{{ID: "model", Value: settings.Model}}
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		SessionID:     domain.SessionID("sess1"),
+		WorkspacePath: t.TempDir(),
+		Model:         "claude-sonnet-5",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+
+	agent.mu.Lock()
+	gotAgent, gotModel := agent.options["agent"], agent.options["model"]
+	agent.mu.Unlock()
+	if gotAgent != "ao-sess1" {
+		t.Errorf("agent option = %q, want %q", gotAgent, "ao-sess1")
+	}
+	if gotModel != "claude-sonnet-5" {
+		t.Errorf("model option = %q, want %q", gotModel, "claude-sonnet-5")
+	}
+}
+
+// A binding that supplies no launch-scoped options must not gain an empty
+// wrapper that starts sending options a provider never advertised.
+func TestACPDriverLeavesPerTurnOptionsAloneWithoutLaunchOptions(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:              domain.HarnessCopilot,
+		Capabilities:         ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:                func(context.Context) error { return nil },
+		Launch:               func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		LaunchSessionOptions: func(LaunchConfig) []SessionOption { return nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		SessionID: domain.SessionID("sess1"), WorkspacePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+
+	agent.mu.Lock()
+	calls := agent.setCalls
+	agent.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("session/set_config_option calls = %d, want 0", calls)
+	}
+}
