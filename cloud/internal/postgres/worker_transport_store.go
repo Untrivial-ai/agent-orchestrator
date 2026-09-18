@@ -348,9 +348,11 @@ func (s *Store) IssueTerminalTicket(
 	orgID, sessionID, kind, terminalID string,
 	ttl time.Duration,
 ) (string, []string, error) {
-	// Do this before waking a paused sandbox. Reopening an already-finished
-	// coding-agent terminal cannot succeed, and treating it as an interactive
-	// request would needlessly resume compute just for the browser to retry.
+	// Do this before waking a paused sandbox. A terminated session cannot be
+	// reopened, but a failed terminal row may belong to an older worker epoch:
+	// worker replacement creates a new terminal for the same durable session.
+	// Treating any historical failed terminal as permanent strands the new
+	// worker behind TERMINAL_SESSION_EXITED and leaves the renderer blank.
 	if kind == "agent" && terminalID == "" {
 		var exited bool
 		err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
