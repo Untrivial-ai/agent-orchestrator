@@ -642,6 +642,8 @@
 	"notify.unreadCount": "{{count}} unread notifications",
 	"notify.workspaceLoadFailed": "Could not load sessions. Restore and open may be unavailable.",
 	"pr.botSuffix": "{{name}} bot",
+	"pr.aoReply": "AO reply from {{name}} · not sent for work",
+	"pr.aoReplyTitle": "This reply is shown for context and is not sent to the worker as review work.",
 	"pr.card.changesRequested": "Changes requested",
 	"pr.card.checksFailing": "Checks failing",
 	"pr.card.checksLoading": "Checking merge readiness",

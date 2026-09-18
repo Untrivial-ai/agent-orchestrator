@@ -722,7 +722,7 @@ func genCommentParams(prURL string, c domain.PullRequestComment) gen.UpsertPRCom
 	return gen.UpsertPRCommentParams{
 		PRURL: prURL, CommentID: c.ID, Author: c.Author, File: c.File,
 		Line: int64(c.Line), Body: c.Body, Resolved: c.Resolved, CreatedAt: c.CreatedAt,
-		ThreadID: c.ThreadID, ReviewID: c.ReviewID, URL: c.URL, IsBot: boolInt(c.IsBot), AutoInjectReview: c.AutoInjectReview,
+		ThreadID: c.ThreadID, ReviewID: c.ReviewID, URL: c.URL, IsBot: boolInt(c.IsBot), IsSelfAuthored: boolInt(c.IsSelfAuthored), AutoInjectReview: c.AutoInjectReview,
 	}
 }
 
@@ -734,11 +734,11 @@ func genLegacyCommentParams(prURL string, c domain.PullRequestComment) gen.Inser
 	}
 }
 
-func commentFromGen(c gen.PRComment) domain.PullRequestComment {
+func commentFromGen(c gen.ListPRCommentsRow) domain.PullRequestComment {
 	return domain.PullRequestComment{
 		ThreadID: c.ThreadID, ReviewID: c.ReviewID, ID: c.CommentID, Author: c.Author,
 		File: c.File, Line: int(c.Line), Body: c.Body, URL: c.URL,
-		Resolved: c.Resolved, IsBot: c.IsBot != 0, CreatedAt: c.CreatedAt,
+		Resolved: c.Resolved, IsBot: c.IsBot != 0, IsSelfAuthored: c.IsSelfAuthored != 0, CreatedAt: c.CreatedAt,
 		AutoInjectReview: c.AutoInjectReview,
 	}
 }

@@ -2658,6 +2658,31 @@ func TestPRObservation_ReviewCommentsNudgeAgent(t *testing.T) {
 	}
 }
 
+func TestSCMObservation_SelfAuthoredReviewCommentDoesNotNudgeAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{
+		{ID: "external", Author: "reviewer", Body: "please add coverage", AutoInjectReview: true},
+		{ID: "self", Author: "AgentWrapper", Body: "I am checking this", AutoInjectReview: true},
+	}
+
+	err := m.ApplySCMObservation(ctx, "mer-1", ports.SCMObservation{
+		Fetched:            true,
+		AuthenticatedLogin: " agentwrapper ",
+		PR:                 ports.SCMPRObservation{URL: "pr1"},
+		Review:             ports.SCMReviewObservation{Decision: string(domain.ReviewChangesRequest)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("want only the external review nudge, got %v", msg.msgs)
+	}
+	if !strings.Contains(msg.msgs[0], "please add coverage") || strings.Contains(msg.msgs[0], "I am checking this") {
+		t.Fatalf("self-authored reply was eligible for a nudge: %q", msg.msgs[0])
+	}
+}
+
 func TestPRObservation_ReviewFeedbackNotInjectedWhenDisabled(t *testing.T) {
 	m, st, msg := newManager()
 	rec := working("mer-1")

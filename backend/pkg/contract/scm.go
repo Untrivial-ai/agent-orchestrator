@@ -94,11 +94,12 @@ type PullRequestReviewCommentLink struct {
 
 // PullRequestUnresolvedReviewer groups review comments by reviewer.
 type PullRequestUnresolvedReviewer struct {
-	ReviewerID string                         `json:"reviewerId"`
-	Count      int                            `json:"count"`
-	Links      []PullRequestReviewCommentLink `json:"links"`
-	ReviewURL  string                         `json:"reviewUrl,omitempty"`
-	IsBot      bool                           `json:"isBot,omitempty"`
+	ReviewerID     string                         `json:"reviewerId"`
+	Count          int                            `json:"count"`
+	Links          []PullRequestReviewCommentLink `json:"links"`
+	ReviewURL      string                         `json:"reviewUrl,omitempty"`
+	IsBot          bool                           `json:"isBot,omitempty"`
+	IsSelfAuthored bool                           `json:"isSelfAuthored,omitempty"`
 }
 
 // PullRequestSubmittedReview is one provider review summary.

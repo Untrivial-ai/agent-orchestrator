@@ -679,6 +679,7 @@ function reviewerLabel(reviewer: SessionPRSummary["review"]["unresolvedBy"][numb
 }
 
 function reviewerDisplayName(reviewer: SessionPRSummary["review"]["unresolvedBy"][number]): string {
+	if (reviewer.isSelfAuthored) return appI18n.t("pr.aoReply", { name: reviewer.reviewerId });
 	if (!reviewer.isBot) return reviewer.reviewerId;
 	return appI18n.t("pr.botSuffix", { name: reviewer.reviewerId });
 }
@@ -693,15 +694,17 @@ function reviewAttentionLink(
 		return {
 			label: reviewerLabel(reviewer),
 			href: reviewer.reviewUrl,
-			title: appI18n.t("pr.openReviewFrom", { name }),
+			title: reviewer.isSelfAuthored ? appI18n.t("pr.aoReplyTitle") : appI18n.t("pr.openReviewFrom", { name }),
 		};
 	}
 	if (inlineURL) {
 		return {
 			label: reviewerLabel(reviewer),
 			href: inlineURL,
-				title:
-					reviewer.count > 0
+			title:
+				reviewer.isSelfAuthored
+					? appI18n.t("pr.aoReplyTitle")
+					: reviewer.count > 0
 						? appI18n.t("pr.unresolvedComments", {
 								count: reviewer.count,
 								name,
@@ -712,7 +715,7 @@ function reviewAttentionLink(
 	return {
 		label: reviewerLabel(reviewer),
 		href: prBrowserUrl(pr),
-		title: appI18n.t("pr.openPRFor", { name }),
+		title: reviewer.isSelfAuthored ? appI18n.t("pr.aoReplyTitle") : appI18n.t("pr.openPRFor", { name }),
 	};
 }
 

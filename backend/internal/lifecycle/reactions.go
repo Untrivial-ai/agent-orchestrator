@@ -153,6 +153,10 @@ type pendingNudge struct {
 // and sends actionable agent nudges such as rebase, fix-CI, and
 // address-review-feedback prompts.
 func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o ports.PRObservation) error {
+	return m.applyPRObservation(ctx, id, o, "")
+}
+
+func (m *Manager) applyPRObservation(ctx context.Context, id domain.SessionID, o ports.PRObservation, authenticatedLogin string) error {
 	if !o.Fetched {
 		return nil
 	}
@@ -237,7 +241,7 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		if err != nil {
 			return fmt.Errorf("list persisted comments for %s: %w", o.URL, err)
 		}
-		o.Comments = prCommentObservations(comments)
+		o.Comments = prCommentObservations(comments, authenticatedLogin)
 
 		if o.CI == domain.CIFailing {
 			pr, ok, err := m.store.GetPR(ctx, o.URL)
@@ -487,7 +491,7 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	if !o.Fetched {
 		return nil
 	}
-	if err := m.ApplyPRObservation(ctx, id, scmToPRObservation(o)); err != nil {
+	if err := m.applyPRObservation(ctx, id, scmToPRObservation(o), o.AuthenticatedLogin); err != nil {
 		return err
 	}
 	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o)
@@ -636,10 +640,11 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 	return pr
 }
 
-func prCommentObservations(comments []domain.PullRequestComment) []ports.PRCommentObservation {
+func prCommentObservations(comments []domain.PullRequestComment, authenticatedLogin string) []ports.PRCommentObservation {
+	authenticatedLogin = strings.TrimSpace(authenticatedLogin)
 	out := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, comment := range comments {
-		if comment.Resolved || comment.IsBot {
+		if comment.Resolved || comment.IsBot || (authenticatedLogin != "" && strings.EqualFold(strings.TrimSpace(comment.Author), authenticatedLogin)) {
 			continue
 		}
 		out = append(out, ports.PRCommentObservation{

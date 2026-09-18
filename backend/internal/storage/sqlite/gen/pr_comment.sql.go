@@ -72,19 +72,36 @@ func (q *Queries) InsertLegacyPRComment(ctx context.Context, arg InsertLegacyPRC
 }
 
 const listPRComments = `-- name: ListPRComments :many
-SELECT pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot, auto_inject_review, review_id
+SELECT pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot, is_self_authored, auto_inject_review, review_id
 FROM pr_comment WHERE pr_url = ? ORDER BY created_at, comment_id
 `
 
-func (q *Queries) ListPRComments(ctx context.Context, prUrl string) ([]PRComment, error) {
+type ListPRCommentsRow struct {
+	PRURL            string
+	CommentID        string
+	Author           string
+	File             string
+	Line             int64
+	Body             string
+	Resolved         bool
+	CreatedAt        time.Time
+	ThreadID         string
+	URL              string
+	IsBot            int64
+	IsSelfAuthored   int64
+	AutoInjectReview bool
+	ReviewID         string
+}
+
+func (q *Queries) ListPRComments(ctx context.Context, prUrl string) ([]ListPRCommentsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPRComments, prUrl)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PRComment{}
+	items := []ListPRCommentsRow{}
 	for rows.Next() {
-		var i PRComment
+		var i ListPRCommentsRow
 		if err := rows.Scan(
 			&i.PRURL,
 			&i.CommentID,
@@ -97,6 +114,7 @@ func (q *Queries) ListPRComments(ctx context.Context, prUrl string) ([]PRComment
 			&i.ThreadID,
 			&i.URL,
 			&i.IsBot,
+			&i.IsSelfAuthored,
 			&i.AutoInjectReview,
 			&i.ReviewID,
 		); err != nil {
@@ -131,8 +149,8 @@ func (q *Queries) MarkPRCommentResolved(ctx context.Context, arg MarkPRCommentRe
 }
 
 const upsertPRComment = `-- name: UpsertPRComment :exec
-INSERT INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot, auto_inject_review)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot, is_self_authored, auto_inject_review)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (pr_url, comment_id) DO UPDATE SET
     author = excluded.author,
     file = excluded.file,
@@ -143,7 +161,8 @@ ON CONFLICT (pr_url, comment_id) DO UPDATE SET
     thread_id = excluded.thread_id,
     review_id = excluded.review_id,
     url = excluded.url,
-    is_bot = excluded.is_bot
+    is_bot = excluded.is_bot,
+    is_self_authored = MAX(pr_comment.is_self_authored, excluded.is_self_authored)
 `
 
 type UpsertPRCommentParams struct {
@@ -159,6 +178,7 @@ type UpsertPRCommentParams struct {
 	ReviewID         string
 	URL              string
 	IsBot            int64
+	IsSelfAuthored   int64
 	AutoInjectReview bool
 }
 
@@ -176,6 +196,7 @@ func (q *Queries) UpsertPRComment(ctx context.Context, arg UpsertPRCommentParams
 		arg.ReviewID,
 		arg.URL,
 		arg.IsBot,
+		arg.IsSelfAuthored,
 		arg.AutoInjectReview,
 	)
 	return err
