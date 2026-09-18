@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 )
 
 func TestDoctorChecksGitVersion(t *testing.T) {
@@ -450,11 +452,107 @@ func TestDoctorTextOutputIsGrouped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor failed: %v\nstderr=%s\nstdout=%s", err, errOut, out)
 	}
-	for _, want := range []string{"Core:\nPASS config:", "Tools:\nPASS git:", "Agent harnesses:\nWARN claude-code:", "WARN codex:", "WARN muse:", "GitHub:\nWARN github-token:", "GitLab:\nWARN gitlab-token:"} {
+	for _, want := range []string{
+		"Core:\nPASS config:",
+		"Tools:\nPASS git:",
+		// Agent harnesses section — spot-check original three plus new additions.
+		"Agent harnesses:\nWARN claude-code:",
+		"WARN codex:",
+		"WARN opencode:",
+		"WARN muse:",
+		"WARN aider:",
+		"WARN goose:",
+		"WARN cursor:",
+		"WARN agy:",
+		"WARN continue:",
+		"WARN prime-agent:",
+		"GitHub:\nWARN github-token:",
+		"GitLab:\nWARN gitlab-token:",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, out)
 		}
 	}
+}
+
+// TestDoctorAllHarnessesPresent asserts that every agent harness in
+// registry.Harnessed() surfaces a check in the runDoctor report.
+func TestDoctorAllHarnessesPresent(t *testing.T) {
+	setConfigEnv(t)
+
+	harnesses := registry.Harnessed()
+	if len(harnesses) == 0 {
+		t.Fatal("registry.Harnessed() returned empty list")
+	}
+
+	// No harness binaries available — all land as WARN "not found in PATH".
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("git version 2.43.0\n"), nil
+	})
+
+	checks := c.runDoctor(context.Background())
+	for _, ha := range harnesses {
+		id := string(ha.Harness)
+		check := findDoctorCheck(t, checks, id)
+		if check.Level != doctorWarn || !strings.Contains(check.Message, "not found in PATH") {
+			t.Fatalf("harness %q check = %+v, want WARN not found in PATH", id, check)
+		}
+	}
+}
+
+// TestDoctorPathOnlyHarnessPassesOnFind covers the PATH-existence-only code
+// path (VersionArg == "") used by adapters such as cursor-agent that have no
+// stable --version flag. When the binary is found on PATH the check must pass
+// without invoking CommandOutput.
+func TestDoctorPathOnlyHarnessPassesOnFind(t *testing.T) {
+	setConfigEnv(t)
+	c := doctorContext(t,
+		map[string]string{
+			"git":          "/bin/git",
+			"cursor-agent": "/usr/local/bin/cursor-agent",
+		},
+		func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			// Only git version calls are expected; cursor-agent has no VersionArg.
+			if name == "/bin/git" {
+				return []byte("git version 2.43.0\n"), nil
+			}
+			t.Fatalf("unexpected CommandOutput call for PATH-only harness: %s", name)
+			return nil, nil
+		},
+	)
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "cursor")
+	if check.Level != doctorPass || !strings.Contains(check.Message, "resolves to") {
+		t.Fatalf("cursor check = %+v, want PASS with path", check)
+	}
+}
+
+// TestDoctorNewVersionedHarnessPassesWithVersion verifies that a Tier-B
+// harness with a --version flag (e.g. opencode) resolves and reports correctly.
+func TestDoctorNewVersionedHarnessPassesWithVersion(t *testing.T) {
+	setConfigEnv(t)
+	c := doctorContext(t,
+		map[string]string{
+			"git":      "/bin/git",
+			"opencode": "/usr/local/bin/opencode",
+		},
+		func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "/bin/git" {
+				return []byte("git version 2.43.0\n"), nil
+			}
+			if name == "/usr/local/bin/opencode" && len(args) == 1 && args[0] == "--version" {
+				return []byte("opencode 0.3.12\n"), nil
+			}
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return nil, nil
+		},
+	)
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "opencode")
+	if check.Level != doctorPass || !strings.Contains(check.Message, "opencode 0.3.12") {
+		t.Fatalf("opencode check = %+v, want PASS with version string", check)
+	}
+
 }
 
 func clearDoctorGitHubEnv(t *testing.T) {

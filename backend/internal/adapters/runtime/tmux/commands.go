@@ -65,6 +65,12 @@ func panePIDArgs(id string) []string {
 	return []string{"display-message", "-p", "-t", id, "#{pane_pid}"}
 }
 
+// paneDeadArgs includes every pane so a retained dead pane cannot hide another
+// running child in the same runtime. Session targeting requires an exact match.
+func paneDeadArgs(id string) []string {
+	return []string{"list-panes", "-s", "-t", exactSessionTarget(id), "-F", "#{pane_dead}"}
+}
+
 // paneCurrentPathArgs prints tmux's cwd for the session's active pane. Create
 // uses this after new-session so a poisoned tmux server that ignores -c fails
 // loudly instead of silently starting the agent in the wrong directory.

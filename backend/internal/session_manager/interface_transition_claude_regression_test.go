@@ -22,8 +22,8 @@ func TestInterfaceTransitionClaudeStaleIdleEmptyComposerCompletes(t *testing.T) 
 		rule+"\n\x1b[39m❯\u00a0\x1b[7m \x1b[0m\n"+rule+"\n⏵⏵ bypass permissions on",
 		inputAt, inputAt.Add(-time.Second))
 
-	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
-		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +49,8 @@ func TestInterfaceTransitionClaudeNavigationMenuReportsPendingDecision(t *testin
 		"  ←/→ to switch · ↓ to select · Esc to cancel"
 	configureClaudeTransitionRegression(t, manager, store, runtime, output, inputAt, inputAt)
 
-	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1",
-		domain.SessionModeChat, domain.SessionInterfaceTransitionDrain)
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+
 	if err != nil {
 		t.Fatal(err)
 	}

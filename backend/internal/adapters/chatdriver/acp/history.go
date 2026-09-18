@@ -73,15 +73,16 @@ func (c *refreshableConversation) RefreshHistory(ctx context.Context) ([]ports.C
 // ACP deliberately replays a flat stream rather than provider turns, so user
 // message ids are the durable boundaries from which AO reconstructs settled turns.
 type historyCapture struct {
-	sessionID       string
-	events          []ports.ChatEvent
-	occurrences     map[string]int
-	turnID          string
-	turnUserID      string
-	turnHasProvider bool
-	pendingUserID   string
-	pendingUserText string
-	fallbackID      int
+	sessionID           string
+	events              []ports.ChatEvent
+	occurrences         map[string]int
+	turnID              string
+	turnUserID          string
+	turnHasProvider     bool
+	pendingUserID       string
+	pendingNativeUserID string
+	pendingUserText     string
+	fallbackID          int
 }
 
 // beginHistoryReplay diverts provider events away from the live Events channel.
@@ -204,6 +205,7 @@ func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMe
 	if chunk.MessageId != nil {
 		messageID = strings.TrimSpace(*chunk.MessageId)
 	}
+	nativeID := messageID
 
 	c.historyMu.Lock()
 	if c.history == nil {
@@ -239,6 +241,7 @@ func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMe
 	c.historyMu.Lock()
 	if c.history != nil {
 		c.history.pendingUserID = messageID
+		c.history.pendingNativeUserID = nativeID
 		c.history.pendingUserText += text
 	}
 	c.historyMu.Unlock()
@@ -296,8 +299,10 @@ func (c *conversation) flushHistoryUserMessage() {
 	}
 	turnID := c.history.turnID
 	messageID := c.history.pendingUserID
+	nativeID := c.history.pendingNativeUserID
 	text := c.history.pendingUserText
 	c.history.pendingUserID = ""
+	c.history.pendingNativeUserID = ""
 	c.history.pendingUserText = ""
 	c.historyMu.Unlock()
 
@@ -305,11 +310,12 @@ func (c *conversation) flushHistoryUserMessage() {
 		return
 	}
 	c.emit(ports.ChatEvent{
-		Kind:            ports.ChatEventUserMessageCompleted,
-		ProviderTurnID:  turnID,
-		ProviderItemID:  c.providerItemID(messageID),
-		ClientMessageID: c.providerItemID(messageID),
-		Text:            text,
+		Kind:                ports.ChatEventUserMessageCompleted,
+		NativeUserMessageID: nativeID,
+		ProviderTurnID:      turnID,
+		ProviderItemID:      c.providerItemID(messageID),
+		ClientMessageID:     c.providerItemID(messageID),
+		Text:                text,
 	})
 }
 

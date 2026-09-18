@@ -184,11 +184,6 @@ type sessionLifecycle interface {
 	// SessionMutationInProgress suppresses observation-driven termination while
 	// Session Manager deliberately replaces or relaunches a provider process.
 	SessionMutationInProgress(id domain.SessionID) bool
-	CodexAccountSwitchInProgress() bool
-	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
-	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
-	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
-	SetCodexAccountSwitchObserver(func())
 	// SetTerminalInputGate prevents mux input from racing a TUI-to-Chat handoff.
 	SetTerminalInputGate(gate sessionmanager.TerminalInputGate)
 	// SetReviewerTerminator late-binds worker lifecycle teardown to the review
@@ -523,49 +518,7 @@ func (c chatLauncher) PreflightChat(
 }
 
 func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStart) (sessionmanager.ChatStarted, error) {
-	out, err := c.svc.StartChat(ctx, chatsvc.StartRequest{
-		SessionID:               cfg.SessionID,
-		ProjectID:               cfg.ProjectID,
-		Kind:                    cfg.Kind,
-		Harness:                 cfg.Harness,
-		DataDir:                 cfg.DataDir,
-		WorkspacePath:           cfg.WorkspacePath,
-		Env:                     cfg.Env,
-		Model:                   cfg.Model,
-		Permissions:             cfg.Permissions,
-		SystemPrompt:            cfg.SystemPrompt,
-		AdditionalDirectories:   cfg.AdditionalDirectories,
-		ExpectedControllerOwner: cfg.ExpectedControllerOwner,
-		PrepareControllerEnv:    cfg.PrepareControllerEnv,
-		ProviderConversationID:  cfg.ProviderConversationID,
-		ProviderScopeID:         cfg.ProviderScopeID,
-		ControllerGeneration:    cfg.ControllerGeneration,
-		RequireNativeHistory:    cfg.RequireNativeHistory,
-		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
-		ControllerReady: func(out chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
-			if cfg.ControllerReady == nil {
-				return chatsvc.ControllerCommit{}, nil
-			}
-			commit, err := cfg.ControllerReady(sessionmanager.ChatStarted{
-				ProviderConversationID: out.ProviderConversationID,
-				ControllerGeneration:   out.ControllerGeneration,
-				Conversation:           out.Conversation,
-				ProviderBoundary:       out.ProviderBoundary,
-				CommitProviderHistory:  out.CommitProviderHistory,
-			})
-			return chatsvc.ControllerCommit{
-				Conversation:    commit.Conversation,
-				ControllerOwner: commit.ControllerOwner,
-			}, err
-		},
-	})
-	if err != nil {
-		return sessionmanager.ChatStarted{}, err
-	}
-	return sessionmanager.ChatStarted{
-		ProviderConversationID: out.ProviderConversationID,
-		ControllerGeneration:   out.ControllerGeneration,
-	}, nil
+	return c.svc.StartChat(ctx, cfg)
 }
 
 func (c chatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {

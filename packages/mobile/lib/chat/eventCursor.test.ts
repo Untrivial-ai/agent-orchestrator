@@ -8,7 +8,7 @@ vi.mock("expo-secure-store", () => ({
 }));
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { DEFAULT_CONFIG, type ServerConfig } from "../config";
+import { DEFAULT_CONFIG, machineIdentity, type ServerConfig } from "../config";
 import { clearEventCursorsForHost, eventCursorKey, HEAD_CURSOR, initialCursorFor } from "./eventCursor";
 
 const cfg = (over: Partial<ServerConfig> = {}): ServerConfig => ({
@@ -16,6 +16,30 @@ const cfg = (over: Partial<ServerConfig> = {}): ServerConfig => ({
 });
 
 describe("eventCursorKey", () => {
+	// The identity rule moved to machineIdentity so the store's retained project
+	// list keys on the same one (#5058 review). Two callers that disagreed about
+	// what counts as the same machine would be a bug in whichever was wrong.
+	it("is the shared machine identity behind a stable prefix", () => {
+		const identified = cfg({ hostId: "h_abc" });
+		expect(eventCursorKey(identified)).toBe(`ao.chat.events.${machineIdentity(identified)}`);
+	});
+
+	// Pinned as literals, not against the helper that produces them: this key is
+	// where a real device's cursor lives, and changing its shape silently orphans
+	// every stored cursor — which costs a full replay, 14,338 events and ~20s on
+	// the measured daemon, on every machine the app has ever talked to. A test
+	// written as `toBe(\`ao.chat.events.${machineIdentity(cfg)}\`)` cannot catch
+	// that, because both sides move together.
+	it("is exactly the key this shipped with", () => {
+		expect(eventCursorKey(cfg({ hostId: "h_abc" }))).toBe("ao.chat.events.host.h_abc");
+		expect(eventCursorKey(cfg({ hostId: undefined, host: "192.168.1.42", httpPort: "3011", secure: false }))).toBe(
+			"ao.chat.events.http.192.168.1.42.3011",
+		);
+		expect(eventCursorKey(cfg({ hostId: undefined, host: "x.trycloudflare.com", httpPort: "443", secure: true }))).toBe(
+			"ao.chat.events.https.x.trycloudflare.com.443",
+		);
+	});
+
 	// The cursor was keyed by address, so the same machine reached over LAN,
 	// Tailscale and the tunnel had three separate cursors. Every network change
 	// therefore started from zero and replayed the entire backlog — measured at

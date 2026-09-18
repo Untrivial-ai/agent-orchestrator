@@ -126,17 +126,14 @@ describe("FileTree", () => {
 		expect(onSelectPath).toHaveBeenCalledWith(expect.objectContaining({ path: "README.md", type: "file" }));
 	});
 
-	it("loads nested directories while searching before they have been expanded", async () => {
-		getMock.mockImplementation(async (_path: string, options: unknown) => {
-			const query = (options as { params?: { query?: { path?: string } } }).params?.query?.path;
-			if (!query) return treeResponse("", [{ name: "src", path: "src", type: "dir", hasChanges: false }]);
-			if (query === "src") {
-				return treeResponse("src", [{ name: "nested", path: "src/nested", type: "dir", hasChanges: false }]);
-			}
-			if (query === "src/nested") {
-				return treeResponse("src/nested", [{ name: "target.ts", path: "src/nested/target.ts", type: "file", status: "unmodified" }]);
-			}
-			return treeResponse(query, []);
+	it("uses the bounded path-search endpoint instead of recursively loading directories", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				query: "target",
+				results: [{ path: "src/nested/target.ts", status: "unmodified", binary: false, size: 12, fileFingerprint: "file-1" }],
+				truncated: false,
+			},
 		});
 
 		renderWithQuery(
@@ -144,8 +141,9 @@ describe("FileTree", () => {
 		);
 
 		expect(await screen.findByText("target.ts")).toBeInTheDocument();
-		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/tree", {
-			params: { path: { sessionId: "sess-1" }, query: { path: "src/nested" } },
+		expect(getMock).toHaveBeenCalledTimes(1);
+		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/search", {
+			params: { path: { sessionId: "sess-1" }, query: { query: "target", limit: 100 } },
 		});
 	});
 

@@ -73,8 +73,8 @@ func TestLiveCursorACP(t *testing.T) {
 	cancelRef := sendLiveTurn(ctx, t, conv,
 		"Use the shell to run `sleep 30`, wait for it, then say finished.")
 	waitForLiveTurn(ctx, t, conv, cancelRef.ProviderTurnID, true, true)
-	if err := conv.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := conv.(ports.ChatProviderTerminator).Terminate(); err != nil {
+		t.Fatalf("Terminate: %v", err)
 	}
 
 	resumed, err := driver.Resume(ctx, ports.ChatResumeConfig{
@@ -86,7 +86,7 @@ func TestLiveCursorACP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	defer resumed.Close()
+	defer resumed.(ports.ChatProviderTerminator).Terminate()
 	resumeRef := sendLiveTurn(ctx, t, resumed,
 		"Confirm the project rule token and whether proof.txt exists. Do not modify files.")
 	answer := waitForLiveTurn(ctx, t, resumed, resumeRef.ProviderTurnID, false, false)
@@ -133,7 +133,7 @@ func TestLiveCursorACPPermissionModes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Start(%s): %v", test.mode, err)
 			}
-			defer conv.Close()
+			defer conv.(ports.ChatProviderTerminator).Terminate()
 			ref := sendLiveTurnWithSettings(ctx, t, conv,
 				"Use the file editing tool (not the shell) to create mode.txt containing ok, then say done.",
 				ports.ChatTurnSettings{Approval: test.mode})
@@ -253,6 +253,9 @@ func waitForLiveTurn(
 				}
 				if !interrupt && event.TurnState != domain.TurnStateCompleted {
 					t.Fatalf("turn state = %q; answer=%q", event.TurnState, answer.String())
+				}
+				if err := conv.(ports.ChatProviderEventAcknowledger).AcknowledgeProviderEvent(context.Background(), event.ProviderEventID); err != nil {
+					t.Fatalf("acknowledge: %v", err)
 				}
 				return answer.String()
 			}

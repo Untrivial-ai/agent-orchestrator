@@ -31,6 +31,7 @@ type taskPromptConfig struct {
 
 type systemPromptConfig struct {
 	Role                  sessionPromptRole
+	Standalone            bool
 	Project               promptProject
 	OrchestratorSessionID string
 	ProjectRules          string
@@ -86,6 +87,10 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 			sections = append(sections, "## Project-Specific Orchestrator Rules\n"+rules)
 		}
 	case sessionPromptRoleWorker:
+		if cfg.Standalone {
+			sections = append(sections, standaloneWorkerSystemPrompt(), workerContainerLabelPrompt())
+			break
+		}
 		orchestratorID := strings.TrimSpace(cfg.OrchestratorSessionID)
 		sections = append(sections, workerSystemPrompt(cfg.Project, orchestratorID != ""))
 		if orchestratorID != "" {
@@ -119,6 +124,14 @@ func publishingScopePrompt() string {
 - For freeform work, publish only when the user requests it or explicitly configured project rules require it. Available credentials, a configured remote, auto/bypass tool permissions, or an associated PR/MR alone do not authorize publishing.
 - Explicit user restrictions such as local-only, review-only, or do-not-publish take precedence over workflow defaults, including issue-task prompts and CI/review follow-up instructions. Complete the permitted local work and report the result without publishing.
 - Preserve the user's publishing scope and restrictions when spawning or redirecting workers. Do not add publishing to a freeform implementation task unless the user or explicitly configured project rules authorize it.`
+}
+
+func standaloneWorkerSystemPrompt() string {
+	return `## AO Standalone Agent
+
+You are a standalone Agent Orchestrator worker. This session is not attached to a project, repository, branch, issue tracker, orchestrator, PR/MR workflow, CI integration, or review automation.
+
+Work only from the user's requests and the files in this AO-managed workspace. Do not invent project context or create repository, branch, issue, PR/MR, CI, or review requirements. You may create and edit ordinary files in the workspace, run relevant commands, and use AO session capabilities such as the terminal, browser, attachments, and chat. Keep work focused, verify it when appropriate, and report blockers clearly.`
 }
 
 // systemPromptGuard is appended to every agent system prompt. The role,
@@ -319,8 +332,9 @@ func workerMultiPRPrompt() string {
 AO attributes PRs to this session when the source branch is this session branch or lives under this session namespace.
 
 - If your current branch ends in ` + "`/root`" + `, create independent PR branches as siblings under the same namespace, for example ` + "`<namespace>/<topic>`" + ` from ` + "`<namespace>/root`" + `. Do not create ` + "`<namespace>/root/<topic>`" + `.
+- For a workspace project whose recorded session branch is ` + "`ao/<session-id>`" + ` or a collision variant such as ` + "`ao/<session-id>-2`" + `, use hyphen siblings such as ` + "`<session-branch>-<topic>`" + ` in each registered repository. The bare session ref prevents Git from creating slash children. Keep the full collision suffix. Claim a child-repository PR explicitly with ` + "`ao session claim-pr <full-pr-url>`" + ` when needed.
 - Otherwise, create each source branch as a child of this session branch, for example ` + "`<current-branch>/<topic>`" + `.
-- To stack a PR on top of another, create the child branch from the parent branch and name it ` + "`<parent-branch>/<topic>`" + `, then target the parent branch in the PR.
+- To stack a PR on top of another, create the new branch from the parent branch and target the parent branch in the PR. Use ` + "`<parent-branch>/<topic>`" + ` when Git permits slash children, or another ` + "`<session-branch>-<topic>`" + ` for bare workspace refs.
 
 Keep branch names inside this session namespace so AO can track every PR you open.`
 }

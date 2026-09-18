@@ -51,34 +51,37 @@ function utf8Encode(str: string): Uint8Array {
 
 // The Go daemon carries terminal payloads as base64 (Go base64.StdEncoding),
 // because raw PTY bytes aren't valid UTF-8 and can't ride in a JSON string.
-// These helpers avoid depending on atob/btoa (not guaranteed in Hermes).
+//
+// Decoding runs once per PTY frame, so it uses atob and a pre-sized Uint8Array -
+// the shape the desktop renderer already uses (frontend/src/renderer/lib/terminal-mux.ts).
+// The "atob isn't guaranteed in Hermes" caution this replaced was already moot:
+// pairingCode.ts calls atob on the live pair path. Encoding keeps the table below,
+// since it runs once per input event rather than once per frame. See #4876.
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const B64_LOOKUP = (() => {
-	const t = new Int16Array(256).fill(-1);
-	for (let i = 0; i < B64.length; i++) t[B64.charCodeAt(i)] = i;
-	return t;
-})();
 
-function base64ToBytes(b64: string): Uint8Array {
-	let clean = "";
-	for (let i = 0; i < b64.length; i++) {
-		const ch = b64.charCodeAt(i);
-		if (ch < 256 && B64_LOOKUP[ch] !== -1) clean += b64[i];
+/**
+ * Decodes one base64 payload from the daemon.
+ *
+ * Returns empty instead of throwing: `handle` is called outside the JSON.parse
+ * guard in ws.onmessage, so a throw here would escape the socket callback. An
+ * unreadable frame is dropped, which is what that guard already does one level
+ * up. The daemon cannot send one - base64.StdEncoding is the only encode site
+ * for terminal output, and it cannot emit whitespace.
+ */
+export function base64ToBytes(b64: string): Uint8Array {
+	let binary: string;
+	try {
+		binary = atob(b64);
+	} catch {
+		return new Uint8Array(0);
 	}
-	const out: number[] = [];
-	for (let i = 0; i < clean.length; i += 4) {
-		const a = B64_LOOKUP[clean.charCodeAt(i)] ?? 0;
-		const b = B64_LOOKUP[clean.charCodeAt(i + 1)] ?? 0;
-		const c = i + 2 < clean.length ? (B64_LOOKUP[clean.charCodeAt(i + 2)] ?? 0) : -1;
-		const d = i + 3 < clean.length ? (B64_LOOKUP[clean.charCodeAt(i + 3)] ?? 0) : -1;
-		out.push((a << 2) | (b >> 4));
-		if (c !== -1) out.push(((b & 15) << 4) | (c >> 2));
-		if (d !== -1) out.push(((c & 3) << 6) | d);
-	}
-	return new Uint8Array(out);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+	return bytes;
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
+/** Encodes one input event for the daemon, which decodes it with Go's StdEncoding. */
+export function bytesToBase64(bytes: Uint8Array): string {
 	let out = "";
 	for (let i = 0; i < bytes.length; i += 3) {
 		const a = bytes[i];

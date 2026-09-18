@@ -12,6 +12,13 @@
 // own ticket, so the hook's reconnect (which builds a fresh mux) transparently
 // gets a fresh ticket.
 //
+// Both the agent and workspace kinds open their socket DIRECTLY at construction
+// and drive readiness off the CP's structured `starting`/`ready` messages —
+// there is no separate agent-ready SSE wait. The CP's OpenTerminal(agent) is
+// find-or-create for the current worker epoch (it reuses a running agent's
+// terminal), so opening a healthy session's terminal is safe and immediate, and
+// a not-yet-started agent is held in `starting` up to the CP's ready deadline.
+//
 // CP wire (see cloud/internal/httpapi/terminal_handlers.go):
 //   client -> {type:"input",data} | {type:"resize",columns,rows}
 //   server -> {type:"starting"|"ready"|"reset"|"replay_complete"|"input_ack"}
@@ -25,7 +32,22 @@ export interface CloudTerminalMuxOptions {
 	/** "agent" attaches the running coding agent; "workspace" opens a shell. */
 	kind: "agent" | "workspace";
 	/** Mints a fresh single-use terminal ticket (goes through the CP proxy). */
-	mintTicket: () => Promise<string>;
+	mintTicket: (kind: "agent" | "workspace") => Promise<string>;
+	/**
+	 * Replay cursor shared across mux rebuilds for the same pane. The hook
+	 * discards a mux and builds a fresh one on every reconnect; without a shared
+	 * cursor each new mux would send `after=0` and the control plane would
+	 * replay the whole scrollback again, so the terminal never settles and just
+	 * flickers. Passing a stable ref object lets a rebuilt mux resume from the
+	 * last sequence it received. Omit for a fresh pane (starts at 0).
+	 *
+	 * The mux always sends `after=cursor.value`; the CP decides whether to honor
+	 * it or reset to 0. Today the CP sends `{type:"reset"}` for both kinds, so
+	 * the effective replay is always from 0 (correct across worker-epoch bumps,
+	 * whose per-terminal output sequences restart). The cursor plumbing is kept
+	 * so a future epoch-aware CP can resume within an epoch instead.
+	 */
+	cursor?: { value: number };
 	WebSocketImpl?: typeof WebSocket;
 }
 
@@ -44,7 +66,14 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 	const connectionListeners = new Set<ConnectionListener>();
 
 	let socket: WebSocket | null = null;
-	let after = 0;
+	// Resume from the shared cursor so a rebuilt mux does not replay the whole
+	// scrollback from sequence 0 (the flicker/never-settle bug). advanceCursor
+	// keeps the shared ref in step with our local position.
+	let after = options.cursor?.value ?? 0;
+	const advanceCursor = (sequence: number) => {
+		after = sequence;
+		if (options.cursor) options.cursor.value = sequence;
+	};
 	let disposed = false;
 	let exited = false;
 	let connectionState: MuxConnectionState | undefined;
@@ -55,6 +84,17 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		if (disposed || connectionState === next) return;
 		connectionState = next;
 		connectionListeners.forEach((listener) => listener(next));
+	};
+
+	const terminalExited = (error: unknown): boolean =>
+		typeof error === "object" && error !== null && (error as { code?: unknown }).code === "TERMINAL_SESSION_EXITED";
+
+	const reportTerminalExited = () => {
+		if (disposed || exited) return;
+		exited = true;
+		errorListeners.forEach((listener) =>
+			listener("The coding-agent terminal has exited. Start a new session to continue."),
+		);
 	};
 
 	const sendJSON = (message: unknown): boolean => {
@@ -75,42 +115,40 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		}
 		switch (message.type) {
 			case "ready":
-				if (typeof message.sequence === "number") after = message.sequence;
+				if (typeof message.sequence === "number") advanceCursor(message.sequence);
 				openedListeners.forEach((listener) => listener());
 				break;
 			case "output":
-				if (typeof message.sequence === "number") after = message.sequence;
+				if (typeof message.sequence === "number") advanceCursor(message.sequence);
 				if (message.data) {
 					const bytes = base64ToBytes(message.data);
 					dataListeners.forEach((listener) => listener(bytes));
 				}
 				break;
-			// starting / reset / replay_complete / input_ack carry no terminal
-			// output the pane must render.
+			case "reset":
+				// The CP deliberately restarts the stream from sequence 0 (a fresh
+				// workspace shell, or an agent open whose replay must start clean).
+				// Drop our resume cursor and wipe the pane's stale content (clear
+				// screen + scrollback, home the cursor) so the fresh replay does not
+				// stack on top of the old buffer.
+				advanceCursor(0);
+				{
+					const clear = new TextEncoder().encode("\x1b[3J\x1b[H\x1b[2J");
+					dataListeners.forEach((listener) => listener(clear));
+				}
+				break;
+			// starting / replay_complete / input_ack carry no terminal output the
+			// pane must render.
 			default:
 				break;
 		}
 	};
 
-	const connect = async () => {
-		let ticket: string;
-		try {
-			ticket = await options.mintTicket();
-		} catch {
-			if (disposed) return;
-			// A freshly created session's worker may not be connected yet while its
-			// sandbox provisions; the control plane reports that as 409
-			// WORKER_UNAVAILABLE on the ticket request. Treat a mint failure as a
-			// transient disconnect so the hook reattaches with backoff and the
-			// terminal streams once the worker checks in, instead of surfacing a
-			// permanent "worker is not connected" error the user must reload past.
-			setConnectionState("closed");
-			return;
-		}
+	const openSocket = (kind: "agent" | "workspace", ticket: string) => {
 		if (disposed) return;
 		const query = new URLSearchParams({
 			ticket,
-			kind: options.kind,
+			kind,
 			after: String(after),
 			protocol: "2",
 		});
@@ -118,39 +156,83 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		const ws = new WS(url);
 		socket = ws;
 		ws.addEventListener("open", () => {
-			if (disposed) return;
+			if (disposed || socket !== ws) return;
 			if (pendingResize) sendJSON({ type: "resize", columns: pendingResize.cols, rows: pendingResize.rows });
 			for (const input of pendingInput.splice(0)) sendJSON({ type: "input", data: input });
 			setConnectionState("open");
 		});
-		ws.addEventListener("message", handleMessage);
+		ws.addEventListener("message", (event) => {
+			if (socket === ws) handleMessage(event);
+		});
 		ws.addEventListener("close", (event: CloseEvent) => {
-			// A normal closure (1000) is the CP telling us the terminal process
-			// exited or the terminal was closed — the pane is gone, so signal exit
-			// and let the hook stop reattaching. Any other close is a transport
-			// drop the hook should reconnect through (with a fresh ticket).
+			if (socket !== ws) return;
 			if (event.code === 1000 && !exited) {
 				exited = true;
 				exitListeners.forEach((listener) => listener());
 			}
 			setConnectionState("closed");
 		});
-		ws.addEventListener("error", () => setConnectionState("closed"));
+		ws.addEventListener("error", () => {
+			if (socket === ws) setConnectionState("closed");
+		});
 	};
 
-	void connect();
+	const connect = async (kind: "agent" | "workspace") => {
+		let ticket: string;
+		try {
+			ticket = await options.mintTicket(kind);
+		} catch (error) {
+			if (disposed) return;
+			// A control plane that reports the agent terminal has exited (410
+			// TERMINAL_SESSION_EXITED) is terminal: surface it and stop, rather than
+			// looping the ticket mint forever as if the worker were merely not up yet
+			// (the "Connected, but stuck Connecting…" symptom).
+			if (terminalExited(error)) {
+				reportTerminalExited();
+				return;
+			}
+			// A freshly created session's worker may not be connected yet while its
+			// sandbox provisions; the control plane reports that as 409
+			// WORKER_UNAVAILABLE on the ticket request. Report this as "waiting",
+			// distinct from a socket-level "closed", so the hook keeps polling for
+			// readiness WITHOUT counting it against the connect-failure circuit
+			// breaker: nothing failed to connect, the worker is simply not up yet.
+			// Only a genuine post-mint socket failure trips the breaker.
+			setConnectionState("waiting");
+			return;
+		}
+		if (disposed) return;
+		openSocket(kind, ticket);
+	};
+
+	// Open directly for both kinds. The CP's find-or-create OpenTerminal plus its
+	// structured starting/ready messages drive readiness, so there is no separate
+	// agent-ready SSE to wait for — that wait was the orchestrator "Connecting…"
+	// stall (a large event log never redelivered the old, low-sequence agent.ready,
+	// so the socket was never even attempted).
+	void connect(options.kind);
+
+	// A hidden/parked pane attaches at 0×0 to keep receiving output WITHOUT
+	// claiming a size — the shared PTY must never be resized from an off-screen
+	// grid. The CP rejects a 0-dimension resize as invalid and closes the socket
+	// (which would loop a parked reconnect), so a 0×0 open/resize sends nothing;
+	// the real size follows from the first visible fit (open for a visible pane,
+	// or resize() when the pane becomes visible).
+	const sendResize = (cols: number, rows: number) => {
+		if (cols <= 0 || rows <= 0) return;
+		pendingResize = { cols, rows };
+		sendJSON({ type: "resize", columns: cols, rows });
+	};
 
 	return {
 		open: (_id, cols, rows) => {
-			pendingResize = { cols, rows };
-			sendJSON({ type: "resize", columns: cols, rows });
+			sendResize(cols, rows);
 		},
 		sendInput: (_id, input) => {
 			if (!sendJSON({ type: "input", data: input })) pendingInput.push(input);
 		},
 		resize: (_id, cols, rows) => {
-			pendingResize = { cols, rows };
-			sendJSON({ type: "resize", columns: cols, rows });
+			sendResize(cols, rows);
 		},
 		close: () => {
 			if (socket) {

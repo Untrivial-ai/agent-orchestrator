@@ -49,6 +49,18 @@ func TestLastPromptComposerState(t *testing.T) {
 		{name: "dim placeholder", output: "❯ \x1b[2mAsk a question\x1b[0m", want: ComposerEmpty},
 		{name: "draft", output: "❯ keep this draft", want: ComposerDraft},
 		{name: "wrapped draft", output: "❯\nkeep this draft", want: ComposerDraft},
+		{
+			// A rule below the prompt ends the composer's content region;
+			// provider status chrome below that rule is not human input.
+			name:   "rule below prompt closes the footer-free scan",
+			output: "❯ \x1b[7m \x1b[0m\n" + strings.Repeat("─", 48) + "\n  glm-5.3 low 40.1k [Rate limited]",
+			want:   ComposerEmpty,
+		},
+		{
+			name:   "prompt-line draft above a rule is still a draft",
+			output: "❯ keep this draft\n" + strings.Repeat("─", 48) + "\n⏵⏵ auto mode on",
+			want:   ComposerDraft,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,5 +134,49 @@ func TestLastBorderedPromptComposerState(t *testing.T) {
 				t.Fatalf("LastBorderedPromptComposerState() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLastBorderedPromptComposerStateIgnoresProviderChromeLabels(t *testing.T) {
+	rule := strings.Repeat("─", 48)
+	output := rule + "\n❯  Claude Code\n" + rule + "\n  glm-5.3 low [Rate limited]"
+	if got := LastBorderedPromptComposerState(output, "❯"); got != ComposerDraft {
+		t.Fatalf("provider label without chrome list = %v, want draft (unchanged default)", got)
+	}
+	if got := LastBorderedPromptComposerState(output, "❯", "Claude Code"); got != ComposerEmpty {
+		t.Fatalf("provider label with chrome list = %v, want empty", got)
+	}
+	if got := LastBorderedPromptComposerState(output, "❯", "OpenAI Codex"); got != ComposerDraft {
+		t.Fatalf("unrelated chrome label = %v, want draft", got)
+	}
+	if got := LastPromptComposerState(output, "❯", "Claude Code"); got != ComposerEmpty {
+		t.Fatalf("footer-free fallback with chrome list = %v, want empty (rule closes the region)", got)
+	}
+}
+
+func TestPromptChromeLabelsAreExemptOnContinuationRows(t *testing.T) {
+	rule := strings.Repeat("─", 48)
+	// The provider can paint its label on its own row inside the bordered
+	// composer, below the marker row. That row is chrome too, not a draft.
+	bordered := rule + "\n❯ \x1b[7m \x1b[0m\n Claude Code\n" + rule + "\n⏵⏵ auto mode on"
+	if got := LastBorderedPromptComposerState(bordered, "❯"); got != ComposerDraft {
+		t.Fatalf("bordered label row without chrome list = %v, want draft (unchanged default)", got)
+	}
+	if got := LastBorderedPromptComposerState(bordered, "❯", "Claude Code"); got != ComposerEmpty {
+		t.Fatalf("bordered label row with chrome list = %v, want empty", got)
+	}
+	// Same for the footer-free fallback: a label row below the prompt is not
+	// human input.
+	footerFree := "❯ \x1b[7m \x1b[0m\nClaude Code\n"
+	if got := LastPromptComposerState(footerFree, "❯"); got != ComposerDraft {
+		t.Fatalf("footer-free label row without chrome list = %v, want draft (unchanged default)", got)
+	}
+	if got := LastPromptComposerState(footerFree, "❯", "Claude Code"); got != ComposerEmpty {
+		t.Fatalf("footer-free label row with chrome list = %v, want empty", got)
+	}
+	// A label followed by human text on the same row is still a draft.
+	mixed := rule + "\n❯ Claude Code review please\n" + rule + "\n⏵⏵ auto mode on"
+	if got := LastBorderedPromptComposerState(mixed, "❯", "Claude Code"); got != ComposerDraft {
+		t.Fatalf("label-prefixed human text = %v, want draft", got)
 	}
 }

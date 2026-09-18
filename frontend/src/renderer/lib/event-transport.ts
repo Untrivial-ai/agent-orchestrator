@@ -96,6 +96,40 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					// A malformed transient event cannot replace the cached safe snapshot.
 				}
 			};
+			// The scheduled flush body. Extracted so a leading-edge event can run
+			// it immediately without waiting out a full window.
+			let lastFlushAt = Number.NEGATIVE_INFINITY;
+			const flushPending = () => {
+				if (allConversationsInvalidationPending) {
+					invalidate(conversationQueryRoot);
+					allConversationsInvalidationPending = false;
+				}
+				if (workspaceInvalidationPending) {
+					invalidate(workspaceQueryKey);
+					invalidate(agentSwitchesQueryRoot);
+					invalidate(sessionScmSummaryQueryKey());
+					invalidate(sessionUsageQueryRoot);
+					workspaceInvalidationPending = false;
+				}
+				if (allEditorHandoffsInvalidationPending) {
+					invalidate(editorHandoffQueryRoot);
+					allEditorHandoffsInvalidationPending = false;
+					pendingEditorHandoffSessions.clear();
+				} else {
+					for (const sessionId of pendingEditorHandoffSessions) {
+						invalidate(editorHandoffQueryKey(sessionId));
+					}
+					pendingEditorHandoffSessions.clear();
+				}
+				for (const sessionId of pendingConversationSessions) {
+					invalidate(conversationQueryKey(sessionId));
+				}
+				pendingConversationSessions.clear();
+				for (const sessionId of pendingInterfaceTransitionSessions) {
+					invalidate(["session-interface-transition", sessionId]);
+				}
+				pendingInterfaceTransitionSessions.clear();
+			};
 			const refreshWorkspaces = (event?: Event) => {
 				if (disposed) return;
 				let conversationOnly = false;
@@ -160,41 +194,25 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					}
 				}
 				if (!conversationOnly) workspaceInvalidationPending = true;
-				// Keep the first event's deadline: a busy stream must not postpone
-				// visible updates until traffic stops. Later events join this window.
+				// A busy stream must not postpone visible updates until traffic
+				// stops, and the first event after a quiet period must not wait out
+				// a full window either. Flush on the leading edge when the last
+				// flush is at least one window old; otherwise coalesce this and
+				// later events into a single trailing flush. invalidate() still
+				// dedups the resulting refetches per key, so the leading edge
+				// cannot start a refetch storm.
 				if (refreshTimer !== undefined) return;
+				const sinceLastFlush = Date.now() - lastFlushAt;
+				if (sinceLastFlush >= INVALIDATE_WINDOW_MS) {
+					lastFlushAt = Date.now();
+					flushPending();
+					return;
+				}
 				refreshTimer = setTimeout(() => {
 					refreshTimer = undefined;
-					if (allConversationsInvalidationPending) {
-						invalidate(conversationQueryRoot);
-						allConversationsInvalidationPending = false;
-					}
-					if (workspaceInvalidationPending) {
-						invalidate(workspaceQueryKey);
-						invalidate(agentSwitchesQueryRoot);
-						invalidate(sessionScmSummaryQueryKey());
-						invalidate(sessionUsageQueryRoot);
-						workspaceInvalidationPending = false;
-					}
-					if (allEditorHandoffsInvalidationPending) {
-						invalidate(editorHandoffQueryRoot);
-						allEditorHandoffsInvalidationPending = false;
-						pendingEditorHandoffSessions.clear();
-					} else {
-						for (const sessionId of pendingEditorHandoffSessions) {
-							invalidate(editorHandoffQueryKey(sessionId));
-						}
-						pendingEditorHandoffSessions.clear();
-					}
-					for (const sessionId of pendingConversationSessions) {
-						invalidate(conversationQueryKey(sessionId));
-					}
-					pendingConversationSessions.clear();
-					for (const sessionId of pendingInterfaceTransitionSessions) {
-						invalidate(["session-interface-transition", sessionId]);
-					}
-					pendingInterfaceTransitionSessions.clear();
-				}, INVALIDATE_WINDOW_MS);
+					lastFlushAt = Date.now();
+					flushPending();
+				}, INVALIDATE_WINDOW_MS - sinceLastFlush);
 			};
 
 			// Consecutive scheduled rebuilds since the stream last opened. Paces

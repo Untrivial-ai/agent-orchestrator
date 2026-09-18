@@ -2,191 +2,188 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	MAX_BROWSER_ANNOTATION_MESSAGE_LENGTH,
 	createBrowserAnnotationContext,
+	createBrowserAnnotationSession,
 	formatBrowserAnnotationMessage,
+	parseBrowserAnnotationMessage,
+	type BrowserAnnotationContext,
+	type BrowserAnnotationSession,
+	type BrowserAnnotationSubmitPayload,
 } from "./browser-annotations";
+
+function context(overrides: Partial<BrowserAnnotationContext> = {}): BrowserAnnotationContext {
+	return {
+		url: "http://localhost:5173/settings",
+		title: "Settings",
+		tag: "button",
+		id: "save",
+		classes: ["primary"],
+		selector: "button#save",
+		size: { width: 140, height: 36 },
+		rect: { x: 16, y: 24, width: 140, height: 36 },
+		visibleText: "Save changes",
+		ariaLabel: "Save profile",
+		computedStyle: {},
+		...overrides,
+	};
+}
+
+function submitPayload(session: BrowserAnnotationSession): BrowserAnnotationSubmitPayload {
+	return {
+		viewId: "42:sess-1",
+		tabId: "t1",
+		pageKey: session.page.url,
+		sessionToken: "annotation-session-1",
+		session,
+	};
+}
 
 describe("createBrowserAnnotationContext", () => {
 	it("captures bounded DOM context for the selected element", () => {
-		document.body.innerHTML = `
-			<main>
-				<label for="email">Email address</label>
-				<section>
-					<button id="save" class="primary cta" aria-label="Save profile" style="font-size: 18px; font-weight: 700;">
-						Save changes
-					</button>
-					<p>Changes apply to the active customer profile.</p>
-				</section>
-			</main>
-		`;
+		document.body.innerHTML = `<button id="save" class="primary cta" aria-label="Save profile" style="font-size:18px;font-weight:700">Save changes</button>`;
 		const button = document.querySelector<HTMLButtonElement>("#save")!;
 		button.getBoundingClientRect = vi.fn(() => ({
-			x: 16,
-			y: 24,
-			width: 140,
-			height: 36,
-			top: 24,
-			right: 156,
-			bottom: 60,
-			left: 16,
+			x: 16, y: 24, width: 140, height: 36, top: 24, right: 156, bottom: 60, left: 16,
 			toJSON: () => ({}),
 		}));
 
-		const context = createBrowserAnnotationContext(button);
+		const captured = createBrowserAnnotationContext(button);
 
-		expect(context.tag).toBe("button");
-		expect(context.id).toBe("save");
-		expect(context.classes).toEqual(["primary", "cta"]);
-		expect(context.selector).toBe("button#save");
-		expect(context.size).toEqual({ width: 140, height: 36 });
-		expect(context.visibleText).toBe("Save changes");
-		expect(context.ariaLabel).toBe("Save profile");
-		expect(context.computedStyle.fontSize).toBe("18px");
-		expect(context.computedStyle.fontWeight).toBe("700");
+		expect(captured.selector).toBe("button#save");
+		expect(captured.classes).toEqual(["primary", "cta"]);
+		expect(captured.size).toEqual({ width: 140, height: 36 });
+		expect(captured.rect).toEqual({ x: 16, y: 24, width: 140, height: 36 });
+		expect(captured.visibleText).toBe("Save changes");
+		expect(captured.ariaLabel).toBe("Save profile");
+		expect(captured.computedStyle.fontSize).toBe("18px");
 	});
 });
 
 describe("formatBrowserAnnotationMessage", () => {
-	it("formats the user instruction and selected element context for the agent", () => {
-		const message = formatBrowserAnnotationMessage({
-			viewId: "42:sess-1",
-			instruction: "Make the save button blue and larger.",
-			selection: {
-				kind: "element",
-				context: {
-					url: "http://localhost:5173/settings",
-					title: "Settings",
-					tag: "button",
-					id: "save",
-					classes: ["primary"],
-					selector: "button#save",
-					size: { width: 140, height: 36 },
-					visibleText: "Save changes",
-					ariaLabel: "Save profile",
-					computedStyle: {
-						display: "inline-flex",
-						position: "static",
-						color: "rgb(255, 255, 255)",
-						backgroundColor: "rgb(0, 0, 0)",
-						fontSize: "14px",
-						fontWeight: "600",
-						padding: "8px 12px",
-						margin: "0px",
-					},
-				},
-			},
+	it("builds a compact, structured handoff with precise visual changes", () => {
+		const session = createBrowserAnnotationSession("https://www.google.com/", "Google");
+		session.annotations.push({
+			id: "annotation-1",
+			number: 1,
+			kind: "adjustment",
+			body: "Try this treatment.",
+			target: { context: context({ url: "https://www.google.com/", title: "Google" }) },
+			adjustments: [
+				{ property: "color", previousValue: "rgb(0, 0, 0)", value: "#e34b63" },
+				{ property: "width", previousValue: "140px", value: "89px" },
+			],
+			createdAt: "2026-09-10T12:00:00.000Z",
+			updatedAt: "2026-09-10T12:00:00.000Z",
 		});
 
-		expect(message).toContain("Browser annotation — apply this change");
-		expect(message).toContain("Request: Make the save button blue and larger.");
-		expect(message).toContain("Target: button#save.primary (button#save)");
-		expect(message).toContain('Page: http://localhost:5173/settings — "Settings"');
-		expect(message).toContain("Size: 140×36");
-		expect(message).toContain('Text: "Save changes"');
-		expect(message).toContain('Aria-label: "Save profile"');
-		expect(message).toContain(
-			"Style: display:inline-flex; position:static; color:rgb(255,255,255); background:rgb(0,0,0); font:600 14px; padding:8px 12px; margin:0px",
-		);
-		expect(message).toContain(
-			"Constraints: smallest diff that satisfies the request; no watch-mode or long-running commands; use finite verification commands or the existing preview watcher.",
-		);
-		expect(message).not.toContain("Do not start, restart, or background a dev server");
+		const message = formatBrowserAnnotationMessage(submitPayload(session));
+
+		expect(message).toMatch(/^<browser_annotations>\n/);
+		expect(message).toContain("Browser feedback");
+		expect(message).toContain('Comment: Try this treatment.');
+		expect(message).toContain('- Text color: "rgb(0, 0, 0)" → "#e34b63"');
+		expect(message).toContain('- Width: "140px" → "89px"');
+		expect(message).toContain("Visual adjustments are already previewed in AO's shared browser");
+		expect(message).toMatch(/\n<\/browser_annotations>$/);
+		expect(message).not.toContain("Browser handoff:");
+		expect(message).not.toContain("Do not");
 	});
 
-	it("omits optional lines when the element has no text, aria-label, or style data", () => {
-		const message = formatBrowserAnnotationMessage({
-			viewId: "1:sess-1",
-			instruction: "Move this over.",
-			selection: {
-				kind: "element",
-				context: {
-					url: "http://localhost:5173/",
-					tag: "div",
-					classes: [],
-					selector: "div:nth-of-type(3)",
-					size: { width: 40, height: 40 },
-					computedStyle: {},
-				},
-			},
+	it("keeps comments intent-sensitive and references staged screenshots", () => {
+		const session = createBrowserAnnotationSession("http://localhost:5173/settings", "Settings");
+		session.annotations.push({
+			id: "annotation-1",
+			number: 1,
+			kind: "comment",
+			body: "Why is this disabled?",
+			target: { context: context() },
+			adjustments: [],
+			createdAt: "2026-09-10T12:00:00.000Z",
+			updatedAt: "2026-09-10T12:00:00.000Z",
 		});
 
-		expect(message).not.toContain("Text:");
-		expect(message).not.toContain("Aria-label:");
-		expect(message).not.toContain("Style:");
-		expect(message).toContain("Target: div (div:nth-of-type(3))");
-		expect(message).toContain("Page: http://localhost:5173/");
+		const message = formatBrowserAnnotationMessage(submitPayload(session), { screenshotPaths: [".ao/attachments/example.png"] });
+
+		expect(message).toContain("Comment: Why is this disabled?");
+		expect(message).toContain("Address the feedback below according to its wording");
+		expect(message).toContain("Reference screenshots:");
+		expect(message).toContain(".ao/attachments/example.png");
 	});
 
-	it("keeps the message below the daemon send-message limit", () => {
-		const message = formatBrowserAnnotationMessage({
-			viewId: "42:sess-1",
-			instruction: "Change this. ".repeat(800),
-			selection: {
-				kind: "element",
-				context: {
-					url: "http://localhost:5173/",
-					title: "Preview",
-					tag: "div",
-					classes: [],
-					selector: "body > div:nth-of-type(1)",
-					size: { width: 100, height: 100 },
-					visibleText: "Long visible text ".repeat(500),
-					computedStyle: {},
-				},
-			},
+	it("does not invent an empty note for an adjustment", () => {
+		const session = createBrowserAnnotationSession("http://localhost:5173/settings", "Settings");
+		session.annotations.push({
+			id: "annotation-1",
+			number: 1,
+			kind: "adjustment",
+			body: "",
+			target: { context: context() },
+			adjustments: [{ property: "height", previousValue: "36px", value: "48px" }],
+			createdAt: "2026-09-10T12:00:00.000Z",
+			updatedAt: "2026-09-10T12:00:00.000Z",
 		});
+
+		const message = formatBrowserAnnotationMessage(submitPayload(session));
+
+		expect(message).not.toContain("Comment:");
+		expect(message).not.toContain("(empty)");
+	});
+
+	it("parses the transport into transcript-safe display data", () => {
+		const session = createBrowserAnnotationSession("http://localhost:5173/settings", "Settings");
+		session.annotations.push({
+			id: "annotation-1",
+			number: 1,
+			kind: "adjustment",
+			body: "Make the primary action clearer.",
+			target: { context: context() },
+			adjustments: [
+				{ property: "color", previousValue: "black", value: "white" },
+				{ property: "backgroundColor", previousValue: "white", value: "blue" },
+			],
+			createdAt: "2026-09-10T12:00:00.000Z",
+			updatedAt: "2026-09-10T12:00:00.000Z",
+		});
+
+		const parsed = parseBrowserAnnotationMessage(
+			formatBrowserAnnotationMessage(submitPayload(session), { screenshotPaths: [".ao/attachments/example.png"] }),
+		);
+
+		expect(parsed).toEqual({
+			pageTitle: "Settings",
+			pageUrl: "http://localhost:5173/settings",
+			items: [
+				{
+					number: 1,
+					kind: "adjustment",
+					target: "button#save.primary",
+					comment: "Make the primary action clearer.",
+					changes: ['Text color: "black" → "white"', 'Background: "white" → "blue"'],
+				},
+			],
+			screenshotCount: 1,
+		});
+	});
+
+	it("keeps the generated handoff below the daemon message limit", () => {
+		const session = createBrowserAnnotationSession("http://localhost:5173/", "Preview");
+		for (let index = 1; index <= 20; index += 1) {
+			session.annotations.push({
+				id: `annotation-${index}`,
+				number: index,
+				kind: "comment",
+				body: "Change this. ".repeat(800),
+				target: { context: context({ visibleText: "Long visible text ".repeat(500) }) },
+				adjustments: [],
+				createdAt: "2026-09-10T12:00:00.000Z",
+				updatedAt: "2026-09-10T12:00:00.000Z",
+			});
+		}
+
+		const message = formatBrowserAnnotationMessage(submitPayload(session));
 
 		expect(message.length).toBeLessThanOrEqual(MAX_BROWSER_ANNOTATION_MESSAGE_LENGTH);
 		expect(message).toContain("[truncated]");
-	});
-
-	it("lists every element for a multi-element selection", () => {
-		const elementContext = (overrides: Record<string, unknown>) => ({
-			url: "http://localhost:5173/",
-			tag: "button",
-			classes: [],
-			selector: "button",
-			size: { width: 80, height: 30 },
-			computedStyle: {},
-			...overrides,
-		});
-		const message = formatBrowserAnnotationMessage({
-			viewId: "1:sess-1",
-			instruction: "Align these two buttons.",
-			selection: {
-				kind: "elements",
-				contexts: [
-					elementContext({ id: "save", selector: "button#save" }),
-					elementContext({ id: "cancel", selector: "button#cancel" }),
-				],
-			},
-		});
-
-		expect(message).toContain("Browser annotation — apply this change to 2 selected elements");
-		expect(message).toContain("Targets @ http://localhost:5173/:");
-		expect(message).toContain("1. button#save (selector: button#save) — 80×30");
-		expect(message).toContain("2. button#cancel (selector: button#cancel) — 80×30");
-	});
-
-	it("pluralizes correctly for a single-element multi-selection", () => {
-		const message = formatBrowserAnnotationMessage({
-			viewId: "1:sess-1",
-			instruction: "Fix this element.",
-			selection: {
-				kind: "elements",
-				contexts: [
-					{
-						url: "http://localhost:5173/",
-						tag: "button",
-						classes: [],
-						selector: "button#fix-me",
-						size: { width: 80, height: 30 },
-						computedStyle: {},
-					},
-				],
-			},
-		});
-
-		expect(message).toContain("Browser annotation — apply this change to 1 selected element");
-		expect(message).not.toContain("1 selected elements");
+		expect(message).toMatch(/\n<\/browser_annotations>$/);
+		expect(parseBrowserAnnotationMessage(message)).not.toBeNull();
 	});
 });

@@ -5,6 +5,7 @@ import {
 	comparePRs,
 	mergeReasonLabel,
 	prBlockerLine,
+	prListSections,
 	prLifecycle,
 	prStatusAtoms,
 	prSummaryLine,
@@ -224,5 +225,40 @@ describe("comparePRs", () => {
 
 	it("breaks ties with the newest PR first", () => {
 		expect(sorted([pr({ number: 4 }), pr({ number: 12 }), pr({ number: 7 })])).toEqual([12, 7, 4]);
+	});
+});
+
+describe("prListSections", () => {
+	const item = (over: Partial<DashboardPR>) => ({
+		pr: pr(over),
+		session: session("alpha", []),
+	});
+
+	it("groups open pull requests by the next useful action", () => {
+		const sections = prListSections([
+			item({ number: 1, reviewDecision: "pending" }),
+			item({ number: 2, ciStatus: "failing" }),
+			item({ number: 3, reviewDecision: "approved", mergeability: { mergeable: true } }),
+			item({ number: 4, isDraft: true }),
+		], "open");
+
+		expect(sections.map((section) => [section.key, section.data.map(({ pr }) => pr.number)])).toEqual([
+			["ready", [3]],
+			["attention", [2]],
+			["review", [1]],
+			["draft", [4]],
+		]);
+	});
+
+	it("keeps merged and closed history out of the open board", () => {
+		const items = [item({ number: 5, state: "merged" }), item({ number: 6, state: "closed" })];
+		expect(prListSections(items, "open")).toEqual([]);
+		expect(prListSections(items, "merged").map((section) => section.key)).toEqual(["merged"]);
+		expect(prListSections(items, "all").map((section) => section.key)).toEqual(["merged", "closed"]);
+	});
+
+	it("orders newer pull requests first within a section", () => {
+		const sections = prListSections([item({ number: 7 }), item({ number: 12 }), item({ number: 4 })], "open");
+		expect(sections[0]?.data.map(({ pr }) => pr.number)).toEqual([12, 7, 4]);
 	});
 });
