@@ -7,6 +7,7 @@ import {
 	filteredEmptyCopy,
 	projectsForMachine,
 	resolveActiveProject,
+	resolveSpawnProject,
 	retainProjects,
 	type KnownProjects,
 } from "./projectFilter";
@@ -49,6 +50,24 @@ describe("resolveActiveProject", () => {
 	// filter hides.
 	it("rejects the filter when the daemon answers with no projects at all", () => {
 		expect(resolveActiveProject("ao", [], true)).toBe("all");
+	});
+});
+
+describe("resolveSpawnProject", () => {
+	it("drops a selected project after the daemon confirms it was deleted", () => {
+		expect(resolveSpawnProject("removed", undefined, ALL_PROJECTS, listed, true)).toBeNull();
+	});
+
+	it("keeps a selected project until the daemon project list is known", () => {
+		expect(resolveSpawnProject("ao", undefined, "ao", [], false)).toBe("ao");
+	});
+
+	it("re-seeds from the only remaining project after the selected project disappears", () => {
+		expect(resolveSpawnProject("removed", undefined, ALL_PROJECTS, [listed[1]], true)).toBe("ao");
+	});
+
+	it("prefers a valid route project when the sheet has no selection", () => {
+		expect(resolveSpawnProject(null, "scratch", ALL_PROJECTS, listed, true)).toBe("scratch");
 	});
 });
 
@@ -162,11 +181,8 @@ describe("retainProjects", () => {
 		]);
 	});
 
-	// Round 2 of the review. fetchAll has no staleness guard, so a request from
-	// the machine the user just left still lands. Recording it as A's was not
-	// enough: it displaced the list B had just given us, and B's next failure
-	// then found nothing retained for B, went unknown, and the saved filter came
-	// back to hide B's workers. Received "removed" before the guard.
+	// Defense in depth for any caller folding a response after the active machine
+	// changed: A's late project list must not displace B's retained list.
 	it("survives a late answer from the machine the user just left", () => {
 		const workers = [session("remaining")];
 		let known = retainProjects(NO_PROJECTS_KNOWN, { machine: B, projects: remaining }, B);

@@ -375,6 +375,7 @@ func run(logger *slog.Logger) error {
 	}
 	apiOptions := httpapi.Options{
 		Store:                     store,
+		Transcripts:               store.SessionTranscripts(),
 		WorkOS:                    workosVerifier,
 		LocalAuthEnabled:          cfg.LocalAuthEnabled,
 		LocalSessionTTL:           cfg.LocalSessionTTL,

@@ -673,10 +673,11 @@ type interfaceTransitionConfig struct {
 // Production sendConfirm bounds: 3 Enters total (1 from Send + 2 re-sends),
 // each given 2s to flip the session active, polled every 300ms.
 const (
-	sendConfirmPollInterval     = 300 * time.Millisecond
-	sendConfirmAttemptDeadline  = 2 * time.Second
-	sendConfirmMaxAttempts      = 3
-	defaultBranchRefreshTimeout = 5 * time.Second
+	sendConfirmPollInterval       = 300 * time.Millisecond
+	sendConfirmAttemptDeadline    = 2 * time.Second
+	sendConfirmMaxAttempts        = 3
+	defaultBranchRefreshTimeout   = 5 * time.Second
+	promptDeliveryDeadlineReserve = 5 * time.Second
 )
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
@@ -942,7 +943,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	id := rec.ID
 	systemPromptFile, err := m.prepareSystemPromptFile(id, cfg.Harness, systemPrompt)
 	if err != nil {
-		m.rollbackSpawnSeedRow(ctx, id)
+		m.rollbackSpawnSeedRowAfterFailure(ctx, id)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnSystemPrompt, err)
 	}
 
@@ -956,7 +957,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		// Nothing observable exists yet — no worktree, no runtime — so the seed
 		// row is deleted outright instead of accumulating as a terminated orphan
 		// in session lists (e.g. when gitworktree refuses the branch).
-		m.rollbackSpawnSeedRow(ctx, id)
+		m.rollbackSpawnSeedRowAfterFailure(ctx, id)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceCreate, err)
 	}
 
@@ -1106,20 +1107,16 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		metadata.DiffBaseSHA, metadata.DiffBaseRef = resolveSpawnDiffBase(ctx, ws.Path, ws.BaseRef)
 	}
 	if err := m.lcm.MarkSpawned(ctx, id, metadata); err != nil {
-		runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
-		m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
-		m.markSpawnFailedTerminated(ctx, id)
+		runtimeDestroyed := m.destroySpawnRuntimeAfterFailure(ctx, handle)
+		m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, rec, ws, workspaceProject, runtimeDestroyed)
+		m.markSpawnFailedTerminatedAfterFailure(ctx, id, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
 	}
 	if delivery == ports.PromptDeliveryAfterStart && prompt != "" {
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, id, prompt); err != nil {
-			runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
-			workspaceDestroyed := m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
-			if runtimeDestroyed && workspaceDestroyed {
-				m.markSpawnFailedTerminatedWithoutWorkspace(ctx, id)
-			} else {
-				m.markSpawnFailedTerminated(ctx, id)
-			}
+			runtimeDestroyed := m.destroySpawnRuntimeAfterFailure(ctx, handle)
+			workspaceDestroyed := m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, rec, ws, workspaceProject, runtimeDestroyed)
+			m.markSpawnFailedTerminatedAfterFailure(ctx, id, runtimeDestroyed && workspaceDestroyed)
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err)
 		}
 	}
@@ -1475,25 +1472,70 @@ func (m *Manager) destroySpawnWorkspace(ctx context.Context, ws ports.WorkspaceI
 	return err == nil
 }
 
-func (m *Manager) rollbackPreparedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo, runtimeDestroyed bool) bool {
-	if m.destroySpawnWorkspace(ctx, ws, workspaceProject) {
-		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
+var spawnRollbackBudget = 30 * time.Second
+
+func spawnRollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), spawnRollbackBudget)
+}
+
+func (m *Manager) destroySpawnRuntimeAfterFailure(ctx context.Context, handle ports.RuntimeHandle) bool {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	defer cancel()
+	return m.runtime.Destroy(cleanupCtx, handle) == nil
+}
+
+func (m *Manager) rollbackSpawnSeedRowAfterFailure(ctx context.Context, id domain.SessionID) {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	defer cancel()
+	m.rollbackSpawnSeedRow(cleanupCtx, id)
+}
+
+func (m *Manager) rollbackPreparedSpawnWorkspaceAfterFailure(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo, runtimeDestroyed bool) bool {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	workspaceDestroyed := m.destroySpawnWorkspace(cleanupCtx, ws, workspaceProject)
+	cancel()
+	if workspaceDestroyed {
+		cleanupCtx, cancel = spawnRollbackContext(ctx)
+		m.cleanupAgentWorkspace(cleanupCtx, rec, ws.Path)
+		cancel()
 		return true
 	}
-	m.preserveFailedSpawnWorkspace(ctx, rec.ID, ws, runtimeDestroyed)
+	cleanupCtx, cancel = spawnRollbackContext(ctx)
+	m.preserveFailedSpawnWorkspace(cleanupCtx, rec.ID, ws, runtimeDestroyed)
+	cancel()
 	return false
 }
 
-func (m *Manager) rollbackSeedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo, prepared bool) {
-	if m.destroySpawnWorkspace(ctx, ws, workspaceProject) {
-		if prepared {
-			m.cleanupAgentWorkspace(ctx, rec, ws.Path)
-		}
-		m.rollbackSpawnSeedRow(ctx, rec.ID)
+func (m *Manager) markSpawnFailedTerminatedAfterFailure(ctx context.Context, id domain.SessionID, withoutWorkspace bool) {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	defer cancel()
+	if withoutWorkspace {
+		m.markSpawnFailedTerminatedWithoutWorkspace(cleanupCtx, id)
 		return
 	}
-	m.preserveFailedSpawnWorkspace(ctx, rec.ID, ws, true)
-	m.markSpawnFailedTerminated(ctx, rec.ID)
+	m.markSpawnFailedTerminated(cleanupCtx, id)
+}
+
+func (m *Manager) rollbackSeedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo, prepared bool) {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	workspaceDestroyed := m.destroySpawnWorkspace(cleanupCtx, ws, workspaceProject)
+	cancel()
+	if workspaceDestroyed {
+		if prepared {
+			cleanupCtx, cancel = spawnRollbackContext(ctx)
+			m.cleanupAgentWorkspace(cleanupCtx, rec, ws.Path)
+			cancel()
+		}
+		m.rollbackSpawnSeedRowAfterFailure(ctx, rec.ID)
+		return
+	}
+	cleanupCtx, cancel = spawnRollbackContext(ctx)
+	m.preserveFailedSpawnWorkspace(cleanupCtx, rec.ID, ws, true)
+	cancel()
+	m.markSpawnFailedTerminatedAfterFailure(ctx, rec.ID, false)
 }
 
 func (m *Manager) preserveFailedSpawnWorkspace(ctx context.Context, id domain.SessionID, ws ports.WorkspaceInfo, runtimeDestroyed bool) {
@@ -2518,7 +2560,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		metadata.AgentSessionIDLaunchID = launchID
 	}
 	if err := m.lcm.MarkSpawned(ctx, rec.ID, metadata); err != nil {
-		_ = m.runtime.Destroy(ctx, handle)
+		m.destroySpawnRuntimeAfterFailure(ctx, handle)
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: completed: %w", operation, rec.ID, err)
 	}
@@ -2535,8 +2577,10 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			Permissions:      agentConfig.Permissions,
 		}
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, rec.ID, rec.Metadata.Prompt); err != nil {
-			_ = m.runtime.Destroy(ctx, handle)
-			_ = m.lcm.MarkTerminated(ctx, rec.ID)
+			m.destroySpawnRuntimeAfterFailure(ctx, handle)
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			_ = m.lcm.MarkTerminated(cleanupCtx, rec.ID)
+			cancel()
 			m.cleanupSystemPromptDir(rec.ID)
 			return RestoreResult{}, fmt.Errorf("%s %s: deliver prompt: %w", operation, rec.ID, err)
 		}
@@ -4816,7 +4860,16 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 	if err != nil {
 		return fmt.Errorf("prompt readiness: %w", err)
 	}
+	callerDeadline, hasCallerDeadline := ctx.Deadline()
 	if hints.InitialDelay > 0 {
+		if hasCallerDeadline && time.Until(callerDeadline)-promptDeliveryDeadlineReserve <= hints.InitialDelay {
+			m.logger.Warn("prompt readiness skipped to preserve caller deadline for fallback delivery",
+				"sessionID", cfg.SessionID,
+				"kind", string(cfg.Kind),
+				"configuredTimeout", hints.Timeout.String(),
+			)
+			return nil
+		}
 		if err := sleepContext(ctx, hints.InitialDelay); err != nil {
 			return err
 		}
@@ -4833,7 +4886,17 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 		lines = 80
 	}
 
-	deadline := time.NewTimer(hints.Timeout)
+	waitTimeout, hasReadinessBudget := promptReadinessWaitTimeout(hints.Timeout, callerDeadline, hasCallerDeadline)
+	if !hasReadinessBudget {
+		m.logger.Warn("prompt readiness skipped to preserve caller deadline for fallback delivery",
+			"sessionID", cfg.SessionID,
+			"kind", string(cfg.Kind),
+			"configuredTimeout", hints.Timeout.String(),
+		)
+		return nil
+	}
+
+	deadline := time.NewTimer(waitTimeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
@@ -4853,7 +4916,8 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 			m.logger.Warn("prompt readiness timed out; falling back to after-start prompt delivery",
 				"sessionID", cfg.SessionID,
 				"kind", string(cfg.Kind),
-				"timeout", hints.Timeout.String(),
+				"timeout", waitTimeout.String(),
+				"configuredTimeout", hints.Timeout.String(),
 				"pollInterval", poll.String(),
 				"lines", lines,
 			)
@@ -4861,6 +4925,17 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 		case <-ticker.C:
 		}
 	}
+}
+
+func promptReadinessWaitTimeout(configured time.Duration, callerDeadline time.Time, hasCallerDeadline bool) (time.Duration, bool) {
+	if !hasCallerDeadline {
+		return configured, true
+	}
+	remaining := time.Until(callerDeadline) - promptDeliveryDeadlineReserve
+	if remaining <= 0 {
+		return 0, false
+	}
+	return min(configured, remaining), true
 }
 
 func promptOutputContains(output string, patterns []string) bool {

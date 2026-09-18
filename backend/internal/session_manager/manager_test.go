@@ -2338,6 +2338,161 @@ func TestSpawn_AfterStartPromptFallsBackWhenReadinessTimesOut(t *testing.T) {
 	}
 }
 
+func TestSpawn_AfterStartPromptReservesCallerDeadlineForFallbackDelivery(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{outputs: []string{"still booting"}}
+	msg := &fakeMessenger{}
+	agent := &recordingAgent{}
+	m := New(Deps{
+		Runtime: rt,
+		Agents: singleAgent{agent: readinessAgent{
+			afterStartAgent: afterStartAgent{recordingAgent: agent},
+			hints: ports.PromptReadinessHints{
+				InitialDelay: time.Second,
+				Patterns:     []string{"Ready..."},
+				PollInterval: time.Millisecond,
+				Timeout:      time.Second,
+			},
+		}},
+		Workspace: &fakeWorkspace{},
+		Store:     st,
+		Messenger: msg,
+		Lifecycle: &fakeLCM{store: st},
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	spawnCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, _, _, err := m.Spawn(spawnCtx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "fix the button"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := spawnCtx.Err(); err != nil {
+		t.Fatalf("spawn exhausted caller deadline before fallback delivery: %v", err)
+	}
+	if len(msg.msgs) != 1 || msg.msgs[0] != "fix the button" {
+		t.Fatalf("delivered prompts = %#v, want fallback prompt delivery", msg.msgs)
+	}
+}
+
+func TestPromptReadinessWaitTimeoutCapsNinetySecondsToSixtySecondRequest(t *testing.T) {
+	deadline := time.Now().Add(60 * time.Second)
+	wait, ok := promptReadinessWaitTimeout(90*time.Second, deadline, true)
+	if !ok {
+		t.Fatal("prompt readiness budget unexpectedly exhausted")
+	}
+	if wait < 54*time.Second || wait > 55*time.Second {
+		t.Fatalf("prompt readiness wait = %v, want approximately 55s with delivery reserve", wait)
+	}
+}
+
+type deadlineConsumingRuntime struct {
+	*fakeRuntime
+}
+
+func (r *deadlineConsumingRuntime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
+	r.destroyed++
+	r.destroyedIDs = append(r.destroyedIDs, handle.ID)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type cancelOnDeliverMessenger struct {
+	cancel context.CancelFunc
+}
+
+func (m *cancelOnDeliverMessenger) Send(context.Context, domain.SessionID, string) error {
+	m.cancel()
+	return context.DeadlineExceeded
+}
+
+func TestSpawn_RollbackGivesEachCleanupStepAFreshDeadline(t *testing.T) {
+	previousBudget := spawnRollbackBudget
+	spawnRollbackBudget = 10 * time.Millisecond
+	t.Cleanup(func() { spawnRollbackBudget = previousBudget })
+
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &deadlineConsumingRuntime{fakeRuntime: &fakeRuntime{}}
+	ws := &fakeWorkspace{}
+	agent := &recordingAgent{}
+	spawnCtx, cancel := context.WithCancel(context.Background())
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    singleAgent{agent: afterStartAgent{recordingAgent: agent}},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &cancelOnDeliverMessenger{cancel: cancel},
+		Lifecycle: &fakeLCM{store: st},
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	_, _, _, err := m.Spawn(spawnCtx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "fix the button"})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSpawnDeliverPrompt) {
+		t.Fatalf("Spawn err = %v, want prompt delivery deadline", err)
+	}
+	if ws.destroyed != 1 {
+		t.Fatalf("workspace destroyed = %d, want 1", ws.destroyed)
+	}
+	if ws.destroyCtxErr != nil {
+		t.Fatalf("workspace cleanup inherited exhausted runtime deadline: %v", ws.destroyCtxErr)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session row was not terminated after an earlier cleanup exhausted its deadline")
+	}
+}
+
+type cancelingCreateWorkspace struct {
+	*fakeWorkspace
+	cancel context.CancelFunc
+}
+
+func (w *cancelingCreateWorkspace) Create(context.Context, ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	w.cancel()
+	return ports.WorkspaceInfo{}, context.DeadlineExceeded
+}
+
+type contextAwareDeleteStore struct {
+	*fakeStore
+	deleteContextErr error
+}
+
+func (s *contextAwareDeleteStore) DeleteSession(ctx context.Context, id domain.SessionID) (bool, error) {
+	s.deleteContextErr = ctx.Err()
+	if s.deleteContextErr != nil {
+		return false, s.deleteContextErr
+	}
+	return s.fakeStore.DeleteSession(ctx, id)
+}
+
+func TestSpawn_WorkspaceCreationTimeoutRollsBackSeedWithDetachedContext(t *testing.T) {
+	base := newFakeStore()
+	base.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	st := &contextAwareDeleteStore{fakeStore: base}
+	spawnCtx, cancel := context.WithCancel(context.Background())
+	ws := &cancelingCreateWorkspace{fakeWorkspace: &fakeWorkspace{}, cancel: cancel}
+	m := New(Deps{
+		Runtime:   &fakeRuntime{},
+		Agents:    singleAgent{agent: &recordingAgent{}},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: &fakeLCM{store: base},
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	_, _, _, err := m.Spawn(spawnCtx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrWorkspaceCreate) {
+		t.Fatalf("Spawn err = %v, want workspace creation deadline", err)
+	}
+	if st.deleteContextErr != nil {
+		t.Fatalf("seed rollback inherited expired request context: %v", st.deleteContextErr)
+	}
+	if _, ok := base.sessions["mer-1"]; ok {
+		t.Fatal("seed session remained after workspace creation timeout")
+	}
+}
+
 func TestSpawn_AfterStartPromptFailureCleansUpSpawn(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}

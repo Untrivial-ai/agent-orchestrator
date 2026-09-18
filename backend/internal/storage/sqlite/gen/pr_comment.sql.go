@@ -130,6 +130,25 @@ func (q *Queries) MarkPRCommentResolved(ctx context.Context, arg MarkPRCommentRe
 	return result.RowsAffected()
 }
 
+const markPRCommentsResolvedForThread = `-- name: MarkPRCommentsResolvedForThread :execrows
+UPDATE pr_comment
+SET resolved = TRUE
+WHERE pr_url = ? AND thread_id = ? AND resolved = FALSE
+`
+
+type MarkPRCommentsResolvedForThreadParams struct {
+	PRURL    string
+	ThreadID string
+}
+
+func (q *Queries) MarkPRCommentsResolvedForThread(ctx context.Context, arg MarkPRCommentsResolvedForThreadParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markPRCommentsResolvedForThread, arg.PRURL, arg.ThreadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const upsertPRComment = `-- name: UpsertPRComment :exec
 INSERT INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot, auto_inject_review)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

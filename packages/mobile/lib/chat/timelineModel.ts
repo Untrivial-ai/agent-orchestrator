@@ -1,6 +1,7 @@
 import type {
 	ConversationActivity,
 	ConversationItem,
+	ConversationMessage,
 	ConversationSnapshot,
 	ConversationTurn,
 } from "./types";
@@ -31,10 +32,27 @@ export type ConversationTimelineRenderPlan =
 	| { kind: "empty"; inverted: false; groups: [] }
 	| { kind: "list"; inverted: true; groups: ConversationGroup[] };
 
+export type QueuedConversationMessage = { turnId: string; message: ConversationMessage };
+
+/** Queued prompts stay next to the composer until they are actually dispatched. */
+export function queuedConversationMessages(snapshot: ConversationSnapshot): QueuedConversationMessage[] {
+	const queuedTurnIds = new Set(snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id));
+	return snapshot.items.flatMap((item) =>
+		item.kind === "message" &&
+		item.role === "user" &&
+		item.origin === "human" &&
+		item.turnId &&
+		queuedTurnIds.has(item.turnId)
+			? [{ turnId: item.turnId, message: item }]
+			: [],
+	);
+}
+
 /** Keep conversation signal while removing provider telemetry/noise. */
 export function readableConversationItems(snapshot: ConversationSnapshot): ConversationItem[] {
 	const plannedTurns = new Set(snapshot.turns.filter((turn) => turn.plan?.steps.length).map((turn) => turn.id));
-	return snapshot.items.filter((item) => item.kind === "message" || (
+	const queuedTurnIds = new Set(snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id));
+	return snapshot.items.filter((item) => !item.turnId || !queuedTurnIds.has(item.turnId)).filter((item) => item.kind === "message" || (
 		item.activityKind !== "usage" &&
 		item.activityKind !== "reasoning" &&
 		!(item.activityKind === "plan" && item.turnId && plannedTurns.has(item.turnId))

@@ -1,0 +1,208 @@
+import { Host } from "@expo/ui";
+import { Asset } from "expo-asset";
+import { Button, HStack, Image, Menu, Spacer, Text, VStack } from "@expo/ui/swift-ui";
+import {
+	accessibilityIdentifier,
+	aspectRatio,
+	buttonStyle,
+	containerRelativeFrame,
+	font,
+	frame,
+	glassEffect,
+	labelStyle,
+	opacity,
+	padding,
+	resizable,
+	tint,
+} from "@expo/ui/swift-ui/modifiers";
+import { useEffect, useMemo, useState } from "react";
+import { Pressable, StyleSheet, Text as RNText, View } from "react-native";
+import { logoFor } from "./harnessLogoAssets";
+import { haptics } from "./haptics";
+import type { SpawnComposerControlsProps, SpawnComposerOption } from "./spawn-composer-controls.types";
+import { useTheme, useThemeState } from "./ThemeProvider";
+
+export function SpawnComposerControls({
+	projects,
+	projectId,
+	onSelectProject,
+	agents,
+	harness,
+	onSelectHarness,
+	models,
+	modelSelection,
+	modelLabel,
+	onSelectModel,
+	onAttach,
+	onSpawn,
+	busy,
+	disabled,
+}: SpawnComposerControlsProps) {
+	const t = useTheme();
+	const { scheme } = useThemeState();
+	const logoUris = useHarnessLogoUris(agents);
+	const projectLabel = projects.find((project) => project.id === projectId)?.label ?? "Choose project";
+	const harnessLabel = agents.find((agent) => agent.id === harness)?.label ?? "Choose harness";
+
+	return (
+		<View style={styles.stack}>
+			<Host style={styles.controlsHost} colorScheme={scheme} seedColor={t.blue}>
+				<VStack alignment="leading" spacing={10} modifiers={[frame({ height: 104, maxWidth: 1000 })]}>
+				<Menu
+					label={
+						<HStack spacing={7}>
+							<Image systemName="folder" size={14} />
+							<Text modifiers={[font({ size: 14, weight: "medium" })]}>{projectLabel}</Text>
+							<Image systemName="chevron.up.chevron.down" size={10} />
+						</HStack>
+					}
+					modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 4 }), accessibilityIdentifier("spawn-project")]}
+				>
+					{projects.map((project) => (
+						<Button
+							key={project.id}
+							label={project.label}
+							systemImage={project.id === projectId ? "checkmark" : "folder"}
+							onPress={() => { haptics.select(); onSelectProject(project.id); }}
+						/>
+					))}
+				</Menu>
+
+				<HStack
+					spacing={6}
+					modifiers={[
+						padding({ horizontal: 8 }),
+						containerRelativeFrame({ axes: "horizontal" }),
+						frame({ height: 54 }),
+						glassEffect({ glass: { variant: "regular", interactive: true }, shape: "roundedRectangle", cornerRadius: 18 }),
+					]}
+				>
+					<Button
+						label="Attach file"
+						systemImage="paperclip"
+						onPress={() => { haptics.tap(); onAttach(); }}
+						modifiers={[
+							buttonStyle("plain"),
+							labelStyle("iconOnly"),
+							frame({ width: 38, height: 38 }),
+							tint(t.textPrimary),
+							accessibilityIdentifier("spawn-attachment"),
+						]}
+					/>
+
+					<Menu
+						label={
+							<HStack spacing={6}>
+								<HarnessImage uri={logoUris[harness]} />
+								<Text modifiers={[font({ size: 14, weight: "medium" })]}>{harnessLabel}</Text>
+								<Image systemName="chevron.down" size={9} />
+							</HStack>
+						}
+						modifiers={[buttonStyle("plain"), tint(t.textPrimary), accessibilityIdentifier("spawn-harness")]}
+					>
+						{agents.map((agent) => (
+							<Button key={agent.id} onPress={() => { haptics.select(); onSelectHarness(agent.id); }}>
+								<HStack spacing={9}>
+									<HarnessImage uri={logoUris[agent.id]} />
+									<Text>{agent.label}</Text>
+									<Spacer />
+									{agent.id === harness ? <Image systemName="checkmark" size={12} /> : null}
+								</HStack>
+							</Button>
+						))}
+					</Menu>
+
+					<Menu
+						label={
+							<HStack spacing={5} modifiers={[frame({ maxWidth: 1000, alignment: "leading" })]}>
+								<Text modifiers={[font({ size: 14, weight: "medium" })]}>{modelLabel}</Text>
+								<Spacer />
+								<Image systemName="chevron.down" size={9} />
+							</HStack>
+						}
+						modifiers={[
+							buttonStyle("plain"),
+							frame({ maxWidth: 1000, alignment: "leading" }),
+							tint(t.textSecondary),
+							opacity(models.length || modelSelection === "__auto__" ? 1 : 0.45),
+							accessibilityIdentifier("spawn-model"),
+						]}
+					>
+						<Button
+							label="Automatic"
+							systemImage={modelSelection === "__auto__" ? "checkmark" : "wand.and.stars"}
+							onPress={() => { haptics.select(); onSelectModel("__auto__"); }}
+						/>
+						{models.map((model) => (
+							<Button
+								key={model.id}
+								label={model.label}
+								systemImage={model.id === modelSelection ? "checkmark" : "cpu"}
+								onPress={() => { haptics.select(); onSelectModel(model.id); }}
+							/>
+						))}
+					</Menu>
+				</HStack>
+
+				</VStack>
+			</Host>
+
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={busy ? "Spawning worker" : "Spawn worker"}
+				accessibilityState={{ disabled }}
+				testID="spawn-submit"
+				disabled={disabled}
+				onPress={() => { haptics.tap(); onSpawn(); }}
+				style={({ pressed }) => [
+					styles.spawnButton,
+					{ backgroundColor: disabled ? t.bgElevatedHover : t.blue },
+					pressed && !disabled && styles.spawnButtonPressed,
+				]}
+			>
+				<RNText style={[styles.spawnLabel, { color: disabled ? t.textFaint : t.onAccent }]}>
+					{busy ? "Spawning…" : "Spawn"}
+				</RNText>
+			</Pressable>
+		</View>
+	);
+}
+
+const styles = StyleSheet.create({
+	stack: { width: "100%", height: 150, gap: 2 },
+	controlsHost: { width: "100%", height: 104 },
+	spawnButton: {
+		height: 44,
+		borderRadius: 16,
+		borderCurve: "continuous",
+		alignItems: "center",
+		justifyContent: "center",
+	},
+	spawnButtonPressed: { opacity: 0.78, transform: [{ scale: 0.995 }] },
+	spawnLabel: { fontSize: 15, lineHeight: 20, fontWeight: "600" },
+});
+
+function HarnessImage({ uri }: { uri?: string }) {
+	return uri
+		? <Image uiImage={uri} modifiers={[resizable(), aspectRatio({ contentMode: "fit" }), frame({ width: 20, height: 20 })]} />
+		: <Image systemName="terminal" size={16} />;
+}
+
+function useHarnessLogoUris(agents: readonly SpawnComposerOption[]) {
+	const ids = useMemo(() => agents.map((agent) => agent.id), [agents]);
+	const [uris, setUris] = useState<Record<string, string>>({});
+	useEffect(() => {
+		let cancelled = false;
+		void Promise.all(ids.map(async (id) => {
+			const source = logoFor(id);
+			if (!source) return [id, ""] as const;
+			const asset = Asset.fromModule(source);
+			await asset.downloadAsync();
+			return [id, asset.localUri ?? asset.uri] as const;
+		})).then((entries) => {
+			if (!cancelled) setUris(Object.fromEntries(entries.filter(([, uri]) => Boolean(uri))));
+		});
+		return () => { cancelled = true; };
+	}, [ids]);
+	return uris;
+}
