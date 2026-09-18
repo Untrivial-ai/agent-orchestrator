@@ -91,7 +91,7 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 		} else {
 			// The workspace is non-empty but not a Git checkout. This happens
 			// when the coding agent starts first and writes files (for example
-			// .claude) into the workspace before the checkout runs. Clone into a
+			// .opencode) into the workspace before the checkout runs. Clone into a
 			// staging directory and merge the result in, so a bare git clone into
 			// a non-empty directory does not fail and checkout no longer depends
 			// on agent-vs-checkout startup ordering.
@@ -116,7 +116,7 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 
 // cloneIntoNonEmptyWorkspace clones the authorized repository into a staging
 // directory and merges the result into a workspace that already contains files
-// the coding agent wrote (for example .claude) before the checkout ran. Files
+// the coding agent wrote (for example .opencode) before the checkout ran. Files
 // the clone did not produce are preserved; the clone's .git directory and
 // tracked files are moved in. This removes the ordering dependency between
 // agent startup and repository checkout.
@@ -144,7 +144,7 @@ func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace
 	for _, entry := range entries {
 		destination := filepath.Join(workspace, entry.Name())
 		if _, statErr := os.Stat(destination); statErr == nil {
-			// A pre-existing file the agent wrote (for example .claude) stays.
+			// A pre-existing file the agent wrote (for example .opencode) stays.
 			continue
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			return fmt.Errorf("inspect workspace entry %s: %w", entry.Name(), statErr)

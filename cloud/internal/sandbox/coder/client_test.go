@@ -271,8 +271,7 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 			for _, expected := range []string{
 				"/mnt/ao/repository",
 				"/mnt/ao/.ao/worker",
-				"/mnt/ao/.ao/home/.claude",
-				"/mnt/ao/.ao/home/.codex",
+				"/mnt/ao/.ao/home/.opencode",
 				"mountpoint -q",
 				"/mnt/ao/.ao/durable-session-id",
 				"/mnt/ao/.ao/worker/worker.pid",

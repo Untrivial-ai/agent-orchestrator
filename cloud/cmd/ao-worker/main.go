@@ -596,15 +596,8 @@ func anonymousCheckoutEnabled() bool {
 }
 
 func verifyHarnessAvailable(harness string) error {
-	var binary string
-	switch harness {
-	case "claude-code":
-		binary = "claude"
-	case "codex":
-		binary = "codex"
-	case "cursor":
-		binary = "cursor-agent"
-	default:
+	const binary = "opencode"
+	if harness != "opencode" {
 		return fmt.Errorf("unsupported coding-agent harness %q", harness)
 	}
 	if _, err := exec.LookPath(binary); err != nil {

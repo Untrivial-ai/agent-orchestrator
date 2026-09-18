@@ -561,16 +561,12 @@ func (s *Server) promoteAgentConnection(w http.ResponseWriter, r *http.Request) 
 }
 
 func validAgentProvider(agent string) bool {
-	return agent == "claude-code" || agent == "codex" || agent == "cursor"
+	return agent == "opencode"
 }
 
 func validAgentCredentialType(agent, credentialType string) bool {
 	switch agent {
-	case "claude-code":
-		return credentialType == "api_key" || credentialType == "oauth_token"
-	case "codex":
-		return credentialType == "api_key" || credentialType == "access_token"
-	case "cursor":
+	case "opencode":
 		return credentialType == "api_key"
 	default:
 		return false

@@ -28,9 +28,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM node:22-trixie-slim AS worker
 ARG TARGETARCH
-ARG CLAUDE_CODE_VERSION=2.1.228
-ARG CODEX_VERSION=0.147.0
-ARG CURSOR_AGENT_VERSION=2026.08.11-e8db854
 ARG GH_VERSION=2.97.0
 RUN apt-get update && \
     apt-get upgrade --yes && \
@@ -52,27 +49,13 @@ RUN apt-get update && \
         | tar --strip-components=2 -xzf - -C /usr/local/bin \
             "gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" && \
     rm -rf /var/lib/apt/lists/* && \
-    npm install --global \
-        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-        "@openai/codex@${CODEX_VERSION}" && \
-    claude --version && \
-    codex --version && \
+    npm install --global opencode-ai && \
+    opencode --version && \
     gh --version && \
     groupadd --gid 10001 ao-worker && \
     useradd --uid 10001 --gid ao-worker --home-dir /workspace/.ao/home --shell /bin/bash ao-worker && \
     mkdir -p /workspace/repository /workspace/.ao/home && \
     chown -R ao-worker:ao-worker /workspace
-RUN case "${TARGETARCH}" in \
-        amd64) cursor_arch=x64 ;; \
-        arm64) cursor_arch=arm64 ;; \
-        *) echo "unsupported Cursor Agent architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac && \
-    mkdir -p "/opt/cursor-agent/${CURSOR_AGENT_VERSION}" && \
-    curl --fail --location --silent --show-error \
-        "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz" \
-        | tar --strip-components=1 -xzf - -C "/opt/cursor-agent/${CURSOR_AGENT_VERSION}" && \
-    ln -s "/opt/cursor-agent/${CURSOR_AGENT_VERSION}/cursor-agent" /usr/local/bin/cursor-agent && \
-    cursor-agent --version
 COPY --from=build --chown=ao-worker:ao-worker /out/ao-worker /ao-worker
 COPY --from=build --chown=ao-worker:ao-worker /out/ao /usr/local/bin/ao
 USER ao-worker

@@ -82,13 +82,12 @@ func TestLiveLifecycle(t *testing.T) {
 	}
 	t.Log("observed expected post-upload bootstrap failure")
 	if err := client.BootstrapWorker(ctx, environment.ID, sandbox.WorkerBootstrap{
-		Binary:      []byte("#!/bin/sh\nset -eu\necho live > \"$AO_WORKSPACE_DIR/uncommitted.txt\"\nmkdir -p \"$CLAUDE_CONFIG_DIR/projects/live\" \"$CODEX_HOME/sessions\"\necho '{}' > \"$CLAUDE_CONFIG_DIR/projects/live/conversation.jsonl\"\necho state > \"$CODEX_HOME/sessions/thread.jsonl\"\nsleep 300\n"),
+		Binary:      []byte("#!/bin/sh\nset -eu\necho live > \"$AO_WORKSPACE_DIR/uncommitted.txt\"\nmkdir -p \"$OPENCODE_CONFIG_DIR/projects/live\"\necho '{}' > \"$OPENCODE_CONFIG_DIR/projects/live/conversation.jsonl\"\necho state > \"$OPENCODE_CONFIG_DIR/sessions/thread.jsonl\"\nsleep 300\n"),
 		Destination: "/usr/local/bin/ao-worker", User: "ao-worker",
 		Environment: map[string]string{
 			"AO_CODER_LIVE_TEST": "true",
 			"AO_WORKSPACE_DIR":   durableRoot + "/repository",
-			"CLAUDE_CONFIG_DIR":  durableRoot + "/.ao/home/.claude",
-			"CODEX_HOME":         durableRoot + "/.ao/home/.codex",
+			"OPENCODE_CONFIG_DIR": durableRoot + "/.ao/home/.opencode",
 		},
 		DurableRoot: durableRoot, DurableIdentity: sessionID,
 	}); err != nil {
@@ -140,8 +139,8 @@ func assertLiveDurableState(
 	}{
 		{path.Join(durableRoot, ".ao", "durable-session-id"), sessionID},
 		{path.Join(durableRoot, "repository", "uncommitted.txt"), "live"},
-		{path.Join(durableRoot, ".ao", "home", ".claude", "projects", "live", "conversation.jsonl"), "{}"},
-		{path.Join(durableRoot, ".ao", "home", ".codex", "sessions", "thread.jsonl"), "state"},
+		{path.Join(durableRoot, ".ao", "home", ".opencode", "projects", "live", "conversation.jsonl"), "{}"},
+		{path.Join(durableRoot, ".ao", "home", ".opencode", "sessions", "thread.jsonl"), "state"},
 	}
 	var condition strings.Builder
 	var diagnostics strings.Builder

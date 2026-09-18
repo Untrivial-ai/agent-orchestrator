@@ -46,7 +46,7 @@ func (s *stubAutolinkStore) CreateSession(
 func createSessionRequestHTTP(t *testing.T, kind, provider string) *http.Request {
 	t.Helper()
 	body := `{"projectId":"` + autolinkProjectID + `","kind":"` + kind +
-		`","harness":"claude-code","displayName":"add-logger","prompt":"do the work","mode":"trusted"` +
+		`","harness":"opencode","displayName":"add-logger","prompt":"do the work","mode":"trusted"` +
 		func() string {
 			if provider == "" {
 				return ""

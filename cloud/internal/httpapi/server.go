@@ -273,7 +273,7 @@ func New(options Options) *Server {
 	}
 	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
-		server.credentialValidator = newAgentCredentialValidator(nil)
+		server.credentialValidator = newAgentCredentialValidator()
 	}
 	if server.checkoutBroker == nil && options.GitHub != nil {
 		server.checkoutBroker = options.GitHub

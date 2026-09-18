@@ -25,12 +25,8 @@ func DeriveActivity(
 	payload []byte,
 ) (contract.ActivityState, bool) {
 	switch harness {
-	case "claude-code":
-		return deriveClaudeActivity(event, payload)
-	case "codex":
-		return deriveCodexActivity(event)
-	case "cursor":
-		return deriveStandardActivity(event)
+	case "opencode":
+		return deriveOpenCodeActivity(event)
 	default:
 		return "", false
 	}
@@ -90,42 +86,19 @@ func ValidActivityEvent(event ActivityEvent) bool {
 		return false
 	}
 	switch event.Harness {
-	case "claude-code":
+	case "opencode":
 		switch event.Event {
 		case "session-start":
-			return event.State == "" && event.AgentSessionID != ""
-		case "user-prompt-submit", "pre-tool-use", "post-tool-use", "post-tool-use-failure":
+			// A created session carries its native id immediately, so the first
+			// opencode event is only a valid active signal once it can be
+			// correlated to a resumable conversation.
+			return event.State == contract.ActivityActive && event.AgentSessionID != ""
+		case "user-prompt-submit", "active":
 			return event.State == contract.ActivityActive
-		case "permission-request":
+		case "stop":
+			return event.State == contract.ActivityIdle
+		case "permission-blocked":
 			return event.State == contract.ActivityBlocked
-		case "stop":
-			return event.State == contract.ActivityIdle
-		case "notification":
-			return event.State == contract.ActivityIdle ||
-				event.State == contract.ActivityWaitingInput ||
-				event.State == contract.ActivityBlocked
-		case "session-end":
-			return event.State == contract.ActivityExited
-		}
-	case "codex":
-		switch event.Event {
-		case "session-start":
-			return event.State == "" && event.AgentSessionID != ""
-		case "user-prompt-submit":
-			return event.State == contract.ActivityActive
-		case "permission-request":
-			return event.State == contract.ActivityWaitingInput
-		case "stop":
-			return event.State == contract.ActivityIdle
-		}
-	case "cursor":
-		switch event.Event {
-		case "session-start", "user-prompt-submit":
-			return event.State == contract.ActivityActive
-		case "permission-request":
-			return event.State == contract.ActivityWaitingInput
-		case "stop":
-			return event.State == contract.ActivityIdle
 		}
 	}
 	return false
@@ -140,63 +113,18 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func deriveClaudeActivity(
-	event string,
-	payload []byte,
-) (contract.ActivityState, bool) {
+// deriveOpenCodeActivity maps the opencode plugin's normalized events onto AO
+// activity states, mirroring the desktop opencode adapter: "session-start",
+// "user-prompt-submit" and "active" mark a live turn, "stop" marks the turn as
+// finished, and "permission-blocked" marks an awaiting-approval dialog.
+func deriveOpenCodeActivity(event string) (contract.ActivityState, bool) {
 	switch event {
-	case "user-prompt-submit", "pre-tool-use", "post-tool-use", "post-tool-use-failure":
+	case "session-start", "user-prompt-submit", "active":
 		return contract.ActivityActive, true
-	case "permission-request":
+	case "stop":
+		return contract.ActivityIdle, true
+	case "permission-blocked":
 		return contract.ActivityBlocked, true
-	case "stop":
-		return contract.ActivityIdle, true
-	case "notification":
-		var notification struct {
-			Type string `json:"notification_type"`
-		}
-		_ = json.Unmarshal(payload, &notification)
-		switch notification.Type {
-		case "idle_prompt", "agent_completed":
-			return contract.ActivityIdle, true
-		case "agent_needs_input":
-			return contract.ActivityWaitingInput, true
-		case "permission_prompt":
-			return contract.ActivityBlocked, true
-		}
-	case "session-end":
-		var ended struct {
-			Reason string `json:"reason"`
-		}
-		_ = json.Unmarshal(payload, &ended)
-		if ended.Reason != "clear" && ended.Reason != "resume" {
-			return contract.ActivityExited, true
-		}
-	}
-	return "", false
-}
-
-func deriveCodexActivity(event string) (contract.ActivityState, bool) {
-	switch event {
-	case "user-prompt-submit":
-		return contract.ActivityActive, true
-	case "permission-request":
-		return contract.ActivityWaitingInput, true
-	case "stop":
-		return contract.ActivityIdle, true
-	default:
-		return "", false
-	}
-}
-
-func deriveStandardActivity(event string) (contract.ActivityState, bool) {
-	switch event {
-	case "session-start", "user-prompt-submit":
-		return contract.ActivityActive, true
-	case "permission-request":
-		return contract.ActivityWaitingInput, true
-	case "stop":
-		return contract.ActivityIdle, true
 	default:
 		return "", false
 	}

@@ -26,7 +26,7 @@ type NodeOpsConfig struct {
 	APIKey        string
 	DefaultShape  string
 	DefaultRootFS string
-	// RootFSByHarness maps a coding-agent harness (e.g. "claude-code") to a
+	// RootFSByHarness maps a coding-agent harness (e.g. "opencode") to a
 	// slimmer template that bakes only that agent. A session whose harness has
 	// a mapping provisions from it; anything unmapped falls back to
 	// DefaultRootFS. Smaller templates shrink the provider's cold-host image
@@ -84,8 +84,7 @@ type CoderWorkspaceLayout struct {
 	Repository      string
 	WorkerData      string
 	Home            string
-	ClaudeConfig    string
-	CodexHome       string
+	OpenCodeData    string
 	DurableIdentity string
 }
 
@@ -113,8 +112,7 @@ func NewCoderWorkspaceLayout(durableRoot string) (CoderWorkspaceLayout, error) {
 		Repository:      path.Join(durableRoot, "repository"),
 		WorkerData:      path.Join(aoRoot, "worker"),
 		Home:            home,
-		ClaudeConfig:    path.Join(home, ".claude"),
-		CodexHome:       path.Join(home, ".codex"),
+		OpenCodeData:    path.Join(home, ".opencode"),
 		DurableIdentity: path.Join(aoRoot, "durable-session-id"),
 	}, nil
 }

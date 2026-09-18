@@ -9,7 +9,7 @@ with `SCOPE_REQUIRED`.
 ## ao spawn — create a worker session
 
 ```
-ao spawn --name "<label>" --prompt "<clear worker task>" [--agent claude-code] [--mode standard|trusted]
+ao spawn --name "<label>" --prompt "<clear worker task>" [--agent opencode] [--mode standard|trusted]
 ```
 
 - `--name` (required): the label the human sees in the sidebar. Keep it short
@@ -18,7 +18,7 @@ ao spawn --name "<label>" --prompt "<clear worker task>" [--agent claude-code] [
 - `--prompt` (required): the worker's complete task. Write it like a brief for
   a competent engineer with no other context: goal, constraints, and the
   expected outcome (usually a pull request).
-- `--agent` / `--harness`: `claude-code` (default), `codex`, or `cursor`.
+- `--agent` / `--harness`: `opencode` (default).
 - `--mode`: `trusted` (default) or `standard`.
 
 Prints `spawned <session-id> (<status>)`. The worker provisions its own

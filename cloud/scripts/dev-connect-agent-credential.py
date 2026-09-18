@@ -3,12 +3,12 @@
 
 Creating a cloud session requires a validated coding-agent provider connection
 (the sandbox worker needs the agent's key). The desktop app has no UI for this
-yet, so this dev tool pushes your local Claude Code credential to the control
-plane so you can create cloud sessions and test the flow.
+yet, so this dev tool pushes your local OpenCode API key to the control plane
+so you can create cloud sessions and test the flow.
 
-It (1) reads your Claude Code OAuth token from the usual local locations,
+It (1) reads your OpenCode API key from the usual local locations,
 (2) signs in to the control plane with WorkOS (browser, one time; the token is
-cached and refreshed after that), and (3) PUTs the claude-code provider
+cached and refreshed after that), and (3) PUTs the opencode provider
 connection for your org, printing the validation result.
 
 Usage:
@@ -20,7 +20,8 @@ Environment overrides:
     AO_CLOUD_CONTROL_PLANE_URL   control-plane base (default: staging)
     AO_CLOUD_WORKOS_CLIENT_ID    WorkOS client id (default: staging)
     AO_CLOUD_AUTH_REDIRECT       loopback redirect (default: http://127.0.0.1:3000/callback)
-    CLAUDE_CRED                  raw oauth token, overrides local lookup
+    OPENCODE_API_KEY             raw API key, overrides local lookup
+    OPENCODE_DATA_DIR            opencode data dir (default: ~/.local/share/opencode)
     AO_CLOUD_TOKEN_FILE          where the WorkOS token is cached (default: ~/.ao/cloud-dev-token.json)
 
 The loopback redirect URI must be registered on the WorkOS AuthKit client.
@@ -49,45 +50,63 @@ TOKEN_FILE = os.path.expanduser(os.environ.get("AO_CLOUD_TOKEN_FILE", "~/.ao/clo
 WORKOS = "https://api.workos.com/user_management"
 
 
-# --- Claude credential lookup ------------------------------------------------
+# --- OpenCode credential lookup -----------------------------------------------
 
-def _extract_oauth_token(raw: str) -> str:
-    """Accept either a bare token or the wrapped {claudeAiOauth:{accessToken}} JSON."""
+def _extract_api_key(raw: str) -> str:
+    """Accept either a bare key or wrapped JSON like {provider:{type,key}}."""
     raw = raw.strip()
-    if raw.startswith("{"):
-        data = json.loads(raw)
-        oauth = data.get("claudeAiOauth") or data
-        token = oauth.get("accessToken") or oauth.get("access_token") or ""
-        return token.strip()
-    return raw
+    if not raw.startswith("{"):
+        return raw
+
+    def first_key(obj) -> str:
+        if isinstance(obj, dict):
+            for field in ("key", "api_key", "accessToken", "access_token", "token"):
+                value = obj.get(field)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    data = json.loads(raw)
+    direct = first_key(data)
+    if direct:
+        return direct
+    for entry in data.values():
+        if isinstance(entry, dict):
+            direct = first_key(entry)
+            if direct:
+                return direct
+    return ""
 
 
-def read_claude_credential() -> str:
-    env = os.environ.get("CLAUDE_CRED", "").strip()
+def opencode_data_dir() -> str:
+    data_dir = os.environ.get("OPENCODE_DATA_DIR", "").strip()
+    if data_dir:
+        return os.path.expanduser(data_dir)
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg:
+        return os.path.join(xdg, "opencode")
+    return os.path.expanduser("~/.local/share/opencode")
+
+
+def read_opencode_credential() -> str:
+    env = os.environ.get("OPENCODE_API_KEY", "").strip()
     if env:
-        return _extract_oauth_token(env)
-    path = os.path.expanduser("~/.claude/.credentials.json")
+        key = _extract_api_key(env)
+        if key:
+            return key
+    path = os.path.join(opencode_data_dir(), "auth.json")
     if os.path.exists(path):
         with open(path) as f:
-            token = _extract_oauth_token(f.read())
-        if token:
-            return token
-    if sys.platform == "darwin":
-        try:
-            out = subprocess.run(
-                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if out.returncode == 0 and out.stdout.strip():
-                return _extract_oauth_token(out.stdout)
-        except Exception:
-            pass
+            key = _extract_api_key(f.read())
+        if key:
+            return key
     raise SystemExit(
-        "No Claude Code credential found. Sign in to Claude Code first, or set CLAUDE_CRED."
+        "No OpenCode API key found. Set OPENCODE_API_KEY or sign in to opencode "
+        f"first (auth.json at {path})."
     )
 
 
-# --- WorkOS token (cache + refresh + one-time PKCE login) --------------------
+# --- WorkOS token (cache + refresh + one-time PKCE login) ---------------------
 
 def _b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
@@ -229,15 +248,15 @@ def main() -> None:
     print(f"control plane: {CP}\norg: {org}")
 
     if delete:
-        st, _ = cp("DELETE", f"/orgs/{org}/provider-connections/agents/claude-code", token)
+        st, _ = cp("DELETE", f"/orgs/{org}/provider-connections/agents/opencode", token)
         print(f"delete connection: {st}")
         return
 
-    secret = read_claude_credential()
-    st, r = cp("PUT", f"/orgs/{org}/provider-connections/agents/claude-code", token,
-               {"credentialType": "oauth_token", "secret": secret})
+    secret = read_opencode_credential()
+    st, r = cp("PUT", f"/orgs/{org}/provider-connections/agents/opencode", token,
+               {"credentialType": "api_key", "secret": secret})
     validation = (r.get("providerConnection") or {}).get("validationState")
-    print(f"connect claude-code: HTTP {st} | validation: {validation}")
+    print(f"connect opencode: HTTP {st} | validation: {validation}")
     if st >= 400 or validation not in ("valid", None):
         print("  response:", json.dumps(r)[:300])
         sys.exit(1)
