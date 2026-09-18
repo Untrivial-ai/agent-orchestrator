@@ -4158,7 +4158,7 @@ func appendAttachmentReferences(prompt string, refs []string) string {
 // empty input box rather than receiving an auto-generated kickoff turn.
 func (m *Manager) buildSpawnTexts(ctx context.Context, cfg ports.SpawnConfig) (prompt, systemPrompt string, err error) {
 	prompt = buildPrompt(cfg)
-	systemPrompt, err = m.buildSystemPrompt(ctx, cfg.Kind, cfg.ProjectID)
+	systemPrompt, err = m.buildSystemPromptWithStartup(ctx, cfg.Kind, cfg.ProjectID, cfg.StartupSystemPrompt)
 	if err != nil {
 		return "", "", err
 	}
@@ -4170,6 +4170,14 @@ func (m *Manager) buildSpawnTexts(ctx context.Context, cfg ports.SpawnConfig) (p
 // rather than persisting them, so a restored worker points at the orchestrator
 // that is active now, not the one from its original spawn.
 func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID) (string, error) {
+	return m.buildSystemPromptWithStartup(ctx, kind, projectID, "")
+}
+
+// buildSystemPromptWithStartup derives the standing instructions for a fresh
+// spawn. Startup instructions are intentionally supplied only by
+// buildSpawnTexts; restore paths call buildSystemPrompt so transient startup
+// behavior is never replayed.
+func (m *Manager) buildSystemPromptWithStartup(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID, startupInstructions string) (string, error) {
 	project, err := m.loadProject(ctx, projectID)
 	if err != nil {
 		return "", err
@@ -4184,14 +4192,13 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 	case domain.KindOrchestrator:
 		cfg.OrchestratorRules = project.Config.OrchestratorRules
 	case domain.KindWorker:
-		if projectID != "" {
-			orchestratorID, ok, err := m.activeOrchestratorSessionID(ctx, projectID)
-			if err != nil {
-				return "", err
-			}
-			if ok {
-				cfg.OrchestratorSessionID = string(orchestratorID)
-			}
+		cfg.StartupInstructions = strings.TrimSpace(startupInstructions)
+		orchestratorID, ok, err := m.activeOrchestratorSessionID(ctx, projectID)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			cfg.OrchestratorSessionID = string(orchestratorID)
 		}
 		rules, err := buildProjectRules(projectRulesConfig{
 			ProjectPath:    project.Path,
