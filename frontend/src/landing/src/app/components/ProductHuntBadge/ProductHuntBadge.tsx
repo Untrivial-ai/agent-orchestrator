@@ -2,24 +2,17 @@
 
 import type { ReactNode } from "react";
 
-import { track } from "@/lib/analytics";
-import { LAUNCH_EVENTS } from "@/lib/analytics/launch/events";
-import { PRODUCT_HUNT_URL } from "@/lib/analytics/launch/utm";
+/** The live Product Hunt page (outbound target for upvote / comment CTAs). */
+export const PRODUCT_HUNT_URL =
+	"https://www.producthunt.com/products/agent-orchestrator?launch=agent-orchestrator";
 
-/** Which Product Hunt CTA this is; selects the event fired on click. */
-export type ProductHuntIntent = keyof typeof INTENT_EVENT;
-
-const INTENT_EVENT = {
-	/** The drop-in badge itself ("find us on PH"). */
-	badge: LAUNCH_EVENTS.phBadgeClick,
-	/** A CTA sending the visitor back to upvote. */
-	upvote: LAUNCH_EVENTS.phUpvoteCtaClick,
-} as const;
-
-const INTENT_LABEL: Record<ProductHuntIntent, string> = {
+/** Which Product Hunt CTA this is; selects the label shown. */
+const INTENT_LABEL = {
 	badge: "Find Agent Orchestrator on Product Hunt",
 	upvote: "Upvote us on Product Hunt",
-};
+} as const;
+
+export type ProductHuntIntent = keyof typeof INTENT_LABEL;
 
 type ProductHuntBadgeProps = {
 	/**
@@ -34,11 +27,10 @@ type ProductHuntBadgeProps = {
 };
 
 /**
- * A drop-in Product Hunt CTA for launch day. It links to our Product Hunt page
- * and fires the event matching `intent` on click (`ph_badge_click` or
- * `ph_upvote_cta_click`). The header mounts the `upvote` variant for launch
- * day; remove it after. It intentionally does not carry UTM back to Product
- * Hunt (the destination is Product Hunt, not our site).
+ * A drop-in Product Hunt CTA that links to our Product Hunt page. The header
+ * mounts the `upvote` variant for launch day; remove it after. It intentionally
+ * does not carry UTM back to Product Hunt (the destination is Product Hunt,
+ * not our site).
  */
 export function ProductHuntBadge({
 	children,
@@ -52,7 +44,6 @@ export function ProductHuntBadge({
 			rel="noopener noreferrer"
 			className={className}
 			aria-label="Agent Orchestrator on Product Hunt"
-			onClick={() => track(INTENT_EVENT[intent])}
 		>
 			{children ?? INTENT_LABEL[intent]}
 		</a>

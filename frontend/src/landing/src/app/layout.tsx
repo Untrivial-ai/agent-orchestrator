@@ -3,7 +3,6 @@ import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
 import { IBM_Plex_Mono } from "next/font/google";
 
-import { CookieConsent } from "@/components/CookieConsent";
 import {
   OrganizationJsonLd,
   SoftwareApplicationJsonLd,
@@ -13,9 +12,7 @@ import {
 import { CTAButtons } from "./components/CTAButtons";
 import { Footer } from "./components/Footer";
 import { Header } from "./components/Header";
-import { LaunchAnalytics } from "./components/LaunchAnalytics";
 import "./globals.css";
-import { Providers } from "./providers";
 
 const ibmPlexMono = IBM_Plex_Mono({
   weight: ["300", "400", "500"],
@@ -42,9 +39,6 @@ export const metadata: Metadata = {
     "AI coding",
     "git worktrees",
     "code automation",
-    "Claude Code",
-    "Cursor",
-    "Codex",
     "agent fleet",
     "PR automation",
   ],
@@ -128,13 +122,9 @@ export default function RootLayout({
         />
       </head>
       <body className="relative overscroll-none font-sans antialiased">
-        <Providers>
-          <LaunchAnalytics />
-          <Header ctaButtons={<CTAButtons />} />
-          {children}
-          <Footer />
-          <CookieConsent />
-        </Providers>
+        <Header ctaButtons={<CTAButtons />} />
+        {children}
+        <Footer />
       </body>
     </html>
   );

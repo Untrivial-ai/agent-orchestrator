@@ -2,9 +2,7 @@
 
 import Image from "next/image";
 import dynamic from "next/dynamic";
-import { useRef, useState } from "react";
-import { track } from "@/lib/analytics";
-import { newVideoProgressState, reportVideoProgress } from "@/lib/analytics/video-progress";
+import { useState } from "react";
 
 // Loaded on demand, not with the page. The player is ~1.1MB and the section is
 // below the fold behind a click, so a static import put it on the critical path
@@ -32,14 +30,6 @@ function PlayIcon({ className = "" }: { className?: string }) {
 
 export function VideoSection() {
 	const [playing, setPlaying] = useState(false);
-	// One view's reported milestones. Lives in a ref so a re-render never resets
-	// it and re-reports a milestone the visitor already passed.
-	// Lazy ref init: passing newVideoProgressState() as the useRef argument would
-	// build a fresh Set on every render and immediately discard it. Build it once,
-	// on first render, and read the stable value out for the rest of the render.
-	const progressRef = useRef<ReturnType<typeof newVideoProgressState> | null>(null);
-	progressRef.current ??= newVideoProgressState();
-	const progress = progressRef.current;
 
 	return (
 		<section id="see-it" className="relative px-4 py-16 sm:px-8 sm:py-20 lg:px-[30px] lg:py-24">
@@ -59,34 +49,17 @@ export function VideoSection() {
 						className="relative aspect-video overflow-hidden bg-black"
 					>
 						{playing ? (
-							// An in-page player rather than the player.mux.com iframe this
-							// replaced: playback position is not readable across that origin, so
-							// watch-through could not be measured at all through the embed.
 							<MuxPlayer
 								playbackId={MUX_PLAYBACK_ID}
 								autoPlay
 								metadata={{ video_title: VIDEO_TITLE }}
 								title={VIDEO_TITLE}
 								className="absolute inset-0 h-full w-full"
-								onTimeUpdate={(event) => {
-									const player = event.currentTarget as { currentTime?: number; duration?: number };
-									reportVideoProgress(progress, player.currentTime ?? 0, player.duration ?? 0);
-								}}
-								onEnded={() => {
-									// currentTime rarely lands exactly on duration, so without this the
-									// 100% milestone would be missed by the people who watched it all.
-									reportVideoProgress(progress, 1, 1);
-								}}
 							/>
 						) : (
 							<button
 								type="button"
-								onClick={() => {
-									// Only the start. Watch time lives inside the Mux iframe and is not
-									// readable from this page, so a duration here would be invented.
-									track("video_started", { video: "demo", placement: "see_it" });
-									setPlaying(true);
-								}}
+								onClick={() => setPlaying(true)}
 								aria-label={`Play video: ${VIDEO_TITLE}`}
 								className="group absolute inset-0 cursor-pointer"
 							>

@@ -8,7 +8,6 @@ import {
   monthsSince,
 } from "@/lib/github-stats";
 import { DesignPartnerCta } from "./DesignPartnerCta";
-import { DesignPartnerReplay } from "./DesignPartnerReplay";
 import {
   RoadmapSlideshow,
   type RoadmapPhase,
@@ -211,7 +210,6 @@ export default async function DesignPartnersPage() {
   return (
     <main className="bg-background text-foreground">
       {/* Recording is bounded by this route: unmounting on navigation stops it. */}
-      <DesignPartnerReplay />
       <section className="relative overflow-hidden px-4 pb-20 pt-24 sm:px-8 sm:pb-28 sm:pt-32 lg:px-[30px] lg:pt-36">
         <div className="relative mx-auto max-w-7xl">
           <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.82fr)] lg:gap-8">
@@ -229,8 +227,6 @@ export default async function DesignPartnersPage() {
               <div className="mt-8 flex flex-wrap gap-3">
                 <DesignPartnerCta
                   href={CAL_URL}
-                  destination="book_call"
-                  placement="hero"
                   external
                   className="inline-flex min-h-11 items-center gap-2 rounded-3xl bg-foreground px-6 py-3 text-base font-semibold tracking-[-0.5px] text-background transition-[transform,opacity] duration-150 hover:opacity-90 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background motion-reduce:transition-none"
                 >
@@ -239,8 +235,6 @@ export default async function DesignPartnersPage() {
                 </DesignPartnerCta>
                 <DesignPartnerCta
                   href={MAILTO_HREF}
-                  destination="email"
-                  placement="hero"
                   className="inline-flex min-h-11 items-center gap-2 rounded-3xl border border-border bg-background px-6 py-3 text-base font-normal tracking-[-0.5px] text-foreground transition-[transform,background-color] duration-150 hover:bg-muted active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background motion-reduce:transition-none"
                 >
                   or write to {CONTACT_EMAIL}
@@ -373,8 +367,6 @@ export default async function DesignPartnersPage() {
           <div className="flex shrink-0 flex-col gap-3 sm:flex-row">
             <DesignPartnerCta
               href={CAL_URL}
-              destination="book_call"
-              placement="closing"
               external
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-3xl bg-foreground px-6 py-3 text-base font-semibold tracking-[-0.5px] text-background transition-[transform,opacity] duration-150 hover:opacity-90 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background motion-reduce:transition-none"
             >
@@ -382,8 +374,6 @@ export default async function DesignPartnersPage() {
             </DesignPartnerCta>
             <DesignPartnerCta
               href={MAILTO_HREF}
-              destination="email"
-              placement="closing"
               className="inline-flex min-h-11 items-center gap-2 text-foreground underline decoration-border underline-offset-4 transition-colors duration-150 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"
             >
               or write to {CONTACT_EMAIL}

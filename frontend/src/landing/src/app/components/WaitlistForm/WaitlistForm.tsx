@@ -1,8 +1,6 @@
 "use client";
 
-import posthog from "posthog-js";
 import { useState } from "react";
-import { track } from "@/lib/analytics";
 
 interface WaitlistFormProps {
 	heading?: string;
@@ -16,17 +14,6 @@ export function WaitlistForm({ heading, description }: WaitlistFormProps) {
 	function handleSubmit(e: React.FormEvent) {
 		e.preventDefault();
 		if (!email) return;
-
-		const wasOptedOut = posthog.has_opted_out_capturing();
-		if (wasOptedOut) {
-			posthog.opt_in_capturing();
-		}
-
-		track("waitlist_signup", { email, platform: "windows_linux" });
-
-		if (wasOptedOut) {
-			posthog.opt_out_capturing();
-		}
 
 		setSubmitted(true);
 	}
@@ -68,8 +55,8 @@ export function WaitlistForm({ heading, description }: WaitlistFormProps) {
 					Join waitlist
 				</button>
 				<p className="text-xs leading-relaxed text-muted-foreground">
-					By joining, you ask us to send your email to PostHog to manage this
-					waitlist. This submission does not turn on site analytics. See our{" "}
+					By joining, you ask us to notify you when Windows &amp; Linux support
+					is ready. See our{" "}
 					<a className="underline underline-offset-2" href="/privacy/">
 						privacy policy
 					</a>
