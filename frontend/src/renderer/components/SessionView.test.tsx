@@ -906,6 +906,22 @@ describe("SessionView", () => {
 		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("uses generic copy while a cloud workspace is connecting", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = false;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "provisioning",
+		};
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Connecting");
+		expect(screen.getByRole("status")).not.toHaveTextContent("Coder");
+	});
+
 	it("activates a new terminal opened while a file tab is selected", async () => {
 		const shell = {
 			handleId: "sh-after-file",
@@ -2848,33 +2864,20 @@ describe("SessionView", () => {
 		expect(inspectorWidthVariable()).toBe("340px");
 	});
 
-	it("resizes the inspector panel and terminal gap together on each animation frame", () => {
-		const frames: FrameRequestCallback[] = [];
-		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-			frames.push(callback);
-			return frames.length;
-		});
-		try {
-			render(<SessionView sessionId="sess-1" />);
-			frames.length = 0;
-			const handle = screen.getByTestId("inspector-resize-handle");
-			expect(document.documentElement.style.getPropertyValue("--ao-inspector-w")).toBe("");
+	it("resizes the inspector panel and terminal gap together synchronously while dragging", () => {
+		render(<SessionView sessionId="sess-1" />);
+		const handle = screen.getByTestId("inspector-resize-handle");
+		expect(document.documentElement.style.getPropertyValue("--ao-inspector-w")).toBe("");
 
-			fireEvent.pointerDown(handle, { clientX: 100 });
-			fireEvent.pointerMove(window, { clientX: 200 });
-			expect(inspectorWidthVariable()).toBe("500px");
-			expect(frames).toHaveLength(1);
+		fireEvent.pointerDown(handle, { clientX: 100 });
+		fireEvent.pointerMove(window, { clientX: 200 });
+		// Sync apply during drag (no rAF) so the grip can follow the painted border 1:1.
+		expect(inspectorWidthVariable()).toBe("400px");
+		expect(inspectorPanelWidthVariable()).toBe("400px");
 
-			act(() => frames.shift()?.(performance.now()));
-			expect(inspectorWidthVariable()).toBe("400px");
-			expect(inspectorPanelWidthVariable()).toBe("400px");
-
-			fireEvent.pointerUp(window);
-			expect(inspectorWidthVariable()).toBe("400px");
-			expect(inspectorPanelWidthVariable()).toBe("400px");
-		} finally {
-			requestAnimationFrameSpy.mockRestore();
-		}
+		fireEvent.pointerUp(window);
+		expect(inspectorWidthVariable()).toBe("400px");
+		expect(inspectorPanelWidthVariable()).toBe("400px");
 	});
 
 	it("grows Browser into a co-work canvas while utility surfaces stay consistent", async () => {

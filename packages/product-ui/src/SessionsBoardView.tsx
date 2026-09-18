@@ -293,6 +293,9 @@ export function SessionCardView({
 		session.statusReadiness === "checking" || (session.statusReadiness !== "unavailable" &&
 		!needsAttention &&
 		session.displayStatus !== "Needs human review" &&
+		// "Draft" describes the PR, not work AO is turning, so it gets no loader
+		// even while the worker is live.
+		session.displayStatus !== "Draft" &&
 		(session.status === "working" ||
 			// The label reads `displayStatus`, so the loader must too. `status`
 			// aggregates the session's WORST open PR while `displayStatus` describes
@@ -471,7 +474,9 @@ function BoardPullRequestGroup({
 	const statusLabel = labels.states[group.state];
 	const linkClassName = "pr-link hover:underline";
 	return (
-		<div className="flex min-w-0 items-center gap-x-2">
+		// Wraps so a session with several PRs of one state stays inside the card
+		// instead of shrinking its gaps away and spilling past the edge.
+		<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 			{group.prs.map((pr) => {
 				const hasComments = (pr.commentCount ?? 0) > 0;
 				return (

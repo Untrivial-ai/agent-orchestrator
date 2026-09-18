@@ -104,7 +104,9 @@ func TestHealHelper(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A baked helper that is already correct means no download and no override.
+	// A baked helper that is already correct means no download, but the override
+	// is still staged (a local copy of the baked bytes) so the hooks, which
+	// invoke <binDir>/ao directly, always find the current helper.
 	baked := filepath.Join(dir, "ao-baked")
 	if err := os.WriteFile(baked, content, 0o755); err != nil {
 		t.Fatal(err)
@@ -116,18 +118,30 @@ func TestHealHelper(t *testing.T) {
 	if served != 0 {
 		t.Fatalf("baked-fresh helper downloaded %d times, want 0", served)
 	}
-	if _, err := os.Stat(filepath.Join(binDir, "ao")); !os.IsNotExist(err) {
-		t.Fatal("baked-fresh helper must not write an override")
+	staged, err := os.ReadFile(filepath.Join(binDir, "ao"))
+	if err != nil {
+		t.Fatalf("baked-fresh helper must be staged at the override path: %v", err)
+	}
+	if string(staged) != string(content) {
+		t.Fatalf("staged override = %q, want baked content %q", staged, content)
 	}
 
-	// A stale baked helper triggers a download into binDir/ao.
+	// A stale baked helper with no current override triggers a download into
+	// binDir/ao. Remove the override staged above to simulate a fresh boot.
+	override := filepath.Join(binDir, "ao")
+	if err := os.Remove(override); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(baked, []byte("stale"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	served = 0
 	if err := healHelper(context.Background(), server.Client(), logger, base, sum, binDir); err != nil {
 		t.Fatalf("healHelper (baked stale): %v", err)
 	}
-	override := filepath.Join(binDir, "ao")
+	if served != 1 {
+		t.Fatalf("stale baked helper downloaded %d times, want 1", served)
+	}
 	got, err := os.ReadFile(override)
 	if err != nil {
 		t.Fatalf("override not written: %v", err)

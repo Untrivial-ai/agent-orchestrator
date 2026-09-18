@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -63,26 +65,30 @@ type createSessionRequest struct {
 }
 
 type sessionResponse struct {
-	ID               string    `json:"id"`
-	OrgID            string    `json:"orgId"`
-	ProjectID        string    `json:"projectId"`
-	Kind             string    `json:"kind"`
-	Harness          string    `json:"harness"`
-	DisplayName      string    `json:"displayName"`
-	Branch           string    `json:"branch"`
-	Mode             string    `json:"mode"`
-	DeniedCommands   []string  `json:"deniedCommands"`
-	ActivityState    string    `json:"activityState"`
-	Status           string    `json:"status"`
-	RuntimeConnected bool      `json:"runtimeConnected"`
-	SandboxProvider  string    `json:"sandboxProvider,omitempty"`
-	DesiredState     string    `json:"desiredState,omitempty"`
-	ObservedState    string    `json:"observedState,omitempty"`
-	RuntimeState     string    `json:"runtimeState,omitempty"`
-	RuntimeError     string    `json:"runtimeError,omitempty"`
-	IsTerminated     bool      `json:"isTerminated"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ID               string   `json:"id"`
+	OrgID            string   `json:"orgId"`
+	ProjectID        string   `json:"projectId"`
+	Kind             string   `json:"kind"`
+	Harness          string   `json:"harness"`
+	DisplayName      string   `json:"displayName"`
+	Branch           string   `json:"branch"`
+	Mode             string   `json:"mode"`
+	DeniedCommands   []string `json:"deniedCommands"`
+	ActivityState    string   `json:"activityState"`
+	Status           string   `json:"status"`
+	RuntimeConnected bool     `json:"runtimeConnected"`
+	SandboxProvider  string   `json:"sandboxProvider,omitempty"`
+	DesiredState     string   `json:"desiredState,omitempty"`
+	ObservedState    string   `json:"observedState,omitempty"`
+	RuntimeState     string   `json:"runtimeState,omitempty"`
+	RuntimeError     string   `json:"runtimeError,omitempty"`
+	IsTerminated     bool     `json:"isTerminated"`
+	// WorkerEpoch advances on every fresh worker connection (resume, restore,
+	// re-provision). Clients key their terminal on it so a resumed session
+	// re-attaches to the live agent instead of the dead epoch's terminal.
+	WorkerEpoch int64     `json:"workerEpoch,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type pageInfo struct {
@@ -177,6 +183,44 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Project configuration is invalid.")
 		return
 	}
+	principal := principalFrom(r)
+	userStore, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	encrypted, nonce, err := userStore.UserProviderConnectionSecret(r.Context(), principal, githubPATProvider, defaultAgentConnectionLabel)
+	if err != nil {
+		s.logger.Error("fetch GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusUnprocessableEntity, "token_missing", "No GitHub personal access token found. Please add one first.")
+		return
+	}
+	if len(encrypted) == 0 {
+		s.logger.Error("fetch GitHub personal access token: token is empty", "request_id", requestID(r))
+		writeError(w, r, http.StatusUnprocessableEntity, "token_missing", "No GitHub personal access token found. Please add one first.")
+		return
+	}
+	secret, err := s.secretCipher.Decrypt(encrypted, nonce, providerSecretAssociatedData("user:"+principal.UserID, githubPATProvider))
+	if err != nil {
+		s.logger.Error("decrypt GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Failed to decrypt the GitHub token.")
+		return
+	}
+	defer clear(secret)
+
+	reachable, _, err := s.probeRepositoryAccess(r.Context(), request.RepositoryURL, string(secret))
+	if err != nil {
+		s.logger.Error("probe repository access", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusBadGateway, "provider_unavailable", "GitHub is temporarily unavailable. Please try again later.")
+		return
+	}
+	if !reachable {
+		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "Can't reach this repository — it may be private, or the URL may be wrong.")
+		return
+	}
+	owner, repo, _ := parseGitHubRepo(request.RepositoryURL)
+	canonicalURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+
 	project, err := s.store.CreateProject(
 		r.Context(),
 		principalFrom(r),
@@ -184,7 +228,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		key,
 		domain.CreateProject{
 			DisplayName:   request.DisplayName,
-			RepositoryURL: request.RepositoryURL,
+			RepositoryURL: canonicalURL,
 			DefaultBranch: request.DefaultBranch,
 			Config:        config,
 		},
@@ -609,19 +653,94 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
 		return
 	}
-	if err := s.store.SetSandboxDesiredState(
+	// Terminate the session AND request its sandbox teardown atomically, so the
+	// board archives it on this request (is_terminated) instead of waiting for
+	// the reconciler — which the idle scanner can race by resetting the sandbox
+	// desired_state, leaving the session active and the card re-appearing. This
+	// makes delete land on the first click, symmetric with restore.
+	if err := s.store.TerminateSession(
 		r.Context(),
 		principalFrom(r),
 		orgID,
 		sessionID,
-		domain.SandboxDesiredDeleted,
 	); err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"session": map[string]any{"id": sessionID, "desiredState": domain.SandboxDesiredDeleted},
+		"session": map[string]any{"id": sessionID, "isTerminated": true, "desiredState": domain.SandboxDesiredDeleted},
 	})
+}
+
+var githubPathRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
+// parseGitHubRepo validates and extracts the owner and repo from a GitHub URL.
+func parseGitHubRepo(repoURL string) (owner, repo string, ok bool) {
+	parsed, err := url.ParseRequestURI(repoURL)
+	if err != nil || parsed.Scheme != "https" {
+		return "", "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "github.com" && host != "www.github.com" {
+		return "", "", false
+	}
+
+	path := strings.Trim(parsed.Path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	if !githubPathRegex.MatchString(parts[0]) || !githubPathRegex.MatchString(parts[1]) || parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// probeRepositoryAccess asks the GitHub API whether a repository
+// is reachable with the provided token, and checks for write vs read-only access.
+func (s *Server) probeRepositoryAccess(ctx context.Context, repositoryURL string, token string) (reachable bool, writeAccess bool, err error) {
+	owner, repo, ok := parseGitHubRepo(repositoryURL)
+	if !ok {
+		return false, false, nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, apiURL, http.NoBody)
+	if err != nil {
+		return false, false, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := s.repositoryProbeClient.Do(req)
+	if err != nil {
+		return false, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
+		return false, false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, false, fmt.Errorf("github api returned status %d", resp.StatusCode)
+	}
+
+	var data struct {
+		Permissions struct {
+			Push bool `json:"push"`
+		} `json:"permissions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return false, false, err
+	}
+
+	return true, data.Permissions.Push, nil
 }
 
 func validProjectInput(request createProjectRequest) bool {
@@ -629,8 +748,8 @@ func validProjectInput(request createProjectRequest) bool {
 		len(request.DefaultBranch) < 1 || len(request.DefaultBranch) > 255 {
 		return false
 	}
-	parsed, err := url.ParseRequestURI(request.RepositoryURL)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != ""
+	_, _, ok := parseGitHubRepo(request.RepositoryURL)
+	return ok
 }
 
 func validProjectUpdate(request updateProjectRequest) bool {
@@ -702,6 +821,7 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		RuntimeState:     session.RuntimeState,
 		RuntimeError:     session.RuntimeError,
 		IsTerminated:     session.IsTerminated,
+		WorkerEpoch:      session.WorkerEpoch,
 		CreatedAt:        session.CreatedAt,
 		UpdatedAt:        session.UpdatedAt,
 	}

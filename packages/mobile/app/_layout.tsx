@@ -1,6 +1,7 @@
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Platform } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { OnboardingGate } from "../lib/OnboardingGate";
 import { TelemetryManager } from "../lib/TelemetryManager";
@@ -25,6 +26,8 @@ const SHEET_ROUTES = [
 	{ name: "sheets/model", detents: [0.5, 0.95] },
 	{ name: "sheets/chat-settings", detents: [0.5, 0.95] },
 	{ name: "sheets/conversation-map", detents: [0.5, 0.95] },
+	{ name: "sheets/conversation-actions", detents: [0.6, 0.95] },
+	{ name: "sheets/conversation-rename", detents: [0.35, 0.65] },
 	{ name: "sheets/composer-picker", detents: [0.6, 0.95] },
 	{ name: "sheets/theme", detents: "fitToContents" },
 	{ name: "sheets/store-update", detents: "fitToContents" },
@@ -57,13 +60,15 @@ export default function RootLayout() {
 	// Stack's own screenOptions below — hence the inner component: a hook cannot
 	// consume a provider its own component renders.
 	return (
-		<SafeAreaProvider>
-			<ThemeProvider>
-				<AppProvider>
-					<Shell />
-				</AppProvider>
-			</ThemeProvider>
-		</SafeAreaProvider>
+		<GestureHandlerRootView style={{ flex: 1 }}>
+			<SafeAreaProvider>
+				<ThemeProvider>
+					<AppProvider>
+						<Shell />
+					</AppProvider>
+				</ThemeProvider>
+			</SafeAreaProvider>
+		</GestureHandlerRootView>
 	);
 }
 
@@ -90,19 +95,45 @@ function Shell() {
 				}}
 			>
 				<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+				<Stack.Screen
+					name="settings"
+					options={{
+						presentation: "formSheet",
+						headerShown: false,
+						sheetAllowedDetents: Platform.OS === "ios" ? [0.92] : [0.9, 1],
+						sheetInitialDetentIndex: 0,
+						sheetGrabberVisible: true,
+						sheetCornerRadius: 24,
+						contentStyle: { backgroundColor: t.bgBase },
+					}}
+				/>
 				<Stack.Screen name="session/[id]" options={{ title: "Session", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="shell/[handleId]" options={{ title: "Worktree shell", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="preview/[id]" options={{ title: "Preview", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
-				<Stack.Screen name="spawn" options={{ presentation: "modal", title: "New agent" }} />
+				<Stack.Screen name="project/[id]" options={{ title: "Project", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
+				<Stack.Screen
+					name="spawn"
+					options={{
+						// Android's native form-sheet implementation jumps between
+						// detents as soon as the IME appears. A transparent modal lets
+						// Spawn render a compact, content-sized sheet and lets RN's
+						// KeyboardAvoidingView keep it directly above the keyboard.
+						presentation: Platform.OS === "ios" ? "formSheet" : "transparentModal",
+						headerShown: false,
+						sheetAllowedDetents: Platform.OS === "ios" ? [0.5, 0.9] : undefined,
+						sheetInitialDetentIndex: 0,
+						sheetGrabberVisible: Platform.OS === "ios",
+						sheetCornerRadius: 24,
+						contentStyle: { backgroundColor: Platform.OS === "ios" ? t.bgSurface : "transparent" },
+					}}
+				/>
 				{/* Reachable from Settings and from the board's bell, so naming either one
 				    in the back label would be wrong half the time. "minimal" drops the
 				    label entirely and leaves the bare chevron. */}
 				<Stack.Screen
 					name="notifications"
 					options={{
-						title: "Notifications",
-						headerBackButtonDisplayMode: "minimal",
-						headerLeft: () => <MinimalBackButton />,
+						headerShown: false,
 					}}
 				/>
 				<Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
@@ -117,7 +148,15 @@ function Shell() {
 					<Stack.Screen
 						key={name}
 						name={name}
-						options={{
+						options={name === "sheets/conversation-actions" && Platform.OS === "android" ? {
+							presentation: "formSheet",
+							sheetAllowedDetents: [0.6],
+							sheetInitialDetentIndex: 0,
+							sheetGrabberVisible: true,
+							sheetCornerRadius: 20,
+							headerShown: false,
+							contentStyle: { backgroundColor: t.bgSurface },
+						} : {
 							presentation: "formSheet",
 							sheetAllowedDetents: detents === "fitToContents" ? "fitToContents" : [...detents],
 							sheetInitialDetentIndex: 0,
