@@ -5,9 +5,13 @@ package conpty
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
 	"sync"
+	"syscall"
 
 	gopty "github.com/aymanbagabas/go-pty"
+	"golang.org/x/sys/windows"
 )
 
 // conptyConn is the real ptyConn implementation backed by go-pty's ConPty
@@ -63,6 +67,22 @@ func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
 	return c, nil
 }
 
+// killProcessTree taskkills pid's whole process tree. Node/the ConPTY child
+// launches its own children (e.g. the "agent-process supervise" wrapper and,
+// under that, the actual agent binary), and cmd.Process.Kill() alone
+// (TerminateProcess) does not propagate to them. /T walks the tree from pid;
+// /F forces it. Mirrors killProcessTree in
+// adapters/chatdriver/acp/process_windows.go, the same fix for the same
+// class of problem in a sibling package.
+func killProcessTree(pid int) error {
+	kill := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	kill.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.CREATE_NO_WINDOW,
+		HideWindow:    true,
+	}
+	return kill.Run()
+}
+
 func (c *conptyConn) wait() {
 	_ = c.cmd.Wait()
 	code := 0
@@ -82,8 +102,16 @@ func (c *conptyConn) Close() error {
 	err := c.pty.Close()
 	// Best-effort kill: a child that ignores ConPTY EOF still gets terminated
 	// so Done() fires. Mirrors pty.kill() in pty-host.ts.
+	//
+	// killProcessTree, not cmd.Process.Kill(): the ConPTY child spawns its own
+	// children (e.g. "agent-process supervise" and, under that, the actual
+	// agent binary), and TerminateProcess does not propagate to descendants.
+	// Killing only the direct child orphaned the real agent process, which
+	// could then hold the session's worktree files open well past the
+	// caller's force-remove retry budget (surfaces as "process cannot access
+	// the file" when replacing/retiring the session).
 	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
+		_ = killProcessTree(c.cmd.Process.Pid)
 	}
 	return err
 }
