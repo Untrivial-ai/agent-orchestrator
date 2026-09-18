@@ -38,6 +38,7 @@ var (
 	ErrAgentNotExited      = errors.New("session: agent has not exited")
 	ErrAgentExitInProgress = errors.New("session: agent exit is already in progress")
 	ErrIncompleteHandle    = errors.New("session: incomplete teardown handle")
+	ErrIncompleteSpawn     = errors.New("session: spawn did not complete")
 	// ErrProjectNotResolvable means the spawn's project has no usable repo
 	// (unregistered, archived, or missing a path). The API maps it to a 400.
 	ErrProjectNotResolvable = errors.New("session: project repo not resolvable")
@@ -2706,7 +2707,24 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 		return err
 	}
 	projectKind := projectKindForSession(project, rec.ProjectID)
-	if rec.Metadata.WorkspacePath == "" || (rec.Metadata.Branch == "" && projectKind != domain.ProjectKindScratch) {
+	// A live row without a workspace is an interrupted spawn, not a restorable session.
+	if rec.Metadata.WorkspacePath == "" {
+		handle := runtimeHandle(rec.Metadata)
+		if handle.ID != "" {
+			if err := m.runtime.Destroy(ctx, handle); err != nil {
+				m.logger.Warn("reconcile: failed to destroy orphaned runtime for partial-spawn session; terminating anyway",
+					"sessionID", rec.ID, "handleID", handle.ID, "error", err)
+			}
+		} else {
+			m.logger.Warn("reconcile: incomplete-spawn zombie has no workspace or runtime; terminating",
+				"sessionID", rec.ID)
+		}
+		if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
+			return fmt.Errorf("%w: %w", ErrIncompleteSpawn, err)
+		}
+		return nil
+	}
+	if rec.Metadata.Branch == "" && projectKind != domain.ProjectKindScratch {
 		return nil
 	}
 	isChat := domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat

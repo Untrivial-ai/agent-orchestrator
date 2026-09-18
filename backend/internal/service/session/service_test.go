@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -5085,6 +5086,94 @@ func sameStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// TestSpawn_UnclassifiedErrorIsLoggedBeforeBeingMasked asserts that when
+// manager.Spawn returns an unclassified internal error, the Service logs the
+// raw cause at ERROR level with structured context before returning the API error.
+func TestSpawn_UnclassifiedErrorIsLoggedBeforeBeingMasked(t *testing.T) {
+	// Arrange
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1"}
+	rawErr := errors.New("sqlite3: database is locked")
+	mgr := &fakeCommander{spawnErr: rawErr}
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	svc := NewWithDeps(Deps{
+		Manager: mgr,
+		Store:   st,
+		Logger:  logger,
+		Clock:   func() time.Time { return time.Time{} },
+	})
+
+	// Act
+	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: "p1",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Prompt:    "implement the feature",
+	})
+
+	// Assert
+	if err == nil {
+		t.Fatal("Spawn: expected non-nil error for a failing manager, got nil")
+	}
+
+	logOutput := logBuf.String()
+	if logOutput == "" {
+		t.Fatal("no log output produced; the service must log spawn errors before masking them")
+	}
+	if !strings.Contains(logOutput, "ERROR") {
+		t.Errorf("log level is not ERROR; got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, rawErr.Error()) {
+		t.Errorf("raw error %q not found in log output:\n%s", rawErr.Error(), logOutput)
+	}
+	if !strings.Contains(logOutput, "p1") {
+		t.Errorf("projectID not logged; got:\n%s", logOutput)
+	}
+}
+
+// TestToAPIError_MapsIncompleteSpawnToConflict asserts that ErrIncompleteSpawn
+// is translated to a typed 409 Conflict with SESSION_SPAWN_INCOMPLETE code.
+func TestToAPIError_MapsIncompleteSpawnToConflict(t *testing.T) {
+	// Arrange
+	wrapped := fmt.Errorf("reconcile p1-1: mark terminated: %w", sessionmanager.ErrIncompleteSpawn)
+
+	// Act
+	result := toAPIError(wrapped)
+
+	// Assert
+	var apiErr *apierr.Error
+	if !errors.As(result, &apiErr) {
+		t.Fatalf("toAPIError(ErrIncompleteSpawn) = %T(%v), want *apierr.Error", result, result)
+	}
+	if apiErr.Kind != apierr.KindConflict {
+		t.Errorf("apierr.Kind = %q, want KindConflict", apiErr.Kind)
+	}
+	if apiErr.Code != "SESSION_SPAWN_INCOMPLETE" {
+		t.Errorf("apierr.Code = %q, want SESSION_SPAWN_INCOMPLETE", apiErr.Code)
+	}
+}
+
+// TestToAPIError_KnownSentinelsAreNotUnclassified confirms that known sentinels
+// (including ErrIncompleteSpawn) are recognized by toAPIError and mapped to typed errors.
+func TestToAPIError_KnownSentinelsAreNotUnclassified(t *testing.T) {
+	sentinels := []error{
+		sessionmanager.ErrNotFound,
+		sessionmanager.ErrTerminated,
+		sessionmanager.ErrIncompleteSpawn,
+		sessionmanager.ErrIncompleteHandle,
+		sessionmanager.ErrMissingHarness,
+	}
+	for _, sentinel := range sentinels {
+		result := toAPIError(sentinel)
+		if errors.Is(result, sentinel) {
+			t.Errorf("toAPIError(%v) returned the sentinel unchanged; it must be mapped to a typed API error", sentinel)
+		}
+	}
 }
 
 // TestSpawnTelemetryCarriesRequestID pins the correlation the daemon needs:

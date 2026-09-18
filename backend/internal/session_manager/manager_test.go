@@ -9539,6 +9539,330 @@ func (m *flipOnNudgeMessenger) Send(_ context.Context, _ domain.SessionID, msg s
 	return nil
 }
 
+// TestReconcileLive_TerminatesIncompleteSpawnWithNoWorkspaceOrRuntime verifies
+// that a session row with empty WorkspacePath and RuntimeHandleID (pure zombie)
+// is marked terminated during boot reconciliation.
+func TestReconcileLive_TerminatesIncompleteSpawnWithNoWorkspaceOrRuntime(t *testing.T) {
+	// Arrange
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID:        "p1-1",
+		ProjectID: "p1",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+	}
+	st.sessions[rec.ID] = rec
+
+	// Act
+	err := m.reconcileLive(context.Background(), rec)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if !st.sessions[rec.ID].IsTerminated {
+		t.Error("incomplete-spawn zombie must be terminated by reconcileLive; session is still live")
+	}
+	if lcm.terminated[rec.ID] != 1 {
+		t.Errorf("MarkTerminated calls = %d, want exactly 1", lcm.terminated[rec.ID])
+	}
+	if ws.stashCalls != 0 || len(ws.calls) != 0 {
+		t.Errorf("workspace touched on a zombie session: stash=%d calls=%v", ws.stashCalls, ws.calls)
+	}
+	if rt.created != 0 || rt.destroyed != 0 {
+		t.Errorf("runtime touched on a zombie session: created=%d destroyed=%d", rt.created, rt.destroyed)
+	}
+}
+
+// TestReconcileLive_DestroysLeakedRuntimeWhenWorkspacePathMissing covers the partial spawn
+// case where runtime.Create succeeded but MarkSpawned failed before writing WorkspacePath.
+// reconcileLive must destroy the leaked runtime before terminating the session.
+func TestReconcileLive_DestroysLeakedRuntimeWhenWorkspacePathMissing(t *testing.T) {
+	// Arrange
+	const leakedHandle = "leaked-h1"
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{aliveByHandle: map[string]bool{leakedHandle: true}}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID:        "p1-2",
+		ProjectID: "p1",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID: leakedHandle,
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	// Act
+	err := m.reconcileLive(context.Background(), rec)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if !st.sessions[rec.ID].IsTerminated {
+		t.Error("partial-spawn session with leaked runtime must be terminated by reconcileLive")
+	}
+	if lcm.terminated[rec.ID] != 1 {
+		t.Errorf("MarkTerminated calls = %d, want exactly 1", lcm.terminated[rec.ID])
+	}
+	if rt.destroyed != 1 {
+		t.Errorf("Destroy calls = %d, want exactly 1 (leaked runtime must be reaped)", rt.destroyed)
+	}
+	if len(rt.destroyedIDs) != 1 || rt.destroyedIDs[0] != leakedHandle {
+		t.Errorf("destroyedIDs = %v, want [%s]", rt.destroyedIDs, leakedHandle)
+	}
+	if ws.stashCalls != 0 || len(ws.calls) != 0 {
+		t.Errorf("workspace touched on a partial-spawn session: stash=%d calls=%v", ws.stashCalls, ws.calls)
+	}
+}
+
+// TestPreserveFailedSpawnWorkspace_ClearsRuntimeHandleWhenRuntimeDestroyed asserts
+// that when workspace cleanup fails during spawn rollback with runtimeDestroyed=true,
+// preserveFailedSpawnWorkspace clears RuntimeHandleID and marks the session terminated.
+func TestPreserveFailedSpawnWorkspace_ClearsRuntimeHandleWhenRuntimeDestroyed(t *testing.T) {
+	// Arrange
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{destroyErr: errors.New("git worktree remove: directory is busy")}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID:        "p1-3",
+		ProjectID: "p1",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID: "h-was-created-then-destroyed",
+		},
+	}
+	st.sessions[rec.ID] = rec
+	wsInfo := ports.WorkspaceInfo{
+		SessionID: rec.ID,
+		Branch:    "ao/p1-3/root",
+		Path:      "/wt/p1-3",
+	}
+
+	// Act
+	m.rollbackSeedSpawnWorkspace(context.Background(), rec, wsInfo, nil, true)
+
+	// Assert
+	stored := st.sessions[rec.ID]
+	if !stored.IsTerminated {
+		t.Error("rollbackSeedSpawnWorkspace must terminate the row when workspace destroy fails")
+	}
+	if lcm.terminated[rec.ID] != 1 {
+		t.Errorf("MarkTerminated calls = %d, want 1", lcm.terminated[rec.ID])
+	}
+	if stored.Metadata.WorkspacePath != wsInfo.Path {
+		t.Errorf("WorkspacePath = %q, want %q (orphaned worktree must be traceable)",
+			stored.Metadata.WorkspacePath, wsInfo.Path)
+	}
+	if stored.Metadata.Branch != wsInfo.Branch {
+		t.Errorf("Branch = %q, want %q", stored.Metadata.Branch, wsInfo.Branch)
+	}
+	if stored.Metadata.RuntimeHandleID != "" {
+		t.Errorf("RuntimeHandleID = %q, want empty (runtime was destroyed during rollback)",
+			stored.Metadata.RuntimeHandleID)
+	}
+}
+
+// TestPreserveFailedSpawnWorkspace_KeepsRuntimeHandleWhenDestroyFailed asserts that when
+// runtime destruction fails during rollback, preserveFailedSpawnWorkspace retains
+// RuntimeHandleID so boot reconciliation can attempt process adoption or cleanup.
+func TestPreserveFailedSpawnWorkspace_KeepsRuntimeHandleWhenDestroyFailed(t *testing.T) {
+	// Arrange
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{destroyErr: errors.New("workspace: device or resource busy")}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	const aliveHandle = "still-running-h1"
+	rec := domain.SessionRecord{
+		ID:        "p1-4",
+		ProjectID: "p1",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID: aliveHandle,
+		},
+	}
+	st.sessions[rec.ID] = rec
+	wsInfo := ports.WorkspaceInfo{
+		SessionID: rec.ID,
+		Branch:    "ao/p1-4/root",
+		Path:      "/wt/p1-4",
+	}
+
+	// Act
+	m.rollbackPreparedSpawnWorkspace(context.Background(), rec, wsInfo, nil, false)
+
+	// Assert
+	stored := st.sessions[rec.ID]
+	if stored.Metadata.WorkspacePath != wsInfo.Path {
+		t.Errorf("WorkspacePath = %q, want %q", stored.Metadata.WorkspacePath, wsInfo.Path)
+	}
+	if stored.Metadata.RuntimeHandleID != aliveHandle {
+		t.Errorf("RuntimeHandleID = %q, want %q (runtime survived, must be kept for boot adopt)",
+			stored.Metadata.RuntimeHandleID, aliveHandle)
+	}
+}
+
+// failingMarkSpawnedLCM wraps fakeLCM and injects an error on MarkSpawned.
+type failingMarkSpawnedLCM struct {
+	*fakeLCM
+	markSpawnedErr error
+	markSpawnedHit bool
+}
+
+func (l *failingMarkSpawnedLCM) MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	l.markSpawnedHit = true
+	if l.markSpawnedErr != nil {
+		return l.markSpawnedErr
+	}
+	return l.fakeLCM.MarkSpawned(ctx, id, metadata)
+}
+
+// TestSpawn_MarkSpawnedFailureLeavesTerminatedRow verifies end-to-end spawn rollback when
+// MarkSpawned fails after runtime.Create succeeded.
+func TestSpawn_MarkSpawnedFailureLeavesTerminatedRow(t *testing.T) {
+	// Arrange
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{}
+	baseLCM := &fakeLCM{store: st}
+	lcm := &failingMarkSpawnedLCM{
+		fakeLCM:        baseLCM,
+		markSpawnedErr: errors.New("sqlite3: database is locked"),
+	}
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	// Act
+	_, _, _, err := m.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: "p1",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Prompt:    "implement the feature",
+	})
+
+	// Assert
+	if err == nil {
+		t.Fatal("Spawn: expected non-nil error when MarkSpawned fails, got nil")
+	}
+	if !lcm.markSpawnedHit {
+		t.Fatal("MarkSpawned was never called; test did not reach the target failure point")
+	}
+	if rt.destroyed == 0 {
+		t.Errorf("runtime.Destroy calls = %d, want >= 1 (orphaned runtime must be cleaned up)", rt.destroyed)
+	}
+	for id, row := range st.sessions {
+		if !row.IsTerminated {
+			t.Errorf("session %s is still live after a failed MarkSpawned; want terminated or deleted", id)
+		}
+	}
+}
+
+// TestReconcile_DoesNotRelaunchPreservedFailedSpawnWorkspace verifies that Reconcile on daemon start
+// does not resurrect a session preserved from a failed spawn attempt.
+func TestReconcile_DoesNotRelaunchPreservedFailedSpawnWorkspace(t *testing.T) {
+	// Arrange
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: lcm,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	st.sessions["p1-5"] = domain.SessionRecord{
+		ID: "p1-5", ProjectID: "p1", Kind: domain.KindWorker,
+		Harness:      domain.HarnessClaudeCode,
+		IsTerminated: true,
+		Activity:     domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch:        "ao/p1-5/root",
+			WorkspacePath: "/wt/p1-5",
+		},
+	}
+
+	// Act
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Assert
+	if !st.sessions["p1-5"].IsTerminated {
+		t.Error("Reconcile must not resurrect a terminated preserved-spawn-failure session")
+	}
+	if rt.created != 0 {
+		t.Errorf("runtime.Create calls = %d, want 0 (failed spawn must not be relaunched)", rt.created)
+	}
+	if len(ws.restoreConfigs) != 0 {
+		t.Errorf("workspace.Restore calls = %v, want 0 (no restore marker present)", ws.restoreConfigs)
+	}
+	if st.num != 0 {
+		t.Errorf("Reconcile minted %d new session(s); a failed spawn must never be resurrected", st.num)
+	}
+}
+
 func TestRestoreRetainsSpawnPermissionsAfterProjectChange(t *testing.T) {
 	for _, permission := range []domain.PermissionMode{"", domain.PermissionModeDefault} {
 		st := newFakeStore()
