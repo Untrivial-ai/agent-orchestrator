@@ -234,8 +234,8 @@ func TestBuildInteractiveUsesCloudProjectAgentConfig(t *testing.T) {
 		Harness:   "codex",
 		Mode:      "standard",
 		AgentConfig: worker.AgentConfig{
-			Model: "gpt-5",
-			Effort: "high",
+			Model:       "gpt-5",
+			Effort:      "high",
 			Permissions: "bypass-permissions",
 		},
 	})
