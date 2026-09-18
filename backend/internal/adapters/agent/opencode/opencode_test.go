@@ -652,6 +652,16 @@ func TestGetAgentHooksInstallsPlugin(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(opencodeSkillDir(workspace), "commands", "spawn.md")); err != nil {
 		t.Fatalf("using-ao commands/spawn.md missing after install: %v", err)
 	}
+	browserSkillBody, err := os.ReadFile(filepath.Join(opencodeBrowserSkillDir(workspace), "SKILL.md"))
+	if err != nil {
+		t.Fatalf("ao-browser SKILL.md missing after install: %v", err)
+	}
+	if !strings.Contains(string(browserSkillBody), "name: ao-browser") {
+		t.Fatalf("installed skill missing ao-browser frontmatter:\n%s", browserSkillBody)
+	}
+	if _, err := os.Stat(filepath.Join(opencodeBrowserSkillDir(workspace), "references", "lifecycle.md")); err != nil {
+		t.Fatalf("ao-browser references/lifecycle.md missing after install: %v", err)
+	}
 }
 
 func TestGetAgentHooksRefusesToClobberForeignFile(t *testing.T) {
@@ -717,8 +727,14 @@ func TestUninstallHooksRemovesPlugin(t *testing.T) {
 	if _, err := os.Stat(opencodeSkillDir(workspace)); !os.IsNotExist(err) {
 		t.Fatalf("AO using-ao skill still present after uninstall: err=%v", err)
 	}
+	if _, err := os.Stat(opencodeBrowserSkillDir(workspace)); !os.IsNotExist(err) {
+		t.Fatalf("AO ao-browser skill still present after uninstall: err=%v", err)
+	}
 	if _, err := os.Stat(opencodeSkillMarkerPath(workspace)); !os.IsNotExist(err) {
 		t.Fatalf("AO skill marker still present after uninstall: err=%v", err)
+	}
+	if _, err := os.Stat(opencodeBrowserSkillMarkerPath(workspace)); !os.IsNotExist(err) {
+		t.Fatalf("AO browser skill marker still present after uninstall: err=%v", err)
 	}
 	if _, err := os.Stat(userPlugin); err != nil {
 		t.Fatalf("user plugin removed by uninstall: %v", err)
