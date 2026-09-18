@@ -560,7 +560,11 @@ func (s *Supervisor) writeAgentPrompt(terminalID string, data []byte) error {
 
 func (s *Supervisor) writeReviewPrompt(terminalID string, data []byte) error {
 	time.Sleep(reviewStartupDelay)
-	return s.writeTerminal(worker.TerminalCommand{TerminalID: terminalID, Data: data})
+	// Codex treats one write containing both a pasted prompt and its carriage
+	// return as a paste operation, which can leave the review prompt waiting in
+	// the composer instead of submitting it. Keep the reviewer on the same
+	// paste-then-Enter path as normal agent turns after its fresh TUI has booted.
+	return s.writeAgentPrompt(terminalID, data)
 }
 
 func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
