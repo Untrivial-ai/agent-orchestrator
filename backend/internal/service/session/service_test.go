@@ -3326,6 +3326,9 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"native conversation unverified", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationUnverified), apierr.KindConflict, "NATIVE_SESSION_UNVERIFIED"},
 		{"unsupported effort", fmt.Errorf("spawn: %w", ports.ErrUnsupportedEffort), apierr.KindInvalid, "UNSUPPORTED_EFFORT"},
 		{"model capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrModelCapabilitiesUnavailable), apierr.KindInvalid, "MODEL_CAPABILITIES_UNAVAILABLE"},
+		{"chat resume failed", fmt.Errorf("resume: %w", ports.ErrChatResumeFailed), apierr.KindConflict, "CHAT_RESUME_FAILED"},
+		{"chat history unavailable", fmt.Errorf("resume: %w", ports.ErrChatHistoryUnavailable), apierr.KindConflict, "CHAT_HISTORY_UNAVAILABLE"},
+		{"chat history unsettled", fmt.Errorf("resume: %w", &ports.ChatHistoryUnsettledError{}), apierr.KindConflict, "CHAT_HISTORY_UNSETTLED"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

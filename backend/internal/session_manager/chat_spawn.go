@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -335,15 +336,32 @@ func (m *Manager) resumeChatController(
 		return RestoreResult{}, fmt.Errorf("%s %s: workspace roots: %w", operation, rec.ID, err)
 	}
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
-	if agent, ok := m.agents.Agent(rec.Harness); ok {
+	agent, ok := m.agents.Agent(rec.Harness)
+	if ok {
 		m.augmentAgentRuntimeEnv(agent, env)
 	}
 	historyMode := ports.ChatHistoryImport
 	var providerHandoff *domain.ChatProviderHandoff
+	ref := ports.SessionRef{
+		ID:            string(rec.ID),
+		WorkspacePath: ws.Path,
+		DataDir:       m.dataDir,
+		Metadata: map[string]string{
+			ports.MetadataKeyAgentSessionID: rec.Metadata.AgentSessionID,
+		},
+	}
+	conversationLost := ok && strings.TrimSpace(rec.Metadata.ProviderConversationID) != "" &&
+		nativeConversationMissing(ctx, agent, ref, rec.Metadata.ProviderConversationID, env)
+	if conversationLost {
+		if requireNativeHistory {
+			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrNativeConversationMissing)
+		}
+		rec.Metadata.ProviderConversationID = ""
+	}
 	if requireNativeHistory {
 		historyMode = ports.ChatHistoryRequired
 		providerHandoff, err = m.prepareLiveChatProviderHandoff(ctx, rec)
-	} else {
+	} else if !conversationLost {
 		providerHandoff, err = m.prepareRecoveredChatProviderHandoff(ctx, rec)
 	}
 	if err != nil {
@@ -428,9 +446,11 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	// Native continuity: the provider still holds the conversation, so the agent
-	// resumes with its own history rather than a replayed prompt.
-	return RestoreResult{Session: restored, Mode: RestoreModeNative}, nil
+	mode := RestoreModeNative
+	if conversationLost || strings.TrimSpace(rec.Metadata.ProviderConversationID) == "" {
+		mode = RestoreModeFresh
+	}
+	return RestoreResult{Session: restored, Mode: mode}, nil
 }
 
 func (m *Manager) markChatControllerSpawned(
