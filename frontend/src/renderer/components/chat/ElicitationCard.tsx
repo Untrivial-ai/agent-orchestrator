@@ -52,12 +52,12 @@ export function ElicitationCard({
 					<p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-logo-accent">
 						Agent needs your input
 					</p>
-					<h3 className="mt-1 text-sm font-medium leading-relaxed text-foreground">
+					<h3 className="mt-1 text-sm font-medium leading-relaxed text-foreground break-words">
 						{activity.detail?.message || activity.summary}
 					</h3>
 				</div>
 				{!pending ? (
-					<span className="mt-1 text-[11px] font-medium text-muted-foreground">
+					<span className="mt-1 min-w-0 shrink-0 text-[11px] font-medium text-muted-foreground">
 						{activity.status === "failed" ? "Expired" : "Answered"}
 					</span>
 				) : null}

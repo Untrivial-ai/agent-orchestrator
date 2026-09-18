@@ -193,4 +193,32 @@ describe("ElicitationCard", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent(/unsafe or invalid URL/i);
 		expect(screen.getByRole("button", { name: "Open link" })).toBeDisabled();
 	});
+
+	it("renders long question text without horizontal overflow", () => {
+		const longMessage = "This is an extremely long question that would normally cause horizontal overflow in the chat interface if not properly handled with CSS text wrapping and overflow constraints";
+		render(
+			<ElicitationCard
+				activity={activity({
+					inputMode: "form",
+					message: longMessage,
+					schema: { type: "object", properties: {} },
+				})}
+				onResolve={vi.fn()}
+			/>
+		);
+		expect(screen.getByText(longMessage)).toBeInTheDocument();
+	});
+
+	it("shows Answered status for resolved questions", () => {
+		render(
+			<ElicitationCard
+				activity={{
+					...activity({ inputMode: "form", schema: { type: "object", properties: {} } }),
+					status: "resolved",
+				}}
+				onResolve={vi.fn()}
+			/>
+		);
+		expect(screen.getByText("Answered")).toBeInTheDocument();
+	});
 });
