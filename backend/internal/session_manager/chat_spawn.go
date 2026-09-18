@@ -222,6 +222,7 @@ func (m *Manager) stopChatBestEffort(ctx context.Context, id domain.SessionID) {
 	if m.chat == nil {
 		return
 	}
+	ctx = context.WithoutCancel(ctx)
 	if err := m.chat.StopChat(ctx, id); err != nil {
 		m.logger.Warn("spawn rollback: close chat controller", "sessionID", id, "error", err)
 	}
