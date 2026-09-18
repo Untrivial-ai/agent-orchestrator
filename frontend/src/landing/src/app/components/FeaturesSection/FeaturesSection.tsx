@@ -68,7 +68,6 @@ export function FeaturesSection() {
 										backgroundImage={
 											FEATURE_BACKGROUNDS[index % FEATURE_BACKGROUNDS.length]
 										}
-										preload
 									>
 										{DemoComponent && <DemoComponent />}
 									</FeatureDemo>
