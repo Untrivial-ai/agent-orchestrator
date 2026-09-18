@@ -65,7 +65,7 @@ surface (`npm run sqlc`, `npm run api`).
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
   (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, and Qwen.
-  Qwen Chat uses native `qwen --acp` and requires Qwen Code 0.15.0 or newer.
+  Qwen Chat uses native `qwen --acp` and requires Qwen Code 0.16.0 or newer.
   Qwen Code's ACP mode enforces approval modes over `session/request_permission`
   (verified live: a non-read-only shell under auto-edit asks), so AO maps its
   permission modes onto Qwen's (default to Ask Permissions) and admits Qwen Chat
