@@ -1900,8 +1900,6 @@
 	],
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
-	"newTask.tuningRequiresChat": "モデル調整には現在チャットモードが必要です。TUI タスクではプロバイダーの既定値が使用されます。",
-	"newTask.tuiTuningDefaults": "TUI フォールバックではプロバイダーの既定値が使用されます。モデル調整にはチャットモードが必要です。",
 	"settings.models.effort": "推論量",
 	"settings.models.providerDefault": "プロバイダーの既定値",
 	"settings.models.unsupportedTuning": "選択したモデルでは{{role}}モデル調整がサポートされなくなりました。保存する前に対応する値を選択してください。",

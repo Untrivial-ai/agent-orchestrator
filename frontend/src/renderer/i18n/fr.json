@@ -1928,8 +1928,6 @@
 	],
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
-	"newTask.tuningRequiresChat": "Le réglage du modèle nécessite actuellement le mode Chat ; les tâches TUI utilisent les valeurs par défaut du fournisseur.",
-	"newTask.tuiTuningDefaults": "Le repli TUI utilise les valeurs par défaut du fournisseur ; le réglage du modèle nécessite le mode Chat.",
 	"settings.models.effort": "Effort",
 	"settings.models.providerDefault": "Valeur par défaut du fournisseur",
 	"settings.models.unsupportedTuning": "Le réglage du modèle {{role}}n’est plus pris en charge par le modèle sélectionné. Choisissez une valeur prise en charge avant d’enregistrer.",
