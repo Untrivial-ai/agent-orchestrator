@@ -197,10 +197,6 @@ Comece pelo [guia de desenvolvimento](../docs/development.md) para ver pré-requ
 
 Participe do [Discord](https://discord.com/invite/UZv7JjxbwG) para receber ajuda e conversar com outros colaboradores, siga [@ao_build](https://x.com/ao_build) para acompanhar as novidades ou inicie uma conversa nas [Issues do GitHub](https://github.com/Untrivial-ai/agent-orchestrator/issues).
 
-## Telemetria anônima
-
-O AO usa métricas de uso do produto e confiabilidade que preservam a privacidade e foram projetadas para excluir informações de identificação pessoal e conteúdo dos projetos. Essas métricas nos ajudam a entender a adoção e melhorar o produto. [Saiba mais sobre telemetria e privacidade](../docs/telemetry.md).
-
 ## Licença
 
 O Agent Orchestrator está disponível sob a [Licença Apache 2.0](../LICENSE).

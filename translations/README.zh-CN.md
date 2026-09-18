@@ -197,10 +197,6 @@ cd agent-orchestrator
 
 加入 [Discord](https://discord.com/invite/UZv7JjxbwG) 获取帮助并参与贡献者讨论，关注 [@ao_build](https://x.com/ao_build) 了解最新动态，或在 [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues) 中发起讨论。
 
-## 匿名遥测
-
-AO 使用注重隐私的产品使用和可靠性指标，这些指标在设计上排除了个人身份信息及项目内容。它们帮助我们了解产品采用情况并改进产品。[进一步了解遥测和隐私](../docs/telemetry.md)。
-
 ## 许可证
 
 Agent Orchestrator 基于 [Apache License 2.0](../LICENSE) 提供。

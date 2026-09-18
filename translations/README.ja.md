@@ -195,10 +195,6 @@ cd agent-orchestrator
 
 サポートやコントリビューター同士の議論には [Discord](https://discord.com/invite/UZv7JjxbwG) に参加し、最新情報は [@ao_build](https://x.com/ao_build) をフォローしてください。[GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues) から会話を始めることもできます。
 
-## 匿名テレメトリ
-
-AO は、PII とプロジェクトの内容を除外するよう設計された、プライバシーに配慮した製品利用状況と信頼性の指標を使用します。これらの指標は、導入状況の把握と製品改善に役立てられます。[テレメトリとプライバシーについて詳しく見る](../docs/telemetry.md)。
-
 ## ライセンス
 
 Agent Orchestrator は [Apache License 2.0](../LICENSE) のもとで提供されています。
