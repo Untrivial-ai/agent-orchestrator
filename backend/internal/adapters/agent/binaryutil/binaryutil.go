@@ -6,6 +6,7 @@ package binaryutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -93,6 +94,7 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 		names = spec.WinNames
 	}
 
+	var lookupErr error
 	var pathHits map[string]struct{}
 	if spec.ValidateIdentity != nil {
 		pathHits = make(map[string]struct{})
@@ -101,7 +103,7 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if path, err := exec.LookPath(name); err == nil && path != "" {
+		if path, err := LookPath(name); err == nil && path != "" {
 			if spec.ValidateIdentity == nil {
 				return path, nil
 			}
@@ -112,6 +114,8 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
+		} else if err != nil && !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, os.ErrNotExist) {
+			lookupErr = err
 		}
 	}
 
@@ -128,6 +132,11 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 			continue
 		}
 		if !hookutil.IsExecutableFile(candidate) {
+			if info, err := os.Stat(candidate); errors.Is(err, os.ErrPermission) {
+				lookupErr = err
+			} else if err == nil && info.Mode().IsRegular() && runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+				lookupErr = &os.PathError{Op: "execute", Path: candidate, Err: os.ErrPermission}
+			}
 			continue
 		}
 		if spec.ValidateIdentity == nil || spec.ValidateIdentity(ctx, candidate) {
@@ -138,7 +147,30 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 		}
 	}
 
+	if lookupErr != nil {
+		return "", lookupErr
+	}
 	return "", fmt.Errorf("%s: %w", spec.Label, ports.ErrAgentBinaryNotFound)
+}
+
+// LookPath preserves executable permission failures that exec.LookPath otherwise
+// collapses into ErrNotFound after walking PATH.
+func LookPath(name string) (string, error) {
+	path, err := exec.LookPath(name)
+	if err == nil || runtime.GOOS == "windows" || !errors.Is(err, exec.ErrNotFound) {
+		return path, err
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		candidate := filepath.Join(dir, name)
+		info, statErr := os.Stat(candidate)
+		if errors.Is(statErr, os.ErrPermission) {
+			return "", statErr
+		}
+		if statErr == nil && info.Mode().IsRegular() && info.Mode()&0o111 == 0 {
+			return "", &os.PathError{Op: "execute", Path: candidate, Err: os.ErrPermission}
+		}
+	}
+	return path, err
 }
 
 // resolveBinaryCandidates returns every binary location in the resolver's

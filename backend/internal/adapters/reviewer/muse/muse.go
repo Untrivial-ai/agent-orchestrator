@@ -16,8 +16,30 @@ type Reviewer struct {
 }
 
 // New builds the Muse Code reviewer adapter.
-func New() *Reviewer {
-	return &Reviewer{agent: workermuse.New()}
+func New(discovery ...ports.AgentBinaryDiscovery) *Reviewer {
+	r := &Reviewer{agent: workermuse.New()}
+	if len(discovery) > 0 {
+		r.SetBinaryDiscovery(discovery[0])
+	}
+	return r
+}
+
+// SetBinaryDiscovery injects the daemon-owned executable resolver.
+func (r *Reviewer) SetBinaryDiscovery(d ports.AgentBinaryDiscovery) {
+	provider, ok := r.agent.(ports.AgentBinaryDiscoveryProvider)
+	if !ok {
+		panic("muse reviewer agent lacks binary discovery")
+	}
+	provider.SetBinaryDiscovery(d)
+}
+
+// AugmentBinaryRuntimeEnv adds interpreter paths needed by the selected executable.
+func (r *Reviewer) AugmentBinaryRuntimeEnv(ctx context.Context, env map[string]string, argv []string, pinnedDir string) {
+	augmenter, ok := r.agent.(ports.AgentBinaryRuntimeEnvironment)
+	if !ok {
+		panic("muse reviewer agent lacks runtime environment augmentation")
+	}
+	augmenter.AugmentBinaryRuntimeEnv(ctx, env, argv, pinnedDir)
 }
 
 // Harness identifies this reviewer in the reviewer registry.

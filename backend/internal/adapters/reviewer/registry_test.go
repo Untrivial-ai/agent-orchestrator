@@ -2,11 +2,24 @@ package reviewer
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type selectedReviewerBinary struct{ calls int }
+
+func (s *selectedReviewerBinary) Resolve(_ context.Context, _ domain.AgentHarness, purpose ports.BinaryResolvePurpose) (ports.AgentBinaryResolution, error) {
+	if purpose != ports.BinaryResolveLaunch {
+		panic("reviewer requested non-launch binary resolution")
+	}
+	s.calls++
+	return ports.AgentBinaryResolution{Executable: "/selected/reviewer-agent"}, nil
+}
+
+func (*selectedReviewerBinary) Invalidate(domain.AgentHarness) {}
 
 // TestRegistryMatchesDomainVocabulary enforces that the shipped reviewer
 // adapters and domain.AllReviewerHarnesses stay in sync: every registered
@@ -97,5 +110,41 @@ func TestNewResolverResolvesShippedReviewers(t *testing.T) {
 		if _, ok := resolver.Reviewer(removed); ok {
 			t.Errorf("resolver returned removed reviewer %q", removed)
 		}
+	}
+}
+
+func TestEveryReviewerUsesSharedBinaryDiscovery(t *testing.T) {
+	discovery := &selectedReviewerBinary{}
+	resolver, err := NewResolver(discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, harness := range domain.AllReviewerHarnesses {
+		t.Run(string(harness), func(t *testing.T) {
+			r, ok := resolver.Reviewer(harness)
+			if !ok {
+				t.Fatal("reviewer missing")
+			}
+			if _, ok := r.(interface {
+				SetBinaryDiscovery(ports.AgentBinaryDiscovery)
+			}); !ok {
+				t.Fatal("reviewer does not expose binary discovery injection")
+			}
+			if _, ok := r.(ports.AgentBinaryRuntimeEnvironment); !ok {
+				t.Fatal("reviewer does not expose binary runtime environment augmentation")
+			}
+			spec, err := r.ReviewCommand(context.Background(), ports.ReviewInvocation{
+				ReviewerID: "review-discovery", WorkspacePath: t.TempDir(), DataDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(spec.Argv, "/selected/reviewer-agent") {
+				t.Fatalf("review command bypassed selected binary: %#v", spec.Argv)
+			}
+		})
+	}
+	if discovery.calls != len(domain.AllReviewerHarnesses) {
+		t.Fatalf("resolution calls = %d, want %d", discovery.calls, len(domain.AllReviewerHarnesses))
 	}
 }

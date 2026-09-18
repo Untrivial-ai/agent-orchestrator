@@ -161,3 +161,20 @@ func (o *recordingTerminalOpener) OpenCommandTerminal(_ context.Context, in shel
 	o.input = in
 	return o.terminal, nil
 }
+
+type managedEnvironmentResolver struct{ managedExecutableResolver }
+
+func (managedEnvironmentResolver) AgentBinaryEnvironment(context.Context, string, string) map[string]string {
+	return map[string]string{"PATH": "/selected/runtime"}
+}
+func TestAuthenticationTerminalReceivesSelectedRuntimeEnvironment(t *testing.T) {
+	opener := &recordingTerminalOpener{}
+	resolver := managedEnvironmentResolver{managedExecutableResolver{agentID: "muse", path: "/selected/muse"}}
+	svc := NewWithAgentResolver(nil, resolver, opener)
+	if _, err := svc.Start(context.Background(), "muse"); err != nil {
+		t.Fatal(err)
+	}
+	if opener.input.Env["PATH"] != "/selected/runtime" {
+		t.Fatal("authentication terminal lost selected runtime PATH")
+	}
+}

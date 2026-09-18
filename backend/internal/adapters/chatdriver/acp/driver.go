@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -53,6 +54,9 @@ type Config struct {
 	Capabilities ports.ChatCapabilities
 	Probe        func(context.Context) error
 	Launch       func(context.Context, LaunchConfig) (Launch, error)
+	// InvalidateBinary discards a stale shared selection after a definite
+	// pre-start executable failure. Prepare then rebuilds the launch once.
+	InvalidateBinary func()
 	// ValidateInitialize optionally admits only the tested ACP distribution and
 	// version after the protocol handshake identifies it. This is preferable to
 	// invoking an adapter-specific version flag, which many stdio agents do not
@@ -145,6 +149,13 @@ func (d *Driver) discoverConfigOptions(ctx context.Context, workingDir string) (
 		return nil, err
 	}
 	proc, err := d.spawn(launch, workingDir)
+	if errors.Is(err, ports.ErrAgentProcessNotStarted) && d.cfg.InvalidateBinary != nil {
+		d.cfg.InvalidateBinary()
+		launch, err = d.cfg.Launch(ctx, cfg)
+		if err == nil {
+			proc, err = d.spawn(launch, workingDir)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -523,6 +534,15 @@ func (d *Driver) connectProcess(
 			launch, err := d.cfg.Launch(prepareCtx, cfg)
 			if err != nil {
 				return persistenthost.PreparedProvider{}, err
+			}
+			if d.cfg.InvalidateBinary != nil {
+				if _, lookupErr := exec.LookPath(launch.Command); lookupErr != nil {
+					d.cfg.InvalidateBinary()
+					launch, err = d.cfg.Launch(prepareCtx, cfg)
+					if err != nil {
+						return persistenthost.PreparedProvider{}, err
+					}
+				}
 			}
 			if launch.Command == "" {
 				return persistenthost.PreparedProvider{}, fmt.Errorf("%w: ACP launch command is empty", ports.ErrChatDriverUnavailable)

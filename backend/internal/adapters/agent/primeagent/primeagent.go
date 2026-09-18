@@ -199,10 +199,18 @@ func ResolvePrimeAgentBinary(ctx context.Context) (string, error) {
 
 // ResolveBinary resolves the executable path for the optional registry probe.
 func (p *Plugin) ResolveBinary(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolveLaunch); shared {
+		return path, err
+	}
+
 	return p.primeAgentBinary(ctx)
 }
 
 func (p *Plugin) primeAgentBinary(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolveLaunch); shared {
+		return path, err
+	}
+
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

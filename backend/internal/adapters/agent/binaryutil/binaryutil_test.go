@@ -513,3 +513,17 @@ func TestResolveBinaryHonorsCancellation(t *testing.T) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
+
+func TestResolveBinaryPermissionFailureIsNotAbsence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable mode")
+	}
+	candidate := filepath.Join(t.TempDir(), "agent-not-executable")
+	if err := os.WriteFile(candidate, []byte("no execute permission"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ResolveBinary(context.Background(), BinarySpec{Label: "fixture", UnixPaths: []string{candidate}})
+	if !errors.Is(err, os.ErrPermission) || errors.Is(err, ports.ErrAgentBinaryNotFound) {
+		t.Fatalf("error = %v", err)
+	}
+}

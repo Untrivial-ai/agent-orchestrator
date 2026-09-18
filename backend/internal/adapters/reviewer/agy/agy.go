@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	agentagy "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agy"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -29,19 +30,33 @@ var requiredFlags = []string{"--agent", "--conversation", "--prompt-interactive"
 
 // Reviewer describes Agy's host-trusted interactive lifecycle.
 type Reviewer struct {
+	agentbase.Base
 	resolveBinary func(context.Context) (string, error)
 	run           func(context.Context, map[string]string, string, ...string) ([]byte, error)
 }
 
 // New returns the experimental host-trusted adapter.
-func New() *Reviewer {
-	return &Reviewer{
+func New(discovery ...ports.AgentBinaryDiscovery) *Reviewer {
+	r := &Reviewer{
 		resolveBinary: agentagy.ResolveAgyBinary,
 		run: func(ctx context.Context, env map[string]string, binary string, args ...string) ([]byte, error) {
 			cmd := aoprocess.CommandContext(ctx, binary, args...)
 			cmd.Env = appendEnvironment(os.Environ(), env)
 			return cmd.CombinedOutput()
 		},
+	}
+	if len(discovery) > 0 {
+		r.SetBinaryDiscovery(discovery[0])
+	}
+	return r
+}
+
+// SetBinaryDiscovery injects the daemon-owned executable resolver.
+func (r *Reviewer) SetBinaryDiscovery(d ports.AgentBinaryDiscovery) {
+	r.Base.SetBinaryDiscovery(d)
+	r.resolveBinary = func(ctx context.Context) (string, error) {
+		v, e := d.Resolve(ctx, domain.AgentHarness(r.Harness()), ports.BinaryResolveLaunch)
+		return v.Executable, e
 	}
 }
 

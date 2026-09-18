@@ -907,3 +907,23 @@ func TestReadinessCoordinatorRejectsInvalidPurposeAndUnknownAgent(t *testing.T) 
 		}
 	}
 }
+
+func TestReadinessDiscoveryPendingNeverBecomesMissingOrAuthenticated(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	adapter := &readinessTestAgent{resolve: func(context.Context) (string, error) { return "", ports.ErrAgentBinaryChecking }, auth: func(context.Context) (ports.AgentAuthStatus, error) {
+		t.Error("auth during pending discovery")
+		return ports.AgentAuthStatusAuthorized, nil
+	}}
+	c := newReadinessCoordinator(readinessCoordinatorConfig{Context: ctx, Agents: []agentregistry.HarnessAgent{readinessHarness("codex", "Codex", adapter)}})
+	got, err := c.Ensure(ctx, []string{"codex"}, domain.AgentReadinessPurposeDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Installation.State != domain.AgentInstallationUnknown || got[0].Installation.Freshness != domain.AgentReadinessChecking {
+		t.Fatalf("pending discovery = %+v", got[0])
+	}
+	if got[0].Authentication.State == domain.AgentAuthenticationAuthorized {
+		t.Fatal("discovery inferred authentication")
+	}
+}

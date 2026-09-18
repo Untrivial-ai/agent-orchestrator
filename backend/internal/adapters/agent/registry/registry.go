@@ -42,8 +42,8 @@ import (
 // ships, in a stable registration order. Adding a new harness means adding its
 // constructor here (and a domain.AgentHarness constant) — the one edit the
 // daemon picks up.
-func Constructors() []adapters.Adapter {
-	return []adapters.Adapter{
+func Constructors(discovery ...ports.AgentBinaryDiscovery) []adapters.Adapter {
+	items := []adapters.Adapter{
 		claudecode.New(),
 		codex.New(),
 		opencode.New(),
@@ -72,14 +72,24 @@ func Constructors() []adapters.Adapter {
 		primeagent.New(),
 		autohand.New(),
 	}
+	if len(discovery) > 0 && discovery[0] != nil {
+		for _, item := range items {
+			provider, ok := item.(ports.AgentBinaryDiscoveryProvider)
+			if !ok {
+				panic("registered agent has no binary discovery metadata")
+			}
+			provider.SetBinaryDiscovery(discovery[0])
+		}
+	}
+	return items
 }
 
 // Build returns a registry populated with the shipped agent adapters, keyed by
 // manifest id. Registration only fails on an empty/duplicate id — a programmer
 // error, not a runtime condition.
-func Build() (*adapters.Registry, error) {
+func Build(discovery ...ports.AgentBinaryDiscovery) (*adapters.Registry, error) {
 	reg := adapters.NewRegistry()
-	for _, a := range Constructors() {
+	for _, a := range Constructors(discovery...) {
 		if err := reg.Register(a); err != nil {
 			return nil, fmt.Errorf("register agent adapter %q: %w", a.Manifest().ID, err)
 		}
@@ -99,8 +109,8 @@ type HarnessAgent struct {
 // Harnessed returns every shipped adapter that drives an agent, paired with its
 // harness, in Constructors() order. An adapter that does not implement
 // ports.Agent is skipped.
-func Harnessed() []HarnessAgent {
-	cons := Constructors()
+func Harnessed(discovery ...ports.AgentBinaryDiscovery) []HarnessAgent {
+	cons := Constructors(discovery...)
 	out := make([]HarnessAgent, 0, len(cons))
 	for _, a := range cons {
 		agent, ok := a.(ports.Agent)

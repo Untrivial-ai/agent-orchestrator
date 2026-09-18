@@ -166,6 +166,10 @@ func ResolveAgyBinary(ctx context.Context) (string, error) {
 }
 
 func (p *Plugin) agyBinary(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolveLaunch); shared {
+		return path, err
+	}
+
 	// Fast path: a concurrent-safe read of the already-resolved binary.
 	p.binaryMu.RLock()
 	cached := p.resolvedBinary

@@ -362,3 +362,22 @@ describe("HarnessSettingsSection", () => {
 		expect(await screen.findByText("Could not poll installation status.")).toBeInTheDocument();
 	});
 });
+
+describe("automatic discovery status", () => {
+ afterEach(() => vi.restoreAllMocks());
+ it("shows checking and unknown observations without offering a search button", async () => {
+  const pending = catalogWithInstalled();
+  pending.agents[0]!.installation={...pending.agents[0]!.installation,state:"unknown",freshness:"checking",reason:"Installation is being checked."};
+  vi.spyOn(apiClient,"GET").mockImplementation(async(path)=>{
+   if(path==="/api/v1/agents/readiness")return {data:pending} as never;
+   if(path==="/api/v1/agents/installers")return {data:plans} as never;
+   if(path==="/api/v1/agents/install-jobs")return {data:{jobs:[]}} as never;
+   return {data:undefined} as never;
+  });
+  vi.spyOn(apiClient,"POST").mockResolvedValue({data:pending} as never);
+  renderSection();
+  const row=(await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
+  await within(row).findByText("Installation is being checked.");
+  expect(within(row).queryByRole("button",{name:/search|find/i})).not.toBeInTheDocument();
+ });
+});

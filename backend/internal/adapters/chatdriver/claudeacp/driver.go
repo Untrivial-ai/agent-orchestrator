@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -36,7 +37,8 @@ type claudePlugin interface {
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
-		Harness: domain.HarnessClaudeCode,
+		Harness:          domain.HarnessClaudeCode,
+		InvalidateBinary: claudeBinaryInvalidationCallback(plugin),
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
 			ports.ChatCapabilityTools:        true,
@@ -90,6 +92,9 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			// This is the line that prevents the adapter's optional native Claude
 			// package from becoming a second installation managed by AO.
 			env["CLAUDE_CODE_EXECUTABLE"] = claudeBinary
+			if augmenter, ok := plugin.(ports.AgentBinaryRuntimeEnvironment); ok {
+				augmenter.AugmentBinaryRuntimeEnv(ctx, env, []string{claudeBinary}, agentlaunch.PinnedDir(os.Executable, cfg.DataDir))
+			}
 			return acpdriver.Launch{
 				Command: runtimeLaunch.command,
 				Args:    runtimeLaunch.args,
@@ -100,6 +105,14 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
 	}, log)}
+}
+
+func claudeBinaryInvalidationCallback(plugin claudePlugin) func() {
+	invalidator, ok := plugin.(ports.AgentBinaryInvalidator)
+	if !ok {
+		return nil
+	}
+	return func() { invalidator.InvalidateBinary(domain.HarnessClaudeCode) }
 }
 
 func validateClaudeACPExecutable(binary, goos string) error {

@@ -81,6 +81,9 @@ func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purp
 
 // InvalidateAgentInstallation marks an agent's installation observation stale.
 func (s *Service) InvalidateAgentInstallation(agentID string) {
+	if s.binaryDiscovery != nil {
+		s.binaryDiscovery.Invalidate(domain.AgentHarness(agentID))
+	}
 	s.readiness.Invalidate(agentID, readinessInvalidateInstallation)
 }
 
@@ -259,5 +262,15 @@ func readinessInfo(snapshot domain.AgentReadinessSnapshot) Info {
 	return Info{
 		ID: snapshot.ID, Label: snapshot.Label, AuthStatus: status,
 		UsageCount: snapshot.UsageCount, LastUsedAt: snapshot.LastUsedAt,
+	}
+}
+
+// DiscoveryCompleted refreshes display observations without invalidating the
+// newly discovered executable or treating its presence as authentication.
+func (s *Service) DiscoveryCompleted(harnesses []domain.AgentHarness) {
+	for _, harness := range harnesses {
+		id := string(harness)
+		s.readiness.Invalidate(id, readinessInvalidateInstallation)
+		s.RecheckAgent(id)
 	}
 }

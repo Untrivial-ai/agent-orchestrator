@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
@@ -54,6 +55,42 @@ func TestAccountFactoryUsesManagedHomeAndFileCredentialStore(t *testing.T) {
 	}
 	if account.Authentication != domain.AgentAuthenticationAuthorized || account.Method != domain.CodexAuthMethodChatGPT || account.Email == nil || *account.Email != "person@example.com" {
 		t.Fatalf("account = %#v", account)
+	}
+}
+
+type accountRuntimeEnv struct{ called bool }
+
+func (a *accountRuntimeEnv) AugmentBinaryRuntimeEnv(_ context.Context, env map[string]string, argv []string, pinnedDir string) {
+	a.called = true
+	if len(argv) != 1 || argv[0] != "/shell/codex" {
+		panic("unexpected account argv")
+	}
+	env["PATH"] = pinnedDir + string(os.PathListSeparator) + "/shell/node"
+}
+
+func TestAccountFactoryAppliesInjectedBinaryRuntimeEnvironment(t *testing.T) {
+	serverReads, clientWrites := io.Pipe()
+	clientReads, serverWrites := io.Pipe()
+	augmenter := &accountRuntimeEnv{}
+	factory := NewAccountFactoryWithResolver(func(context.Context) (string, error) { return "/shell/codex", nil }, nil, augmenter)
+	var gotEnv []string
+	factory.spawn = func(_ context.Context, _, _ string, env, _ []string) (*process, error) {
+		gotEnv = append([]string(nil), env...)
+		return &process{stdin: clientWrites, stdout: clientReads, stop: func() error { return serverWrites.Close() }}, nil
+	}
+	go serveAccountTestProtocol(serverReads, serverWrites, map[string]any{"initialize": map[string]any{}})
+	client, err := factory.Open(context.Background(), ports.CodexAccountContext{Home: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if !augmenter.called {
+		t.Fatal("binary runtime environment augmenter was not called")
+	}
+	if !slices.ContainsFunc(gotEnv, func(value string) bool {
+		return strings.HasPrefix(value, "PATH=") && strings.HasSuffix(value, "/shell/node")
+	}) {
+		t.Fatal("spawn PATH lacks shell runtime path")
 	}
 }
 

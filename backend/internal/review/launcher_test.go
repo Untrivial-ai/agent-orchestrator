@@ -21,6 +21,18 @@ type fakeReviewer struct {
 	env              map[string]string
 }
 
+type fakeAugmentingReviewer struct {
+	fakeReviewer
+	called    bool
+	pinnedDir string
+}
+
+func (f *fakeAugmentingReviewer) AugmentBinaryRuntimeEnv(_ context.Context, env map[string]string, _ []string, pinnedDir string) {
+	f.called = true
+	f.pinnedDir = pinnedDir
+	env["PATH"] = pinnedDir + string(os.PathListSeparator) + "/private/shell/node"
+}
+
 func (f *fakeReviewer) ReviewCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	f.gotInv = inv
 	return ports.ReviewCommandSpec{Argv: []string{"greptile", "review"}, Env: f.env, WorkingDirectory: f.workingDirectory}, nil
@@ -93,6 +105,25 @@ func TestLauncherSpawnPinsPATHToAOExecutable(t *testing.T) {
 	parts := strings.Split(rt.createCfg.Env["PATH"], string(os.PathListSeparator))
 	if len(parts) < 2 || parts[0] != aoDir || parts[1] != "/reviewer/bin" {
 		t.Fatalf("reviewer PATH = %q, want AO dir before adapter PATH", rt.createCfg.Env["PATH"])
+	}
+}
+
+func TestLauncherLetsSelectedReviewerAugmentRuntimeEnvironmentAfterAOPinning(t *testing.T) {
+	aoDir := t.TempDir()
+	reviewer := &fakeAugmentingReviewer{fakeReviewer: fakeReviewer{env: map[string]string{"PATH": "/daemon/bin"}}}
+	rt := &fakeRuntime{}
+	l := NewLauncher(
+		fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, t.TempDir(),
+		WithExecutable(func() (string, error) { return filepath.Join(aoDir, "ao"), nil }),
+	)
+	if _, err := l.Spawn(context.Background(), launchSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if !reviewer.called || reviewer.pinnedDir != aoDir {
+		t.Fatalf("runtime augmenter called=%v pinnedDir=%q, want true and %q", reviewer.called, reviewer.pinnedDir, aoDir)
+	}
+	if rt.createCfg.Env["PATH"] != aoDir+string(os.PathListSeparator)+"/private/shell/node" {
+		t.Fatalf("runtime PATH = %q", rt.createCfg.Env["PATH"])
 	}
 }
 

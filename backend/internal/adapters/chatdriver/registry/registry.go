@@ -63,17 +63,17 @@ func New(drivers ...ports.ChatDriver) *Registry {
 // Every other harness stays TUI-only until the same is true of it. The driver
 // reuses the harness's existing agent plugin for binary resolution and auth, so
 // registration adds no second answer to "is this agent installed and logged in".
-func Build(log *slog.Logger) *Registry {
+func Build(log *slog.Logger, discovery ...ports.AgentBinaryDiscovery) *Registry {
 	return New(
-		codexappserver.New(codex.New(), log),
-		claudeacp.New(claudecode.New(), log),
-		opencodeacp.New(opencode.New(), log),
-		droidacp.New(droid.New(), log),
-		kimiacp.New(kimi.New(), log),
-		kimchiacp.New(kimchi.New(), log),
-		piacp.New(pi.New(), log),
-		cursoracp.New(cursor.New(), log),
-		ompacp.New(omp.New(), log),
+		codexappserver.New(withDiscovery(codex.New(), discovery), log),
+		claudeacp.New(withDiscovery(claudecode.New(), discovery), log),
+		opencodeacp.New(withDiscovery(opencode.New(), discovery), log),
+		droidacp.New(withDiscovery(droid.New(), discovery), log),
+		kimiacp.New(withDiscovery(kimi.New(), discovery), log),
+		kimchiacp.New(withDiscovery(kimchi.New(), discovery), log),
+		piacp.New(withDiscovery(pi.New(), discovery), log),
+		cursoracp.New(withDiscovery(cursor.New(), discovery), log),
+		ompacp.New(withDiscovery(omp.New(), discovery), log),
 	)
 }
 
@@ -102,4 +102,14 @@ func (r *Registry) Harnesses() []domain.AgentHarness {
 		out = append(out, harness)
 	}
 	return out
+}
+
+// withDiscovery keeps concrete plugin types and all their optional capabilities.
+func withDiscovery[T interface {
+	SetBinaryDiscovery(ports.AgentBinaryDiscovery)
+}](plugin T, discovery []ports.AgentBinaryDiscovery) T {
+	if len(discovery) > 0 {
+		plugin.SetBinaryDiscovery(discovery[0])
+	}
+	return plugin
 }

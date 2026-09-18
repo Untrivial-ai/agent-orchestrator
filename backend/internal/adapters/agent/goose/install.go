@@ -14,6 +14,10 @@ import (
 // plugin. It is the normal readiness/explicit-refresh path, not the cached
 // startup presence shortcut.
 func (p *Plugin) ResolveBinary(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolveLaunch); shared {
+		return path, err
+	}
+
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -35,6 +39,9 @@ func (p *Plugin) ResolveBinary(ctx context.Context) (string, error) {
 // deliberately reported as identity-unknown so startup does not claim
 // Pressly's goose.
 func (p *Plugin) ResolveBinaryPresence(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolvePresence); shared {
+		return path, err
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

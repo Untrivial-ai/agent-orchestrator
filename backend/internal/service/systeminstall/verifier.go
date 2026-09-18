@@ -7,6 +7,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const defaultVerifyTimeout = 5 * time.Second
@@ -68,6 +69,13 @@ func (v *Verifier) Verify(ctx context.Context, target Target) (VerifyResult, err
 	path, err := v.Resolve(probeCtx, target)
 	if err != nil {
 		return VerifyResult{}, err
+	}
+	if agent, ok := v.agents.Agent(domain.AgentHarness(target)); ok {
+		if augmenter, ok := agent.(ports.AgentBinaryRuntimeEnvironment); ok {
+			env := map[string]string{}
+			augmenter.AugmentBinaryRuntimeEnv(probeCtx, env, []string{path}, "")
+			probeCtx = aoprocess.WithCommandEnvironment(probeCtx, env)
+		}
 	}
 	out := &capturedOutput{max: maxOutputBytes}
 	if err := v.commands.Run(probeCtx, []string{path, "--version"}, out, out); err != nil {

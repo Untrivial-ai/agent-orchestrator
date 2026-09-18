@@ -94,7 +94,7 @@ func New(plugin codexPlugin, log *slog.Logger) *Driver {
 	}
 	return &Driver{
 		plugin: plugin, log: log, spawn: spawnAppServer,
-		versionProbe: installedCodexVersion, persistent: true, connectHost: persistenthost.ConnectOrStart,
+		persistent: true, connectHost: persistenthost.ConnectOrStart,
 	}
 }
 
@@ -173,7 +173,9 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 	// admit a different device account) before the managed runtime is launched.
 	versionProbe := d.versionProbe
 	if versionProbe == nil {
-		versionProbe = installedCodexVersion
+		versionProbe = func(ctx context.Context, bin string) (string, error) {
+			return installedCodexVersionEnv(ctx, bin, d.processEnv(ctx, bin, nil))
+		}
 	}
 	versionCtx, versionCancel := context.WithTimeout(ctx, 5*time.Second)
 	versionOutput, versionErr := versionProbe(versionCtx, bin)
@@ -270,8 +272,12 @@ func (v codexVersion) String() string {
 }
 
 func installedCodexVersion(ctx context.Context, bin string) (string, error) {
+	return installedCodexVersionEnv(ctx, bin, codexProcessEnv(ctx, bin, nil))
+}
+
+func installedCodexVersionEnv(ctx context.Context, bin string, env []string) (string, error) {
 	cmd := aoprocess.CommandContext(ctx, bin, "--version")
-	cmd.Env = codexProcessEnv(ctx, bin, nil)
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
@@ -420,7 +426,16 @@ func (d *Driver) connect(ctx context.Context, workdir string, env map[string]str
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 	}
 
-	proc, err := d.spawn(ctx, bin, workdir, codexProcessEnv(ctx, bin, env))
+	proc, err := d.spawn(ctx, bin, workdir, d.processEnv(ctx, bin, env))
+	if errors.Is(err, ports.ErrAgentProcessNotStarted) {
+		if invalidator, ok := d.plugin.(ports.AgentBinaryInvalidator); ok {
+			invalidator.InvalidateBinary(domain.HarnessCodex)
+			bin, err = d.plugin.ResolveBinary(ctx)
+			if err == nil {
+				proc, err = d.spawn(ctx, bin, workdir, d.processEnv(ctx, bin, env))
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: launch app-server: %w", ports.ErrChatDriverUnavailable, err)
 	}
@@ -462,19 +477,32 @@ func (d *Driver) connectSession(
 		SessionID: string(sessionID),
 		DataDir:   dataDir,
 		Workdir:   workdir,
-		Env:       envSlice(env),
+		Env:       d.processEnv(ctx, bin, env),
 		Argv:      []string{bin, "app-server"},
 	}
-	if prepareEnv != nil {
-		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
-			preparedEnv, prepareErr := prepareEnv(prepareCtx)
+	hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
+		preparedEnv := env
+		if prepareEnv != nil {
+			var prepareErr error
+			preparedEnv, prepareErr = prepareEnv(prepareCtx)
 			if prepareErr != nil {
 				return persistenthost.PreparedProvider{}, prepareErr
 			}
-			return persistenthost.PreparedProvider{
-				Env: envSlice(preparedEnv), Argv: []string{bin, "app-server"},
-			}, nil
 		}
+		preparedBin := bin
+		if invalidator, ok := d.plugin.(ports.AgentBinaryInvalidator); ok {
+			if _, lookupErr := exec.LookPath(preparedBin); lookupErr != nil {
+				invalidator.InvalidateBinary(domain.HarnessCodex)
+				var resolveErr error
+				preparedBin, resolveErr = d.plugin.ResolveBinary(prepareCtx)
+				if resolveErr != nil {
+					return persistenthost.PreparedProvider{}, resolveErr
+				}
+			}
+		}
+		return persistenthost.PreparedProvider{
+			Env: d.processEnv(prepareCtx, preparedBin, preparedEnv), Argv: []string{preparedBin, "app-server"},
+		}, nil
 	}
 	transport, err := d.connectHost(ctx, hostConfig)
 	if err != nil {
@@ -579,7 +607,7 @@ func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*pr
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start %s app-server: %w", bin, err)
+		return nil, fmt.Errorf("%w: start %s app-server: %w", ports.ErrAgentProcessNotStarted, bin, err)
 	}
 
 	// Drain stderr so a chatty provider cannot fill the pipe buffer and wedge
@@ -641,5 +669,18 @@ func codexProcessEnv(ctx context.Context, bin string, env map[string]string) []s
 		overlay["PATH"] = os.Getenv("PATH")
 	}
 	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath, agentlaunch.PinnedDir(os.Executable, overlay["AO_DATA_DIR"]))
+	return envSlice(overlay)
+}
+
+func (d *Driver) processEnv(ctx context.Context, bin string, env map[string]string) []string {
+	overlay := make(map[string]string)
+	for _, entry := range codexProcessEnv(ctx, bin, env) {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			overlay[key] = value
+		}
+	}
+	if augmenter, ok := d.plugin.(ports.AgentBinaryRuntimeEnvironment); ok {
+		augmenter.AugmentBinaryRuntimeEnv(ctx, overlay, []string{bin}, agentlaunch.PinnedDir(os.Executable, overlay["AO_DATA_DIR"]))
+	}
 	return envSlice(overlay)
 }

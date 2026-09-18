@@ -7,11 +7,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // Plugin is the existing agent-plugin surface native ACP bindings reuse for
@@ -74,8 +77,9 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 	}
 
 	return acpdriver.Config{
-		Harness:      cfg.Harness,
-		Capabilities: capabilities,
+		Harness:          cfg.Harness,
+		Capabilities:     capabilities,
+		InvalidateBinary: binaryInvalidationCallback(plugin, cfg.Harness),
 		Probe: func(ctx context.Context) error {
 			if cfg.Configure == nil {
 				return fmt.Errorf("%w: incomplete native ACP binding for %s",
@@ -84,6 +88,11 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 			bin, err := plugin.ResolveBinary(ctx)
 			if err != nil {
 				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+			}
+			if augmenter, ok := plugin.(ports.AgentBinaryRuntimeEnvironment); ok {
+				env := map[string]string{}
+				augmenter.AugmentBinaryRuntimeEnv(ctx, env, []string{bin}, "")
+				ctx = aoprocess.WithCommandEnvironment(ctx, env)
 			}
 			if cfg.VersionProbe != nil {
 				versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -128,6 +137,9 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 			for key, value := range overrides {
 				env[key] = value
 			}
+			if augmenter, ok := plugin.(ports.AgentBinaryRuntimeEnvironment); ok {
+				augmenter.AugmentBinaryRuntimeEnv(ctx, env, []string{binary}, agentlaunch.PinnedDir(os.Executable, launchCfg.DataDir))
+			}
 			return acpdriver.Launch{
 				Command: binary,
 				Args:    append([]string(nil), args...),
@@ -141,4 +153,12 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 		ClientExtensionAliases: cfg.ClientExtensionAliases,
 		ValidateTurnSettings:   cfg.ValidateTurnSettings,
 	}
+}
+
+func binaryInvalidationCallback(plugin Plugin, harness domain.AgentHarness) func() {
+	invalidator, ok := plugin.(ports.AgentBinaryInvalidator)
+	if !ok {
+		return nil
+	}
+	return func() { invalidator.InvalidateBinary(harness) }
 }

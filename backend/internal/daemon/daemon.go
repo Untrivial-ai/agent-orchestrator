@@ -21,6 +21,7 @@ import (
 
 	codexagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
+	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	chatdriveracp "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
@@ -28,6 +29,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/systemexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/telemetry/policyauthority"
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentbinary"
 	"github.com/aoagents/agent-orchestrator/backend/internal/autoreview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
 	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
@@ -344,7 +346,17 @@ func Run() error {
 	if defaultAgent == "" {
 		defaultAgent = config.DefaultAgent
 	}
-	agents, err := buildAgentResolver(defaultAgent, log)
+	binarySpecs := make(map[domain.AgentHarness]ports.AgentBinarySpec)
+	for _, item := range agentregistry.Harnessed() {
+		provider, ok := item.Agent.(ports.AgentBinaryDiscoveryProvider)
+		if !ok {
+			return fmt.Errorf("agent %s has no binary discovery metadata", item.Harness)
+		}
+		binarySpecs[item.Harness] = provider.BinaryDiscoverySpec()
+	}
+	binaryDiscovery := agentbinary.New(agentbinary.Config{Context: ctx, Specs: binarySpecs, Probe: systemexec.AgentShellProbe{}, Logger: log})
+	defer binaryDiscovery.Close()
+	agents, err := buildAgentResolver(defaultAgent, log, binaryDiscovery)
 	if err != nil {
 		stop()
 		if cdcErr := cdcPipe.Stop(); cdcErr != nil {
@@ -359,7 +371,7 @@ func Run() error {
 	// selected runtime, routed git/scratch workspaces, the per-session agent
 	// resolver (AO_AGENT validated here for compatibility), and the agent
 	// messenger, then mount it on the API.
-	chatDrivers := chatdriverregistry.Build(log)
+	chatDrivers := chatdriverregistry.Build(log, binaryDiscovery)
 
 	// Daemon-owned preferences. The store's type is field-compatible with the
 	// service's, adapted here so neither package imports the other. Offering
@@ -447,7 +459,9 @@ func Run() error {
 		},
 	})
 
-	codexModelDriver := codexappserver.New(codexagent.New(), log)
+	codexModelPlugin := codexagent.New()
+	codexModelPlugin.SetBinaryDiscovery(binaryDiscovery)
+	codexModelDriver := codexappserver.New(codexModelPlugin, log)
 	modelDiscoverer := modelcatalog.Discoverer{
 		CodexModels: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error) {
 			return codexModelDriver.DiscoverModels(listCtx, request.WorkingDir, request.Env)
@@ -469,6 +483,7 @@ func Run() error {
 	// (issue #2685).
 	tracker := newMultiTracker(cfg.GitLab, log)
 	codexPlugin := codexagent.New()
+	codexPlugin.SetBinaryDiscovery(binaryDiscovery)
 	codexHome, err := codexPlugin.NativeSessionConfigDir(ctx, nil)
 	if err != nil {
 		stop()
@@ -480,21 +495,23 @@ func Run() error {
 	}
 	codexOperationGate := codexops.NewGate()
 	agentDeps := agentsvc.Deps{
-		Cache: store, Discoverer: modelDiscoverer, Projects: store, Sessions: store, Context: ctx, Logger: log,
+		BinaryDiscovery: binaryDiscovery,
+		Cache:           store, Discoverer: modelDiscoverer, Projects: store, Sessions: store, Context: ctx, Logger: log,
 		CodexAccountRoot:       filepath.Join(cfg.StateDir, "harnesses", "codex", "accounts"),
 		CodexPendingRoot:       filepath.Join(cfg.StateDir, "harnesses", "codex", "pending-accounts"),
 		CodexSwitchStagingRoot: filepath.Join(cfg.StateDir, "harnesses", "codex", "switch-staging"),
 		CodexGlobalHome:        codexHome,
 		CodexAccountSwitches:   store,
 		CodexAccounts: codexappserver.NewAccountFactoryWithResolver(func(resolveCtx context.Context) (string, error) {
-			return codexagent.New().ResolveBinary(resolveCtx)
-		}, log),
+			return codexPlugin.ResolveBinary(resolveCtx)
+		}, log, codexPlugin),
 		CodexOperationGate: codexOperationGate,
 	}
 	agentSvc = agentsvc.NewWithDeps(agentDeps)
+	binaryDiscovery.SetOnChanged(agentSvc.DiscoveryCompleted)
 	agentSvc.WarmModelCatalogs(ctx)
 
-	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, messenger, telemetrySink, agents, agentSvc, managedPreview, browserBroker, browserAuthority, chatLauncher{svc: chatSvc}, settingsSvc, policyCoordinator, tracker, codexOperationGate, log)
+	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, messenger, telemetrySink, agents, agentSvc, managedPreview, browserBroker, browserAuthority, chatLauncher{svc: chatSvc}, settingsSvc, policyCoordinator, tracker, codexOperationGate, log, binaryDiscovery)
 	if err != nil {
 		stop()
 		lcStack.Stop()

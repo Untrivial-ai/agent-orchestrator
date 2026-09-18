@@ -84,3 +84,25 @@ func TestConfiguredPATHWindowsUsesExactProtectedSpelling(t *testing.T) {
 		t.Fatalf("case-insensitive configured PATH = %q, want project", got)
 	}
 }
+
+func TestAugmentRuntimePATHUsesDiscoveredPythonWithoutCopyingShellPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix shebang")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "agent")
+	if err := os.WriteFile(bin, []byte("#!/usr/bin/env python3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"PATH": "/base"}
+	AugmentRuntimePATHForLaunchBinary(context.Background(), env, []string{bin}, func(name string) (string, error) {
+		if name == "python3" {
+			return "/discovered/python/bin/python3", nil
+		}
+		return "", exec.ErrNotFound
+	}, "")
+	want := dir + string(os.PathListSeparator) + "/discovered/python/bin" + string(os.PathListSeparator) + "/base"
+	if env["PATH"] != want {
+		t.Fatalf("PATH=%q want %q", env["PATH"], want)
+	}
+}

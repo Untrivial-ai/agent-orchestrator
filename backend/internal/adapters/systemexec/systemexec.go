@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // Adapter implements the host executable and command-runner ports.
@@ -182,6 +183,7 @@ func (Adapter) Run(ctx context.Context, argv []string, stdout, stderr io.Writer)
 	if err != nil {
 		return err
 	}
+	aoprocess.ApplyCommandEnvironment(ctx, cmd)
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second

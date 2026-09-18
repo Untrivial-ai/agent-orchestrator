@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	workerauggie "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/auggie"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -15,11 +16,27 @@ const HostTrustWarning = "experimental user-approved reviewer: Auggie uses the u
 
 // Reviewer builds Auggie's reviewer command.
 type Reviewer struct {
+	agentbase.Base
 	resolveBinary func(context.Context) (string, error)
 }
 
 // New returns the production Auggie reviewer adapter.
-func New() *Reviewer { return &Reviewer{resolveBinary: workerauggie.ResolveAuggieBinary} }
+func New(discovery ...ports.AgentBinaryDiscovery) *Reviewer {
+	r := &Reviewer{resolveBinary: workerauggie.ResolveAuggieBinary}
+	if len(discovery) > 0 {
+		r.SetBinaryDiscovery(discovery[0])
+	}
+	return r
+}
+
+// SetBinaryDiscovery injects the daemon-owned executable resolver.
+func (r *Reviewer) SetBinaryDiscovery(d ports.AgentBinaryDiscovery) {
+	r.Base.SetBinaryDiscovery(d)
+	r.resolveBinary = func(ctx context.Context) (string, error) {
+		v, e := d.Resolve(ctx, domain.AgentHarness(r.Harness()), ports.BinaryResolveLaunch)
+		return v.Executable, e
+	}
+}
 
 // Harness returns Auggie's reviewer identity.
 func (*Reviewer) Harness() domain.ReviewerHarness { return domain.ReviewerAuggie }

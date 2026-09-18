@@ -50,21 +50,23 @@ type modelCatalogCall struct {
 // Service owns normalized harness readiness and the unchanged model catalog.
 // Consumers share coordinator checks instead of probing adapters directly.
 type Service struct {
-	agents        []agentregistry.HarnessAgent
-	readiness     *readinessCoordinator
-	cache         ports.AgentModelCatalogCache
-	discoverer    ports.AgentModelDiscoverer
-	projects      ProjectLookup
-	sessions      SessionUsageLookup
-	resolverMu    map[string]*sync.Mutex
-	modelCallMu   sync.Mutex
-	modelCalls    map[string]*modelCatalogCall
-	codexAccounts *codexAccountManager
-	codexSwitches *codexAccountSwitchCoordinator
+	binaryDiscovery ports.AgentBinaryDiscovery
+	agents          []agentregistry.HarnessAgent
+	readiness       *readinessCoordinator
+	cache           ports.AgentModelCatalogCache
+	discoverer      ports.AgentModelDiscoverer
+	projects        ProjectLookup
+	sessions        SessionUsageLookup
+	resolverMu      map[string]*sync.Mutex
+	modelCallMu     sync.Mutex
+	modelCalls      map[string]*modelCatalogCall
+	codexAccounts   *codexAccountManager
+	codexSwitches   *codexAccountSwitchCoordinator
 }
 
 // Deps contains optional durable dependencies for the agent catalog service.
 type Deps struct {
+	BinaryDiscovery        ports.AgentBinaryDiscovery
 	Cache                  ports.AgentModelCatalogCache
 	Discoverer             ports.AgentModelDiscoverer
 	Projects               ProjectLookup
@@ -102,7 +104,7 @@ func New() *Service {
 // NewWithDeps returns the production service with in-memory readiness and a
 // durable model-catalog cache.
 func NewWithDeps(deps Deps) *Service {
-	agents := agentregistry.Harnessed()
+	agents := agentregistry.Harnessed(deps.BinaryDiscovery)
 	svc := newService(agents, deps.Cache, deps.Projects, deps.Discoverer)
 	if deps.CodexAccountRoot != "" && deps.CodexGlobalHome != "" {
 		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.Logger, deps.CodexOperationGate)
@@ -111,7 +113,7 @@ func NewWithDeps(deps Deps) *Service {
 		}
 	}
 	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{
-		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,
+		Agents: agents, Factory: func() []agentregistry.HarnessAgent { return agentregistry.Harnessed(deps.BinaryDiscovery) }, Context: deps.Context, Logger: deps.Logger,
 		AuthenticationCheck: svc.structuredCodexAuthentication,
 	})
 	if svc.codexAccounts != nil {
@@ -125,6 +127,7 @@ func NewWithDeps(deps Deps) *Service {
 			deps.Clock, svc.PublishCodexAccounts,
 		)
 	}
+	svc.binaryDiscovery = deps.BinaryDiscovery
 	svc.sessions = deps.Sessions
 	return svc
 }
@@ -264,6 +267,12 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		if err == nil {
 			binary = resolved
 		}
+	}
+	if augmenter, ok := item.Agent.(ports.AgentBinaryRuntimeEnvironment); ok && binary != "" {
+		if discovery.env == nil {
+			discovery.env = map[string]string{}
+		}
+		augmenter.AugmentBinaryRuntimeEnv(ctx, discovery.env, []string{binary}, "")
 	}
 	request := ports.AgentModelDiscoveryRequest{
 		AgentID: agentID, Binary: binary, WorkingDir: discovery.workingDir, Env: discovery.env,
@@ -474,4 +483,16 @@ func (s *Service) ResolveAgentBinary(ctx context.Context, agentID string) (strin
 	lock.Lock()
 	defer lock.Unlock()
 	return resolver.ResolveBinary(ctx)
+}
+
+// AgentBinaryEnvironment provides only the selected executable's child runtime paths.
+// It is used by trusted authentication terminals, never merged into the daemon.
+func (s *Service) AgentBinaryEnvironment(ctx context.Context, agentID, binary string) map[string]string {
+	env := map[string]string{}
+	if item, ok := s.agent(agentID); ok {
+		if augmenter, ok := item.Agent.(ports.AgentBinaryRuntimeEnvironment); ok {
+			augmenter.AugmentBinaryRuntimeEnv(ctx, env, []string{binary}, "")
+		}
+	}
+	return env
 }

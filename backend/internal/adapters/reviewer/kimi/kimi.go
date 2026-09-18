@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	workerkimi "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -25,12 +26,26 @@ const HostTrustWarning = "experimental host-trusted reviewer: Kimi has no OS iso
 
 // Reviewer builds Kimi's persistent interactive reviewer command.
 type Reviewer struct {
+	agentbase.Base
 	resolveBinary func(context.Context) (string, error)
 }
 
 // New returns the production Kimi reviewer adapter.
-func New() *Reviewer {
-	return &Reviewer{resolveBinary: workerkimi.ResolveKimiBinary}
+func New(discovery ...ports.AgentBinaryDiscovery) *Reviewer {
+	r := &Reviewer{resolveBinary: workerkimi.ResolveKimiBinary}
+	if len(discovery) > 0 {
+		r.SetBinaryDiscovery(discovery[0])
+	}
+	return r
+}
+
+// SetBinaryDiscovery injects the daemon-owned executable resolver.
+func (r *Reviewer) SetBinaryDiscovery(d ports.AgentBinaryDiscovery) {
+	r.Base.SetBinaryDiscovery(d)
+	r.resolveBinary = func(ctx context.Context) (string, error) {
+		v, e := d.Resolve(ctx, domain.AgentHarness(r.Harness()), ports.BinaryResolveLaunch)
+		return v.Executable, e
+	}
 }
 
 // Harness returns Kimi's reviewer identity.

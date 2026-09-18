@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	agentpi "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/pi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -38,17 +39,31 @@ var extensionSource []byte
 
 // Reviewer launches Pi's live TUI with only AO's structured review tools.
 type Reviewer struct {
+	agentbase.Base
 	resolveBinary func(context.Context) (string, error)
 	runHelp       func(context.Context, string) ([]byte, error)
 }
 
 // New returns the production Pi reviewer adapter.
-func New() *Reviewer {
-	return &Reviewer{
+func New(discovery ...ports.AgentBinaryDiscovery) *Reviewer {
+	r := &Reviewer{
 		resolveBinary: agentpi.ResolvePiBinary,
 		runHelp: func(ctx context.Context, binary string) ([]byte, error) {
 			return aoprocess.CommandContext(ctx, binary, "--help").CombinedOutput()
 		},
+	}
+	if len(discovery) > 0 {
+		r.SetBinaryDiscovery(discovery[0])
+	}
+	return r
+}
+
+// SetBinaryDiscovery injects the daemon-owned executable resolver.
+func (r *Reviewer) SetBinaryDiscovery(d ports.AgentBinaryDiscovery) {
+	r.Base.SetBinaryDiscovery(d)
+	r.resolveBinary = func(ctx context.Context) (string, error) {
+		v, e := d.Resolve(ctx, domain.AgentHarness(r.Harness()), ports.BinaryResolveLaunch)
+		return v.Executable, e
 	}
 }
 

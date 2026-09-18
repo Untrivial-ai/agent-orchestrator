@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	workercrush "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/crush"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -18,11 +19,27 @@ const HostTrustWarning = "experimental user-approved reviewer: Crush uses normal
 
 // Reviewer builds Crush's persistent interactive reviewer command.
 type Reviewer struct {
+	agentbase.Base
 	resolveBinary func(context.Context) (string, error)
 }
 
 // New returns the production Crush reviewer adapter.
-func New() *Reviewer { return &Reviewer{resolveBinary: workercrush.ResolveCrushBinary} }
+func New(discovery ...ports.AgentBinaryDiscovery) *Reviewer {
+	r := &Reviewer{resolveBinary: workercrush.ResolveCrushBinary}
+	if len(discovery) > 0 {
+		r.SetBinaryDiscovery(discovery[0])
+	}
+	return r
+}
+
+// SetBinaryDiscovery injects the daemon-owned executable resolver.
+func (r *Reviewer) SetBinaryDiscovery(d ports.AgentBinaryDiscovery) {
+	r.Base.SetBinaryDiscovery(d)
+	r.resolveBinary = func(ctx context.Context) (string, error) {
+		v, e := d.Resolve(ctx, domain.AgentHarness(r.Harness()), ports.BinaryResolveLaunch)
+		return v.Executable, e
+	}
+}
 
 // Harness returns Crush's reviewer identity.
 func (*Reviewer) Harness() domain.ReviewerHarness { return domain.ReviewerCrush }

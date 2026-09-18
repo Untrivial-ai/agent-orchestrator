@@ -79,7 +79,7 @@ func TestRunInstallScriptCancellationCleansUp(t *testing.T) {
 		t.Fatal("expected cancellation")
 	}
 	entries, readErr := os.ReadDir(filepath.Join(dataDir, "installers", "tmp"))
-	if readErr != nil || len(entries) != 0 {
+	if (readErr != nil && !os.IsNotExist(readErr)) || len(entries) != 0 {
 		t.Fatalf("temporary scripts remain after cancellation: %v, %v", entries, readErr)
 	}
 }

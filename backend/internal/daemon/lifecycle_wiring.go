@@ -215,7 +215,7 @@ func (m sessionLifecycleMessenger) Send(ctx context.Context, id domain.SessionID
 // (issue #2685). The returned service is mounted at httpd APIDeps.Sessions.
 // It also returns the manager so the caller can wire Reconcile into the boot
 // sequence.
-func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
+func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, log *slog.Logger, discovery ...ports.AgentBinaryDiscovery) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
 	gitWS, err := gitworktree.New(gitworktree.Options{
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
@@ -282,7 +282,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	// from the reviewer registry (distinct from the worker agent set). The
 	// reviewer posts its review to the PR itself, so the service needs no SCM
 	// writer.
-	reviewers, err := reviewer.NewResolver()
+	reviewers, err := reviewer.NewResolver(discovery...)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
 	}
@@ -396,8 +396,8 @@ func (m *modeAwareMessenger) Send(ctx context.Context, id domain.SessionID, mess
 // empty/duplicate id — a programmer error, not a runtime condition.
 // The shipped adapter list lives in the adapters/agent/registry package
 // (registry.Constructors). Adding a new harness is a one-line edit there.
-func buildAgentRegistry() (*adapters.Registry, error) {
-	return agentregistry.Build()
+func buildAgentRegistry(discovery ...ports.AgentBinaryDiscovery) (*adapters.Registry, error) {
+	return agentregistry.Build(discovery...)
 }
 
 // agentRegistry adapts the generic adapter Registry to ports.AgentResolver: it
@@ -446,11 +446,11 @@ func (r reviewerAgentAuth) AuthStatus(ctx context.Context, harness domain.Review
 // adapters. It still validates AO_AGENT at startup for compatibility with the
 // config surface, but worker/orchestrator spawns must provide a resolved
 // harness before calling Agent.
-func buildAgentResolver(defaultAgent string, log *slog.Logger) (ports.AgentResolver, error) {
+func buildAgentResolver(defaultAgent string, log *slog.Logger, discovery ...ports.AgentBinaryDiscovery) (ports.AgentResolver, error) {
 	if defaultAgent == "" {
 		defaultAgent = config.DefaultAgent
 	}
-	reg, err := buildAgentRegistry()
+	reg, err := buildAgentRegistry(discovery...)
 	if err != nil {
 		return nil, err
 	}

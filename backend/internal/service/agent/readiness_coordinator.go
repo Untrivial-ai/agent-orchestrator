@@ -12,6 +12,7 @@ import (
 	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const (
@@ -526,6 +527,14 @@ func (c *readinessCoordinator) checkInstallation(item agentregistry.HarnessAgent
 	} else {
 		return successfulInstallation(attempted, domain.AgentInstallationUnknown, domain.AgentReadinessReasonInstallCheckUnsupported, "Installation checks are not supported for this harness."), false
 	}
+	if errors.Is(err, ports.ErrAgentBinaryChecking) && errors.Is(err, context.DeadlineExceeded) {
+		return failedInstallation(attempted, domain.AgentReadinessReasonInstallCheckTimeout, "Installation check timed out."), false
+	}
+	if errors.Is(err, ports.ErrAgentBinaryChecking) {
+		observation := successfulInstallation(attempted, domain.AgentInstallationUnknown, domain.AgentReadinessReasonChecking, "Installation is being checked.")
+		observation.Freshness = domain.AgentReadinessChecking
+		return observation, false
+	}
 	if errors.Is(err, ports.ErrAgentBinaryIdentityUnknown) {
 		return successfulInstallation(attempted, domain.AgentInstallationUnknown, domain.AgentReadinessReasonInstallIdentityPending, item.Manifest.Name+" is present but its identity has not been confirmed."), false
 	}
@@ -558,6 +567,15 @@ func (c *readinessCoordinator) checkAuthentication(item agentregistry.HarnessAge
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, c.authTimeout)
 	defer cancel()
+	if augmenter, ok := item.Agent.(ports.AgentBinaryRuntimeEnvironment); ok {
+		if resolver, ok := item.Agent.(ports.AgentBinaryResolver); ok {
+			if binary, err := resolver.ResolveBinary(ctx); err == nil {
+				env := map[string]string{}
+				augmenter.AugmentBinaryRuntimeEnv(ctx, env, []string{binary}, "")
+				ctx = aoprocess.WithCommandEnvironment(ctx, env)
+			}
+		}
+	}
 	status, err := checker.AuthStatus(ctx)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -646,6 +664,9 @@ func (c *readinessCoordinator) neededChecksLocked(entry *readinessEntry, purpose
 		ttl = c.launchTTL
 	}
 	now := c.now()
+	if entry.snapshot.Installation.State == domain.AgentInstallationNotInstalled && ttl > time.Minute {
+		ttl = time.Minute
+	}
 	needed := entry.invalidated
 	if entry.snapshot.Installation.CheckedAt == nil || now.Sub(*entry.snapshot.Installation.CheckedAt) >= ttl {
 		needed |= readinessInvalidateInstallation

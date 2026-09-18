@@ -298,6 +298,10 @@ func ResolveDroidBinary(ctx context.Context) (string, error) {
 }
 
 func (p *Plugin) droidBinary(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolveLaunch); shared {
+		return path, err
+	}
+
 	p.binaryMu.Lock()
 	defer p.binaryMu.Unlock()
 

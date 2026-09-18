@@ -28,7 +28,10 @@ func TestCommandContextWrapsBatchShimWithComSpec(t *testing.T) {
 	if !strings.EqualFold(cmd.Path, comSpec) {
 		t.Fatalf("Path = %q, want ComSpec", cmd.Path)
 	}
-	if cmd.SysProcAttr == nil || !strings.Contains(cmd.SysProcAttr.CmdLine, `"agent tool.cmd" "argument with spaces"`) {
+	if cmd.SysProcAttr == nil {
+		t.Fatal("missing batch process attributes")
+	}
+	if !strings.Contains(cmd.SysProcAttr.CmdLine, `"`+shim+`" "argument with spaces"`) {
 		t.Fatalf("CmdLine = %q, want quoted shim and argument", cmd.SysProcAttr.CmdLine)
 	}
 	configureProcessGroup(cmd)

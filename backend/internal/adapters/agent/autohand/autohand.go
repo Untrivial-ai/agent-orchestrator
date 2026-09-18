@@ -174,6 +174,10 @@ func ResolveAutohandBinary(ctx context.Context) (string, error) {
 }
 
 func (p *Plugin) autohandBinary(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolveLaunch); shared {
+		return path, err
+	}
+
 	// Honor cancellation even on the cached path, where ResolveAutohandBinary
 	// (which has its own ctx.Err() guard) is never reached.
 	if err := ctx.Err(); err != nil {

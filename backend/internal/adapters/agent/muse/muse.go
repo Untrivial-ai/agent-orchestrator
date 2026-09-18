@@ -237,13 +237,18 @@ func resolveMuseBinary(ctx context.Context, spec binaryutil.BinarySpec) (string,
 }
 
 func isOfficialMuseBinary(ctx context.Context, binary string) bool {
+	ok, _ := officialMuseIdentity(ctx, binary)
+	return ok
+}
+
+func officialMuseIdentity(ctx context.Context, binary string) (bool, error) {
 	cmd := aoprocess.CommandContext(ctx, binary, "--version")
-	cmd.Env = append(os.Environ(), "MUSE_NO_AUTO_UPDATE=1")
+	cmd.Env = append(cmd.Environ(), "MUSE_NO_AUTO_UPDATE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return false
+		return false, err
 	}
-	return strings.HasPrefix(strings.TrimSpace(string(out)), "Muse Code ")
+	return strings.HasPrefix(strings.TrimSpace(string(out)), "Muse Code "), nil
 }
 
 func museCanonicalBinaryCandidates(spec binaryutil.BinarySpec) []string {
@@ -262,6 +267,10 @@ func museCanonicalBinaryCandidates(spec binaryutil.BinarySpec) []string {
 }
 
 func (p *Plugin) museBinary(ctx context.Context) (string, error) {
+	if path, shared, err := p.DiscoveredBinary(ctx, p.Manifest().ID, ports.BinaryResolveLaunch); shared {
+		return path, err
+	}
+
 	p.binaryMu.Lock()
 	defer p.binaryMu.Unlock()
 

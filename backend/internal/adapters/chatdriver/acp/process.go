@@ -11,6 +11,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/processenv"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 type process struct {
@@ -65,7 +66,7 @@ func spawnAgent(launch Launch, workdir string) (*process, error) {
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start %s: %w", launch.Command, err)
+		return nil, fmt.Errorf("%w: start %s: %w", ports.ErrAgentProcessNotStarted, launch.Command, err)
 	}
 
 	// ACP owns stdout. Always drain stderr separately so a verbose adapter cannot

@@ -1053,11 +1053,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// path the adapter returned) BEFORE handing the launch to the runtime.
 	// tmux happily creates a session+pane around a missing command, so an
 	// unresolved binary would leak through as a "live" session that never ran.
-	if err := m.validateAgentBinary(argv); err != nil {
+	if argv, err = m.validateOrResolveAgentBinary(ctx, agent, rec.Harness, argv); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, err)
 	}
 	m.augmentRuntimePATHForLaunchBinary(ctx, env, argv)
+	if augmenter, ok := agent.(ports.AgentBinaryRuntimeEnvironment); ok {
+		augmenter.AugmentBinaryRuntimeEnv(ctx, env, argv, PinnedHookDir(m.executable, m.dataDir))
+	}
 	argv, launchID, err := m.superviseAgentProcess(agent, id, env, argv)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
@@ -2494,11 +2497,14 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrNotResumable)
 	}
-	if err := m.validateAgentBinary(argv); err != nil {
+	if argv, err = m.validateOrResolveAgentBinary(ctx, agent, rec.Harness, argv); err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
 	}
 	m.augmentRuntimePATHForLaunchBinary(ctx, env, argv)
+	if augmenter, ok := agent.(ports.AgentBinaryRuntimeEnvironment); ok {
+		augmenter.AugmentBinaryRuntimeEnv(ctx, env, argv, PinnedHookDir(m.executable, m.dataDir))
+	}
 	launchID := strings.TrimSpace(reservedGeneration)
 	if launchID == "" {
 		argv, launchID, err = m.superviseAgentProcess(agent, rec.ID, env, argv)
@@ -5215,4 +5221,38 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// validateOrResolveAgentBinary retries selection once before any runtime exists.
+// It changes only the executable, retaining the original prompt and arguments.
+func (m *Manager) validateOrResolveAgentBinary(ctx context.Context, agent ports.Agent, harness domain.AgentHarness, argv []string) ([]string, error) {
+	err := m.validateAgentBinary(argv)
+	if err == nil {
+		return argv, nil
+	}
+	invalidator, ok := agent.(ports.AgentBinaryInvalidator)
+	if !ok {
+		return argv, err
+	}
+	resolver, ok := agent.(ports.AgentBinaryResolver)
+	if !ok {
+		return argv, err
+	}
+	invalidator.InvalidateBinary(harness)
+	binary, resolveErr := resolver.ResolveBinary(ctx)
+	if resolveErr != nil {
+		return argv, resolveErr
+	}
+	previous, ok := launchBinary(argv)
+	if !ok {
+		return argv, err
+	}
+	next := append([]string(nil), argv...)
+	for i, arg := range next {
+		if arg == previous {
+			next[i] = binary
+			break
+		}
+	}
+	return next, m.validateAgentBinary(next)
 }

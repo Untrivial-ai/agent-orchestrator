@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -33,9 +34,10 @@ type accountSpawnFunc func(ctx context.Context, bin, workdir string, env []strin
 // AccountFactory reuses the app-server transport for account-scoped reads
 // without creating a conversation.
 type AccountFactory struct {
-	resolve func(context.Context) (string, error)
-	log     *slog.Logger
-	spawn   accountSpawnFunc
+	resolve    func(context.Context) (string, error)
+	runtimeEnv ports.AgentBinaryRuntimeEnvironment
+	log        *slog.Logger
+	spawn      accountSpawnFunc
 
 	mu              sync.Mutex
 	capability      map[string]domain.CodexAccountCapabilities
@@ -50,12 +52,13 @@ type capabilityCall struct {
 
 // NewAccountFactory builds a structured Codex account client factory.
 func NewAccountFactory(plugin codexPlugin, log *slog.Logger) *AccountFactory {
-	return NewAccountFactoryWithResolver(plugin.ResolveBinary, log)
+	augmenter, _ := plugin.(ports.AgentBinaryRuntimeEnvironment)
+	return NewAccountFactoryWithResolver(plugin.ResolveBinary, log, augmenter)
 }
 
 // NewAccountFactoryWithResolver lets daemon readiness resolve through a fresh
 // adapter instance for every native operation, avoiding binary-path caches.
-func NewAccountFactoryWithResolver(resolve func(context.Context) (string, error), log *slog.Logger) *AccountFactory {
+func NewAccountFactoryWithResolver(resolve func(context.Context) (string, error), log *slog.Logger, runtimeEnv ...ports.AgentBinaryRuntimeEnvironment) *AccountFactory {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -63,6 +66,9 @@ func NewAccountFactoryWithResolver(resolve func(context.Context) (string, error)
 		resolve: resolve, log: log, spawn: spawnAccountAppServer,
 		capability:      make(map[string]domain.CodexAccountCapabilities),
 		capabilityCalls: make(map[string]*capabilityCall),
+	}
+	if len(runtimeEnv) > 0 {
+		f.runtimeEnv = runtimeEnv[0]
 	}
 	f.probeSchema = f.detectCapabilities
 	return f
@@ -89,7 +95,7 @@ func (f *AccountFactory) Open(ctx context.Context, account ports.CodexAccountCon
 	if account.Managed {
 		args = []string{"-c", `cli_auth_credentials_store="file"`, "app-server"}
 	}
-	proc, err := f.spawn(ctx, bin, account.Home, envSlice(map[string]string{"CODEX_HOME": account.Home}), args)
+	proc, err := f.spawn(ctx, bin, account.Home, f.processEnv(ctx, bin, map[string]string{"CODEX_HOME": account.Home}), args)
 	if err != nil {
 		return nil, fmt.Errorf("launch Codex account client: %w", err)
 	}
@@ -115,7 +121,7 @@ func (f *AccountFactory) Capabilities(ctx context.Context) domain.CodexAccountCa
 		return unknownCodexCapabilities("Codex capability detection is unavailable.")
 	}
 	versionCtx, cancel := context.WithTimeout(probeCtx, 5*time.Second)
-	version, versionErr := installedCodexVersion(versionCtx, bin)
+	version, versionErr := installedCodexVersionEnv(versionCtx, bin, f.processEnv(versionCtx, bin, nil))
 	cancel()
 	key := bin + "\x00" + strings.TrimSpace(version)
 	cacheable := versionErr == nil
@@ -164,17 +170,18 @@ func (f *AccountFactory) detectCapabilities(ctx context.Context, bin string) dom
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	cmd := aoprocess.CommandContext(probeCtx, bin, "app-server", "generate-json-schema", "--experimental", "--out", dir)
+	cmd.Env = f.processEnv(probeCtx, bin, nil)
 	if err := cmd.Run(); err != nil {
 		return unknownCodexCapabilities("Codex capability detection did not complete.")
 	}
 	capabilities := inspectCodexSchemaDirectory(dir)
-	capabilities.NativeLogin = probeCodexCLISurface(probeCtx, bin, []string{"login", "--help"}, "Native Codex login is available.")
+	capabilities.NativeLogin = probeCodexCLISurface(probeCtx, bin, f.processEnv(probeCtx, bin, nil), []string{"login", "--help"}, "Native Codex login is available.")
 	return capabilities
 }
 
-func probeCodexCLISurface(ctx context.Context, bin string, args []string, supportedReason string) domain.CodexCapabilityObservation {
+func probeCodexCLISurface(ctx context.Context, bin string, env, args []string, supportedReason string) domain.CodexCapabilityObservation {
 	cmd := aoprocess.CommandContext(ctx, bin, args...)
-	cmd.Env = codexProcessEnv(ctx, bin, nil)
+	cmd.Env = env
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
@@ -187,6 +194,19 @@ func probeCodexCLISurface(ctx context.Context, bin string, args []string, suppor
 		State: domain.CodexCapabilitySupported, ReasonCode: domain.CodexCapabilityReasonSupported,
 		Reason: supportedReason,
 	}
+}
+
+func (f *AccountFactory) processEnv(ctx context.Context, bin string, values map[string]string) []string {
+	overlay := make(map[string]string)
+	for _, entry := range codexProcessEnv(ctx, bin, values) {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			overlay[key] = value
+		}
+	}
+	if f.runtimeEnv != nil {
+		f.runtimeEnv.AugmentBinaryRuntimeEnv(ctx, overlay, []string{bin}, agentlaunch.PinnedDir(os.Executable, overlay["AO_DATA_DIR"]))
+	}
+	return envSlice(overlay)
 }
 
 func inspectCodexSchemaDirectory(dir string) domain.CodexAccountCapabilities {

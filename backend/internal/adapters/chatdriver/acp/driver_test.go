@@ -3352,6 +3352,71 @@ func (d *Driver) useTestProcess(spawn spawnFunc) {
 	}
 }
 
+func TestPersistentPrepareInvalidatesAndRebuildsLaunchOnce(t *testing.T) {
+	good := filepath.Join(t.TempDir(), "agent")
+	if err := os.WriteFile(good, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launches, invalidations, credentials := 0, 0, 0
+	d := New(Config{
+		Harness: domain.HarnessCodex,
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			launches++
+			if invalidations == 0 {
+				return Launch{Command: filepath.Join(t.TempDir(), "stale")}, nil
+			}
+			return Launch{Command: good}, nil
+		},
+		InvalidateBinary: func() { invalidations++ },
+	}, nil)
+	d.connectHost = func(ctx context.Context, cfg persistenthost.Config) (*persistenthost.Transport, error) {
+		prepared, err := cfg.Prepare(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if prepared.Argv[0] != good || prepared.Env == nil {
+			t.Fatalf("prepared provider = %#v", prepared)
+		}
+		return nil, errors.New("stop after prepare")
+	}
+	_, err := d.connectProcess(context.Background(), LaunchConfig{SessionID: "s", DataDir: t.TempDir(), WorkspacePath: t.TempDir()}, func(context.Context) (map[string]string, error) {
+		credentials++
+		return map[string]string{"CREDENTIAL": "prepared"}, nil
+	})
+	if err == nil {
+		t.Fatal("connectProcess error = nil")
+	}
+	if launches != 2 || invalidations != 1 || credentials != 1 {
+		t.Fatalf("launches=%d invalidations=%d credentials=%d", launches, invalidations, credentials)
+	}
+}
+
+func TestPersistentConnectDoesNotRetryAmbiguousHostFailure(t *testing.T) {
+	launches, invalidations := 0, 0
+	d := New(Config{
+		Harness: domain.HarnessCodex,
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			launches++
+			return Launch{Command: "/unused"}, nil
+		},
+		InvalidateBinary: func() { invalidations++ },
+	}, nil)
+	d.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
+		return nil, persistenthost.ErrOwnershipInconclusive
+	}
+	_, _ = d.connectProcess(context.Background(), LaunchConfig{SessionID: "s", DataDir: t.TempDir(), WorkspacePath: t.TempDir()}, nil)
+	if launches != 0 || invalidations != 0 {
+		t.Fatalf("ambiguous host failure launched=%d invalidated=%d", launches, invalidations)
+	}
+}
+
+func TestSpawnAgentMarksOnlyStartFailureAsNotStarted(t *testing.T) {
+	_, err := spawnAgent(Launch{Command: filepath.Join(t.TempDir(), "missing")}, t.TempDir())
+	if !errors.Is(err, ports.ErrAgentProcessNotStarted) {
+		t.Fatalf("spawn error = %v", err)
+	}
+}
+
 func TestACPConversationImplementsCompactor(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -1487,3 +1488,92 @@ func TestEnvSliceWithNoOverlayStillInheritsTheEnvironment(t *testing.T) {
 		t.Error("an empty overlay produced an environment with no HOME")
 	}
 }
+
+func TestConnectRetriesOnlyProvenPreStartFailure(t *testing.T) {
+	for _, prestart := range []bool{true, false} {
+		t.Run(strconv.FormatBool(prestart), func(t *testing.T) {
+			plugin := &retryPlugin{}
+			calls := 0
+			d := New(plugin, slog.New(slog.DiscardHandler))
+			d.spawn = func(_ context.Context, bin, _ string, _ []string) (*process, error) {
+				calls++
+				if calls == 1 && prestart {
+					return nil, fmt.Errorf("%w: %w", ports.ErrAgentProcessNotStarted, os.ErrNotExist)
+				}
+				if calls == 2 && bin != "new-agent" {
+					t.Errorf("retry binary=%s", bin)
+				}
+				return nil, io.EOF
+			}
+			_, _ = d.connect(context.Background(), t.TempDir(), nil, "")
+			want := 1
+			if prestart {
+				want = 2
+			}
+			if calls != want {
+				t.Fatalf("spawn calls=%d want %d", calls, want)
+			}
+		})
+	}
+}
+
+type retryPlugin struct{ invalidated bool }
+
+func (p *retryPlugin) ResolveBinary(context.Context) (string, error) {
+	if p.invalidated {
+		return "new-agent", nil
+	}
+	return "old-agent", nil
+}
+func (*retryPlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusUnknown, nil
+}
+func (p *retryPlugin) InvalidateBinary(domain.AgentHarness) { p.invalidated = true }
+
+func TestPersistentPrepareReselectsMissingCodexBinaryAndPreparesCredentialsOnce(t *testing.T) {
+	good := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(good, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plugin := &persistentRetryPlugin{good: good}
+	d := New(plugin, slog.New(slog.DiscardHandler))
+	preparedCredentials := 0
+	d.connectHost = func(ctx context.Context, cfg persistenthost.Config) (*persistenthost.Transport, error) {
+		prepared, err := cfg.Prepare(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if prepared.Argv[0] != good {
+			t.Fatalf("prepared binary = %q, want %q", prepared.Argv[0], good)
+		}
+		return nil, errors.New("stop after prepare")
+	}
+	_, _, err := d.connectSession(context.Background(), "session", t.TempDir(), t.TempDir(), nil, func(context.Context) (map[string]string, error) {
+		preparedCredentials++
+		return map[string]string{"CODEX_HOME": t.TempDir()}, nil
+	}, "")
+	if err == nil {
+		t.Fatal("connectSession error = nil")
+	}
+	if plugin.calls != 2 || plugin.invalidations != 1 || preparedCredentials != 1 {
+		t.Fatalf("resolve=%d invalidations=%d credentials=%d", plugin.calls, plugin.invalidations, preparedCredentials)
+	}
+}
+
+type persistentRetryPlugin struct {
+	good          string
+	calls         int
+	invalidations int
+}
+
+func (p *persistentRetryPlugin) ResolveBinary(context.Context) (string, error) {
+	p.calls++
+	if p.invalidations > 0 {
+		return p.good, nil
+	}
+	return filepath.Join(filepath.Dir(p.good), "missing"), nil
+}
+func (*persistentRetryPlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusUnknown, nil
+}
+func (p *persistentRetryPlugin) InvalidateBinary(domain.AgentHarness) { p.invalidations++ }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 type verifierAgent struct {
@@ -102,5 +103,30 @@ func TestVerifierBoundsVersionProbe(t *testing.T) {
 	_, err := verifier.Verify(context.Background(), TargetCodex)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Verify error = %v, want deadline exceeded", err)
+	}
+}
+
+type environmentVerifierAgent struct{ verifierAgent }
+
+func (environmentVerifierAgent) AugmentBinaryRuntimeEnv(_ context.Context, env map[string]string, _ []string, _ string) {
+	env["AO_DISCOVERY_TEST_RUNTIME"] = "selected"
+}
+func TestVerifierScopesSelectedRuntimeEnvironmentToVersionProbe(t *testing.T) {
+	runner := &recordingCommandRunner{run: func(ctx context.Context, _ []string, _, _ io.Writer) error {
+		cmd := aoprocess.CommandContext(ctx, "unused")
+		found := false
+		for _, entry := range cmd.Environ() {
+			if entry == "AO_DISCOVERY_TEST_RUNTIME=selected" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("version probe lost selected runtime environment")
+		}
+		return nil
+	}}
+	verifier := NewVerifier(verifierResolver{domain.HarnessCodex: environmentVerifierAgent{verifierAgent{path: "/selected/codex"}}}, runner)
+	if _, err := verifier.Verify(context.Background(), TargetCodex); err != nil {
+		t.Fatal(err)
 	}
 }

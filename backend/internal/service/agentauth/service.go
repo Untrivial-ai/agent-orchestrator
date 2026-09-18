@@ -141,8 +141,15 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 	if s.terminals == nil {
 		return StartResult{}, apierr.Internal("AGENT_AUTH_TERMINAL_UNAVAILABLE", "Authentication terminal service is unavailable.")
 	}
+	var env map[string]string
+	if runtimeEnv, ok := s.agents.(interface {
+		AgentBinaryEnvironment(context.Context, string, string) map[string]string
+	}); ok && len(plan.command) > 0 {
+		env = runtimeEnv.AgentBinaryEnvironment(ctx, plan.AgentID, plan.command[0])
+	}
 	terminal, err := s.terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{
 		Argv:  plan.command,
+		Env:   env,
 		Title: plan.title,
 	})
 	if err != nil {

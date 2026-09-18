@@ -452,7 +452,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 		SessionID:     domain.SessionID(handleID),
 		WorkspacePath: workingDirectory,
 		Argv:          cmd.Argv,
-		Env:           l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env),
+		Env:           l.runtimeEnv(ctx, reviewer, spec, cmd.Argv, cmd.Env),
 	})
 	if err != nil {
 		return LaunchResult{}, fmt.Errorf("reviewer runtime: %w", err)
@@ -532,7 +532,7 @@ func outputContainsAny(output string, patterns []string) bool {
 	return false
 }
 
-func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []string, base map[string]string) map[string]string {
+func (l *agentLauncher) runtimeEnv(ctx context.Context, reviewer ports.Reviewer, spec LaunchSpec, argv []string, base map[string]string) map[string]string {
 	env := make(map[string]string, len(base)+3)
 	for k, v := range base {
 		env[k] = v
@@ -564,6 +564,9 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 		env[EnvAOCommandWarning] = fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr)
 	}
 	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath, pinnedDir)
+	if augmenter, ok := reviewer.(ports.AgentBinaryRuntimeEnvironment); ok {
+		augmenter.AugmentBinaryRuntimeEnv(ctx, env, argv, pinnedDir)
+	}
 	return env
 }
 

@@ -39,8 +39,8 @@ type Adapter interface {
 
 // Constructors returns every reviewer adapter the daemon ships. Add a reviewer
 // here (and to domain.AllReviewerHarnesses) to register it.
-func Constructors() []Adapter {
-	return []Adapter{
+func Constructors(discovery ...ports.AgentBinaryDiscovery) []Adapter {
+	items := []Adapter{
 		aider.New(),
 		agy.New(),
 		amp.New(),
@@ -63,6 +63,18 @@ func Constructors() []Adapter {
 		opencode.New(),
 		pi.New(),
 	}
+	if len(discovery) > 0 && discovery[0] != nil {
+		for _, item := range items {
+			provider, ok := item.(interface {
+				SetBinaryDiscovery(ports.AgentBinaryDiscovery)
+			})
+			if !ok {
+				panic(fmt.Sprintf("reviewer %q lacks binary discovery", item.Harness()))
+			}
+			provider.SetBinaryDiscovery(discovery[0])
+		}
+	}
+	return items
 }
 
 // Resolver maps a reviewer harness onto its adapter.
@@ -75,9 +87,9 @@ var _ ports.ReviewerResolver = (*Resolver)(nil)
 // NewResolver builds a Resolver from the shipped reviewer adapters. It fails if
 // two adapters claim the same harness, or if a registered harness is not in the
 // domain reviewer vocabulary (the two must stay in sync).
-func NewResolver() (*Resolver, error) {
+func NewResolver(discovery ...ports.AgentBinaryDiscovery) (*Resolver, error) {
 	m := make(map[domain.ReviewerHarness]ports.Reviewer)
-	for _, a := range Constructors() {
+	for _, a := range Constructors(discovery...) {
 		h := a.Harness()
 		if !h.IsKnown() {
 			return nil, fmt.Errorf("reviewer adapter %q is not in domain.AllReviewerHarnesses", h)

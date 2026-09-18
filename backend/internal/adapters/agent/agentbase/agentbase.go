@@ -9,6 +9,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -35,7 +36,24 @@ func AppendModelFlag(cmd *[]string, cfg ports.AgentConfig, flag string) {
 // a Plugin struct (`agentbase.Base`) and override only what the harness needs.
 // Every method honors ctx cancellation and otherwise does nothing, matching what
 // the adapters previously wrote by hand.
-type Base struct{}
+type Base struct {
+	// BinaryDiscovery is assigned before publishing an adapter to consumers.
+	BinaryDiscovery ports.AgentBinaryDiscovery
+}
+
+// SetBinaryDiscovery injects the daemon-owned resolver before the adapter is used.
+func (b *Base) SetBinaryDiscovery(discovery ports.AgentBinaryDiscovery) {
+	b.BinaryDiscovery = discovery
+}
+
+// DiscoveredBinary returns the shared selection when this adapter is daemon-owned.
+func (b *Base) DiscoveredBinary(ctx context.Context, harness string, purpose ports.BinaryResolvePurpose) (string, bool, error) {
+	if b.BinaryDiscovery == nil {
+		return "", false, nil
+	}
+	result, err := b.BinaryDiscovery.Resolve(ctx, domain.AgentHarness(harness), purpose)
+	return result.Executable, true, err
+}
 
 // GetConfigSpec reports no agent-specific config keys.
 func (Base) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
@@ -86,4 +104,11 @@ func StandardSessionInfo(session ports.SessionRef) (ports.SessionInfo, bool) {
 		return ports.SessionInfo{}, false
 	}
 	return info, true
+}
+
+// InvalidateBinary forces the next launch to re-evaluate its selected executable.
+func (b *Base) InvalidateBinary(harness domain.AgentHarness) {
+	if b.BinaryDiscovery != nil {
+		b.BinaryDiscovery.Invalidate(harness)
+	}
 }
