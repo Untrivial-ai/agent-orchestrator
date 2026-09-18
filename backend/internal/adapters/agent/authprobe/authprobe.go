@@ -15,7 +15,8 @@ var CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, e
 	return aoprocess.CommandContext(ctx, name, arg...).CombinedOutput()
 }
 
-// CLIStatus runs bounded local CLI probes and classifies their output.
+// CLIStatus runs bounded local CLI probes and recognizes explicit negative output.
+// Positive authorization requires an adapter-specific parser.
 // Callers must pass adapter-specific commands; catalog refresh should not run
 // a generic sequence of auth-like commands against every installed binary.
 func CLIStatus(ctx context.Context, binary string, commands [][]string) (ports.AgentAuthStatus, error) {
@@ -67,7 +68,8 @@ func commandStatus(ctx context.Context, binary string, args []string, timeout ti
 	return ports.AgentAuthStatusUnknown, nil
 }
 
-// StatusFromText classifies common CLI auth/status output.
+// StatusFromText recognizes explicit negative CLI auth/status output.
+// Generic positive phrases and fields are not proof of validated authorization.
 func StatusFromText(out string) ports.AgentAuthStatus {
 	text := strings.ToLower(out)
 	compactText := compact(text)
@@ -106,18 +108,6 @@ func StatusFromText(out string) ports.AgentAuthStatus {
 		"loggedin=false",
 	) {
 		return ports.AgentAuthStatusUnauthorized
-	}
-	if hasAny(text,
-		"logged in",
-		"authenticated",
-		"authorized",
-		"token valid",
-		"api key found",
-		"credentials found",
-		`"loggedin": true`,
-		`"loggedin":true`,
-	) {
-		return ports.AgentAuthStatusAuthorized
 	}
 	return ports.AgentAuthStatusUnknown
 }
