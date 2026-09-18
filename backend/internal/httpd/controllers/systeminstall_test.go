@@ -122,6 +122,49 @@ func TestAgentInstallDefaultsOmittedOperationToInstall(t *testing.T) {
 	}
 }
 
+func TestAgentInstall_RequestDecoding(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	installer := &fakeInstaller{startJob: systeminstall.Job{Target: systeminstall.TargetCodex, Status: systeminstall.StatusInstalling}}
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Installer: installer}, httpd.ControlDeps{}))
+	defer srv.Close()
+
+	// 1. Empty body is accepted and defaults operation to install.
+	_, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/install", "")
+	if status != http.StatusAccepted || installer.lastOperation != systeminstall.AgentOperationInstall {
+		t.Fatalf("empty body status=%d operation=%q, want 202 install", status, installer.lastOperation)
+	}
+
+	// 2. Whitespace-only body is accepted and defaults operation to install.
+	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/install", "   \r\n\t  ")
+	if status != http.StatusAccepted || installer.lastOperation != systeminstall.AgentOperationInstall {
+		t.Fatalf("whitespace body status=%d operation=%q, want 202 install", status, installer.lastOperation)
+	}
+
+	// 3. Trailing non-JSON junk is rejected.
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/install", `{"method":"npm"} trailing junk`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_INSTALL_REQUEST")
+
+	// 4. Concatenated JSON is rejected.
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/install", `{"method":"npm"} {"second":"doc"}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_INSTALL_REQUEST")
+
+	// 5. Unknown fields are rejected.
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/install", `{"method":"npm","unknownField":true}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_INSTALL_REQUEST")
+
+	// 6. Oversized body is rejected.
+	oversized := `{"method":"npm","extra":"` + strings.Repeat("A", 2<<20) + `"}`
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/install", oversized)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_INSTALL_REQUEST")
+
+	// 7. Valid single document with trailing whitespace is accepted.
+	validWithWS := `{"method":"npm"}   ` + "\r\n  "
+	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/install", validWithWS)
+	if status != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for valid body with trailing whitespace, got %d", status)
+	}
+}
+
 func TestAgentInstallMapsMethodAndActiveHarnessErrors(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, tt := range []struct {
