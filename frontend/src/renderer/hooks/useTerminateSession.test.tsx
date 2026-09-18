@@ -20,8 +20,6 @@ vi.mock("./useCloudCp", () => ({
 	createRendererCloudCpClient: createCloudClientMock,
 }));
 
-vi.mock("../lib/telemetry", () => ({ captureRendererEvent: vi.fn() }));
-
 import { useTerminateSession } from "./useTerminateSession";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 

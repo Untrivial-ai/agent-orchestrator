@@ -70,11 +70,6 @@ vi.mock("../lib/spawn-orchestrator", async (importOriginal) => ({
 	...await importOriginal<typeof import("../lib/spawn-orchestrator")>(),
 	spawnOrchestrator: spawnMock,
 }));
-vi.mock("../lib/telemetry", () => ({
-	addRendererExceptionStep: vi.fn(),
-	captureRendererEvent: vi.fn(),
-	captureRendererException: vi.fn(),
-}));
 vi.mock("./NewTaskDialog", () => ({ NewTaskDialog: () => null }));
 vi.mock("./NotificationCenter", () => ({
 	NotificationCenter: () => <button aria-label="Notifications" type="button" />,

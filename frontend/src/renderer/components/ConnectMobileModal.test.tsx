@@ -41,7 +41,6 @@ const { mobileStatus } = vi.hoisted(() => ({
 	},
 }));
 
-vi.mock("../lib/telemetry", () => ({ captureRendererEvent: vi.fn() }));
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		GET: async (path: string) =>

@@ -13,7 +13,6 @@ const {
 	getVersion,
 	featureBuildsList,
 	featureBuildsGetActive,
-	telemetryCapture,
 } = vi.hoisted(() => ({
 	updGetStatus: vi.fn(),
 	updOnStatus: vi.fn(),
@@ -22,7 +21,6 @@ const {
 	getVersion: vi.fn(),
 	featureBuildsList: vi.fn(),
 	featureBuildsGetActive: vi.fn(),
-	telemetryCapture: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", () => ({
@@ -41,12 +39,6 @@ vi.mock("../../lib/bridge", () => ({
 	},
 }));
 
-vi.mock("../../lib/telemetry", () => ({
-	captureRendererEvent: telemetryCapture,
-	releaseChannelFrom: vi.fn(),
-	setReleaseChannelContext: vi.fn(),
-}));
-
 vi.mock("../../hooks/useRequestUpdateInstall", () => ({
 	useRequestUpdateInstall: () => () => undefined,
 }));
@@ -63,7 +55,7 @@ function renderUpdates() {
 }
 
 beforeEach(() => {
-	for (const m of [updGetStatus, updOnStatus, settingsGet, settingsSet, getVersion, featureBuildsList, featureBuildsGetActive, telemetryCapture]) {
+	for (const m of [updGetStatus, updOnStatus, settingsGet, settingsSet, getVersion, featureBuildsList, featureBuildsGetActive]) {
 		m.mockReset();
 	}
 	updOnStatus.mockReturnValue(() => undefined);
