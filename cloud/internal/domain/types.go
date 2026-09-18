@@ -75,8 +75,14 @@ type Session struct {
 	ObservedState    string
 	RuntimeState     string
 	RuntimeError     string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// WorkerEpoch is the highest worker epoch the session has minted for its
+	// agent terminal. It advances every time a fresh worker connects (a resume
+	// from idle-pause, a restore, or any re-provision), so a client can key its
+	// terminal on it and re-attach to the live agent instead of clinging to the
+	// dead epoch's exited terminal. 0 when no worker has ever connected.
+	WorkerEpoch int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // Status derives the session's display status from runtime and pull request facts.

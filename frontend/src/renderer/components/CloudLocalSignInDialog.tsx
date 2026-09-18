@@ -1,5 +1,16 @@
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import {
+	centeredOnboardingDialogClass,
+	onboardingFieldErrorClass,
+	onboardingFieldHintClass,
+	onboardingFooterActionsEndClass,
+	onboardingFormLabelClass,
+} from "../lib/onboarding-ui";
+import { cn } from "../lib/utils";
+import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
+import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
 import { Button } from "./ui/button";
 import {
 	Dialog,
@@ -7,17 +18,10 @@ import {
 	DialogContent,
 	DialogDescription,
 	DialogTitle,
-	settingsDialogBodyClass,
-	settingsDialogContentClass,
-	settingsDialogFooterClass,
-	settingsDialogHeaderClass,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
-import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
-import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
-import { cn } from "../lib/utils";
 
 type Mode = "signIn" | "register";
 type Phase = "idle" | "submitting";
@@ -85,6 +89,8 @@ export function CloudLocalSignInDialog() {
 				trimmed.orgName !== "" &&
 				password.length >= MIN_PASSWORD_LENGTH));
 
+	const busy = phase === "submitting";
+
 	const submit = async () => {
 		if (!canSubmit) return;
 		setPhase("submitting");
@@ -114,18 +120,27 @@ export function CloudLocalSignInDialog() {
 
 	return (
 		<Dialog open={open} onOpenChange={setOpen}>
-			<DialogContent className={settingsDialogContentClass}>
-				<div className={settingsDialogHeaderClass}>
-					<div className="flex items-center gap-2">
-						<DialogTitle className="settings-dialog-title">{t("cloudLocalAuth.title")}</DialogTitle>
-						<span className="rounded-full bg-muted px-2 py-0.5 text-caption font-medium uppercase tracking-wide text-muted-foreground">
-							{t("cloudLocalAuth.devBadge")}
-						</span>
-					</div>
-					<DialogDescription asChild>
-						<div className="text-control leading-4 text-settings-muted">{t("cloudLocalAuth.description")}</div>
-					</DialogDescription>
+			<DialogContent className={centeredOnboardingDialogClass} showCloseButton={false}>
+				<DialogClose asChild>
+					<button
+						type="button"
+						className="settings-dialog-close-button settings-close-button"
+						aria-label={t("common.close")}
+						disabled={busy}
+					>
+						<X className="size-icon-base" aria-hidden="true" />
+					</button>
+				</DialogClose>
+
+				<div className="flex items-center gap-2 px-4 pr-12 pt-3">
+					<DialogTitle className="text-balance text-[18px] font-semibold text-[var(--color-text-import-title)]">{t("cloudLocalAuth.title")}</DialogTitle>
+					<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+						{t("cloudLocalAuth.devBadge")}
+					</span>
 				</div>
+				<DialogDescription className="px-4 pr-12 pt-1 text-pretty text-[13px] leading-5 text-muted-foreground">
+					{t("cloudLocalAuth.description")}
+				</DialogDescription>
 
 				<Tabs
 					value={mode}
@@ -134,19 +149,23 @@ export function CloudLocalSignInDialog() {
 						setError(null);
 					}}
 				>
-					<div className={cn(settingsDialogBodyClass, "flex flex-col gap-4")}>
-						<TabsList className="w-full">
+					<div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 pb-1 pt-4">
+						<TabsList className="w-full" aria-label={t("cloudLocalAuth.title")}>
 							<TabsTrigger value="signIn">{t("cloudLocalAuth.tabSignIn")}</TabsTrigger>
 							<TabsTrigger value="register">{t("cloudLocalAuth.tabRegister")}</TabsTrigger>
 						</TabsList>
 
-						<div className="flex flex-col gap-1.5">
-							<Label htmlFor="cloud-local-email">{t("cloudLocalAuth.email")}</Label>
+						<div className="space-y-2">
+							<Label htmlFor="cloud-local-email" className={onboardingFormLabelClass}>
+								{t("cloudLocalAuth.email")}
+							</Label>
 							<Input
 								id="cloud-local-email"
 								type="email"
 								autoComplete="off"
 								spellCheck={false}
+								className="text-[13px]"
+								disabled={busy}
 								value={email}
 								onChange={(e) => setEmail(e.target.value)}
 								onKeyDown={onEnter}
@@ -154,34 +173,46 @@ export function CloudLocalSignInDialog() {
 						</div>
 
 						<TabsContent value="register" className="flex flex-col gap-4">
-							<div className="flex flex-col gap-1.5">
-								<Label htmlFor="cloud-local-displayName">{t("cloudLocalAuth.displayName")}</Label>
+							<div className="space-y-2">
+								<Label htmlFor="cloud-local-displayName" className={onboardingFormLabelClass}>
+									{t("cloudLocalAuth.displayName")}
+								</Label>
 								<Input
 									id="cloud-local-displayName"
 									autoComplete="off"
 									spellCheck={false}
+									className="text-[13px]"
+									disabled={busy}
 									value={displayName}
 									onChange={(e) => setDisplayName(e.target.value)}
 									onKeyDown={onEnter}
 								/>
 							</div>
-							<div className="flex flex-col gap-1.5">
-								<Label htmlFor="cloud-local-orgSlug">{t("cloudLocalAuth.orgSlug")}</Label>
+							<div className="space-y-2">
+								<Label htmlFor="cloud-local-orgSlug" className={onboardingFormLabelClass}>
+									{t("cloudLocalAuth.orgSlug")}
+								</Label>
 								<Input
 									id="cloud-local-orgSlug"
 									autoComplete="off"
 									spellCheck={false}
+									className="text-[13px]"
+									disabled={busy}
 									value={orgSlug}
 									onChange={(e) => setOrgSlug(e.target.value)}
 									onKeyDown={onEnter}
 								/>
 							</div>
-							<div className="flex flex-col gap-1.5">
-								<Label htmlFor="cloud-local-orgName">{t("cloudLocalAuth.orgName")}</Label>
+							<div className="space-y-2">
+								<Label htmlFor="cloud-local-orgName" className={onboardingFormLabelClass}>
+									{t("cloudLocalAuth.orgName")}
+								</Label>
 								<Input
 									id="cloud-local-orgName"
 									autoComplete="off"
 									spellCheck={false}
+									className="text-[13px]"
+									disabled={busy}
 									value={orgName}
 									onChange={(e) => setOrgName(e.target.value)}
 									onKeyDown={onEnter}
@@ -189,37 +220,41 @@ export function CloudLocalSignInDialog() {
 							</div>
 						</TabsContent>
 
-						<div className="flex flex-col gap-1.5">
-							<Label htmlFor="cloud-local-password">{t("cloudLocalAuth.password")}</Label>
+						<div className="space-y-2">
+							<Label htmlFor="cloud-local-password" className={onboardingFormLabelClass}>
+								{t("cloudLocalAuth.password")}
+							</Label>
 							<Input
 								id="cloud-local-password"
 								type="password"
 								autoComplete="off"
 								spellCheck={false}
+								className="text-[13px]"
+								disabled={busy}
 								value={password}
 								onChange={(e) => setPassword(e.target.value)}
 								onKeyDown={onEnter}
 							/>
 							{mode === "register" ? (
-								<p className="text-caption leading-4 text-settings-muted">{t("cloudLocalAuth.passwordHint")}</p>
+								<p className={onboardingFieldHintClass}>{t("cloudLocalAuth.passwordHint")}</p>
 							) : null}
 						</div>
 
 						{error ? (
-							<p role="alert" className="text-caption leading-4 text-error">
+							<p role="alert" className={onboardingFieldErrorClass}>
 								{error}
 							</p>
 						) : null}
 					</div>
 				</Tabs>
 
-				<div className={settingsDialogFooterClass}>
+				<div className={cn(onboardingFooterActionsEndClass, "px-4 pb-4")}>
 					<DialogClose asChild>
-						<Button type="button" variant="footer">
+						<Button type="button" variant="outline" disabled={busy}>
 							{t("cloudLocalAuth.cancel")}
 						</Button>
 					</DialogClose>
-					<Button type="button" variant="footer-primary" disabled={!canSubmit} onClick={() => void submit()}>
+					<Button type="button" variant="primary" disabled={!canSubmit} onClick={() => void submit()}>
 						{phase === "submitting"
 							? t("cloudLocalAuth.working")
 							: mode === "signIn"

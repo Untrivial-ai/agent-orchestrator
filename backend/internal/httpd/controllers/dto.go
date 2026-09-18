@@ -1709,6 +1709,8 @@ type MergePRResponse struct {
 
 // ResolveCommentsRequest is the optional body of POST /api/v1/prs/{id}/resolve-comments.
 type ResolveCommentsRequest struct {
+	// CommentIDs accepts provider comment ids and review thread ids. Comment
+	// ids are mapped to their owning thread before resolving.
 	CommentIDs []string `json:"commentIds,omitempty"`
 }
 

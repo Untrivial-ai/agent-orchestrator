@@ -703,6 +703,22 @@ export async function killSession(cfg: ServerConfig, id: string): Promise<void> 
 	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/kill`, { method: "POST" });
 }
 
+/** Rename the worker shown on the board without changing its conversation history. */
+export async function renameSession(cfg: ServerConfig, id: string, displayName: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		body: JSON.stringify({ displayName }),
+	});
+}
+
+export async function pinSession(cfg: ServerConfig, id: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/pin`, { method: "POST" });
+}
+
+export async function unpinSession(cfg: ServerConfig, id: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/pin`, { method: "DELETE" });
+}
+
 export async function restoreSession(cfg: ServerConfig, id: string): Promise<void> {
 	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/restore`, { method: "POST" });
 }
@@ -721,7 +737,7 @@ export async function sendMessage(cfg: ServerConfig, id: string, message: string
 
 export async function spawnSession(
 	cfg: ServerConfig,
-	opts: { projectId: string; prompt?: string; issueId?: string; harness?: string; mode?: SessionMode },
+	opts: { projectId: string; prompt?: string; issueId?: string; harness?: string; mode?: SessionMode; attachments?: SpawnAttachmentInput[] },
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/sessions`, {
 		method: "POST",
@@ -737,11 +753,17 @@ export async function spawnSession(
 			// the phone depend on a desktop preference it cannot see.
 			mode: opts.mode ?? "chat",
 			kind: "worker",
+			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
 	});
 	const data = await res.json();
 	return mapSession(data?.session ?? data);
 }
+
+export type SpawnAttachmentInput = {
+	mimeType: string;
+	data: string;
+};
 
 export async function getSession(cfg: ServerConfig, id: string): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}`);
@@ -751,7 +773,7 @@ export async function getSession(cfg: ServerConfig, id: string): Promise<Dashboa
 
 export async function delegateTask(
 	cfg: ServerConfig,
-	opts: { projectId: string; brief: string; agent?: string; model?: string; mode: SessionMode },
+	opts: { projectId: string; brief: string; agent?: string; model?: string; mode: SessionMode; attachments?: SpawnAttachmentInput[] },
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/orchestrators/delegate`, {
 		method: "POST",
@@ -761,6 +783,7 @@ export async function delegateTask(
 			agent: opts.agent || undefined,
 			model: opts.model || undefined,
 			mode: opts.mode,
+			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
 	});
 	const data = await res.json();

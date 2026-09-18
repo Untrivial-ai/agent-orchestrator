@@ -141,6 +141,38 @@ describe("report problem drafts", () => {
 		expect(email.searchParams.get("body")).toContain("AO version: 1.2.3-test");
 	});
 
+	it("percent-encodes mailto spaces instead of serializing them as plus signs", () => {
+		const email = reportProblemDestinationUrl(
+			{
+				summary: "Switch Codex accounts bug",
+				details: "Keep literal + signs safe.",
+			},
+			diagnostics,
+			"email",
+		)!;
+
+		expect(email.startsWith("mailto:prasad@untrivial.ai?")).toBe(true);
+		expect(email).toContain("subject=AO%20feedback%3A%20Switch%20Codex%20accounts%20bug");
+		expect(email).toContain("body=AO%20feedback%0A%0ASummary%3A%20Switch%20Codex%20accounts%20bug");
+		expect(email).toContain("Keep%20literal%20%2B%20signs%20safe.");
+		expect(email).not.toContain("+");
+	});
+
+	it("keeps mailto drafts sendable when pasted text contains malformed UTF-16", () => {
+		const email = new URL(
+			reportProblemDestinationUrl(
+				{
+					summary: "Broken \uD800 text",
+					details: "The pasted value should still open email.",
+				},
+				diagnostics,
+				"email",
+			)!,
+		);
+
+		expect(email.searchParams.get("subject")).toBe("AO feedback: Broken � text");
+	});
+
 	it("derives route surface from the hash-history route", async () => {
 		window.ao!.app.getVersion = vi.fn().mockResolvedValue("1.2.3-test");
 		window.ao!.daemon.getStatus = vi.fn().mockResolvedValue({ state: "ready" });

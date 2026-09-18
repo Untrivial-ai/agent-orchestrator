@@ -177,7 +177,7 @@ describe("app i18next instance", () => {
 		};
 		for (const locale of APP_LOCALES) {
 			if (locale === "en") continue;
-			const catalog = allCatalogs[locale] as Record<keyof typeof enMessages, string | string[]>;
+			const catalog = allCatalogs[locale] as unknown as Record<keyof typeof enMessages, string | string[]>;
 			for (const key of Object.keys(enMessages) as (keyof typeof enMessages)[]) {
 				expect(variables(catalog[key]), `${locale} placeholder mismatch for ${key}`).toEqual(
 					variables(enMessages[key]),

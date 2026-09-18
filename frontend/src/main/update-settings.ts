@@ -22,6 +22,8 @@ export interface UpdateSettings {
 	nightlyAck: boolean;
 	/** When set, the updater tracks the pr<N> prerelease channel instead of `channel`. Null = not pinned. */
 	feature: FeaturePin | null;
+	/** Internal fail-closed mirror of Developer Mode for macOS Nightly updates. */
+	macDifferentialUpdates?: boolean;
 }
 
 // Live state of an automatic or manual update check/download, streamed to the
@@ -36,6 +38,7 @@ export interface UpdateStatus {
 	percent?: number;
 	transferred?: number;
 	total?: number;
+	bytesPerSecond?: number;
 	message?: string;
 	/** Epoch ms when the updater most recently successfully checked the feed. */
 	checkedAt?: number;
@@ -84,7 +87,13 @@ export interface UpdateStatus {
 /** File holding the user's auto-update preferences under the ~/.ao state dir. */
 export const UPDATE_SETTINGS_FILE_NAME = "update-settings.json";
 
-const DEFAULTS: UpdateSettings = { enabled: false, channel: "latest", nightlyAck: false, feature: null };
+const DEFAULTS: UpdateSettings = {
+	enabled: false,
+	channel: "latest",
+	nightlyAck: false,
+	feature: null,
+	macDifferentialUpdates: false,
+};
 let settingsOperationQueue: Promise<void> = Promise.resolve();
 
 function coerceFeature(raw: unknown): FeaturePin | null {
@@ -103,7 +112,21 @@ function coerce(raw: unknown): UpdateSettings {
 		nightlyAck: o.nightlyAck === true,
 		// Legacy files with no `feature` key default to null (migration-safe).
 		feature: coerceFeature(o.feature),
+		macDifferentialUpdates: o.macDifferentialUpdates === true && (o.feature === null || coerceFeature(o.feature) !== null),
 	};
+}
+
+/** Enables differential transfer only inside the approved guarded rollout. */
+export function macDifferentialUpdatesEnabled(input: {
+	platform: NodeJS.Platform;
+	settings: Pick<UpdateSettings, "channel" | "feature" | "macDifferentialUpdates">;
+}): boolean {
+	return (
+		input.platform === "darwin" &&
+		input.settings.channel === "nightly" &&
+		input.settings.feature === null &&
+		input.settings.macDifferentialUpdates === true
+	);
 }
 
 async function readUpdateSettingsUnlocked(stateDir: string): Promise<UpdateSettings> {

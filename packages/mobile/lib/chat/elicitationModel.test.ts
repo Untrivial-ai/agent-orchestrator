@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inputOptions, missingRequiredInputs, safeHttpURL, toggleInputValue, validateInput } from "./elicitationModel";
+import { elicitationPromptCopy, elicitationStepPresentation, groupedQuestionInputs, inputOptions, missingRequiredInputs, safeHttpURL, toggleInputValue, validateInput } from "./elicitationModel";
 
 describe("mobile Chat elicitation model", () => {
 	it("opens only explicit web URLs", () => {
@@ -24,5 +24,40 @@ describe("mobile Chat elicitation model", () => {
 		]);
 		expect(toggleInputValue(["read"], "write")).toEqual(["read", "write"]);
 		expect(toggleInputValue(["read", "write"], "read")).toEqual(["write"]);
+	});
+
+	it("groups numbered agent questions with their custom-answer fields", () => {
+		const properties = [
+			["question_1", { type: "string" }],
+			["question_1_custom", { type: "string" }],
+			["question_2", { type: "string" }],
+		] as const;
+		expect(groupedQuestionInputs(properties)).toEqual([
+			[["question_1", { type: "string" }], ["question_1_custom", { type: "string" }]],
+			[["question_2", { type: "string" }]],
+		]);
+	});
+
+	it("leaves ordinary schemas on one form instead of inventing question pages", () => {
+		expect(groupedQuestionInputs([["branch", { type: "string" }]])).toBeUndefined();
+		expect(groupedQuestionInputs([])).toBeUndefined();
+	});
+
+	it("presents paged questions as one quiet status line with native navigation", () => {
+		expect(elicitationStepPresentation(0, 3)).toEqual({
+			status: "Needs input · Question 1 of 3",
+			showBack: false,
+			primaryLabel: "Next",
+		});
+		expect(elicitationStepPresentation(2, 3)).toEqual({
+			status: "Needs input · Question 3 of 3",
+			showBack: true,
+			primaryLabel: "Continue",
+		});
+	});
+
+	it("drops generic form instructions so the actual question leads", () => {
+		expect(elicitationPromptCopy("Please answer the following questions.")).toBeUndefined();
+		expect(elicitationPromptCopy("Choose the rollout strategy for production.")).toBe("Choose the rollout strategy for production.");
 	});
 });

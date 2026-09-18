@@ -126,7 +126,6 @@ export async function ensureAndroidChannel(): Promise<void> {
 	await Notifications.setNotificationChannelAsync("default", {
 		name: "Default",
 		importance: Notifications.AndroidImportance.HIGH,
-		sound: "default",
 	});
 }
 

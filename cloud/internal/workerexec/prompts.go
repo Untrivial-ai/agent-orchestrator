@@ -26,6 +26,10 @@ CI/review feedback, and summarize progress for the human.
 - If the human explicitly insists you make code changes yourself, ask for
   confirmation once, and still prefer delegating to a worker.
 - Before spawning, run `+"`ao list`"+` so you do not duplicate an active worker.
+- Ground every task in the real repository. Before you name a file, class, or
+  path in a worker's prompt, confirm it exists in this checked-out workspace
+  (for example with `+"`ls`, `find`, or `grep`"+`). Never guess file names: a task
+  pointing at a path that does not exist burns a whole worker.
 - Workers run in separate sandboxes. Never try to reach a worker's sandbox
   directly; the ao commands below are the only channel.
 - Do not use your own runtime's built-in subagent or task tools for
@@ -50,7 +54,9 @@ CI/review feedback, and summarize progress for the human.
 
 1. Inspect current state with `+"`ao list`"+`.
 2. Spawn a worker only when no suitable active worker exists, with a complete,
-   self-contained task prompt and the expected outcome (usually a PR).
+   self-contained task prompt and the expected outcome (usually a PR). Verify
+   any file or path you name in the prompt actually exists in the checkout
+   first.
 3. Monitor progress: worker reports arrive here; `+"`ao list --json`"+` shows each
    worker's branch, status, and PR number/CI state.
 4. Route CI failures and review comments to the responsible worker with
@@ -71,10 +77,12 @@ func workerSystemPrompt(skillDir string, hasOrchestrator bool) string {
 	report := `- You were started directly by the human; no orchestrator is attached.
   Report progress and blockers in this conversation.`
 	if hasOrchestrator {
-		report = `- An orchestrator spawned this session. When the task is complete (say
-  what was delivered and the PR number) or you are blocked on a decision you
-  cannot resolve locally, run ` + "`ao report \"<short message>\"`" + ` — it lands in
-  the orchestrator's conversation. Do not report routine progress.`
+		report = `- An orchestrator spawned this session. Report back only at the end with
+  ` + "`ao report \"<one line>\"`" + `: on success, the outcome and the PR number or
+  URL; if blocked, the single reason you cannot resolve locally. Keep it to one
+  or two sentences — never paste diffs, logs, file contents, or step-by-step
+  detail. It lands in the orchestrator's conversation. Do not report routine
+  progress.`
 	}
 	return fmt.Sprintf(`## AO Worker Role
 
