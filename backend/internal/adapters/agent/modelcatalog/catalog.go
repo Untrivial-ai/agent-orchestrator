@@ -213,7 +213,7 @@ func discoverClaudeCatalog(
 	if list != nil {
 		models, err := list(ctx, request)
 		if err != nil {
-			base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), settings.Model)
+			base.Models = claudeFallbackModels(settings)
 			return base, fmt.Errorf("claude-code model discovery: %w", err)
 		}
 		normalized := normalize(models)
@@ -222,13 +222,52 @@ func discoverClaudeCatalog(
 			base.Source = "provider"
 			return base, nil
 		}
-		base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), settings.Model)
+		base.Models = claudeFallbackModels(settings)
 		return base, errors.New("claude-code model discovery returned no models")
 	}
 
-	base.Models = applyClaudeConfiguredDefault(normalize(claudeCodeModels()), settings.Model)
+	base.Models = claudeFallbackModels(settings)
 	return base, nil
 }
+
+func claudeFallbackModels(settings agentcreds.ClaudeSettings) []ports.AgentModelInfo {
+	static := normalize(claudeCodeModels())
+	if strings.TrimSpace(settings.Env["ANTHROPIC_BASE_URL"]) == "" {
+		return applyClaudeConfiguredDefault(static, settings.Model)
+	}
+
+	configured := []string{
+		settings.Model,
+		settings.Env["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+		settings.Env["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+		settings.Env["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+		settings.Env["ANTHROPIC_SMALL_FAST_MODEL"],
+	}
+	models := make([]ports.AgentModelInfo, 0, len(configured)+len(static))
+	seen := make(map[string]struct{}, len(configured)+len(static))
+	appendModel := func(item ports.AgentModelInfo) {
+		item.ID = strings.TrimSpace(item.ID)
+		if item.ID == "" {
+			return
+		}
+		if _, exists := seen[item.ID]; exists {
+			return
+		}
+		seen[item.ID] = struct{}{}
+		if strings.TrimSpace(item.Label) == "" {
+			item.Label = item.ID
+		}
+		models = append(models, item)
+	}
+	for _, id := range configured {
+		appendModel(ports.AgentModelInfo{ID: id})
+	}
+	for _, item := range static {
+		appendModel(item)
+	}
+	return applyClaudeConfiguredDefault(models, settings.Model)
+}
+
 func applyClaudeConfiguredDefault(models []ports.AgentModelInfo, configured string) []ports.AgentModelInfo {
 	if configured == "" {
 		return models

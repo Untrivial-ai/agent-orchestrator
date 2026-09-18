@@ -114,6 +114,56 @@ func TestClaudeCatalogReturnsStaticFallbackWithProviderError(t *testing.T) {
 	}
 }
 
+func TestClaudeGatewayCatalogFailureReturnsConfiguredModelsWithoutDiscoverySuccess(t *testing.T) {
+	request := claudeRequest(t)
+	request.Env = map[string]string{
+		"ANTHROPIC_BASE_URL":             "https://gateway.example",
+		"ANTHROPIC_MODEL":                "gateway-primary",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "gateway-opus",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-shared",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "gateway-shared",
+		"ANTHROPIC_SMALL_FAST_MODEL":     "gateway-fast",
+	}
+	listCalls := 0
+	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
+		listCalls++
+		return nil, errors.New("gateway does not implement /v1/models")
+	}
+
+	catalog, err := discoverClaudeCatalog(context.Background(), request, list)
+	if err == nil {
+		t.Fatal("gateway listing failure was reported as successful discovery")
+	}
+	if listCalls != 1 {
+		t.Fatalf("provider listing calls = %d, want exactly one", listCalls)
+	}
+	if catalog.Source == "provider" {
+		t.Fatalf("source = %q, want unverified fallback provenance", catalog.Source)
+	}
+	if catalog.CustomModelEntry != ports.CustomModelEntryDirect || !catalog.AllowCustom {
+		t.Fatalf("custom entry = (%q, %v), want direct enabled", catalog.CustomModelEntry, catalog.AllowCustom)
+	}
+	wantPrefix := []string{"gateway-primary", "gateway-opus", "gateway-shared", "gateway-fast"}
+	if len(catalog.Models) < len(wantPrefix) {
+		t.Fatalf("models = %#v, want configured gateway models first", catalog.Models)
+	}
+	for i, want := range wantPrefix {
+		if got := catalog.Models[i].ID; got != want {
+			t.Fatalf("models[%d] = %q, want %q; catalog = %#v", i, got, want, catalog.Models)
+		}
+	}
+	counts := make(map[string]int, len(catalog.Models))
+	for _, item := range catalog.Models {
+		counts[item.ID]++
+	}
+	if counts["gateway-shared"] != 1 {
+		t.Fatalf("gateway-shared count = %d, want one deduplicated target", counts["gateway-shared"])
+	}
+	if counts["sonnet"] != 1 || counts["opus"] != 1 || counts["haiku"] != 1 {
+		t.Fatalf("models = %#v, want static aliases after configured gateway targets", catalog.Models)
+	}
+}
+
 func TestClaudeProviderModelsAreDeduped(t *testing.T) {
 	list := func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
 		return []ports.AgentModelInfo{

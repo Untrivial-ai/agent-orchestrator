@@ -1154,10 +1154,12 @@ func TestClaudeModelsKeepProviderCacheWhenRefreshFallsBackToStaticAliases(t *tes
 	}
 }
 
-func TestClaudeModelsRejectProviderCacheWhenDiscoveryFingerprintChanges(t *testing.T) {
+func TestClaudeModelsKeepProviderCacheWhenDiscoveryFingerprintChanges(t *testing.T) {
 	cached := ports.AgentModelCatalog{
 		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
-		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1"}}, Source: "provider",
+		Models: []ports.AgentModelInfo{{
+			ID: "us.anthropic.claude-opus-v1", Efforts: []string{"low", "high"}, DefaultEffort: "high",
+		}}, Source: "provider",
 	}
 	data, err := json.Marshal(cached)
 	if err != nil {
@@ -1182,8 +1184,10 @@ func TestClaudeModelsRejectProviderCacheWhenDiscoveryFingerprintChanges(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Models) != 2 || got.Models[0].ID != "sonnet" || got.Source != "catalog" {
-		t.Fatalf("catalog = %#v, want newly discovered aliases after fingerprint change", got)
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" ||
+		!reflect.DeepEqual(got.Models[0].Efforts, []string{"low", "high"}) || got.Models[0].DefaultEffort != "high" ||
+		got.Source != "provider" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale provider IDs and efforts after fingerprint change", got)
 	}
 }
 
