@@ -411,7 +411,8 @@ func (o *Observer) Poll(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	listedPRs, listedRepos := o.discoverNewPRs(ctx, sessionRepos, subjects, repoGuards, now, markRepoListFailed)
+	identities := o.resolveIdentities(ctx, sessionRepos)
+	listedPRs, listedRepos := o.discoverNewPRs(ctx, sessionRepos, subjects, repoGuards, identities, now, markRepoListFailed)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -598,6 +599,10 @@ func (o *Observer) Poll(ctx context.Context) error {
 			continue
 		}
 		if o.lifecycle != nil {
+			// The lifecycle reducer needs the authenticated account only while it
+			// selects nudge candidates. Keep it out of durable PR facts: the
+			// persisted comment remains visible even when it was authored by AO.
+			prepared.AuthenticatedLogin = identities[identityKey(prepared.Provider, prepared.Host)].Login
 			if err := o.lifecycle.ApplySCMObservation(ctx, subj.session.ID, prepared); err != nil {
 				o.logger.Error("scm observer: lifecycle notification failed", "session", subj.session.ID, "pr", firstNonEmpty(prepared.PR.URL, prepared.PR.HTMLURL, local.URL), "err", err)
 				markRepoRefreshFailed(subj.repo)
@@ -965,8 +970,7 @@ func pendingRepoRefreshes(guards map[string]repoGuardState) map[string]bool {
 // PRs (its root plus stacked children). Repos whose PR-list guard reports
 // NotModified against a known ETag are skipped, since nothing new can have
 // appeared since the last poll.
-func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRepo, subjects map[string]*subject, guards map[string]repoGuardState, now time.Time, markRepoFailed func(ports.SCMRepo)) (listedPRs, listedRepos map[string]bool) {
-	identities := o.resolveIdentities(ctx, sessionRepos)
+func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRepo, subjects map[string]*subject, guards map[string]repoGuardState, identities map[string]ports.SCMIdentity, now time.Time, markRepoFailed func(ports.SCMRepo)) (listedPRs, listedRepos map[string]bool) {
 	byRepo := map[string][]sessionRepo{}
 	repos := map[string]ports.SCMRepo{}
 	for _, sr := range sessionRepos {
@@ -982,7 +986,8 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	listedRepos = map[string]bool{}
 	pullsByRepo := map[string][]ports.SCMPRObservation{}
 	for repoKey, repo := range repos {
-		if _, ok := identities[identityKey(repo.Provider, repo.Host)]; !ok {
+		identity, ok := identities[identityKey(repo.Provider, repo.Host)]
+		if !ok || !identity.Human {
 			// Do not acknowledge discoveries we could not attribute. Clear even
 			// an older cursor/ETag so recovery retries a full listing after an
 			// identity outage longer than the incremental overlap window.
@@ -1133,8 +1138,10 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	return listedPRs, listedRepos
 }
 
-// resolveIdentities resolves each provider/host once per poll. Unknown or bot
-// accounts disable discovery only for that scope; other accounts keep working.
+// resolveIdentities resolves each provider/host once per poll. Callers use the
+// identity's Human flag to decide whether automatic discovery is allowed; the
+// login is retained for every account so lifecycle can identify AO-authored
+// review replies too.
 func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []sessionRepo) map[string]ports.SCMIdentity {
 	if o.scopedIdentityResolver == nil {
 		return nil
@@ -1153,7 +1160,7 @@ func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []session
 			continue
 		}
 		id.Login = strings.TrimSpace(id.Login)
-		if !id.Human || id.Login == "" {
+		if id.Login == "" {
 			continue
 		}
 		identities[ik] = id

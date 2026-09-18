@@ -661,6 +661,9 @@ func TestPoll_RepoETag200DiscoversPRAndRefreshesSamePoll(t *testing.T) {
 	if got := store.writes[0].pr.Author; got != "alice" {
 		t.Fatalf("discovered author = %q, want alice", got)
 	}
+	if got := lc.observed[0].AuthenticatedLogin; got != "alice" {
+		t.Fatalf("lifecycle authenticated login = %q, want alice", got)
+	}
 }
 
 func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
