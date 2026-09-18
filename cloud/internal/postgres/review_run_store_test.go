@@ -59,4 +59,17 @@ func TestTerminalTicketPurposeBindsReviewerTerminal(t *testing.T) {
 	}
 }
 
+func TestReviewTerminalOpenCommandCarriesInitialPrompt(t *testing.T) {
+	command := reviewTerminalOpenCommand("reviewer-terminal-id", "review this pull request")
+	if command.TerminalID != "reviewer-terminal-id" {
+		t.Fatalf("TerminalID = %q", command.TerminalID)
+	}
+	if command.Kind != "agent" || !command.Review {
+		t.Fatalf("review open command = %#v, want review agent", command)
+	}
+	if got, want := string(command.Data), "review this pull request"; got != want {
+		t.Fatalf("initial review prompt = %q, want %q", got, want)
+	}
+}
+
 func ptr(value string) *string { return &value }

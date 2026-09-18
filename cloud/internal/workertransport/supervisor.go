@@ -56,12 +56,6 @@ const (
 	fallbackTerminalRows    = 24
 )
 
-// Review commands need a brief boot window before their first prompt is
-// written. Unlike the primary agent, a reviewer has no browser attachment to
-// hold input until the TUI has initialized; Codex can otherwise discard the
-// first prompt while it is still starting.
-const reviewStartupDelay = 2 * time.Second
-
 type Supervisor struct {
 	Control         Control
 	Workspace       string
@@ -363,7 +357,7 @@ func (s *Supervisor) handle(
 			if input.TerminalID == s.AgentTerminalID {
 				err = s.writeAgentPrompt(input.TerminalID, input.Data)
 			} else if input.Review {
-				err = s.writeReviewPrompt(input.TerminalID, input.Data)
+				err = s.writeAgentPrompt(input.TerminalID, input.Data)
 			} else {
 				err = s.writeTerminal(input)
 			}
@@ -484,7 +478,14 @@ func (s *Supervisor) terminalCommand(
 		if commandConfig.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")
 		}
-		command := exec.CommandContext(ctx, commandConfig.Path, commandConfig.Args...)
+		args := append([]string(nil), commandConfig.Args...)
+		if input.Review && len(input.Data) > 0 {
+			// Codex accepts an initial positional prompt. Supplying it at process
+			// startup avoids racing its interactive TUI initialization, which can
+			// drop a prompt typed immediately after the PTY opens.
+			args = append(args, string(input.Data))
+		}
+		command := exec.CommandContext(ctx, commandConfig.Path, args...)
 		command.Dir = commandConfig.Dir
 		command.Env = terminalEnvironment(commandConfig.Env)
 		cleanup := commandConfig.Cleanup
@@ -556,15 +557,6 @@ func (s *Supervisor) writeAgentPrompt(terminalID string, data []byte) error {
 	return s.writeTerminal(worker.TerminalCommand{
 		TerminalID: terminalID, Data: []byte("\r"),
 	})
-}
-
-func (s *Supervisor) writeReviewPrompt(terminalID string, data []byte) error {
-	time.Sleep(reviewStartupDelay)
-	// Codex treats one write containing both a pasted prompt and its carriage
-	// return as a paste operation, which can leave the review prompt waiting in
-	// the composer instead of submitting it. Keep the reviewer on the same
-	// paste-then-Enter path as normal agent turns after its fresh TUI has booted.
-	return s.writeAgentPrompt(terminalID, data)
 }
 
 func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
