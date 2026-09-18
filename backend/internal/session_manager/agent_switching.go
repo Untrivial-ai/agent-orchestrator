@@ -1330,18 +1330,21 @@ func (m *Manager) preserveCurrentNativeSession(ctx context.Context, store ports.
 
 func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.AgentSwitchStore, rec domain.SessionRecord, project domain.ProjectRecord, agent ports.Agent, caps ports.ContinuationCapabilities, sw domain.AgentSwitch, modelOverride string) (preparedTargetActivation, error) {
 	harness := sw.TargetHarness
+	// Claude may select a different effective provider from project settings,
+	// which these device-global probes cannot see. Its launch is authoritative.
+	unscopedAuthCanReject := harness != domain.HarnessClaudeCode
 	if m.agentReadiness != nil {
 		readiness, readinessErr := m.agentReadiness.EnsureAgentReadiness(ctx, string(harness), domain.AgentReadinessPurposeLaunch)
 		if readinessErr != nil {
 			m.logger.Warn("agent switch: target readiness check failed; launch remains authoritative", "sessionID", rec.ID, "harness", harness, "error", readinessErr)
-		} else if readiness.Authentication.State == domain.AgentAuthenticationUnauthorized {
+		} else if unscopedAuthCanReject && readiness.Authentication.State == domain.AgentAuthenticationUnauthorized {
 			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
 		}
 	} else if checker, ok := agent.(ports.AgentAuthChecker); ok {
 		status, authErr := checker.AuthStatus(ctx)
 		if authErr != nil {
 			m.logger.Warn("agent switch: target auth probe failed; launch remains authoritative", "sessionID", rec.ID, "harness", harness, "error", authErr)
-		} else if status == ports.AgentAuthStatusUnauthorized {
+		} else if unscopedAuthCanReject && status == ports.AgentAuthStatusUnauthorized {
 			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
 		}
 	}

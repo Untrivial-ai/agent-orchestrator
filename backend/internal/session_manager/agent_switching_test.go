@@ -3063,6 +3063,69 @@ func TestSwitchAgentUsesCoordinatorUnauthorizedPolicyBeforeStoppingSource(t *tes
 	}
 }
 
+func TestSwitchAgentTreatsGlobalClaudeUnauthorizedAsAdvisoryForProjectGateway(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Harness = domain.HarnessCodex
+	store.sessions[rec.ID] = rec
+	project := store.projects["proj"]
+	project.Config.Env = map[string]string{
+		"ANTHROPIC_BASE_URL": "https://gateway.example",
+		"ANTHROPIC_API_KEY":  "project-fixture-key",
+	}
+	store.projects[project.ID] = project
+	readiness := &switchReadinessProvider{snapshot: domain.AgentReadinessSnapshot{
+		Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled},
+		Authentication: domain.AgentAuthenticationObservation{
+			State: domain.AgentAuthenticationUnauthorized, Freshness: domain.AgentReadinessFresh,
+		},
+	}}
+	manager.SetAgentReadiness(readiness)
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessClaudeCode, IdempotencyKey: "project-gateway-global-unauthorized",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.State != domain.AgentSwitchCompleted || runtime.created != 1 {
+		t.Fatalf("switch=%+v runtime creates=%d, want completed target launch", sw, runtime.created)
+	}
+	if runtime.lastCfg.Env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("target environment omitted project gateway: %#v", runtime.lastCfg.Env)
+	}
+}
+
+func TestSwitchAgentTreatsFallbackClaudeUnauthorizedAsAdvisoryForProjectGateway(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Harness = domain.HarnessCodex
+	store.sessions[rec.ID] = rec
+	project := store.projects["proj"]
+	project.Config.Env = map[string]string{
+		"ANTHROPIC_BASE_URL": "https://gateway.example",
+		"ANTHROPIC_API_KEY":  "project-fixture-key",
+	}
+	store.projects[project.ID] = project
+	target := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+	target.authStatus = ports.AgentAuthStatusUnauthorized
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessClaudeCode, IdempotencyKey: "project-gateway-fallback-unauthorized",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.State != domain.AgentSwitchCompleted || runtime.created != 1 {
+		t.Fatalf("switch=%+v runtime creates=%d, want completed target launch", sw, runtime.created)
+	}
+	if runtime.lastCfg.Env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("target environment omitted project gateway: %#v", runtime.lastCfg.Env)
+	}
+}
+
 func TestSwitchAgentTreatsCoordinatorUnknownAsAdvisory(t *testing.T) {
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
 	manager, _, _ := newSwitchTestManager(t, runtime)
