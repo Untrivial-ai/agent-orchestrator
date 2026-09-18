@@ -80,12 +80,14 @@ func (v *Validator) anthropicRequest(ctx context.Context, provider Provider, cre
 		return requestSpec{}, err
 	}
 	label := "Anthropic"
+	parseModels := parseAnthropicModels
 	if provider == ProviderGateway {
 		label = "the configured gateway"
+		parseModels = parseGatewayModels
 	}
 	return requestSpec{
 		request:     request,
-		parseModels: parseAnthropicModels,
+		parseModels: parseModels,
 		// A gateway need not implement model listing, and the first-party API
 		// always does, so neither case treats an empty list as a rejection.
 		requireModels:                 false,
@@ -154,13 +156,23 @@ func (v *Validator) foundryRequest(ctx context.Context, cred Credential) (reques
 	}, nil
 }
 
-// parseAnthropicModels reads the first-party model list, which Foundry and
-// gateways mirror.
+// parseAnthropicModels reads the first-party model list, which Foundry mirrors.
 //
 // It also reads capabilities.effort, which is the only authoritative source for
 // which reasoning levels a given model accepts. Those differ across the catalog
 // and change as models ship, so they are carried through rather than assumed.
 func parseAnthropicModels(body []byte) ([]Model, error) {
+	return parseAnthropicCompatibleModels(body, true)
+}
+
+// parseGatewayModels reads an Anthropic-compatible gateway model list without
+// assuming the gateway uses Anthropic model names. The IDs are provider-owned
+// and may name any family the gateway makes available.
+func parseGatewayModels(body []byte) ([]Model, error) {
+	return parseAnthropicCompatibleModels(body, false)
+}
+
+func parseAnthropicCompatibleModels(body []byte, claudeOnly bool) ([]Model, error) {
 	var payload struct {
 		Data []struct {
 			ID           string `json:"id"`
@@ -175,7 +187,7 @@ func parseAnthropicModels(body []byte) ([]Model, error) {
 	}
 	models := make([]Model, 0, len(payload.Data))
 	for _, entry := range payload.Data {
-		if !isClaudeModelID(entry.ID) {
+		if strings.TrimSpace(entry.ID) == "" || claudeOnly && !isClaudeModelID(entry.ID) {
 			continue
 		}
 		models = append(models, Model{

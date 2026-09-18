@@ -229,6 +229,96 @@ func TestGatewayToleratesAMissingModelEndpoint(t *testing.T) {
 	}
 }
 
+func TestGatewayCatalogPreservesArbitraryNonEmptyModelIDs(t *testing.T) {
+	body := `{"data":[
+		{"id":"kimi-for-coding"},
+		{"id":"kimi-for-coding-highspeed"},
+		{"id":"k3"},
+		{"id":"k3-256k"},
+		{"id":"glm-4.6"},
+		{"id":""}
+	]}`
+	wantGateway := []string{
+		"kimi-for-coding",
+		"kimi-for-coding-highspeed",
+		"k3",
+		"k3-256k",
+		"glm-4.6",
+	}
+
+	tests := []struct {
+		name       string
+		credential Credential
+		wantState  State
+		wantIDs    []string
+	}{
+		{
+			name:       "gateway",
+			credential: Credential{Kind: KindAPIKey, Secret: "k", Provider: ProviderGateway},
+			wantState:  StateValid,
+			wantIDs:    wantGateway,
+		},
+		{
+			name:       "first party",
+			credential: Credential{Kind: KindAPIKey, Secret: "k", Provider: ProviderFirstParty},
+			wantState:  StateValid,
+		},
+		{
+			name:       "foundry",
+			credential: Credential{Kind: KindAzureAPIKey, Secret: "k", Provider: ProviderFoundry},
+			wantState:  StateUnknown,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			credential := tc.credential
+			credential.BaseURL = server.URL
+			result := New(server.Client()).Validate(context.Background(), credential)
+			if result.State != tc.wantState {
+				t.Fatalf("state = %q (%s), want %q", result.State, result.Detail, tc.wantState)
+			}
+			if len(result.Models) != len(tc.wantIDs) {
+				t.Fatalf("models = %v, want ids %v", result.Models, tc.wantIDs)
+			}
+			for index, wantID := range tc.wantIDs {
+				if result.Models[index].ID != wantID {
+					t.Fatalf("model %d id = %q, want %q", index, result.Models[index].ID, wantID)
+				}
+			}
+		})
+	}
+}
+
+func TestGatewayRequestPreservesBasePathAndUsesOnlyAPIKeyHeader(t *testing.T) {
+	spec, err := New(nil).requestFor(context.Background(), ProviderGateway, Credential{
+		Kind: KindAPIKey, Secret: "kimi-key", Provider: ProviderGateway,
+		BaseURL: "https://api.kimi.com/coding/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := spec.request
+	if target := request.URL.Scheme + "://" + request.URL.Host + request.URL.Path; target != "https://api.kimi.com/coding/v1/models" {
+		t.Fatalf("target = %q, want %q", target, "https://api.kimi.com/coding/v1/models")
+	}
+	if request.URL.Query().Get("limit") != "1000" {
+		t.Fatalf("limit = %q, want 1000", request.URL.Query().Get("limit"))
+	}
+	if got := request.Header.Get("x-api-key"); got != "kimi-key" {
+		t.Fatalf("x-api-key = %q, want %q", got, "kimi-key")
+	}
+	if got := request.Header.Get("authorization"); got != "" {
+		t.Fatalf("authorization = %q, want empty", got)
+	}
+}
+
 // Model IDs do not translate between providers, so the validating call must
 // also be what supplies the catalog.
 func TestValidationReturnsThatProvidersModelIDs(t *testing.T) {
