@@ -1278,32 +1278,69 @@ describe("ensureNativeActiveTab automation-runtime resync", () => {
 	// just whichever call happened to trigger it first — browser:closeTab's
 	// own try/catch never even ran, because the throw came from its unguarded
 	// ensureNativeActiveTab call sitting *before* that try block.
-	it("recovers browser:selectTab when the runtime rejects tab-select for the newly active tab", async () => {
-		const { invoke, runtime } = setupTabHost();
+	it("keeps browser:selectTab responsive and resyncs before the next agent command", async () => {
+		const { host, invoke, runtime } = setupTabHost();
 		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
 		const viewId = ensure.viewId;
-		await invoke("browser:openTab", { viewId }); // t1, t2 — t2 active, natively synced
+		await invoke("browser:navigate", { viewId, url: "https://first.example/" });
+		await invoke("browser:openTab", { viewId, url: "https://second.example/" });
 
 		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
 		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
 		const seenActions: string[] = [];
-		let failNextSelect = true;
+		let releaseSelect!: () => void;
+		const selectHeld = new Promise<void>((resolve) => {
+			releaseSelect = resolve;
+		});
 		runAction.mockImplementation(async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown) => {
 			seenActions.push(action);
-			if (action === "tab-select" && String(args.tabId) === "t1" && failNextSelect) {
-				failNextSelect = false;
-				throw Object.assign(new Error("Tab t1 not found; run `agent-browser tab` to list open tabs"), {
-					code: "AGENT_BROWSER_COMMAND_FAILED",
-				});
-			}
+			if (action === "tab-select" && String(args.tabId) === "t1") await selectHeld;
 			return originalRunAction(sessionId, action, args, provider);
 		});
 
 		const result = (await invoke("browser:selectTab", { viewId, tabId: "t1" })) as { activeTabId: string };
 		expect(result.activeTabId).toBe("t1");
-		// Asked the runtime to refresh its own view (exactly what its error
-		// message suggests) before retrying, rather than giving up immediately.
-		expect(seenActions).toContain("tabs");
+		expect(seenActions).toEqual([]);
+
+		let commandFinished = false;
+		const command = host.execute("sess-1", "get", { property: "url" }).finally(() => {
+			commandFinished = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(seenActions).toEqual(["tab-select"]);
+		expect(commandFinished).toBe(false);
+		releaseSelect();
+		await expect(command).resolves.toMatchObject({ value: "https://first.example/" });
+		expect(seenActions).toEqual(["tab-select", "get"]);
+	});
+
+	it("keeps a newer human selection after a delayed runtime activation callback", async () => {
+		const { activeTargets, host, invoke, runtime } = setupTabHost();
+		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		const viewId = ensure.viewId;
+		await invoke("browser:navigate", { viewId, url: "https://first.example/" });
+		await invoke("browser:openTab", { viewId, url: "https://second.example/" });
+		await invoke("browser:selectTab", { viewId, tabId: "t1" });
+
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		let releaseSelect!: () => void;
+		const selectHeld = new Promise<void>((resolve) => {
+			releaseSelect = resolve;
+		});
+		runAction.mockImplementation(async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown) => {
+			if (action === "tab-select" && String(args.tabId) === "t1") await selectHeld;
+			return originalRunAction(sessionId, action, args, provider);
+		});
+
+		const command = host.execute("sess-1", "get", { property: "url" });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await invoke("browser:selectTab", { viewId, tabId: "t2" });
+		releaseSelect();
+
+		await expect(command).resolves.toMatchObject({ value: "https://second.example/" });
+		expect(activeTargets.get("sess-1")).toBe("t2");
+		expect(runAction.mock.calls.map((call) => call[1])).toEqual(["tab-new", "tab-select", "tab-select", "get"]);
 	});
 
 	it("does not wedge the session after a transient tab-select failure — later operations still work", async () => {
@@ -1333,11 +1370,10 @@ describe("ensureNativeActiveTab automation-runtime resync", () => {
 		expect(result.tabs.map((tab) => tab.id)).toEqual(["t1"]);
 	});
 
-	// Regression: accepting the drift used to be silent — no log at all — so a
-	// later "the agent clicked the wrong tab" report would have nothing to go
-	// on. A resync attempt that also fails should leave a breadcrumb.
-	it("warns when the runtime is still desynced after a resync attempt, instead of failing silently", async () => {
-		const { invoke, runtime } = setupTabHost();
+	// A failed convergence must stop the command. Continuing would send the
+	// action to whichever tab the separate runtime still considers active.
+	it("fails an agent command instead of accepting persistent runtime tab drift", async () => {
+		const { host, invoke, runtime } = setupTabHost();
 		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
 		const viewId = ensure.viewId;
 		await invoke("browser:openTab", { viewId }); // t1, t2 — t2 active, natively synced
@@ -1351,13 +1387,73 @@ describe("ensureNativeActiveTab automation-runtime resync", () => {
 			}
 			return {};
 		});
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		await invoke("browser:selectTab", { viewId, tabId: "t1" });
+		await expect(host.execute("sess-1", "get", { property: "url" })).rejects.toMatchObject({
+			code: "AGENT_BROWSER_COMMAND_FAILED",
+		});
+		expect(runAction.mock.calls.map((call) => call[1])).toEqual(["tab-new", "tab-select", "tabs", "tab-select"]);
+	});
 
+	it("serializes agent screenshots behind native tab targeting", async () => {
+		const { host, invoke, runtime } = setupTabHost();
+		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		const viewId = ensure.viewId;
+		await invoke("browser:navigate", { viewId, url: "https://first.example/" });
+		await invoke("browser:openTab", { viewId, url: "https://second.example/" });
 		await invoke("browser:selectTab", { viewId, tabId: "t1" });
 
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("t1"));
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("sess-1"));
-		warnSpy.mockRestore();
+		const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+		const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+		let releaseSelect!: () => void;
+		const selectHeld = new Promise<void>((resolve) => {
+			releaseSelect = resolve;
+		});
+		runAction.mockImplementation(async (sessionId: string, action: string, args: Record<string, unknown>, provider: unknown) => {
+			if (action === "tab-select" && String(args.tabId) === "t1") await selectHeld;
+			return originalRunAction(sessionId, action, args, provider);
+		});
+
+		const screenshot = host.execute("sess-1", "screenshot");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(runtime.screenshot).not.toHaveBeenCalled();
+		releaseSelect();
+		await screenshot;
+		expect(runtime.screenshot).toHaveBeenCalledOnce();
+		expect(runAction.mock.calls.map((call) => call[1])).toEqual(["tab-new", "tab-select"]);
+	});
+
+	it("keeps activation mode correct when the runtime sticks to its first provider", async () => {
+		const runCase = async (initializeWithSync: boolean): Promise<void> => {
+			const fixture = setupTabHost();
+			const { host, invoke, runtime, sent, views } = fixture;
+			const runAction = runtime.runAction as unknown as ReturnType<typeof vi.fn>;
+			const originalRunAction = runAction.getMockImplementation()! as (...args: unknown[]) => Promise<unknown>;
+			let stickyProvider: unknown;
+			runAction.mockImplementation(async (...args: unknown[]) => {
+				stickyProvider ??= args[3];
+				return originalRunAction(args[0], args[1], args[2], stickyProvider);
+			});
+
+			const ensured = (await invoke("browser:ensure", "sess-1")) as BrowserNavState;
+			if (initializeWithSync) {
+				await invoke("browser:navigate", { viewId: ensured.viewId, url: "http://localhost:3000/" });
+				views[0]!.webContents.openWindow("http://localhost:3000/popup");
+				await vi.waitFor(() => expect(fixture.activeTargets.get("sess-1")).toBe("t2"));
+			} else {
+				await host.execute("sess-1", "tabs");
+				await host.execute("sess-1", "tab-new");
+			}
+
+			const sentBeforeSelect = sent.length;
+			await host.execute("sess-1", "tab-select", { tabId: "t1" });
+			expect(sent.slice(sentBeforeSelect)).toContainEqual({
+				channel: "browser:tabsState",
+				payload: expect.objectContaining({ change: { kind: "selected", tabId: "t1" } }),
+			});
+		};
+
+		await runCase(false);
+		await runCase(true);
 	});
 });
 
@@ -1757,6 +1853,128 @@ describe("browser profile partitions and replacement", () => {
 		).toEqual([]);
 	});
 
+	it("restores the active tab first without waiting for inactive tab reloads", async () => {
+		const store = fakeBrowserProfileStore(profile, { "worker-1": profile.id });
+		let releaseInactive!: () => void;
+		let inactiveReloadStarted!: () => void;
+		const inactiveHeld = new Promise<void>((resolve) => {
+			releaseInactive = resolve;
+		});
+		const inactiveStarted = new Promise<void>((resolve) => {
+			inactiveReloadStarted = resolve;
+		});
+		const fixture = setupTabHost(store, false, async (viewIndex, url) => {
+			if (viewIndex >= 4 && url === "https://second.example/") {
+				inactiveReloadStarted();
+				await inactiveHeld;
+			}
+		});
+		const nav = (await fixture.invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		await fixture.invoke("browser:navigate", { viewId: nav.viewId, url: "https://first.example/" });
+		await fixture.invoke("browser:openTab", { viewId: nav.viewId, url: "https://second.example/" });
+		await fixture.invoke("browser:openTab", { viewId: nav.viewId, url: "https://third.example/" });
+		await fixture.invoke("browser:openTab", { viewId: nav.viewId, url: "https://fourth.example/" });
+		await fixture.invoke("browser:selectTab", { viewId: nav.viewId, tabId: "t1" });
+
+		const switching = fixture.host.switchProfile(nav.viewId, null);
+		await inactiveStarted;
+		try {
+			await expect(switching).resolves.toMatchObject({ profileId: null, temporary: true });
+			const tabs = (await fixture.invoke("browser:getTabs", nav.viewId)) as BrowserTabsState;
+			expect(tabs).toMatchObject({ activeTabId: "t1" });
+			expect(tabs.tabs).toHaveLength(4);
+
+			await fixture.invoke("browser:selectTab", { viewId: nav.viewId, tabId: "t2" });
+			let commandFinished = false;
+			const command = fixture.host.execute("worker-1", "get", { property: "url" }).finally(() => {
+				commandFinished = true;
+			});
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(commandFinished).toBe(false);
+			releaseInactive();
+			await expect(command).resolves.toMatchObject({ value: "https://second.example/" });
+		} finally {
+			releaseInactive();
+		}
+	});
+
+	it("returns after the structural swap while active restoration remains a readiness barrier", async () => {
+		const store = fakeBrowserProfileStore(profile, { "worker-1": profile.id });
+		let releaseActive!: () => void;
+		let activeRestoreStarted!: () => void;
+		const activeHeld = new Promise<void>((resolve) => {
+			releaseActive = resolve;
+		});
+		const activeStarted = new Promise<void>((resolve) => {
+			activeRestoreStarted = resolve;
+		});
+		const fixture = setupTabHost(store, false, async (viewIndex, url) => {
+			if (viewIndex > 0 && url === "https://active.example/") {
+				activeRestoreStarted();
+				await activeHeld;
+			}
+		});
+		const nav = (await fixture.invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		await fixture.invoke("browser:navigate", { viewId: nav.viewId, url: "https://active.example/" });
+
+		const switching = fixture.host.switchProfile(nav.viewId, null);
+		await activeStarted;
+		await expect(switching).resolves.toMatchObject({ profileId: null, temporary: true });
+		const tabs = (await fixture.invoke("browser:getTabs", nav.viewId)) as BrowserTabsState;
+		expect(tabs).toMatchObject({ activeTabId: "t1" });
+
+		let commandFinished = false;
+		const command = fixture.host.execute("worker-1", "get", { property: "url" }).finally(() => {
+			commandFinished = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(commandFinished).toBe(false);
+		releaseActive();
+		await expect(command).resolves.toMatchObject({ value: "https://active.example/" });
+	});
+
+	it("keeps a pending restore URL when a second profile switch supersedes it", async () => {
+		const bindings = { "worker-1": profile.id };
+		const store = fakeBrowserProfileStore(profile, bindings);
+		let releaseRestores!: () => void;
+		let restoreCount = 0;
+		let firstRestoreStarted!: () => void;
+		let secondRestoreStarted!: () => void;
+		const restoresStarted = [
+			new Promise<void>((resolve) => {
+				firstRestoreStarted = resolve;
+			}),
+			new Promise<void>((resolve) => {
+				secondRestoreStarted = resolve;
+			}),
+		];
+		const restoresHeld = new Promise<void>((resolve) => {
+			releaseRestores = resolve;
+		});
+		const fixture = setupTabHost(store, false, async (viewIndex, url) => {
+			if (viewIndex > 0 && url === "https://pending.example/") {
+				restoreCount += 1;
+				if (restoreCount === 1) firstRestoreStarted();
+				if (restoreCount === 2) secondRestoreStarted();
+				await restoresHeld;
+			}
+		});
+		const nav = (await fixture.invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		await fixture.invoke("browser:navigate", { viewId: nav.viewId, url: "https://pending.example/" });
+
+		const firstSwitch = fixture.host.switchProfile(nav.viewId, null);
+		await restoresStarted[0];
+		await expect(firstSwitch).resolves.toMatchObject({ profileId: null, temporary: true });
+
+		const secondSwitch = fixture.host.switchProfile(nav.viewId, profile.id);
+		await restoresStarted[1];
+		await expect(secondSwitch).resolves.toMatchObject({ profileId: profile.id, temporary: false });
+		expect(fixture.views.at(-1)!.webContents.loadURL).toHaveBeenCalledWith("https://pending.example/");
+
+		releaseRestores();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	});
+
 	it("defers a bound worker until an in-flight profile data operation finishes", async () => {
 		const store = fakeBrowserProfileStore(profile, { "worker-1": profile.id });
 		let operationInProgress = true;
@@ -1850,13 +2068,16 @@ describe("browser profile partitions and replacement", () => {
 		const switching = fixture.host.switchProfile(nav.viewId, null);
 		await replacementStarted;
 		expect(fixture.views).toHaveLength(2);
+		await expect(switching).resolves.toMatchObject({ profileId: null, temporary: true });
 		fixture.host.destroy(nav.viewId);
 		releaseReload();
 
-		await expect(switching).rejects.toMatchObject({ code: "BROWSER_TARGET_UNAVAILABLE" });
+		// The structural replacement has already completed. The stale background
+		// restore must observe destruction and must not recreate old tabs.
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		expect(fixture.views).toHaveLength(2);
 		expect(fixture.views[1]!.webContents.close).toHaveBeenCalled();
-		expect(bindings["worker-1"]).toBe(profile.id);
+		expect(bindings["worker-1"]).toBeUndefined();
 	});
 
 	it("refuses a profile switch while agent-browser activity is still running", async () => {
@@ -1996,6 +2217,48 @@ describe("native browser visibility", () => {
 		const { host, view } = setupHost();
 		host.refreshLastFocusedPanelSurface();
 		expect(view.setBounds).not.toHaveBeenCalled();
+	});
+
+	it("ignores overlay refreshes during profile replacement and stale deferred refreshes afterward", async () => {
+		vi.useFakeTimers();
+		try {
+			const profile: BrowserProfile = {
+				id: "22222222-2222-4222-8222-222222222222",
+				name: "Work",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			};
+			const fixture = setupTabHost(fakeBrowserProfileStore(profile, { "worker-1": profile.id }));
+			const nav = (await fixture.invoke("browser:ensure", "worker-1")) as BrowserNavState;
+			fixture.emit("browser:setBounds", {
+				viewId: nav.viewId,
+				rect: { x: 10, y: 20, width: 320, height: 240 },
+				visible: true,
+			});
+			await fixture.invoke("browser:navigate", { viewId: nav.viewId, url: "https://example.com/" });
+
+			const oldView = fixture.views[0]!;
+			oldView.setBounds.mockClear();
+			oldView.setVisible.mockClear();
+			fixture.host.refreshLastFocusedPanelSurface();
+			expect(oldView.setVisible).toHaveBeenCalledWith(false);
+
+			const switching = fixture.host.switchProfile(nav.viewId, null);
+			expect(() => fixture.host.refreshLastFocusedPanelSurface()).not.toThrow();
+			await switching;
+			const replacement = fixture.views.at(-1)!;
+			replacement.setBounds.mockClear();
+			replacement.setVisible.mockClear();
+			await vi.runAllTimersAsync();
+
+			// The callback captured the old entry and must not restore either that
+			// destroyed view or whichever replacement tab is active now.
+			expect(oldView.setVisible.mock.calls.every(([visible]) => visible === false)).toBe(true);
+			expect(replacement.setBounds).not.toHaveBeenCalled();
+			expect(replacement.setVisible).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps rounded native geometry across page zoom", async () => {
@@ -2510,6 +2773,12 @@ describe("agent browser runtime", () => {
 			tabId: "t1",
 		})) as { activeTabId: string };
 		expect(selected.activeTabId).toBe("t1");
+		// Human selection updates the local view immediately; the runtime is
+		// synchronized at the next automation boundary.
+		expect(activeTargets.get("sess-1")).toBe("t2");
+		expect(await host.execute("sess-1", "get", { property: "url" })).toMatchObject({
+			value: "about:blank",
+		});
 		expect(activeTargets.get("sess-1")).toBe("t1");
 		expect(runtime.runAction).toHaveBeenCalledWith(
 			"sess-1",
@@ -2518,9 +2787,6 @@ describe("agent browser runtime", () => {
 			expect.anything(),
 			undefined,
 		);
-		expect(await host.execute("sess-1", "get", { property: "url" })).toMatchObject({
-			value: "about:blank",
-		});
 
 		const closed = (await invoke("browser:closeTab", {
 			viewId: ensured.viewId,
