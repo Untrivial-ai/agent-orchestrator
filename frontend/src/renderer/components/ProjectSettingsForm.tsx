@@ -386,7 +386,10 @@ function SettingsBody({
 				onSubmit={() => {
 				setSavedAt(null);
 				setReplacementError(null);
-				const validation = validateProjectSettings(form, { validateIntake: !isScratchProject });
+				const validation = validateProjectSettings(form, {
+					validateIntake: !isScratchProject,
+					originalDisplayName: project.name,
+				});
 				if (validation) {
 					setValidationError(
 						validation === "agents_required"

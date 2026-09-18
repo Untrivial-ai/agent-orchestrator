@@ -88,6 +88,30 @@ describe("project models", () => {
 				intakeAssignee: "",
 			}),
 		).toBe("name_too_long");
+		expect(
+			validateProjectSettings(
+				{
+					displayName: "l".repeat(110),
+					workerAgent: "codex",
+					orchestratorAgent: "claude-code",
+					intakeEnabled: false,
+					intakeAssignee: "",
+				},
+				{ originalDisplayName: "l".repeat(110) },
+			),
+		).toBeNull();
+		expect(
+			validateProjectSettings(
+				{
+					displayName: "l".repeat(110),
+					workerAgent: "codex",
+					orchestratorAgent: "claude-code",
+					intakeEnabled: false,
+					intakeAssignee: "",
+				},
+				{ originalDisplayName: "original-name" },
+			),
+		).toBe("name_too_long");
 	});
 
 	it("gates project setup on agents and intake eligibility", () => {
