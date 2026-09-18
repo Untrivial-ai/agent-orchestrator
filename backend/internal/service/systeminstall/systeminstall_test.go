@@ -379,7 +379,9 @@ func TestStart_SuccessCallbackRunsAfterVerifiedInstall(t *testing.T) {
 
 func TestStart_FailedInstallDoesNotRunSuccessCallback(t *testing.T) {
 	s := newTestService("darwin", "npm")
-	s.commands = testCommandRunner(func(context.Context, []string) *exec.Cmd { return exec.Command("false") })
+	s.commands = commandRunnerFunc(func(context.Context, []string, io.Writer, io.Writer) error {
+		return errors.New("install failed")
+	})
 	called := make(chan Target, 1)
 	s.SetOnSucceeded(func(target Target) { called <- target })
 

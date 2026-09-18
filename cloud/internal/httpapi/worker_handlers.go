@@ -80,6 +80,10 @@ var workerEventTypes = map[string]struct{}{
 	"agent.ready":          {},
 	"worker.ready":         {},
 	"chat.assistant_delta": {},
+	// DIAG: bootstrap phase timing reported by ao-worker. Logged, not persisted,
+	// so the intra-sandbox breakdown (clone vs harness start) survives the
+	// ephemeral microVM without a schema change.
+	"worker.phase": {},
 }
 
 const (
@@ -764,6 +768,28 @@ func (s *Server) workerEvent(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			s.writeWorkerStoreError(w, r, err)
 			return
+		}
+	case "worker.phase":
+		// DIAG: log the worker's bootstrap phase timing so the intra-sandbox
+		// breakdown reaches CloudWatch. Not persisted.
+		var phase struct {
+			Phase     string `json:"phase"`
+			ElapsedMs int64  `json:"elapsedMs"`
+			DeltaMs   int64  `json:"deltaMs"`
+		}
+		if err := json.Unmarshal(input.Payload, &phase); err != nil ||
+			strings.TrimSpace(phase.Phase) == "" || len(phase.Phase) > 64 {
+			writeError(w, r, http.StatusBadRequest, "INVALID_EVENT_PAYLOAD", "The worker.phase payload is invalid.")
+			return
+		}
+		if s.logger != nil {
+			s.logger.Info("worker phase",
+				"session_id", claims.SessionID,
+				"worker_id", claims.WorkerID,
+				"epoch", claims.Epoch,
+				"phase", phase.Phase,
+				"elapsed_ms", phase.ElapsedMs,
+				"delta_ms", phase.DeltaMs)
 		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})

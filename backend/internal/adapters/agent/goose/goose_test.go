@@ -763,6 +763,18 @@ printf '%s\n' 'Usage: goose [command]' '  up  Migrate up' '  down  Migrate down'
 	writeGooseIdentityFixture(t, valid, `#!/bin/sh
 printf '%s\n' 'Usage: goose [OPTIONS] <COMMAND>' 'Commands:' '  session  Manage sessions' '  recipe  Manage recipes'
 `)
+	previousCommand := gooseIdentityCommand
+	gooseIdentityCommand = func(_ context.Context, binary string, _ ...string) ([]byte, error) {
+		switch binary {
+		case foreign:
+			return []byte("Usage: goose [command]\n  up  Migrate up\n  down  Migrate down\n"), nil
+		case valid:
+			return []byte("Usage: goose [OPTIONS] <COMMAND>\nCommands:\n  session  Manage sessions\n  recipe  Manage recipes\n"), nil
+		default:
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
 
 	got, err := binaryutil.ResolveBinary(context.Background(), binaryutil.BinarySpec{
 		Label:            "goose",

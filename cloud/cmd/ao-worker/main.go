@@ -135,6 +135,35 @@ func run(logger *slog.Logger) error {
 		"repository_url", bootstrap.Launch.RepositoryURL,
 	)
 
+	// DIAG: report bootstrap-phase timing so the intra-sandbox breakdown (clone
+	// vs harness start) reaches the control plane's logs. ao-worker's own stdout
+	// goes to /var/log/ao-worker.log inside the ephemeral microVM and is never
+	// shipped, so without this the ~3 minutes between "worker connected" and the
+	// agent terminal opening is invisible. Elapsed is measured from here (the
+	// per-sandbox self-update and provisioning happen before this point and are
+	// visible separately in the control plane's own logs). Best-effort: each
+	// report fires in the background with a short timeout so it never delays the
+	// very phases it measures.
+	phaseStart := time.Now()
+	var phaseMu sync.Mutex
+	phaseLast := phaseStart
+	markPhase := func(name string) {
+		phaseMu.Lock()
+		now := time.Now()
+		elapsed := now.Sub(phaseStart).Milliseconds()
+		delta := now.Sub(phaseLast).Milliseconds()
+		phaseLast = now
+		phaseMu.Unlock()
+		logger.Info("worker phase", "phase", name, "elapsed_ms", elapsed, "delta_ms", delta)
+		payload := map[string]any{"phase": name, "elapsedMs": elapsed, "deltaMs": delta}
+		go func() {
+			rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer rcancel()
+			_ = client.publishEvent(rctx, "worker.phase", payload)
+		}()
+	}
+	markPhase("connected")
+
 	// The workspace shell is deliberately available before checkout starts. A
 	// developer can inspect the sandbox immediately while repository preparation
 	// and coding-agent authentication continue in the background.
@@ -222,7 +251,7 @@ func run(logger *slog.Logger) error {
 	rehydrateDone := make(chan struct{})
 	go func() {
 		if err := prepareWorkspace(
-			runCtx, logger, client, bootstrap, workspace, dataDir, publicURL,
+			runCtx, logger, client, bootstrap, workspace, dataDir, publicURL, markPhase,
 		); err != nil {
 			if runCtx.Err() == nil {
 				logger.Error("background workspace startup failed", "error", err)
@@ -248,7 +277,7 @@ func run(logger *slog.Logger) error {
 	go func() {
 		if err := startInteractiveAgent(
 			runCtx, logger, client, bootstrap, workspace, dataDir,
-			pullRequestSocketPath, reviewSocketPath, checkpointSocketPath, &transportSupervisor, rehydrateDone,
+			pullRequestSocketPath, reviewSocketPath, checkpointSocketPath, &transportSupervisor, rehydrateDone, markPhase,
 		); err != nil && runCtx.Err() == nil {
 			logger.Error("background coding-agent startup failed", "error", err)
 		}
@@ -272,12 +301,14 @@ func prepareWorkspace(
 	client *client,
 	bootstrap worker.BootstrapResponse,
 	workspace, dataDir, publicURL string,
+	markPhase func(string),
 ) error {
 	if worker.IsScratchRepositoryURL(bootstrap.Launch.RepositoryURL) {
 		if err := worker.PrepareScratchWorkspace(ctx, worker.ExecGitRunner{}, workspace); err != nil {
 			return fmt.Errorf("prepare scratch workspace: %w", err)
 		}
 		logger.Info("initialized scratch workspace")
+		markPhase("scratch_ready")
 	} else {
 		checkoutGrant, err := client.checkoutGrant(ctx)
 		if err != nil {
@@ -294,15 +325,18 @@ func prepareWorkspace(
 			checkoutGrant = worker.CheckoutGrantResponse{CloneURL: bootstrap.Launch.RepositoryURL}
 			logger.Info("using anonymous public GitHub checkout")
 		}
+		markPhase("checkout_grant")
 		if err := worker.PrepareCheckout(ctx, worker.ExecGitRunner{}, workspace, checkoutGrant); err != nil {
 			return fmt.Errorf("prepare repository checkout: %w", err)
 		}
+		markPhase("checkout_done")
 		if err := worker.ConfigureWorkerGit(
 			ctx, worker.ExecGitRunner{}, workspace, dataDir, publicURL,
 			bootstrap.SessionID, bootstrap.Launch.Branch,
 		); err != nil {
 			return fmt.Errorf("configure repository tooling: %w", err)
 		}
+		markPhase("git_configured")
 	}
 	return nil
 }
@@ -315,6 +349,7 @@ func startInteractiveAgent(
 	workspace, dataDir, pullRequestSocketPath, reviewSocketPath, checkpointSocketPath string,
 	transportSupervisor *workertransport.Supervisor,
 	rehydrateDone <-chan struct{},
+	markPhase func(string),
 ) error {
 	// Wait until the checkout has completed and any delete/restore rehydration
 	// has run: the transcript must be on disk before the command is built, so
@@ -324,6 +359,7 @@ func startInteractiveAgent(
 		return nil
 	case <-rehydrateDone:
 	}
+	markPhase("rehydrate_done")
 	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
 		logger.Warn("coding-agent harness unavailable", "error", err)
 		return nil
@@ -332,12 +368,14 @@ func startInteractiveAgent(
 	if err != nil {
 		return fmt.Errorf("load coding-agent credential: %w", err)
 	}
+	markPhase("credential_loaded")
 	agentCommand, err := (workerexec.HarnessBuilder{DataDir: dataDir}).BuildInteractive(
 		bootstrap.Launch, credential, workspace,
 	)
 	if err != nil {
 		return fmt.Errorf("build interactive coding-agent command: %w", err)
 	}
+	markPhase("harness_built")
 	agentCommand.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
 	agentCommand.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
 	agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
@@ -361,6 +399,7 @@ func startInteractiveAgent(
 		}
 		return fmt.Errorf("initialize agent terminal: %w", err)
 	}
+	markPhase("agent_terminal_ready")
 	if err := transportSupervisor.StartAgent(ctx, agentCommand, agentTerminal.TerminalID); err != nil {
 		return fmt.Errorf("start interactive coding-agent terminal: %w", err)
 	}
