@@ -28,6 +28,7 @@ export const AGENT_OPTIONS = [
 	"prime-agent",
 	"autohand",
 	"omp",
+	"qodercli",
 ] as const;
 
 export type AgentId = (typeof AGENT_OPTIONS)[number];
@@ -66,6 +67,7 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	"prime-agent": "Prime Agent",
 	autohand: "Autohand",
 	omp: "OMP",
+	qodercli: "Qoder CLI",
 };
 
 export const AGENT_IDENTITIES: ReadonlyMap<AgentId, AgentIdentity> = new Map(

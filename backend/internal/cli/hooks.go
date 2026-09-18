@@ -292,10 +292,11 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 			userPrompt = observedPrompt
 			origin = domain.ConversationCheckpointOriginHuman
 		case "stop":
-			// Claude and Continue's Claude-compatible hooks report this field on
-			// Stop. Similar-looking fields from Codex do not carry the same
-			// main-turn guarantee and must not become hard replay checkpoints.
-			if agent == domain.HarnessClaudeCode || agent == domain.HarnessContinue {
+			// Claude and the Claude-compatible hooks of Continue and Qoder CLI
+			// report this field on Stop. Similar-looking fields from Codex do
+			// not carry the same main-turn guarantee and must not become hard
+			// replay checkpoints.
+			if agent == domain.HarnessClaudeCode || agent == domain.HarnessContinue || agent == domain.HarnessQodercli {
 				assistant = p.LastAssistantMessage
 			}
 		}
@@ -445,7 +446,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	}
 	conversation := hookConversationSnapshot{}
 	switch domain.AgentHarness(agent) {
-	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue:
+	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue, domain.HarnessQodercli:
 		conversation = hookConversationFacts(domain.AgentHarness(agent), event, payload)
 	}
 	path := "sessions/" + url.PathEscape(sessionID) + "/activity"

@@ -8448,6 +8448,7 @@ components:
           - auggie
           - cline
           - autohand
+          - qodercli
           type: string
         scmStatus:
           enum:
@@ -9225,6 +9226,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - qodercli
           - fake
           type: string
         approvalMode:
@@ -9795,6 +9797,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - qodercli
           - cloudflared
           type: string
         updatedAt:
@@ -11647,6 +11650,7 @@ components:
           - auggie
           - cline
           - autohand
+          - qodercli
           type: string
       type: object
     SettingsResponse:
@@ -11768,6 +11772,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - qodercli
           type: string
         issueId:
           type: string
@@ -12128,6 +12133,7 @@ components:
           - auggie
           - cline
           - autohand
+          - qodercli
           type: string
       type: object
     TriggerReviewResponse:
