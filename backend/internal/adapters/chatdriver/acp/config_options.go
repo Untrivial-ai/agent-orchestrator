@@ -299,6 +299,22 @@ func choiceOffered(choices []ports.ChatConfigOptionChoice, value string) bool {
 	return false
 }
 
+// modeOffered reports whether the synthetic "mode" config option — populated
+// by normalizeSessionOptions from the agent's legacy SessionModeState — lists
+// modeID among its current choices. Availability can be model-dependent (for
+// example, Claude Code only advertises "auto" for models whose SDK reports
+// classifier support), so this must be checked fresh against the live catalog
+// rather than assumed from a static AO-vocabulary mapping.
+func modeOffered(options []ports.ChatConfigOption, modeID string) bool {
+	for _, option := range options {
+		if option.ID != "mode" {
+			continue
+		}
+		return choiceOffered(option.Choices, modeID)
+	}
+	return false
+}
+
 // resolveLegacyModelChoice translates a CLI-facing model alias into the exact
 // opaque value an ACP agent advertised. Cursor's CLI lists aliases such as
 // composer-2.5-fast and gpt-5.5-medium while its legacy ACP selector includes

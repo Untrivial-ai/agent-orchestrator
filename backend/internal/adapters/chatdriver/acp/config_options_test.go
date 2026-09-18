@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"errors"
 	"testing"
 
 	acpsdk "github.com/coder/acp-go-sdk"
@@ -136,3 +137,86 @@ func TestApplyAcceptedConfigOptionIgnoresUnknownID(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// TestModeOfferedChecksLiveCatalogNotStaticMapping guards the fix for a real
+// incident: Claude Code only advertises the "auto" permission mode when the
+// current model's SDK reports classifier support (e.g. Haiku does not), so a
+// static AO-vocabulary mapping (permission "auto" -> ACP mode id "auto") can
+// name a mode the live session never offered.
+func TestModeOfferedChecksLiveCatalogNotStaticMapping(t *testing.T) {
+	options := normalizeSessionOptions(nil, nil, &acpsdk.SessionModeState{
+		CurrentModeId: "default",
+		AvailableModes: []acpsdk.SessionMode{
+			{Id: "default", Name: "Manual"},
+			{Id: "acceptEdits", Name: "Accept Edits"},
+		},
+	})
+
+	if modeOffered(options, "auto") {
+		t.Fatal("modeOffered(auto) = true, want false — auto is not in AvailableModes")
+	}
+	if !modeOffered(options, "acceptEdits") {
+		t.Fatal("modeOffered(acceptEdits) = false, want true — acceptEdits is in AvailableModes")
+	}
+}
+
+// TestApplyTurnSettingsToleratesModeUnavailableOnThisModel verifies that
+// applyTurnSettings does not call session/set_mode with a mode the agent's
+// live catalog does not offer. Calling it anyway trips the agent's own hard
+// validation (session.modes.availableModes.some(...) throw), which surfaced
+// as a fatal spawn failure instead of the graceful degrade every other
+// unsupported-setter path already gets.
+func TestApplyTurnSettingsToleratesModeUnavailableOnThisModel(t *testing.T) {
+	c := &conversation{
+		sessionID:    "sess-1",
+		capabilities: make(ports.ChatCapabilities),
+		modeFor:      func(ports.PermissionMode) string { return "auto" },
+		legacyMode:   true,
+		configOptions: normalizeSessionOptions(nil, nil, &acpsdk.SessionModeState{
+			CurrentModeId: "default",
+			AvailableModes: []acpsdk.SessionMode{
+				{Id: "default", Name: "Manual"},
+				{Id: "acceptEdits", Name: "Accept Edits"},
+			},
+		}),
+	}
+
+	err := c.applyTurnSettings(t.Context(), ports.ChatTurnSettings{Approval: ports.PermissionModeAuto})
+	if !errors.Is(err, ErrACPSetterUnsupported) {
+		t.Fatalf("applyTurnSettings with unavailable mode: err = %v, want ErrACPSetterUnsupported", err)
+	}
+}
+
+// TestApplyTurnSettingsSkipsModeReapplicationWhenUnchanged guards a real
+// incident: Start tolerates ErrACPSetterUnsupported for the initial mode
+// (the mode may already have reached the agent via launch-time flags or the
+// ACP Initialize meta), but SendTurn does not — it must surface a genuine
+// runtime mode *change* the agent refuses. Without this guard, the very
+// first SendTurn re-sends the session's own unchanged initial settings,
+// hits the same unavailable-mode condition Start already tolerated, and
+// fails the user's first message instead of just running in whatever mode
+// the agent actually started in.
+func TestApplyTurnSettingsSkipsModeReapplicationWhenUnchanged(t *testing.T) {
+	c := &conversation{
+		sessionID:         "sess-1",
+		capabilities:      make(ports.ChatCapabilities),
+		modeFor:           func(ports.PermissionMode) string { return "auto" },
+		legacyMode:        true,
+		initialPermission: ports.PermissionModeAuto,
+		permissionMode:    ports.PermissionModeAuto, // set by start(), as if Start() already ran
+		configOptions: normalizeSessionOptions(nil, nil, &acpsdk.SessionModeState{
+			CurrentModeId: "default",
+			AvailableModes: []acpsdk.SessionMode{
+				{Id: "default", Name: "Manual"},
+				{Id: "acceptEdits", Name: "Accept Edits"},
+			},
+		}),
+	}
+
+	// Re-sending the same initial Approval on the first real turn must not
+	// re-trigger the mode-unavailable failure Start() already tolerated.
+	err := c.applyTurnSettings(t.Context(), ports.ChatTurnSettings{Approval: ports.PermissionModeAuto})
+	if err != nil {
+		t.Fatalf("applyTurnSettings reapplying unchanged initial mode: err = %v, want nil", err)
+	}
+}
