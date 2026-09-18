@@ -41,7 +41,6 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
-var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 var _ ports.StartupInputReadinessSignaler = (*Plugin)(nil)
 
 // FirstSignalProvesInputReady reports that Cursor's sessionStart hook is

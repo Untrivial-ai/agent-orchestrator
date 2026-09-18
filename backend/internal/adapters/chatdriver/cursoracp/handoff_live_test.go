@@ -447,7 +447,7 @@ func cursorHandoffEventIdentity(event ports.ChatEvent) string {
 func cursorHandoffMarkerCounts(history []ports.ChatEvent, markers []string) ([]int, []int) {
 	counts := make([]int, len(markers))
 	order := make([]int, 0, len(markers))
-	for eventIndex, event := range history {
+	for _, event := range history {
 		if event.Kind != ports.ChatEventUserMessageCompleted {
 			continue
 		}
@@ -455,12 +455,38 @@ func cursorHandoffMarkerCounts(history []ports.ChatEvent, markers []string) ([]i
 			if strings.Contains(event.Text, marker) {
 				counts[markerIndex]++
 				if counts[markerIndex] == 1 {
-					order = append(order, eventIndex)
+					// Record which expected marker appeared next; event indices
+					// alone are always sorted because history is traversed in order.
+					order = append(order, markerIndex)
 				}
 			}
 		}
 	}
 	return counts, order
+}
+
+func TestCursorHandoffMarkerCountsRejectsReversedChronology(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		texts         []string
+		wantConverged bool
+	}{
+		{"ordered", []string{"first-marker", "second-marker"}, true},
+		{"reversed", []string{"second-marker", "first-marker"}, false},
+		{"missing", []string{"first-marker"}, false},
+		{"duplicated", []string{"first-marker", "second-marker", "first-marker"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			history := []ports.ChatEvent{{Kind: ports.ChatEventMessageCompleted, Text: "second-marker first-marker"}}
+			for _, text := range tt.texts {
+				history = append(history, ports.ChatEvent{Kind: ports.ChatEventUserMessageCompleted, Text: text})
+			}
+			counts, order := cursorHandoffMarkerCounts(history, []string{"first-marker", "second-marker"})
+			if got := allCursorHandoffCountsEqual(counts, 1) && sort.IntsAreSorted(order); got != tt.wantConverged {
+				t.Fatalf("counts=%v order=%v converged=%t, want %t", counts, order, got, tt.wantConverged)
+			}
+		})
+	}
 }
 
 func allCursorHandoffCountsEqual(counts []int, want int) bool {
