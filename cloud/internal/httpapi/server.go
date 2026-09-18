@@ -415,6 +415,7 @@ func New(options Options) *Server {
 			router.Put("/provider-connections/agents/{agent}", server.putAgentConnection)
 			router.Delete("/provider-connections/agents/{agent}", server.deleteAgentConnection)
 			router.Post("/provider-connections/agents/{agent}/promote", server.promoteAgentConnection)
+			router.Get("/agents/available", server.listAvailableAgents)
 			router.Get("/sessions", server.listSessions)
 			router.Post("/sessions", server.createSession)
 			router.Get("/sessions/{sessionId}", server.getSession)

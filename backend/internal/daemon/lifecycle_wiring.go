@@ -274,9 +274,10 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Logger:            log,
 		BackgroundContext: ctx,
 		AgentReadiness:    agentReadiness,
-		// no_signal only makes sense for harnesses with complete lifecycle signal
-		// coverage; partial callbacks cannot prove that silence is abnormal.
-		SignalCapable: activitydispatch.FullySupportsHarness,
+		// Harnesses with partial or complete lifecycle signal coverage (Aider,
+		// Continue, Claude Code, etc.) can use the no_signal watchdog to detect
+		// stalled agents. Restore coverage to include SignalCoveragePartial.
+		SignalCapable: activitydispatch.SupportsHarness,
 	})
 	// Triggering a review spawns a reviewer over the worker's worktree, resolved
 	// from the reviewer registry (distinct from the worker agent set). The

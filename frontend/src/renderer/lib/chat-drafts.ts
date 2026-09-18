@@ -241,13 +241,14 @@ function draftRuntime(scope: ChatDraftScopeInput): ChatDraftRuntime {
 
 function evictSettledDraftRuntime(key: string, runtime: ChatDraftRuntime): void {
 	if (
-		runtime.listeners.size > 0 ||
 		runtime.composer.pending ||
 		runtime.inlineEdit.pending ||
 		runtime.composer.accepted ||
 		runtime.inlineEdit.accepted ||
 		draftRuntimes.get(key) !== runtime
 	) return;
+	// Clear listeners before deletion to break closure references that prevent GC.
+	runtime.listeners.clear();
 	draftRuntimes.delete(key);
 }
 

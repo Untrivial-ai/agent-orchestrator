@@ -161,6 +161,8 @@ func (s *Service) warmModelCatalogs(ctx context.Context) {
 		if err != nil {
 			continue
 		}
+		// Parallelize revalidation to avoid blocking startup on sequential catalog refreshes.
+		var wg sync.WaitGroup
 		for _, record := range records {
 			if err := ctx.Err(); err != nil {
 				return
@@ -172,8 +174,13 @@ func (s *Service) warmModelCatalogs(ctx context.Context) {
 			if !cached.Stale && !cached.ValidatedAt.IsZero() && time.Since(cached.ValidatedAt) < modelCatalogStartupGuard {
 				continue
 			}
-			_, _ = s.RevalidateModels(ctx, agentID, record.ProjectID)
+			wg.Add(1)
+			go func(aid, pid string) {
+				defer wg.Done()
+				_, _ = s.RevalidateModels(ctx, aid, pid)
+			}(agentID, record.ProjectID)
 		}
+		wg.Wait()
 	}
 }
 
@@ -351,15 +358,17 @@ func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID str
 		if record.ProjectID == projectID {
 			continue
 		}
-		var candidate ports.AgentModelCatalog
-		if err := json.Unmarshal([]byte(record.CatalogJSON), &candidate); err != nil || len(candidate.Models) == 0 {
-			continue
-		}
+		// Use record.FetchedAt directly instead of unmarshaling the entire catalog.
+		// Only unmarshal if we might select this as the best candidate.
 		at := record.FetchedAt
-		if at.IsZero() {
-			at = candidate.FetchedAt
-		}
 		if best.Models == nil || at.After(bestAt) {
+			var candidate ports.AgentModelCatalog
+			if err := json.Unmarshal([]byte(record.CatalogJSON), &candidate); err != nil || len(candidate.Models) == 0 {
+				continue
+			}
+			if at.IsZero() {
+				at = candidate.FetchedAt
+			}
 			best = candidate
 			bestAt = at
 		}

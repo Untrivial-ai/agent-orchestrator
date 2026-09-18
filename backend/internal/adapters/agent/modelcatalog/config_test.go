@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -205,5 +206,20 @@ func TestConfigCatalogDiscoveryAndFingerprint(t *testing.T) {
 	after := CatalogFingerprint(context.Background(), "continue", "", "", nil)
 	if before == after {
 		t.Fatalf("fingerprint did not change after config edit: %q", before)
+	}
+}
+
+func TestCachedModelConfigPathsKeysOnEnvironment(t *testing.T) {
+	first := cachedModelConfigPaths("vibe", "", map[string]string{"VIBE_HOME": filepath.Join(t.TempDir(), "a")})
+	second := cachedModelConfigPaths("vibe", "", map[string]string{"VIBE_HOME": filepath.Join(t.TempDir(), "b")})
+	if len(first) == 0 || len(second) == 0 {
+		t.Fatalf("expected config paths, got %v and %v", first, second)
+	}
+	if first[0] == second[0] {
+		t.Fatalf("cache ignored VIBE_HOME and returned stale paths: %q", first[0])
+	}
+	cached := cachedModelConfigPaths("vibe", "", map[string]string{"VIBE_HOME": strings.TrimSuffix(first[0], string(filepath.Separator)+"config.toml")})
+	if len(cached) == 0 || cached[0] != first[0] {
+		t.Fatalf("expected cached paths %v, got %v", first, cached)
 	}
 }

@@ -24,6 +24,10 @@ import {
 } from "../lib/onboarding-ui";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
+import {
+	cloudAvailableAgentsQueryKey,
+	useCloudAvailableAgents,
+} from "../hooks/useCloudAvailableAgents";
 import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { cn } from "../lib/utils";
@@ -75,14 +79,28 @@ export function CloudCredentialDialog() {
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
 
-	const [agent, setAgent] = useState<CloudCpAgentProvider>(AGENTS[0].agent);
-	const [credentialType, setCredentialType] = useState<string>(AGENTS[0].creds[0].value);
+	// Only offer agents the control plane actually supports for this org.
+	const availableAgentsQuery = useCloudAvailableAgents(org?.id, open);
+	const availableAgents = useMemo(
+		() => AGENTS.filter((entry) => availableAgentsQuery.data?.some((agent) => agent.id === entry.agent)),
+		[availableAgentsQuery.data],
+	);
+	const agentsReady = availableAgentsQuery.isSuccess && availableAgents.length > 0;
+	const defaultAgent: CloudCpAgentProvider = availableAgents[0]?.agent ?? AGENTS[0].agent;
+	const defaultCredType =
+		AGENTS.find((a) => a.agent === defaultAgent)?.creds[0]?.value ?? "api_key";
+
+	const [agent, setAgent] = useState<CloudCpAgentProvider>(defaultAgent);
+	const [credentialType, setCredentialType] = useState<string>(defaultCredType);
 	const [secret, setSecret] = useState("");
 	const [phase, setPhase] = useState<Phase>("idle");
 	const [error, setError] = useState<string | null>(null);
 
 	const creds = useMemo(() => AGENTS.find((a) => a.agent === agent)?.creds ?? AGENTS[0].creds, [agent]);
-	const agentOptions = useMemo(() => AGENTS.map((entry) => ({ value: entry.agent, label: entry.label })), []);
+	const agentOptions = useMemo(
+		() => availableAgents.map((entry) => ({ value: entry.agent as string, label: entry.label })),
+		[availableAgents],
+	);
 	const credentialOptions = useMemo(
 		() => creds.map((entry) => ({ value: entry.value, label: entry.label })),
 		[creds],
@@ -95,22 +113,23 @@ export function CloudCredentialDialog() {
 	// stale secret or a previous error/success.
 	useEffect(() => {
 		if (!open) return;
-		setAgent(AGENTS[0].agent);
-		setCredentialType(AGENTS[0].creds[0].value);
+		setAgent(defaultAgent);
+		setCredentialType(defaultCredType);
 		setSecret("");
 		setPhase("idle");
 		setError(null);
-	}, [open]);
+	}, [open, defaultAgent, defaultCredType]);
 
 	const onAgentChange = (next: string) => {
-		const agentValue = (AGENTS.find((a) => a.agent === next) ?? AGENTS[0]).agent;
+		const agentValue = (availableAgents.find((a) => a.agent === next) ?? availableAgents[0] ?? AGENTS[0]).agent;
 		setAgent(agentValue);
 		setCredentialType(AGENTS.find((a) => a.agent === agentValue)?.creds[0]?.value ?? "api_key");
 		setSecret("");
 		setError(null);
 	};
 
-	const canSubmit = phase !== "submitting" && needsSecret && secret.trim() !== "" && org !== undefined;
+	const canSubmit =
+		agentsReady && phase !== "submitting" && needsSecret && secret.trim() !== "" && org !== undefined;
 	const busy = phase === "submitting";
 
 	const submit = async () => {
@@ -128,6 +147,7 @@ export function CloudCredentialDialog() {
 				return;
 			}
 			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			await queryClient.invalidateQueries({ queryKey: cloudAvailableAgentsQueryKey(org.id) });
 			setPhase("success");
 			setSecret("");
 		} catch (err) {
@@ -143,6 +163,7 @@ export function CloudCredentialDialog() {
 		try {
 			await aoBridge.cloud.connectProviderAuth({ baseUrl, orgId: org.id, provider: agent });
 			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			await queryClient.invalidateQueries({ queryKey: cloudAvailableAgentsQueryKey(org.id) });
 			setPhase("success");
 		} catch (err) {
 			setPhase("idle");
@@ -174,6 +195,21 @@ export function CloudCredentialDialog() {
 						<p role="status" className="text-control leading-4 text-success">
 							{t("cloudCredential.connected")}
 						</p>
+					</div>
+				) : availableAgentsQuery.isLoading ? (
+					<div className="min-h-0 overflow-y-auto px-4 pb-1 pt-4">
+						<p role="status" className="text-control leading-4 text-muted-foreground">
+							{t("cloudCredential.loadingAgents")}
+						</p>
+					</div>
+				) : availableAgentsQuery.isError || !agentsReady ? (
+					<div className="flex min-h-0 flex-col items-start gap-3 overflow-y-auto px-4 pb-1 pt-4">
+						<p role="alert" className={onboardingFieldErrorClass}>
+							{t("cloudCredential.agentsLoadFailed")}
+						</p>
+						<Button type="button" variant="outline" onClick={() => void availableAgentsQuery.refetch()}>
+							{t("cloudCredential.retry")}
+						</Button>
 					</div>
 				) : (
 					<div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 pb-1 pt-4">
@@ -273,12 +309,12 @@ export function CloudCredentialDialog() {
 							</Button>
 						</DialogClose>
 					)}
-					{phase !== "success" && needsSecret ? (
+					{phase !== "success" && needsSecret && agentsReady ? (
 						<Button type="button" variant="primary" disabled={!canSubmit} onClick={() => void submit()}>
 							{phase === "submitting" ? t("cloudCredential.connecting") : t("cloudCredential.connect")}
 						</Button>
 					) : null}
-					{phase !== "success" && !needsSecret ? (
+					{phase !== "success" && !needsSecret && agentsReady ? (
 						<Button type="button" variant="primary" disabled={org === undefined || phase === "submitting"} onClick={() => void loginWithBrowser()}>
 							{phase === "submitting" ? t("cloudCredential.connecting") : (agent === "claude-code" ? t("cloudCredential.loginWithAnthropic") : t("cloudCredential.loginWithChatGPT"))}
 						</Button>

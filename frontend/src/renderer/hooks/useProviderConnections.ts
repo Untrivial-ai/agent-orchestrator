@@ -10,7 +10,7 @@ import type { CloudCpProviderConnection } from "../lib/cloud-cp";
 import { useCloudCp } from "./useCloudCp";
 
 export function providerConnectionsQueryKey(orgId: string) {
-	return ["cloud-provider-connections", orgId] as const;
+	return ["cloud", "provider-connections", orgId] as const;
 }
 
 export function useProviderConnections(orgId: string | undefined) {
