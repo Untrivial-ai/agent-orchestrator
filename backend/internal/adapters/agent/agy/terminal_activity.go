@@ -1,10 +1,13 @@
 package agy
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
+
+var agyTerminalEscape = regexp.MustCompile(`\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\][^\x07]*(?:\x07|\x1b\\))`)
 
 // DetectTerminalActivity parses the Agy CLI terminal output to determine if the
 // agent is currently idle, allowing the observer to reconcile sessions whose
@@ -19,7 +22,7 @@ import (
 //     footer—within maxPromptFooterGap lines—so an older transcript prompt
 //     separated by output content does not satisfy the idle proof.
 func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
-	lines := strings.Split(strings.TrimRight(output, "\r\n "), "\n")
+	lines := agyTerminalLines(output)
 	if len(lines) == 0 {
 		return "", false
 	}
@@ -80,4 +83,14 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 
 	// Footer present but no adjacent prompt; incomplete or partial frame.
 	return "", false
+}
+
+func agyTerminalLines(output string) []string {
+	plain := agyTerminalEscape.ReplaceAllString(output, "")
+	clean := strings.ReplaceAll(strings.ReplaceAll(plain, "\r\n", "\n"), "\r", "\n")
+	clean = strings.TrimRight(clean, "\r\n ")
+	if strings.TrimSpace(clean) == "" {
+		return nil
+	}
+	return strings.Split(clean, "\n")
 }

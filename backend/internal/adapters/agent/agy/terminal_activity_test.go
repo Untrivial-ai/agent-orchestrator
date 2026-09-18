@@ -109,6 +109,48 @@ another output line
 			expectedState: domain.ActivityIdle,
 			expectedValid: true,
 		},
+		{
+			name: "ansi color-styled idle prompt on conpty is idle",
+			output: "\x1b[33m⌊ Interrupted · What should Antigravity CLI do instead?\x1b[0m\r\n" +
+				"\x1b[36m> \x1b[0m\r\n" +
+				"\x1b[90m? for shortcuts\x1b[0m",
+			expectedState: domain.ActivityIdle,
+			expectedValid: true,
+		},
+		{
+			name: "ansi color-styled prompt with blank cursor line and crlf is idle",
+			output: "\x1b[33m⌊ Interrupted · What should Antigravity CLI do instead?\x1b[0m\r\n" +
+				"\x1b[36m> \x1b[0m\r\n" +
+				"\r\n" +
+				"\x1b[90m? for shortcuts\x1b[0m\r\n",
+			expectedState: domain.ActivityIdle,
+			expectedValid: true,
+		},
+		{
+			name: "ansi color-styled active thinking marker prevents idle",
+			output: "\x1b[33m⌊ Interrupted · What should Antigravity CLI do instead?\x1b[0m\r\n" +
+				"\x1b[36m> \x1b[0m\r\n" +
+				"\x1b[90m? for shortcuts\x1b[0m\r\n" +
+				"\x1b[35mthinking...\x1b[0m",
+			expectedState: "",
+			expectedValid: false,
+		},
+		{
+			name: "ansi color-styled transcript prompt does not spoof active chrome",
+			output: "\x1b[36m> \x1b[0mexplain why it says \x1b[31m(esc to interrupt)\x1b[0m\r\n" +
+				"normal output\r\n" +
+				"\x1b[33m⌊ Interrupted · What should Antigravity CLI do instead?\x1b[0m\r\n" +
+				"\x1b[36m> \x1b[0m\r\n" +
+				"\x1b[90m? for shortcuts\x1b[0m",
+			expectedState: domain.ActivityIdle,
+			expectedValid: true,
+		},
+		{
+			name:          "only ansi escape sequences without text is ignored",
+			output:        "\x1b[0m\x1b[2J\x1b[?25h\r\n   \x1b[36m\x1b[0m",
+			expectedState: "",
+			expectedValid: false,
+		},
 	}
 
 	for _, tt := range tests {
