@@ -382,6 +382,10 @@ export function TopbarKillButton({
 									disabled={isPending}
 									onClick={() => {
 										clearTerminateSessionState(queryClient, session.id);
+										// Force the confirm open rather than letting the trigger toggle
+										// it: a second trash tap would otherwise dismiss the dialog, so
+										// the delete "needed" several clicks to land on the Yes button.
+										setConfirmOpen(true);
 									}}
 									variant="killIcon"
 								>

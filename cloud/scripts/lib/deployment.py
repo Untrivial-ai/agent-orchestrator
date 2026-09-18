@@ -254,6 +254,8 @@ def build_task_definition(
                 "AO_CLOUD_LOCAL_AUTH": "false",
                 "AO_CLOUD_MIGRATE_ON_STARTUP": "false",
                 "AO_CLOUD_SANDBOX_PROVIDER": sandbox_provider,
+                "AO_CLOUD_TERMINAL_STREAM": "1",
+                "AO_CLOUD_TERMINAL_RELAY": "1",
                 "AO_CLOUD_WORKER_BINARY_PATH": WORKER_BINARY_PATH,
                 "AO_CLOUD_WORKER_HELPER_BINARY_PATH": WORKER_HELPER_BINARY_PATH,
             }
@@ -342,6 +344,10 @@ def validate_task_artifacts(
         raise ValueError("task definition does not use packaged /ao helper")
     if PROVIDER_AUTO_PAUSE_ENV in environment:
         raise ValueError("task definition configures provider auto-pause")
+    if environment.get("AO_CLOUD_TERMINAL_STREAM") != "1":
+        raise ValueError("task definition does not enable terminal streaming")
+    if environment.get("AO_CLOUD_TERMINAL_RELAY") != "1":
+        raise ValueError("task definition does not enable terminal relay")
     sandbox_provider = environment.get("AO_CLOUD_SANDBOX_PROVIDER", "")
     if sandbox_provider not in PROVIDER_SECRET_ENV:
         raise ValueError("task definition uses an unsupported sandbox provider")

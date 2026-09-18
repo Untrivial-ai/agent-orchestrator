@@ -3648,7 +3648,7 @@ components:
           enum: [us, eu]
         credentialType:
           type: string
-          enum: [oauth_token, api_key, access_token]
+          enum: [oauth_token, api_key, access_token, auth_json]
     PutAgentProviderConnectionInput:
       type: object
       additionalProperties: false
@@ -3656,7 +3656,7 @@ components:
       properties:
         credentialType:
           type: string
-          enum: [oauth_token, api_key, access_token]
+          enum: [oauth_token, api_key, access_token, auth_json]
         secret:
           type: string
           minLength: 1
@@ -3672,7 +3672,7 @@ components:
           enum: [claude-code, codex, cursor]
         credentialType:
           type: string
-          enum: [oauth_token, api_key, access_token]
+          enum: [oauth_token, api_key, access_token, auth_json]
         secret:
           type: string
           minLength: 1

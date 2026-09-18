@@ -14,6 +14,8 @@ import {
 	type ViewStyle,
 } from "react-native";
 import { haptics } from "./haptics";
+import { NativeHeaderButton, type NativeHeaderButtonIcon } from "./native-header-button";
+import { useOptionalSidebarNavigation } from "./sidebar-navigation-shell";
 import type { ConnStatus } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
@@ -181,28 +183,26 @@ export function HeaderIconButton({
 	onPress,
 	badge = 0,
 }: {
-	icon: keyof typeof Feather.glyphMap;
+	icon: NativeHeaderButtonIcon;
 	/** Required — the control has no visible text. */
 	label: string;
 	onPress: () => void;
 	/** Non-zero shows an unread dot. The number itself is not drawn. */
 	badge?: number;
 }) {
-	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
 	return (
-		<Pressable
-			hitSlop={10}
-			accessibilityLabel={badge > 0 ? `${label}, ${badge} unread` : label}
-			onPress={() => {
-				haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [s.headerIconBtn, pressed && { opacity: 0.6 }]}
-		>
-			<Feather name={icon} size={21} color={t.textSecondary} />
+		<View style={s.headerIconBtn} accessibilityLabel={badge > 0 ? `${label}, ${badge} unread` : label}>
+			<NativeHeaderButton
+				icon={icon}
+				label={badge > 0 ? `${label}, ${badge} unread` : label}
+				onPress={() => {
+					haptics.tap();
+					onPress();
+				}}
+			/>
 			{badge > 0 ? <View style={s.headerBadge} /> : null}
-		</Pressable>
+		</View>
 	);
 }
 
@@ -241,18 +241,23 @@ function MascotLamp({ status }: { status?: ConnStatus }) {
 export function ScreenHeader({
 	title,
 	subtitle,
+	left,
 	right,
 	status,
 }: {
 	title: string;
 	subtitle?: string;
+	/** Detail routes can supply a back action instead of the sidebar button. */
+	left?: ReactNode;
 	right?: ReactNode;
 	/** Drives the wand-tip lamp. Omit to render the mascot with no lamp. */
 	status?: ConnStatus;
 }) {
 	const s = useThemedStyles(makeStyles);
+	const sidebar = useOptionalSidebarNavigation();
 	return (
 		<View style={s.screenHeader}>
+			{left ?? (sidebar ? <HeaderIconButton icon="menu" label="Open navigation" onPress={sidebar.openSidebar} /> : null)}
 			<View style={{ flex: 1 }}>
 				<View style={s.titleRow}>
 					<Text style={s.screenTitle}>{title}</Text>
@@ -265,6 +270,16 @@ export function ScreenHeader({
 				) : null}
 			</View>
 			{right}
+		</View>
+	);
+}
+
+export function ListSectionHeader({ label }: { label: string }) {
+	const s = useThemedStyles(makeStyles);
+	return (
+		<View style={s.listSectionHeader}>
+			<Text style={s.listSectionLabel}>{label}</Text>
+			<View style={s.listSectionRule} />
 		</View>
 	);
 }
@@ -646,6 +661,16 @@ export function EmptyState({
 
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
+		listSectionHeader: {
+			flexDirection: "row",
+			alignItems: "center",
+			gap: 10,
+			paddingHorizontal: 18,
+			paddingTop: 18,
+			paddingBottom: 5,
+		},
+		listSectionLabel: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
+		listSectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle },
 		badge: { flexDirection: "row", alignItems: "center", gap: 6 },
 		badgeText: { fontSize: 12, fontWeight: "600" },
 

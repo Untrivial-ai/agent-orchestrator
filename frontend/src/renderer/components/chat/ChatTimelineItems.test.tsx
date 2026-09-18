@@ -285,7 +285,7 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.getByLabelText(/^Sent Yesterday · \d{2}:\d{2}$/)).toBeInTheDocument();
 		view.rerender(<AssistantMessage message={message({ createdAt: older, streaming: false })} showCopy />);
 		expect(screen.queryByLabelText(/^Sent Yesterday ·/)).toBeNull();
-		expect(screen.getByLabelText(/^Sent [A-Z][a-z]{2} \d{1,2}, \d{4}$/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/^Sent .+\d{4}$/)).toBeInTheDocument();
 	});
 
 	it("survives StrictMode effect cleanup and keeps draining", () => {

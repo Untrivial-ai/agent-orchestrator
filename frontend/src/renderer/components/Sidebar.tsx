@@ -62,8 +62,9 @@ import {
 	type WorkspaceSession,
 	type WorkspaceSummary,
 	sortedWorkerSessions,
-	workerSessions,
 	resolveNextNavigationAfterSessionKill,
+	workerSessions,
+	CLOUD_PROJECT_KIND,
 	STANDALONE_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
@@ -1558,7 +1559,11 @@ const ProjectItem = memo(function ProjectItem({
 						description={
 							<>
 								<p className="text-sm font-medium text-foreground">{t("shell.removeProjectLead", { name: workspace.name })}</p>
-								<p className="mt-1 text-xs text-muted-foreground">{t("shell.removeProjectBody")}</p>
+								<p className="mt-1 text-xs text-muted-foreground">
+									{workspace.kind === CLOUD_PROJECT_KIND
+										? t("shell.removeCloudProjectBody")
+										: t("shell.removeProjectBody")}
+								</p>
 								{openPullRequestCount > 0 ? (
 									<p className="mt-2 text-xs font-medium text-error">
 										{t("shell.removeProjectOpenPrWarning", { count: openPullRequestCount })}

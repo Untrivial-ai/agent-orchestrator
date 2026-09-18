@@ -286,6 +286,14 @@ function toCloudWorkspaceSession(
 		// A cloud session's PTY is addressed by the session id over its ticketed
 		// CP WebSocket, so the session id is its handle.
 		terminalHandleId: session.id,
+		// The worker epoch advances on every fresh worker connection (resume from
+		// idle-pause, restore, re-provision). Folding it into the terminal
+		// generation makes the terminal pane re-mint against the new epoch and
+		// attach to the live agent, instead of clinging to the previous epoch's
+		// exited terminal (the "connected but TERMINAL ENDED / can't type" loop,
+		// which then idle-pauses the session again because nothing attached).
+		// Stable within an epoch, so it does not churn the pane between resumes.
+		terminalGeneration: session.workerEpoch ? String(session.workerEpoch) : undefined,
 		workspaceId: project.id,
 		workspaceName: project.displayName,
 		title: session.displayName || session.id,
