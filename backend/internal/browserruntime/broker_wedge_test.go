@@ -26,8 +26,17 @@ type wedgeHarness struct {
 }
 
 func newWedgeHarness(t *testing.T) *wedgeHarness {
+	return newTunedWedgeHarness(t, nil)
+}
+
+// newTunedWedgeHarness builds the standard harness while letting liveness
+// tests tune broker knobs before Serve starts.
+func newTunedWedgeHarness(t *testing.T, tune func(*Broker)) *wedgeHarness {
 	t.Helper()
 	broker := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if tune != nil {
+		tune(broker)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -259,5 +268,206 @@ func TestBrokerNewConnectionFailsStalePending(t *testing.T) {
 		}
 	case <-time.After(browserRuntimeTestTimeout()):
 		t.Fatal("command on replacement connection did not complete")
+	}
+}
+
+// startPonger takes over reading the runtime side of the harness connection:
+// it answers ping frames out of band and forwards every other frame to the
+// returned channel. Do not use h.dec once the ponger is running.
+func startPonger(t *testing.T, h *wedgeHarness) <-chan wireMessage {
+	t.Helper()
+	frames := make(chan wireMessage, 16)
+	go func() {
+		dec := json.NewDecoder(h.conn)
+		for {
+			var msg wireMessage
+			if err := dec.Decode(&msg); err != nil {
+				return
+			}
+			if msg.Type == "ping" {
+				_ = h.enc.Encode(wireMessage{Type: "pong"})
+				continue
+			}
+			select {
+			case frames <- msg:
+			case <-time.After(browserRuntimeTestTimeout()):
+				return
+			}
+		}
+	}()
+	return frames
+}
+
+// The liveness tests below cover #5369's wedge: an attached runtime whose
+// desktop process stopped scheduling never answers pings, and the broker must
+// notice instead of reporting "connected" forever.
+
+func TestBrokerUnresponsiveRuntimeFailsPendingFast(t *testing.T) {
+	h := newTunedWedgeHarness(t, func(b *Broker) {
+		b.liveness = livenessConfig{interval: 20 * time.Millisecond, stallLimit: 80 * time.Millisecond}
+	})
+	requestCtx, cancel := context.WithTimeout(context.Background(), 2*browserRuntimeTestTimeout())
+	defer cancel()
+	outcomes := make(chan executeOutcome, 1)
+	go func() {
+		_, err := h.broker.Execute(requestCtx, "session-1", "open", nil)
+		outcomes <- executeOutcome{err: err}
+	}()
+	_ = h.conn.SetReadDeadline(time.Now().Add(browserRuntimeTestTimeout()))
+	var command wireMessage
+	if err := h.dec.Decode(&command); err != nil {
+		t.Fatal(err)
+	}
+	waitPendingRequest(t, h.broker, command.RequestID)
+
+	// The runtime never answers. Liveness detection must tear the connection
+	// down and fail the command long before the request context expires.
+	select {
+	case outcome := <-outcomes:
+		if !errors.Is(outcome.err, ErrUnavailable) {
+			t.Fatalf("stale command error = %v, want ErrUnavailable", outcome.err)
+		}
+	case <-time.After(browserRuntimeTestTimeout()):
+		t.Fatal("unresponsive runtime was not failed by liveness detection")
+	}
+	if h.broker.Status().Connected {
+		t.Fatal("unresponsive runtime still reported connected")
+	}
+}
+
+func TestBrokerResponsiveRuntimeSurvivesLiveness(t *testing.T) {
+	h := newTunedWedgeHarness(t, func(b *Broker) {
+		b.liveness = livenessConfig{interval: 20 * time.Millisecond, stallLimit: 80 * time.Millisecond}
+	})
+	frames := startPonger(t, h)
+
+	requestCtx, cancel := context.WithTimeout(context.Background(), 2*browserRuntimeTestTimeout())
+	defer cancel()
+	outcomes := make(chan executeOutcome, 1)
+	go func() {
+		result, err := h.broker.Execute(requestCtx, "session-1", "wait", nil)
+		outcomes <- executeOutcome{result: result, err: err}
+	}()
+
+	// Hold the command open across several liveness windows while the runtime
+	// answers every ping, then let it complete.
+	var command wireMessage
+	select {
+	case command = <-frames:
+	case <-time.After(browserRuntimeTestTimeout()):
+		t.Fatal("timed out waiting for the command frame")
+	}
+	if command.Type != "command" {
+		t.Fatalf("command = %#v", command)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := h.enc.Encode(wireMessage{
+		Type:      "result",
+		RequestID: command.RequestID,
+		OK:        true,
+		Result:    json.RawMessage(`{"ok":true}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case outcome := <-outcomes:
+		if outcome.err != nil {
+			t.Fatalf("responsive runtime command failed: %v", outcome.err)
+		}
+	case <-time.After(browserRuntimeTestTimeout()):
+		t.Fatal("responsive runtime command did not complete")
+	}
+	if !h.broker.Status().Connected {
+		t.Fatal("responsive runtime was disconnected by liveness detection")
+	}
+}
+
+func TestBrokerHelloVersionNegotiation(t *testing.T) {
+	broker := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	broker.liveness = livenessConfig{interval: 20 * time.Millisecond, stallLimit: 80 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = broker.Serve(ctx, ln) }()
+
+	// v1 is refused outright.
+	stale, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(stale).Encode(wireMessage{Type: "hello", Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	_ = stale.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := stale.Read(make([]byte, 1)); err == nil {
+		t.Fatal("protocol v1 runtime connection remained open")
+	}
+	_ = stale.Close()
+	if broker.Status().Connected {
+		t.Fatal("protocol v1 runtime was accepted")
+	}
+
+	// v3 hellos are accepted even though the wire contract moved from v2, so
+	// a freshly built desktop app can talk to a not-yet-upgraded daemon.
+	current, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = current.Close() }()
+	if err := json.NewEncoder(current).Encode(wireMessage{Type: "hello", Version: 3}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(browserRuntimeTestTimeout())
+	for !broker.Status().Connected {
+		if time.Now().After(deadline) {
+			t.Fatal("protocol v3 runtime was not accepted")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestBrokerLegacyRuntimeGetsNoPings(t *testing.T) {
+	broker := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	broker.liveness = livenessConfig{interval: 20 * time.Millisecond, stallLimit: 80 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = broker.Serve(ctx, ln) }()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := json.NewEncoder(conn).Encode(wireMessage{Type: "hello", Version: 2}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(browserRuntimeTestTimeout())
+	for !broker.Status().Connected {
+		if time.Now().After(deadline) {
+			t.Fatal("protocol v2 runtime was not accepted")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Several liveness windows pass: a legacy runtime must not see a single
+	// ping frame, and the broker must keep treating it as connected.
+	_ = conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	var frame wireMessage
+	if err := json.NewDecoder(conn).Decode(&frame); err == nil {
+		t.Fatalf("legacy runtime received an unexpected frame: %#v", frame)
+	} else {
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("legacy runtime connection failed unexpectedly: %v", err)
+		}
+	}
+	if !broker.Status().Connected {
+		t.Fatal("legacy runtime was disconnected by liveness detection")
 	}
 }

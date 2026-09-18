@@ -1,7 +1,11 @@
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
 
-const PROTOCOL_VERSION = 2;
+// v3 answers broker liveness pings. Unlike the supervisor link — where the
+// open socket IS the liveness signal — the browser runtime embeds a
+// third-party automation stack whose host process wedges often enough that an
+// open socket says nothing about responsiveness, so the daemon probes us.
+const PROTOCOL_VERSION = 3;
 const BACKOFF_INIT_MS = 200;
 const BACKOFF_MAX_MS = 2_000;
 const MAX_COMMAND_BYTES = 1 << 20;
@@ -184,6 +188,14 @@ export function connectBrowserRuntime(
 		try {
 			message = JSON.parse(line) as BrowserRuntimeCommand | BrowserRuntimeCancel;
 		} catch {
+			return;
+		}
+		if (message.type === "ping") {
+			// Liveness is answered outside the per-session command chains so a
+			// wedged operation can never starve the heartbeat.
+			void send({ type: "pong" }, target, epoch).catch(() => {
+				// Socket already torn down; the daemon will observe disconnect.
+			});
 			return;
 		}
 		if (message.type === "cancel" && typeof message.requestId === "string") {

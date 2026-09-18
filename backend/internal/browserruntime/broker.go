@@ -25,7 +25,12 @@ import (
 
 const (
 	// ProtocolVersion identifies the daemon-to-Electron browser bridge contract.
-	ProtocolVersion = 2
+	// v3 adds broker-issued ping frames answered by pong; v2 peers (desktop
+	// builds older than the heartbeat) are still accepted and simply not probed.
+	ProtocolVersion = 3
+	// minSupportedProtocolVersion is the oldest hello the broker accepts, so a
+	// freshly built daemon keeps working against a not-yet-upgraded desktop app.
+	minSupportedProtocolVersion = 2
 	// RuntimeTokenStdinEnv tells an app-spawned daemon to read its token once
 	// from the inherited private stdin pipe instead of an environment variable.
 	RuntimeTokenStdinEnv = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
@@ -57,6 +62,21 @@ func ReadRuntimeToken(r io.Reader) (string, error) {
 
 // ErrUnavailable indicates that no Electron browser runtime can accept a command.
 var ErrUnavailable = errors.New("browser runtime is unavailable")
+
+// ErrUnresponsive is the disconnect cause recorded when the runtime stops
+// answering liveness pings.
+var ErrUnresponsive = errors.New("browser runtime is unresponsive")
+
+// livenessConfig tunes the broker heartbeat. A runtime whose desktop process
+// wedged (busy event loop, system sleep, wedged network stack) keeps its
+// socket open but stops answering pings, so the stall check — not the socket
+// state — is what actually detects a dead bridge.
+type livenessConfig struct {
+	interval   time.Duration
+	stallLimit time.Duration
+}
+
+var defaultLiveness = livenessConfig{interval: 5 * time.Second, stallLimit: 15 * time.Second}
 
 // Status describes whether Electron is connected to the browser command broker.
 type Status struct {
@@ -121,6 +141,9 @@ type Broker struct {
 	pending     map[string]chan pendingResult
 	writeGate   chan struct{}
 	token       string
+	pongAt      time.Time
+
+	liveness livenessConfig
 }
 
 // New creates an empty browser command broker.
@@ -134,7 +157,7 @@ func New(log *slog.Logger, token ...string) *Broker {
 	if len(token) > 0 {
 		runtimeToken = token[0]
 	}
-	return &Broker{log: log, pending: make(map[string]chan pendingResult), writeGate: gate, token: runtimeToken}
+	return &Broker{log: log, pending: make(map[string]chan pendingResult), writeGate: gate, token: runtimeToken, liveness: defaultLiveness}
 }
 
 // NewToken returns a per-daemon-launch secret used to authenticate the desktop
@@ -238,7 +261,8 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 	if !scanner.Scan() ||
 		json.Unmarshal(scanner.Bytes(), &hello) != nil ||
 		hello.Type != "hello" ||
-		hello.Version != ProtocolVersion ||
+		hello.Version < minSupportedProtocolVersion ||
+		hello.Version > ProtocolVersion ||
 		!validRuntimeToken(b.token, hello.Token) {
 		_ = conn.Close()
 		return
@@ -257,6 +281,13 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 	failPending(pending, ErrUnavailable)
 	b.log.Info("browser runtime connected")
 
+	if hello.Version >= ProtocolVersion {
+		b.mu.Lock()
+		b.pongAt = time.Now()
+		b.mu.Unlock()
+		go b.runLiveness(ctx, conn)
+	}
+
 	go func() {
 		<-ctx.Done()
 		_ = conn.Close()
@@ -267,12 +298,53 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
 		}
+		if msg.Type == "pong" {
+			b.mu.Lock()
+			if b.conn == conn {
+				b.pongAt = time.Now()
+			}
+			b.mu.Unlock()
+			continue
+		}
 		if msg.Type != "result" || msg.RequestID == "" {
 			continue
 		}
 		b.resolve(msg)
 	}
 	b.disconnect(conn, scanner.Err())
+}
+
+// runLiveness probes a protocol v3 runtime until the connection goes away. An
+// unanswered ping does not immediately fail the peer — the stall check is what
+// declares it unresponsive — because a healthy runtime answers pings from its
+// socket read loop regardless of how busy its command pipeline is.
+func (b *Broker) runLiveness(ctx context.Context, conn net.Conn) {
+	ticker := time.NewTicker(b.liveness.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		b.mu.Lock()
+		replaced := b.conn != conn
+		stalled := time.Since(b.pongAt) > b.liveness.stallLimit
+		b.mu.Unlock()
+		if replaced {
+			return
+		}
+		if stalled {
+			b.disconnect(conn, ErrUnresponsive)
+			return
+		}
+		pingCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := b.write(pingCtx, conn, wireMessage{Type: "ping"})
+		cancel()
+		if err != nil {
+			b.log.Debug("browser runtime ping failed", "err", err)
+		}
+	}
 }
 
 func (b *Broker) write(ctx context.Context, conn net.Conn, msg wireMessage) error {
