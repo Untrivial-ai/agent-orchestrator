@@ -397,6 +397,23 @@ func TestResolveClaudeTUIAgentConfigRejectsUnsupportedEffort(t *testing.T) {
 	}
 }
 
+func TestResolveClaudeManualModelClearsInheritedEffortWhenCatalogUnavailable(t *testing.T) {
+	m := &Manager{modelCatalog: tuningCatalog{err: errors.New("gateway does not list models")}}
+
+	resolved, err := m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		AgentConfig: ports.AgentConfig{Model: "provider/model-vNext"},
+	}, domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{
+		Model: "sonnet", Effort: "high",
+	}}})
+	if err != nil {
+		t.Fatalf("manual model with inherited effort: %v", err)
+	}
+	if resolved.Model != "provider/model-vNext" || resolved.Effort != "" {
+		t.Fatalf("resolved = %#v, want manual model with provider-default effort", resolved)
+	}
+}
+
 func TestApplySymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows symlink creation requires a host privilege outside this unit test")

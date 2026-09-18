@@ -1166,6 +1166,8 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 	base := effectiveAgentConfig(cfg.Kind, project)
 	requested := cfg.AgentConfig
 	resolved := applySpawnAgentConfig(base, requested)
+	modelChangedWithoutExplicitEffort := requested.Model != "" && requested.Model != base.Model &&
+		!cfg.EffortOverride && requested.Effort == ""
 	if cfg.EffortOverride {
 		resolved.Effort = requested.Effort
 	}
@@ -1177,6 +1179,10 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 	}
 	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
 	if err != nil {
+		if modelChangedWithoutExplicitEffort {
+			resolved.Effort = ""
+			return resolved, nil
+		}
 		if resolved.Effort != "" {
 			return ports.AgentConfig{}, fmt.Errorf("%w: %w", ports.ErrModelCapabilitiesUnavailable, err)
 		}
@@ -1198,8 +1204,8 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 			break
 		}
 	}
-	if requested.Model != "" && requested.Model != base.Model {
-		if !cfg.EffortOverride && requested.Effort == "" && (selected == nil || !containsString(selected.Efforts, base.Effort)) {
+	if modelChangedWithoutExplicitEffort {
+		if selected == nil || !containsString(selected.Efforts, base.Effort) {
 			resolved.Effort = ""
 		}
 	}

@@ -1354,13 +1354,22 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("system prompt file: %w", err)
 	}
-	config := effectiveAgentConfig(rec.Kind, project.Config)
+	baseConfig := effectiveAgentConfig(rec.Kind, project.Config)
 	if roleOverride(rec.Kind, project.Config).Harness != harness {
-		config.Model = ""
-		config.Mode = ""
+		baseConfig.Model = ""
+		baseConfig.Effort = ""
+		baseConfig.Mode = ""
 	}
-	if model := strings.TrimSpace(modelOverride); model != "" {
-		config.Model = model
+	config, err := m.resolveAgentConfig(ctx, ports.SpawnConfig{
+		ProjectID: rec.ProjectID,
+		Kind:      rec.Kind,
+		Harness:   harness,
+		AgentConfig: ports.AgentConfig{
+			Model: strings.TrimSpace(modelOverride),
+		},
+	}, domain.ProjectConfig{AgentConfig: baseConfig})
+	if err != nil {
+		return preparedTargetActivation{}, fmt.Errorf("target config: %w", err)
 	}
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	pinRuntimePermissionEnv(env, config.Permissions)

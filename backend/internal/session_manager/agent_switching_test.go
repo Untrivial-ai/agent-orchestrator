@@ -589,6 +589,7 @@ type switchTestAgent struct {
 	launchPermissions   ports.PermissionMode
 	restorePrompt       string
 	restoreModel        string
+	restoreEffort       string
 	launchSystemPrompt  string
 	restoreSystemPrompt string
 	launchSystemFile    string
@@ -864,6 +865,7 @@ func (a *switchTestAgent) GetRestoreCommand(_ context.Context, cfg ports.Restore
 	}
 	a.restorePrompt = cfg.Prompt
 	a.restoreModel = cfg.Config.Model
+	a.restoreEffort = cfg.Config.Effort
 	a.restoreSystemPrompt = cfg.SystemPrompt
 	a.restoreSystemFile = cfg.SystemPromptFile
 	return []string{"agent", "resume", id, cfg.Prompt}, true, nil
@@ -2739,6 +2741,7 @@ func TestSwitchAgentResumesVerifiedPriorNativeSession(t *testing.T) {
 	project := store.projects["proj"]
 	project.Config.Worker.Harness = domain.HarnessCodex
 	project.Config.Worker.AgentConfig.Model = "target-model"
+	project.Config.Worker.AgentConfig.Effort = "high"
 	store.projects[project.ID] = project
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
 	target.available["codex-prior"] = ports.NativeSessionAvailabilityAvailable
@@ -2756,14 +2759,56 @@ func TestSwitchAgentResumesVerifiedPriorNativeSession(t *testing.T) {
 	if sw.TargetStartMode != domain.AgentSwitchTargetStartResumed {
 		t.Fatalf("target mode = %q, want resumed", sw.TargetStartMode)
 	}
-	if target.restoreModel != "target-model" {
-		t.Fatalf("restore model = %q, want target-model", target.restoreModel)
+	if target.restoreModel != "target-model" || target.restoreEffort != "high" {
+		t.Fatalf("restore tuning = %q/%q, want target-model/high", target.restoreModel, target.restoreEffort)
 	}
 	if got := strings.Join(runtime.lastCfg.Argv, " "); !strings.Contains(got, "-- agent resume codex-prior ") || !strings.Contains(target.restoreSystemPrompt, "<ao-continuation") || target.restorePrompt != aoTargetActivationPrompt {
 		t.Fatalf("target argv = %q", got)
 	}
 	if store.native["native-prior"].LastGenerationID != "target-generation" {
 		t.Fatalf("target generation was not advanced: %+v", store.native["native-prior"])
+	}
+}
+
+func TestSwitchAgentResumableClaudeTargetDropsOtherProviderEffort(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Harness = domain.HarnessCodex
+	store.sessions[rec.ID] = rec
+	project := store.projects["proj"]
+	project.Config.Worker = domain.RoleOverride{
+		Harness: domain.HarnessCodex,
+		AgentConfig: domain.AgentConfig{
+			Model: "gpt-5.6-sol", Effort: "xhigh",
+		},
+	}
+	store.projects[project.ID] = project
+	source := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	source.available["source-native"] = ports.NativeSessionAvailabilityAvailable
+	target := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+	target.available["claude-prior"] = ports.NativeSessionAvailabilityAvailable
+	now := time.Now().UTC().Add(-time.Hour)
+	store.native["native-claude-prior"] = domain.AgentNativeSession{
+		ID: "native-claude-prior", AOSessionID: rec.ID, Harness: domain.HarnessClaudeCode,
+		ConfigDir: target.configDir, NativeSessionID: "claude-prior",
+		LastGenerationID: "old-generation", CreatedAt: now, LastUsedAt: now,
+	}
+	manager.modelCatalog = tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{
+		ID: "sonnet", IsDefault: true, Efforts: []string{"low", "high"},
+	}}}}
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessClaudeCode, IdempotencyKey: "resume-claude-without-codex-effort",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.TargetStartMode != domain.AgentSwitchTargetStartResumed {
+		t.Fatalf("target mode = %q, want resumed", sw.TargetStartMode)
+	}
+	if target.restoreEffort != "" {
+		t.Fatalf("Claude restore effort = %q, want provider default", target.restoreEffort)
 	}
 }
 
