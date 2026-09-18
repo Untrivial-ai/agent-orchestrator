@@ -20,8 +20,12 @@ const (
 	copilotHooksDir      = ".github/hooks"
 	copilotHooksFileName = "ao.json"
 
-	copilotAgentsDir     = ".github/agents"
-	copilotAgentSentinel = "<!-- managed by agent-orchestrator: copilot agent profile -->"
+	copilotAgentsDir           = ".github/agents"
+	copilotAgentExcludeHeader  = "# agent-orchestrator Copilot session files"
+	copilotAgentExcludePattern = "/.github/agents/ao-*.agent.md"
+	copilotAgentExcludePrefix  = "/.github/agents/ao-"
+	copilotAgentExcludeSuffix  = ".agent.md"
+	copilotAgentSentinel       = "<!-- managed by agent-orchestrator: copilot agent profile -->"
 
 	// copilotHooksVersion is the schema version of the hooks file (Copilot uses 1).
 	copilotHooksVersion = 1
@@ -176,7 +180,7 @@ func installCopilotAgent(workspacePath, sessionID, inlinePrompt, promptFile stri
 	if err := hookutil.AtomicWriteFile(agentPath, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", agentPath, err)
 	}
-	if err := ignoreCopilotPath(workspacePath, "/"+filepath.ToSlash(filepath.Join(copilotAgentsDir, agentName+".agent.md"))); err != nil {
+	if err := ignoreCopilotPath(workspacePath, copilotAgentExcludePattern); err != nil {
 		return fmt.Errorf("git exclude: %w", err)
 	}
 	return nil
@@ -206,21 +210,67 @@ func ignoreCopilotPath(workspacePath, pattern string) error {
 		return fmt.Errorf("read %s: %w", excludePath, err)
 	}
 	pattern = strings.TrimSpace(pattern)
-	if pattern == "" || strings.Contains(string(data), pattern) {
+	if pattern == "" {
+		return nil
+	}
+	body := normalizeCopilotExcludes(string(data), pattern)
+	if body == string(data) {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o750); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(excludePath), err)
 	}
-	body := strings.TrimRight(string(data), "\n")
-	if body != "" {
-		body += "\n"
-	}
-	body += "# agent-orchestrator Copilot session files\n" + pattern + "\n"
 	if err := hookutil.AtomicWriteFile(excludePath, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", excludePath, err)
 	}
 	return nil
+}
+
+func normalizeCopilotExcludes(data, pattern string) string {
+	lines := strings.SplitAfter(data, "\n")
+	kept := make([]string, 0, len(lines)+2)
+	inserted := false
+
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSuffix(lines[i], "\n")
+		if line == copilotAgentExcludeHeader && i+1 < len(lines) {
+			next := strings.TrimSuffix(lines[i+1], "\n")
+			if next == pattern || isLegacyCopilotAgentExclude(next) {
+				if !inserted {
+					kept = append(kept, copilotAgentExcludeHeader+"\n", pattern+"\n")
+					inserted = true
+				}
+				i++
+				continue
+			}
+		}
+		if line == pattern {
+			if !inserted {
+				kept = append(kept, copilotAgentExcludeHeader+"\n", pattern+"\n")
+				inserted = true
+			}
+			continue
+		}
+		kept = append(kept, lines[i])
+	}
+
+	body := strings.Join(kept, "")
+	if inserted {
+		return body
+	}
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	return body + copilotAgentExcludeHeader + "\n" + pattern + "\n"
+}
+
+func isLegacyCopilotAgentExclude(line string) bool {
+	name, ok := strings.CutPrefix(line, copilotAgentExcludePrefix)
+	if !ok {
+		return false
+	}
+	name, ok = strings.CutSuffix(name, copilotAgentExcludeSuffix)
+	return ok && name != "" && !strings.ContainsAny(name, "/*")
 }
 
 func workspaceGitCommonDir(workspacePath string) (string, error) {
