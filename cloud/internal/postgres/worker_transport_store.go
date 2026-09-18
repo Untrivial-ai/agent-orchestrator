@@ -1265,6 +1265,30 @@ func (s *Store) MarkTerminalExited(
 		if tag.RowsAffected() == 0 {
 			return ErrTransportExpired
 		}
+		// A dedicated reviewer that exits without submitting a verdict cannot
+		// remain "running": no process is left to complete it and the UI must
+		// allow the user to retry that commit. A normal terminal is not present
+		// in ao_review_runs, so this update leaves the main agent untouched.
+		reviewError := "Reviewer terminal exited before submitting a verdict."
+		if exitCode != 0 {
+			reviewError = fmt.Sprintf("Reviewer terminal exited with status %d before submitting a verdict.", exitCode)
+		}
+		if _, err := tx.Exec(ctx,
+			`WITH failed_runs AS (
+				UPDATE ao_review_runs
+				SET status = 'failed', last_error = $3, completed_at = now()
+				WHERE org_id = $1 AND review_terminal_id = $2 AND status = 'running'
+				RETURNING pull_request_id, target_sha
+			)
+			UPDATE ao_pull_requests pull_request
+			SET ao_review_state = 'needs_review', updated_at = now()
+			FROM failed_runs run
+			WHERE pull_request.org_id = $1 AND pull_request.id = run.pull_request_id
+			  AND pull_request.head_sha = run.target_sha`,
+			orgID, terminalID, reviewError,
+		); err != nil {
+			return err
+		}
 		_, err = tx.Exec(ctx,
 			`UPDATE ao_sessions session
 			SET activity_state = 'exited',
@@ -1277,6 +1301,13 @@ func (s *Store) MarkTerminalExited(
 				WHERE terminal.org_id = session.org_id
 				  AND terminal.session_id = session.id
 				  AND terminal.id = $3 AND terminal.kind = 'agent'
+			  )
+			  -- Reviewer terminals are independent agent processes. Their exit
+			  -- must not tear down the main session's terminal presentation.
+			  AND NOT EXISTS (
+				SELECT 1 FROM ao_review_runs review_run
+				WHERE review_run.org_id = session.org_id
+				  AND review_run.review_terminal_id = $3
 			  )`,
 			orgID, sessionID, terminalID,
 		)
