@@ -628,7 +628,10 @@ export function BrowserPanelView({
 		const frame = window.requestAnimationFrame(() => {
 			if (urlInputRef.current) urlInputRef.current.scrollLeft = 0;
 		});
-		return () => window.cancelAnimationFrame(frame);
+		return () => {
+			window.cancelAnimationFrame(frame);
+			clearTimeout(copyFeedbackTimeoutRef.current);
+		};
 	}, [navState.url]);
 
 	useEffect(() => {
@@ -765,7 +768,7 @@ export function BrowserPanelView({
 		void openLinkInSystemBrowser(navState.url);
 	};
 
-	const copyCurrentURL = useCallback(async () => {
+	const copyCurrentURL = async () => {
 		if (!navState.url) return;
 		try {
 			await aoBridge.clipboard.writeText(navState.url);
@@ -775,9 +778,7 @@ export function BrowserPanelView({
 		} catch {
 			showGlobalToast(t("browser.urlCopyFailed"), undefined, "top-center");
 		}
-	}, [navState.url, showGlobalToast, t]);
-
-	useEffect(() => () => clearTimeout(copyFeedbackTimeoutRef.current), []);
+	};
 
 	const toggleAnnotationMode = async () => {
 		if (!canAnnotate || status === "sending") return;
@@ -839,6 +840,8 @@ export function BrowserPanelView({
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
 	const suggestionsOpen = urlEditing && historySuggestions.length > 0;
+	const currentURLIsWeb = isWebLink(navState.url);
+	const copyURLLabel = t(urlCopied ? "browser.urlCopied" : "browser.copyUrl");
 	const browserAddressBar = (
 		<form
 			className={cn(
@@ -883,10 +886,13 @@ export function BrowserPanelView({
 							value={urlEditing || poppedOut ? urlInput : getDisplayUrl(navState.url)}
 						/>
 						{navState.url ? (
-							<BrowserControlTooltip label={t(urlCopied ? "browser.urlCopied" : "browser.copyUrl")}>
+							<BrowserControlTooltip label={copyURLLabel}>
 								<Button
-									aria-label={t(urlCopied ? "browser.urlCopied" : "browser.copyUrl")}
-									className="browser-panel__url-copy"
+									aria-label={copyURLLabel}
+									className={cn(
+										"browser-panel__url-copy",
+										!currentURLIsWeb && "browser-panel__url-copy--only",
+									)}
 									onClick={() => void copyCurrentURL()}
 									size="icon-sm"
 									type="button"
@@ -911,18 +917,18 @@ export function BrowserPanelView({
 								</Button>
 							</BrowserControlTooltip>
 						) : null}
-						{isWebLink(navState.url) ? (
+						{currentURLIsWeb ? (
 							<BrowserControlTooltip label={t("inspector.openInSystemBrowser")}>
-								<Button
-									aria-label={t("inspector.openInSystemBrowser")}
-									className="browser-panel__url-external"
-									onClick={openCurrentPageExternally}
-									size="icon-sm"
-									type="button"
-									variant="ghost"
-								>
-									<ExternalLink aria-hidden="true" className="size-icon-base" />
-								</Button>
+									<Button
+										aria-label={t("inspector.openInSystemBrowser")}
+										className="browser-panel__url-external"
+										onClick={openCurrentPageExternally}
+										size="icon-sm"
+										type="button"
+										variant="ghost"
+									>
+										<ExternalLink aria-hidden="true" className="size-icon-base" />
+									</Button>
 							</BrowserControlTooltip>
 						) : null}
 					</div>

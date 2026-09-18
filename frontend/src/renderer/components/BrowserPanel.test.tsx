@@ -626,6 +626,14 @@ describe("BrowserPanel", () => {
 		writeText.mockRestore();
 	});
 
+	it("keeps the copy action at the trailing edge when no external action is available", () => {
+		hookState.navState = { ...hookState.navState, url: "localhost:5173" };
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		expect(screen.getByRole("button", { name: "Copy URL" })).toHaveClass("browser-panel__url-copy--only");
+		expect(screen.queryByRole("button", { name: /open in system browser/i })).not.toBeInTheDocument();
+	});
+
 	it("does not show URL actions on a blank browser tab", () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 

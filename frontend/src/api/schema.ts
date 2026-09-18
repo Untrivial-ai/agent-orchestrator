@@ -4126,6 +4126,8 @@ export interface components {
             terminateOnPrMerge: boolean;
         };
         SetSessionPreviewRequest: {
+            /** @description Reject the target unless it resolves to an existing file in the session workspace. */
+            requireWorkspaceFile?: boolean;
             /** @description Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace. */
             url?: string;
         };

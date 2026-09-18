@@ -5051,6 +5051,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__url-copy {
 	position: absolute;
 	top: 3px;
+	right: 3px;
 	z-index: 3;
 	width: 23px;
 	height: 23px;
@@ -5062,12 +5063,12 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	pointer-events: none;
 }
 
-.browser-panel__url-external {
-	right: 3px;
-}
-
 .browser-panel__url-copy {
 	right: 30px;
+}
+
+.browser-panel__url-copy--only {
+	right: 3px;
 }
 
 .browser-panel__url-wrap:hover:not(:has(.browser-panel__url-input:focus)) :is(.browser-panel__url-external, .browser-panel__url-copy),

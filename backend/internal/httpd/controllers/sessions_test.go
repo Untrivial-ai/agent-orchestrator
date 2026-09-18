@@ -1759,7 +1759,7 @@ func TestSessionsAPI_SetPreviewLocalRelativePathResolvesToPreviewOrigin(t *testi
 	svc.sessions["ao-1"] = s
 	srv := newSessionTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":"./dist/index.html"}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":"./dist/index.html","requireWorkspaceFile":true}`)
 	if status != http.StatusOK {
 		t.Fatalf("set preview = %d, want 200; body=%s", status, body)
 	}
@@ -2237,10 +2237,17 @@ func TestSessionsAPI_SetPreviewMissingOrMalformedFileFailsWithoutOverwriting(t *
 	svc.sessions["ao-1"] = s
 	srv := newSessionTestServer(t, svc)
 
-	for _, target := range []string{missing, "file:///%"} {
-		body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":`+strconv.Quote(target)+`}`)
+	for _, testCase := range []struct {
+		target               string
+		requireWorkspaceFile bool
+	}{
+		{target: missing},
+		{target: "file:///%"},
+		{target: "reports/missing.html", requireWorkspaceFile: true},
+	} {
+		body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":`+strconv.Quote(testCase.target)+`,"requireWorkspaceFile":`+strconv.FormatBool(testCase.requireWorkspaceFile)+`}`)
 		if status != http.StatusNotFound || !bytes.Contains(body, []byte(`"code":"PREVIEW_FILE_NOT_FOUND"`)) {
-			t.Fatalf("set unavailable file preview %q = %d, want 404; body=%s", target, status, body)
+			t.Fatalf("set unavailable file preview %q = %d, want 404; body=%s", testCase.target, status, body)
 		}
 	}
 	if got := svc.sessions["ao-1"].Metadata.PreviewURL; got != "http://localhost:4321/docs" {

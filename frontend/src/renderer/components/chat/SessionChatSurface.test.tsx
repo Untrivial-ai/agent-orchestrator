@@ -435,7 +435,7 @@ describe("SessionChatSurface link routing", () => {
 
 		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
 			params: { path: { sessionId: session.id } },
-			body: { url: REPORT_LINK },
+			body: { url: REPORT_LINK, requireWorkspaceFile: true },
 		});
 	});
 

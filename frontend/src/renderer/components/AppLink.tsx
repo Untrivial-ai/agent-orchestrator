@@ -44,12 +44,10 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onF
 			<ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-52">
 				{browserLink && (
-					<>
-						<ContextMenuItem disabled={!openBrowser} onSelect={() => openBrowser?.(href)}>
-							<Globe aria-hidden="true" />
-							{t("link.openInAOBrowser")}
-						</ContextMenuItem>
-					</>
+					<ContextMenuItem disabled={!openBrowser} onSelect={() => openBrowser?.(href)}>
+						<Globe aria-hidden="true" />
+						{t("link.openInAOBrowser")}
+					</ContextMenuItem>
 				)}
 				{filePath && onFileOpen && (
 					<ContextMenuItem onSelect={() => onFileOpen(filePath)}>
@@ -63,7 +61,7 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onF
 						{t("link.openInExternalBrowser")}
 					</ContextMenuItem>
 				)}
-				{(browserLink || (filePath && onFileOpen) || webLink) && <ContextMenuSeparator />}
+				{browserLink && <ContextMenuSeparator />}
 				<ContextMenuItem onSelect={() => void aoBridge.clipboard.writeText(href)}>
 					<Copy aria-hidden="true" />
 					{t("link.copy")}

@@ -11,7 +11,7 @@ export function isWebLink(url: string): boolean {
 
 function decodedPath(url: string): string {
 	const trimmed = url.trim();
-	let path = trimmed.split(/[?#]/, 1)[0] ?? "";
+	let path = trimmed.split(/[?#]/, 1)[0];
 	if (/^file:/i.test(trimmed)) {
 		try {
 			path = new URL(trimmed).pathname;
@@ -33,7 +33,7 @@ function hasParentTraversal(path: string): boolean {
 }
 
 function comparableWorkspacePath(path: string): string {
-	return path.replace(/^(?:\.\/)+/, "").replace(/^\/+/, "");
+	return path.replace(/^(?:(?:\.\/)+|\/+)/, "");
 }
 
 /** Resolve a displayed path to the workspace-relative path returned by Files. */
@@ -41,10 +41,14 @@ export function workspaceFilePath(url: string, workspacePaths: string[]): string
 	const path = decodedPath(url);
 	if (!path || hasParentTraversal(path)) return undefined;
 	const comparable = comparableWorkspacePath(path);
-	return workspacePaths.find((candidate) => {
-		const workspacePath = comparableWorkspacePath(decodedPath(candidate));
-		return !!workspacePath && (comparable === workspacePath || comparable.endsWith(`/${workspacePath}`));
-	});
+	const exact = workspacePaths.find((candidate) => comparable === candidate);
+	if (exact) return exact;
+
+	const absolute = /^file:/i.test(url.trim()) || path.startsWith("/") || /^[a-z]:\//i.test(path);
+	if (!absolute) return undefined;
+	return workspacePaths
+		.filter((candidate) => comparable.endsWith(`/${candidate}`))
+		.sort((left, right) => right.length - left.length)[0];
 }
 
 export function isWorkspaceFileLink(url: string, workspacePaths: string[]): boolean {
@@ -59,20 +63,12 @@ export function isWorkspaceFileLink(url: string, workspacePaths: string[]): bool
 export function isPotentialWorkspaceFileLink(url: string): boolean {
 	const trimmed = url.trim();
 	if (!trimmed || trimmed.startsWith("#") || isWebLink(trimmed)) return false;
-	if (/^file:/i.test(trimmed)) return !hasParentTraversal(decodedPath(trimmed));
 
 	const path = decodedPath(trimmed);
 	if (!path || hasParentTraversal(path) || path.startsWith("//")) return false;
 	if (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:\//i.test(path)) return false;
 
-	return (
-		/^[a-z]:\//i.test(path) ||
-		path.startsWith("/") ||
-		path.startsWith("./") ||
-		path.includes("/") ||
-		/(?:^|\/)\.[^/]+$/.test(path) ||
-		/\.[a-z\d][a-z\d._-]*$/i.test(path)
-	);
+	return path.includes("/") || /^\.[^/]+$/.test(path) || /\.[a-z\d][a-z\d._-]*$/i.test(path);
 }
 
 export function isWorkspaceHtmlLink(url: string, workspacePaths: string[]): boolean {

@@ -54,7 +54,7 @@ export function useSessionBrowserLink(
 				try {
 					const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/preview", {
 						params: { path: { sessionId } },
-						body: { url: uri },
+						body: webLink ? { url: uri } : { url: uri, requireWorkspaceFile: true },
 					});
 					if (error) {
 						console.warn("Unable to open link in Browser preview", error);
