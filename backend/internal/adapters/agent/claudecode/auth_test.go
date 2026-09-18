@@ -365,6 +365,71 @@ func TestClaudeAuthReportIgnoresStderrJSON(t *testing.T) {
 	}
 }
 
+func TestRelativeClaudeConfigDirectoryUsesProjectContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	clearClaudeCredentialEnv(t)
+	daemonDir, projectDir := t.TempDir(), t.TempDir()
+	t.Chdir(daemonDir)
+	for _, fixture := range []struct{ dir, model, token string }{
+		{daemonDir, "daemon-model", "daemon-fixture-token"},
+		{projectDir, "project-model", "project-fixture-token"},
+	} {
+		configDir := filepath.Join(fixture.dir, ".claude-custom")
+		writeClaudeAuthSettings(t, filepath.Join(configDir, "settings.json"), map[string]string{
+			"ANTHROPIC_MODEL": fixture.model, "ANTHROPIC_BASE_URL": "https://gateway.example",
+		})
+		if err := os.WriteFile(filepath.Join(configDir, ".credentials.json"), []byte(`{"accessToken":"`+fixture.token+`"}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	explicitEnv := map[string]string{"CLAUDE_CONFIG_DIR": ".claude-custom"}
+	options := agentcreds.ResolveOptions{Env: func(string) string { return "" }, GOOS: "linux"}
+	settings := agentcreds.ResolveClaudeSettings(projectDir, explicitEnv, options)
+	if settings.Model != "project-model" {
+		t.Errorf("settings selected %q, want the project model", settings.Model)
+	}
+	wantConfigDir := filepath.Join(projectDir, ".claude-custom")
+	if settings.Env["CLAUDE_CONFIG_DIR"] != wantConfigDir {
+		t.Error("resolved settings did not expose the project-absolute config directory")
+	}
+	options.WorkingDir, options.CommandEnv = projectDir, explicitEnv
+	resolved := options.WithClaudeSettings()
+	credential, ok := agentcreds.ResolveLocal(context.Background(), agentcreds.ProviderGateway, resolved)
+	if !ok || credential.Secret != "project-fixture-token" || credential.Source != "credentials-file" {
+		t.Error("credentials reader did not select the project credential file")
+	}
+	if resolved.CommandEnv["CLAUDE_CONFIG_DIR"] != wantConfigDir {
+		t.Error("child command environment did not use the same absolute config directory")
+	}
+	// Execute a local auth-status fixture so the assertions cover the real child
+	// cwd/environment boundary as well as the Go-side readers. No real CLI,
+	// credential store, or provider request is involved.
+	binary := filepath.Join(t.TempDir(), "claude")
+	script := `#!/bin/sh
+test "$1" = auth && test "$2" = status || exit 2
+case "$CLAUDE_CONFIG_DIR" in /*) ;; *) exit 3 ;; esac
+test "$CLAUDE_CONFIG_DIR" -ef "$PWD/.claude-custom" || exit 4
+test "$ANTHROPIC_MODEL" = project-model || exit 5
+settings=$(cat "$CLAUDE_CONFIG_DIR/settings.json") || exit 6
+case "$settings" in *'"ANTHROPIC_MODEL":"project-model"'*) ;; *) exit 7 ;; esac
+IFS= read -r credential < "$CLAUDE_CONFIG_DIR/.credentials.json" || exit 8
+test "$credential" = '{"accessToken":"project-fixture-token"}' || exit 9
+printf '%s\n' '{"loggedIn":true,"apiProvider":"gateway"}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report, parsed := (&Plugin{}).claudeCLIAuthReport(context.Background(), binary, resolved.WorkingDir, resolved.CommandEnv)
+	if !parsed || !report.LoggedIn || report.APIProvider != "gateway" {
+		t.Error("auth-status child did not read the same project settings and credentials")
+	}
+	if explicitEnv["CLAUDE_CONFIG_DIR"] != ".claude-custom" {
+		t.Fatal("explicit caller environment was mutated")
+	}
+}
+
 func TestUserGatewaySettingsOverrideSignedOutFirstPartyAuth(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

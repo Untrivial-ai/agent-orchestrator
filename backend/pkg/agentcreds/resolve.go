@@ -237,23 +237,28 @@ func oauthTokenFromCredentialsJSON(data []byte) (string, bool) {
 }
 
 // claudeConfigDir resolves Claude Code's config directory, honoring the same
-// overrides the CLI does.
+// overrides the CLI does. Relative directories are anchored to the launch cwd,
+// rather than the daemon cwd, so readers and child commands agree.
 func claudeConfigDir(opts ResolveOptions) (string, error) {
-	if dir := strings.TrimSpace(opts.ConfigDir); dir != "" {
-		return dir, nil
+	dir := strings.TrimSpace(opts.ConfigDir)
+	if dir == "" {
+		dir = opts.env("CLAUDE_CONFIG_DIR")
 	}
-	if dir := opts.env("CLAUDE_CONFIG_DIR"); dir != "" {
-		return dir, nil
+	if dir == "" {
+		homeKey := "HOME"
+		if opts.goos() == "windows" {
+			homeKey = "USERPROFILE"
+		}
+		home := opts.env(homeKey)
+		if home == "" {
+			return "", errors.New("agentcreds: home directory is unavailable")
+		}
+		dir = filepath.Join(home, ".claude")
 	}
-	homeKey := "HOME"
-	if opts.goos() == "windows" {
-		homeKey = "USERPROFILE"
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(strings.TrimSpace(opts.WorkingDir), dir)
 	}
-	home := opts.env(homeKey)
-	if home == "" {
-		return "", errors.New("agentcreds: home directory is unavailable")
-	}
-	return filepath.Join(home, ".claude"), nil
+	return filepath.Abs(dir)
 }
 
 func resolveFoundry(opts ResolveOptions) (Credential, bool) {

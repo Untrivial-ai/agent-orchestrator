@@ -56,6 +56,7 @@ func ResolveClaudeSettings(workingDir string, explicitEnv map[string]string, opt
 	}
 	pathOptions := opts
 	pathOptions.Env = lookup
+	pathOptions.WorkingDir = workingDir
 	configDir, _ := claudeConfigDir(pathOptions)
 	var paths []string
 	if configDir != "" {
@@ -79,6 +80,9 @@ func ResolveClaudeSettings(workingDir string, explicitEnv map[string]string, opt
 				resolved.Env[key] = strings.TrimSpace(value)
 			}
 		}
+	}
+	if _, configured := resolved.Env["CLAUDE_CONFIG_DIR"]; configured && configDir != "" {
+		resolved.Env["CLAUDE_CONFIG_DIR"] = configDir
 	}
 	if model := resolved.Env["ANTHROPIC_MODEL"]; model != "" {
 		resolved.Model = model
