@@ -34,6 +34,7 @@ export function getAgentIdentity(provider: string): AgentIdentity {
 	return {
 		id: provider,
 		label: provider || "Unknown agent",
+		logoKey: provider,
 		initial: provider.charAt(0).toUpperCase() || "?",
 	};
 }
