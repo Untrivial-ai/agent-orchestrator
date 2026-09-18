@@ -26,6 +26,6 @@ describe("chat chrome theme styling", () => {
 			borderColor: darkTheme.borderDefault,
 			foregroundColor: darkTheme.textPrimary,
 		});
-		expect(userMessageSurfaceStyle(lightTheme).backgroundColor).not.toBe(lightTheme.blue);
+		expect(userMessageSurfaceStyle(lightTheme).backgroundColor).not.toBe(lightTheme.accent);
 	});
 });

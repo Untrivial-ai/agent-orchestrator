@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { Pressable, StyleSheet } from "react-native";
 import { useTheme } from "./ThemeProvider";
+import { iconSize, radius, type } from "./tokens";
 
 export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 	const t = useTheme();
@@ -9,14 +10,14 @@ export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 			testID="sidebar-spawn-worker"
 			accessibilityRole="button"
 			accessibilityLabel="Spawn worker"
-			android_ripple={{ color: t.tintBlue, borderless: true, radius: 24 }}
+			android_ripple={{ color: t.accentTint, borderless: true, radius: 24 }}
 			onPress={onPress}
 			style={({ pressed }) => [
 				styles.button,
-				{ backgroundColor: pressed ? t.tintBlue : t.bgElevated, borderColor: t.borderDefault },
+				{ backgroundColor: pressed ? t.accentTint : t.bgElevated, borderColor: t.borderDefault },
 			]}
 		>
-			<Feather name="plus" size={25} color={t.textSecondary} />
+			<Feather name="plus" size={iconSize.xl} color={t.textSecondary} />
 		</Pressable>
 	);
 }
@@ -25,7 +26,7 @@ const styles = StyleSheet.create({
 	button: {
 		width: 48,
 		height: 48,
-		borderRadius: 24,
+		borderRadius: radius.pill, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",
 		justifyContent: "center",

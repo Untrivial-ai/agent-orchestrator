@@ -4,10 +4,11 @@ import {
 	accessibilityIdentifier,
 	accessibilityLabel,
 	frame,
-	glassEffect,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
+import { glassCircle } from "./glass";
 import { useTheme, useThemeState } from "./ThemeProvider";
+import { iconSize, type } from "./tokens";
 
 export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 	const t = useTheme();
@@ -19,13 +20,13 @@ export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 				onPress={onPress}
 				modifiers={[
 					frame({ width: 48, height: 48 }),
-					glassEffect({ glass: { variant: "regular", interactive: true }, shape: "circle" }),
+					glassCircle(),
 					tint(t.textSecondary),
 					accessibilityLabel("Spawn worker"),
 					accessibilityIdentifier("sidebar-spawn-worker"),
 				]}
 			>
-				<Image systemName="plus" size={20} color={t.textSecondary} />
+				<Image systemName="plus" size={iconSize.lg} color={t.textSecondary} />
 			</Button>
 		</Host>
 	);

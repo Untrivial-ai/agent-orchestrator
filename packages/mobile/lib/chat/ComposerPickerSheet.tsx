@@ -7,6 +7,7 @@ import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { SheetHeader } from "../ui";
 import { composerSheetContentStyle } from "./chatLayout";
 import { rankComposerCatalog, type ComposerPickerCatalog, type RankedSuggestion } from "./composerSuggestions";
+import { iconSize, press, space, type } from "../tokens";
 
 export function ComposerPickerSheet({
 	catalog,
@@ -40,7 +41,7 @@ export function ComposerPickerSheet({
 						subtitle={kind === "skills" ? "Insert a skill into your message." : "Mention a file from this worktree."}
 					/>
 					<View style={styles.searchSurface}>
-						<Feather name="search" size={17} color={t.textTertiary} />
+						<Feather name="search" size={iconSize.md} color={t.textTertiary} />
 						<TextInput
 							value={query}
 							onChangeText={setQuery}
@@ -48,7 +49,7 @@ export function ComposerPickerSheet({
 							placeholderTextColor={t.textTertiary}
 							style={styles.search}
 						/>
-						{query ? <Pressable accessibilityRole="button" accessibilityLabel="Clear search" hitSlop={8} onPress={() => { haptics.tap(); setQuery(""); }}><Feather name="x-circle" size={17} color={t.textTertiary} /></Pressable> : null}
+						{query ? <Pressable accessibilityRole="button" accessibilityLabel="Clear search" hitSlop={8} onPress={() => { haptics.tap(); setQuery(""); }}><Feather name="x-circle" size={iconSize.md} color={t.textTertiary} /></Pressable> : null}
 					</View>
 					{kind === "files" && truncated ? (
 						<Text style={styles.notice}>Showing the daemon&apos;s capped path list. Narrow your search or type a path directly.</Text>
@@ -73,9 +74,9 @@ function SuggestionRow({ kind, choice, onSelect }: { kind: "skills" | "files"; c
 				haptics.select();
 				onSelect(choice.value);
 			}}
-			style={({ pressed }) => [styles.row, pressed && { opacity: 0.6 }]}
+			style={({ pressed }) => [styles.row, pressed && { opacity: press.opacity }]}
 		>
-			<Feather name={kind === "skills" ? "zap" : "file-text"} size={17} color={t.textSecondary} style={styles.rowIcon} />
+			<Feather name={kind === "skills" ? "zap" : "file-text"} size={iconSize.md} color={t.textSecondary} style={styles.rowIcon} />
 			<View style={{ flex: 1 }}>
 				<Text style={styles.label}>{choice.label}</Text>
 				{choice.detail ? <Text numberOfLines={2} style={styles.detail}>{choice.detail}</Text> : null}
@@ -87,15 +88,15 @@ function SuggestionRow({ kind, choice, onSelect }: { kind: "skills" | "files"; c
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgSurface },
-	searchSurface: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 9, marginTop: 18, paddingHorizontal: 13, borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
-	search: { flex: 1, minHeight: 46, color: t.textPrimary, fontSize: 15, paddingVertical: 0 },
-	notice: { color: t.amber, fontSize: 11, lineHeight: 16, marginTop: 9 },
-	results: { color: t.textTertiary, fontSize: 12, fontWeight: "600", marginTop: 20, marginBottom: 4 },
-	row: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 11, paddingVertical: 10, paddingHorizontal: 2 },
+	searchSurface: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: space.sm, marginTop: space.lg, paddingHorizontal: space.md, borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
+	search: { flex: 1, minHeight: 46, color: t.textPrimary, fontSize: type.subheadline.fontSize, paddingVertical: space.none },
+	notice: { color: t.amber, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: space.sm },
+	results: { color: t.textTertiary, fontSize: type.caption1.fontSize, fontWeight: "600", marginTop: space.xl, marginBottom: space.xxs },
+	row: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: space.sm, paddingHorizontal: space.hair },
 	rowIcon: { width: 21, textAlign: "center" },
-	label: { color: t.textPrimary, fontSize: 15, fontWeight: "500" },
-	detail: { color: t.textTertiary, fontSize: 12, lineHeight: 16, marginTop: 2 },
-	badge: { color: t.textTertiary, fontSize: 10 },
-	separator: { height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle, marginLeft: 34 },
-	empty: { color: t.textTertiary, textAlign: "center", paddingVertical: 28 },
+	label: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
+	detail: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, marginTop: space.hair },
+	badge: { color: t.textTertiary, fontSize: type.caption2.fontSize },
+	separator: { height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle, marginLeft: space.xxxl },
+	empty: { color: t.textTertiary, textAlign: "center", paddingVertical: space.xxl },
 });

@@ -24,6 +24,7 @@ import {
 	workerProjectLabel,
 	workerSearchPresentation,
 } from "../../lib/worker-controls";
+import { space } from "../../lib/tokens";
 
 export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
@@ -127,7 +128,7 @@ export default function FleetScreen() {
 
 			{loading && sessions.length === 0 ? (
 				<View style={styles.center}>
-					<ActivityIndicator color={t.blue} />
+					<ActivityIndicator color={t.accent} />
 				</View>
 			) : (
 				<WorkerBoardList
@@ -165,7 +166,7 @@ export default function FleetScreen() {
 							<EmptyState
 								icon="moon"
 								title="No active workers"
-								message="Spawn a worker to put your fleet to work."
+								message="Spawn a worker to get started."
 								action={<Button title="New agent" icon="plus" onPress={() => router.push({ pathname: "/spawn", params: spawnProjectParam(workerProjectId) })} />}
 							/>
 						)
@@ -217,7 +218,7 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
-		errorActions: { flexDirection: "row", gap: 10, alignItems: "center" },
+		errorActions: { flexDirection: "row", gap: space.sm, alignItems: "center" },
 		dock: {
 			position: "absolute",
 			left: 16,

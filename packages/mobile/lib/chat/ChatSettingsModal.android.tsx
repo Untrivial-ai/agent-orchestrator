@@ -9,6 +9,7 @@ import { SheetHeader } from "../ui";
 import type { ChatConfigOption, ChatModel, ConversationSnapshot, TurnSettings } from "./types";
 import { fastControlEnabled, fastControlValue, orderedProviderControls, providerTurnControlKind } from "./turnSettingsModel";
 import { can } from "./types";
+import { type, space } from "../tokens";
 
 const APPROVALS = [
 	{ id: "default", label: "Default", description: "The worktree remains the safety boundary" },
@@ -69,7 +70,7 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 	return <View style={[styles.screen, { backgroundColor: t.bgSurface }]}>
 		<View style={styles.header}>
 			<SheetHeader title="Turn settings" subtitle="Changes apply to the next message." right={<Pressable accessibilityRole="button" accessibilityLabel="Refresh turn settings" disabled={refreshing} onPress={() => { haptics.tap(); onRefresh(); }} style={styles.refresh}>
-				{refreshing ? <ActivityIndicator size="small" color={t.blue} /> : <Feather name="refresh-cw" size={14} color={t.blue} />}
+				{refreshing ? <ActivityIndicator size="small" color={t.accent} /> : <Feather name="refresh-cw" size={15} color={t.accent} />}
 				<Text style={styles.refreshText}>Refresh</Text>
 			</Pressable>} />
 			{error ? <Notice color={t.red} background={t.tintRed} icon="alert-circle" text={error} /> : null}
@@ -117,7 +118,7 @@ function SettingRow({ icon, label, value, description, disabled, onPress }: { ic
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.row, pressed && styles.rowPressed, disabled && styles.disabled]}>
-		<Feather name={icon} size={18} color={t.textSecondary} />
+		<Feather name={icon} size={17} color={t.textSecondary} />
 		<View style={styles.rowCopy}><Text numberOfLines={1} style={styles.rowLabel}>{label}</Text>{description ? <Text numberOfLines={2} style={styles.rowDescription}>{description}</Text> : null}</View>
 		<Text numberOfLines={1} style={styles.rowValue}>{value}</Text>
 		<Feather name="chevron-right" size={17} color={t.textFaint} />
@@ -141,7 +142,7 @@ function ToggleRow({ label, description, value, disabled, onChange }: { label: s
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const { scheme } = useThemeState();
-	return <View style={[styles.row, disabled && styles.disabled]}><Feather name="zap" size={18} color={t.textSecondary} /><View style={styles.rowCopy}><Text style={styles.rowLabel}>{label}</Text>{description ? <Text numberOfLines={2} style={styles.rowDescription}>{description}</Text> : null}</View><Host style={styles.switchHost} colorScheme={scheme} seedColor={t.blue}><NativeSwitch value={value} disabled={disabled} onValueChange={(next) => { haptics.select(); onChange(next); }} /></Host></View>;
+	return <View style={[styles.row, disabled && styles.disabled]}><Feather name="zap" size={17} color={t.textSecondary} /><View style={styles.rowCopy}><Text style={styles.rowLabel}>{label}</Text>{description ? <Text numberOfLines={2} style={styles.rowDescription}>{description}</Text> : null}</View><Host style={styles.switchHost} colorScheme={scheme} seedColor={t.accent}><NativeSwitch value={value} disabled={disabled} onValueChange={(next) => { haptics.select(); onChange(next); }} /></Host></View>;
 }
 
 function EffortSlider({ choices, selected, disabled, onChange }: { choices: Choice[]; selected: string; disabled?: boolean; onChange(value: string): void }) {
@@ -160,9 +161,9 @@ function EffortSlider({ choices, selected, disabled, onChange }: { choices: Choi
 	}, [choices, index, onChange, selected]);
 
 	return <View style={[styles.effort, disabled && styles.disabled]}>
-		<View style={styles.effortHeader}><Feather name="activity" size={18} color={t.textSecondary} /><View style={styles.rowCopy}><Text style={styles.rowLabel}>Reasoning effort</Text><Text style={styles.rowDescription}>More effort can improve harder tasks</Text></View><Text style={styles.effortValue}>{choices[index]?.label}</Text></View>
-		<Host style={styles.sliderHost} colorScheme={scheme} seedColor={t.blue}><Slider value={index} min={0} max={Math.max(0, choices.length - 1)} step={1} disabled={disabled} onValueChange={(value) => setIndex(Math.round(value))} testID="turn-settings-effort" /></Host>
-		<View style={styles.effortLabels}>{choices.map((choice, choiceIndex) => <Text key={choice.value} style={[styles.effortLabel, choiceIndex === index && { color: t.blue }]}>{choice.label}</Text>)}</View>
+		<View style={styles.effortHeader}><Feather name="activity" size={17} color={t.textSecondary} /><View style={styles.rowCopy}><Text style={styles.rowLabel}>Reasoning effort</Text><Text style={styles.rowDescription}>More effort can improve harder tasks</Text></View><Text style={styles.effortValue}>{choices[index]?.label}</Text></View>
+		<Host style={styles.sliderHost} colorScheme={scheme} seedColor={t.accent}><Slider value={index} min={0} max={Math.max(0, choices.length - 1)} step={1} disabled={disabled} onValueChange={(value) => setIndex(Math.round(value))} testID="turn-settings-effort" /></Host>
+		<View style={styles.effortLabels}>{choices.map((choice, choiceIndex) => <Text key={choice.value} style={[styles.effortLabel, choiceIndex === index && { color: t.accent }]}>{choice.label}</Text>)}</View>
 	</View>;
 }
 
@@ -178,7 +179,7 @@ function ChoicePage({ choice, onBack }: { choice: NonNullable<OpenChoice>; onBac
 			const selected = item.value === choice.value;
 			return <Pressable key={item.value} accessibilityRole="button" accessibilityState={{ selected }} onPress={() => { haptics.select(); choice.onChange(item.value); onBack(); }} style={[styles.choiceRow, index > 0 && styles.choiceDivider, selected && styles.choiceSelected]}>
 				<View style={styles.choiceCopy}><Text style={[styles.choiceLabel, selected && styles.choiceLabelSelected]}>{item.label}</Text>{item.description ? <Text style={styles.choiceDescription}>{item.description}</Text> : null}</View>
-				{selected ? <Feather name="check" size={19} color={t.blue} style={styles.choiceCheck} /> : null}
+				{selected ? <Feather name="check" size={20} color={t.accent} style={styles.choiceCheck} /> : null}
 			</Pressable>;
 		})}</View></ScrollView>
 	</View>;
@@ -186,7 +187,7 @@ function ChoicePage({ choice, onBack }: { choice: NonNullable<OpenChoice>; onBac
 
 function Notice({ color, background, icon, text }: { color: string; background: string; icon: keyof typeof Feather.glyphMap; text: string }) {
 	const styles = useThemedStyles(makeStyles);
-	return <View accessibilityRole="alert" style={[styles.notice, { backgroundColor: background }]}><Feather name={icon} size={14} color={color} /><Text style={[styles.noticeText, { color }]}>{text}</Text></View>;
+	return <View accessibilityRole="alert" style={[styles.notice, { backgroundColor: background }]}><Feather name={icon} size={15} color={color} /><Text style={[styles.noticeText, { color }]}>{text}</Text></View>;
 }
 
 function choiceLabel(option: ChatConfigOption): string {
@@ -198,44 +199,44 @@ function capitalize(value: string): string { return value ? value[0].toUpperCase
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1 },
-	header: { paddingHorizontal: 16, paddingTop: 12, gap: 8 },
-	refresh: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 },
-	refreshText: { color: t.blue, fontSize: 13, fontWeight: "700" },
-	notice: { minHeight: 38, flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 12, paddingHorizontal: 11, paddingVertical: 8 },
-	noticeText: { flex: 1, fontSize: 12, lineHeight: 17 },
-	content: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28, gap: 18 },
-	section: { gap: 7 },
-	sectionTitle: { paddingHorizontal: 4, color: t.textTertiary, fontSize: 11, lineHeight: 15, letterSpacing: 1.05, fontWeight: "700" },
+	header: { paddingHorizontal: space.lg, paddingTop: space.md, gap: space.sm },
+	refresh: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.xxs },
+	refreshText: { color: t.accent, fontSize: type.footnote.fontSize, fontWeight: "700" },
+	notice: { minHeight: 38, flexDirection: "row", alignItems: "center", gap: space.sm, borderRadius: 12, paddingHorizontal: space.md, paddingVertical: space.sm },
+	noticeText: { flex: 1, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
+	content: { paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xxl, gap: space.lg },
+	section: { gap: space.xs },
+	sectionTitle: { paddingHorizontal: space.xxs, color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, letterSpacing: 1.05, fontWeight: "700" },
 	group: { overflow: "hidden", borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated },
-	row: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 11, paddingHorizontal: 14, paddingVertical: 8 },
+	row: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: space.md, paddingHorizontal: space.md, paddingVertical: space.sm },
 	rowPressed: { backgroundColor: t.bgElevatedHover },
 	disabled: { opacity: 0.45 },
-	rowCopy: { flex: 1, minWidth: 0, gap: 0 },
-	rowLabel: { color: t.textPrimary, fontSize: 15, lineHeight: 19, fontWeight: "600" },
-	rowDescription: { color: t.textTertiary, fontSize: 11, lineHeight: 14 },
-	rowValue: { maxWidth: "42%", color: t.textSecondary, fontSize: 14, lineHeight: 19 },
+	rowCopy: { flex: 1, minWidth: 0, gap: space.none },
+	rowLabel: { color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	rowDescription: { color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
+	rowValue: { maxWidth: "42%", color: t.textSecondary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
 	switchHost: { width: 54, height: 34 },
-	effort: { paddingHorizontal: 14, paddingTop: 11, paddingBottom: 9, gap: 3 },
+	effort: { paddingHorizontal: space.md, paddingTop: space.md, paddingBottom: space.sm, gap: space.hair },
 	// Match the standard settings row's icon-to-copy spacing so the Model and
 	// Reasoning effort labels share the same text column.
-	effortHeader: { flexDirection: "row", alignItems: "center", gap: 11 },
-	effortValue: { color: t.blue, fontSize: 13, lineHeight: 18, fontWeight: "700" },
+	effortHeader: { flexDirection: "row", alignItems: "center", gap: space.md },
+	effortValue: { color: t.accent, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, fontWeight: "700" },
 	// Expo UI maps this Host to Compose on Android, where percentage widths are
 	// not valid native layout values. Let the parent stretch it instead.
 	sliderHost: { height: 36, alignSelf: "stretch" },
-	effortLabels: { flexDirection: "row", justifyContent: "space-between", gap: 4 },
-	effortLabel: { flex: 1, color: t.textTertiary, fontSize: 9, lineHeight: 13, textAlign: "center" },
-	empty: { color: t.textTertiary, fontSize: 13, lineHeight: 19, paddingHorizontal: 4 },
-	choiceBack: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12 },
-	choiceTitle: { color: t.textPrimary, fontSize: 19, lineHeight: 25, fontWeight: "700" },
-	choiceList: { paddingHorizontal: 16, paddingBottom: 20 },
+	effortLabels: { flexDirection: "row", justifyContent: "space-between", gap: space.xxs },
+	effortLabel: { flex: 1, color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, textAlign: "center" },
+	empty: { color: t.textTertiary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, paddingHorizontal: space.xxs },
+	choiceBack: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.md },
+	choiceTitle: { color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "700" },
+	choiceList: { paddingHorizontal: space.lg, paddingBottom: space.xl },
 	choiceCard: { borderRadius: 16, overflow: "hidden", backgroundColor: t.bgElevated },
-	choiceRow: { minHeight: 52, flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 15, paddingVertical: 10 },
+	choiceRow: { minHeight: 52, flexDirection: "row", alignItems: "flex-start", gap: space.sm, paddingHorizontal: space.lg, paddingVertical: space.sm },
 	choiceDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
-	choiceSelected: { backgroundColor: t.tintBlue },
-	choiceCopy: { flex: 1, minWidth: 0, gap: 1 },
-	choiceLabel: { color: t.textPrimary, fontSize: 15, lineHeight: 20 },
-	choiceDescription: { color: t.textTertiary, fontSize: 11, lineHeight: 15 },
+	choiceSelected: { backgroundColor: t.accentTint },
+	choiceCopy: { flex: 1, minWidth: 0, gap: space.none },
+	choiceLabel: { color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
+	choiceDescription: { color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 	choiceCheck: { alignSelf: "center" },
-	choiceLabelSelected: { color: t.blue, fontWeight: "700" },
+	choiceLabelSelected: { color: t.accent, fontWeight: "700" },
 });

@@ -13,6 +13,7 @@ import { useTheme, useThemedStyles } from "./ThemeProvider";
 import { ListSectionHeader } from "./ui";
 import { WorkerListRow } from "./worker-list-row";
 import { filterWorkerSessions } from "./worker-search";
+import { type, space } from "./tokens";
 
 // The archive rides along as one more section so it scrolls with the board
 // rather than being pinned like desktop's strip — a phone has no room for a
@@ -102,7 +103,7 @@ export function WorkerBoardList({
 	const listSections = useMemo<ListSection[]>(() => {
 		if (query.trim()) {
 			const data = [...filteredGroups.pinned, ...filteredGroups.sections.flatMap((section) => section.data), ...filteredGroups.archived];
-			return data.length === 0 ? [] : [{ zone: "search", label: "Search results", color: t.blue, data }];
+			return data.length === 0 ? [] : [{ zone: "search", label: "Search results", color: t.accent, data }];
 		}
 		const liveSections: ListSection[] = [
 			...(pinned.length ? [{ zone: "pinned" as const, label: "Pinned", color: t.amber, data: pinned }] : []),
@@ -193,7 +194,7 @@ export function WorkerBoardList({
 				contentContainerStyle={{ paddingBottom: contentBottomInset }}
 				keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
 				keyboardShouldPersistTaps="handled"
-				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.blue} />}
+				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.accent} />}
 				ListHeaderComponent={ListHeaderComponent}
 				ListEmptyComponent={ListEmptyComponent}
 				renderItem={({ item }) => {
@@ -253,7 +254,7 @@ function ArchiveHeader({ count, open, onToggle }: { count: number; open: boolean
 			}}
 			style={({ pressed }) => [styles.archiveHeader, pressed && { opacity: 0.6 }]}
 		>
-			<Feather name={open ? "chevron-down" : "chevron-right"} size={14} color={t.textTertiary} />
+			<Feather name={open ? "chevron-down" : "chevron-right"} size={15} color={t.textTertiary} />
 			<Text style={styles.archiveLabel}>Archive</Text>
 			<Text style={styles.archiveCount}>{count}</Text>
 		</Pressable>
@@ -265,11 +266,11 @@ const makeStyles = (t: Theme) =>
 		archiveHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 8,
-			paddingHorizontal: 16,
-			paddingTop: 22,
-			paddingBottom: 10,
+			gap: space.sm,
+			paddingHorizontal: space.lg,
+			paddingTop: space.xl,
+			paddingBottom: space.sm,
 		},
-		archiveLabel: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "500", flex: 1 },
-		archiveCount: { color: t.textFaint, fontSize: 12, fontWeight: "700", fontFamily: t.fontMono },
+		archiveLabel: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500", flex: 1 },
+		archiveCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "700", fontFamily: t.fontMono },
 	});

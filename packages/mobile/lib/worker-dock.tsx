@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { StyleSheet, View } from "react-native";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import { workerDockVisibility } from "./worker-dock-layout";
+import { space, type } from "./tokens";
 
 export type WorkerDockProps = {
 	query: string;
@@ -38,16 +39,16 @@ export function WorkerDock({
 
 	return (
 		<View style={styles.row}>
-			{visibility.showControls ? <Host style={styles.actionHost} colorScheme={scheme} seedColor={t.blue}>
+			{visibility.showControls ? <Host style={styles.actionHost} colorScheme={scheme} seedColor={t.accent}>
 				<Button
 					label="Filters"
 					onPress={onOpenControls}
 					testID="worker-controls"
 					variant={projectFiltered ? "filled" : "outlined"}
-					style={{ width: 52, height: 52, borderRadius: 26 }}
+					style={{ width: 52, height: 52, borderRadius: 28}}
 				/>
 			</Host> : null}
-			{visibility.showSearch ? <Host style={styles.searchHost} colorScheme={scheme} seedColor={t.blue}>
+			{visibility.showSearch ? <Host style={styles.searchHost} colorScheme={scheme} seedColor={t.accent}>
 				{
 					<TextInput
 						value={value}
@@ -64,24 +65,24 @@ export function WorkerDock({
 						style={{
 							width: "100%",
 							height: 52,
-							borderRadius: 18,
+							borderRadius: 16,
 							backgroundColor: t.bgSubtle,
 							borderWidth: StyleSheet.hairlineWidth,
 							borderColor: t.borderDefault,
-							paddingHorizontal: 16,
+							paddingHorizontal: space.lg,
 						}}
-						textStyle={{ color: t.textPrimary, fontSize: 16 }}
+						textStyle={{ color: t.textPrimary, fontSize: type.callout.fontSize }}
 						placeholderTextColor={t.textTertiary}
 					/>
 				}
 			</Host> : null}
-			{visibility.showSpawn ? <Host style={styles.actionHost} colorScheme={scheme} seedColor={t.blue}>
+			{visibility.showSpawn ? <Host style={styles.actionHost} colorScheme={scheme} seedColor={t.accent}>
 				<Button
 					label="+"
 					onPress={onSpawn}
 					testID="spawn-worker"
 					variant="outlined"
-					style={{ width: 52, height: 52, borderRadius: 26 }}
+					style={{ width: 52, height: 52, borderRadius: 28}}
 				/>
 			</Host> : null}
 		</View>
@@ -89,7 +90,7 @@ export function WorkerDock({
 }
 
 const styles = StyleSheet.create({
-	row: { height: 52, flexDirection: "row", gap: 10 },
+	row: { height: 52, flexDirection: "row", gap: space.sm },
 	searchHost: { flex: 1, height: 52 },
 	actionHost: { width: 52, height: 52 },
 });

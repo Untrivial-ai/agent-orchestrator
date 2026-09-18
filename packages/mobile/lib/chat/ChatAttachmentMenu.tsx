@@ -4,6 +4,7 @@ import { StyleSheet, View } from "react-native";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
+import { iconSize, type } from "../tokens";
 
 export function ChatAttachmentMenu({
 	disabled,
@@ -30,7 +31,7 @@ export function ChatAttachmentMenu({
 			accessibilityState={{ disabled }}
 			style={[styles.trigger, disabled && styles.disabled]}
 		>
-			<Feather name="paperclip" size={21} color={disabled ? t.textFaint : t.textSecondary} />
+			<Feather name="paperclip" size={iconSize.lg} color={disabled ? t.textFaint : t.textSecondary} />
 		</View>
 	);
 
@@ -50,6 +51,6 @@ export function ChatAttachmentMenu({
 }
 
 const makeStyles = (_t: Theme) => StyleSheet.create({
-	trigger: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center" },
+	trigger: { width: 42, height: 42, borderRadius: 20, borderCurve: "continuous", alignItems: "center", justifyContent: "center" },
 	disabled: { opacity: 0.55 },
 });

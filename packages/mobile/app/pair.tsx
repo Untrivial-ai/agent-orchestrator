@@ -28,6 +28,7 @@ import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { MinimalBackButton } from "../lib/MinimalBackButton";
 import { MOBILE_EVENTS } from "../lib/telemetry/events";
 import { mobileTelemetry } from "../lib/telemetry/runtime";
+import { iconSize, space, type } from "../lib/tokens";
 
 export default function PairScreen() {
 	const t = useTheme();
@@ -185,11 +186,11 @@ export default function PairScreen() {
 
 			{failure ? (
 				<View style={styles.errorBox}>
-					<Feather name="alert-circle" size={15} color={t.red} />
+					<Feather name="alert-circle" size={iconSize.sm} color={t.red} />
 					<View style={{ flex: 1 }}>
 						<Text style={styles.errorText}>{failure.message}</Text>
 						{failure.showLocalNetworkHint ? (
-							<Text style={[styles.errorText, { marginTop: 6 }]}>{LOCAL_NETWORK_HINT}</Text>
+							<Text style={[styles.errorText, { marginTop: space.xs }]}>{LOCAL_NETWORK_HINT}</Text>
 						) : null}
 						<View style={styles.errorActions}>
 							{/* Re-arms the scanner; without it a failed scan is a dead end,
@@ -215,7 +216,7 @@ export default function PairScreen() {
 				style={[styles.manual, { paddingBottom: insets.bottom + 14 }]}
 				accessibilityRole="button"
 			>
-				<Feather name="edit-3" size={15} color={t.textSecondary} />
+				<Feather name="edit-3" size={iconSize.sm} color={t.textSecondary} />
 				<Text style={styles.manualText}>Enter details manually</Text>
 			</Pressable>
 		</View>
@@ -247,7 +248,7 @@ function CameraGate({
 	}
 	return (
 		<View style={styles.gate}>
-			<Feather name="camera-off" size={24} color={t.textTertiary} />
+			<Feather name="camera-off" size={iconSize.xl} color={t.textTertiary} />
 			<Text style={styles.gateTitle}>Camera access needed</Text>
 			<Text style={styles.gateHint}>
 				{canAskAgain
@@ -258,14 +259,14 @@ function CameraGate({
 				// App Review 5.1.1(iv): the button ahead of the system permission
 				// prompt must read "Continue"/"Next", never "Allow ...", so the grant
 				// decision is only ever made in the system dialog itself.
-				<Button title="Continue" onPress={onRequest} style={{ marginTop: 18 }} />
+				<Button title="Continue" onPress={onRequest} style={{ marginTop: space.lg }} />
 			) : (
 				<Button
 					title="Open settings"
 					variant="ghost"
 					icon="settings"
 					onPress={() => Linking.openSettings()}
-					style={{ marginTop: 18 }}
+					style={{ marginTop: space.lg }}
 				/>
 			)}
 		</View>
@@ -278,14 +279,14 @@ const CORNER_W = 3;
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgBase },
-	topBar: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 8 },
+	topBar: { paddingHorizontal: space.lg, paddingTop: space.xxs, paddingBottom: space.sm },
 
-	steps: { paddingHorizontal: 20, paddingBottom: 16 },
+	steps: { paddingHorizontal: space.xl, paddingBottom: space.lg },
 
 	viewfinder: {
 		flex: 1,
-		marginHorizontal: 16,
-		borderRadius: 18,
+		marginHorizontal: space.lg,
+		borderRadius: 16, borderCurve: "continuous",
 		overflow: "hidden",
 		// The viewfinder is a camera preview, so it stays dark in both themes.
 		backgroundColor: "#0c0d10",
@@ -301,38 +302,38 @@ const makeStyles = (t: Theme) =>
 	cBL: { bottom: 14, left: 14, borderBottomWidth: CORNER_W, borderLeftWidth: CORNER_W, borderBottomLeftRadius: 6 },
 	cBR: { bottom: 14, right: 14, borderBottomWidth: CORNER_W, borderRightWidth: CORNER_W, borderBottomRightRadius: 6 },
 
-	gate: { flex: 1, alignItems: "center", justifyContent: "center", padding: 28 },
-	gateTitle: { color: t.textPrimary, fontSize: 16, fontWeight: "700", marginTop: 12 },
+	gate: { flex: 1, alignItems: "center", justifyContent: "center", padding: space.xxl },
+	gateTitle: { color: t.textPrimary, fontSize: type.callout.fontSize, fontWeight: "700", marginTop: space.md },
 	gateHint: {
 		color: t.textSecondary,
-		fontSize: 13,
-		lineHeight: 19,
+		fontSize: type.footnote.fontSize,
+		lineHeight: type.footnote.lineHeight,
 		textAlign: "center",
-		marginTop: 8,
+		marginTop: space.sm,
 		maxWidth: 300,
 	},
 
 	errorBox: {
 		flexDirection: "row",
-		gap: 9,
+		gap: space.sm,
 		alignItems: "flex-start",
 		backgroundColor: t.tintRed,
-		borderRadius: 10,
-		padding: 12,
-		marginHorizontal: 16,
-		marginTop: 14,
+		borderRadius: 8, borderCurve: "continuous",
+		padding: space.md,
+		marginHorizontal: space.lg,
+		marginTop: space.md,
 	},
-	errorText: { color: t.red, fontSize: 13, lineHeight: 19 },
-	errorActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+	errorText: { color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+	errorActions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, marginTop: space.sm },
 
 	manual: {
 		flexDirection: "row",
 		alignItems: "center",
 		justifyContent: "center",
-		gap: 8,
-		paddingTop: 18,
+		gap: space.sm,
+		paddingTop: space.lg,
 	},
-	manualText: { color: t.textSecondary, fontSize: 15, fontWeight: "600" },
+	manualText: { color: t.textSecondary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
 });
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";

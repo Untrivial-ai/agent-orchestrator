@@ -2,6 +2,7 @@ import { Button, Column, Host, ListItem, Text as NativeText, TextInput as Native
 import { useEffect } from "react";
 import { haptics } from "../haptics";
 import { useTheme, useThemeState } from "../ThemeProvider";
+import { space, type } from "../tokens";
 
 export type ElicitationChoice = { value: string; label: string; description?: string };
 export type ElicitationChoiceListProps = {
@@ -24,7 +25,7 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	return (
-		<Host matchContents={{ vertical: true }} style={{ width: "100%" }} colorScheme={scheme} seedColor={t.blue}>
+		<Host matchContents={{ vertical: true }} style={{ width: "100%" }} colorScheme={scheme} seedColor={t.accent}>
 			<Column spacing={0} style={{ width: "100%" }}>
 				{choices.map((choice) => {
 					const checked = selected(choice.value);
@@ -32,10 +33,10 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 						key={choice.value}
 						testID={`elicitation-choice-${choice.value}`}
 						onPress={() => { haptics.select(); onChange(choice.value); }}
-						leading={<NativeText textStyle={{ color: checked ? t.blue : t.textTertiary, fontSize: 20 }}>{checked ? (multi ? "✓" : "●") : "○"}</NativeText>}
+						leading={<NativeText textStyle={{ color: checked ? t.accent : t.textTertiary, fontSize: type.title3.fontSize }}>{checked ? (multi ? "✓" : "●") : "○"}</NativeText>}
 						supportingText={choice.description}
 					>
-						<NativeText textStyle={{ color: t.textPrimary, fontSize: 14, fontWeight: checked ? "700" : "600" }}>{choice.label}</NativeText>
+						<NativeText textStyle={{ color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: checked ? "700" : "600" }}>{choice.label}</NativeText>
 					</ListItem>;
 				})}
 			</Column>
@@ -51,7 +52,7 @@ export function ElicitationTextField({ value, label, autoFocus, numeric, maxLeng
 		const next = value === undefined ? "" : String(value);
 		if (text.value !== next) text.value = next;
 	}, [text, value]);
-	return <Host style={{ width: "100%", height: 58 }} colorScheme={scheme} seedColor={t.blue}>
+	return <Host style={{ width: "100%", height: 58 }} colorScheme={scheme} seedColor={t.accent}>
 		<NativeTextInput
 			value={text}
 			autoFocus={autoFocus}
@@ -59,7 +60,7 @@ export function ElicitationTextField({ value, label, autoFocus, numeric, maxLeng
 			placeholder={label}
 			keyboardType={numeric ? "numeric" : "default"}
 			maxLength={maxLength}
-			style={{ width: "100%", height: 54, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, backgroundColor: t.bgSubtle }}
+			style={{ width: "100%", height: 54, paddingHorizontal: space.md, paddingVertical: space.sm, borderRadius: 12, backgroundColor: t.bgSubtle }}
 			placeholderTextColor={t.textFaint}
 		/>
 	</Host>;
@@ -69,7 +70,7 @@ export function ElicitationAction({ label, primary, disabled, width, onPress }: 
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const resolvedWidth = width ?? (primary ? 96 : 70);
-	return <Host style={{ width: resolvedWidth, height: 44 }} colorScheme={scheme} seedColor={t.blue}>
-		<Button label={label} variant={primary ? "filled" : "text"} disabled={disabled} onPress={() => { haptics.tap(); onPress(); }} style={{ width: resolvedWidth, height: 44, borderRadius: 14 }} />
+	return <Host style={{ width: resolvedWidth, height: 44 }} colorScheme={scheme} seedColor={t.accent}>
+		<Button label={label} variant={primary ? "filled" : "text"} disabled={disabled} onPress={() => { haptics.tap(); onPress(); }} style={{ width: resolvedWidth, height: 44, borderRadius: 12}} />
 	</Host>;
 }

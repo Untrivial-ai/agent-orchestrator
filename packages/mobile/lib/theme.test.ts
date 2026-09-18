@@ -31,7 +31,7 @@ describe("palette parity", () => {
 	// A half-finished light palette is the likely failure mode: colours copied
 	// across unchanged look washed out on white, and nothing else would flag it.
 	it("darkens every semantic colour for light mode rather than reusing it", () => {
-		const semantic = ["blue", "orange", "amber", "red", "purple", "green"] as const;
+		const semantic = ["accent", "orange", "amber", "red", "green"] as const;
 		for (const token of semantic) {
 			expect(lightTheme[token], token).not.toBe(darkTheme[token]);
 		}
@@ -42,18 +42,22 @@ describe("palette parity", () => {
 		expect(lightTheme.textPrimary).not.toBe(darkTheme.textPrimary);
 	});
 
-	// The four call sites that used to hardcode #06101f would be invisible on the
-	// light accent.
+	// The accent flips polarity between themes — near-white ink on dark, near-black
+	// on light — so the ink has to flip with it.
 	it("flips the accent ink between themes", () => {
-		expect(darkTheme.onAccent).toBe("#06101f");
+		expect(darkTheme.onAccent).toBe("#0b0c0e");
 		expect(lightTheme.onAccent).toBe("#ffffff");
 	});
 
-	it("keeps the back-compat aliases in step with their real tokens", () => {
+	// Blue and purple were removed from the product palette: every hue means a
+	// state, and the interactive accent carries emphasis with contrast instead.
+	it("has no blue or purple left anywhere in the palette", () => {
 		for (const t of [darkTheme, lightTheme]) {
-			expect(t.accent).toBe(t.blue);
-			expect(t.accentTint).toBe(t.tintBlue);
-			expect(t.attention).toBe(t.amber);
+			for (const gone of ["blue", "purple", "tintBlue", "tintPurple", "attention"]) {
+				expect(t, gone).not.toHaveProperty(gone);
+			}
+			expect(t.accent).not.toBe(t.orange);
+			expect(t.accentBorder).toBeTruthy();
 		}
 	});
 });

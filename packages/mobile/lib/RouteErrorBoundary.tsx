@@ -4,6 +4,7 @@ import { StyleSheet, View } from "react-native";
 import { haptics } from "./haptics";
 import { captureMobileException } from "./sentry";
 import { Button, EmptyState } from "./ui";
+import { space } from "./tokens";
 
 /**
  * What a route shows when it throws while rendering, instead of the app
@@ -92,5 +93,5 @@ function useReportOnShow(error: Error) {
 // surface colour and a pushed screen keeps the base one.
 const styles = StyleSheet.create({
 	center: { flex: 1, alignItems: "center", justifyContent: "center" },
-	actions: { flexDirection: "row", gap: 10, alignItems: "center" },
+	actions: { flexDirection: "row", gap: space.sm, alignItems: "center" },
 });

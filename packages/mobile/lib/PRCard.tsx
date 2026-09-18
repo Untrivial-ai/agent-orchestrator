@@ -16,6 +16,7 @@ import {
 	type PRLifecycle,
 } from "./prView";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
+import { iconSize, space, type } from "./tokens";
 
 /** A pull-request row with the same hierarchy and density as WorkerListRow. */
 export function PRCard({
@@ -58,7 +59,7 @@ export function PRCard({
 			style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
 		>
 			<View style={styles.eyebrow}>
-				<Feather name="git-pull-request" size={14} color={state.color} />
+				<Feather name="git-pull-request" size={iconSize.sm} color={state.color} />
 				<Text style={styles.project} numberOfLines={1}>{project}</Text>
 				<Text style={[styles.status, { color: toneColor(t, status.tone) }]} numberOfLines={1}>{status.text}</Text>
 			</View>
@@ -79,7 +80,7 @@ export function PRCard({
 					}}
 					style={({ pressed }) => [styles.external, pressed && styles.externalPressed]}
 				>
-					<Feather name="external-link" size={16} color={t.textTertiary} />
+					<Feather name="external-link" size={iconSize.sm} color={t.textTertiary} />
 				</Pressable>
 			</View>
 
@@ -92,21 +93,21 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		row: {
 			minHeight: 76,
-			paddingHorizontal: 18,
-			paddingVertical: 10,
-			gap: 3,
+			paddingHorizontal: space.lg,
+			paddingVertical: space.sm,
+			gap: space.hair,
 			borderBottomWidth: StyleSheet.hairlineWidth,
 			borderBottomColor: t.borderSubtle,
 		},
 		rowPressed: { backgroundColor: t.bgSubtle },
-		eyebrow: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 17 },
-		project: { flex: 1, color: t.textSecondary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
-		status: { flexShrink: 0, fontSize: 12, lineHeight: 16, fontWeight: "500" },
+		eyebrow: { flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: 17 },
+		project: { flex: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		status: { flexShrink: 0, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
 		titleRow: { flexDirection: "row", alignItems: "center", minHeight: 40 },
-		copy: { flex: 1, gap: 2 },
-		title: { color: t.textPrimary, fontSize: 16, lineHeight: 21, fontWeight: "600", letterSpacing: -0.15 },
-		details: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontFamily: t.fontMono },
-		external: { width: 36, height: 36, marginRight: -8, alignItems: "center", justifyContent: "center", borderRadius: 12 },
+		copy: { flex: 1, gap: space.hair },
+		title: { color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
+		details: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontFamily: t.fontMono },
+		external: { width: 36, height: 36, marginRight: -8, alignItems: "center", justifyContent: "center", borderRadius: 12, borderCurve: "continuous"},
 		externalPressed: { backgroundColor: t.bgElevated },
-		blockers: { color: t.amber, fontSize: 11, lineHeight: 15, marginTop: 2, marginLeft: 20 },
+		blockers: { color: t.amber, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: space.hair, marginLeft: space.xl },
 	});

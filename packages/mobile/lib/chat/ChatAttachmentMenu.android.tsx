@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
+import { iconSize, radius, space, type } from "../tokens";
 
 export function ChatAttachmentMenu({
 	disabled,
@@ -33,17 +34,17 @@ export function ChatAttachmentMenu({
 		<>
 			<Pressable
 				accessibilityRole="button"
-				accessibilityLabel="Attach"
+				hitSlop={{ top: 1, bottom: 1 }} accessibilityLabel="Attach"
 				accessibilityState={{ disabled }}
 				disabled={disabled}
-				android_ripple={{ color: t.tintBlue, borderless: true, radius: 20 }}
+				android_ripple={{ color: t.accentTint, borderless: true, radius: 20 }}
 				onPress={() => {
 					haptics.tap();
 					setOpen(true);
 				}}
 				style={[styles.trigger, disabled && styles.disabled]}
 			>
-				<Feather name="paperclip" size={21} color={disabled ? t.textFaint : t.textSecondary} />
+				<Feather name="paperclip" size={iconSize.lg} color={disabled ? t.textFaint : t.textSecondary} />
 			</Pressable>
 
 			<BottomSheet
@@ -57,7 +58,7 @@ export function ChatAttachmentMenu({
 					<View style={styles.header}>
 						<Text style={styles.title}>Attach</Text>
 						<Pressable accessibilityRole="button" accessibilityLabel="Close" hitSlop={12} onPress={() => setOpen(false)}>
-							<Feather name="x" size={21} color={t.textSecondary} />
+							<Feather name="x" size={iconSize.lg} color={t.textSecondary} />
 						</Pressable>
 					</View>
 					<View style={styles.choices}>
@@ -82,24 +83,24 @@ function AttachmentChoice({ icon, label, bordered, onPress }: {
 		<Pressable
 			accessibilityRole="button"
 			onPress={onPress}
-			android_ripple={{ color: t.tintBlue }}
+			android_ripple={{ color: t.accentTint }}
 			style={[styles.choice, bordered && styles.choiceBorder]}
 		>
-			<Feather name={icon} size={19} color={t.blue} />
+			<Feather name={icon} size={iconSize.lg} color={t.accent} />
 			<Text style={styles.choiceLabel}>{label}</Text>
-			<Feather name="chevron-right" size={18} color={t.textFaint} />
+			<Feather name="chevron-right" size={iconSize.md} color={t.textFaint} />
 		</Pressable>
 	);
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
-	trigger: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+	trigger: { width: 42, height: 42, borderRadius: radius.pill, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
 	disabled: { opacity: 0.55 },
-	sheet: { paddingHorizontal: 16, backgroundColor: t.bgSurface },
-	header: { minHeight: 54, paddingHorizontal: 4, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-	title: { color: t.textPrimary, fontSize: 20, lineHeight: 26, fontWeight: "700" },
-	choices: { borderRadius: 16, backgroundColor: t.bgElevated, overflow: "hidden" },
-	choice: { minHeight: 54, paddingHorizontal: 15, flexDirection: "row", alignItems: "center", gap: 11 },
+	sheet: { paddingHorizontal: space.lg, backgroundColor: t.bgSurface },
+	header: { minHeight: 54, paddingHorizontal: space.xxs, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+	title: { color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "700" },
+	choices: { borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated, overflow: "hidden" },
+	choice: { minHeight: 54, paddingHorizontal: space.lg, flexDirection: "row", alignItems: "center", gap: space.md },
 	choiceBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
-	choiceLabel: { flex: 1, color: t.textPrimary, fontSize: 16, lineHeight: 21, fontWeight: "600" },
+	choiceLabel: { flex: 1, color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600" },
 });

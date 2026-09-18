@@ -33,7 +33,7 @@ export function AgentLogo({ harness, size = 24 }: { harness?: string | null; siz
 		<View
 			style={[
 				styles.box,
-				{ width: size, height: size, borderRadius: Math.round(size * 0.28), backgroundColor: chip },
+				{ width: size, height: size, borderRadius: Math.round(size * 0.28), borderCurve: "continuous", backgroundColor: chip },
 			]}
 		>
 			{source ? (
@@ -47,7 +47,7 @@ export function AgentLogo({ harness, size = 24 }: { harness?: string | null; siz
 					accessibilityIgnoresInvertColors
 				/>
 			) : (
-				<View style={[styles.fallback, { width: size, height: size, borderRadius: Math.round(size * 0.28) }]}>
+				<View style={[styles.fallback, { width: size, height: size, borderRadius: Math.round(size * 0.28), borderCurve: "continuous"}]}>
 					<Text style={[styles.initial, { fontSize: Math.round(size * 0.5), color: t.textSecondary }]}>
 						{harnessInitial(harness)}
 					</Text>

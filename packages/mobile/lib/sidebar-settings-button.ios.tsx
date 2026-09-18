@@ -4,10 +4,11 @@ import {
 	accessibilityIdentifier,
 	accessibilityLabel,
 	frame,
-	glassEffect,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
+import { glassCircle } from "./glass";
 import { useTheme, useThemeState } from "./ThemeProvider";
+import { iconSize, type } from "./tokens";
 
 export function SidebarSettingsButton({ active, onPress }: { active: boolean; onPress: () => void }) {
 	const t = useTheme();
@@ -19,16 +20,13 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 				onPress={onPress}
 				modifiers={[
 					frame({ width: 48, height: 48 }),
-					glassEffect({
-						glass: { variant: "regular", interactive: true, tint: active ? t.tintBlue : undefined },
-						shape: "circle",
-					}),
-					tint(active ? t.blue : t.textSecondary),
+					glassCircle(active ? t.accentTint : undefined),
+					tint(active ? t.accent : t.textSecondary),
 					accessibilityLabel("Settings"),
 					accessibilityIdentifier("sidebar-settings"),
 				]}
 			>
-				<Image systemName="gearshape" size={20} color={active ? t.blue : t.textSecondary} />
+				<Image systemName="gearshape" size={iconSize.lg} color={active ? t.accent : t.textSecondary} />
 			</Button>
 		</Host>
 	);

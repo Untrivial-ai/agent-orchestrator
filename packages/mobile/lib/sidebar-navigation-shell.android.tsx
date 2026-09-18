@@ -47,6 +47,7 @@ import { useReducedMotion } from "./useReducedMotion";
 import { useApp } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
+import { type, space } from "./tokens";
 
 type ScrollRequest = { destination: SidebarDestinationId; sequence: number };
 type SidebarNavigationContextValue = {
@@ -312,15 +313,15 @@ function DestinationRow({ destination, active, badge, onPress }: {
 			testID={`sidebar-${destination.id}`}
 			accessibilityRole="button"
 			accessibilityState={{ selected: active }}
-			android_ripple={{ color: t.tintBlue }}
+			android_ripple={{ color: t.accentTint }}
 			onPress={onPress}
 			style={({ pressed }) => [
 				styles.destination,
-				(active || pressed) && { backgroundColor: t.tintBlue },
+				(active || pressed) && { backgroundColor: t.accentTint },
 			]}
 		>
-			<SidebarDestinationIcon destination={destination} active={active} color={active ? t.blue : t.textSecondary} />
-			<Text numberOfLines={1} style={[styles.destinationLabel, active && { color: t.blue, fontWeight: "700" }]}>
+			<SidebarDestinationIcon destination={destination} active={active} color={active ? t.accent : t.textSecondary} />
+			<Text numberOfLines={1} style={[styles.destinationLabel, active && { color: t.accent, fontWeight: "700" }]}>
 				{destination.label}
 			</Text>
 			{/* No check: the tinted row and the blue label already say which
@@ -389,57 +390,57 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 		bottom: 88,
 		width: 64,
 	},
-	sidebar: { flex: 1, paddingHorizontal: 16, backgroundColor: t.bgSide },
+	sidebar: { flex: 1, paddingHorizontal: space.lg, backgroundColor: t.bgSide },
 	sidebarTop: { height: 232 },
-	brandMascotSlot: { width: 72, height: 62, paddingLeft: 14, justifyContent: "center" },
+	brandMascotSlot: { width: 72, height: 62, paddingLeft: space.md, justifyContent: "center" },
 	brandMascot: { width: 58, height: 48 },
-	destinations: { gap: 7, paddingTop: 8 },
+	destinations: { gap: space.xs, paddingTop: space.sm },
 	destination: {
 		height: 52,
-		paddingHorizontal: 14,
-		borderRadius: 13,
+		paddingHorizontal: space.md,
+		borderRadius: 12,
 		borderCurve: "continuous",
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 13,
+		gap: space.md,
 		overflow: "hidden",
 	},
-	destinationLabel: { flex: 1, color: t.textPrimary, fontSize: 17, lineHeight: 22, fontWeight: "600" },
+	destinationLabel: { flex: 1, color: t.textPrimary, fontSize: type.body.fontSize, lineHeight: type.body.lineHeight, fontWeight: "600" },
 	// Amber, not the selection blue: this is attention owed, and it must read
 	// the same whether or not you are standing on that destination.
-	destinationBadge: { minWidth: 22, textAlign: "center", color: t.amber, fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"] },
+	destinationBadge: { minWidth: 22, textAlign: "center", color: t.amber, fontSize: type.footnote.fontSize, fontWeight: "700", fontVariant: ["tabular-nums"] },
 	sectionLabel: {
-		paddingTop: 8,
-		paddingBottom: 8,
-		paddingHorizontal: 12,
+		paddingTop: space.sm,
+		paddingBottom: space.sm,
+		paddingHorizontal: space.md,
 		color: t.textTertiary,
-		fontSize: 12,
+		fontSize: type.caption1.fontSize,
 		fontWeight: "700",
 		letterSpacing: 0.7,
 	},
 	sectionLabelStale: { color: t.amber },
 	sessionList: { flex: 1 },
 	sessionListStale: { opacity: 0.55 },
-	sessionListContent: { paddingBottom: 8 },
+	sessionListContent: { paddingBottom: space.sm },
 	emptySessionList: { flexGrow: 1 },
-	emptySessions: { paddingHorizontal: 12, paddingTop: 8, color: t.textTertiary, fontSize: 14 },
+	emptySessions: { paddingHorizontal: space.md, paddingTop: space.sm, color: t.textTertiary, fontSize: type.subheadline.fontSize },
 	sessionRow: {
 		minHeight: 58,
-		paddingHorizontal: 12,
-		paddingVertical: 9,
+		paddingHorizontal: space.md,
+		paddingVertical: space.sm,
 		borderRadius: 12,
 		borderCurve: "continuous",
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 11,
+		gap: space.md,
 		overflow: "hidden",
 	},
 	sessionRowPressed: { backgroundColor: t.bgSubtle },
 	sessionText: { flex: 1, minWidth: 0 },
-	sessionTitle: { color: t.textPrimary, fontSize: 15, fontWeight: "600" },
-	sessionMetaRow: { marginTop: 4, flexDirection: "row", alignItems: "center", gap: 6 },
-	statusDot: { width: 6, height: 6, borderRadius: 3 },
-	sessionMeta: { flex: 1, color: t.textTertiary, fontSize: 12 },
+	sessionTitle: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
+	sessionMetaRow: { marginTop: space.xxs, flexDirection: "row", alignItems: "center", gap: space.xs },
+	statusDot: { width: 6, height: 6, borderRadius: 4 },
+	sessionMeta: { flex: 1, color: t.textTertiary, fontSize: type.caption1.fontSize },
 	sidebarActions: {
 		position: "absolute",
 		left: 28,

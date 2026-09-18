@@ -1,5 +1,5 @@
 import { Host } from "@expo/ui";
-import { Button, HStack, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
+import { Button, GlassEffectContainer, HStack, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
 import {
 	accessibilityIdentifier,
 	Animation,
@@ -8,7 +8,6 @@ import {
 	buttonStyle,
 	controlSize,
 	frame,
-	glassEffect,
 	labelStyle,
 	opacity,
 	padding,
@@ -17,7 +16,9 @@ import {
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { useEffect } from "react";
+import { glassField } from "./glass";
 import { haptics } from "./haptics";
+import { duration } from "./tokens";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import { workerProjectLabel, workerProjectOptions } from "./worker-controls";
 import type { WorkerDockProps } from "./worker-dock";
@@ -49,7 +50,10 @@ export function WorkerDock({
 	}, [query, text]);
 
 	return (
-		<Host style={{ flex: 1, height: 52 }} colorScheme={scheme} seedColor={t.blue}>
+		<Host style={{ flex: 1, height: 52 }} colorScheme={scheme} seedColor={t.accent}>
+			{/* The filter, the search field and spawn are three pieces of one dock.
+			    A single container lets the system blend their glass as they meet. */}
+			<GlassEffectContainer spacing={10}>
 			<HStack spacing={10} modifiers={[frame({ height: 52, maxWidth: 1000 })]}>
 				{visibility.showControls ? <Menu
 					label="Worker options"
@@ -59,7 +63,7 @@ export function WorkerDock({
 						controlSize("extraLarge"),
 						buttonBorderShape("circle"),
 						labelStyle("iconOnly"),
-						tint(projectFiltered ? t.blue : t.textPrimary),
+						tint(projectFiltered ? t.accent : t.textSecondary),
 						accessibilityIdentifier("worker-controls"),
 					]}
 				>
@@ -91,9 +95,9 @@ export function WorkerDock({
 					<HStack
 						spacing={0}
 						modifiers={[
-							frame({ height: 48, maxWidth: 1000 }),
-							glassEffect({ glass: { variant: "regular", interactive: true }, shape: "roundedRectangle", cornerRadius: 18 }),
-							animation(Animation.spring({ duration: 0.3, bounce: 0.08 }), searchOpen),
+							frame({ height: 44, maxWidth: 1000 }),
+							glassField(44),
+							animation(Animation.spring({ duration: duration.slow / 1000, bounce: 0 }), searchOpen),
 						]}
 					>
 						<TextField
@@ -125,7 +129,7 @@ export function WorkerDock({
 								tint(t.textSecondary),
 								opacity(clear.disabled ? 0.7 : clear.opacity),
 								scaleEffect(clear.disabled ? 1 : clear.scale),
-								animation(Animation.spring({ duration: 0.24, bounce: 0.12 }), !clear.disabled),
+								animation(Animation.spring({ duration: duration.base / 1000, bounce: 0 }), !clear.disabled),
 								accessibilityIdentifier("worker-search-clear"),
 							]}
 						/>
@@ -147,6 +151,7 @@ export function WorkerDock({
 					]}
 				/> : null}
 			</HStack>
+			</GlassEffectContainer>
 		</Host>
 	);
 }

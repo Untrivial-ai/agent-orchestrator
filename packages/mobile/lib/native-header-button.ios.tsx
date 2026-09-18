@@ -34,7 +34,7 @@ export function NativeHeaderButton({
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	return (
-		<Host style={{ width: 44, height: 44 }} colorScheme={scheme} seedColor={t.blue}>
+		<Host style={{ width: 44, height: 44 }} colorScheme={scheme} seedColor={t.accent}>
 			<Button
 				label={label}
 				systemImage={systemImage(icon)}

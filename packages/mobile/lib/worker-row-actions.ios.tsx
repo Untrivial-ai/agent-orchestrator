@@ -1,5 +1,5 @@
 import { Host } from "@expo/ui";
-import { Button, HStack, Image } from "@expo/ui/swift-ui";
+import { Button, GlassEffectContainer, HStack, Image } from "@expo/ui/swift-ui";
 import {
 	accessibilityIdentifier,
 	accessibilityLabel,
@@ -11,7 +11,8 @@ import {
 	rotationEffect,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
-import { useThemeState } from "./ThemeProvider";
+import { useTheme, useThemeState } from "./ThemeProvider";
+import { iconSize, type } from "./tokens";
 
 const ACTION_WIDTH = 64;
 const CONTROL_SIZE = 44;
@@ -28,9 +29,13 @@ export function WorkerRowActions({
 	onDelete(): void;
 }) {
 	const { scheme } = useThemeState();
+	const t = useTheme();
 
 	return (
 		<Host style={{ width: ACTION_WIDTH * 2, height: 76 }} colorScheme={scheme}>
+			{/* One container for both controls: the system renders their glass in a
+			    single pass and blends them as they come together. */}
+			<GlassEffectContainer spacing={16}>
 			<HStack spacing={16} modifiers={[frame({ width: ACTION_WIDTH * 2, height: 76 })]}>
 				<Button
 					onPress={() => onSetPinned(!pinned)}
@@ -39,7 +44,7 @@ export function WorkerRowActions({
 						buttonBorderShape("circle"),
 						controlSize("large"),
 						labelStyle("iconOnly"),
-						tint(pinned ? "#E2AC50" : "#4B87FF"),
+						tint(pinned ? t.amber : t.accent),
 						frame({ width: CONTROL_SIZE, height: CONTROL_SIZE }),
 						accessibilityLabel(pinned ? `Unpin ${title}` : `Pin ${title}`),
 						accessibilityIdentifier("worker-pin"),
@@ -47,8 +52,8 @@ export function WorkerRowActions({
 				>
 					<Image
 						systemName={pinned ? "pin.fill" : "pin"}
-						size={19}
-						color={pinned ? "#E2AC50" : "#4B87FF"}
+						size={iconSize.lg}
+						color={pinned ? t.amber : t.accent}
 						modifiers={[rotationEffect(28)]}
 					/>
 				</Button>
@@ -59,15 +64,16 @@ export function WorkerRowActions({
 						buttonBorderShape("circle"),
 						controlSize("large"),
 						labelStyle("iconOnly"),
-						tint("#F06A6A"),
+						tint(t.red),
 						frame({ width: CONTROL_SIZE, height: CONTROL_SIZE }),
 						accessibilityLabel(`Delete ${title}`),
 						accessibilityIdentifier("worker-delete"),
 					]}
 				>
-					<Image systemName="trash" size={19} color="#F06A6A" />
+					<Image systemName="trash" size={iconSize.lg} color={t.red} />
 				</Button>
 			</HStack>
+			</GlassEffectContainer>
 		</Host>
 	);
 }

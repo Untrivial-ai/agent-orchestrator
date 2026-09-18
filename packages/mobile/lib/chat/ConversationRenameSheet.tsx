@@ -6,6 +6,7 @@ import { useThemedStyles } from "../ThemeProvider";
 import { SheetHeader } from "../ui";
 import { ElicitationAction, ElicitationTextField } from "./elicitation-native-controls";
 import { normalizeConversationTitle } from "./conversationMenuModel";
+import { space, type } from "../tokens";
 
 export function ConversationRenameSheet({
 	initialTitle,
@@ -32,7 +33,7 @@ export function ConversationRenameSheet({
 			onClose();
 		} catch (cause) {
 			haptics.error();
-			setError(cause instanceof Error ? cause.message : "Could not rename this conversation.");
+			setError(cause instanceof Error ? cause.message : "Couldn't rename this conversation.");
 			setSaving(false);
 		}
 	};
@@ -51,8 +52,8 @@ export function ConversationRenameSheet({
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
-	screen: { flex: 1, backgroundColor: t.bgSurface, paddingHorizontal: 20, paddingTop: 22 },
-	field: { marginTop: 22 },
-	error: { color: t.red, fontSize: 12, lineHeight: 17, marginTop: 8 },
-	actions: { flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 6, marginTop: 12 },
+	screen: { flex: 1, backgroundColor: t.bgSurface, paddingHorizontal: space.xl, paddingTop: space.xl },
+	field: { marginTop: space.xl },
+	error: { color: t.red, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, marginTop: space.sm },
+	actions: { flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: space.xs, marginTop: space.md },
 });

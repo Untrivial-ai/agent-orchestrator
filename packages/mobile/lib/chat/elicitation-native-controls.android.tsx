@@ -7,6 +7,7 @@ import type {
 	ElicitationChoiceListProps,
 	ElicitationTextFieldProps,
 } from "./elicitation-native-controls";
+import { iconSize, space, type } from "../tokens";
 
 export function ElicitationChoiceList({ choices, selected, multi, onChange }: ElicitationChoiceListProps) {
 	const t = useTheme();
@@ -20,14 +21,14 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 						testID={`elicitation-choice-${choice.value}`}
 						accessibilityRole={multi ? "checkbox" : "radio"}
 						accessibilityState={{ checked }}
-						android_ripple={{ color: t.tintBlue }}
+						android_ripple={{ color: t.accentTint }}
 						onPress={() => { haptics.select(); onChange(choice.value); }}
 						style={[styles.choice, index > 0 && { borderTopColor: t.borderSubtle, borderTopWidth: StyleSheet.hairlineWidth }]}
 					>
 						<Feather
 							name={checked ? (multi ? "check-square" : "disc") : (multi ? "square" : "circle")}
-							size={22}
-							color={checked ? t.blue : t.textTertiary}
+							size={iconSize.lg}
+							color={checked ? t.accent : t.textTertiary}
 						/>
 						<View style={styles.choiceCopy}>
 							<Text style={[styles.choiceLabel, { color: t.textPrimary }, checked && styles.choiceLabelSelected]}>{choice.label}</Text>
@@ -49,7 +50,7 @@ export function ElicitationTextField({ value, label, autoFocus, numeric, maxLeng
 			onChangeText={(next) => onChange(numeric ? (next === "" ? "" : Number(next)) : next)}
 			placeholder={label}
 			placeholderTextColor={t.textFaint}
-			selectionColor={t.blue}
+			selectionColor={t.accent}
 			keyboardType={numeric ? "numeric" : "default"}
 			maxLength={maxLength}
 			style={[styles.input, { color: t.textPrimary, backgroundColor: t.bgSubtle, borderColor: t.borderDefault }]}
@@ -64,13 +65,13 @@ export function ElicitationAction({ label, primary, disabled, width, onPress }: 
 		<Pressable
 			accessibilityRole="button"
 			disabled={disabled}
-			android_ripple={{ color: primary ? "rgba(255,255,255,0.18)" : t.tintBlue }}
+			android_ripple={{ color: primary ? "rgba(255,255,255,0.18)" : t.accentTint }}
 			onPress={() => { haptics.tap(); onPress(); }}
 			style={({ pressed }) => [
 				styles.action,
 				{
 					width: resolvedWidth,
-					backgroundColor: primary ? t.blue : pressed ? t.bgSubtle : "transparent",
+					backgroundColor: primary ? t.accent : pressed ? t.bgSubtle : "transparent",
 					opacity: disabled ? 0.45 : 1,
 				},
 			]}
@@ -81,21 +82,21 @@ export function ElicitationAction({ label, primary, disabled, width, onPress }: 
 }
 
 const styles = StyleSheet.create({
-	choice: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 11, paddingHorizontal: 4 },
-	choiceCopy: { flex: 1, gap: 3 },
-	choiceLabel: { fontSize: 14, lineHeight: 19, fontWeight: "600" },
+	choice: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: space.md, paddingHorizontal: space.xxs },
+	choiceCopy: { flex: 1, gap: space.hair },
+	choiceLabel: { fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
 	choiceLabelSelected: { fontWeight: "700" },
-	choiceDescription: { fontSize: 13, lineHeight: 18 },
+	choiceDescription: { fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 	input: {
 		flex: 1,
 		height: 54,
-		paddingHorizontal: 14,
-		paddingVertical: 10,
-		borderRadius: 14,
+		paddingHorizontal: space.md,
+		paddingVertical: space.sm,
+		borderRadius: 12,
 		borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
-		fontSize: 15,
+		fontSize: type.subheadline.fontSize,
 	},
-	action: { height: 44, borderRadius: 14, alignItems: "center", justifyContent: "center", overflow: "hidden" },
-	actionLabel: { fontSize: 14, fontWeight: "700" },
+	action: { height: 44, borderRadius: 12, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
+	actionLabel: { fontSize: type.subheadline.fontSize, fontWeight: "700" },
 });

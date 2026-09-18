@@ -16,6 +16,7 @@ import { WorkerRowActions } from "./worker-row-actions";
 import { WorkerRowInteraction } from "./worker-row-interaction";
 import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
 import { normalizeConversationTitle } from "./chat/conversationMenuModel";
+import { iconSize, press, space, type } from "./tokens";
 
 export function WorkerListRow({
 	session,
@@ -83,7 +84,7 @@ export function WorkerListRow({
 			onRenameCancel();
 		} catch (cause) {
 			haptics.error();
-			setRenameError(cause instanceof Error ? cause.message : "Could not rename this worker.");
+			setRenameError(cause instanceof Error ? cause.message : "Couldn't rename this worker.");
 			setRenameSaving(false);
 		}
 	}, [onRename, onRenameCancel, renameSaving, renameTitle]);
@@ -266,29 +267,29 @@ function WorkerRowContents({
 						onChangeText={onRenameTitleChange}
 						placeholder="Worker name"
 						placeholderTextColor={t.textFaint}
-						selectionColor={t.blue}
-						maxLength={100}
+						selectionColor={t.accent}
+						maxLength={120}
 						returnKeyType="done"
 						onSubmitEditing={onRenameSave}
 						style={styles.renameInput}
 					/>
 					<Pressable
 						accessibilityRole="button"
-						accessibilityLabel="Cancel rename"
+						hitSlop={{ top: 6, bottom: 6, left: 3, right: 3 }} accessibilityLabel="Cancel rename"
 						disabled={renameSaving}
 						onPress={onRenameCancel}
 						style={({ pressed }) => [styles.renameControl, pressed && styles.renameControlPressed, renameSaving && styles.renameControlDisabled]}
 					>
-						<Feather name="x" size={17} color={t.textSecondary} />
+						<Feather name="x" size={iconSize.md} color={t.textSecondary} />
 					</Pressable>
 					<Pressable
 						accessibilityRole="button"
-						accessibilityLabel="Save worker name"
+						hitSlop={{ top: 6, bottom: 6, left: 3, right: 3 }} accessibilityLabel="Save worker name"
 						disabled={!canSave}
 						onPress={onRenameSave}
 						style={({ pressed }) => [styles.renameControl, styles.renameSave, pressed && styles.renameControlPressed, !canSave && styles.renameControlDisabled]}
 					>
-						<Feather name={renameSaving ? "loader" : "check"} size={17} color={t.onAccent} />
+						<Feather name={renameSaving ? "loader" : "check"} size={iconSize.md} color={t.onAccent} />
 					</Pressable>
 				</View>
 			) : (
@@ -324,21 +325,21 @@ const makeStyles = (t: Theme) =>
 		foreground: { backgroundColor: t.bgBase },
 		row: {
 			minHeight: 76,
-			paddingHorizontal: 18,
-			paddingVertical: 10,
-			gap: 3,
+			paddingHorizontal: space.lg,
+			paddingVertical: space.sm,
+			gap: space.hair,
 		},
 		rowPressed: { backgroundColor: t.bgSubtle },
-		titleEditor: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 7 },
-		renameInput: { flex: 1, minWidth: 0, minHeight: 32, paddingHorizontal: 0, paddingVertical: 0, borderWidth: 0, backgroundColor: "transparent", color: t.textPrimary, fontSize: 16, lineHeight: 21, fontWeight: "600", letterSpacing: -0.15, includeFontPadding: false, textAlignVertical: "center" },
-		renameError: { color: t.red, fontSize: 11, lineHeight: 15, marginTop: -1 },
-		renameControl: { width: 32, height: 32, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, alignItems: "center", justifyContent: "center", backgroundColor: t.bgElevatedHover },
-		renameSave: { borderColor: t.blue, backgroundColor: t.blue },
-		renameControlPressed: { opacity: 0.68 },
+		titleEditor: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: space.xs },
+		renameInput: { flex: 1, minWidth: 0, minHeight: 32, paddingHorizontal: space.none, paddingVertical: space.none, borderWidth: 0, backgroundColor: "transparent", color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15, includeFontPadding: false, textAlignVertical: "center" },
+		renameError: { color: t.red, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: -1 },
+		renameControl: { width: 32, height: 32, borderRadius: 16, borderCurve: "continuous", borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, alignItems: "center", justifyContent: "center", backgroundColor: t.bgElevatedHover },
+		renameSave: { borderColor: t.accent, backgroundColor: t.accent },
+		renameControlPressed: { opacity: press.opacity },
 		renameControlDisabled: { opacity: 0.45 },
-		eyebrow: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 17 },
-		project: { flex: 1, color: t.textSecondary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
-		trailing: { flexShrink: 0, fontSize: 12, lineHeight: 16, fontWeight: "500", fontVariant: ["tabular-nums"] },
-		title: { color: t.textPrimary, fontSize: 16, lineHeight: 21, fontWeight: "600", letterSpacing: -0.15 },
-		details: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontFamily: t.fontMono },
+		eyebrow: { flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: 17 },
+		project: { flex: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		trailing: { flexShrink: 0, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500", fontVariant: ["tabular-nums"] },
+		title: { color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
+		details: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontFamily: t.fontMono },
 	});

@@ -136,7 +136,7 @@ export function prStateVisual(t: Theme, pr: DashboardPR): { label: PRLifecycle; 
 export function stateVisualOf(t: Theme, life: PRLifecycle): { label: PRLifecycle; color: string; tint: string } {
 	switch (life) {
 		case "merged":
-			return { label: "merged", color: t.purple, tint: t.tintPurple };
+			return { label: "merged", color: t.textSecondary, tint: t.bgSubtle };
 		case "closed":
 			return { label: "closed", color: t.red, tint: t.tintRed };
 		case "draft":

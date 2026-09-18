@@ -8,6 +8,7 @@ import type { ConversationActionsEntry } from "./chatSheetRegistry";
 import { contextReadout } from "./conversationChrome";
 import { conversationMenuSections, type ConversationMenuAction } from "./conversationMenuModel";
 import { can } from "./types";
+import { type, space } from "../tokens";
 
 export function ConversationActionsSheet({ entry, onAction }: { entry: ConversationActionsEntry; onAction(action: () => void): void }) {
 	const styles = useThemedStyles(makeStyles);
@@ -65,10 +66,10 @@ function ActionRow({ icon, label, hint, value, disabled, destructive, divider, o
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={() => { destructive ? haptics.warning() : haptics.tap(); onPress(); }} style={({ pressed }) => [styles.row, divider && styles.rowDivider, pressed && styles.rowPressed, disabled && { opacity: 0.42 }]}>
-		<Feather name={icon} size={18} color={destructive ? t.red : t.textSecondary} style={styles.rowIcon} />
+		<Feather name={icon} size={17} color={destructive ? t.red : t.textSecondary} style={styles.rowIcon} />
 		<View style={{ flex: 1 }}><Text style={[styles.rowLabel, destructive && { color: t.red }]}>{label}</Text>{hint ? <Text style={styles.rowHint}>{hint}</Text> : null}</View>
 		{value ? <Text numberOfLines={1} style={styles.rowValue}>{value}</Text> : null}
-		<Feather name="chevron-right" size={16} color={t.textFaint} />
+		<Feather name="chevron-right" size={15} color={t.textFaint} />
 	</Pressable>;
 }
 
@@ -77,19 +78,19 @@ function formatReset(seconds?: number): string { if (seconds === undefined || se
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	list: { flex: 1, backgroundColor: t.bgBase },
-	content: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 32 },
-	section: { marginTop: 18 },
-	sectionTitle: { color: t.textTertiary, fontSize: 12, fontWeight: "600", marginBottom: 5 },
+	content: { paddingHorizontal: space.xl, paddingTop: space.xl, paddingBottom: space.xxxl },
+	section: { marginTop: space.lg },
+	sectionTitle: { color: t.textTertiary, fontSize: type.caption1.fontSize, fontWeight: "600", marginBottom: space.xxs },
 	group: { overflow: "hidden", borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated },
-	row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 11, paddingHorizontal: 14, paddingVertical: 9 },
+	row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: space.md, paddingHorizontal: space.md, paddingVertical: space.sm },
 	rowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: t.borderSubtle },
 	rowPressed: { opacity: 0.58 },
 	rowIcon: { width: 22, textAlign: "center" },
-	rowLabel: { color: t.textPrimary, fontSize: 15, fontWeight: "500" },
-	rowHint: { color: t.textTertiary, fontSize: 11, lineHeight: 15, marginTop: 2 },
-	rowValue: { maxWidth: 110, color: t.textTertiary, fontSize: 13 },
-	usage: { marginTop: 25, paddingTop: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, gap: 7 },
-	usageText: { color: t.textTertiary, fontSize: 11, lineHeight: 16 },
+	rowLabel: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
+	rowHint: { color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: space.hair },
+	rowValue: { maxWidth: 110, color: t.textTertiary, fontSize: type.footnote.fontSize },
+	usage: { marginTop: space.xxl, paddingTop: space.lg, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, gap: space.xs },
+	usageText: { color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 	contextTrack: { height: 4, borderRadius: 2, backgroundColor: t.bgSubtle, overflow: "hidden" },
-	contextFill: { height: 4, borderRadius: 2, backgroundColor: t.blue },
+	contextFill: { height: 4, borderRadius: 2, backgroundColor: t.accent },
 });

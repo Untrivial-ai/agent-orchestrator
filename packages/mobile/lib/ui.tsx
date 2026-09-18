@@ -15,10 +15,11 @@ import {
 } from "react-native";
 import { haptics } from "./haptics";
 import { BREATHE_MS, shouldBreathe } from "./motion";
+import { useEnterTransition, usePressScale } from "./motionHooks";
 import { NativeHeaderButton, type NativeHeaderButtonIcon } from "./native-header-button";
 import { useOptionalSidebarNavigation } from "./sidebar-navigation-shell";
 import { useReducedMotion } from "./useReducedMotion";
-import { fontScaleCap } from "./tokens";
+import { fontScaleCap, press, space, type } from "./tokens";
 import type { ConnStatus } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
@@ -154,9 +155,9 @@ export function Chip({
 	const bg = tint ?? t.bgSubtle;
 	return (
 		<View style={[s.chip, { backgroundColor: bg }]}>
-			{icon ? <Feather name={icon} size={11} color={fg} style={{ marginRight: 4 }} /> : null}
+			{icon ? <Feather name={icon} size={12} color={fg} style={{ marginRight: space.xxs }} /> : null}
 			<Text
-				style={[s.chipText, { color: fg }, mono && { fontFamily: t.fontMono, fontSize: 11 }]}
+				style={[s.chipText, { color: fg }, mono && { fontFamily: t.fontMono, fontSize: type.caption2.fontSize }]}
 				numberOfLines={1}
 				maxFontSizeMultiplier={fontScaleCap.chrome}
 			>
@@ -176,17 +177,24 @@ export function Card({
 	style?: StyleProp<ViewStyle>;
 }) {
 	const s = useThemedStyles(makeStyles);
+	const pressFx = usePressScale();
 	if (!onPress) return <View style={[s.card, style]}>{children}</View>;
 	return (
-		<Pressable
-			onPress={() => {
-				haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [s.card, pressed && s.cardPressed, style]}
-		>
-			{children}
-		</Pressable>
+		// The animated transform lives on a wrapper: `Animated.createAnimatedComponent`
+		// drops function styles, and the card's pressed state needs one.
+		<Animated.View style={[style, pressFx.style]}>
+			<Pressable
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					haptics.tap();
+					onPress();
+				}}
+				style={({ pressed }) => [s.card, pressed && s.cardPressed]}
+			>
+				{children}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -338,37 +346,41 @@ export function Button({
 	const isDanger = variant === "danger";
 	// `onAccent`, not a literal: near-black reads best on the dark theme's light
 	// accent, but is invisible on light mode's darker one, which needs white.
-	const fg = isPrimary ? t.onAccent : isDanger ? t.red : t.blue;
+	const fg = isPrimary ? t.onAccent : isDanger ? t.red : t.accent;
+	const pressFx = usePressScale(disabled || loading);
 	return (
-		<Pressable
-			onPress={() => {
-				// Danger actions get a cautionary buzz; everything else a light tap.
-				if (isDanger) haptics.warning();
-				else haptics.tap();
-				onPress();
-			}}
-			disabled={disabled || loading}
-			style={({ pressed }) => [
-				s.btn,
-				isPrimary && s.btnPrimary,
-				!isPrimary && s.btnGhost,
-				isDanger && s.btnDanger,
-				(disabled || loading) && { opacity: 0.5 },
-				pressed && { opacity: 0.8 },
-				style,
-			]}
-		>
-			{loading ? (
-				<ActivityIndicator color={fg} size="small" />
-			) : (
-				<View style={s.btnInner}>
-					{icon ? <Feather name={icon} size={15} color={fg} style={{ marginRight: 7 }} /> : null}
-					<Text maxFontSizeMultiplier={fontScaleCap.body} style={[s.btnText, { color: fg }]}>
-						{title}
-					</Text>
-				</View>
-			)}
-		</Pressable>
+		<Animated.View style={[style, pressFx.style]}>
+			<Pressable
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					// Danger actions get a cautionary buzz; everything else a light tap.
+					if (isDanger) haptics.warning();
+					else haptics.tap();
+					onPress();
+				}}
+				disabled={disabled || loading}
+				style={({ pressed }) => [
+					s.btn,
+					isPrimary && s.btnPrimary,
+					!isPrimary && s.btnGhost,
+					isDanger && s.btnDanger,
+					(disabled || loading) && { opacity: 0.5 },
+					pressed && { opacity: press.opacity },
+				]}
+			>
+				{loading ? (
+					<ActivityIndicator color={fg} size="small" />
+				) : (
+					<View style={s.btnInner}>
+						{icon ? <Feather name={icon} size={15} color={fg} style={{ marginRight: space.xs }} /> : null}
+						<Text maxFontSizeMultiplier={fontScaleCap.body} style={[s.btnText, { color: fg }]}>
+							{title}
+						</Text>
+					</View>
+				)}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -439,9 +451,9 @@ export function SheetHeader({
  * share. Pure padding, so it needs no theme and can be a plain const.
  */
 export const SHEET_SCROLL_CONTENT = {
-	paddingHorizontal: 20,
-	paddingTop: 22,
-	paddingBottom: 24,
+	paddingHorizontal: space.xl,
+	paddingTop: space.xl,
+	paddingBottom: space.xxl,
 };
 
 /** A sheet whose content is short and fixed, so it needs no scrolling root. */
@@ -536,6 +548,7 @@ export function SettingsRow({
 	const s = useThemedStyles(makeStyles);
 	const labelColor = destructive ? t.red : t.textPrimary;
 	const iconColor = destructive ? t.red : t.textSecondary;
+	const pressFx = usePressScale();
 	const body = (
 		<>
 			{icon ? <Feather name={icon} size={17} color={iconColor} style={s.rowIcon} /> : null}
@@ -546,38 +559,46 @@ export function SettingsRow({
 			>
 				{label}
 			</Text>
-			{right ?? (
-				<>
-					{loading ? <ActivityIndicator size="small" color={t.textTertiary} /> : null}
-					{!loading && leading ? leading : null}
-					{!loading && value ? (
-						<Text
-							style={[s.rowValue, valueColor ? { color: valueColor } : null]}
-							numberOfLines={1}
-							maxFontSizeMultiplier={fontScaleCap.chrome}
-						>
-							{value}
-						</Text>
-					) : null}
-					{onPress ? <Feather name="chevron-right" size={17} color={t.textFaint} style={s.rowChevron} /> : null}
-				</>
-			)}
+			{/* The accessory never shrinks: at large text sizes the label has to be the
+			    one that gives way, or it draws underneath the switch. */}
+			<View style={s.rowAccessory}>
+				{right ?? (
+					<>
+						{loading ? <ActivityIndicator size="small" color={t.textTertiary} /> : null}
+						{!loading && leading ? leading : null}
+						{!loading && value ? (
+							<Text
+								style={[s.rowValue, valueColor ? { color: valueColor } : null]}
+								numberOfLines={1}
+								maxFontSizeMultiplier={fontScaleCap.chrome}
+							>
+								{value}
+							</Text>
+						) : null}
+						{onPress ? <Feather name="chevron-right" size={17} color={t.textFaint} style={s.rowChevron} /> : null}
+					</>
+				)}
+			</View>
 		</>
 	);
 
 	if (!onPress) return <View style={[s.row, disabled && s.rowDisabled]}>{body}</View>;
 	return (
-		<Pressable
-			disabled={disabled || loading}
-			onPress={() => {
-				if (destructive) haptics.warning();
-				else haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [s.row, pressed && s.rowPressed, (disabled || loading) && s.rowDisabled]}
-		>
-			{body}
-		</Pressable>
+		<Animated.View style={pressFx.style}>
+			<Pressable
+				disabled={disabled || loading}
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					if (destructive) haptics.warning();
+					else haptics.tap();
+					onPress();
+				}}
+				style={({ pressed }) => [s.row, pressed && s.rowPressed, (disabled || loading) && s.rowDisabled]}
+			>
+				{body}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -615,7 +636,7 @@ export function SettingsToggle({
 							onValueChange(v);
 						}}
 						disabled={disabled}
-						trackColor={{ true: t.blue, false: t.borderStrong }}
+						trackColor={{ true: t.accent, false: t.borderStrong }}
 					/>
 				)
 			}
@@ -647,31 +668,36 @@ export function IconButton({
 }) {
 	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
+	const pressFx = usePressScale(disabled || loading);
 	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={label}
-			accessibilityState={{ disabled: disabled || loading }}
-			disabled={disabled || loading}
-			hitSlop={6}
-			onPress={() => {
-				if (destructive) haptics.warning();
-				else haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [
-				s.iconBtn,
-				destructive && { borderColor: t.tintRed },
-				pressed && (destructive ? s.iconBtnPressedDanger : s.iconBtnPressed),
-				(disabled || loading) && { opacity: 0.4 },
-			]}
-		>
-			{loading ? (
-				<ActivityIndicator size="small" color={t.textSecondary} />
-			) : (
-				<Feather name={icon} size={15} color={destructive ? t.red : t.textSecondary} />
-			)}
-		</Pressable>
+		<Animated.View style={pressFx.style}>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={label}
+				accessibilityState={{ disabled: disabled || loading }}
+				disabled={disabled || loading}
+				hitSlop={6}
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					if (destructive) haptics.warning();
+					else haptics.tap();
+					onPress();
+				}}
+				style={({ pressed }) => [
+					s.iconBtn,
+					destructive && { borderColor: t.tintRed },
+					pressed && (destructive ? s.iconBtnPressedDanger : s.iconBtnPressed),
+					(disabled || loading) && { opacity: 0.4 },
+				]}
+			>
+				{loading ? (
+					<ActivityIndicator size="small" color={t.textSecondary} />
+				) : (
+					<Feather name={icon} size={15} color={destructive ? t.red : t.textSecondary} />
+				)}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -688,10 +714,13 @@ export function EmptyState({
 }) {
 	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
+	// An empty state appears once per screen and then sits still, so it can afford
+	// a quiet entrance. Lists and rows stay unstaggered.
+	const enter = useEnterTransition(space.xxs);
 	return (
-		<View style={s.empty}>
+		<Animated.View style={[s.empty, enter]}>
 			<View style={s.emptyIcon}>
-				<Feather name={icon} size={26} color={t.textTertiary} />
+				<Feather name={icon} size={24} color={t.textTertiary} />
 			</View>
 			<Text maxFontSizeMultiplier={fontScaleCap.body} style={s.emptyTitle}>
 				{title}
@@ -701,8 +730,8 @@ export function EmptyState({
 					{message}
 				</Text>
 			) : null}
-			{action ? <View style={{ marginTop: 18 }}>{action}</View> : null}
-		</View>
+			{action ? <View style={{ marginTop: space.lg }}>{action}</View> : null}
+		</Animated.View>
 	);
 }
 
@@ -711,45 +740,45 @@ const makeStyles = (t: Theme) =>
 		listSectionHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 10,
-			paddingHorizontal: 18,
-			paddingTop: 18,
-			paddingBottom: 5,
+			gap: space.sm,
+			paddingHorizontal: space.lg,
+			paddingTop: space.lg,
+			paddingBottom: space.xxs,
 		},
-		listSectionLabel: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
+		listSectionLabel: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
 		listSectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle },
 		// Mono and tabular so a count changing from 9 to 10 does not shift the rule.
-		listSectionCount: { color: t.textFaint, fontSize: 12, fontWeight: "700", fontFamily: t.fontMono },
-		badge: { flexDirection: "row", alignItems: "center", gap: 6 },
-		badgeText: { fontSize: 12, fontWeight: "600" },
+		listSectionCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "700", fontFamily: t.fontMono },
+		badge: { flexDirection: "row", alignItems: "center", gap: space.xs },
+		badgeText: { fontSize: type.caption1.fontSize, fontWeight: "600" },
 
 		pill: {
-			paddingHorizontal: 14,
-			paddingVertical: 7,
+			paddingHorizontal: space.md,
+			paddingVertical: space.xs,
 			borderRadius: 20,
 			borderWidth: 1,
 			borderColor: t.borderDefault,
 			backgroundColor: t.bgElevated,
 		},
-		pillActive: { backgroundColor: t.tintBlue, borderColor: t.blue },
-		pillText: { color: t.textSecondary, fontSize: 13, fontWeight: "600" },
-		pillTextActive: { color: t.blue },
+		pillActive: { backgroundColor: t.accentTint, borderColor: t.accent },
+		pillText: { color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+		pillTextActive: { color: t.accent },
 
 		chip: {
 			flexDirection: "row",
 			alignItems: "center",
-			paddingHorizontal: 8,
-			paddingVertical: 3,
-			borderRadius: 6,
+			paddingHorizontal: space.sm,
+			paddingVertical: space.hair,
+			borderRadius: 4,
 		},
-		chipText: { fontSize: 11, fontWeight: "600" },
+		chipText: { fontSize: type.caption2.fontSize, fontWeight: "600" },
 
 		card: {
 			backgroundColor: t.bgElevated,
 			borderRadius: 12,
 			borderWidth: 1,
 			borderColor: t.borderSubtle,
-			padding: 14,
+			padding: space.md,
 		},
 		cardPressed: {
 			backgroundColor: t.bgElevatedHover,
@@ -759,22 +788,22 @@ const makeStyles = (t: Theme) =>
 		sectionHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			paddingHorizontal: 16,
-			paddingTop: 20,
-			paddingBottom: 10,
-			gap: 9,
+			paddingHorizontal: space.lg,
+			paddingTop: space.xl,
+			paddingBottom: space.sm,
+			gap: space.sm,
 		},
 		sectionBar: { width: 3, height: 13, borderRadius: 2 },
 		sectionLabel: {
 			color: t.textSecondary,
-			fontSize: 11,
+			fontSize: type.caption2.fontSize,
 			letterSpacing: 1.2,
 			fontWeight: "700",
 			flex: 1,
 		},
 		sectionCount: {
 			color: t.textTertiary,
-			fontSize: 12,
+			fontSize: type.caption1.fontSize,
 			fontWeight: "700",
 			fontFamily: t.fontMono,
 		},
@@ -782,15 +811,15 @@ const makeStyles = (t: Theme) =>
 		screenHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			paddingHorizontal: 16,
-			paddingTop: 8,
-			paddingBottom: 10,
-			gap: 12,
+			paddingHorizontal: space.lg,
+			paddingTop: space.sm,
+			paddingBottom: space.sm,
+			gap: space.md,
 		},
-		titleRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+		titleRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
 		// Enlarged from 30x26: the wand-tip lamp replaced the "live" pill, so the tip
 		// has to be big enough for the dot to actually read as a status light.
-		mascotWrap: { width: 40, height: 35, marginTop: 3 },
+		mascotWrap: { width: 40, height: 35, marginTop: space.hair },
 		mascot: { width: 40, height: 35 },
 		// Positioned on the wand tip — see the note above MascotLamp. Offsets are the
 		// tip fraction of the 40x35 box, less half the dot/halo so they sit centred.
@@ -816,15 +845,15 @@ const makeStyles = (t: Theme) =>
 		},
 		screenTitle: {
 			color: t.textPrimary,
-			fontSize: 26,
+			fontSize: type.title1.fontSize,
 			fontWeight: "800",
 			letterSpacing: -0.5,
 		},
-		screenSubtitle: { color: t.textTertiary, fontSize: 12, marginTop: 1 },
+		screenSubtitle: { color: t.textTertiary, fontSize: type.caption1.fontSize, marginTop: space.none },
 		headerIconBtn: {
 			alignItems: "center",
 			justifyContent: "center",
-			padding: 2,
+			padding: space.hair,
 		},
 		headerBadge: {
 			position: "absolute",
@@ -832,39 +861,39 @@ const makeStyles = (t: Theme) =>
 			right: 1,
 			width: 9,
 			height: 9,
-			borderRadius: 4.5,
-			backgroundColor: t.blue,
+			borderRadius: 4,
+			backgroundColor: t.accent,
 			borderWidth: 1.5,
 			borderColor: t.bgBase,
 		},
 
 		btn: {
-			borderRadius: 10,
-			paddingVertical: 13,
-			paddingHorizontal: 16,
+			borderRadius: 8,
+			paddingVertical: space.md,
+			paddingHorizontal: space.lg,
 			alignItems: "center",
 		},
 		btnInner: { flexDirection: "row", alignItems: "center" },
-		btnPrimary: { backgroundColor: t.blue },
+		btnPrimary: { backgroundColor: t.accent },
 		btnGhost: {
 			borderWidth: 1,
 			borderColor: t.borderStrong,
 			backgroundColor: t.bgElevated,
 		},
 		btnDanger: { borderColor: t.tintRed, backgroundColor: t.tintRed },
-		btnText: { fontSize: 15, fontWeight: "700" },
+		btnText: { fontSize: type.subheadline.fontSize, fontWeight: "700" },
 
 		step: {
 			flexDirection: "row",
 			alignItems: "flex-start",
-			gap: 13,
-			paddingVertical: 14,
+			gap: space.md,
+			paddingVertical: space.md,
 		},
-		stepCompact: { paddingVertical: 6, alignItems: "center", gap: 11 },
+		stepCompact: { paddingVertical: space.xs, alignItems: "center", gap: space.md },
 		stepBadge: {
 			width: 30,
 			height: 30,
-			borderRadius: 9,
+			borderRadius: 8,
 			backgroundColor: t.bgElevated,
 			borderWidth: 1,
 			borderColor: t.borderSubtle,
@@ -872,15 +901,15 @@ const makeStyles = (t: Theme) =>
 			justifyContent: "center",
 		},
 		stepBadgeCompact: { width: 23, height: 23, borderRadius: 12 },
-		stepNum: { color: t.textSecondary, fontSize: 13, fontWeight: "700" },
-		stepNumCompact: { fontSize: 11 },
-		stepTitle: { color: t.textPrimary, fontSize: 15, fontWeight: "700" },
-		stepTitleCompact: { fontSize: 14, fontWeight: "600" },
+		stepNum: { color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "700" },
+		stepNumCompact: { fontSize: type.caption2.fontSize },
+		stepTitle: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "700" },
+		stepTitleCompact: { fontSize: type.subheadline.fontSize, fontWeight: "600" },
 		stepHint: {
 			color: t.textTertiary,
-			fontSize: 13,
-			lineHeight: 19,
-			marginTop: 3,
+			fontSize: type.footnote.fontSize,
+			lineHeight: type.footnote.lineHeight,
+			marginTop: space.hair,
 		},
 
 		// No card, corners or grabber here — the native sheet draws all of that. The
@@ -889,35 +918,35 @@ const makeStyles = (t: Theme) =>
 		// reserves room for the home indicator, and adding it again left a dead strip.
 		sheetScreen: {
 			backgroundColor: t.bgSurface,
-			paddingHorizontal: 20,
-			paddingTop: 22,
-			paddingBottom: 20,
+			paddingHorizontal: space.xl,
+			paddingTop: space.xl,
+			paddingBottom: space.xl,
 		},
 		// Padding lives on the scroll content rather than a wrapper, so a scrolling
 		// sheet's list can run edge to edge while its rows keep the same inset.
-		sheetHeader: { paddingBottom: 2 },
-		sheetTitleRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+		sheetHeader: { paddingBottom: space.hair },
+		sheetTitleRow: { flexDirection: "row", alignItems: "center", gap: space.md },
 		sheetTitle: {
 			color: t.textPrimary,
-			fontSize: 19,
+			fontSize: type.title3.fontSize,
 			fontWeight: "800",
 			letterSpacing: -0.3,
 		},
 		sheetSubtitle: {
 			color: t.textSecondary,
-			fontSize: 13,
-			lineHeight: 19,
-			marginTop: 5,
+			fontSize: type.footnote.fontSize,
+			lineHeight: type.footnote.lineHeight,
+			marginTop: space.xxs,
 		},
 
-		group: { marginBottom: 26 },
+		group: { marginBottom: space.xxl },
 		groupTitle: {
 			color: t.textTertiary,
-			fontSize: 11,
+			fontSize: type.caption2.fontSize,
 			letterSpacing: 1.2,
 			fontWeight: "700",
-			marginBottom: 8,
-			marginLeft: 4,
+			marginBottom: space.sm,
+			marginLeft: space.xxs,
 		},
 		groupBody: {
 			backgroundColor: t.bgElevated,
@@ -928,10 +957,10 @@ const makeStyles = (t: Theme) =>
 		},
 		groupFooter: {
 			color: t.textTertiary,
-			fontSize: 12,
-			lineHeight: 17,
-			marginTop: 8,
-			marginHorizontal: 4,
+			fontSize: type.caption1.fontSize,
+			lineHeight: type.caption1.lineHeight,
+			marginTop: space.sm,
+			marginHorizontal: space.xxs,
 		},
 		// Inset to the label's x-origin (row padding + icon + gap), the iOS detail
 		// that makes a stack of rows read as one grouped list.
@@ -944,65 +973,67 @@ const makeStyles = (t: Theme) =>
 			flexDirection: "row",
 			alignItems: "center",
 			minHeight: 48,
-			paddingVertical: 11,
-			paddingHorizontal: 14,
-			gap: 8,
+			paddingVertical: space.md,
+			paddingHorizontal: space.md,
+			gap: space.sm,
 		},
 		rowPressed: { backgroundColor: t.bgElevatedHover },
 		rowDisabled: { opacity: 0.45 },
-		rowIcon: { width: 17, marginRight: 4 },
+		rowIcon: { width: 17, marginRight: space.xxs },
 		rowLabel: {
 			flex: 1,
+			minWidth: 0,
 			color: t.textPrimary,
-			fontSize: 15,
+			fontSize: type.subheadline.fontSize,
 			fontWeight: "500",
 		},
-		rowValue: { color: t.textTertiary, fontSize: 14, flexShrink: 1 },
+		rowValue: { color: t.textTertiary, fontSize: type.subheadline.fontSize, flexShrink: 1 },
 		rowChevron: { marginRight: -3 },
+		rowAccessory: { flexShrink: 0, flexDirection: "row", alignItems: "center" },
 
 		iconBtn: {
 			width: 32,
 			height: 32,
-			borderRadius: 9,
+			borderRadius: 8,
 			borderWidth: 1,
 			borderColor: t.borderDefault,
 			backgroundColor: t.bgSubtle,
 			alignItems: "center",
 			justifyContent: "center",
 		},
-		iconBtnPressed: { backgroundColor: t.tintBlue, borderColor: t.blue },
+		iconBtnPressed: { backgroundColor: t.accentTint, borderColor: t.accent },
 		iconBtnPressedDanger: { backgroundColor: t.tintRed, borderColor: t.red },
 
 		empty: {
 			flex: 1,
 			alignItems: "center",
 			justifyContent: "center",
-			padding: 40,
+			padding: space.huge,
 			minHeight: 320,
 		},
 		emptyIcon: {
 			width: 64,
 			height: 64,
-			borderRadius: 18,
+			borderRadius: 16,
 			backgroundColor: t.bgElevated,
 			borderWidth: 1,
 			borderColor: t.borderSubtle,
 			alignItems: "center",
 			justifyContent: "center",
-			marginBottom: 18,
+			marginBottom: space.lg,
 		},
 		emptyTitle: {
 			color: t.textPrimary,
-			fontSize: 17,
+			fontSize: type.body.fontSize,
 			fontWeight: "700",
 			textAlign: "center",
 		},
 		emptyMsg: {
 			color: t.textSecondary,
-			fontSize: 13,
-			lineHeight: 20,
+			fontSize: type.footnote.fontSize,
+			lineHeight: type.footnote.lineHeight,
 			textAlign: "center",
-			marginTop: 8,
+			marginTop: space.sm,
 			maxWidth: 300,
 		},
 	});
@@ -1027,10 +1058,10 @@ export function cardShell(t: Theme): ViewStyle {
 		borderRadius: 12,
 		borderWidth: 1,
 		borderColor: t.borderSubtle,
-		paddingHorizontal: 14,
-		paddingVertical: 13,
-		marginHorizontal: 12,
-		marginVertical: 5,
+		paddingHorizontal: space.md,
+		paddingVertical: space.md,
+		marginHorizontal: space.md,
+		marginVertical: space.xxs,
 	};
 }
 

@@ -8,6 +8,7 @@ import { useTheme, useThemedStyles } from "./ThemeProvider";
 import { boundWorkerActionTranslation, WORKER_ACTION_REVEAL_WIDTH, resolveWorkerActionRail } from "./worker-row-swipe-model";
 import { workerActionGlyph, type WorkerActionId } from "./worker-action-model";
 import type { WorkerRowInteractionProps } from "./worker-row-interaction.types";
+import { press, space, type } from "./tokens";
 
 const GESTURE_DISTANCE = 16;
 const LONG_PRESS_DISTANCE = 12;
@@ -177,7 +178,7 @@ export function WorkerRowInteraction({
 									accessibilityRole="button"
 									accessibilityLabel={action.title}
 									onPress={() => choose(action.id)}
-									android_ripple={{ color: action.destructive ? t.tintRed : t.tintBlue }}
+									android_ripple={{ color: action.destructive ? t.tintRed : t.accentTint }}
 									style={({ pressed }) => [styles.menuRow, pressed && styles.menuButtonPressed]}
 								>
 									{/* A vector font, not a drawable: this list is an in-app Modal,
@@ -215,7 +216,7 @@ function MenuGlyph({ id, color }: { id: WorkerActionId; color: string }) {
 	if (glyph.family === "material") {
 		return <MaterialCommunityIcons name={glyph.name} size={21} color={color} style={{ transform: [{ rotate: "28deg" }] }} />;
 	}
-	return <Feather name={glyph.name} size={19} color={color} />;
+	return <Feather name={glyph.name} size={20} color={color} />;
 }
 
 const makeStyles = (t: Theme) =>
@@ -234,27 +235,27 @@ const makeStyles = (t: Theme) =>
 			flex: 1,
 			alignItems: "center",
 			justifyContent: "center",
-			padding: 24,
+			padding: space.xxl,
 			backgroundColor: "rgba(0, 0, 0, 0.58)",
 		},
 		menu: {
 			width: "100%",
 			maxWidth: 340,
-			padding: 20,
-			gap: 8,
-			borderRadius: 24,
+			padding: space.xl,
+			gap: space.sm,
+			borderRadius: 20,
 			borderWidth: StyleSheet.hairlineWidth,
 			borderColor: t.borderDefault,
 			backgroundColor: t.bgElevated,
 			elevation: 12,
 		},
-		menuTitle: { color: t.textPrimary, fontSize: 20, lineHeight: 25, fontWeight: "700" },
-		menuList: { marginTop: 6, marginHorizontal: -8 },
-		menuRow: { minHeight: 48, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 14, borderRadius: 10 },
-		menuRowText: { color: t.textPrimary, fontSize: 16, lineHeight: 21, fontWeight: "500" },
+		menuTitle: { color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "700" },
+		menuList: { marginTop: space.xs, marginHorizontal: -8 },
+		menuRow: { minHeight: 48, paddingHorizontal: space.sm, flexDirection: "row", alignItems: "center", gap: space.md, borderRadius: 8 },
+		menuRowText: { color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "500" },
 		menuRowTextDestructive: { color: t.red },
-		menuButton: { minHeight: 42, paddingHorizontal: 16, borderRadius: 21, alignItems: "center", justifyContent: "center", marginTop: 10, alignSelf: "flex-end" },
+		menuButton: { minHeight: 42, paddingHorizontal: space.lg, borderRadius: 20, alignItems: "center", justifyContent: "center", marginTop: space.sm, alignSelf: "flex-end" },
 		cancelButton: { backgroundColor: t.bgElevatedHover, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
-		cancelButtonText: { color: t.textPrimary, fontSize: 14, lineHeight: 18, fontWeight: "600" },
+		cancelButtonText: { color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
 		menuButtonPressed: { opacity: 0.76 },
 	});

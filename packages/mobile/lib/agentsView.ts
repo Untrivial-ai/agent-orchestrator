@@ -140,7 +140,7 @@ export function zoneMeta(t: Theme, zone: BoardZone): { label: string; color: str
 		case "needs_you":
 			return { label: "Needs you", color: t.amber };
 		case "needs_review":
-			return { label: "In review", color: t.purple };
+			return { label: "In review", color: t.textTertiary };
 		case "ready":
 			return { label: "Ready", color: t.green };
 		case "validating":

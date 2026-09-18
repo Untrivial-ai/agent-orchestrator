@@ -1,11 +1,21 @@
-// Mission Control palette - mirrors AO's DESIGN.md so the phone app reads as the
-// same product. Color = meaning; most states get none.
-//   blue   = the conductor (you / orchestrator / primary action)
-//   orange = a working agent (alive, running)
-//   amber  = needs your input / attention
-//   red    = failing / stuck / crashed
-//   green  = mergeable / passed / done
-//   purple = merged (terminal, not actionable)
+// Mission Control palette. Color = meaning; most states get none.
+//
+//   neutral (accent) = interactive emphasis: primary actions, selected controls
+//   orange           = a working agent (alive, running)
+//   amber            = needs your input / attention
+//   red              = failing / stuck / crashed
+//   green            = mergeable / passed / approved
+//   neutral (muted)  = terminal states — merged, done, killed
+//
+// There is no blue and no purple in the product palette, on purpose. Every hue
+// in the system already means a state, so the interactive accent carries
+// emphasis with contrast — a filled pill against a hairline outline — instead
+// of with a hue of its own. That keeps exactly one meaning per color, and stops
+// a filled button from reading as a status.
+//
+// The terminal's ANSI ramp further down is the one exception: a terminal's 16
+// colors are a compatibility surface owned by the agent TUIs, not part of this
+// palette, and agents print in them by name.
 //
 // Two palettes of one shape. Light is derived from the desktop app's
 // frontend/src/styles/tokens.css `:root[data-theme="light"]` block, with two
@@ -40,29 +50,26 @@ export type Theme = {
 	borderDefault: string;
 	borderStrong: string;
 
-	blue: string;
+	/** Interactive emphasis. Deliberately hue-less — see the note at the top. */
+	accent: string;
+	accentTint: string;
+	accentBorder: string;
+	accentPressed: string;
+
 	orange: string;
 	amber: string;
 	red: string;
-	purple: string;
 	green: string;
 
-	tintBlue: string;
 	tintOrange: string;
 	tintAmber: string;
 	tintRed: string;
 	tintGreen: string;
-	tintPurple: string;
 
 	/** Ink on a filled accent surface (primary button, send, mic). */
 	onAccent: string;
 	/** Scrim behind modals. */
 	scrim: string;
-
-	// Back-compat aliases (older screens referenced these names).
-	accent: string;
-	accentTint: string;
-	attention: string;
 
 	fontMono: string;
 };
@@ -79,36 +86,37 @@ export const darkTheme: Theme = {
 	bgElevatedHover: "#191b20",
 	bgSubtle: "rgba(255,255,255,0.04)",
 
+	// The two dimmest steps were below the contrast floor on the base surface
+	// (tertiary measured 3.61:1, faint 2.17:1). They keep their hue and moved
+	// only in lightness — the channel contrast responds to — so metadata reads
+	// at 4.95:1 and the decorative step at 3.41:1.
 	textPrimary: "#f4f5f7",
 	textSecondary: "#9ba1aa",
-	textTertiary: "#646a73",
-	textFaint: "#444951",
+	textTertiary: "#7a808a",
+	textFaint: "#61666e",
 
 	borderSubtle: "rgba(255,255,255,0.06)",
 	borderDefault: "rgba(255,255,255,0.10)",
 	borderStrong: "rgba(255,255,255,0.16)",
 
-	blue: "#4d8dff",
+	accent: "#f4f5f7",
+	accentTint: "rgba(244,245,247,0.14)",
+	accentBorder: "rgba(244,245,247,0.28)",
+	accentPressed: "rgba(244,245,247,0.22)",
+
 	orange: "#f59f4c",
 	amber: "#e8c14a",
 	red: "#ef6b6b",
-	purple: "#a371f7",
 	green: "#74b98a",
 
-	tintBlue: "rgba(77,141,255,0.14)",
 	tintOrange: "rgba(245,159,76,0.14)",
 	tintAmber: "rgba(232,193,74,0.14)",
 	tintRed: "rgba(239,107,107,0.14)",
 	tintGreen: "rgba(116,185,138,0.14)",
-	tintPurple: "rgba(163,113,247,0.14)",
 
-	// Near-black on the light-ish accent reads better than white at this weight.
-	onAccent: "#06101f",
+	// Near-black ink on the near-white accent.
+	onAccent: "#0b0c0e",
 	scrim: "rgba(0,0,0,0.6)",
-
-	accent: "#4d8dff",
-	accentTint: "rgba(77,141,255,0.14)",
-	attention: "#e8c14a",
 
 	fontMono: FONT_MONO,
 };
@@ -124,10 +132,12 @@ export const lightTheme: Theme = {
 	bgElevatedHover: "#ececf0",
 	bgSubtle: "rgba(0,0,0,0.04)",
 
+	// Same correction on white: secondary also deepened slightly to keep a
+	// visible step between it and the new tertiary (5.97:1 vs 4.83:1).
 	textPrimary: "#1a1a1a",
-	textSecondary: "#666666",
-	textTertiary: "#8e8e93",
-	textFaint: "#b8b8bd",
+	textSecondary: "#5c5c60",
+	textTertiary: "#6a6a6e",
+	textFaint: "#87878b",
 
 	// Alpha rather than solid hex, mirroring the dark ramp's structure so a
 	// hairline behaves the same over a white card and over the grey base.
@@ -135,26 +145,25 @@ export const lightTheme: Theme = {
 	borderDefault: "rgba(0,0,0,0.12)",
 	borderStrong: "rgba(0,0,0,0.20)",
 
-	blue: "#2563eb",
-	orange: "#b45309", // hue kept, darkened for contrast on white
-	amber: "#946200",
-	red: "#c0392b",
-	purple: "#7c3aed",
-	green: "#2f7d32",
+	accent: "#141519",
+	accentTint: "rgba(20,21,25,0.08)",
+	accentBorder: "rgba(20,21,25,0.24)",
+	accentPressed: "rgba(20,21,25,0.16)",
 
-	tintBlue: "rgba(37,99,235,0.12)",
+	// Hue kept, darkened for contrast on white — each clears 4.5:1 both on the
+	// base surface and on its own 12% tint, which is where these actually render.
+	orange: "#a04a08",
+	amber: "#875900",
+	red: "#b13428",
+	green: "#2a702d",
+
 	tintOrange: "rgba(180,83,9,0.12)",
 	tintAmber: "rgba(148,98,0,0.12)",
 	tintRed: "rgba(192,57,43,0.12)",
 	tintGreen: "rgba(47,125,50,0.12)",
-	tintPurple: "rgba(124,58,237,0.12)",
 
 	onAccent: "#ffffff",
 	scrim: "rgba(0,0,0,0.45)",
-
-	accent: "#2563eb",
-	accentTint: "rgba(37,99,235,0.12)",
-	attention: "#946200",
 
 	fontMono: FONT_MONO,
 };
@@ -274,7 +283,7 @@ export type StatusVisual = { color: string; label: string; breathing?: boolean }
 export function statusVisual(t: Theme, status?: string | null): StatusVisual {
 	switch (status) {
 		case "spawning":
-			return { color: t.blue, label: "Starting" };
+			return { color: t.textSecondary, label: "Starting" };
 		case "working":
 			return { color: t.orange, label: "Working", breathing: true };
 		case "detecting":
@@ -297,8 +306,10 @@ export function statusVisual(t: Theme, status?: string | null): StatusVisual {
 			return { color: t.green, label: "Approved" };
 		case "mergeable":
 			return { color: t.green, label: "Mergeable" };
+		// Merged is terminal and no longer actionable, so it drops out of the
+		// success hue and settles into the neutral the other finished states use.
 		case "merged":
-			return { color: t.green, label: "Merged" };
+			return { color: t.textSecondary, label: "Merged" };
 		case "done":
 			return { color: t.green, label: "Done" };
 		case "idle":

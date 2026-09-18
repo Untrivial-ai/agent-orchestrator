@@ -8,7 +8,7 @@ import { haptics } from "../haptics";
 import { PAGE_SLIDE_MS } from "../motion";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
-import { fontScaleCap } from "../tokens";
+import { fontScaleCap, space, type } from "../tokens";
 import { useReducedMotion } from "../useReducedMotion";
 import type { RequestDockModel, RequestDockPage } from "./requestDockModel";
 
@@ -126,7 +126,7 @@ export function RequestCard({
 					onPress={() => { haptics.tap(); onShow(model.sequence); }}
 					style={({ pressed }) => [styles.openForm, pressed && styles.pressed]}
 				>
-					<Feather name="arrow-up" size={14} color={t.blue} />
+					<Feather name="arrow-up" size={15} color={t.accent} />
 					<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.openFormText}>Open the full request</Text>
 				</Pressable>
 			</View>
@@ -139,11 +139,11 @@ export function RequestCard({
 				<View style={styles.head}>
 					{total > 1 ? <View style={styles.pager}>
 						<Pressable accessibilityRole="button" accessibilityLabel="Previous question" disabled={page === 0} hitSlop={10} onPress={() => goTo(page - 1)}>
-							<Feather name="chevron-left" size={18} color={page === 0 ? t.textFaint : t.textSecondary} />
+							<Feather name="chevron-left" size={17} color={page === 0 ? t.textFaint : t.textSecondary} />
 						</Pressable>
 						<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.pagerText}>{page + 1} of {total}</Text>
 						<Pressable accessibilityRole="button" accessibilityLabel="Next question" disabled={page >= total - 1} hitSlop={10} onPress={() => goTo(page + 1)}>
-							<Feather name="chevron-right" size={18} color={page >= total - 1 ? t.textFaint : t.textSecondary} />
+							<Feather name="chevron-right" size={17} color={page >= total - 1 ? t.textFaint : t.textSecondary} />
 						</Pressable>
 					</View> : <Text maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.eyebrow}>{model.title}</Text>}
 					{/* One exit, in one place. Skip takes the corner where it exists;
@@ -191,7 +191,7 @@ export function RequestCard({
 							>
 								<View style={[styles.ordinal, selected && styles.ordinalSelected]}>
 									{selected
-										? <Feather name="check" size={13} color={t.bgBase} />
+										? <Feather name="check" size={12} color={t.bgBase} />
 										: <Text maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.ordinalText}>{index + 1}</Text>}
 								</View>
 								<View style={styles.optionBody}>
@@ -226,7 +226,7 @@ export function RequestCard({
 							onPress={sendTyped}
 							style={({ pressed }) => [styles.send, pressed && styles.pressed]}
 						>
-							{busy ? <ActivityIndicator size="small" color={t.bgBase} /> : <Feather name="arrow-up" size={16} color={t.bgBase} />}
+							{busy ? <ActivityIndicator size="small" color={t.bgBase} /> : <Feather name="arrow-up" size={15} color={t.bgBase} />}
 						</Pressable> : null}
 					</View> : null}
 				</Animated.View>
@@ -247,36 +247,36 @@ const makeStyles = (t: Theme) =>
 			borderColor: t.borderDefault,
 			borderRadius: 20,
 			borderCurve: "continuous",
-			paddingHorizontal: 14,
-			paddingTop: 10,
-			paddingBottom: 6,
+			paddingHorizontal: space.md,
+			paddingTop: space.sm,
+			paddingBottom: space.xs,
 			overflow: "hidden",
 		},
 		head: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 26 },
-		pager: { flexDirection: "row", alignItems: "center", gap: 8 },
-		pagerText: { color: t.textSecondary, fontSize: 12, fontWeight: "600", fontVariant: ["tabular-nums"] },
-		eyebrow: { color: t.textSecondary, fontSize: 11, fontWeight: "700", letterSpacing: 0.4, textTransform: "uppercase" },
-		question: { color: t.textPrimary, fontSize: 17, lineHeight: 23, fontWeight: "600", marginTop: 4, marginBottom: 8 },
-		option: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11 },
+		pager: { flexDirection: "row", alignItems: "center", gap: space.sm },
+		pagerText: { color: t.textSecondary, fontSize: type.caption1.fontSize, fontWeight: "600", fontVariant: ["tabular-nums"] },
+		eyebrow: { color: t.textSecondary, fontSize: type.caption2.fontSize, fontWeight: "700", letterSpacing: 0.4, textTransform: "uppercase" },
+		question: { color: t.textPrimary, fontSize: type.body.fontSize, lineHeight: type.body.lineHeight, fontWeight: "600", marginTop: space.xxs, marginBottom: space.sm },
+		option: { flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: space.md },
 		optionDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
-		ordinal: { width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: t.bgSubtle },
-		ordinalText: { color: t.textSecondary, fontSize: 12, fontWeight: "700" },
+		ordinal: { width: 26, height: 26, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: t.bgSubtle },
+		ordinalText: { color: t.textSecondary, fontSize: type.caption1.fontSize, fontWeight: "700" },
 		// Neutral, like the Orchestrator badge: the filled circle and the check
 		// carry the selection, so it needs no colour of its own.
 		ordinalSelected: { backgroundColor: t.textSecondary },
 		optionLabelSelected: { fontWeight: "700" },
-		optionBody: { flex: 1, minWidth: 0, gap: 2 },
-		optionLabel: { color: t.textPrimary, fontSize: 15, lineHeight: 20 },
-		optionHint: { color: t.textTertiary, fontSize: 12, lineHeight: 16 },
-		typed: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 6 },
-		typedInput: { flex: 1, minHeight: 38, color: t.textPrimary, fontSize: 15, paddingVertical: 8 },
-		send: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: t.textPrimary },
-		skip: { paddingVertical: 2, paddingHorizontal: 2 },
-		skipText: { color: t.textSecondary, fontSize: 13, fontWeight: "600" },
-		openForm: { flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 10 },
-		openFormText: { color: t.blue, fontSize: 14, fontWeight: "600" },
-		busy: { paddingVertical: 8, alignItems: "center" },
-		error: { color: t.red, fontSize: 12, lineHeight: 16, paddingBottom: 6 },
+		optionBody: { flex: 1, minWidth: 0, gap: space.hair },
+		optionLabel: { color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
+		optionHint: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
+		typed: { flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: space.xs },
+		typedInput: { flex: 1, minHeight: 38, color: t.textPrimary, fontSize: type.subheadline.fontSize, paddingVertical: space.sm },
+		send: { width: 34, height: 34, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: t.textPrimary },
+		skip: { paddingVertical: space.hair, paddingHorizontal: space.hair },
+		skipText: { color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+		openForm: { flexDirection: "row", alignItems: "center", gap: space.xs, paddingVertical: space.sm },
+		openFormText: { color: t.accent, fontSize: type.subheadline.fontSize, fontWeight: "600" },
+		busy: { paddingVertical: space.sm, alignItems: "center" },
+		error: { color: t.red, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, paddingBottom: space.xs },
 		pressed: { opacity: 0.6 },
 		dim: { opacity: 0.5 },
 	});

@@ -6,6 +6,7 @@ import { haptics } from "./haptics";
 import { SHEET_SCROLL_CONTENT, SheetHeader } from "./ui";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
 import { ALL_PROJECTS } from "./projectFilter";
+import { iconSize, press, space, type } from "./tokens";
 
 // Picks the active project — the filter behind `useVisibleSessions()` (Agents +
 // PRs) and the default project in the spawn screen.
@@ -99,8 +100,8 @@ function Option({
 	const s = useThemedStyles(makeS);
 	return (
 		<Pressable onPress={onPress} style={({ pressed }) => [s.option, pressed && s.optionPressed]}>
-			<Feather name={icon} size={16} color={selected ? t.blue : t.textTertiary} />
-			<Text style={[s.label, selected && { color: t.blue }]} numberOfLines={1}>
+			<Feather name={icon} size={iconSize.sm} color={selected ? t.accent : t.textTertiary} />
+			<Text style={[s.label, selected && { color: t.accent }]} numberOfLines={1}>
 				{label}
 			</Text>
 			{hint ? (
@@ -108,7 +109,7 @@ function Option({
 					{hint}
 				</Text>
 			) : null}
-			{selected ? <Feather name="check" size={17} color={t.blue} /> : null}
+			{selected ? <Feather name="check" size={iconSize.md} color={t.accent} /> : null}
 		</Pressable>
 	);
 }
@@ -119,22 +120,22 @@ const makeS = (t: Theme) =>
 		option: {
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 11,
-			paddingVertical: 13,
-			paddingHorizontal: 2,
+			gap: space.md,
+			paddingVertical: space.md,
+			paddingHorizontal: space.hair,
 		},
-		optionPressed: { opacity: 0.6 },
-		label: { flex: 1, color: t.textPrimary, fontSize: 15, fontWeight: "500" },
+		optionPressed: { opacity: press.opacity },
+		label: { flex: 1, color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
 		hint: {
 			color: t.textFaint,
-			fontSize: 12,
+			fontSize: type.caption1.fontSize,
 			fontFamily: t.fontMono,
 			flexShrink: 1,
 		},
 		empty: {
 			color: t.textTertiary,
-			fontSize: 13,
-			lineHeight: 19,
-			paddingVertical: 14,
+			fontSize: type.footnote.fontSize,
+			lineHeight: type.footnote.lineHeight,
+			paddingVertical: space.md,
 		},
 	});

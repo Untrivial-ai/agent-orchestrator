@@ -5,6 +5,7 @@ import { haptics } from "./haptics";
 import { withHaptic } from "./hapticPress";
 import { minimalBackButtonStyle } from "./navigationChrome";
 import { useTheme } from "./ThemeProvider";
+import { iconSize, type } from "./tokens";
 
 export function MinimalBackButton({ onPress, label = "Back" }: { onPress?(): void; label?: string }) {
 	const router = useRouter();
@@ -20,7 +21,7 @@ export function MinimalBackButton({ onPress, label = "Back" }: { onPress?(): voi
 			})}
 			style={minimalBackButtonStyle}
 		>
-			<Feather name="chevron-left" size={25} color={t.textPrimary} />
+			<Feather name="chevron-left" size={iconSize.xl} color={t.textPrimary} />
 		</Pressable>
 	);
 }

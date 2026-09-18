@@ -124,7 +124,7 @@ export function MicKey({
 				// unaffected: it ignores the finger by design.
 				onTouchCancel={onPressOut}
 			>
-				<Feather name={denied || unavailable ? "mic-off" : "mic"} size={18} color={ink} />
+				<Feather name={denied || unavailable ? "mic-off" : "mic"} size={17} color={ink} />
 			</Pressable>
 		</View>
 	);

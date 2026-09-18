@@ -47,6 +47,7 @@ import { SidebarSpawnButton } from "./sidebar-spawn-button";
 import { useApp } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles, useThemeState } from "./ThemeProvider";
+import { type, space } from "./tokens";
 
 type ScrollRequest = {
 	destination: SidebarDestinationId;
@@ -222,7 +223,7 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 					importantForAccessibility={open ? "yes" : "no-hide-descendants"}
 				>
 					<View style={styles.sidebarTop}>
-						<Host style={{ width: drawerWidth - 32, height: 232 }} colorScheme={scheme} seedColor={t.blue}>
+						<Host style={{ width: drawerWidth - 32, height: 232 }} colorScheme={scheme} seedColor={t.accent}>
 							<Column
 								alignment="start"
 								spacing={0}
@@ -368,13 +369,13 @@ function DestinationRow({
 				style={{
 					width: drawerWidth - 32,
 					height: 52,
-					paddingHorizontal: 14,
-					borderRadius: 13,
-					backgroundColor: active ? t.tintBlue : "transparent",
+					paddingHorizontal: space.md,
+					borderRadius: 12,
+					backgroundColor: active ? t.accentTint : "transparent",
 				}}
 			>
-				<SidebarDestinationIcon destination={destination} active={active} color={active ? t.blue : t.textSecondary} />
-				<Text textStyle={{ color: active ? t.blue : t.textPrimary, fontSize: 17, fontWeight: active ? "700" : "600" }}>
+				<SidebarDestinationIcon destination={destination} active={active} color={active ? t.accent : t.textSecondary} />
+				<Text textStyle={{ color: active ? t.accent : t.textPrimary, fontSize: type.body.fontSize, fontWeight: active ? "700" : "600" }}>
 					{destination.label}
 				</Text>
 				<Spacer flexible />
@@ -382,7 +383,7 @@ function DestinationRow({
 				    destination you are on. The slot carries a count instead — workers
 				    waiting on a person, in amber because it is attention owed and must
 				    read the same on the row you are standing on. */}
-				{badge ? <Text textStyle={{ color: t.amber, fontSize: 15, fontWeight: "700" }}>{String(badge)}</Text> : null}
+				{badge ? <Text textStyle={{ color: t.amber, fontSize: type.subheadline.fontSize, fontWeight: "700" }}>{String(badge)}</Text> : null}
 			</Row>
 		</Button>
 	);
@@ -396,41 +397,41 @@ const makeStyles = (t: Theme) =>
 			left: 0,
 			top: 0,
 			bottom: 0,
-			paddingHorizontal: 16,
+			paddingHorizontal: space.lg,
 		},
 		sidebarTop: { height: 232 },
-		brandMascotSlot: { width: 72, height: 48, paddingLeft: 14 },
+		brandMascotSlot: { width: 72, height: 48, paddingLeft: space.md },
 		brandMascot: { width: 58, height: 48 },
 		sectionLabel: {
-			marginTop: 8,
-			marginBottom: 8,
-			paddingHorizontal: 12,
+			marginTop: space.sm,
+			marginBottom: space.sm,
+			paddingHorizontal: space.md,
 			color: t.textTertiary,
-			fontSize: 12,
+			fontSize: type.caption1.fontSize,
 			fontWeight: "700",
 			letterSpacing: 0.7,
 		},
 		sectionLabelStale: { color: t.amber },
 		sessionListStale: { opacity: 0.55 },
 		sessionList: { flex: 1 },
-		sessionListContent: { paddingBottom: 8 },
+		sessionListContent: { paddingBottom: space.sm },
 		emptySessionList: { flexGrow: 1 },
-		emptySessions: { paddingHorizontal: 12, paddingTop: 8, color: t.textTertiary, fontSize: 14 },
+		emptySessions: { paddingHorizontal: space.md, paddingTop: space.sm, color: t.textTertiary, fontSize: type.subheadline.fontSize },
 		sessionRow: {
 			minHeight: 58,
-			paddingHorizontal: 12,
-			paddingVertical: 9,
+			paddingHorizontal: space.md,
+			paddingVertical: space.sm,
 			borderRadius: 12,
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 11,
+			gap: space.md,
 		},
 		sessionRowPressed: { backgroundColor: t.bgSubtle },
 		sessionText: { flex: 1, minWidth: 0 },
-		sessionTitle: { color: t.textPrimary, fontSize: 15, fontWeight: "600" },
-		sessionMetaRow: { marginTop: 4, flexDirection: "row", alignItems: "center", gap: 6 },
-		statusDot: { width: 6, height: 6, borderRadius: 3 },
-		sessionMeta: { flex: 1, color: t.textTertiary, fontSize: 12 },
+		sessionTitle: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
+		sessionMetaRow: { marginTop: space.xxs, flexDirection: "row", alignItems: "center", gap: space.xs },
+		statusDot: { width: 6, height: 6, borderRadius: 4 },
+		sessionMeta: { flex: 1, color: t.textTertiary, fontSize: type.caption1.fontSize },
 		sidebarActions: {
 			position: "absolute",
 			left: 28,

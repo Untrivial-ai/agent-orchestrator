@@ -75,7 +75,7 @@ export default function ProjectScreen() {
 			{!row ? (
 				loading ? (
 					<View style={styles.center}>
-						<ActivityIndicator color={t.blue} />
+						<ActivityIndicator color={t.accent} />
 					</View>
 				) : (
 					<EmptyState icon="folder" title="Project not found" message="It may have been removed from AO." />
