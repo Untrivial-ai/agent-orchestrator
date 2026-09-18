@@ -392,14 +392,9 @@ export function TaskComposer({
 				try {
 					const completed = await ensureAgentReadiness([selectedAgent], "launch");
 					cacheAgentReadiness(queryClient, completed);
-					const selectedReadiness = completed.agents.find((item) => item.id === selectedAgent);
-					if (selectedReadiness?.authentication.state === "unauthorized") {
-						setError(t("newTask.agentUnauthorized", { agent: selectedReadiness.label || selectedAgent }));
-						return;
-					}
 				} catch {
-					// Readiness is advisory when the targeted check is inconclusive; the
-					// launch path remains the authoritative validator.
+					// This check lacks the selected project's cwd and environment, so it
+					// is advisory. The project-aware launch path remains authoritative.
 				}
 			}
 			const attachmentPayloads = await toSettledPayload();

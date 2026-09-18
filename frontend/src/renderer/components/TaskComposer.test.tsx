@@ -222,57 +222,73 @@ describe("TaskComposer", () => {
 		);
 	});
 
-	it("blocks submission when targeted readiness confirms the selected agent is unauthorized", async () => {
+	it("submits a gateway-backed Claude project when refreshed global readiness is unauthorized", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
-				return { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } };
+				return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
 			}
-			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+			return {
+				data: {
+					status: "ok",
+					project: {
+						agent: "claude-code",
+						config: { env: { ANTHROPIC_BASE_URL: "https://gateway.example" } },
+					},
+				},
+			};
 		});
-		const unauthorized = agentReadiness("codex", "Codex", { authentication: "unauthorized" });
+		const unauthorized = agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" });
 		h.ensureTargetedReadiness.mockResolvedValueOnce({ agents: [unauthorized] });
-		h.post.mockResolvedValueOnce({ data: { workerId: "should-not-spawn" } });
+		h.post.mockResolvedValueOnce({ data: { workerId: "worker-1" } });
+		const onCreated = vi.fn();
 
 		render(
 			<Wrap>
-				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+				<TaskComposer projectId="proj-1" onCreated={onCreated} />
 			</Wrap>,
 		);
-		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "codex"));
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
 		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
 
-		expect(await screen.findByText("Codex is not authorized. Check settings to authenticate.")).toBeInTheDocument();
-		expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["codex"], "launch");
-		expect(h.post).not.toHaveBeenCalled();
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("worker-1"));
+		expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["claude-code"], "launch");
 	});
 
-	it("allows a fresh launch recheck when cached readiness is unauthorized", async () => {
+	it("keeps submission enabled for a gateway-backed Claude project when cached global readiness is unauthorized", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
-				return { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } };
+				return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
 			}
-			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+			return {
+				data: {
+					status: "ok",
+					project: {
+						agent: "claude-code",
+						config: { env: { ANTHROPIC_BASE_URL: "https://gateway.example" } },
+					},
+				},
+			};
 		});
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(agentReadinessQueryKey, {
-			agents: [agentReadiness("codex", "Codex", { authentication: "unauthorized" })],
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" })],
 		});
 		h.ensureTargetedReadiness.mockResolvedValueOnce({
-			agents: [agentReadiness("codex", "Codex", { authentication: "authorized" })],
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "authorized" })],
 		});
-		h.post.mockResolvedValueOnce({ data: { session: { id: "worker-1" } } });
+		h.post.mockResolvedValueOnce({ data: { workerId: "worker-1" } });
 
 		render(
 			<Wrap queryClient={queryClient}>
 				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
 			</Wrap>,
 		);
-		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "codex"));
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
 		const submit = screen.getByRole("button", { name: "Start task" });
 		expect(submit).toBeEnabled();
 		fireEvent.click(submit);
 
-		await waitFor(() => expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["codex"], "launch"));
+		await waitFor(() => expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["claude-code"], "launch"));
 		await waitFor(() => expect(h.post).toHaveBeenCalled());
 	});
 
