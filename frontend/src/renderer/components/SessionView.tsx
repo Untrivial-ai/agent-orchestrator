@@ -542,7 +542,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[queryClient],
 	);
 	const workspaceQuery = useWorkspaceSession(sessionId);
-	const { client: cloudCpClient } = useCloudCp();
+	const { client: cloudCpClient, ready: cloudCpReady, baseUrl: cloudCpBaseUrl } = useCloudCp();
 	const theme = useResolvedTheme();
 	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
@@ -830,7 +830,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
-			window.ao && session && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
+			window.ao && session && !session.cloud && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
 		),
 		refetchInterval: (query) => {
 			const data = query.state.data as ReviewsResponse | undefined;
@@ -844,7 +844,25 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			return data ?? ({ reviewerHandleId: "", reviews: [], runs: [] } satisfies ReviewsResponse);
 		},
 	});
-	const availableReviewerTerminal = reviewerTerminalFromReviews(reviewerQuery.data);
+	const cloudReviewerQuery = useQuery({
+		queryKey: ["cloud-session-reviews", cloudCpBaseUrl, session?.cloud?.orgId, sessionId],
+		enabled: Boolean(session?.cloud && cloudCpReady && sessionIsActive(session)),
+		queryFn: () => {
+			if (!session?.cloud) throw new Error("Cloud session is unavailable");
+			return cloudCpClient.getSessionReviewState(session.cloud.orgId, sessionId);
+		},
+		retry: 1,
+		refetchInterval: (query) =>
+			query.state.data?.reviews.some((review) => review.status === "running") ? 2500 : false,
+	});
+	const availableReviewerTerminal = session?.cloud
+		? cloudReviewerQuery.data?.reviewerHandleId?.trim()
+			? {
+					handleId: cloudReviewerQuery.data.reviewerHandleId,
+					harness: cloudReviewerQuery.data.reviewerHarness || session.provider,
+			  }
+			: undefined
+		: reviewerTerminalFromReviews(reviewerQuery.data);
 	const reviewerTerminal = session && sessionIsActive(session) ? availableReviewerTerminal : undefined;
 
 	// Shell terminals opened inside a session live beside its pane as extra tabs,
@@ -1145,12 +1163,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		setTerminalTarget((current) =>
 			current.kind === "reviewer" &&
-				reviewerQuery.isFetched &&
+			(session?.cloud ? cloudReviewerQuery.isFetched : reviewerQuery.isFetched) &&
 			(!availableReviewerTerminal || availableReviewerTerminal.handleId !== current.handleId)
 				? { kind: "worker" }
 				: current,
 		);
-	}, [availableReviewerTerminal, reviewerQuery.isFetched]);
+	}, [availableReviewerTerminal, cloudReviewerQuery.isFetched, reviewerQuery.isFetched, session?.cloud]);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
 	const hasInspector = Boolean(session);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);
