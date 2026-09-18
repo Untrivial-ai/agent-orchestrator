@@ -33,3 +33,32 @@ export function formatEstimatedCost(cost: EstimatedCost | null | undefined): str
 	if (!cost) return null;
 	return formatCostNanos(cost.totalNanos);
 }
+
+export type UnpricedReason = NonNullable<components["schemas"]["UsageTotalsResponse"]["unpricedReason"]>;
+
+/**
+ * Translation key for an absent estimate.
+ *
+ * A null total says nothing about whether a price is still coming. The backend
+ * knows the difference, so the label carries it: a session waiting on
+ * attribution reads differently from one whose route can never be priced.
+ * Falls back to the neutral label when the backend offered no reason.
+ */
+export function unpricedCostKey(
+	reason: UnpricedReason | null | undefined,
+):
+	| "usage.unavailable"
+	| "usage.unpricedPendingAttribution"
+	| "usage.unpricedUnidentifiedRoute"
+	| "usage.unpricedNoCatalogRates" {
+	switch (reason) {
+		case "pending_attribution":
+			return "usage.unpricedPendingAttribution";
+		case "unidentified_route":
+			return "usage.unpricedUnidentifiedRoute";
+		case "no_catalog_rates":
+			return "usage.unpricedNoCatalogRates";
+		default:
+			return "usage.unavailable";
+	}
+}
