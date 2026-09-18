@@ -138,18 +138,25 @@ export function MobileDevicesSection() {
 									<Smartphone className="size-4 shrink-0 text-settings-muted" aria-hidden="true" />
 									<div className="min-w-0 flex-1">
 										<div className="truncate text-sm">{name}</div>
+										{!device.notificationsEnabled && (
+											<p className="mt-1 text-caption text-settings-muted">
+												{t("mobile.devices.enableOnPhone")}
+											</p>
+										)}
 									</div>
 
 									<div className="flex items-center gap-2" title={t("mobile.devices.notificationsFor", { name })}>
 										<Bell className="size-4 text-settings-muted" aria-hidden="true" data-testid="bell" />
 										<Switch
-											checked={device.notificationsEnabled && !device.muted}
-											disabled={mute.isPending || !device.notificationsEnabled}
+											checked={!device.muted}
+											disabled={mute.isPending}
+											className="data-[state=checked]:bg-settings-switch-on data-[state=unchecked]:bg-[var(--color-border-settings-input)] **:data-[slot=switch-thumb]:bg-white"
 											aria-label={t("mobile.devices.notificationsFor", { name })}
 											onCheckedChange={(next) =>
 												mute.mutate({ installId: device.installId, muted: !next })
 											}
 										/>
+
 									</div>
 
 									{confirmingRemoval === device.installId ? (
