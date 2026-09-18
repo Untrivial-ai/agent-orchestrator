@@ -1,6 +1,6 @@
 # Agent Orchestrator Architecture
 
-Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex and all ACP Chat processes live in detached per-session hosts so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
+Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. The opencode Chat controller lives in a detached per-session host so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
 
 ## Table of Contents
 
@@ -360,11 +360,12 @@ observation time also orders native identities within a launch, so delayed hooks
 cannot replace the current identity's facts.
 
 Independent handoff publication settles the retired predecessor's work and fails
-pending requests in the same transaction as history and ownership. Codex scopes
-projection IDs at the adapter boundary and decodes them for native RPCs. A durable
-branch flag preserves legacy unscoped Codex IDs on upgrade; native forks inherit
+pending requests in the same transaction as history and ownership. The native
+driver scopes projection IDs at the adapter boundary and decodes them for native
+RPCs. A durable
+branch flag preserves legacy unscoped IDs on upgrade; native forks inherit
 that flag, while new provider boundaries use scoped IDs.
-When Codex proves fork ancestry, replay omits copied prefixes only if their stable
+When native fork ancestry is proven, replay omits copied prefixes only if their stable
 item IDs and complete content match retained ancestor rows. Those rows stay in
 their original scope. Unknown ancestry or changed content is retained in full.
 
