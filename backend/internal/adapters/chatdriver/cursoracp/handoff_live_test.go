@@ -1,0 +1,597 @@
+//go:build !windows
+
+package cursoracp
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/creack/pty"
+)
+
+const (
+	cursorHandoffFlushTimeout = 10 * time.Second
+	cursorHandoffTurnTimeout  = 2 * time.Minute
+)
+
+// Provider evidence (blocked 2026-09-18): Cursor 2026.09.02-c22c1a3 on
+// darwin/arm64 reached ACP session/new, which returned Authentication required
+// for the isolated CURSOR_DATA_DIR at <scratch AO_DATA_DIR>/cursor. The user's
+// normal Cursor profile was authenticated, but credentials were deliberately
+// neither copied nor imported into the isolated profile. Consequently the
+// sessionStart identity field, ACP replay identity fields, and bounded 10s
+// flush result remain unobserved. Re-run this gate only after the user explicitly
+// authenticates that isolated profile with AO_CURSOR_HANDOFF_DATA_DIR set to an
+// absolute scratch root, or supplies CURSOR_API_KEY to the process. Do not enable
+// Cursor switching from this evidence.
+func TestLiveCursorInterfaceHandoff(t *testing.T) {
+	if os.Getenv("AO_LIVE_CURSOR_HANDOFF") != "1" {
+		t.Skip("set AO_LIVE_CURSOR_HANDOFF=1 to run the Cursor cross-interface contract")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	plugin := cursor.New()
+	harness := newCursorHandoffHarness(t, plugin)
+	harness.run(ctx)
+}
+
+type cursorHandoffHarness struct {
+	t         *testing.T
+	plugin    *cursor.Plugin
+	driver    ports.ChatDriver
+	workspace string
+	dataDir   string
+	hookDir   string
+	env       map[string]string
+	version   string
+	markers   [3]string
+}
+
+func newCursorHandoffHarness(t *testing.T, plugin *cursor.Plugin) *cursorHandoffHarness {
+	t.Helper()
+	workspace := t.TempDir()
+	dataDir := cursorHandoffDataDir(t)
+	hookDir := filepath.Join(dataDir, "cursor-handoff-hooks")
+	binDir := filepath.Join(dataDir, "cursor-handoff-bin")
+	if err := os.MkdirAll(hookDir, 0o700); err != nil {
+		t.Fatalf("Cursor handoff setup failed: create hook recorder")
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatalf("Cursor handoff setup failed: create fake ao directory")
+	}
+	fakeAO := []byte("#!/bin/sh\n" +
+		"set -eu\n" +
+		"event=${3:-unknown}\n" +
+		"tmp=\"$AO_CURSOR_HANDOFF_HOOK_DIR/.hook.$$\"\n" +
+		"umask 077\n" +
+		"cat > \"$tmp\"\n" +
+		"mv \"$tmp\" \"$AO_CURSOR_HANDOFF_HOOK_DIR/$event.$$.json\"\n" +
+		"printf '{}\\n'\n")
+	if err := os.WriteFile(filepath.Join(binDir, "ao"), fakeAO, 0o700); err != nil {
+		t.Fatalf("Cursor handoff setup failed: write fake ao executable")
+	}
+
+	env := liveEnvMap()
+	env["AO_DATA_DIR"] = dataDir
+	env["AO_CURSOR_HANDOFF_HOOK_DIR"] = hookDir
+	env["PATH"] = binDir + string(os.PathListSeparator) + env["PATH"]
+	plugin.AugmentRuntimeEnv(env, dataDir)
+	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
+		DataDir: dataDir, Env: env, SessionID: "live-cursor-handoff", WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatalf("Cursor handoff setup failed: install hooks")
+	}
+
+	version := cursorHandoffVersion(t, plugin)
+	return &cursorHandoffHarness{
+		t: t, plugin: plugin, driver: New(plugin, nil), workspace: workspace,
+		dataDir: dataDir, hookDir: hookDir, env: env, version: version,
+		markers: [3]string{randomCursorHandoffMarker(t), randomCursorHandoffMarker(t), randomCursorHandoffMarker(t)},
+	}
+}
+
+func cursorHandoffDataDir(t *testing.T) string {
+	t.Helper()
+	dataDir, configured := os.LookupEnv("AO_CURSOR_HANDOFF_DATA_DIR")
+	if !configured {
+		return t.TempDir()
+	}
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" || !filepath.IsAbs(dataDir) {
+		t.Fatal("AO_CURSOR_HANDOFF_DATA_DIR must be a non-empty absolute scratch path")
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal("Cursor handoff setup failed: create configured scratch data directory")
+	}
+	return filepath.Clean(dataDir)
+}
+
+func (h *cursorHandoffHarness) run(ctx context.Context) {
+	h.t.Helper()
+	if _, err := h.driver.Probe(ctx); err != nil {
+		h.t.Fatalf("Cursor %s handoff probe failed", h.version)
+	}
+
+	conversation, err := h.driver.Start(ctx, ports.ChatStartConfig{
+		SessionID: "live-cursor-handoff", DataDir: h.dataDir, WorkspacePath: h.workspace,
+		Env: h.env, Permissions: ports.PermissionModeDefault,
+		ProviderScopeID: "live-cursor-handoff", ProviderIDsScoped: true,
+	})
+	if err != nil {
+		if errors.Is(err, ports.ErrChatAuthRequired) {
+			h.t.Fatalf("Cursor %s ACP start failed: authentication required for isolated CURSOR_DATA_DIR", h.version)
+		}
+		h.t.Fatalf("Cursor %s ACP start failed", h.version)
+	}
+	providerID := strings.TrimSpace(conversation.ProviderConversationID())
+	if providerID == "" {
+		h.t.Fatalf("Cursor %s native conversation id is empty", h.version)
+	}
+
+	acknowledgement := randomCursorHandoffMarker(h.t)
+	ref := sendLiveTurnSanitized(ctx, h.t, conversation,
+		"Remember the private code "+h.markers[0]+" for later. Reply with the acknowledgement "+acknowledgement+".")
+	answer := waitForLiveTurnSanitized(ctx, h.t, conversation, ref.ProviderTurnID)
+	if !strings.Contains(answer, acknowledgement) {
+		h.t.Fatalf("Cursor %s ACP turn A completed without its in-memory acknowledgement", h.version)
+	}
+	h.terminate(conversation, "ACP turn A")
+
+	firstSessionStarts := len(h.hookRecords("session-start"))
+	tui := h.startTUI(ctx, providerID, firstSessionStarts)
+	h.assertSessionStartIDs(providerID)
+	tui.clearOutput()
+	stopCount := len(h.hookRecords("stop"))
+	tui.writePrompt(h.t, "Recall the private code from the previous turn, then include this second code: "+h.markers[1]+".")
+	h.waitForHookCount("stop", stopCount+1, cursorHandoffTurnTimeout)
+	if !tui.waitForOutput([]string{h.markers[0]}, 5*time.Second) {
+		h.t.Fatalf("Cursor %s TUI turn B did not recall the ACP marker; native id=%s", h.version, providerID)
+	}
+	h.stopTUI(tui)
+
+	resumed := h.resumeACP(ctx, providerID)
+	history := h.waitForReplay(ctx, resumed, h.markers[:2])
+	h.assertStableReplay(ctx, resumed, history, h.markers[:2])
+
+	ref = sendLiveTurnSanitized(ctx, h.t, resumed,
+		"State the two private codes already in this conversation, then include this third code: "+h.markers[2]+".")
+	answer = waitForLiveTurnSanitized(ctx, h.t, resumed, ref.ProviderTurnID)
+	for _, marker := range h.markers {
+		if !strings.Contains(answer, marker) {
+			h.t.Fatalf("Cursor %s ACP turn C omitted an in-memory prior marker; native id=%s", h.version, providerID)
+		}
+	}
+	h.terminate(resumed, "ACP turn C")
+
+	secondSessionStarts := len(h.hookRecords("session-start"))
+	tui = h.startTUI(ctx, providerID, secondSessionStarts)
+	h.assertSessionStartIDs(providerID)
+	tui.clearOutput()
+	stopCount = len(h.hookRecords("stop"))
+	tui.writePrompt(h.t, "State all three private codes from this conversation, without explanation.")
+	h.waitForHookCount("stop", stopCount+1, cursorHandoffTurnTimeout)
+	if !tui.waitForOutput(h.markers[:], 5*time.Second) {
+		h.t.Fatalf("Cursor %s final TUI turn omitted a prior marker; native id=%s", h.version, providerID)
+	}
+	h.stopTUI(tui)
+	h.assertSessionStartIDs(providerID)
+}
+
+func (h *cursorHandoffHarness) resumeACP(ctx context.Context, providerID string) ports.ChatConversation {
+	h.t.Helper()
+	conversation, err := h.driver.Resume(ctx, ports.ChatResumeConfig{
+		SessionID: "live-cursor-handoff", ProviderConversationID: providerID,
+		DataDir: h.dataDir, WorkspacePath: h.workspace, Env: h.env,
+		Permissions: ports.PermissionModeDefault, ProviderScopeID: "live-cursor-handoff",
+		ProviderIDsScoped: true,
+	})
+	if err != nil {
+		h.t.Fatalf("Cursor %s ACP resume failed; native id=%s", h.version, providerID)
+	}
+	if got := strings.TrimSpace(conversation.ProviderConversationID()); got != providerID {
+		h.terminate(conversation, "mismatched ACP resume")
+		h.t.Fatalf("Cursor %s ACP resume native id=%s, want=%s", h.version, got, providerID)
+	}
+	if _, ok := conversation.(ports.ChatHistoryReader); !ok {
+		h.terminate(conversation, "missing history reader")
+		h.t.Fatalf("Cursor %s ACP resume has no ChatHistoryReader; native id=%s", h.version, providerID)
+	}
+	if _, ok := conversation.(ports.ChatHistoryRefresher); !ok {
+		h.terminate(conversation, "missing history refresher")
+		h.t.Fatalf("Cursor %s ACP resume has no ChatHistoryRefresher; native id=%s", h.version, providerID)
+	}
+	return conversation
+}
+
+func (h *cursorHandoffHarness) waitForReplay(
+	ctx context.Context,
+	conversation ports.ChatConversation,
+	markers []string,
+) []ports.ChatEvent {
+	h.t.Helper()
+	reader := conversation.(ports.ChatHistoryReader)
+	refresher := conversation.(ports.ChatHistoryRefresher)
+	deadline := time.Now().Add(cursorHandoffFlushTimeout)
+	history, err := reader.ReadHistory(ctx)
+	for {
+		counts, order := cursorHandoffMarkerCounts(history, markers)
+		if err == nil && allCursorHandoffCountsEqual(counts, 1) && sort.IntsAreSorted(order) {
+			h.assertReplayIdentities(history, markers)
+			return history
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("Cursor %s ACP replay did not converge within %s; marker counts=%v order=%v native id=%s",
+				h.version, cursorHandoffFlushTimeout, counts, order, conversation.ProviderConversationID())
+		}
+		time.Sleep(250 * time.Millisecond)
+		history, err = refresher.RefreshHistory(ctx)
+	}
+}
+
+func (h *cursorHandoffHarness) assertReplayIdentities(history []ports.ChatEvent, markers []string) {
+	h.t.Helper()
+	for markerIndex, marker := range markers {
+		var user *ports.ChatEvent
+		for i := range history {
+			if history[i].Kind == ports.ChatEventUserMessageCompleted && strings.Contains(history[i].Text, marker) {
+				user = &history[i]
+				break
+			}
+		}
+		if user == nil {
+			h.t.Fatalf("Cursor %s ACP replay marker index=%d is absent", h.version, markerIndex)
+		}
+		if user.NativeUserMessageID == "" || user.ProviderTurnID == "" || user.ProviderItemID == "" || user.ProviderEventID == "" {
+			h.t.Fatalf("Cursor %s ACP replay marker index=%d identity fields: NativeUserMessageID=%q ProviderTurnID=%q ProviderItemID=%q ProviderEventID=%q",
+				h.version, markerIndex, user.NativeUserMessageID, user.ProviderTurnID, user.ProviderItemID, user.ProviderEventID)
+		}
+		assistantItems := make(map[string]struct{})
+		turnCompleted := false
+		for _, event := range history {
+			if event.ProviderTurnID != user.ProviderTurnID {
+				continue
+			}
+			if event.ProviderEventID == "" {
+				h.t.Fatalf("Cursor %s ACP replay marker index=%d has empty ProviderEventID; ProviderTurnID=%s kind=%s",
+					h.version, markerIndex, user.ProviderTurnID, event.Kind)
+			}
+			if event.Kind == ports.ChatEventMessageCompleted && event.ProviderItemID != "" {
+				assistantItems[event.ProviderItemID] = struct{}{}
+			}
+			turnCompleted = turnCompleted || event.Kind == ports.ChatEventTurnCompleted
+		}
+		if len(assistantItems) == 0 || !turnCompleted {
+			h.t.Fatalf("Cursor %s ACP replay marker index=%d lacks a structured assistant identity or completed boundary; ProviderTurnID=%s assistant item count=%d completed=%t",
+				h.version, markerIndex, user.ProviderTurnID, len(assistantItems), turnCompleted)
+		}
+	}
+}
+
+func (h *cursorHandoffHarness) assertStableReplay(
+	ctx context.Context,
+	conversation ports.ChatConversation,
+	want []ports.ChatEvent,
+	markers []string,
+) {
+	h.t.Helper()
+	got, err := conversation.(ports.ChatHistoryRefresher).RefreshHistory(ctx)
+	if err != nil {
+		h.t.Fatalf("Cursor %s ACP replay refresh failed; native id=%s", h.version, conversation.ProviderConversationID())
+	}
+	gotCounts, gotOrder := cursorHandoffMarkerCounts(got, markers)
+	if !allCursorHandoffCountsEqual(gotCounts, 1) || !sort.IntsAreSorted(gotOrder) {
+		h.t.Fatalf("Cursor %s refreshed ACP replay marker counts=%v order=%v native id=%s",
+			h.version, gotCounts, gotOrder, conversation.ProviderConversationID())
+	}
+	if len(got) != len(want) {
+		h.t.Fatalf("Cursor %s ACP replay event count changed across refresh: first=%d second=%d native id=%s",
+			h.version, len(want), len(got), conversation.ProviderConversationID())
+	}
+	for i := range want {
+		if cursorHandoffEventIdentity(want[i]) != cursorHandoffEventIdentity(got[i]) {
+			h.t.Fatalf("Cursor %s ACP replay identity changed at index=%d; first=%s second=%s native id=%s",
+				h.version, i, cursorHandoffEventIdentity(want[i]), cursorHandoffEventIdentity(got[i]),
+				conversation.ProviderConversationID())
+		}
+	}
+}
+
+func cursorHandoffEventIdentity(event ports.ChatEvent) string {
+	return fmt.Sprintf("kind=%s NativeUserMessageID=%s ProviderTurnID=%s ProviderItemID=%s ProviderEventID=%s",
+		event.Kind, event.NativeUserMessageID, event.ProviderTurnID, event.ProviderItemID, event.ProviderEventID)
+}
+
+func cursorHandoffMarkerCounts(history []ports.ChatEvent, markers []string) ([]int, []int) {
+	counts := make([]int, len(markers))
+	order := make([]int, 0, len(markers))
+	for eventIndex, event := range history {
+		if event.Kind != ports.ChatEventUserMessageCompleted {
+			continue
+		}
+		for markerIndex, marker := range markers {
+			if strings.Contains(event.Text, marker) {
+				counts[markerIndex]++
+				if counts[markerIndex] == 1 {
+					order = append(order, eventIndex)
+				}
+			}
+		}
+	}
+	return counts, order
+}
+
+func allCursorHandoffCountsEqual(counts []int, want int) bool {
+	for _, count := range counts {
+		if count != want {
+			return false
+		}
+	}
+	return true
+}
+
+type cursorHandoffPTY struct {
+	file *os.File
+	cmd  *exec.Cmd
+	done chan error
+	mu   sync.Mutex
+	out  bytes.Buffer
+}
+
+func (h *cursorHandoffHarness) startTUI(
+	ctx context.Context,
+	providerID string,
+	previousSessionStarts int,
+) *cursorHandoffPTY {
+	h.t.Helper()
+	argv, ok, err := h.plugin.GetRestoreCommand(ctx, ports.RestoreConfig{
+		DataDir: h.dataDir, Permissions: ports.PermissionModeDefault,
+		Session: ports.SessionRef{
+			ID: "live-cursor-handoff", WorkspacePath: h.workspace, DataDir: h.dataDir,
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: providerID},
+		},
+	})
+	if err != nil || !ok || len(argv) == 0 {
+		h.t.Fatalf("Cursor %s could not construct TUI restore command; native id=%s", h.version, providerID)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = h.workspace
+	cmd.Env = cursorHandoffEnvList(h.env)
+	file, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
+	if err != nil {
+		h.t.Fatalf("Cursor %s TUI resume failed; native id=%s", h.version, providerID)
+	}
+	process := &cursorHandoffPTY{file: file, cmd: cmd, done: make(chan error, 1)}
+	go process.capture()
+	go func() { process.done <- cmd.Wait() }()
+	h.t.Cleanup(func() { process.forceStop() })
+	h.waitForHookCount("session-start", previousSessionStarts+1, 30*time.Second)
+	return process
+}
+
+func (p *cursorHandoffPTY) capture() {
+	buffer := make([]byte, 4096)
+	for {
+		n, err := p.file.Read(buffer)
+		if n > 0 {
+			p.mu.Lock()
+			_, _ = p.out.Write(buffer[:n])
+			p.mu.Unlock()
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (p *cursorHandoffPTY) clearOutput() {
+	p.mu.Lock()
+	p.out.Reset()
+	p.mu.Unlock()
+}
+
+func (p *cursorHandoffPTY) outputContains(marker string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return bytes.Contains(p.out.Bytes(), []byte(marker))
+}
+
+func (p *cursorHandoffPTY) waitForOutput(markers []string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		found := true
+		for _, marker := range markers {
+			found = found && p.outputContains(marker)
+		}
+		if found {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func (p *cursorHandoffPTY) writePrompt(t *testing.T, prompt string) {
+	t.Helper()
+	if _, err := io.WriteString(p.file, prompt+"\r"); err != nil {
+		t.Fatal("Cursor TUI prompt submission failed")
+	}
+}
+
+func (h *cursorHandoffHarness) stopTUI(process *cursorHandoffPTY) {
+	h.t.Helper()
+	_, _ = process.file.Write([]byte{3})
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-process.done:
+		_ = process.file.Close()
+		return
+	case <-timer.C:
+		_, _ = process.file.Write([]byte{3})
+	}
+	timer.Reset(5 * time.Second)
+	select {
+	case <-process.done:
+		_ = process.file.Close()
+	case <-timer.C:
+		process.forceStop()
+		h.t.Fatalf("Cursor %s TUI did not stop within 10s", h.version)
+	}
+}
+
+func (p *cursorHandoffPTY) forceStop() {
+	_ = p.file.Close()
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+}
+
+type cursorHookRecord struct {
+	fields map[string]json.RawMessage
+}
+
+func (h *cursorHandoffHarness) hookRecords(event string) []cursorHookRecord {
+	h.t.Helper()
+	entries, err := os.ReadDir(h.hookDir)
+	if err != nil {
+		h.t.Fatalf("Cursor %s hook record count failed", h.version)
+	}
+	records := make([]cursorHookRecord, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), event+".") {
+			continue
+		}
+		payload, err := os.ReadFile(filepath.Join(h.hookDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		fields := make(map[string]json.RawMessage)
+		if json.Unmarshal(payload, &fields) == nil {
+			records = append(records, cursorHookRecord{fields: fields})
+		}
+	}
+	return records
+}
+
+func (h *cursorHandoffHarness) waitForHookCount(event string, want int, timeout time.Duration) {
+	h.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if len(h.hookRecords(event)) >= want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	h.t.Fatalf("Cursor %s hook event=%s count=%d want-at-least=%d",
+		h.version, event, len(h.hookRecords(event)), want)
+}
+
+func (h *cursorHandoffHarness) assertSessionStartIDs(want string) {
+	h.t.Helper()
+	records := h.hookRecords("session-start")
+	if len(records) == 0 {
+		h.t.Fatalf("Cursor %s sessionStart hook count=0", h.version)
+	}
+	for index, record := range records {
+		field, got := cursorHookNativeID(record.fields)
+		if got != want {
+			h.t.Fatalf("Cursor %s sessionStart index=%d identity field=%s id=%s want=%s fields=%v",
+				h.version, index, field, got, want, cursorHookFieldNames(record.fields))
+		}
+	}
+}
+
+func cursorHookNativeID(fields map[string]json.RawMessage) (string, string) {
+	for _, name := range []string{"session_id", "sessionId", "conversation_id", "conversationId"} {
+		var value string
+		if json.Unmarshal(fields[name], &value) == nil && strings.TrimSpace(value) != "" {
+			return name, strings.TrimSpace(value)
+		}
+	}
+	return "", ""
+}
+
+func cursorHookFieldNames(fields map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (h *cursorHandoffHarness) terminate(conversation ports.ChatConversation, stage string) {
+	h.t.Helper()
+	terminator, ok := conversation.(ports.ChatProviderTerminator)
+	if !ok {
+		_ = conversation.Close()
+		h.t.Fatalf("Cursor %s %s has no ChatProviderTerminator", h.version, stage)
+	}
+	if err := terminator.Terminate(); err != nil {
+		h.t.Fatalf("Cursor %s %s stop failed", h.version, stage)
+	}
+}
+
+func cursorHandoffVersion(t *testing.T, plugin *cursor.Plugin) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	binary, err := plugin.ResolveBinary(ctx)
+	if err != nil {
+		t.Fatal("Cursor handoff setup failed: binary unavailable")
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(binary); resolveErr == nil {
+		versionDir := filepath.Base(filepath.Dir(resolved))
+		if _, ok := parseCursorVersion(versionDir); ok {
+			return versionDir
+		}
+	}
+	output, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatal("Cursor handoff setup failed: version unavailable")
+	}
+	version := strings.TrimSpace(string(output))
+	if version == "" {
+		t.Fatal("Cursor handoff setup failed: empty version")
+	}
+	return strings.Join(strings.Fields(version), " ")
+}
+
+func randomCursorHandoffMarker(t *testing.T) string {
+	t.Helper()
+	value := make([]byte, 12)
+	if _, err := rand.Read(value); err != nil {
+		t.Fatal("Cursor handoff setup failed: random marker")
+	}
+	return "ao-cursor-handoff-" + hex.EncodeToString(value)
+}
+
+func cursorHandoffEnvList(env map[string]string) []string {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	values := make([]string, 0, len(names))
+	for _, name := range names {
+		values = append(values, name+"="+env[name])
+	}
+	return values
+}
