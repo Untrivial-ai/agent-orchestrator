@@ -8,13 +8,6 @@ import { SettingsDialog } from "./SettingsDialog";
 
 const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
 
-const accountsResponse = {
-	accountRevision: 0,
-	accounts: [],
-	capabilities: {},
-	deviceReconciliation: { status: "verified", activeAccountVerified: false, reasonCode: "verified", retryable: false },
-};
-
 vi.mock("../lib/api-client", () => ({
 	apiClient: { POST: postMock },
 	apiErrorCode: (error: { code?: string }) => error?.code,
@@ -53,9 +46,7 @@ vi.mock("../hooks/useCloudGate", () => ({
 
 describe("SettingsDialog", () => {
 	beforeEach(() => {
-		postMock.mockReset().mockImplementation((path: string) => path === "/api/v1/agents/codex/accounts/ensure"
-			? Promise.resolve({ data: accountsResponse })
-			: Promise.resolve({ data: { operationId: "login-1", status: "cancelled" } }));
+		postMock.mockReset().mockResolvedValue({ data: {} });
 		useUiStore.setState({ settingsModal: null });
 	});
 
@@ -82,19 +73,6 @@ describe("SettingsDialog", () => {
 
 		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("mobile");
 		expect(screen.getByRole("button", { name: "Mobile" })).toHaveAttribute("aria-current", "page");
-		await vi.waitFor(() => expect(postMock).toHaveBeenCalledWith(
-			"/api/v1/agents/codex/accounts/ensure",
-			{ body: { accountIds: [], includeUsage: true, forceAuthentication: true, forceDeviceReconciliation: true } },
-		));
-	});
-
-	it("refreshes accounts once when global Settings opens, not when its pages change", async () => {
-		useUiStore.getState().openGlobalSettings();
-		renderSettingsDialog();
-
-		await vi.waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		await userEvent.click(screen.getByRole("button", { name: "Harness" }));
-		expect(postMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("mounts dialog chrome before the selected settings form", async () => {
@@ -120,18 +98,6 @@ describe("SettingsDialog", () => {
 
 		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("general");
 		expect(screen.queryByRole("button", { name: "Cloud" })).not.toBeInTheDocument();
-	});
-
-	it("closes Settings without cancelling daemon-owned account login work", async () => {
-		useUiStore.getState().openGlobalSettings("agents");
-		renderSettingsDialog();
-
-		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("agents");
-		expect(screen.getByRole("button", { name: "General" })).toBeEnabled();
-		await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
-
-		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
-		expect(postMock.mock.calls.map(([path]) => path)).toEqual(["/api/v1/agents/codex/accounts/ensure"]);
 	});
 
 	it("traps focus and closes from Escape or the backdrop", async () => {

@@ -16,16 +16,12 @@ function connection(provider: string, validationState = "valid"): CloudCpProvide
 
 describe("selectCloudOrchestratorHarness", () => {
 	it("uses the connected harness when it is the only Cloud option", () => {
-		expect(selectCloudOrchestratorHarness([connection("claude-code")])).toBe("claude-code");
-	});
-
-	it("preserves Codex as the preference when several supported agents are connected", () => {
-		expect(selectCloudOrchestratorHarness([connection("cursor"), connection("codex")])).toBe("codex");
+		expect(selectCloudOrchestratorHarness([connection("opencode")])).toBe("opencode");
 	});
 
 	it("ignores invalid, non-default, and non-agent provider connections", () => {
-		const invalid = connection("codex", "invalid");
-		const nonDefault = { ...connection("claude-code"), label: "secondary" };
+		const invalid = connection("opencode", "invalid");
+		const nonDefault = { ...connection("opencode"), label: "secondary" };
 		expect(selectCloudOrchestratorHarness([invalid, nonDefault, connection("github")])).toBeUndefined();
 	});
 });

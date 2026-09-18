@@ -22,7 +22,7 @@ const session = (mode: "chat" | "tui") => ({
 	id: mode,
 	title: "Session",
 	workspaceName: "repo",
-	provider: "claude-code",
+	provider: "opencode",
 	mode,
 	status: "working",
 });

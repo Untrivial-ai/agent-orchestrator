@@ -33,7 +33,7 @@ const session = {
 const childView = (overrides: Partial<OrchestratorChildView>): OrchestratorChildView => ({
 	id: "child-1",
 	title: "Fix CI",
-	provider: "claude-code",
+	provider: "opencode",
 	status: "working",
 	activity: { state: "active", lastActivityAt: "2026-08-30T12:00:00Z" },
 	isTerminated: false,

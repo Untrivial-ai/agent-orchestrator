@@ -147,7 +147,7 @@ const worker = {
 	workspaceId: "proj-1",
 	workspaceName: "my-app",
 	title: "do the thing",
-	provider: "claude-code",
+	provider: "opencode",
 	kind: "worker",
 	branch: "ao/sess-1",
 	status: "working",
@@ -917,18 +917,18 @@ describe("terminal restore", () => {
 });
 
 describe("providerScrollsByKeyboard", () => {
-	// opencode, its fork kilocode, and grok use TUIs that scroll their own transcripts
-	// by keyboard and ignore SGR wheel reports, so they must opt into the
-	// PageUp/PageDown wheel routing (see XtermTerminal's paneScrollsByKeyboard).
+	// opencode uses a TUI that scrolls its own transcript by keyboard and ignores
+	// SGR wheel reports, so it must opt into the PageUp/PageDown wheel routing
+	// (see XtermTerminal's paneScrollsByKeyboard).
 	it("is true for keyboard-scroll TUIs", () => {
 		expect(providerScrollsByKeyboard("opencode")).toBe(true);
-		expect(providerScrollsByKeyboard("kilocode")).toBe(true);
-		expect(providerScrollsByKeyboard("grok")).toBe(true);
 	});
 
 	it("is false for mouse-report/native-scroll providers", () => {
 		expect(providerScrollsByKeyboard("codex")).toBe(false);
 		expect(providerScrollsByKeyboard("claude-code")).toBe(false);
+		expect(providerScrollsByKeyboard("kilocode")).toBe(false);
+		expect(providerScrollsByKeyboard("grok")).toBe(false);
 		// Muse writes its transcript to the normal buffer. PageUp is ignored by
 		// Muse, so wheel input must stay on the SGR -> tmux copy-mode path.
 		expect(providerScrollsByKeyboard("muse")).toBe(false);

@@ -23,7 +23,7 @@ const session: WorkspaceSession = {
 	workspaceId: "proj-1",
 	workspaceName: "Project One",
 	title: "orchestrator",
-	provider: "codex",
+	provider: "opencode",
 	kind: "orchestrator",
 	status: "terminated",
 	updatedAt: "2026-07-26T00:00:00Z",
@@ -34,7 +34,7 @@ const workspace: WorkspaceSummary = {
 	id: "proj-1",
 	name: "Project One",
 	path: "/repo/project-one",
-	orchestratorAgent: "codex",
+	orchestratorAgent: "opencode",
 	sessions: [session],
 };
 

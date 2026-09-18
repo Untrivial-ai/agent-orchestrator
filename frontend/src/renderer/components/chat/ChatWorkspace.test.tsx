@@ -192,7 +192,7 @@ const chatSession = {
 	workspaceId: "project-1",
 	workspaceName: "agent-orchestrator",
 	title: "Reviewer chat",
-	provider: "codex",
+	provider: "opencode",
 	kind: "worker",
 	mode: "chat",
 	status: "working",

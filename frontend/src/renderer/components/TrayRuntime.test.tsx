@@ -47,7 +47,7 @@ function worker(overrides: Partial<WorkspaceSession> & { id: string }): Workspac
 		workspaceId: "proj-1",
 		workspaceName: "note-tauri",
 		title: overrides.id,
-		provider: "codex",
+		provider: "opencode",
 		kind: "worker",
 		branch: `feature/${overrides.id}`,
 		status: "working",

@@ -3,18 +3,12 @@ import { describe, expect, it } from "vitest";
 import { AgentAvatar } from "./AgentAvatar";
 
 describe("AgentAvatar", () => {
-	it("renders the Prime Agent brand asset", () => {
-		render(<AgentAvatar provider="prime-agent" />);
+	it("renders the opencode brand asset", () => {
+		render(<AgentAvatar provider="opencode" />);
 
-		expect(screen.getByRole("img", { name: "prime-agent" })).toHaveAttribute(
+		expect(screen.getByRole("img", { name: "opencode" })).toHaveAttribute(
 			"src",
-			expect.stringContaining("prime-agent.png"),
+			expect.stringContaining("opencode.svg"),
 		);
-	});
-
-	it("renders the OMP brand asset", () => {
-		render(<AgentAvatar provider="omp" />);
-
-		expect(screen.getByRole("img", { name: "omp" })).toHaveAttribute("src", expect.stringContaining("omp.png"));
 	});
 });

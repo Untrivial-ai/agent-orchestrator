@@ -1649,14 +1649,14 @@ describe("ProjectSettingsForm", () => {
 				id: "proj-1",
 				name: "Project One",
 				path: "/repo/project-one",
-				orchestratorAgent: "goose",
+				orchestratorAgent: "opencode",
 				sessions: [
 					{
 						id: "proj-1-orchestrator",
 						workspaceId: "proj-1",
 						workspaceName: "Project One",
 						title: "Orchestrator",
-						provider: "claude-code",
+						provider: "opencode",
 						kind: "orchestrator",
 						branch: "ao/proj-1-orchestrator",
 						status: "working",

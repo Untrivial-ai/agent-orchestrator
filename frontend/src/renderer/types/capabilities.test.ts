@@ -14,7 +14,7 @@ import { can, type ConversationSnapshot } from "./conversation";
 const base: ConversationSnapshot = {
 	conversationId: "conv-1",
 	sessionId: "s-1",
-	harness: "codex",
+	harness: "opencode",
 	mode: "chat",
 	controller: { state: "ready" },
 	latestSequence: 0,

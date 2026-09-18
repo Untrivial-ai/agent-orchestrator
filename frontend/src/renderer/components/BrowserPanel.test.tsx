@@ -103,7 +103,7 @@ const session: WorkspaceSession = {
 	workspaceId: "ws-1",
 	workspaceName: "my-app",
 	title: "do the thing",
-	provider: "claude-code",
+	provider: "opencode",
 	kind: "worker",
 	branch: "feat/ns",
 	status: "needs_input",

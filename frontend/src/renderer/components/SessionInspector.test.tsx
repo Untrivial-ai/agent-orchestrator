@@ -99,7 +99,7 @@ const session = (
   workspaceId: "ws-1",
   workspaceName: "my-app",
   title: "do the thing",
-  provider: "claude-code",
+  provider: "opencode",
   kind: "worker",
   branch: "feat/ns",
   status: "review_pending",
@@ -221,7 +221,7 @@ function commonGetsResponder(
             path: "/repo",
             repo: "my-app",
             defaultBranch: "main",
-            config: { reviewers: [{ harness: "codex" }] },
+            config: { reviewers: [{ harness: "opencode" }] },
           },
         },
       };
@@ -1365,28 +1365,6 @@ describe("SessionInspector Activity section", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("does not offer agent resume while an agent switch owns the exited source", () => {
-    renderWithQuery(
-      <SessionInspector
-        session={session([], {
-          status: "exited",
-          activity: { state: "exited", lastActivityAt: "2026-06-15T10:00:00Z" },
-          activeAgentSwitch: {
-            id: "switch-1",
-            fromHarness: "claude-code",
-            targetHarness: "codex",
-            state: "source_stopped",
-            agentHandoffStatus: "received",
-          },
-        })}
-      />,
-    );
-
-    expect(
-      screen.queryByRole("button", { name: "Resume agent" }),
-    ).not.toBeInTheDocument();
-  });
-
   it("keeps resume failures visible beside the action", async () => {
     postMock.mockResolvedValueOnce({
       error: new Error("agent restart failed"),
@@ -1964,20 +1942,20 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(
       <SessionInspector
-        session={sessionWithProvider([pr(3, "open")], "codex")}
+        session={sessionWithProvider([pr(3, "open")], "opencode")}
       />,
     );
     await openReviewsSection();
 
     expect(
       await screen.findByRole("button", { name: /Select reviewer agent/ }),
-    ).toHaveTextContent("Codex");
+    ).toHaveTextContent("OpenCode");
     expect(screen.queryByText("reviewer")).not.toBeInTheDocument();
   });
 
   // The label is a display name, not the wire id: the trigger used to print the
-  // raw harness id, which read as a second, selectable "claude-code" entry
-  // alongside the catalog's properly-cased "Claude Code".
+  // raw harness id, which read as a second, selectable "opencode" entry
+  // alongside the catalog's properly-cased "OpenCode".
   it("labels the default reviewer with its display name, not the raw id", async () => {
     getMock.mockImplementation(async (path: string) => {
       if (path === "/api/v1/agents/readiness") {
@@ -2014,7 +1992,7 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(
       <SessionInspector
-        session={sessionWithProvider([pr(3, "open")], "claude-code")}
+        session={sessionWithProvider([pr(3, "open")], "opencode")}
       />,
     );
     await openReviewsSection();
@@ -2022,8 +2000,8 @@ describe("SessionInspector summary reviews", () => {
     const trigger = await screen.findByRole("button", {
       name: /Select reviewer agent/,
     });
-    expect(trigger).toHaveTextContent("Claude Code");
-    expect(trigger).not.toHaveTextContent("claude-code");
+    expect(trigger).toHaveTextContent("OpenCode");
+    expect(trigger).not.toHaveTextContent("opencode");
   });
 
   it("configures session auto-review and disables manual controls", async () => {
@@ -2051,7 +2029,7 @@ describe("SessionInspector summary reviews", () => {
               path: "/repo",
               repo: "my-app",
               defaultBranch: "main",
-              config: { reviewers: [{ harness: "codex" }] },
+              config: { reviewers: [{ harness: "opencode" }] },
             },
           },
         };
@@ -2142,7 +2120,7 @@ describe("SessionInspector summary reviews", () => {
               path: "/repo",
               repo: "my-app",
               defaultBranch: "main",
-              config: { reviewers: [{ harness: "codex" }] },
+              config: { reviewers: [{ harness: "opencode" }] },
             },
           },
         };
@@ -2248,7 +2226,7 @@ describe("SessionInspector summary reviews", () => {
 
     expect(
       screen.getByRole("button", { name: /Select reviewer agent/ }),
-    ).toHaveTextContent("Codex");
+    ).toHaveTextContent("OpenCode");
     expect(screen.queryByText("Reviewable change 3")).not.toBeInTheDocument();
     expect(await screen.findByText("Reviewable change 4")).toBeInTheDocument();
     expect(
@@ -3039,10 +3017,10 @@ describe("SessionInspector summary reviews", () => {
 
   it("preserves hidden reviewer config fields when saving a session reviewer model", async () => {
     getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
-      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "codex") {
+      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "opencode") {
         return {
           data: {
-            agentId: "codex",
+            agentId: "opencode",
             selectionMode: "catalog",
             models: [
               { id: "gpt-5", label: "GPT-5", isDefault: true },
@@ -3067,7 +3045,7 @@ describe("SessionInspector summary reviews", () => {
     renderWithQuery(
       <SessionInspector
         session={session([pr(3, "open")], {
-          reviewerHarness: "codex",
+          reviewerHarness: "opencode",
           reviewerConfig: { model: "gpt-5", permissions: "bypass-permissions" },
         })}
       />,
@@ -3075,7 +3053,7 @@ describe("SessionInspector summary reviews", () => {
     await openReviewsSection();
 
     await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /opencode/i }));
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "GPT-5 Mini" })).toBeInTheDocument(),
     );
@@ -3095,10 +3073,10 @@ describe("SessionInspector summary reviews", () => {
 
   it("preserves hidden reviewer config when the explicit override matches the default harness", async () => {
     getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
-      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "codex") {
+      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "opencode") {
         return {
           data: {
-            agentId: "codex",
+            agentId: "opencode",
             selectionMode: "catalog",
             models: [
               { id: "gpt-5", label: "GPT-5", isDefault: true },
@@ -3123,8 +3101,8 @@ describe("SessionInspector summary reviews", () => {
     renderWithQuery(
       <SessionInspector
         session={session([pr(3, "open")], {
-          provider: "codex",
-          reviewerHarness: "codex",
+          provider: "opencode",
+          reviewerHarness: "opencode",
           reviewerConfig: { permissions: "bypass-permissions" },
         })}
       />,
@@ -3132,7 +3110,7 @@ describe("SessionInspector summary reviews", () => {
     await openReviewsSection();
 
     await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /opencode/i }));
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "GPT-5 Mini" })).toBeInTheDocument(),
     );
@@ -3303,10 +3281,10 @@ describe("SessionInspector summary reviews", () => {
 
   it("keeps the current default reviewer open for model selection", async () => {
     getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
-      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "codex") {
+      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "opencode") {
         return {
           data: {
-            agentId: "codex",
+            agentId: "opencode",
             selectionMode: "catalog",
             models: [
               { id: "gpt-5", label: "GPT-5", isDefault: true },
@@ -3332,7 +3310,7 @@ describe("SessionInspector summary reviews", () => {
     await openReviewsSection();
 
     await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /opencode/i }));
 
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "GPT-5 Mini" })).toBeInTheDocument(),
@@ -3361,8 +3339,8 @@ describe("SessionInspector summary reviews", () => {
     renderWithQuery(
       <SessionInspector
         session={session([pr(3, "open")], {
-          provider: "codex",
-          reviewerHarness: "codex",
+          provider: "opencode",
+          reviewerHarness: "opencode",
           reviewerConfig: { permissions: "bypass-permissions" },
         })}
       />,
@@ -3373,7 +3351,7 @@ describe("SessionInspector summary reviews", () => {
       name: /Select reviewer agent/,
     });
     await userEvent.click(picker);
-    await userEvent.click(screen.getByRole("menuitem", { name: /codex/i }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /opencode/i }));
 
     await waitFor(() =>
       expect(postMock).toHaveBeenLastCalledWith(
@@ -3397,7 +3375,7 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(
       <SessionInspector
-        session={sessionWithProvider([pr(3, "open")], "codex")}
+        session={sessionWithProvider([pr(3, "open")], "opencode")}
       />,
     );
     await openReviewsSection();
@@ -3406,7 +3384,7 @@ describe("SessionInspector summary reviews", () => {
       name: /Select reviewer agent/,
     });
     await userEvent.click(picker);
-    expect(screen.getAllByRole("menuitem", { name: /codex/i })).toHaveLength(1);
+    expect(screen.getAllByRole("menuitem", { name: /opencode/i })).toHaveLength(1);
     expect(
       screen.getByRole("menuitem", { name: /opencode/ }),
     ).toBeInTheDocument();
@@ -3423,8 +3401,8 @@ describe("SessionInspector summary reviews", () => {
     );
 
     await userEvent.click(picker);
-    expect(screen.getAllByRole("menuitem", { name: /codex/i })).toHaveLength(1);
-    await userEvent.click(screen.getByRole("menuitem", { name: /codex/i }));
+    expect(screen.getAllByRole("menuitem", { name: /opencode/i })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("menuitem", { name: /opencode/i }));
 
     await waitFor(() =>
       expect(postMock).toHaveBeenLastCalledWith(
@@ -3744,7 +3722,7 @@ describe("SessionInspector summary reviews", () => {
 
     expect(
       await screen.findByRole("button", { name: /Select reviewer agent/ }),
-    ).toHaveTextContent("Codex");
+    ).toHaveTextContent("OpenCode");
     expect(screen.queryByText("reviewer")).not.toBeInTheDocument();
     expect(screen.queryByText("sess-1")).not.toBeInTheDocument();
     expect(screen.queryByText("review session")).not.toBeInTheDocument();

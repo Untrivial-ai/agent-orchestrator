@@ -171,7 +171,7 @@ const workspace: WorkspaceSummary = {
 	id: "proj-1",
 	name: "Project One",
 	path: "/repo/project-one",
-	orchestratorAgent: "claude-code",
+	orchestratorAgent: "opencode",
 	sessions: [],
 };
 
@@ -180,26 +180,13 @@ const session: WorkspaceSession = {
 	workspaceId: "proj-1",
 	workspaceName: "Project One",
 	title: "fix login",
-	provider: "claude-code",
+	provider: "opencode",
 	kind: "worker",
 	branch: "session/proj-1-1",
 	status: "working",
 	updatedAt: "2026-06-30T00:00:00Z",
 	prs: [],
 };
-
-function activeAgentSwitch(
-	overrides: Partial<NonNullable<WorkspaceSession["activeAgentSwitch"]>> = {},
-): NonNullable<WorkspaceSession["activeAgentSwitch"]> {
-	return {
-		agentHandoffStatus: "received",
-		fromHarness: "claude-code",
-		id: "switch-1",
-		state: "starting_target",
-		targetHarness: "codex",
-		...overrides,
-	};
-}
 
 function sidebarPR(overrides: Partial<WorkspaceSession["prs"][number]> = {}): WorkspaceSession["prs"][number] {
 	return {
@@ -807,7 +794,7 @@ describe("Sidebar", () => {
 			id: "proj-2",
 			name: "Project Two",
 			path: "/repo/project-two",
-			orchestratorAgent: "claude-code",
+			orchestratorAgent: "opencode",
 			sessions: [{ ...session, id: "proj-2-1", workspaceId: "proj-2", workspaceName: "Project Two", title: "other task" }],
 		};
 		renderSidebar({
@@ -975,8 +962,8 @@ describe("Sidebar", () => {
 			expect(onCreateProject).toHaveBeenCalledWith(
 				expect.objectContaining({
 					path: "/repo/new-project",
-					workerAgent: "claude-code",
-					orchestratorAgent: "claude-code",
+					workerAgent: "opencode",
+					orchestratorAgent: "opencode",
 				}),
 			),
 		);
@@ -1029,8 +1016,8 @@ describe("Sidebar", () => {
 		await waitFor(() => expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({
 			path: "/repo/web-app",
 			clonePreparationId: "prep-web-app",
-			workerAgent: "claude-code",
-			orchestratorAgent: "claude-code",
+			workerAgent: "opencode",
+			orchestratorAgent: "opencode",
 		})));
 		expect(onCloneProject).not.toHaveBeenCalled();
 	});
@@ -1080,8 +1067,8 @@ describe("Sidebar", () => {
 			expect(onCreateProject).toHaveBeenCalledWith(
 				expect.objectContaining({
 					path: "/repo/local-project",
-					workerAgent: "claude-code",
-					orchestratorAgent: "claude-code",
+					workerAgent: "opencode",
+					orchestratorAgent: "opencode",
 				}),
 			),
 		);
@@ -1236,8 +1223,8 @@ describe("Sidebar", () => {
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/workspace",
-				workerAgent: "codex",
-				orchestratorAgent: "claude-code",
+				workerAgent: "opencode",
+				orchestratorAgent: "opencode",
 				asWorkspace: true,
 			}),
 		);
@@ -1574,7 +1561,7 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: "Create and start" }));
 
 		await waitFor(() =>
-			expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent: "claude-code" })),
+			expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent: "opencode" })),
 		);
 	});
 
@@ -1611,8 +1598,8 @@ describe("Sidebar", () => {
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/new-project",
-				workerAgent: "claude-code",
-				orchestratorAgent: "claude-code",
+				workerAgent: "opencode",
+				orchestratorAgent: "opencode",
 				trackerIntake: undefined,
 				asWorkspace: false,
 			}),
@@ -2059,27 +2046,6 @@ describe("Sidebar", () => {
 		expect(idleDraftDot).toHaveClass("bg-status-in-review");
 		expect(idleActivityDot).not.toHaveClass("animate-status-pulse");
 		expect(idleDraftDot).not.toHaveClass("animate-status-pulse");
-	});
-
-	it("keeps runtime activity on the dot while showing switch progress separately", () => {
-		renderSidebar({
-			workspaces: [{
-				...workspace,
-				sessions: [{
-					...session,
-					status: "exited",
-					activity: { state: "exited", lastActivityAt: "2026-06-30T00:00:00Z" },
-					activeAgentSwitch: activeAgentSwitch(),
-				}],
-			}],
-		});
-
-		const row = screen.getByLabelText("Open fix login");
-		expect(row).toHaveAccessibleDescription("Switching to Codex");
-		expect(within(row).getByText("Switching to Codex")).toBeInTheDocument();
-		const dot = row.querySelector<HTMLElement>("[data-session-status]");
-		expect(dot).toHaveClass("bg-status-needs-you");
-		expect(dot).not.toHaveClass("animate-status-pulse");
 	});
 
 	it("shows sessions on load and hides them once collapsed", async () => {

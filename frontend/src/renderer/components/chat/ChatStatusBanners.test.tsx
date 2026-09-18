@@ -11,9 +11,9 @@ describe("ReauthBanner", () => {
 	it.each(["Unauthorized (401)", "Authentication failed", "OAuth token has been revoked"])(
 		"offers sign-in based on account state for %s",
 		(reason) => {
-			render(<ReauthBanner account={{ reauthRequiredAt: "2026-09-14T00:00:00Z", reauthReason: reason }} harness="claude-code" />);
+			render(<ReauthBanner account={{ reauthRequiredAt: "2026-09-14T00:00:00Z", reauthReason: reason }} harness="opencode" />);
 			expect(screen.getByRole("alert")).toHaveTextContent(reason);
-			expect(screen.getByText("claude auth login")).toBeInTheDocument();
+			expect(screen.getByText("opencode auth login")).toBeInTheDocument();
 		},
 	);
 	it("names the command, because re-authenticating is not something AO can do", () => {
@@ -23,31 +23,31 @@ describe("ReauthBanner", () => {
 					reauthRequiredAt: "2026-08-03T00:00:00Z",
 					reauthReason: "The stored session expired.",
 				}}
-				harness="codex"
+				harness="opencode"
 			/>,
 		);
 		expect(screen.getByRole("alert")).toBeInTheDocument();
-		expect(screen.getByText("codex login")).toBeInTheDocument();
+		expect(screen.getByText("opencode auth login")).toBeInTheDocument();
 		expect(screen.getByText(/The stored session expired/)).toBeInTheDocument();
 	});
 
 	it("says the worktree is untouched, since nothing else about the session works", () => {
 		render(
-			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="codex" />,
+			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="opencode" />,
 		);
 		expect(screen.getByText(/worktree is untouched/i)).toBeInTheDocument();
 	});
 
-	it("names Claude Code's non-interactive authentication command", () => {
+	it("names opencode's non-interactive authentication command", () => {
 		render(
-			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="claude-code" />,
+			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="opencode" />,
 		);
-		expect(screen.getByText("claude auth login")).toBeInTheDocument();
+		expect(screen.getByText("opencode auth login")).toBeInTheDocument();
 	});
 
 	it("falls back to generic wording rather than guessing a command", () => {
 		render(
-			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="opencode" />,
+			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="muse" />,
 		);
 		expect(screen.queryByText(/login$/)).not.toBeInTheDocument();
 		expect(screen.getByText(/agent’s own CLI/)).toBeInTheDocument();
@@ -55,7 +55,7 @@ describe("ReauthBanner", () => {
 
 	it("stays silent for an account with no credential demand", () => {
 		const { container } = render(
-			<ReauthBanner account={{ authMode: "chatgpt", planLabel: "Pro" }} harness="codex" />,
+			<ReauthBanner account={{ authMode: "chatgpt", planLabel: "Pro" }} harness="opencode" />,
 		);
 		expect(container).toBeEmptyDOMElement();
 	});

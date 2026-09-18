@@ -114,7 +114,7 @@ const { workspaces, workspaceQueryState, shellTerminalsState } = vi.hoisted(() =
 		workspaceId: "proj-1",
 		workspaceName: "my-app",
 		title: "do the thing",
-		provider: "claude-code",
+		provider: "opencode",
 		kind: "worker",
 		branch: "ao/sess-1",
 		status: "working",
@@ -695,7 +695,7 @@ describe("SessionView", () => {
 			delete session.runtimeConnected;
 			delete session.cloud;
 			session.status = "working";
-			session.provider = "claude-code";
+			session.provider = "opencode";
 			delete session.mode;
 			session.prs = [];
 		}

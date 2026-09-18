@@ -102,9 +102,9 @@ describe("CreateProjectAgentSheet", () => {
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
 				sessions: [
-					{ id: "w1", kind: "worker", provider: "codex", createdAt: hoursAgo(5) },
-					{ id: "w2", kind: "worker", provider: "codex", createdAt: hoursAgo(4) },
-					{ id: "o1", kind: "orchestrator", provider: "claude-code", createdAt: hoursAgo(3) },
+					{ id: "w1", kind: "worker", provider: "opencode", createdAt: hoursAgo(5) },
+					{ id: "w2", kind: "worker", provider: "opencode", createdAt: hoursAgo(4) },
+					{ id: "o1", kind: "orchestrator", provider: "opencode", createdAt: hoursAgo(3) },
 				],
 			},
 		]);
@@ -124,7 +124,7 @@ describe("CreateProjectAgentSheet", () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
-				sessions: [{ id: "w1", kind: "worker", provider: "claude-code", createdAt: hoursAgo(3) }],
+				sessions: [{ id: "w1", kind: "worker", provider: "opencode", createdAt: hoursAgo(3) }],
 			},
 		]);
 		const onSubmit = renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
@@ -133,8 +133,8 @@ describe("CreateProjectAgentSheet", () => {
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
 				sessions: [
-					{ id: "w2", kind: "worker", provider: "claude-code", createdAt: hoursAgo(2) },
-					{ id: "w3", kind: "worker", provider: "claude-code", createdAt: hoursAgo(1) },
+					{ id: "w2", kind: "worker", provider: "opencode", createdAt: hoursAgo(2) },
+					{ id: "w3", kind: "worker", provider: "opencode", createdAt: hoursAgo(1) },
 				],
 			},
 		]);

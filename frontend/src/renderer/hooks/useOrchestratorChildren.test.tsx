@@ -55,7 +55,7 @@ const session = (overrides: Partial<WorkspaceSession>): WorkspaceSession =>
 		workspaceId: "project-1",
 		workspaceName: "demo",
 		title: "Orchestrator",
-		provider: "claude-code",
+		provider: "opencode",
 		kind: "orchestrator",
 		status: "idle",
 		isTerminated: false,
