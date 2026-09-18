@@ -2487,6 +2487,128 @@ func TestSpawn_AfterStartPromptSuppressedTerminationFailsSpawn(t *testing.T) {
 	}
 }
 
+type contextAwareRuntime struct {
+	*fakeRuntime
+	destroyContextErr error
+}
+
+func (r *contextAwareRuntime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {
+	r.destroyContextErr = ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.fakeRuntime.Destroy(ctx, handle)
+}
+
+type contextAwareWorkspace struct {
+	*fakeWorkspace
+	destroyContextErr error
+}
+
+func (w *contextAwareWorkspace) Destroy(ctx context.Context, ws ports.WorkspaceInfo) error {
+	w.destroyContextErr = ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return w.fakeWorkspace.Destroy(ctx, ws)
+}
+
+type contextAwareStore struct {
+	*fakeStore
+	updateContextErr error
+	getContextErr    error
+}
+
+func (s *contextAwareStore) UpdateSession(ctx context.Context, rec domain.SessionRecord) error {
+	s.updateContextErr = ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.fakeStore.UpdateSession(ctx, rec)
+}
+
+func (s *contextAwareStore) GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	s.getContextErr = ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return domain.SessionRecord{}, false, err
+	}
+	return s.fakeStore.GetSession(ctx, id)
+}
+
+type timeoutOnDeliverMessenger struct {
+	cancel context.CancelFunc
+}
+
+func (m *timeoutOnDeliverMessenger) Send(ctx context.Context, id domain.SessionID, msg string) error {
+	if m.cancel != nil {
+		m.cancel()
+	}
+	return context.DeadlineExceeded
+}
+
+func TestSpawn_AfterStartPromptTimeoutRollbackUsesDetachedContext(t *testing.T) {
+	base := newFakeStore()
+	base.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	st := &contextAwareStore{fakeStore: base}
+	rt := &contextAwareRuntime{fakeRuntime: &fakeRuntime{}}
+	ws := &contextAwareWorkspace{fakeWorkspace: &fakeWorkspace{}}
+	agent := &recordingAgent{}
+	lcm := &fakeLCM{store: base}
+
+	spawnCtx, cancel := context.WithCancel(context.Background())
+	msg := &timeoutOnDeliverMessenger{cancel: cancel}
+
+	m := New(Deps{
+		Runtime:   rt,
+		Agents:    singleAgent{agent: afterStartAgent{recordingAgent: agent}},
+		Workspace: ws,
+		Store:     st,
+		Messenger: msg,
+		Lifecycle: lcm,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	_, _, _, err := m.Spawn(spawnCtx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "fix the button"})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Spawn err = %v, want context.DeadlineExceeded", err)
+	}
+	if !errors.Is(err, ErrSpawnDeliverPrompt) {
+		t.Fatalf("Spawn err = %v, want ErrSpawnDeliverPrompt", err)
+	}
+
+	// Verify that the rollback was performed with a detached context:
+	// 1. Runtime was destroyed and destroy did not receive an expired context.
+	if rt.destroyed != 1 {
+		t.Fatalf("runtime destroyed = %d, want 1", rt.destroyed)
+	}
+	if rt.destroyContextErr != nil {
+		t.Fatalf("runtime destroy was passed expired context: %v", rt.destroyContextErr)
+	}
+
+	// 2. Workspace was destroyed and destroy did not receive an expired context.
+	if ws.destroyed != 1 {
+		t.Fatalf("workspace destroyed = %d, want 1", ws.destroyed)
+	}
+	if ws.destroyContextErr != nil {
+		t.Fatalf("workspace destroy was passed expired context: %v", ws.destroyContextErr)
+	}
+
+	// 3. Session row was marked terminated and workspace handles cleared.
+	rec, ok := base.sessions["mer-1"]
+	if !ok {
+		t.Fatal("session mer-1 not found in store")
+	}
+	if !rec.IsTerminated {
+		t.Fatalf("session IsTerminated = false, want true")
+	}
+	if rec.Metadata.WorkspacePath != "" {
+		t.Fatalf("session WorkspacePath = %q, want empty after rollback", rec.Metadata.WorkspacePath)
+	}
+	if rec.Metadata.RuntimeHandleID != "" {
+		t.Fatalf("session RuntimeHandleID = %q, want empty after rollback", rec.Metadata.RuntimeHandleID)
+	}
+}
+
 func TestSpawn_PromptDeliveryStrategyFailureCleansUpWorkspaceProjectRows(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{

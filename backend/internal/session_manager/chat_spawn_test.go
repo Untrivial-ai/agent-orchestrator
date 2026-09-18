@@ -1423,3 +1423,98 @@ func TestSendRefusedForTerminatedChatSession(t *testing.T) {
 		t.Errorf("a terminated session still received %v", launcher.relayed)
 	}
 }
+
+type contextAwareChatLauncher struct {
+	*recordingLauncher
+	stopChatContextErr error
+	onStartChatTurn    func(context.Context, domain.SessionID, string)
+}
+
+func (l *contextAwareChatLauncher) StopChat(ctx context.Context, id domain.SessionID) error {
+	l.stopChatContextErr = ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return l.recordingLauncher.StopChat(ctx, id)
+}
+
+func (l *contextAwareChatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {
+	if l.onStartChatTurn != nil {
+		l.onStartChatTurn(ctx, id, text)
+	}
+	return l.recordingLauncher.StartChatTurn(ctx, id, text)
+}
+
+type contextAwareChatWorkspace struct {
+	*fakeWorkspace
+	destroyContextErr error
+}
+
+func (w *contextAwareChatWorkspace) Destroy(ctx context.Context, ws ports.WorkspaceInfo) error {
+	w.destroyContextErr = ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return w.fakeWorkspace.Destroy(ctx, ws)
+}
+
+func TestChatSpawn_PromptTurnTimeoutRollbackUsesDetachedContext(t *testing.T) {
+	launcher := &contextAwareChatLauncher{recordingLauncher: &recordingLauncher{}}
+	ws := &contextAwareChatWorkspace{fakeWorkspace: &fakeWorkspace{}}
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	mgr := New(Deps{
+		Runtime:   rt,
+		Agents:    fakeAgents{},
+		Workspace: ws,
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Chat:      launcher,
+		Lifecycle: &fakeLCM{store: st},
+		DataDir:   "/ao-test-data",
+		LookPath:  lookPath,
+	})
+
+	spawnCtx, cancel := context.WithCancel(context.Background())
+	launcher.turnErr = context.DeadlineExceeded
+	launcher.onStartChatTurn = func(ctx context.Context, id domain.SessionID, text string) {
+		cancel()
+	}
+
+	_, _, _, err := mgr.Spawn(spawnCtx, ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessCodex,
+		Prompt:        "fix the button",
+		RequestedMode: domain.SessionModeChat,
+	})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Spawn err = %v, want context.DeadlineExceeded", err)
+	}
+	if !errors.Is(err, ErrSpawnDeliverPrompt) {
+		t.Fatalf("Spawn err = %v, want ErrSpawnDeliverPrompt", err)
+	}
+
+	// Verify that rollback occurred with a detached context
+	if len(launcher.stopped) != 1 {
+		t.Fatalf("stopped chat controllers = %d, want 1", len(launcher.stopped))
+	}
+	if launcher.stopChatContextErr != nil {
+		t.Fatalf("StopChat received expired context: %v", launcher.stopChatContextErr)
+	}
+	if ws.destroyed != 1 {
+		t.Fatalf("workspace destroyed = %d, want 1", ws.destroyed)
+	}
+	if ws.destroyContextErr != nil {
+		t.Fatalf("workspace destroy received expired context: %v", ws.destroyContextErr)
+	}
+	rec, ok := st.sessions["mer-1"]
+	if !ok {
+		t.Fatal("session mer-1 not found in store")
+	}
+	if !rec.IsTerminated {
+		t.Fatalf("session IsTerminated = false, want true")
+	}
+}

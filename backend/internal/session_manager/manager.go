@@ -1106,19 +1106,23 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		metadata.DiffBaseSHA, metadata.DiffBaseRef = resolveSpawnDiffBase(ctx, ws.Path, ws.BaseRef)
 	}
 	if err := m.lcm.MarkSpawned(ctx, id, metadata); err != nil {
-		runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
-		m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
-		m.markSpawnFailedTerminated(ctx, id)
+		cleanupCtx, cancel := spawnRollbackContext(ctx)
+		defer cancel()
+		runtimeDestroyed := m.runtime.Destroy(cleanupCtx, handle) == nil
+		m.rollbackPreparedSpawnWorkspace(cleanupCtx, rec, ws, workspaceProject, runtimeDestroyed)
+		m.markSpawnFailedTerminated(cleanupCtx, id)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
 	}
 	if delivery == ports.PromptDeliveryAfterStart && prompt != "" {
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, id, prompt); err != nil {
-			runtimeDestroyed := m.runtime.Destroy(ctx, handle) == nil
-			workspaceDestroyed := m.rollbackPreparedSpawnWorkspace(ctx, rec, ws, workspaceProject, runtimeDestroyed)
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			defer cancel()
+			runtimeDestroyed := m.runtime.Destroy(cleanupCtx, handle) == nil
+			workspaceDestroyed := m.rollbackPreparedSpawnWorkspace(cleanupCtx, rec, ws, workspaceProject, runtimeDestroyed)
 			if runtimeDestroyed && workspaceDestroyed {
-				m.markSpawnFailedTerminatedWithoutWorkspace(ctx, id)
+				m.markSpawnFailedTerminatedWithoutWorkspace(cleanupCtx, id)
 			} else {
-				m.markSpawnFailedTerminated(ctx, id)
+				m.markSpawnFailedTerminated(cleanupCtx, id)
 			}
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err)
 		}
@@ -1475,6 +1479,18 @@ func (m *Manager) destroySpawnWorkspace(ctx context.Context, ws ports.WorkspaceI
 	return err == nil
 }
 
+const spawnRollbackBudget = 30 * time.Second
+
+// spawnRollbackContext returns a detached context bounded by spawnRollbackBudget
+// so rollback operations (runtime destroy, workspace cleanup, marking the session
+// terminated) can complete reliably even when the spawn context timed out or was cancelled.
+func spawnRollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), spawnRollbackBudget)
+}
+
 func (m *Manager) rollbackPreparedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo, runtimeDestroyed bool) bool {
 	if m.destroySpawnWorkspace(ctx, ws, workspaceProject) {
 		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
@@ -1485,15 +1501,17 @@ func (m *Manager) rollbackPreparedSpawnWorkspace(ctx context.Context, rec domain
 }
 
 func (m *Manager) rollbackSeedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo, prepared bool) {
-	if m.destroySpawnWorkspace(ctx, ws, workspaceProject) {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	defer cancel()
+	if m.destroySpawnWorkspace(cleanupCtx, ws, workspaceProject) {
 		if prepared {
-			m.cleanupAgentWorkspace(ctx, rec, ws.Path)
+			m.cleanupAgentWorkspace(cleanupCtx, rec, ws.Path)
 		}
-		m.rollbackSpawnSeedRow(ctx, rec.ID)
+		m.rollbackSpawnSeedRow(cleanupCtx, rec.ID)
 		return
 	}
-	m.preserveFailedSpawnWorkspace(ctx, rec.ID, ws, true)
-	m.markSpawnFailedTerminated(ctx, rec.ID)
+	m.preserveFailedSpawnWorkspace(cleanupCtx, rec.ID, ws, true)
+	m.markSpawnFailedTerminated(cleanupCtx, rec.ID)
 }
 
 func (m *Manager) preserveFailedSpawnWorkspace(ctx context.Context, id domain.SessionID, ws ports.WorkspaceInfo, runtimeDestroyed bool) {
@@ -2518,7 +2536,9 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		metadata.AgentSessionIDLaunchID = launchID
 	}
 	if err := m.lcm.MarkSpawned(ctx, rec.ID, metadata); err != nil {
-		_ = m.runtime.Destroy(ctx, handle)
+		cleanupCtx, cancel := spawnRollbackContext(ctx)
+		defer cancel()
+		_ = m.runtime.Destroy(cleanupCtx, handle)
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: completed: %w", operation, rec.ID, err)
 	}
@@ -2535,8 +2555,10 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			Permissions:      agentConfig.Permissions,
 		}
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, rec.ID, rec.Metadata.Prompt); err != nil {
-			_ = m.runtime.Destroy(ctx, handle)
-			_ = m.lcm.MarkTerminated(ctx, rec.ID)
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			defer cancel()
+			_ = m.runtime.Destroy(cleanupCtx, handle)
+			_ = m.lcm.MarkTerminated(cleanupCtx, rec.ID)
 			m.cleanupSystemPromptDir(rec.ID)
 			return RestoreResult{}, fmt.Errorf("%s %s: deliver prompt: %w", operation, rec.ID, err)
 		}

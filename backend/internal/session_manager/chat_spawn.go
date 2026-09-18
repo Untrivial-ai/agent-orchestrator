@@ -186,9 +186,11 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	})
 	if err != nil {
 		if completionErr != nil || controllerCommitted {
-			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
-			m.markSpawnFailedTerminated(ctx, id)
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			defer cancel()
+			m.stopChatBestEffort(cleanupCtx, id)
+			m.rollbackPreparedSpawnWorkspace(cleanupCtx, in.record, in.workspace, in.workspaceProject, true)
+			m.markSpawnFailedTerminated(cleanupCtx, id)
 			if completionErr != nil {
 				return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnCommit, completionErr)
 			}
@@ -205,9 +207,11 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	// provider either accepts the turn or reports why.
 	if in.prompt != "" {
 		if _, err := m.chat.StartChatTurn(ctx, id, in.prompt); err != nil {
-			m.stopChatBestEffort(ctx, id)
-			m.rollbackPreparedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, true)
-			m.markSpawnFailedTerminated(ctx, id)
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			defer cancel()
+			m.stopChatBestEffort(cleanupCtx, id)
+			m.rollbackPreparedSpawnWorkspace(cleanupCtx, in.record, in.workspace, in.workspaceProject, true)
+			m.markSpawnFailedTerminated(cleanupCtx, id)
 			return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err)
 		}
 	}
