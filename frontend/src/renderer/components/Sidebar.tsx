@@ -38,7 +38,6 @@ import {
 import {
 	useCallback,
 	useEffect,
-	useId,
 	useLayoutEffect,
 	memo,
 	useMemo,
@@ -67,7 +66,6 @@ import {
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 import { getSessionStatusDotView } from "../lib/session-presentation";
-import { deriveSessionAgentSwitchPresentation } from "../lib/agent-switch-presentation";
 import { aoBridge } from "../lib/bridge";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { cloudSessionsQueryKey, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
@@ -1654,12 +1652,6 @@ function SessionRow({
 	const { t } = useTranslation();
 	const prefersReducedMotion = useReducedMotion();
 	useGrabbingCursor(Boolean(reorder?.isDragging));
-	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
-	const switchLabel = switchPresentation
-		? t(switchPresentation.compactLabelKey, switchPresentation.values)
-		: undefined;
-	const switchStatusId = useId();
-	const describedBy = switchLabel ? switchStatusId : undefined;
 	const queryClient = useQueryClient();
 	const refreshWorkspaces = useCallback(
 		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
@@ -1740,7 +1732,6 @@ function SessionRow({
 					<div className={cn("relative z-[1] flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
 						<button
 							aria-current={active ? "page" : undefined}
-							aria-describedby={describedBy}
 							aria-keyshortcuts="F2"
 							aria-label={t("shell.openSession", { title: session.title })}
 							className={cn(
@@ -1793,11 +1784,6 @@ function SessionRow({
 								>
 									{session.title}
 								</span>
-								{switchLabel ? (
-									<span id={switchStatusId} className="max-w-28 shrink-0 truncate text-2xs text-muted-foreground">
-										{switchLabel}
-									</span>
-								) : null}
 							</span>
 						</button>
 					</div>

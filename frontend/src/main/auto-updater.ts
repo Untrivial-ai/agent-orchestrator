@@ -22,14 +22,7 @@ import {
 } from "./update-settings";
 import { reconcileFeaturePin } from "./feature-builds";
 import { evaluateEscalation } from "./escalation-evaluator";
-import {
-  isNetErrorMessage,
-  normalizeReleaseNotes,
-  updateFailureOutcome,
-  type UpdateOutcome,
-  type UpdatePhase,
-  type UpdateTrigger,
-} from "../shared/update-telemetry";
+import { isNetErrorMessage, normalizeReleaseNotes } from "../shared/update-support";
 
 // reconcileAndPersist clears a pinned feature build whose PR has been retired
 // (merged/closed/deleted/expired) and persists the change, so the next check
@@ -367,7 +360,7 @@ let automaticCheckNetFailureCounted = false;
 // Which stage the active operation reached, and what it was fetching. Tracked
 // here because the renderer cannot know either: automatic failures never
 // broadcast a status, and error statuses carry no version.
-let activeUpdaterPhase: UpdatePhase = "check";
+let activeUpdaterPhase: "check" | "download" = "check";
 let pendingUpdateVersion: string | undefined;
 // Stalled-download watchdog. electron-updater keeps its request open when a
 // download stops receiving bytes, so AO kept the last percentage forever, held
@@ -403,9 +396,6 @@ function armDownloadStallWatchdog(): void {
     // manual retry would just wait behind the dead download.
     activeDownloadCancellation?.cancel();
     activeDownloadCancellation = undefined;
-    emitUpdateOutcome(
-      updateFailureOutcome("download stalled", "download", activeUpdateTrigger(), pendingUpdateVersion),
-    );
     broadcast(
       withActiveRequest({
         state: "error",
@@ -428,7 +418,7 @@ let lastCheckedAtMs: number | undefined;
  * NOT BrowserWindow.getAllWindows(). Since #3750 the AO shell is a BaseWindow
  * hosting the UI in a WebContentsView, and BrowserWindow.getAllWindows() only
  * ever returns BrowserWindow instances — so enumerating windows here matched
- * nothing and every "updates:status" and "updates:telemetry" push was dropped
+ * nothing and every "updates:status" push was dropped
  * on the floor from 2026-08-09 onward. `invoke` handlers reply to their own
  * sender regardless of window type, so updates:getStatus kept working and the
  * breakage looked like a stale-cache bug: Settings showed a correct timestamp
@@ -449,25 +439,6 @@ export function setRendererSink(resolve: () => RendererSink | null | undefined):
 // window is recreated, and holding the first one would silently stop delivering.
 function sendToRenderer(channel: string, payload: unknown): void {
   resolveRendererSink()?.send(channel, payload);
-}
-
-// emitUpdateOutcome pushes an update outcome to renderers on a channel separate
-// from "updates:status", so suppressing a status for UI reasons (as the
-// automatic path does) never suppresses the telemetry for it.
-function emitUpdateOutcome(outcome: UpdateOutcome): void {
-  sendToRenderer("updates:telemetry", outcome);
-}
-
-function activeUpdateTrigger(): UpdateTrigger {
-  return activeUpdaterOperation === "automatic-check" ? "automatic" : "manual";
-}
-
-function emitUpdateFailure(err: unknown): void {
-  const message =
-    err instanceof Error ? err.message : err === undefined ? undefined : String(err);
-  emitUpdateOutcome(
-    updateFailureOutcome(message, activeUpdaterPhase, activeUpdateTrigger(), pendingUpdateVersion),
-  );
 }
 
 // broadcast pushes the latest update status to every renderer window so the
@@ -1638,12 +1609,6 @@ function wireUpdaterEvents(): void {
   autoUpdater.on("update-downloaded", (info) => {
     clearDownloadStallWatchdog();
     downloadStalled = false;
-    emitUpdateOutcome({
-      event: "ao.renderer.update_downloaded",
-      phase: "download",
-      trigger: activeUpdateTrigger(),
-      ...(info?.version ? { to_version: info.version } : {}),
-    });
     // Re-staging the SAME build must not restart the staged clock. electron-updater
     // re-runs its download task whenever a check finds a version it has already
     // cached, so this event repeats on every automatic check until the user quits.
@@ -1698,7 +1663,6 @@ function wireUpdaterEvents(): void {
   autoUpdater.on("error", (err) => {
     clearDownloadStallWatchdog();
     if (handleMacStagingFailure(err)) {
-      emitUpdateFailure(err);
       return;
     }
     if (downloadStalled) {
@@ -1718,10 +1682,7 @@ function wireUpdaterEvents(): void {
     }
     // Never crash on update failure (offline, unsigned macOS, etc.).
     // A one-off automatic failure restores the previous status so the UI does
-    // not flash an error the user never asked for. That suppression is a UI
-    // decision and must not suppress the telemetry: automatic checks are the
-    // main way an install goes silently stale.
-    emitUpdateFailure(err);
+    // not flash an error the user never asked for.
     // The native installer rejected the build already sitting in the cache
     // (#4254). This is the one failure class that cannot be left to the
     // automatic path's suppress-and-retry, because retrying it is exactly what
@@ -2111,12 +2072,6 @@ export async function checkForUpdatesNow(
   // Asking again IS the explicit retry the exhausted message points at.
   forgetInstallRejections();
 	if (!app.isPackaged) {
-    emitUpdateOutcome({
-      event: "ao.renderer.update_unsupported",
-      phase: activeUpdaterPhase,
-      trigger: activeUpdateTrigger(),
-      error_category: "not_supported",
-    });
     broadcast({
       state: "unsupported",
       message: "Updates are only available in the installed app.",
@@ -2129,7 +2084,7 @@ export async function checkForUpdatesNow(
   // can reset the module-level phase, so the distinction is captured locally
   // while the operation is still on the stack. Boxed because the assignment
   // happens inside the operation closure.
-  const failed: { phase: UpdatePhase } = { phase: "check" };
+  const failed: { phase: "check" | "download" } = { phase: "check" };
   try {
     await runSerializedUpdaterOperation(
       "manual-check",
@@ -2219,12 +2174,6 @@ export async function returnToHome(
   escalationStateDir = stateDir;
   wireUpdaterEvents();
   if (!app.isPackaged) {
-    emitUpdateOutcome({
-      event: "ao.renderer.update_unsupported",
-      phase: activeUpdaterPhase,
-      trigger: activeUpdateTrigger(),
-      error_category: "not_supported",
-    });
     broadcast({
       state: "unsupported",
       message: "Updates are only available in the installed app.",
@@ -2233,7 +2182,7 @@ export async function returnToHome(
     return;
   }
   // See checkForUpdatesNow: boxed so the closure assignment is visible here.
-  const failed: { phase: UpdatePhase } = { phase: "check" };
+  const failed: { phase: "check" | "download" } = { phase: "check" };
   try {
     await runSerializedUpdaterOperation(
       "return-home",
@@ -2283,12 +2232,6 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
   wireUpdaterEvents();
   forgetInstallRejections();
 	if (!app.isPackaged) {
-    emitUpdateOutcome({
-      event: "ao.renderer.update_unsupported",
-      phase: activeUpdaterPhase,
-      trigger: activeUpdateTrigger(),
-      error_category: "not_supported",
-    });
     broadcast({
       state: "unsupported",
       message: "Updates are only available in the installed app.",

@@ -1,4 +1,4 @@
-import { BadgeCheck, Bot, CircleHelp, Cloud, Globe2, Keyboard, RefreshCw, Settings2, Smartphone, type LucideIcon } from "lucide-react";
+import { Bot, CircleHelp, Cloud, Globe2, Keyboard, RefreshCw, Settings2, Smartphone, type LucideIcon } from "lucide-react";
 import { lazy, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import type { GlobalSettingsSection } from "../../stores/ui-store";
@@ -6,7 +6,6 @@ import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { CloudCredentialsSection } from "./CloudCredentialsSection";
 import { CloudProviderSection } from "./CloudProviderSection";
-import { CodexAccountsSection } from "./CodexAccountsSection";
 import { ConnectMobileContent } from "./ConnectMobileContent";
 import { GeneralSettingsSection } from "./GeneralSettingsSection";
 import { HarnessSettingsSection } from "./HarnessSettingsSection";
@@ -48,12 +47,6 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		icon: Bot,
 		label: (t) => t("settings.harness"),
 		render: (_t, titleHidden) => <HarnessSettingsSection titleHidden={titleHidden} />,
-	},
-	{
-		id: "agents",
-		icon: BadgeCheck,
-		label: (t) => t("settings.agents"),
-		render: (_t, titleHidden) => <CodexAccountsSection titleHidden={titleHidden} />,
 	},
 	{
 		id: "browserProfiles",

@@ -39,7 +39,6 @@ import {
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
-import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
 import { OrchestratorChildrenSection } from "./OrchestratorChildrenSection";
@@ -993,9 +992,6 @@ function usageProcessedTokens(totals: SessionUsage["totals"]): number | null {
 
 function formatHarnessName(harness: string): string {
 	const knownNames: Record<string, string> = {
-		"claude-code": "Claude",
-		claude: "Claude",
-		codex: "Codex",
 		glm: "GLM",
 		kimi: "Kimi",
 	};
@@ -1066,7 +1062,7 @@ function ResumeAgentControl({ session }: { session: WorkspaceSession }) {
 		},
 	});
 
-	if (session.isTerminated === true || session.activity?.state !== "exited" || session.activeAgentSwitch) return null;
+	if (session.isTerminated === true || session.activity?.state !== "exited") return null;
 
 	const error = resume.error instanceof Error ? resume.error.message : null;
 	return (
@@ -1482,17 +1478,13 @@ type ReviewerHarness = NonNullable<components["schemas"]["TriggerReviewRequest"]
 type AgentCatalog = components["schemas"]["AgentReadinessResponse"];
 
 const WORKER_DEFAULT_REVIEWERS: Partial<Record<WorkspaceSession["provider"], ReviewerHarness>> = {
-	"claude-code": "claude-code",
-	codex: "codex",
 	opencode: "opencode",
-	muse: "muse",
-	kimchi: "kimchi",
 };
 
 function resolveDefaultReviewerHarness(config: ProjectConfig | undefined, workerHarness: WorkspaceSession["provider"]): ReviewerHarness {
 	const configuredHarness = config?.reviewers?.[0]?.harness;
 	if (configuredHarness) return configuredHarness as ReviewerHarness;
-	return WORKER_DEFAULT_REVIEWERS[workerHarness] ?? "claude-code";
+	return WORKER_DEFAULT_REVIEWERS[workerHarness] ?? "opencode";
 }
 
 function ReviewsSection({
@@ -1580,9 +1572,6 @@ function ReviewsSection({
 	});
 	const saveAutoReview = useMutation({
 		mutationFn: async (enabled: boolean) => {
-			// Intent, not effect: emitted before the PUT, so a failed save still
-			// counts as the user reaching for the switch.
-			void captureRendererEvent("ao.renderer.review_auto_review_toggled", { enabled });
 			const { error } = await apiClient.PUT("/api/v1/sessions/{sessionId}/auto-review", {
 				params: { path: { sessionId: session.id } },
 				body: { enabled },
@@ -1725,7 +1714,7 @@ function ReviewsSection({
  * one list keyed by PR. They were two sections, which made the same PR appear
  * twice and left the reader joining them up by number; a review is a review,
  * and what matters is who wrote it. Each group inside a PR names its source —
- * "AO codex" against the agent that ran, "On GitHub" for everyone else.
+ * "AO opencode" against the agent that ran, "On GitHub" for everyone else.
  */
 function MergedReviewsSection({
 	githubPRs,
@@ -2142,9 +2131,9 @@ function projectConfig(project: components["schemas"]["ProjectOrDegraded"] | und
 
 function mockProjectConfig(): ProjectConfig {
 	return {
-		worker: { agent: "codex" },
-		orchestrator: { agent: "codex" },
-		reviewers: [{ harness: "codex" }],
+		worker: { agent: "opencode" },
+		orchestrator: { agent: "opencode" },
+		reviewers: [{ harness: "opencode" }],
 	};
 }
 
@@ -2227,7 +2216,7 @@ function ReviewPanel({
 
 	const openReviewStates = openReviewStatesFor(session, reviewStates);
 	// Whichever PR happens to come first is not the reviewer to name. With one PR
-	// reviewed earlier by claude-code and another running under codex, taking the
+	// reviewed earlier and another running a fresh review, taking the
 	// first run reported the wrong agent as the one working. Prefer the run
 	// actually in flight, then the newest recorded one.
 	const runningRun = openReviewStates.find((review) => review.status === "running")?.latestRun;

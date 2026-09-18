@@ -15,9 +15,7 @@ import { SettingsSection } from "./SettingsSection";
 
 // Proper nouns; deliberately not translated.
 const AGENT_LABELS: Record<string, string> = {
-	"claude-code": "Claude Code",
-	codex: "Codex",
-	cursor: "Cursor",
+	opencode: "opencode",
 	github: "GitHub",
 };
 

@@ -3,7 +3,6 @@ import { createRendererCloudCpClient } from "../hooks/useCloudCp";
 import type { CloudCpAgentProvider, CloudCpProviderConnection } from "./cloud-cp";
 import { settingsQueryKey, type Settings } from "../hooks/useSettings";
 import { readSelectedSandboxProvider } from "../stores/sandbox-provider-store";
-import { captureRendererEvent } from "./telemetry";
 
 // A cloud project has no locally-configured orchestrator agent (that config
 // lives in the local daemon's project settings), so the launchers must not
@@ -19,11 +18,8 @@ import { captureRendererEvent } from "./telemetry";
 const ORCHESTRATOR_KICKOFF_PROMPT =
 	"You are the orchestrator for this project. Survey the repository, then wait for tasks and delegate work to worker sessions.";
 
-// A Cloud worker image currently ships these three harnesses. This ordering
-// preserves the former Codex default whenever it is available, while allowing
-// a user's connected Claude Code or Cursor credential to run the orchestrator
-// when Codex is not connected.
-const CLOUD_ORCHESTRATOR_HARNESS_PRIORITY: readonly CloudCpAgentProvider[] = ["codex", "claude-code", "cursor"];
+// A Cloud worker image currently ships OpenCode.
+const CLOUD_ORCHESTRATOR_HARNESS_PRIORITY: readonly CloudCpAgentProvider[] = ["opencode"];
 
 export function selectCloudOrchestratorHarness(
 	connections: readonly CloudCpProviderConnection[],
@@ -52,8 +48,7 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 	// directly from localStorage since this launcher is deliberately hook-free.
 	const provider = readSelectedSandboxProvider();
 	// #4960: pick the orchestrator harness from the user's connected Cloud
-	// coding-agent credentials (Codex -> Claude Code -> Cursor) instead of
-	// hardcoding claude-code.
+	// coding-agent credentials instead of hardcoding one.
 	const [orgCredentials, personalCredentials] = await Promise.all([
 		client.listProviderConnections(orgId),
 		client.listUserProviderConnections(),
@@ -63,19 +58,13 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 		...personalCredentials.providerConnections,
 	]);
 	if (!harness) throw new Error("Connect a Cloud coding agent before spawning an orchestrator.");
-	try {
-		const { session } = await client.createSession(orgId, {
-			projectId,
-			kind: "orchestrator",
-			harness,
-			displayName: "Orchestrator",
-			prompt: ORCHESTRATOR_KICKOFF_PROMPT,
-			...(provider ? { provider } : {}),
-		});
-		void captureRendererEvent("ao.renderer.cloud_orchestrator_spawn_succeeded", { project_id: projectId });
-		return session.id;
-	} catch (error) {
-		void captureRendererEvent("ao.renderer.cloud_orchestrator_spawn_failed", { project_id: projectId });
-		throw error;
-	}
+	const { session } = await client.createSession(orgId, {
+		projectId,
+		kind: "orchestrator",
+		harness,
+		displayName: "Orchestrator",
+		prompt: ORCHESTRATOR_KICKOFF_PROMPT,
+		...(provider ? { provider } : {}),
+	});
+	return session.id;
 }

@@ -327,13 +327,12 @@ export interface CloudCpTerminalTicketResponse {
 // Provider connections (`provider_handlers.go`)
 // ---------------------------------------------------------------------------
 
-/** Coding-agent providers the control plane accepts (`validAgentProvider`). */
-export type CloudCpAgentProvider = "claude-code" | "codex" | "cursor";
+/** Coding-agent provider the control plane accepts (`validAgentProvider`). */
+export type CloudCpAgentProvider = "opencode";
 
 /**
  * Credential types by provider (`validAgentCredentialType`):
- * claude-code accepts "api_key" | "oauth_token"; codex accepts
- * "api_key" | "access_token"; cursor accepts "api_key".
+ * opencode accepts "api_key" (exposed to the sandbox worker as OPENCODE_API_KEY).
  */
 export interface CloudCpPutAgentConnectionRequest {
 	credentialType: string;

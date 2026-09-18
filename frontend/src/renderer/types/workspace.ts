@@ -16,7 +16,7 @@ import type { ReviewerHarnessId } from "../lib/reviewer-harnesses";
 export { toKanbanColumn, toSessionActivity, toSessionStatus };
 export type { KanbanColumn, SessionActivity, SessionActivityState, SessionStatus };
 
-export type AgentProvider = AgentId | "fake";
+export type AgentProvider = AgentId;
 
 /** A file changed in a worker workspace (drives the review rail). */
 export type ChangedFile = {
@@ -50,16 +50,6 @@ export type PullRequestFacts = {
 
 /** The daemon-committed controller currently responsible for the session. */
 export type SessionMode = "chat" | "tui";
-
-export type AgentSwitchSummary = {
-	agentHandoffStatus: string;
-	errorCode?: string;
-	fromHarness: string;
-	id: string;
-	state: string;
-	targetHarness: string;
-	updatedAt?: string;
-};
 
 export type WorkspaceSession = {
 	id: string;
@@ -133,7 +123,6 @@ export type WorkspaceSession = {
 	pinnedAt?: string;
 	/** Raw agent lifecycle activity from the daemon. */
 	activity?: SessionActivity;
-	activeAgentSwitch?: AgentSwitchSummary;
 	/**
 	 * Live preview target set by the daemon (via `ao preview`) and streamed over
 	 * CDC. When non-empty, the browser panel opens and navigates here.
@@ -387,6 +376,5 @@ export function orchestratorHealth(workspace: WorkspaceSummary, restarting = fal
 }
 
 export function toAgentProvider(provider?: string): AgentProvider {
-	if (provider === "fake") return provider;
-	return AGENT_OPTIONS.find((candidate) => candidate === provider) ?? "codex";
+	return AGENT_OPTIONS.find((candidate) => candidate === provider) ?? "opencode";
 }

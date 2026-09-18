@@ -8,7 +8,6 @@ import {
 	type ReportProblemOutput,
 } from "../../lib/report-problem";
 import { aoBridge } from "../../lib/bridge";
-import { captureRendererEvent } from "../../lib/telemetry";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
@@ -82,7 +81,6 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 			setCopyError(null);
 			return;
 		}
-		void captureRendererEvent("ao.renderer.support_opened");
 		let cancelled = false;
 		void collectReportProblemDiagnostics().then((nextDiagnostics) => {
 			if (!cancelled) setDiagnostics(nextDiagnostics);
@@ -113,11 +111,9 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 			setCopiedOutput(output);
 			setSummary("");
 			setDetails("");
-			void captureRendererEvent("ao.renderer.support_submitted", { destination: output, outcome: "succeeded" });
 		} catch (err) {
 			setCopyError(err instanceof Error ? err.message : t("report.copyFailed"));
 			setCopiedOutput(null);
-			void captureRendererEvent("ao.renderer.support_submitted", { destination: output, outcome: "failed" });
 		}
 	};
 

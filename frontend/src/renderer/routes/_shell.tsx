@@ -20,7 +20,6 @@ import { ShellTopbar } from "../components/ShellTopbar";
 import { SessionTopbarProvider } from "../components/SessionTopbarPortal";
 import { OrchestratorReplacementDialog } from "../components/OrchestratorReplacementDialog";
 import { RestartToUpdateDialog } from "../components/RestartToUpdateDialog";
-import { TelemetryConsentRenewalDialog } from "../components/TelemetryConsentRenewalDialog";
 import { Sidebar } from "../components/Sidebar";
 import { SidebarProvider } from "../components/ui/sidebar";
 import { TitlebarNav } from "../components/TitlebarNav";
@@ -34,10 +33,8 @@ import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions, workspaceS
 import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
-import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
 import { ShellProvider } from "../lib/shell-context";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
-import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { aoBridge } from "../lib/bridge";
 import { handleModifierLinkClick } from "../lib/external-link-policy";
@@ -54,7 +51,6 @@ import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/u
 import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
-import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
 
 export const Route = createFileRoute("/_shell")({
 	// Prefetch the workspace list for the whole shell (parent loaders run before
@@ -167,8 +163,6 @@ const ShellCenter = memo(function ShellCenter({
 // the old single <App>, with selection now owned by the router (route params)
 // instead of Zustand. The daemon-status effect runs here exactly once.
 function ShellLayout() {
-	// Reports how many agents this install has available, once per launch.
-	useAgentInventoryTelemetry();
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const matchRoute = useMatchRoute();
@@ -399,7 +393,7 @@ function ShellLayout() {
 		async (
 			workspace: WorkspaceSummary,
 			input: CreateProjectConfigInput,
-			source: "project_add" | "project_clone",
+			_source: "project_add" | "project_clone",
 		) => {
 		// Safety: a hung spawn must never wedge the board behind the
 		// provisioning gate. If it outlives this budget, release the gate and
@@ -413,10 +407,6 @@ function ShellLayout() {
 			);
 		}, PROVISIONING_TIMEOUT_MS);
 		try {
-			void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
-				project_id: workspace.id,
-				source,
-			});
 			const {
 				data: spawnData,
 				error: spawnError,
@@ -434,10 +424,6 @@ function ShellLayout() {
 					: `Failed to spawn orchestrator (${spawnResponse.status})`;
 				throw new Error(message);
 			}
-			void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
-				project_id: workspace.id,
-				source,
-			});
 			const sessionId = spawnData.session.id;
 			window.clearTimeout(provisioningGuard);
 			setProjectProvisioning(workspace.id, false);
@@ -453,10 +439,6 @@ function ShellLayout() {
 		} catch (spawnError) {
 			window.clearTimeout(provisioningGuard);
 			setProjectProvisioning(workspace.id, false);
-			void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
-				project_id: workspace.id,
-				source,
-			});
 			const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
 			const startupMessage = `Project added, but orchestrator did not start: ${message}`;
 			setOrchestratorStartupError(workspace.id, startupMessage);
@@ -469,7 +451,7 @@ function ShellLayout() {
 		async (
 			project: components["schemas"]["Project"],
 			input: CreateProjectConfigInput,
-			source: "project_add" | "project_clone",
+			_source: "project_add" | "project_clone",
 		) => {
 			const workspace: WorkspaceSummary = {
 				id: project.id,
@@ -481,7 +463,6 @@ function ShellLayout() {
 				orchestratorAgent: input.orchestratorAgent as WorkspaceSummary["orchestratorAgent"],
 				sessions: [],
 			};
-			void captureRendererEvent(`ao.renderer.${source}_succeeded`, { project_id: workspace.id });
 			updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
 			setOrchestratorStartupError(workspace.id, null);
 			setProjectProvisioning(workspace.id, true);
@@ -490,7 +471,7 @@ function ShellLayout() {
 			// than after the spawn) is what closes the setup modal and makes
 			// the board usable while the orchestrator starts in the background.
 			void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
-			void provisionOrchestrator(workspace, input, source);
+			void provisionOrchestrator(workspace, input, _source);
 		},
 		[navigate, provisionOrchestrator, setOrchestratorStartupError, setProjectProvisioning, updateWorkspaces],
 	);
@@ -504,12 +485,6 @@ function ShellLayout() {
 			asWorkspace?: boolean;
 			clonePreparationId?: string;
 		}) => {
-			void addRendererExceptionStep("Project add requested", {
-				source: "project-add",
-				operation: "project_add",
-				surface: "project_board",
-			});
-			void captureRendererEvent("ao.renderer.project_add_requested");
 			const status = await refreshDaemonStatus();
 			if (status.state !== "ready" || !status.port) {
 				throw new Error(status.message || "AO daemon is not ready.");
@@ -559,11 +534,6 @@ function ShellLayout() {
 						return;
 					}
 				}
-				void captureRendererException(failure, {
-					source: "project-add",
-					operation: "project_add",
-					surface: "project_board",
-					});
 					throw failure;
 			}
 			if (!data?.project) throw new Error("Project creation returned no project");
@@ -581,12 +551,6 @@ function ShellLayout() {
 			trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
 			signal?: AbortSignal;
 		}) => {
-			void addRendererExceptionStep("Project clone requested", {
-				source: "project-clone",
-				operation: "project_clone",
-				surface: "project_board",
-			});
-			void captureRendererEvent("ao.renderer.project_clone_requested");
 			const status = await refreshDaemonStatus();
 			if (status.state !== "ready" || !status.port) {
 				throw new Error(status.message || "AO daemon is not ready.");
@@ -608,11 +572,6 @@ function ShellLayout() {
 				failure.code = apiErrorCode(error);
 				failure.details = apiErrorDetails(error);
 				failure.requestId = apiErrorRequestId(error);
-				void captureRendererException(failure, {
-					source: "project-clone",
-					operation: "project_clone",
-					surface: "project_board",
-				});
 				throw failure;
 			}
 			if (!data?.project) throw new Error("Project clone returned no project");
@@ -646,27 +605,14 @@ function ShellLayout() {
 		async (projectId: string) => {
 			const isLastWorkspace =
               workspaces.length === 1 && workspaces[0]?.id === projectId;
-			void addRendererExceptionStep("Project removal requested", {
-				source: "project-remove",
-				operation: "project_remove",
-				surface: "project_board",
-				project_id: projectId,
-			});
 			const { error } = await apiClient.DELETE("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },
 			});
 			if (error) {
 				const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
 				failure.code = apiErrorCode(error);
-				void captureRendererException(failure, {
-					source: "project-remove",
-					operation: "project_remove",
-					surface: "project_board",
-					project_id: projectId,
-				});
 				throw failure;
 			}
-			void captureRendererEvent("ao.renderer.project_removed", { project_id: projectId });
 			updateWorkspaces((current) => current.filter((item) => item.id !== projectId));
 			if (isLastWorkspace) {
               void navigate({ to: "/" });
@@ -684,9 +630,6 @@ function ShellLayout() {
 				setProjectRestarting,
 				setOrchestratorReplacementError,
 				mode,
-				onError: (error) => {
-					captureOrchestratorReplacementFailure(error, projectId);
-				},
 			});
 		},
 		[navigate, queryClient, setOrchestratorReplacementError, setProjectRestarting],
@@ -966,7 +909,6 @@ function ShellLayout() {
 				<GlobalToast />
 				<SettingsDialog />
 				<RestartToUpdateDialog />
-				<TelemetryConsentRenewalDialog />
 				<KeyboardShortcutsDialog
 					open={isKeyboardShortcutsOpen}
 					onOpenChange={setIsKeyboardShortcutsOpen}

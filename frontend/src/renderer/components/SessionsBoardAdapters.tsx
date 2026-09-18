@@ -22,10 +22,6 @@ import { formatTimeCompact } from "../lib/format-time";
 import { formatEstimatedCost } from "../lib/format-cost";
 import { formatTokenCount } from "../lib/format-token-count";
 import { prBrowserUrl, sessionPRDisplaySummaries } from "../lib/pr-display";
-import {
-	agentSwitchStatusVisual,
-	deriveSessionAgentSwitchPresentation,
-} from "../lib/agent-switch-presentation";
 import type { WorkspaceSession } from "../types/workspace";
 import { canonicalTrackerIssueId } from "../types/workspace";
 import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
@@ -42,10 +38,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export function toBoardSessionPresentation(
 	session: WorkspaceSession,
-	t?: TFunction,
+	_t?: TFunction,
 ): BoardSessionPresentation {
-	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
-	const switchVisual = switchPresentation ? agentSwitchStatusVisual(switchPresentation) : undefined;
 	return {
 		activity: session.activity,
 		branch: session.branch,
@@ -56,15 +50,6 @@ export function toBoardSessionPresentation(
 		statusReadiness: session.statusReadiness,
 		provider: session.provider,
 		status: session.status,
-		statusPresentation:
-			t && switchPresentation && switchVisual
-				? {
-						className: switchVisual.className,
-						indicatorClassName: `${switchVisual.indicatorClassName}${switchVisual.breathe ? " animate-status-pulse" : ""}`,
-						label: t(switchPresentation.compactLabelKey, switchPresentation.values),
-						tone: switchVisual.tone,
-					}
-				: undefined,
 		title: session.title,
 		trackerIssueId: canonicalTrackerIssueId(session.issueId),
 		updatedAt: session.updatedAt,

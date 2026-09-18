@@ -6,11 +6,7 @@ import { computeSseRetryDelayMs } from "./sse-backoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
 import { conversationQueryKey, conversationQueryRoot } from "../hooks/useConversation";
-import { agentSwitchesQueryRoot } from "../hooks/useAgentSwitches";
 import { sessionUsageQueryRoot } from "../hooks/useSessionUsageSummaries";
-import { agentSwitchVisibility } from "./agent-switch-visibility";
-import { codexAccountsQueryKey, writeCodexAccounts } from "../hooks/codex-accounts-state";
-import type { components } from "../../api/schema";
 import { editorHandoffQueryKey, editorHandoffQueryRoot } from "../hooks/useEditorHandoff";
 
 export type EventTransport = {
@@ -41,10 +37,9 @@ const CDC_EVENT_TYPES = [
 ] as const;
 
 /**
- * Wires live server state into the TanStack Query cache. Three sources feed it:
+ * Wires live server state into the TanStack Query cache. Two sources feed it:
  *   - daemon lifecycle over Electron IPC (coming up/down changes session availability)
  *   - the backend CDC stream over SSE (project/session/PR changes)
- *   - the Codex account stream over SSE (account, capacity, and switch state)
  * Lifecycle and CDC events invalidate the workspace cache; durable per-session
  * updates also refresh editor-handoff readiness. Invalidations are batched
  * because a single user action can emit a burst of CDC events.
@@ -52,7 +47,6 @@ const CDC_EVENT_TYPES = [
 export function createEventTransport(queryClient: QueryClient): EventTransport {
 	return {
 		connect() {
-			let healthAttempt = 0;
 			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
@@ -63,8 +57,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
-			let accountSource: EventSource | undefined;
-			let accountSourceBaseUrl: string | undefined;
 			let disposed = false;
 			// Do not repeatedly cancel a slow fetch under continuous CDC traffic. A
 			// key receives at most one in-flight refresh and one queued catch-up.
@@ -87,15 +79,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				};
 				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
 			};
-			const applyAccountEvent = (event: Event) => {
-				if (disposed || !("data" in event)) return;
-				try {
-					const decoded = JSON.parse(String((event as MessageEvent).data)) as components["schemas"]["CodexAccountsResponse"];
-					writeCodexAccounts(queryClient, decoded, "replace");
-				} catch {
-					// A malformed transient event cannot replace the cached safe snapshot.
-				}
-			};
 			// The scheduled flush body. Extracted so a leading-edge event can run
 			// it immediately without waiting out a full window.
 			let lastFlushAt = Number.NEGATIVE_INFINITY;
@@ -106,7 +89,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				}
 				if (workspaceInvalidationPending) {
 					invalidate(workspaceQueryKey);
-					invalidate(agentSwitchesQueryRoot);
 					invalidate(sessionScmSummaryQueryKey());
 					invalidate(sessionUsageQueryRoot);
 					workspaceInvalidationPending = false;
@@ -233,34 +215,13 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				// EventSource is unavailable in jsdom (tests) and some preview surfaces; guard it.
 				if (disposed || typeof EventSource === "undefined") return;
 				if (!hasTrustedApiBaseUrl()) {
-					healthAttempt += 1;
 					source?.close();
-					accountSource?.close();
 					source = undefined;
-					accountSource = undefined;
 					sourceBaseUrl = undefined;
-					accountSourceBaseUrl = undefined;
 					setEventsConnectionState("disconnected");
-					agentSwitchVisibility.setTransportHealthy("active", false);
-					agentSwitchVisibility.setTransportHealthy("history", false);
 					return;
 				}
 				const baseUrl = getApiBaseUrl();
-				if (!accountSource || accountSourceBaseUrl !== baseUrl || accountSource.readyState === EVENTSOURCE_CLOSED) {
-					accountSource?.close();
-					accountSourceBaseUrl = baseUrl;
-					try {
-						accountSource = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/agents/codex/accounts/events`);
-						accountSource.onopen = () => {
-							if (disposed) return;
-							void queryClient.invalidateQueries({ queryKey: codexAccountsQueryKey });
-						};
-						accountSource.onerror = () => { if (accountSource?.readyState === EVENTSOURCE_CLOSED) scheduleRetry(); };
-						accountSource.addEventListener("codex_account", applyAccountEvent);
-					} catch {
-						accountSource = undefined;
-					}
-				}
 				// Keep a still-usable source on the same base URL; replace one the
 				// browser abandoned (CLOSED) or one bound to a stale port.
 				if (source && sourceBaseUrl === baseUrl && source.readyState !== EVENTSOURCE_CLOSED) return;
@@ -276,11 +237,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					const connectedSource = source;
 					source.onopen = () => {
 						if (disposed || source !== connectedSource) return;
-						healthAttempt += 1;
 						retries = 0;
 						setEventsConnectionState("connected");
-						agentSwitchVisibility.setTransportHealthy("active", true);
-						agentSwitchVisibility.setTransportHealthy("history", true);
 						// Events emitted during the gap were lost; refetch once on (re)open.
 						refreshWorkspaces();
 					};
@@ -291,22 +249,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						// of looping silently against a dead daemon.
 						setEventsConnectionState("disconnected");
 						if (source?.readyState === EVENTSOURCE_CLOSED) scheduleRetry();
-						const attempt = ++healthAttempt;
 						void queryClient.refetchQueries(
 							{ queryKey: workspaceQueryKey, type: "active" },
 							{ throwOnError: true },
-						).then(
-							() => {
-								if (attempt !== healthAttempt || source !== connectedSource) return;
-								agentSwitchVisibility.setTransportHealthy("active", true);
-								agentSwitchVisibility.setTransportHealthy("history", true);
-							},
-							() => {
-								if (attempt !== healthAttempt || source !== connectedSource) return;
-								agentSwitchVisibility.setTransportHealthy("active", false);
-								agentSwitchVisibility.setTransportHealthy("history", false);
-							},
-						);
+						).catch(() => {});
 					};
 					source.onmessage = refreshWorkspaces; // unnamed events, if any
 					for (const type of CDC_EVENT_TYPES) {
@@ -329,7 +275,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			connectSource();
 
 			return () => {
-				healthAttempt += 1;
 				disposed = true;
 				if (refreshTimer !== undefined) clearTimeout(refreshTimer);
 				pendingConversationSessions.clear();
@@ -339,7 +284,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				removeDaemonListener();
 				removeBaseUrlListener();
 				source?.close();
-				accountSource?.close();
 				setEventsConnectionState("idle");
 			};
 		},

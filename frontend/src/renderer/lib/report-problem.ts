@@ -1,5 +1,5 @@
 import { aoBridge } from "./bridge";
-import { routeSurface } from "./telemetry";
+import { routeSurface } from "./route-surface";
 
 export type ReportProblemOutput = "github" | "discord" | "email";
 

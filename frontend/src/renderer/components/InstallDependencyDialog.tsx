@@ -21,24 +21,18 @@ import {
 } from "./ui/dialog";
 
 type InstallJob = components["schemas"]["InstallJob"];
-type InstallTarget = "tmux" | "gh" | "claude" | "codex" | "opencode" | "copilot";
+type InstallTarget = "tmux" | "gh" | "opencode";
 type AgentInstallTarget = Exclude<InstallTarget, "tmux" | "gh">;
 
 // Labels are the CLIs' own product names — not translated, same treatment as
 // "Agent Orchestrator" itself. Descriptions are ordinary UI copy and go
 // through t() at render time (see AGENT_INSTALL_DESCRIPTION_KEYS below).
 const AGENT_INSTALL_OPTIONS: Array<{ target: AgentInstallTarget; label: string }> = [
-	{ target: "claude", label: "Claude Code" },
-	{ target: "codex", label: "Codex" },
 	{ target: "opencode", label: "opencode" },
-	{ target: "copilot", label: "Copilot CLI" },
 ];
 
 const AGENT_INSTALL_DESCRIPTION_KEYS: Record<AgentInstallTarget, MessageKey> = {
-	claude: "startup.agentDescClaude",
-	codex: "startup.agentDescCodex",
 	opencode: "startup.agentDescOpencode",
-	copilot: "startup.agentDescCopilot",
 };
 
 const POLL_INTERVAL_MS = 1_000;

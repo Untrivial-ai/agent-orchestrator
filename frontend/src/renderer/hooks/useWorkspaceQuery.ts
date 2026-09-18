@@ -9,10 +9,7 @@ import { useCloudOrg } from "./useCloudOrg";
 import { mockWorkspaces } from "../lib/mock-data";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { toReviewerHarnessId } from "../lib/reviewer-harnesses";
-import { captureRendererEvent } from "../lib/telemetry";
-import { agentSwitchVisibility } from "../lib/agent-switch-visibility";
 import {
-	type AgentSwitchSummary,
 	type PRState,
 	type PullRequestFacts,
 	toAgentProvider,
@@ -40,20 +37,6 @@ function placeStandaloneWorkspaceLast(workspaces: WorkspaceSummary[]): Workspace
 	];
 }
 
-function toAgentSwitchSummary(
-	agentSwitch: components["schemas"]["AgentSwitch"],
-): AgentSwitchSummary {
-	return {
-		agentHandoffStatus: agentSwitch.agentHandoffStatus,
-		errorCode: agentSwitch.errorCode,
-		fromHarness: agentSwitch.fromHarness,
-		id: agentSwitch.id,
-		state: agentSwitch.state,
-		targetHarness: agentSwitch.targetHarness,
-		updatedAt: agentSwitch.updatedAt,
-	};
-}
-
 function toPullRequestFacts(pr: components["schemas"]["SessionPRFacts"]): PullRequestFacts {
 	return {
 		url: pr.url,
@@ -77,10 +60,6 @@ function toWorkspaceSession(
 	const scmStatus = session.scmStatus ? toSessionStatus(session.scmStatus) : undefined;
 	const kanbanColumn = toKanbanColumn(session.kanbanColumn, status);
 	const activity = statusReadiness === "ready" ? toSessionActivity(session.activity) : undefined;
-	if (statusReadiness === "ready" && status === "unknown") reportUnknownSessionField("status", session.status);
-	if (statusReadiness === "ready" && (!activity || activity.state === "unknown")) {
-		reportUnknownSessionField("activity", session.activity?.state);
-	}
 	return {
 		id: session.id,
 		terminalHandleId: session.terminalHandleId,
@@ -116,7 +95,6 @@ function toWorkspaceSession(
 		updatedAt: session.updatedAt,
 		lastUserMessageAt: session.lastUserMessageAt ?? undefined,
 		activity,
-		activeAgentSwitch: session.activeAgentSwitch ? toAgentSwitchSummary(session.activeAgentSwitch) : undefined,
 		previewUrl: session.previewUrl,
 		previewRevision: session.previewRevision,
 		isPinned: session.isPinned ?? false,
@@ -129,15 +107,6 @@ export const workspaceQueryKey = ["workspaces"] as const;
 export function workspaceStatusesChecking(workspaces: WorkspaceSummary[] | undefined): boolean {
 	return workspaces?.some((workspace) => workspace.sessions.some((session) => session.statusReadiness === "checking")) ?? false;
 }
-const reportedUnknownSessionFields = new Set<string>();
-
-function reportUnknownSessionField(field: "status" | "activity", value?: string): void {
-	const reason = value ? "unrecognized" : "missing";
-	const key = `${field}:${reason}`;
-	if (reportedUnknownSessionFields.has(key)) return;
-	reportedUnknownSessionFields.add(key);
-	void captureRendererEvent("ao.renderer.session_state_unknown", { field, reason });
-}
 
 function toLocalWorkspaceSession(
 	session: components["schemas"]["ControllersSessionView"],
@@ -148,8 +117,6 @@ function toLocalWorkspaceSession(
 	const scmStatus = session.scmStatus ? toSessionStatus(session.scmStatus) : undefined;
 	const kanbanColumn = toKanbanColumn(session.kanbanColumn, status);
 	const activity = toSessionActivity(session.activity);
-	if (status === "unknown") reportUnknownSessionField("status", session.status);
-	if (!activity || activity.state === "unknown") reportUnknownSessionField("activity", session.activity?.state);
 	return {
 		id: session.id,
 		terminalHandleId: session.terminalHandleId,
@@ -183,7 +150,6 @@ function toLocalWorkspaceSession(
 		updatedAt: session.updatedAt,
 		lastUserMessageAt: session.lastUserMessageAt ?? undefined,
 		activity,
-		activeAgentSwitch: session.activeAgentSwitch ? toAgentSwitchSummary(session.activeAgentSwitch) : undefined,
 		previewUrl: session.previewUrl,
 		previewRevision: session.previewRevision,
 		isPinned: session.isPinned ?? false,
@@ -215,12 +181,8 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 		await Promise.all([apiClient.GET("/api/v1/projects"), apiClient.GET("/api/v1/sessions")]);
 
 	if (projectsError || sessionsError) {
-		agentSwitchVisibility.setQueryHealthy("active", false, "workspaces");
-		agentSwitchVisibility.setQueryHealthy("history", false, "workspaces");
 		throw projectsError ?? sessionsError;
 	}
-	agentSwitchVisibility.setQueryHealthy("active", true, "workspaces");
-	agentSwitchVisibility.setQueryHealthy("history", true, "workspaces");
 
 	const sessions = sessionsData?.sessions ?? [];
 	const projects = (projectsData?.projects ?? []).map((project) => {

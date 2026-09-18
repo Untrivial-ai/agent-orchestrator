@@ -1,11 +1,9 @@
 import { InspectorSection, inspectorEmptyClass } from "@aoagents/product-ui";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useOrchestratorChildren, type OrchestratorChildView } from "../hooks/useOrchestratorChildren";
 import { cn } from "../lib/utils";
 import { getSessionStatusDotView, getSessionStatusView } from "../lib/session-presentation";
-import { captureRendererEvent } from "../lib/telemetry";
 import type { PullRequestFacts, WorkspaceSession } from "../types/workspace";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
@@ -20,14 +18,6 @@ export function OrchestratorChildrenSection({ session }: { session: WorkspaceSes
 	const navigate = useNavigate();
 	const query = useOrchestratorChildren(session);
 	const children = query.data ?? [];
-	const viewedRef = useRef(false);
-	useEffect(() => {
-		if (viewedRef.current || query.data === undefined) return;
-		viewedRef.current = true;
-		void captureRendererEvent("ao.renderer.cloud_workers_viewed", {
-			worker_count: query.data.length,
-		});
-	}, [query.data]);
 
 	const title =
 		children.length > 0 ? t("inspector.workersCount", { count: children.length }) : t("inspector.workers");
@@ -48,9 +38,6 @@ export function OrchestratorChildrenSection({ session }: { session: WorkspaceSes
 							key={child.id}
 							child={child}
 							onOpen={() => {
-								void captureRendererEvent("ao.renderer.cloud_worker_opened", {
-									has_pr: child.prs.length > 0,
-								});
 								void navigate({
 									to: "/projects/$projectId/sessions/$sessionId",
 									params: { projectId: session.workspaceId, sessionId: child.id },

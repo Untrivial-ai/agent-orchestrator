@@ -23,40 +23,24 @@ import { providerConnectionsQueryKey } from "../hooks/useProviderConnections";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { cn } from "../lib/utils";
 
-// The coding-agent providers the control plane accepts, with the credential
-// types each one validates (see cloud validAgentCredentialType). The first
-// credential type is the default and matches the "setup token" a developer
-// normally pastes.
+// The coding-agent provider the control plane accepts, with the credential
+// type it validates (see cloud validAgentCredentialType). The first credential
+// type is the default and matches the "setup token" a developer normally
+// pastes.
 const AGENTS = [
 	{
-		agent: "claude-code",
-		label: "Claude Code",
-		creds: [
-			{ value: "oauth_token", label: "Setup token" },
-			{ value: "api_key", label: "API key" },
-		],
-	},
-	{
-		agent: "codex",
-		label: "Codex",
-		creds: [
-			{ value: "access_token", label: "Access token" },
-			{ value: "api_key", label: "API key" },
-		],
-	},
-	{
-		agent: "cursor",
-		label: "Cursor",
+		agent: "opencode",
+		label: "opencode",
 		creds: [{ value: "api_key", label: "API key" }],
 	},
 ] as const;
 
 type Phase = "idle" | "submitting" | "success";
 
-// Connects a developer's local coding-agent credential (Claude Code setup
-// token, Codex/Cursor key) to their cloud org so the sandbox worker can run the
-// agent. Replaces the dev-only cloud/scripts/dev-connect-agent-credential.py:
-// same PUT /orgs/{org}/provider-connections/agents/{agent}, in the app.
+// Connects a developer's local coding-agent credential (opencode API key) to
+// their cloud org so the sandbox worker can run the agent. Replaces the
+// dev-only cloud/scripts/dev-connect-agent-credential.py: same
+// PUT /orgs/{org}/provider-connections/agents/{agent}, in the app.
 export function CloudCredentialDialog() {
 	const { t } = useTranslation();
 	const { client } = useCloudCp();

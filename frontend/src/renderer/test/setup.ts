@@ -170,15 +170,6 @@ if (typeof window !== "undefined") {
 				return { id: targetId ?? "cursor", name: "Cursor", kind: "editor" };
 			},
 		},
-		telemetry: {
-			getBootstrap: async () => null,
-			getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "test", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false }),
-			setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "test", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false }),
-			onPolicy: () => () => false,
-			onClearQueues: () => () => false,
-			capture: async () => false,
-			signalAgentSwitchVisibility: () => false,
-		},
 		browser: {
 			nativeCompositionEnabled: true,
 			ensure: async (sessionId: string) => ({
@@ -332,7 +323,6 @@ if (typeof window !== "undefined") {
 			isPostUpdateRelaunch: async () => false,
 			relaunch: async () => undefined,
 			onStatus: () => () => undefined,
-		onTelemetry: () => () => undefined,
 		},
 		featureBuilds: {
 			list: async () => [],

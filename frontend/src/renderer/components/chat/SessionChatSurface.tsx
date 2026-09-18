@@ -7,18 +7,8 @@
  * preview and live data here.
  */
 
-import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { memo, useEffect, useRef, type ReactNode } from "react";
-import { useTranslation } from "react-i18next";
-import {
-	findActiveAgentSwitch,
-	isTerminalAgentSwitch,
-	selectDurableAgentSwitch,
-	useAgentSwitches,
-} from "../../hooks/useAgentSwitches";
-import { useObservedAgentSwitchLifecycle } from "../../hooks/useObservedAgentSwitchLifecycle";
-import { useAgentSwitchPresentationVisibility, useAgentSwitchRouteVisibility } from "../../hooks/useAgentSwitchVisibility";
-import { useSwitchAgentState } from "../../hooks/useSwitchAgent";
 import {
 	useConversation,
 	useConversationCommands,
@@ -28,23 +18,15 @@ import {
 	useStageAttachments,
 	useWorkspaceFilePaths,
 } from "../../hooks/useConversation";
-import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProviderCatalogs";
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
 import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
-import {
-	deriveAgentSwitchPresentation,
-	agentSwitchVisibilityPresentationKind,
-	type AgentSwitchPresentation,
-} from "../../lib/agent-switch-presentation";
-import { cn } from "../../lib/utils";
 import type { Theme } from "../../stores/ui-store";
 import { can } from "../../types/conversation";
 import type { ConversationSnapshot } from "../../types/conversation";
 import type { TerminalTarget } from "../../types/terminal";
-import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace";
-import { AgentSwitchProgressTrack } from "../AgentSwitchProgressTrack";
+import type { WorkspaceSession } from "../../types/workspace";
 import { ChatWorkspace } from "./ChatWorkspace";
 
 export interface ConversationWorkState {
@@ -108,11 +90,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	sessionTabAction,
 	sessionTabActionWide = false,
 	tabStripAction,
-	handoffDialogOpen = false,
 	workspaceTabs,
 	workspaceTabActions,
 	workspaceActiveTabKey,
-	workspaceFileActive,
 	auxiliaryTabOrder,
 	onAuxiliaryTabOrderChange,
 	controllerTransitioning,
@@ -147,12 +127,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	sessionTabAction?: ReactNode;
 	sessionTabActionWide?: boolean;
 	tabStripAction?: ReactNode;
-	handoffDialogOpen?: boolean;
 	workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
 	workspaceTabActions?: ReactNode;
 	workspaceActiveTabKey?: string;
-	/** A file overlay hides the chat surface, so it must not acknowledge switch UI. */
-	workspaceFileActive?: boolean;
 	/** Session-owned order shared with the terminal UI surface. */
 	auxiliaryTabOrder?: string[];
 	onAuxiliaryTabOrderChange?: (keys: string[]) => void;
@@ -221,95 +198,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	// Mode commits before the target controller starts. A cached ready snapshot
 	// can also outlive the source, so wait for the handoff's final snapshot refresh.
 	const controllerCatalogsEnabled = targetChatControllerReady && !controllerTransitioning && !newWorkDisabled;
-	// Agent-switch presentation for the chat surface progress track and input locks.
-	const switchMutation = useSwitchAgentState(session.id);
-	const agentSwitches = useAgentSwitches(session.id).data ?? [];
-	const activeHistorySwitch = findActiveAgentSwitch(agentSwitches);
-	const selectedDurableAgentSwitch = selectDurableAgentSwitch(
-		session.activeAgentSwitch,
-		agentSwitches,
-	);
-	const admissionAgentSwitch: AgentSwitchSummary | undefined =
-		switchMutation.isPending && switchMutation.input
-			? {
-				agentHandoffStatus: "not_attempted",
-				fromHarness: switchMutation.input.session.provider,
-				id: `admission:${switchMutation.input.idempotencyKey}`,
-				state: "preparing_handoff",
-				targetHarness: switchMutation.input.targetHarness,
-			}
-			: undefined;
-	const {
-		dismissFailure: dismissAgentSwitchFailure,
-		dismissedFailureSwitchId,
-		isObserved: isAgentSwitchObserved,
-		isRetired: isAgentSwitchRetired,
-		observedTerminalSwitch,
-		settle: settleAgentSwitch,
-		transientSuccessNotice,
-		transientSuccessSwitchId,
-	} = useObservedAgentSwitchLifecycle({
-		sessionId: session.id,
-		agentSwitches,
-		nonterminalCandidates: [
-			session.activeAgentSwitch,
-			activeHistorySwitch,
-			selectedDurableAgentSwitch,
-			admissionAgentSwitch,
-		],
-	});
-	const durableAgentSwitch =
-		selectedDurableAgentSwitch && !isAgentSwitchRetired(selectedDurableAgentSwitch.id)
-			? selectedDurableAgentSwitch
-			: undefined;
-	const agentSwitch = durableAgentSwitch ?? admissionAgentSwitch ?? observedTerminalSwitch;
-	useAgentSwitchRouteVisibility(`session/${session.id}`, agentSwitch && agentSwitch.state !== "completed" && agentSwitch.state !== "failed" ? "active" : "history", undefined, false);
-	const switchPresentation = agentSwitch
-		? deriveAgentSwitchPresentation({
-				agentSwitch,
-				activityState: session.activity?.state,
-				currentHarness: session.provider,
-				isTerminated: Boolean(session.isTerminated),
-				// The shared presentation uses a live terminal handle as its TUI
-				// takeover proof. Chat has no terminal runtime, so its equivalent is
-				// the structured controller reaching a dispatchable state.
-				terminalHandleId: targetChatControllerReady ? "chat-controller" : undefined,
-			})
-		: undefined;
-	const agentSwitching = Boolean(
-		switchMutation.isPending ||
-			(switchPresentation?.outcome === "in_progress" ||
-				switchPresentation?.outcome === "recovery"),
-	);
-	const observedSettledSwitchId =
-		agentSwitch &&
-		(switchPresentation?.outcome === "success" || switchPresentation?.outcome === "failure") &&
-		isAgentSwitchObserved(agentSwitch.id)
-			? agentSwitch.id
-			: undefined;
-	const latestTerminalSwitch = agentSwitches.find(isTerminalAgentSwitch);
-	const controllerOwnedTerminalSwitch =
-		targetChatControllerReady &&
-		latestTerminalSwitch &&
-		((latestTerminalSwitch.state === "completed" &&
-			latestTerminalSwitch.targetHarness === session.provider) ||
-			(latestTerminalSwitch.state === "failed" &&
-				latestTerminalSwitch.fromHarness === session.provider))
-			? latestTerminalSwitch
-			: undefined;
-	// Catalog ownership follows the live controller epoch, not whether this mount
-	// happened to observe the switch in progress. A sub-second switch can arrive
-	// first as terminal history and still needs its outgoing cache reconciled.
-	const providerCatalogSettledSwitchId =
-		observedSettledSwitchId ?? controllerOwnedTerminalSwitch?.id;
-	const catalogsEnabled = useAgentSwitchProviderCatalogs({
-		sessionId: session.id,
-		agentSwitching,
-		settledSwitchId: providerCatalogSettledSwitchId,
-	});
 	const configOptions = useConversationConfigOptions(
 		session.id,
-		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot && can(snapshot, "config_options")),
+		Boolean(controllerCatalogsEnabled && snapshot && can(snapshot, "config_options")),
 	);
 	// A provider config catalog may cover only model, only mode, or both.
 	// Suppress native controls only for dimensions the provider catalog replaces;
@@ -325,11 +216,11 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	// from the live controller, so there is nothing to fetch before then.
 	const { models } = useConversationModels(
 		session.id,
-		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot) && !hasProviderModel,
+		Boolean(controllerCatalogsEnabled && snapshot) && !hasProviderModel,
 	);
 	const { skills } = useConversationSkills(
 		session.id,
-		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot),
+		Boolean(controllerCatalogsEnabled && snapshot),
 	);
 	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
 	const stageAttachments = useStageAttachments(session.id);
@@ -390,46 +281,12 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 			}
 		}
 	}, [isLoading, openLinkInBrowser, paths, snapshot]);
-	const observedSuccessfulSwitch = Boolean(
-		agentSwitch &&
-			observedSettledSwitchId === agentSwitch.id &&
-			switchPresentation?.outcome === "success",
-	);
-	useEffect(() => {
-		if (!observedSuccessfulSwitch || !agentSwitch || !switchPresentation) return;
-		settleAgentSwitch(agentSwitch, switchPresentation);
-	}, [agentSwitch, observedSuccessfulSwitch, settleAgentSwitch, switchPresentation]);
-	const shownSwitchPresentation =
-		switchPresentation?.outcome === "failure" && dismissedFailureSwitchId === agentSwitch?.id
-			? undefined
-			: switchPresentation?.outcome === "success"
-				? transientSuccessSwitchId === agentSwitch?.id
-					? transientSuccessNotice?.presentation
-					: undefined
-				: switchPresentation ?? transientSuccessNotice?.presentation;
-	const switchLocksChat = Boolean(
-		switchPresentation?.lockAgentTerminal && !switchPresentation.allowSourceInput,
-	);
 	const renderShellFallback = Boolean(shellTarget && session);
 	const renderSnapshot =
 		snapshot ??
 		(renderShellFallback
 			? unavailableConversationSnapshot(session)
 			: undefined);
-	const visibilityPresentationKind = agentSwitchVisibilityPresentationKind(shownSwitchPresentation);
-	useAgentSwitchPresentationVisibility({
-		localRouteKey: `session/${session.id}`,
-		agentSwitch,
-		presentationKind: visibilityPresentationKind,
-		visible: Boolean(
-			shownSwitchPresentation &&
-				(!isLoading || renderShellFallback) &&
-				(!unavailable || renderShellFallback) &&
-				!error &&
-				renderSnapshot &&
-				!workspaceFileActive,
-		),
-	});
 
 	if (isLoading && !renderShellFallback) {
 		return (
@@ -475,7 +332,6 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 			<ChatWorkspace
 				key={session.id}
 				snapshot={renderSnapshot}
-				agentInputDisabled={switchLocksChat || handoffDialogOpen}
 				newWorkDisabled={newWorkDisabled}
 				onLinkOpen={openLinkInBrowser}
 				sessionTitle={session.title}
@@ -584,98 +440,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				reloadingMcpServers={commands.reloadingMcpServers}
 				mcpReloadError={commands.mcpReloadError}
 			/>
-			{shownSwitchPresentation ? (
-				<ChatAgentSwitchStatus
-					auxiliaryActive={Boolean(reviewerTarget || shellTarget)}
-					onDismiss={
-						shownSwitchPresentation.outcome === "failure" && agentSwitch
-							? () => dismissAgentSwitchFailure(agentSwitch.id)
-							: undefined
-					}
-					presentation={shownSwitchPresentation}
-				/>
-			) : null}
 		</div>
 	);
 });
-
-function ChatAgentSwitchStatus({
-	auxiliaryActive,
-	onDismiss,
-	presentation,
-}: {
-	auxiliaryActive: boolean;
-	onDismiss?: () => void;
-	presentation: AgentSwitchPresentation;
-}) {
-	const { t } = useTranslation();
-	const fullOverlay = presentation.lockAgentTerminal && !presentation.allowSourceInput && !auxiliaryActive;
-	const warning = presentation.outcome === "failure" || presentation.outcome === "recovery";
-	const success = presentation.outcome === "success";
-	const inProgress = presentation.outcome === "in_progress";
-	return (
-		<div
-			aria-busy={inProgress && presentation.animate ? true : undefined}
-			aria-live="polite"
-			className={cn(
-				"pointer-events-none z-20 flex",
-				fullOverlay
-					? "absolute inset-0 items-center justify-center bg-background/75 backdrop-blur-[1px]"
-					: "absolute inset-x-3 top-3 justify-center",
-			)}
-			data-outcome={presentation.outcome}
-			data-testid="chat-agent-switch-status"
-			role="status"
-		>
-			<div
-				className={cn(
-					"pointer-events-auto relative flex w-full max-w-lg items-start gap-3 rounded-lg border bg-surface/95 px-4 py-3 text-left shadow-lg",
-					onDismiss && "pr-11",
-					success
-						? "border-success/40"
-						: warning
-							? presentation.tone === "danger"
-								? "border-danger/40"
-								: "border-warning/40"
-							: "border-border",
-				)}
-			>
-				{success ? (
-					<CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
-				) : warning ? (
-					<AlertTriangle
-						aria-hidden="true"
-						className={cn(
-							"mt-0.5 size-4 shrink-0",
-							presentation.tone === "danger" ? "text-danger" : "text-warning",
-						)}
-					/>
-				) : (
-					<Loader2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 animate-spin text-status-working" />
-				)}
-				<div className="min-w-0 flex-1">
-					<strong className="block text-sm text-foreground">
-						{t(presentation.titleKey, presentation.values)}
-					</strong>
-					<p className="mt-0.5 text-pretty text-xs leading-relaxed text-muted-foreground">
-						{t(presentation.descriptionKey, presentation.values)}
-					</p>
-					{inProgress ? <AgentSwitchProgressTrack stage={presentation.stage} /> : null}
-				</div>
-				{onDismiss ? (
-					<button
-						aria-label={t("common.close")}
-						className="absolute right-2 top-2 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
-						onClick={onDismiss}
-						type="button"
-					>
-						<X aria-hidden="true" className="size-icon-sm" />
-					</button>
-				) : null}
-			</div>
-		</div>
-	);
-}
 
 function unavailableConversationSnapshot(session: WorkspaceSession): ConversationSnapshot {
 	return {
