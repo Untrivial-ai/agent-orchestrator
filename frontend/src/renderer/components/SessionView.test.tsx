@@ -918,7 +918,7 @@ describe("SessionView", () => {
 		);
 	});
 
-	it("keeps a Cloud reviewer terminal available to the session view", async () => {
+	it("opens a newly running Cloud reviewer terminal in the session view", async () => {
 		const session = workerSession("sess-2");
 		session.mode = "chat";
 		session.cloud = { orgId: "cloud-org" };
@@ -932,9 +932,7 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-2" />);
 
-		const reviewerButton = await screen.findByRole("button", { name: "Reviewer" });
-		fireEvent.click(reviewerButton);
-		expect(screen.getByTestId("terminal-target")).toHaveTextContent("reviewer");
+		await waitFor(() => expect(screen.getByTestId("terminal-target")).toHaveTextContent("reviewer"));
 	});
 
 	it("resumes a cloud session only after its detail view is opened", async () => {
