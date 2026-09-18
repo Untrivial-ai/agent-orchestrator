@@ -13,6 +13,7 @@ import (
 // interface handoff.
 type renderedSurface struct {
 	emulator *vt.SafeEmulator
+	titles   oscTitleFilter
 }
 
 func newRenderedSurface(cols, rows int) *renderedSurface {
@@ -27,7 +28,7 @@ func newRenderedSurface(cols, rows int) *renderedSurface {
 }
 
 func (s *renderedSurface) Write(p []byte) {
-	_, _ = s.emulator.Write(p)
+	_, _ = s.emulator.Write(s.titles.filter(p))
 }
 
 func (s *renderedSurface) Resize(cols, rows int) {
