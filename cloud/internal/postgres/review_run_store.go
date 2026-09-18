@@ -133,6 +133,7 @@ func (s *Store) OpenReviewTerminal(
 	if err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		inputPayload, err := json.Marshal(worker.TerminalCommand{
 			TerminalID: terminalID, Data: []byte(prompt + "\r"),
+			Review: true,
 		})
 		if err != nil {
 			return err
