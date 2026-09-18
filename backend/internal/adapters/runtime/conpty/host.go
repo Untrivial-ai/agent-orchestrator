@@ -23,6 +23,10 @@ const (
 	// probes, or every other viewer. Each client gets a bounded writer queue;
 	// filling it drops only that client and lets the terminal layer re-attach.
 	hostClientWriteBuffer = 256
+	// Host-generated terminal replies (see terminalQueryResponder) ride their own
+	// bounded queue so a PTY that stops accepting input can never stall the output
+	// pump. The burst a TUI sends at startup is well under this.
+	hostQueryReplyBuffer = 64
 )
 
 // ptyConn is the host's handle to the running agent's pseudo-terminal.
@@ -55,6 +59,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		cfg:       cfg,
 		clients:   make(map[net.Conn]*clientState),
 		surface:   newRenderedSurface(initialConPTYColumns, initialConPTYRows),
+		responder: &terminalQueryResponder{},
+		replies:   make(chan []byte, hostQueryReplyBuffer),
 		shutdownC: make(chan struct{}),
 	}
 	return h.run(ctx)
@@ -117,6 +123,12 @@ type host struct {
 	// = none applied yet). Guarded by mu; used to skip redundant resizes.
 	curCols, curRows int
 
+	// responder answers the terminal capability queries a TUI sends before it will
+	// draw, and replies carries those answers to a single writer goroutine. Only
+	// set by Serve; both are nil-tolerant so a hand-built host (tests) still works.
+	responder *terminalQueryResponder
+	replies   chan []byte
+
 	shutdownOnce sync.Once
 	shutdownC    chan struct{} // closed when Shutdown is called
 }
@@ -166,6 +178,8 @@ func (h *host) applyLargestLocked() {
 func (h *host) run(ctx context.Context) error {
 	// Pump PTY output to ring + broadcast.
 	go h.pumpPTY()
+	// Write host-generated terminal replies on their own goroutine.
+	go h.pumpReplies()
 
 	// Watch for ctx cancellation and trigger shutdown.
 	go func() {
@@ -235,6 +249,7 @@ func (h *host) pumpPTY() {
 			copy(chunk, buf[:n])
 			h.cfg.Ring.Append(chunk)
 			h.surface.Write(chunk)
+			h.answerTerminalQueries(chunk)
 			if frame, err := EncodeMessage(MsgTerminalData, chunk); err == nil {
 				h.broadcast(frame)
 			}
@@ -255,6 +270,64 @@ func (h *host) pumpPTY() {
 	h.broadcast(statusFrame(false, pid, &code))
 	// Keep-alive: do NOT shutdown here. The host stays up so clients can
 	// still connect and read scrollback.
+}
+
+// answerTerminalQueries replies to a terminal capability query in the child's
+// output, but only while no client is attached.
+//
+// The rule matters in both directions. With nothing attached, the host is the
+// only thing that can answer, and a TUI that waits for a reply never draws (Muse
+// Code exits 0 without painting anything). With a client attached, the client is
+// a terminal emulator and answers for itself — answering from both sides would
+// deliver two cursor-position reports for one query, and a stray report is the
+// classic source of phantom keystrokes in full-screen apps.
+func (h *host) answerTerminalQueries(chunk []byte) {
+	if h.responder == nil {
+		return
+	}
+	// Feed unconditionally: the responder carries fragments across reads, so its
+	// state must advance with the stream even while a client is answering.
+	replies := h.responder.Feed(chunk)
+	if len(replies) == 0 {
+		return
+	}
+	h.mu.Lock()
+	attached := len(h.clients) > 0
+	h.mu.Unlock()
+	if attached {
+		return
+	}
+	for _, reply := range replies {
+		h.queueReply(reply)
+	}
+}
+
+// queueReply hands a reply to the PTY writer. Dropping when the queue is full
+// keeps a PTY that has stopped accepting input from blocking the output pump;
+// the next query from the app is answered as usual.
+func (h *host) queueReply(reply []byte) {
+	if h.replies == nil {
+		return
+	}
+	select {
+	case h.replies <- reply:
+	default:
+	}
+}
+
+// pumpReplies is the only writer of host-generated replies, so replies cannot
+// interleave with each other, and the output pump never waits on a PTY write.
+func (h *host) pumpReplies() {
+	for {
+		select {
+		case <-h.shutdownC:
+			return
+		case reply := <-h.replies:
+			if _, err := h.cfg.PTY.Write(reply); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // broadcast queues msg to all connected clients. Socket writes happen only in
