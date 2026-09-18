@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -668,6 +669,55 @@ func TestReadinessCoordinatorUsesConfiguredRetryBackoff(t *testing.T) {
 		if gotDelay != wantDelay {
 			t.Fatalf("attempt %d retry delay = %s, want %s", attempt+1, gotDelay, wantDelay)
 		}
+	}
+}
+
+func TestLaunchReadinessDoesNotReuseDisplayAuthentication(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 14, 16, 30, 0, 0, time.UTC)
+	var purposes []domain.AgentReadinessPurpose
+	var mu sync.Mutex
+	agent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/codex", nil },
+		auth:    func(context.Context) (ports.AgentAuthStatus, error) { return ports.AgentAuthStatusAuthorized, nil },
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("codex", "Codex", agent)},
+		Now:    func() time.Time { return now },
+		AuthenticationCheck: func(_ context.Context, _ string, purpose domain.AgentReadinessPurpose) (domain.AgentAuthenticationObservation, bool) {
+			mu.Lock()
+			purposes = append(purposes, purpose)
+			mu.Unlock()
+			if purpose == domain.AgentReadinessPurposeDisplay {
+				return successfulAuthentication(now, domain.AgentAuthenticationAuthorized, domain.AgentReadinessReasonAuthorized, "display auth passed"), true
+			}
+			return failedAuthentication(now, domain.AgentReadinessReasonAuthCheckFailed, "launch auth failed"), true
+		},
+	})
+
+	display, err := coordinator.Ensure(context.Background(), []string{"codex"}, domain.AgentReadinessPurposeDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if display[0].EffectiveReadiness != domain.AgentReadinessReady {
+		t.Fatalf("display readiness = %#v, want ready", display[0])
+	}
+
+	launch, err := coordinator.Ensure(context.Background(), []string{"codex"}, domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	gotPurposes := append([]domain.AgentReadinessPurpose(nil), purposes...)
+	mu.Unlock()
+	if !reflect.DeepEqual(gotPurposes, []domain.AgentReadinessPurpose{domain.AgentReadinessPurposeDisplay, domain.AgentReadinessPurposeLaunch}) {
+		t.Fatalf("authentication purposes = %#v, want display then launch", gotPurposes)
+	}
+	if launch[0].Authentication.ReasonCode != domain.AgentReadinessReasonAuthCheckFailed {
+		t.Fatalf("launch authentication = %#v, want launch failure", launch[0].Authentication)
+	}
+	if launch[0].EffectiveReadiness == domain.AgentReadinessReady {
+		t.Fatalf("launch readiness = %#v, must fail closed after launch verification failure", launch[0])
 	}
 }
 

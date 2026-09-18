@@ -46,16 +46,17 @@ type doctorReport struct {
 }
 
 const (
-	doctorSectionCore           = "Core"
-	doctorSectionTools          = "Tools"
-	doctorSectionAgents         = "Agent harnesses"
-	doctorSectionGitHub         = "GitHub"
-	doctorSectionGitLab         = "GitLab"
-	minGitVersion               = "2.25.0"
-	githubDoctorUserAgent       = "ao-agent-orchestrator/doctor"
-	gitlabDoctorUserAgent       = "ao-agent-orchestrator/doctor"
-	defaultDoctorGitHubRESTBase = "https://api.github.com"
-	defaultDoctorGitLabRESTBase = "https://gitlab.com/api/v4"
+	doctorSectionCore                 = "Core"
+	doctorSectionTools                = "Tools"
+	doctorSectionAgents               = "Agent harnesses"
+	doctorSectionGitHub               = "GitHub"
+	doctorSectionGitLab               = "GitLab"
+	minGitVersion                     = "2.25.0"
+	githubDoctorUserAgent             = "ao-agent-orchestrator/doctor"
+	gitlabDoctorUserAgent             = "ao-agent-orchestrator/doctor"
+	defaultDoctorGitHubRESTBase       = "https://api.github.com"
+	defaultDoctorGitLabRESTBase       = "https://gitlab.com/api/v4"
+	doctorLargeDatabaseBytes    int64 = 1 << 30
 )
 
 type harnessProbe struct {
@@ -231,10 +232,13 @@ func checkStore(dataDir string) doctorCheck {
 	info, err := os.Stat(dbPath)
 	switch {
 	case err == nil:
-		return doctorCheck{
-			Level: doctorPass, Section: doctorSectionCore, Name: "sqlite",
-			Message: fmt.Sprintf("%s (%d bytes); migrations are applied by the daemon at startup", dbPath, info.Size()),
+		level := doctorPass
+		message := fmt.Sprintf("%s (%d bytes); migrations are applied by the daemon at startup", dbPath, info.Size())
+		if info.Size() >= doctorLargeDatabaseBytes {
+			level = doctorWarn
+			message += "; database is large, take a backup and review retention before it grows further"
 		}
+		return doctorCheck{Level: level, Section: doctorSectionCore, Name: "sqlite", Message: message}
 	case errors.Is(err, fs.ErrNotExist):
 		return doctorCheck{
 			Level: doctorWarn, Section: doctorSectionCore, Name: "sqlite",
