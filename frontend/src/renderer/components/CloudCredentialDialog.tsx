@@ -14,7 +14,7 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import type { CloudCpAgentProvider } from "../lib/cloud-cp";
+import type { CloudCpAgentProvider, CloudCpOrganization } from "../lib/cloud-cp";
 import {
 	centeredOnboardingDialogClass,
 	onboardingFieldErrorClass,
@@ -69,8 +69,8 @@ type Phase = "idle" | "submitting" | "success";
 // same PUT /orgs/{org}/provider-connections/agents/{agent}, in the app.
 export function CloudCredentialDialog() {
 	const { t } = useTranslation();
-	const { client, baseUrl } = useCloudCp();
-	const { org } = useCloudOrg();
+	const { client, baseUrl, ready } = useCloudCp();
+	const { org, refetch: refetchOrg } = useCloudOrg();
 	const queryClient = useQueryClient();
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
@@ -110,15 +110,28 @@ export function CloudCredentialDialog() {
 		setError(null);
 	};
 
-	const canSubmit = phase !== "submitting" && needsSecret && secret.trim() !== "" && org !== undefined;
+	// The org query can still be settling (or may have failed transiently) while
+	// the user is filling in the form. Do not leave Connect permanently disabled;
+	// submit retries the get-or-create request before writing the credential.
+	const canSubmit = phase !== "submitting" && needsSecret && secret.trim() !== "" && ready;
 	const busy = phase === "submitting";
 
 	const submit = async () => {
-		if (!canSubmit || org === undefined) return;
+		if (!canSubmit) return;
 		setPhase("submitting");
 		setError(null);
 		try {
-			const { providerConnection } = await client.putAgentConnection(org.id, agent, {
+			let targetOrg: CloudCpOrganization | undefined = org;
+			if (targetOrg === undefined) {
+				const result = await refetchOrg();
+				targetOrg = result.data;
+				if (targetOrg === undefined) {
+					setPhase("idle");
+					setError(t("cloudCredential.failed"));
+					return;
+				}
+			}
+			const { providerConnection } = await client.putAgentConnection(targetOrg.id, agent, {
 				credentialType,
 				secret: secret.trim(),
 			});
@@ -127,7 +140,7 @@ export function CloudCredentialDialog() {
 				setError(t("cloudCredential.invalid", { state: providerConnection.validationState }));
 				return;
 			}
-			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(org.id) });
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(targetOrg.id) });
 			setPhase("success");
 			setSecret("");
 		} catch (err) {
