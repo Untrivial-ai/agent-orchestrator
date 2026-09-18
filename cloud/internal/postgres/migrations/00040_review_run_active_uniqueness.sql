@@ -4,9 +4,9 @@
 -- running reviews unique so cancellation and startup failures can be retried
 -- for the same pull-request commit.
 ALTER TABLE ao_review_runs
-    DROP CONSTRAINT ao_review_runs_pull_request_id_target_sha_key;
+    DROP CONSTRAINT IF EXISTS ao_review_runs_pull_request_id_target_sha_key;
 
-CREATE UNIQUE INDEX ao_review_runs_active_pull_request_sha_idx
+CREATE UNIQUE INDEX IF NOT EXISTS ao_review_runs_active_pull_request_sha_idx
     ON ao_review_runs (pull_request_id, target_sha)
     WHERE status = 'running';
 
