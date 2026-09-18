@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"runtime"
 	"testing"
+	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -14,6 +16,71 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestControllerReadyReleasesActiveTurn(t *testing.T) {
+	conv := &conversation{
+		sessionID:  "session-1",
+		activeTurn: "turn-1",
+		events:     make(chan ports.ChatEvent),
+		log:        slog.New(slog.DiscardHandler),
+	}
+	done := make(chan struct{})
+	go func() {
+		conv.finishPrompt("turn-1", acpsdk.PromptResponse{
+			StopReason: acpsdk.StopReasonEndTurn,
+			Meta:       map[string]any{persistenthost.ACPEventIDMetaKey: "terminal-event-1"},
+		}, nil)
+		close(done)
+	}()
+
+	account := nextEvent(t, conv.Events())
+	if account.Kind != ports.ChatEventAccountChanged {
+		t.Fatalf("first event = %#v, want account recovery", account)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		conv.mu.Lock()
+		if conv.terminalEventID == "terminal-event-1" {
+			break
+		}
+		conv.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for terminal event correlation")
+		}
+		runtime.Gosched()
+	}
+	completed := nextEvent(t, conv.Events())
+	if completed.Kind != ports.ChatEventTurnCompleted {
+		conv.mu.Unlock()
+		t.Fatalf("second event = %#v, want turn completion", completed)
+	}
+	readyEvents := make(chan ports.ChatEvent, 1)
+	go func() { readyEvents <- <-conv.Events() }()
+	select {
+	case ready := <-readyEvents:
+		active := conv.activeTurn
+		conv.mu.Unlock()
+		if ready.Kind == ports.ChatEventControllerState && ready.ControllerState == ports.ChatControllerReady && active != "" {
+			t.Fatalf("ControllerReady emitted while activeTurn = %q", active)
+		}
+	case <-time.After(20 * time.Millisecond):
+		// The turn-state transition is correctly waiting for the mutex, so Ready
+		// cannot be observable until activeTurn has been released.
+		conv.mu.Unlock()
+		select {
+		case ready := <-readyEvents:
+			if ready.Kind != ports.ChatEventControllerState || ready.ControllerState != ports.ChatControllerReady {
+				t.Fatalf("third event = %#v, want controller ready", ready)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for ControllerReady")
+		}
+	}
+	if _, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{Text: "next"}); err != nil {
+		t.Fatalf("SendTurn after ControllerReady: %v", err)
+	}
+	<-done
+}
 
 func TestACPDriverPromptResponseFailure(t *testing.T) {
 	for _, tc := range []struct {
