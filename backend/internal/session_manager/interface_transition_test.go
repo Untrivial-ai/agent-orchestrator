@@ -13,6 +13,7 @@ import (
 	"time"
 
 	codexagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	cursoragent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -3002,6 +3003,31 @@ func TestInterfaceTransitionRequiresExplicitAdapterCapability(t *testing.T) {
 	}
 	if len(store.transitions) != 0 || runtime.destroyed != 0 || chat.start.ProviderConversationID != "" {
 		t.Fatal("unsupported handoff mutated session or controllers")
+	}
+}
+
+func TestCursorInterfaceTransitionRejectsUnverifiedHistoryBeforeTouchingControllers(t *testing.T) {
+	for _, mode := range []domain.SessionMode{domain.SessionModeTUI, domain.SessionModeChat} {
+		t.Run(string(mode), func(t *testing.T) {
+			manager, store, _, _, log := newTransitionManager(t, mode)
+			manager.agents = singleAgent{agent: cursoragent.New()}
+			rec := store.sessions["session-1"]
+			rec.Harness = domain.HarnessCursor
+			store.sessions["session-1"] = rec
+
+			status, err := manager.InterfaceTransitionStatus(context.Background(), rec.ID)
+			if err != nil || status.Supported || status.ReasonCode != "INTERFACE_HANDOFF_UNSUPPORTED" {
+				t.Fatalf("status=%+v err=%v; want unsupported Cursor handoff", status, err)
+			}
+			_, err = manager.StartInterfaceTransition(context.Background(), rec.ID, oppositeSessionMode(mode),
+				domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+			if !errors.Is(err, ErrInterfaceHandoffUnsupported) {
+				t.Fatalf("start error=%v; want ErrInterfaceHandoffUnsupported", err)
+			}
+			if len(store.transitions) != 0 || len(*log) != 0 || store.sessions[rec.ID].Mode != mode {
+				t.Fatalf("unsupported Cursor handoff touched ownership: transitions=%v log=%v mode=%v", store.transitions, *log, store.sessions[rec.ID].Mode)
+			}
+		})
 	}
 }
 

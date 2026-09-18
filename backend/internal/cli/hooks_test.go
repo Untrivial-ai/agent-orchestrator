@@ -826,7 +826,7 @@ func TestHooks_CursorDoesNotReportUnverifiedConversationFacts(t *testing.T) {
 			if capture.hits != 1 || req.Event != tt.event || req.LaunchID != "launch-1" {
 				t.Fatalf("ordinary activity reporting changed: hits=%d request=%+v", capture.hits, req)
 			}
-			if req.ProviderTurnID != "" || req.SubmissionID != "" || req.LatestUserPrompt != "" ||
+			if req.AgentSessionID != "" || req.ProviderTurnID != "" || req.SubmissionID != "" || req.LatestUserPrompt != "" ||
 				req.LatestAssistantUpdate != "" || req.TranscriptPath != "" || req.ConversationCheckpointOrigin != "" {
 				t.Fatalf("Cursor reported unverified conversation facts: %+v", req)
 			}
@@ -834,6 +834,68 @@ func TestHooks_CursorDoesNotReportUnverifiedConversationFacts(t *testing.T) {
 				t.Fatalf("Cursor emitted unverified submission context: %q", stdout)
 			}
 		})
+	}
+}
+
+func TestHooks_CursorResumeIdentityRequiresMainSessionStart(t *testing.T) {
+	const mainStart = `{"conversation_id":"cursor-native-1","generation_id":"cursor-native-1","model":"model","is_background_agent":false,"composer_mode":"agent"}`
+	for _, review := range []bool{false, true} {
+		for _, tt := range []struct {
+			name, event, payload, wantID string
+		}{
+			{"main session start", "session-start", mainStart, "cursor-native-1"},
+			{"stop cannot replace identity", "stop", mainStart, ""},
+			{"submission cannot replace identity", "user-prompt-submit", mainStart, ""},
+			{"tool cannot replace identity", "after-shell-execution", mainStart, ""},
+			{"shell permission cannot replace identity", "before-shell-execution", mainStart, ""},
+			{"MCP permission cannot replace identity", "before-mcp-execution", mainStart, ""},
+			{"subagent session start", "session-start", strings.TrimSuffix(mainStart, "}") + `,"agent_id":"child"}`, ""},
+			{"subagent alias", "session-start", strings.TrimSuffix(mainStart, "}") + `,"subagent_id":"child"}`, ""},
+			{"parent identity", "session-start", strings.TrimSuffix(mainStart, "}") + `,"parent_agent_id":"parent"}`, ""},
+			{"background session", "session-start", strings.Replace(mainStart, `false`, `true`, 1), ""},
+			{"missing foreground proof", "session-start", `{"conversation_id":"cursor-native-1","generation_id":"cursor-native-1"}`, ""},
+			{"different generation", "session-start", strings.Replace(mainStart, `"generation_id":"cursor-native-1"`, `"generation_id":"foreign"`, 1), ""},
+			{"foreign session id", "session-start", strings.TrimSuffix(mainStart, "}") + `,"session_id":"foreign"}`, ""},
+			{"foreign conversation alias", "session-start", strings.Replace(mainStart, `"conversation_id"`, `"conversationId"`, 1), ""},
+			{"control characters", "session-start", strings.ReplaceAll(mainStart, `cursor-native-1`, `cursor\u001b[0m`), ""},
+			{"oversized identity", "session-start", strings.ReplaceAll(mainStart, `cursor-native-1`, strings.Repeat("a", 257)), ""},
+			{"malformed boundary", "session-start", mainStart + `{`, ""},
+		} {
+			name := tt.name
+			if review {
+				name = "review/" + name
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Setenv("AO_SESSION_ID", "ao-7")
+				t.Setenv("AO_REVIEW_SESSION_ID", "")
+				t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-1")
+				t.Setenv("AO_PERMISSION_MODE", "auto")
+				wantPath := "/api/v1/sessions/ao-7/activity"
+				if review {
+					t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
+					wantPath = "/api/v1/reviews/review-7/activity"
+				}
+				cfg := setConfigEnv(t)
+				srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+				writeRunFileFor(t, cfg, srv)
+				_, _, err := executeCLI(t, Deps{
+					In: strings.NewReader(tt.payload), ProcessAlive: func(int) bool { return true },
+				}, "hooks", "cursor", tt.event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if capture.hits == 0 && tt.wantID == "" {
+					return // Metadata-only hooks may have no remaining activity to send.
+				}
+				var request setActivityAPIRequest
+				if err := json.Unmarshal([]byte(capture.body), &request); err != nil {
+					t.Fatal(err)
+				}
+				if capture.hits != 1 || capture.path != wantPath || request.LaunchID != "launch-1" || request.AgentSessionID != tt.wantID {
+					t.Fatalf("hits=%d path=%q request=%+v; want path=%q native ID=%q", capture.hits, capture.path, request, wantPath, tt.wantID)
+				}
+			})
+		}
 	}
 }
 

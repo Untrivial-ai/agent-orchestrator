@@ -8,29 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// NativeConversationID bridges Cursor's terminal resume id and ACP
-// conversation id. A TUI source must have reported its native id through the
-// AO-owned hook metadata; Chat supplies the id returned by Cursor ACP.
-func (p *Plugin) NativeConversationID(
-	ctx context.Context,
-	session ports.SessionRef,
-	currentMode domain.SessionMode,
-	providerConversationID string,
-) (string, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return "", false, err
-	}
-	if currentMode == domain.SessionModeChat {
-		id := strings.TrimSpace(providerConversationID)
-		return id, id != "", nil
-	}
-	id := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
-	return id, id != "", nil
-}
+// Cursor deliberately does not implement AgentInterfaceHandoff. Its citation
+// transcript drops native message/generation IDs, including from turn-ended
+// markers, so file existence cannot prove that TUI history matches ACP session/load.
+// Keep the owned location probe separate from the capability until a native
+// checkpoint verifier and identity-based history reconciliation are available.
 
 // NativeConversationExists reports whether Cursor has persisted exactly one
 // non-empty transcript for id beneath the AO-owned CURSOR_DATA_DIR. It does not

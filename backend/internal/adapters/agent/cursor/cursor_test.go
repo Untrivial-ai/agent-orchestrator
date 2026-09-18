@@ -11,84 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
-
-func TestNativeConversationIDUsesModeSpecificCursorIdentity(t *testing.T) {
-	plugin := &Plugin{}
-	tests := []struct {
-		name                   string
-		session                ports.SessionRef
-		mode                   domain.SessionMode
-		providerConversationID string
-		wantID                 string
-		wantOK                 bool
-	}{
-		{
-			name: "chat uses provider conversation id",
-			session: ports.SessionRef{
-				ID:       "ao-session-1",
-				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "stale-tui-id"},
-			},
-			mode:                   domain.SessionModeChat,
-			providerConversationID: "  cursor-chat-1  ",
-			wantID:                 "cursor-chat-1",
-			wantOK:                 true,
-		},
-		{
-			name: "TUI uses captured agent session id",
-			session: ports.SessionRef{
-				ID:       "ao-session-1",
-				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "  cursor-native-1  "},
-			},
-			mode:                   domain.SessionModeTUI,
-			providerConversationID: "ignored-chat-id",
-			wantID:                 "cursor-native-1",
-			wantOK:                 true,
-		},
-		{
-			name:                   "blank chat provider id",
-			mode:                   domain.SessionModeChat,
-			providerConversationID: "  ",
-		},
-		{
-			name: "TUI does not fall back to AO or provider id",
-			session: ports.SessionRef{
-				ID:       "ao-session-1",
-				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "  "},
-			},
-			mode:                   domain.SessionModeTUI,
-			providerConversationID: "cursor-chat-1",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotID, gotOK, err := plugin.NativeConversationID(
-				context.Background(), tt.session, tt.mode, tt.providerConversationID,
-			)
-			if err != nil {
-				t.Fatalf("NativeConversationID: %v", err)
-			}
-			if gotID != tt.wantID || gotOK != tt.wantOK {
-				t.Fatalf("NativeConversationID = (%q, %v), want (%q, %v)", gotID, gotOK, tt.wantID, tt.wantOK)
-			}
-		})
-	}
-}
-
-func TestNativeConversationIDHonorsContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, _, err := (&Plugin{}).NativeConversationID(ctx, ports.SessionRef{
-		Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "cursor-native-1"},
-	}, domain.SessionModeTUI, "")
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("NativeConversationID error = %v, want context.Canceled", err)
-	}
-}
 
 func TestCursorNativeHistoryRequiresExactlyOneOwnedTranscript(t *testing.T) {
 	plugin := &Plugin{}
