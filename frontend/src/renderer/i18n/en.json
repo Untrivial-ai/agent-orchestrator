@@ -1589,6 +1589,8 @@
 	"terminal.renameHintDoubleClick": "{{workingDir}} (double-click to rename)",
 	"terminal.renameHintRightClick": "{{workingDir}} (right-click to rename)",
 	"terminal.reviewer": "Reviewer",
+	"terminal.reviewCompleted": "Review completed",
+	"terminal.reviewerCompleted": "Review completed and posted to the pull request.",
 	"terminal.scrollTabsLeft": "Scroll tabs left",
 	"terminal.scrollTabsRight": "Scroll tabs right",
 	"terminal.search": "Search terminal",

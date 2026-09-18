@@ -160,6 +160,7 @@ function createFakeTerminal(): FakeTerminal {
 function setup({
 	coverInitialReplay = true,
 	waitForInitialOutput = false,
+	exitNotice,
 	daemonReady = true,
 	attachedSession = session as WorkspaceSession | undefined,
 	isVisible = true,
@@ -186,6 +187,7 @@ function setup({
 			useTerminalSession(attachedSession, {
 				coverInitialReplay,
 				waitForInitialOutput,
+				exitNotice,
 				daemonReady: ready,
 				createMux,
 				inputDisabled: blocked,
@@ -821,6 +823,13 @@ describe("useTerminalSession", () => {
 		expect(terminal.lines.some((line) => line.includes("[process exited]"))).toBe(true);
 		expect(muxes[0].disposed).toBe(true);
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
+	});
+
+	it("uses a contextual exit notice for intentionally short-lived terminals", () => {
+		const { terminal, muxes } = setup({ exitNotice: "[reviewer terminal finished]" });
+		act(() => muxes[0].emitExit("handle-1"));
+		expect(terminal.lines).toContain("[reviewer terminal finished]");
+		expect(terminal.lines.some((line) => line.includes("[process exited]"))).toBe(false);
 	});
 
 	it("reconnects when a merged terminated session is restored with the same terminal handle", () => {

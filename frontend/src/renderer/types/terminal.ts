@@ -5,6 +5,8 @@ export type TerminalTarget =
 			handleId: string;
 			harness: string;
 			sessionId: string;
+			/** Durable Cloud review state for this exact dedicated terminal. */
+			reviewStatus?: "running" | "complete" | "delivered" | "failed" | "cancelled";
 	  }
 	// A standalone shell the user opened by hand — no agent session behind it,
 	// so unlike "worker" and "reviewer" it carries its own handle and never

@@ -62,9 +62,10 @@ import {
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
+import { useCloudCp } from "../hooks/useCloudCp";
 import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { cloudLifecycleStage, type CloudLifecycleStage } from "../lib/cloud-lifecycle";
-import { useCloudCp } from "../hooks/useCloudCp";
+import type { CloudCpAOReviewRun, CloudCpSessionReviewState } from "../lib/cloud-cp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
@@ -275,6 +276,13 @@ function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTa
 	if (!handleId) return undefined;
 	const latest = data?.reviews?.find((review) => review.latestRun)?.latestRun;
 	return { handleId, harness: data?.reviewerHarness || latest?.harness || "codex" };
+}
+
+function cloudReviewRunForTerminal(
+	data: CloudCpSessionReviewState | undefined,
+	terminalID: string,
+): CloudCpAOReviewRun | undefined {
+	return data?.runs.find((run) => run.reviewerTerminalId === terminalID);
 }
 
 type SessionViewProps = {
@@ -863,7 +871,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			  }
 			: undefined
 		: reviewerTerminalFromReviews(reviewerQuery.data);
-	const reviewerTerminal = session && sessionIsActive(session) ? availableReviewerTerminal : undefined;
+	const retainedCloudReviewerTerminal =
+		session?.cloud && terminalTarget.kind === "reviewer"
+			? cloudReviewRunForTerminal(cloudReviewerQuery.data, terminalTarget.handleId)
+				? { handleId: terminalTarget.handleId, harness: terminalTarget.harness }
+				: undefined
+			: undefined;
+	const reviewerTerminal = session && sessionIsActive(session)
+		? availableReviewerTerminal ?? retainedCloudReviewerTerminal
+		: undefined;
 
 	// Shell terminals opened inside a session live beside its pane as extra tabs,
 	// scoped to the session on screen so each session has its own shell set.
@@ -1164,11 +1180,21 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		setTerminalTarget((current) =>
 			current.kind === "reviewer" &&
 			(session?.cloud ? cloudReviewerQuery.isFetched : reviewerQuery.isFetched) &&
-			(!availableReviewerTerminal || availableReviewerTerminal.handleId !== current.handleId)
+			(!availableReviewerTerminal || availableReviewerTerminal.handleId !== current.handleId) &&
+			!(session?.cloud && cloudReviewRunForTerminal(cloudReviewerQuery.data, current.handleId))
 				? { kind: "worker" }
 				: current,
 		);
-	}, [availableReviewerTerminal, cloudReviewerQuery.isFetched, reviewerQuery.isFetched, session?.cloud]);
+	}, [availableReviewerTerminal, cloudReviewerQuery.data, cloudReviewerQuery.isFetched, reviewerQuery.isFetched, session?.cloud]);
+	useEffect(() => {
+		if (!session?.cloud) return;
+		setTerminalTarget((current) => {
+			if (current.kind !== "reviewer") return current;
+			const run = cloudReviewRunForTerminal(cloudReviewerQuery.data, current.handleId);
+			if (!run || current.reviewStatus === run.status) return current;
+			return { ...current, reviewStatus: run.status };
+		});
+	}, [cloudReviewerQuery.data, session?.cloud]);
 	// A Cloud trigger can replace a previously ended reviewer with a new terminal
 	// while the inspector remains mounted. Make that replacement visible even if
 	// the trigger response raced the inspector callback: the shared Cloud review
