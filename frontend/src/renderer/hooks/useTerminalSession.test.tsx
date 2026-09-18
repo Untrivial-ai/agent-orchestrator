@@ -157,6 +157,16 @@ function createFakeTerminal(): FakeTerminal {
 	return terminal;
 }
 
+type SetupOptions = {
+	coverInitialReplay?: boolean;
+	waitForInitialOutput?: boolean;
+	exitNotice?: string;
+	daemonReady?: boolean;
+	attachedSession?: WorkspaceSession;
+	isVisible?: boolean;
+	inputDisabled?: boolean;
+};
+
 function setup({
 	coverInitialReplay = true,
 	waitForInitialOutput = false,
@@ -165,7 +175,7 @@ function setup({
 	attachedSession = session as WorkspaceSession | undefined,
 	isVisible = true,
 	inputDisabled = false,
-} = {}) {
+}: SetupOptions = {}) {
 	const muxes: FakeMux[] = [];
 	const createMux = () => {
 		const fake = createFakeMux();
