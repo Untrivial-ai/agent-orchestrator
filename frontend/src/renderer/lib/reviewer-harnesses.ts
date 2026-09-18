@@ -1,4 +1,10 @@
+import { queryOptions } from "@tanstack/react-query";
 import type { components } from "../../api/schema";
+import { apiClient, apiErrorMessage } from "./api-client";
+import { usesPreviewWorkspaceData as usePreviewData } from "./preview-mode";
+import { agentLabel } from "./agent-options";
+
+export type ReviewerHarnessInfo = components["schemas"]["ReviewerHarnessInfo"];
 
 // Reviewers are a narrower vocabulary than worker agents on purpose: a
 // reviewer-only tool must not become a valid worker, and the daemon rejects
@@ -42,4 +48,22 @@ export const KNOWN_REVIEWER_HARNESS_IDS: ReadonlySet<string> = new Set(REVIEWER_
 
 export function toReviewerHarnessId(value?: string): ReviewerHarnessId | undefined {
 	return value && KNOWN_REVIEWER_HARNESS_IDS.has(value) ? (value as ReviewerHarnessId) : undefined;
+}
+
+export function reviewerCatalogQueryOptions() {
+	return queryOptions({
+		queryKey: ["reviewer-catalog"] as const,
+		queryFn: async (): Promise<ReviewerHarnessInfo[]> => {
+			if (usePreviewData) {
+				return [...KNOWN_REVIEWER_HARNESS_IDS].map((id) => ({
+					id: id as ReviewerHarnessInfo["id"],
+					label: agentLabel(id),
+				}));
+			}
+			const { data, error } = await apiClient.GET("/api/v1/reviewers");
+			if (error) throw new Error(apiErrorMessage(error, "Unable to load reviewer catalog"));
+			return data?.reviewers ?? [];
+		},
+		staleTime: 60_000,
+	});
 }
