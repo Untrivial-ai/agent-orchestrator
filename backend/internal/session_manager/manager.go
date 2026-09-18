@@ -23,6 +23,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	promptbuilder "github.com/aoagents/agent-orchestrator/backend/internal/session_manager/prompt"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
@@ -428,62 +429,15 @@ type Manager struct {
 	statusRecoveryRevision         uint64
 	statusRecoveries               map[domain.SessionID]statusRecovery
 	statusVerificationLimit        time.Duration
-	agentOpMu                      sync.Mutex
-	agentOperations                map[domain.SessionID]agentOperationKind
 	interfaceRecoveryMu            sync.Mutex
 	deferredInterfaceRecovery      map[domain.SessionID]string
-	// switchDecisionInput opens a narrow human-only terminal lane while the
-	// source is blocked on permission during a mandatory switch.
-	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
-	// retainedSwitches marks switch gates intentionally kept closed after an
-	// ambiguous external side effect (for example a target runtime that could
-	// not be removed). A later reconciliation pass may reclaim exactly these
-	// gates; an actively-running switch remains non-reentrant.
-	retainedSwitches map[domain.SessionID]struct{}
-	inputLeases      map[domain.SessionID]int
-	inputDrained     map[domain.SessionID]chan struct{}
-	// handoffWait bounds optional source-agent enrichment. Time spent waiting
-	// for a human permission decision is paused and charged only against the
-	// separate switchPermissionDecisionWait budget below.
-	handoffWait time.Duration
-	// switchPermissionDecisionWait is a separate human-response budget used only
-	// while the source agent is blocked on a permission prompt. The semantic
-	// handoff budget is paused while this budget is active.
-	switchPermissionDecisionWait time.Duration
-	// switchTargetStartWait bounds proof that the newly-created supervised
-	// provider generation is actually alive before durable ownership transfers.
-	switchTargetStartWait time.Duration
-	// switchPostStopWait bounds aggregate target setup after source ownership is
-	// conclusively stopped. Tests shorten it to exercise phase-budget isolation.
-	switchPostStopWait time.Duration
-	// switchDeliveryAckWait bounds the target generation's prompt-submit hook.
-	// Timeout is an explicit failed/ambiguous delivery, never implicit success.
-	switchDeliveryAckWait time.Duration
-	// backgroundContext owns asynchronous agent-switch execution independently
-	// of the admitting request. The daemon cancels it before waiting for workers.
-	backgroundContext        context.Context
-	agentSwitchWorkers       sync.WaitGroup
-	agentSwitchWorkerMu      sync.Mutex
-	agentSwitchWorkersClosed bool
 
-	transitionMu sync.Mutex
-	transitions  map[domain.SessionID]*interfaceTransitionRun
-	// transitionDeliveryWake drives the durable transition-message outbox. A
-	// daemon-lifetime worker is started by Reconcile; terminal transition paths
-	// also make one immediate delivery attempt so tests and in-process callers do
-	// not depend on the boot worker.
-	transitionDeliveryMu        sync.Mutex
-	transitionDeliveryRunning   bool
-	transitionDeliveryWake      chan struct{}
-	transitionDeliveryAttemptMu sync.Mutex
-	// sendConfirm bounds the best-effort post-send confirmation that the session
-	// actually became active (the agent accepted the prompt). New fills in the
-	// sendConfirm* defaults; tests in this package shrink the timings directly.
-	sendConfirm sendConfirmConfig
-	// interfaceTransition bounds only contradictory stale-idle proof. Turns and
-	// user-paced waits reported through the activity boundary remain unbounded.
-	interfaceTransition interfaceTransitionConfig
-	logger              *slog.Logger
+	// Saga execution state, grouped by owner (see state.go). The groups are
+	// embedded so existing m.<field> selectors keep working via promotion.
+	sagaOperationState
+	switchExecutionState
+	transitionExecutionState
+	logger *slog.Logger
 
 	// shellTerminalsMu guards shellTerminals: it is late-bound (see
 	// ShellTerminalCloser) after Manager already exists, so a setter mutates it
@@ -759,34 +713,11 @@ func New(d Deps) *Manager {
 		executable:                     d.Executable,
 		newLaunchID:                    d.NewLaunchID,
 		codexOperationGate:             defaultCodexOperationGate(d.CodexOperationGate),
-		backgroundContext:              d.BackgroundContext,
 		startupBackgroundReconcileDone: make(chan struct{}),
-		agentOperations:                make(map[domain.SessionID]agentOperationKind),
-		switchDecisionInput:            make(map[domain.SessionID]domain.AgentSwitchID),
-		retainedSwitches:               make(map[domain.SessionID]struct{}),
-		inputLeases:                    make(map[domain.SessionID]int),
-		inputDrained:                   make(map[domain.SessionID]chan struct{}),
-		handoffWait:                    90 * time.Second,
-		switchPermissionDecisionWait:   time.Minute,
-		switchTargetStartWait:          3 * time.Second,
-		switchPostStopWait:             switchPostStopWait,
-		// Provider startup, including slow MCP initialization, can delay the
-		// prompt-submit hook even though the continuation is correctly buffered.
-		// Leave enough headroom to avoid a false delivery failure.
-		switchDeliveryAckWait:  150 * time.Second,
-		transitions:            make(map[domain.SessionID]*interfaceTransitionRun),
-		transitionDeliveryWake: make(chan struct{}, 1),
-		sendConfirm: sendConfirmConfig{
-			pollInterval:    sendConfirmPollInterval,
-			attemptDeadline: sendConfirmAttemptDeadline,
-			maxAttempts:     sendConfirmMaxAttempts,
-		},
-		interfaceTransition: interfaceTransitionConfig{
-			pollInterval:   interfaceTransitionPoll,
-			idleSettle:     interfaceTransitionIdleSettle,
-			staleIdleLimit: interfaceTransitionStaleIdleLimit,
-		},
-		logger: d.Logger,
+		sagaOperationState:             newSagaOperationState(),
+		switchExecutionState:           newSwitchExecutionState(d.BackgroundContext),
+		transitionExecutionState:       newTransitionExecutionState(),
+		logger:                         d.Logger,
 	}
 	if m.clock == nil {
 		// UTC so spawn-stamped CreatedAt/UpdatedAt match every other session
@@ -4036,7 +3967,7 @@ func isDefaultDevDataDir(dataDir string) bool {
 }
 
 func buildPrompt(cfg ports.SpawnConfig) string {
-	return buildTaskPrompt(taskPromptConfig{
+	return promptbuilder.BuildTaskPrompt(promptbuilder.TaskConfig{
 		Role:         promptRoleForKind(cfg.Kind),
 		Prompt:       cfg.Prompt,
 		IssueID:      string(cfg.IssueID),
@@ -4044,18 +3975,18 @@ func buildPrompt(cfg ports.SpawnConfig) string {
 	})
 }
 
-func promptRoleForKind(kind domain.SessionKind) sessionPromptRole {
+func promptRoleForKind(kind domain.SessionKind) promptbuilder.Role {
 	switch kind {
 	case domain.KindOrchestrator:
-		return sessionPromptRoleOrchestrator
+		return promptbuilder.RoleOrchestrator
 	case domain.KindWorker:
-		return sessionPromptRoleWorker
+		return promptbuilder.RoleWorker
 	default:
 		return ""
 	}
 }
 
-func promptProjectContext(projectID domain.ProjectID, project domain.ProjectRecord) promptProject {
+func promptProjectContext(projectID domain.ProjectID, project domain.ProjectRecord) promptbuilder.Project {
 	cfg := project.Config.WithDefaults()
 	if project.Kind.WithDefault() == domain.ProjectKindScratch || cfg.DefaultBranch == domain.DefaultBranchAuto {
 		cfg.DefaultBranch = ""
@@ -4064,7 +3995,7 @@ func promptProjectContext(projectID domain.ProjectID, project domain.ProjectReco
 	if strings.TrimSpace(id) == "" {
 		id = string(projectID)
 	}
-	return promptProject{
+	return promptbuilder.Project{
 		ID:            id,
 		Name:          project.DisplayName,
 		Repo:          project.RepoOriginURL,
@@ -4174,7 +4105,7 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 	if err != nil {
 		return "", err
 	}
-	cfg := systemPromptConfig{
+	cfg := promptbuilder.SystemConfig{
 		Role:       promptRoleForKind(kind),
 		Standalone: projectID == "",
 		Project:    promptProjectContext(projectID, project),
@@ -4193,7 +4124,7 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 				cfg.OrchestratorSessionID = string(orchestratorID)
 			}
 		}
-		rules, err := buildProjectRules(projectRulesConfig{
+		rules, err := promptbuilder.BuildProjectRules(promptbuilder.ProjectRulesConfig{
 			ProjectPath:    project.Path,
 			AgentRules:     project.Config.AgentRules,
 			AgentRulesFile: project.Config.AgentRulesFile,
@@ -4218,7 +4149,7 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 	if pointer := strings.TrimSpace(m.aoSkillPointer()); pointer != "" {
 		cfg.AdditionalSections = append(cfg.AdditionalSections, pointer)
 	}
-	return buildSystemPromptText(cfg), nil
+	return promptbuilder.BuildSystemPromptText(cfg), nil
 }
 
 // aoSkillPointer is appended to every agent system prompt. It points the agent
