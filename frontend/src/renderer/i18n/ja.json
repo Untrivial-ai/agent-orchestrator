@@ -678,6 +678,8 @@
 	"notify.retryUnresolved": "未解決通知の読み込みを再試行",
 	"notify.workspaceLoadFailed": "セッションを読み込めませんでした。復元とオープンが利用できない可能性があります。",
 	"pr.botSuffix": "{{name}} bot",
+	"pr.aoReply": "{{name}} からの AO の返信・作業として送信されません",
+	"pr.aoReplyTitle": "この返信は参考情報として表示され、レビュー作業としてワーカーには送信されません。",
 	"pr.card.changesRequested": "変更がリクエストされました",
 	"pr.card.checksFailing": "チェックに失敗",
 	"pr.card.checksLoading": "マージ可否を確認中",
