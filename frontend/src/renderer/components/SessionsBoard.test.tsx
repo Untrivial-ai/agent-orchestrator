@@ -37,6 +37,7 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	workspaceQueryKey: ["workspaces"],
+	cloudSessionsQueryKey: ["cloud-sessions"],
 	useWorkspaceQuery: workspaceQueryMock,
 	useWorkspaceScope: (projectId?: string) => {
 		const query = workspaceQueryMock();

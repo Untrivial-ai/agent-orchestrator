@@ -16,10 +16,18 @@ def load_secret(path: str) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--nodeops", required=True)
+    provider = parser.add_mutually_exclusive_group(required=True)
+    provider.add_argument("--nodeops")
+    provider.add_argument("--coder")
     parser.add_argument("--worker", required=True)
     args = parser.parse_args()
-    validate_hosted_settings(load_secret(args.nodeops), load_secret(args.worker))
+    provider_name = "coder" if args.coder else "nodeops"
+    provider_path = args.coder or args.nodeops
+    validate_hosted_settings(
+        load_secret(provider_path),
+        load_secret(args.worker),
+        provider=provider_name,
+    )
 
 
 if __name__ == "__main__":

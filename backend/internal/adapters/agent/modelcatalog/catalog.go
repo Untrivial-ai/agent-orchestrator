@@ -287,7 +287,10 @@ func discoverCodexCatalog(ctx context.Context, request ports.AgentModelDiscovery
 		if prefix, _, ok := strings.Cut(id, "/"); ok {
 			provider = prefix
 		}
-		normalized = append(normalized, ports.AgentModelInfo{ID: id, Label: label, Provider: provider, IsDefault: item.Default})
+		normalized = append(normalized, ports.AgentModelInfo{
+			ID: id, Label: label, Provider: provider, IsDefault: item.Default,
+			Efforts: append([]string(nil), item.Efforts...), DefaultEffort: item.DefaultEffort,
+		})
 	}
 	if len(normalized) == 0 {
 		return base, errors.New("codex model discovery returned no models")

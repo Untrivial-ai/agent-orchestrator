@@ -32,10 +32,12 @@ import {
 	type InterfaceSwitchRecheck,
 	mobileInterfaceTransitionIsActive,
 	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 	useInterfaceTransition,
 } from "./useInterfaceTransition";
 import { terminalInterfaceFailureRecovery } from "./terminalInterfaceRecovery";
 import { adjustTerminalViewport } from "./terminalViewport";
+import type { RouteSession } from "./sessionRoute";
 
 const FONT_SIZE = 12;
 
@@ -550,7 +552,13 @@ function terminalInterfacePhaseLabel(phase?: string): string {
 	}
 }
 
-export default function TerminalScreen() {
+/**
+ * `session` is what the route resolved when the board's lists do not hold this
+ * id (see `sessionRouteView`); the lists still win whenever they have it, since
+ * they are refreshed on every poll. A session from that lookup is not refreshed.
+ * The shell route passes nothing.
+ */
+export default function TerminalScreen({ session: resolved }: { session?: RouteSession }) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const styles = useThemedStyles(makeStyles);
@@ -620,7 +628,10 @@ export default function TerminalScreen() {
 	const previewWebRef = useRef<WebView>(null);
 
 	const { sessions, orchestrators, restore, refresh, config: activeConfig } = useApp();
-	const known = sessions.find((s) => s.id === sessionId) ?? orchestrators.find((o) => o.id === sessionId) ?? null;
+	const known =
+		sessions.find((s) => s.id === sessionId) ??
+		orchestrators.find((o) => o.id === sessionId) ??
+		(!shellOnly && resolved?.id === sessionId ? resolved : null);
 	// Runtime handles are opaque. Native macOS PTYs are versioned (ptyhost-v1:),
 	// so using the session id here would incorrectly route the attach to legacy
 	// tmux. Older daemons omit terminalHandleId and retain the historical
@@ -648,6 +659,7 @@ export default function TerminalScreen() {
 	const interfaceStatusRef = useRef(interfaceSwitch.status);
 	interfaceStatusRef.current = interfaceSwitch.status;
 	const interfaceTransitionActive = mobileInterfaceTransitionIsActive(interfaceSwitch.transition);
+	const interfaceRecoveryMessage = mobileInterfaceTransitionRecoveryMessage(interfaceSwitch.transition);
 	const interfaceTransitionNotice =
 		!interfaceTransitionActive &&
 		!interfaceSwitch.transition?.noticeAcknowledgedAt &&
@@ -1415,9 +1427,9 @@ export default function TerminalScreen() {
 				{interfaceTransitionActive ? (
 					<View style={styles.interfaceOverlay}>
 						<View style={styles.interfaceCard}>
-							<Feather name="repeat" size={22} color={t.blue} />
-							<Text style={styles.interfaceTitle}>Switching to Chat</Text>
-							<Text style={styles.interfaceCopy}>{terminalInterfacePhaseLabel(interfaceSwitch.transition?.phase)}</Text>
+							<Feather name={interfaceRecoveryMessage ? "alert-triangle" : "repeat"} size={22} color={t.blue} />
+							<Text style={styles.interfaceTitle}>{interfaceRecoveryMessage ? "Interface recovery blocked" : "Switching to Chat"}</Text>
+							<Text style={styles.interfaceCopy}>{interfaceRecoveryMessage || terminalInterfacePhaseLabel(interfaceSwitch.transition?.phase)}</Text>
 							{mobileInterfaceTransitionIsCancellable(interfaceSwitch.transition) ? (
 								<Pressable
 									disabled={interfaceSwitch.cancelling}
@@ -1428,7 +1440,7 @@ export default function TerminalScreen() {
 								</Pressable>
 							) : null}
 							{interfaceSwitch.error ? <Text style={styles.interfaceError}>{interfaceSwitch.error}</Text> : null}
-							{interfaceSwitch.fetchFailed ? (
+							{interfaceSwitch.fetchFailed || interfaceRecoveryMessage ? (
 								<Pressable
 									disabled={rechecking}
 									onPress={() => void retryInterfaceCheck()}

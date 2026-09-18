@@ -37,7 +37,7 @@ describe("clone repository input", () => {
 		window.ao!.app.checkGitRepository = vi.fn().mockResolvedValue(true);
 		window.ao!.app.chooseDirectory = vi.fn();
 		const { props, view } = renderCloneDialog();
-		const input = screen.getByRole("textbox", { name: "Destination folder" });
+		const input = screen.getByRole("textbox", { name: "Clone into" });
 		fireEvent.click(input);
 		fireEvent.change(input, { target: { value: "/Projects/new folder" } });
 		expect(window.ao!.app.chooseDirectory).not.toHaveBeenCalled();
@@ -70,7 +70,7 @@ describe("clone repository input", () => {
 	it("describes the destination consistently and shows the exact checkout path", () => {
 		renderCloneDialog();
 
-		expect(screen.getByText("Destination folder")).toBeInTheDocument();
+		expect(screen.getByText("Clone into")).toBeInTheDocument();
 		expect(screen.getByText("Repository will be created at /code/web-app.")).toBeInTheDocument();
 		expect(screen.queryByText(/parent folder/i)).not.toBeInTheDocument();
 	});

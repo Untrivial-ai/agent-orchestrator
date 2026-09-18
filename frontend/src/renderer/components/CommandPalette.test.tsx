@@ -724,7 +724,7 @@ describe("CommandPalette PR and review actions", () => {
 	it("triggers a review for the PR's session and closes", async () => {
 		mockReviews([reviewState("needs_review")]);
 		await openPaletteWithQuery("review");
-		fireEvent.click(await screen.findByText("Re-review PR #7"));
+		fireEvent.click(await screen.findByText("Review latest commit #7"));
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
 				params: { path: { sessionId: "w-merge" } },

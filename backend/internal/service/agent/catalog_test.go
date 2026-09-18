@@ -54,6 +54,12 @@ type startupPresenceAgent struct {
 	authCalls          *atomic.Int32
 }
 
+type identityPendingAgent struct {
+	fakeAgent
+	normalResolveCalls *atomic.Int32
+	presenceCalls      *atomic.Int32
+}
+
 type mutableInstallAgent struct {
 	fakeAgent
 	installed atomic.Bool
@@ -316,6 +322,16 @@ func (f startupPresenceAgent) AuthStatus(context.Context) (ports.AgentAuthStatus
 	return ports.AgentAuthStatusAuthorized, nil
 }
 
+func (f identityPendingAgent) ResolveBinary(ctx context.Context) (string, error) {
+	f.normalResolveCalls.Add(1)
+	return f.fakeAgent.ResolveBinary(ctx)
+}
+
+func (f identityPendingAgent) ResolveBinaryPresence(context.Context) (string, error) {
+	f.presenceCalls.Add(1)
+	return "", ports.ErrAgentBinaryIdentityUnknown
+}
+
 func TestListReturnsInitialSupportedInventoryWithoutProbing(t *testing.T) {
 	probed := false
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
@@ -402,6 +418,88 @@ func TestFindInstalledBinaryUsesPresenceResolverWithoutAuthOrNormalResolution(t 
 	}
 	if got := authCalls.Load(); got != 0 {
 		t.Fatalf("auth calls = %d, want 0", got)
+	}
+}
+
+func TestFindInstalledBinaryKeepsNameOnlyGooseMatchUnknown(t *testing.T) {
+	var normalResolveCalls atomic.Int32
+	var presenceCalls atomic.Int32
+	svc := NewWithAgents([]agentregistry.HarnessAgent{{
+		Harness:  domain.AgentHarness("goose"),
+		Manifest: adapters.Manifest{ID: "goose", Name: "Goose"},
+		Agent: identityPendingAgent{
+			fakeAgent:          fakeAgent{err: ports.ErrAgentBinaryNotFound},
+			normalResolveCalls: &normalResolveCalls,
+			presenceCalls:      &presenceCalls,
+		},
+	}})
+
+	if _, ok := svc.FindInstalledBinary(context.Background()); ok {
+		t.Fatal("FindInstalledBinary() treated an unverified name match as installed")
+	}
+	if got := presenceCalls.Load(); got != 1 {
+		t.Fatalf("startup presence calls = %d, want 1", got)
+	}
+	if got := normalResolveCalls.Load(); got != 0 {
+		t.Fatalf("startup normal resolution calls = %d, want 0", got)
+	}
+
+	readiness, err := svc.CachedReadiness(context.Background())
+	if err != nil {
+		t.Fatalf("CachedReadiness: %v", err)
+	}
+	installation := readiness.Agents[0].Installation
+	if installation.State != domain.AgentInstallationUnknown || installation.ReasonCode != domain.AgentReadinessReasonInstallIdentityPending {
+		t.Fatalf("startup installation = %#v, want identity-pending unknown", installation)
+	}
+
+	inventory, err := svc.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got := normalResolveCalls.Load(); got != 1 {
+		t.Fatalf("fresh normal resolution calls = %d, want 1", got)
+	}
+	if len(inventory.Installed) != 0 {
+		t.Fatalf("Pressly-only inventory Installed = %#v, want empty", inventory.Installed)
+	}
+}
+
+func TestPresslyGooseDoesNotSatisfyStartupOrFreshInventory(t *testing.T) {
+	var normalResolveCalls atomic.Int32
+	var presenceCalls atomic.Int32
+	// The Goose adapter's help-level Pressly classification is covered in its
+	// own tests. Inject the resulting identity-unknown observation here so this
+	// service contract cannot inspect host-wide fallback paths.
+	pressly := identityPendingAgent{
+		fakeAgent:          fakeAgent{err: ports.ErrAgentBinaryNotFound},
+		normalResolveCalls: &normalResolveCalls,
+		presenceCalls:      &presenceCalls,
+	}
+	svc := NewWithAgents([]agentregistry.HarnessAgent{{
+		Harness:  domain.AgentHarness("goose"),
+		Manifest: adapters.Manifest{ID: "goose", Name: "Goose"},
+		Agent:    pressly,
+	}})
+	if _, ok := svc.FindInstalledBinary(context.Background()); ok {
+		t.Fatal("Pressly-only PATH match satisfied the process-free startup check")
+	}
+	if got := presenceCalls.Load(); got != 1 {
+		t.Fatalf("startup presence calls = %d, want 1", got)
+	}
+	if got := normalResolveCalls.Load(); got != 0 {
+		t.Fatalf("startup normal resolution calls = %d, want 0", got)
+	}
+
+	inventory, err := svc.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got := normalResolveCalls.Load(); got != 1 {
+		t.Fatalf("fresh normal resolution calls = %d, want 1", got)
+	}
+	if len(inventory.Installed) != 0 {
+		t.Fatalf("Pressly-only fresh inventory Installed = %#v, want empty", inventory.Installed)
 	}
 }
 
@@ -856,15 +954,15 @@ func TestModelsRediscoversWhenBinaryVersionChanges(t *testing.T) {
 func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	agent := &blockingResolverAgent{started: make(chan struct{}), release: make(chan struct{})}
 	svc := newService([]agentregistry.HarnessAgent{{
-		Harness:  domain.AgentHarness("codex"),
-		Manifest: adapters.Manifest{ID: "codex", Name: "Codex"},
+		Harness:  domain.AgentHarness("muse"),
+		Manifest: adapters.Manifest{ID: "muse", Name: "Muse"},
 		Agent:    agent,
 	}}, nil, nil, successfulModelDiscoverer())
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderErr := make(chan error, 1)
 	go func() {
-		_, err := svc.Models(leaderCtx, "codex", "proj-1", true)
+		_, err := svc.Models(leaderCtx, "muse", "proj-1", true)
 		leaderErr <- err
 	}()
 	<-agent.started
@@ -872,7 +970,7 @@ func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	waiterResult := make(chan ports.AgentModelCatalog, 1)
 	waiterErr := make(chan error, 1)
 	go func() {
-		catalog, err := svc.Models(context.Background(), "codex", "proj-1", true)
+		catalog, err := svc.Models(context.Background(), "muse", "proj-1", true)
 		waiterResult <- catalog
 		waiterErr <- err
 	}()
@@ -884,7 +982,7 @@ func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	if err := <-waiterErr; err != nil {
 		t.Fatalf("coalesced waiter: %v", err)
 	}
-	if got := <-waiterResult; got.AgentID != "codex" || len(got.Models) == 0 {
+	if got := <-waiterResult; got.AgentID != "muse" || len(got.Models) == 0 {
 		t.Fatalf("coalesced waiter catalog = %#v", got)
 	}
 }

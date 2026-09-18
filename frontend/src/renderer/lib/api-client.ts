@@ -80,7 +80,7 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/agents/codex/accounts/login-operations/{operationId}/verify",
 	"/api/v1/agents/codex/accounts/login-operations/{operationId}/cancel",
 	"/api/v1/agents/codex/account-switches",
-	"/api/v1/agents/codex/account-switches/{switchId}/recover",
+	"/api/v1/agents/codex/account-switches/{switchId}",
 	"/api/v1/agents/{agent}/models",
 	"/api/v1/agents/{agent}/models/refresh",
 	"/api/v1/agents/{agent}/probe",

@@ -12,6 +12,8 @@ import {
 	CLOUD_PROJECT_KIND,
 	isOrchestratorSession,
 	sessionIsActive,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
 	type WorkspaceSession,
 } from "../types/workspace";
 import { useWorkspaceScope } from "../hooks/useWorkspaceQuery";
@@ -80,9 +82,6 @@ export function ShellTopbar({
 	const navigate = useNavigate();
 	const params = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
 	const currentSessionId = params.sessionId;
-	const isInspectorOpen = useUiStore((state) =>
-		currentSessionId ? (state.inspectorSessions[currentSessionId]?.isOpen ?? true) : false,
-	);
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const isFullScreen = useWindowFullScreen();
 	const prefersReducedMotion = useReducedMotion();
@@ -111,6 +110,9 @@ export function ShellTopbar({
 	const session = workspaceScope?.session;
 	const isSessionRoute = Boolean(params.sessionId);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
+	const isInspectorOpen = useUiStore((state) =>
+		currentSessionId ? (state.inspectorSessions[currentSessionId]?.isOpen ?? !isOrchestrator) : false,
+	);
 	// Project in scope: the session's workspace wins over the route param so the
 	// cross-project /sessions/$sessionId route still resolves a crumb. A
 	// projectId that no longer resolves (stale route after the project was
@@ -122,7 +124,14 @@ export function ShellTopbar({
 	const project = workspaceScope?.project;
 	const projectLabel = project?.name ?? session?.workspaceName ?? (projectId ? "" : t("shell.board"));
 	const orchestrator = workspaceScope?.orchestrator;
-	const projectActions = useProjectOrchestratorAction({ projectId, project, orchestrator, source: "topbar", sessionId: currentSessionId });
+	const supportsProjectActions = project?.kind !== STANDALONE_PROJECT_KIND && projectId !== STANDALONE_WORKSPACE_ID;
+	const projectActions = useProjectOrchestratorAction({
+		projectId: supportsProjectActions ? projectId : undefined,
+		project: supportsProjectActions ? project : undefined,
+		orchestrator: supportsProjectActions ? orchestrator : undefined,
+		source: "topbar",
+		sessionId: currentSessionId,
+	});
 	const { isSpawning, isProjectRestarting, isProvisioning, openNewTask, openOrchestrator } = projectActions;
 	const { showProjectEmpty } = useBoardPresentation({
 		projectId,
@@ -276,13 +285,17 @@ export function ShellTopbar({
 												});
 												return;
 											}
+											if (workspaceId === STANDALONE_WORKSPACE_ID) {
+												void navigate({ to: "/" });
+												return;
+											}
 											void navigate({ to: "/projects/$projectId", params: { projectId: workspaceId } });
 										}}
 									/>
 								) : null}
 							</div>
 						) : null}
-						{!isOrchestrator ? (
+						{!isOrchestrator && supportsProjectActions ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<span className="inline-flex" style={noDragStyle}>
@@ -304,7 +317,7 @@ export function ShellTopbar({
 						) : null}
 					</>
 				) : null}
-				{isSessionRoute && !isOrchestrator ? (
+				{isSessionRoute ? (
 					/* The pinned controls are owned by SessionView so they stay at the
 					   window's right edge. Reserve their width only when the rail is closed. */
 					<div
@@ -363,6 +376,10 @@ export function TopbarKillButton({
 									disabled={isPending}
 									onClick={() => {
 										clearTerminateSessionState(queryClient, session.id);
+										// Force the confirm open rather than letting the trigger toggle
+										// it: a second trash tap would otherwise dismiss the dialog, so
+										// the delete "needed" several clicks to land on the Yes button.
+										setConfirmOpen(true);
 									}}
 									variant="killIcon"
 								>

@@ -13,13 +13,16 @@ import { nativeImage } from "electron";
 import { randomUUID } from "node:crypto";
 import type {
 	BrowserAnnotationCancelPayload,
+	BrowserAnnotationActionInput,
+	BrowserAnnotationCompleteInput,
 	BrowserAnnotationContext,
-	BrowserAnnotationDraft,
+	BrowserAnnotationDiscardInput,
 	BrowserAnnotationModeInput,
 	BrowserAnnotationPageCancelPayload,
 	BrowserAnnotationPageSubmitPayload,
-	BrowserAnnotationSelection,
+	BrowserAnnotationSession,
 	BrowserAnnotationSnapshot,
+	BrowserAnnotationStatePayload,
 	BrowserAnnotationSubmitPayload,
 } from "../shared/browser-annotations";
 import {
@@ -60,20 +63,23 @@ function isValidAnnotationContext(value: unknown): value is BrowserAnnotationCon
 	return true;
 }
 
-function isValidAnnotationSelection(value: unknown): value is BrowserAnnotationSelection {
-	if (typeof value !== "object" || value === null) return false;
-	const selection = value as { kind?: unknown; context?: unknown; contexts?: unknown };
-	if (selection.kind === "element") {
-		return isValidAnnotationContext(selection.context);
-	}
-	if (selection.kind === "elements") {
-		return (
-			Array.isArray(selection.contexts) &&
-			selection.contexts.length > 0 &&
-			selection.contexts.every(isValidAnnotationContext)
-		);
-	}
-	return false;
+function isValidAnnotationSession(value: unknown): value is BrowserAnnotationSession {
+	if (!value || typeof value !== "object") return false;
+	const session = value as Partial<BrowserAnnotationSession>;
+	if (session.version !== 1 || !session.page || typeof session.page.url !== "string") return false;
+	if (!Array.isArray(session.annotations) || !Array.isArray(session.screenshots)) return false;
+	return session.annotations.every((annotation) =>
+		Boolean(
+			annotation &&
+				typeof annotation.id === "string" &&
+				typeof annotation.number === "number" &&
+				(annotation.kind === "comment" || annotation.kind === "adjustment") &&
+				typeof annotation.body === "string" &&
+				annotation.target &&
+				isValidAnnotationContext(annotation.target.context) &&
+				Array.isArray(annotation.adjustments),
+		),
+	);
 }
 
 export type BrowserRect = Pick<Rectangle, "x" | "y" | "width" | "height">;
@@ -146,6 +152,11 @@ type BrowserNavigateInput = {
 type BrowserHistorySuggestInput = {
 	viewId: string;
 	query: string;
+};
+
+type BrowserHistoryFaviconInput = {
+	viewId: string;
+	url: string;
 };
 
 type BrowserTabInput = {
@@ -340,11 +351,10 @@ export type BrowserViewHost = {
 	clearProfileData: (profileId: BrowserProfileId) => Promise<void>;
 	// Whether browser-owned UI was the most recently used application surface.
 	isLastUsedBrowser: () => boolean;
-	// Same "identical bounds are a no-op, so nudge and restore" trick
-	// window-composition.ts uses for the shell's own stale-surface bug, applied
-	// to the live page's own view. Call right after raising the transparent
-	// shell for an overlay (see the caller in main.ts) — see the comment above
-	// this method's implementation for why the live view needs it too.
+	// Refresh the live page after raising the transparent shell for an overlay.
+	// Hide immediately, then restore visibility with the bounds nudge on the next
+	// tick — a same-turn hide/show can coalesce into a no-op on macOS and leave
+	// the page blank for the whole overlay lifetime.
 	refreshLastFocusedPanelSurface: () => void;
 };
 
@@ -355,7 +365,8 @@ type BrowserEntry = {
 	ready: Promise<void>;
 	state: BrowserNavState;
 	annotationEnabled: boolean;
-	annotationDraft: BrowserAnnotationDraft | null;
+	annotationSessions: Map<string, { session: BrowserAnnotationSession; token: string }>;
+	annotationTheme?: BrowserAnnotationModeInput["theme"];
 	networkCapture?: BrowserNetworkCapture;
 	favicon?: string;
 	// URL of the favicon currently applied to `favicon` (fetch succeeded).
@@ -477,6 +488,7 @@ const MAX_BROWSER_SIGNALS = MAX_NETWORK_REQUESTS;
 const MAX_BROWSER_SIGNAL_BYTES = 16 * 1024;
 const FAVICON_SIZE = 32;
 const MAX_FAVICON_BYTES = 256 * 1024;
+const FAVICON_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_NATIVE_DEVTOOLS_PLACEMENT: BrowserDevToolsPlacement = "right";
 const MAX_EXTERNAL_TEXT_BYTES = 1 << 20;
 // Annotation submit must never feel laggy: capture is best-effort and bounded
@@ -549,6 +561,7 @@ export function scaleBoundsForZoom(rect: BrowserRect, zoomFactor: number): Brows
 
 export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserViewHost {
 	const entries = new Map<string, BrowserSessionEntry>();
+	const historyFaviconCache = new WeakMap<Session, Map<string, Promise<string | undefined>>>();
 	const signalWatchers = new Map<
 		BrowserElectronSession,
 		{ viewIds: Set<string>; webRequest: BrowserElectronSession["webRequest"] }
@@ -560,13 +573,19 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const tabsByWebContentsId = new Map<number, BrowserEntry>();
 	const ipcDisposers: Array<() => void> = [];
 	let disposePromise: Promise<void> | null = null;
-	// viewId of the panel that most recently held focus; cleared when it is hidden or destroyed.
+	// viewId of the panel that most recently held native focus; cleared when the
+	// native surface is hidden or destroyed (menu Edit/DevTools targeting).
 	let lastFocusedViewId: string | null = null;
 	// Separate from native focus: the address bar and tab strip live in the shell
-	// renderer, but browser shortcuts must continue to target their panel.
+	// renderer, but browser shortcuts must continue to target their panel. Do NOT
+	// clear this when the native page is merely hidden (blank tab / measure blip) —
+	// that is exactly when ⌘T/⌘W must keep creating/closing browser tabs instead
+	// of falling through to new/close terminal.
 	let lastUsedViewId: string | null = null;
-	const forgetIfFocused = (viewId: string): void => {
+	const forgetNativeFocus = (viewId: string): void => {
 		if (lastFocusedViewId === viewId) lastFocusedViewId = null;
+	};
+	const forgetBrowserShortcutTarget = (viewId: string): void => {
 		if (lastUsedViewId === viewId) lastUsedViewId = null;
 	};
 	const setAgentBrowserActivity = (
@@ -677,7 +696,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			ready: Promise.resolve(),
 			state,
 			annotationEnabled: false,
-			annotationDraft: null,
+			annotationSessions: new Map(),
 		};
 		session.tabs.set(tabId, entry);
 		tabsByWebContentsId.set(view.webContents.id, entry);
@@ -1113,14 +1132,29 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (!tab) throw browserError("TAB_NOT_FOUND", `Browser tab ${tabId} does not exist`);
 		const closedTab = tabResult(tab, false);
 		const wasActive = tabId === session.activeTabId;
+		// Activate the replacement BEFORE destroying the closed view. Destroying
+		// the focused view first leaves OS focus in limbo until the async close
+		// resolves — a second ⌘W in that window bypasses every before-input-event
+		// handler and hits the menu's Close item, killing the app window.
+		const nextTabId = wasActive ? [...session.tabs.keys()].filter((id) => id !== tabId).at(-1)! : undefined;
+		if (nextTabId) activateTab(session, nextTabId, false);
 		disposeNetworkCapture(tab, "tab-closed");
 		if (session.networkTabId === tabId) session.networkTabId = undefined;
 		session.tabs.delete(tabId);
 		tabsByWebContentsId.delete(tab.view.webContents.id);
 		destroyTabView(tab);
-		if (wasActive) {
-			const nextTabId = [...session.tabs.keys()].at(-1)!;
-			activateTab(session, nextTabId, false);
+		if (wasActive && nextTabId) {
+			const replacement = session.tabs.get(nextTabId);
+			if (replacement) {
+				lastUsedViewId = session.viewId;
+				lastFocusedViewId = session.viewId;
+				if (isBlankBrowserEntry(replacement)) {
+					focusLocation(session);
+				} else {
+					applySessionBounds(session, replacement);
+					replacement.view.webContents.focus();
+				}
+			}
 		}
 		const state = listTabs(session, { kind: "closed", tabId, tab: closedTab });
 		shellContents(options).send("browser:tabsState", state);
@@ -1170,7 +1204,13 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 
 	const focusLocation = (session: BrowserSessionEntry): void => {
 		lastUsedViewId = session.viewId;
-		shellWebContents.focus();
+		if (typeof shellWebContents.isFocused === "function") {
+			if (!shellWebContents.isFocused()) {
+				shellWebContents.focus();
+			}
+		} else {
+			shellWebContents.focus();
+		}
 		shellWebContents.send("browser:focusLocation", session.viewId);
 	};
 	const reopenClosedTab = (session: BrowserSessionEntry): void => {
@@ -1182,12 +1222,15 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		isNativePage: boolean,
 	): void {
 		contents.on("before-input-event", (event, input) => {
-			if (input.type !== "keyDown" || input.isAutoRepeat || options.isKeybindingRecording?.()) return;
+			if (input.type !== "keyDown" || options.isKeybindingRecording?.()) return;
 			const action = browserShortcutAction(input, Boolean(options.isMac));
 			if (!action) return;
 			const session = getSession();
 			if (!session) return;
 			event.preventDefault();
+			// Consume repeats without re-firing: a held ⌘W must not fall through
+			// to the menu's Close item and kill the app window.
+			if (input.isAutoRepeat) return;
 			lastUsedViewId = session.viewId;
 			if (action === "focus-location") {
 				focusLocation(session);
@@ -1198,7 +1241,14 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				return;
 			}
 			if (action === "new-tab") {
-				void openUserTab(session).then(() => focusLocation(session)).catch(() => undefined);
+				void openUserTab(session)
+					.then(() => {
+						// Blank tabs have no page to focus; omnibox is correct. Keep the
+						// browser shortcut target so a second ⌘T cannot open a terminal.
+						lastUsedViewId = session.viewId;
+						focusLocation(session);
+					})
+					.catch(() => undefined);
 				return;
 			}
 			if (action === "reopen-tab") {
@@ -1206,13 +1256,22 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				return;
 			}
 			const closingTabId = session.activeTabId;
-			void closeUserTab(session, closingTabId)
-				.then(() => {
-					if (isNativePage && session.tabs.has(session.activeTabId)) {
-						activeEntry(session).view.webContents.focus();
-					}
-				})
-				.catch(() => undefined);
+			if (isNativePage && session.tabs.size > 1) {
+				// The focused view is about to be destroyed asynchronously. Move OS
+				// focus to its replacement synchronously — making it visible first
+				// so the focus sticks — or a fast second ⌘W lands in focus limbo
+				// and hits the menu's Close item, killing the app window.
+				const replacementId = [...session.tabs.keys()].filter((id) => id !== closingTabId).at(-1);
+				const replacement = replacementId ? session.tabs.get(replacementId) : undefined;
+				if (replacement) {
+					lastUsedViewId = session.viewId;
+					lastFocusedViewId = session.viewId;
+					applySessionBounds(session, replacement);
+					if (isBlankBrowserEntry(replacement)) focusLocation(session);
+					else replacement.view.webContents.focus();
+				}
+			}
+			void closeUserTab(session, closingTabId).catch(() => undefined);
 		});
 	}
 
@@ -1421,7 +1480,9 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			session.bounds = OFFSCREEN_BOUNDS;
 			session.visible = false;
 			if (!session.profileSwitching && session.tabs.size > 0) applySessionBounds(session, activeEntry(session));
-			forgetIfFocused(viewId);
+			// Hiding the native surface (blank tab, transient measure) must not drop
+			// the browser shortcut target — the panel chrome is still the context.
+			forgetNativeFocus(viewId);
 			return;
 		}
 		// The renderer measures the slot in page-zoomed CSS pixels, while
@@ -1456,7 +1517,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (!isAllowedBrowserURL(normalized.href, options.rendererOrigin)) {
 			throw new Error("Unsupported browser URL");
 		}
-		if (!entry.annotationDraft || !isSameAnnotationPage(annotationDraftURL(entry.annotationDraft), normalized.href)) {
+		if (!isSameAnnotationPage(entry.view.webContents.getURL(), normalized.href)) {
 			cancelAnnotation(options, entry, "navigation");
 		}
 		try {
@@ -1488,7 +1549,8 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			session.visible = false;
 			session.bounds = OFFSCREEN_BOUNDS;
 			applySessionBounds(session, entry);
-			forgetIfFocused(viewId);
+			forgetNativeFocus(viewId);
+			forgetBrowserShortcutTarget(viewId);
 			entry.ready = entry.view.webContents.loadURL("about:blank");
 			await entry.ready;
 			entry.view.webContents.clearHistory();
@@ -1537,7 +1599,8 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		entries.delete(viewId);
 		viewIdsBySessionId.delete(session.sessionId);
 		rendererOwnersByViewId.delete(viewId);
-		forgetIfFocused(viewId);
+		forgetNativeFocus(viewId);
+		forgetBrowserShortcutTarget(viewId);
 		// When the window is already gone (dispose fired from mainWindow "closed"),
 		// Electron has torn down contentView and the child WebContentsViews. Touching
 		// them throws "Object has been destroyed", so just drop our reference.
@@ -1805,23 +1868,26 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 
 	const setAnnotationMode = (event: IpcMainInvokeEvent, input: BrowserAnnotationModeInput): void => {
 		if (!isRendererOwned(event, input.viewId)) return;
-		const session = entries.get(input.viewId);
-		if (!session) return;
-		assertProfileStable(session);
-		const entry = activeEntry(session);
+		const browserSession = entries.get(input.viewId);
+		if (!browserSession) return;
+		assertProfileStable(browserSession);
+		const entry = activeEntry(browserSession);
 		entry.annotationEnabled = input.enabled;
-		if (!input.enabled) entry.annotationDraft = null;
+		if (input.theme) entry.annotationTheme = input.theme;
+		const annotationSession = annotationSessionFor(entry);
 		entry.view.webContents.send("browser:annotation:setMode", {
 			enabled: input.enabled,
-			...(input.enabled && entry.annotationDraft ? { draft: entry.annotationDraft } : {}),
+			...(annotationSession ? { session: annotationSession } : {}),
+			...(entry.annotationTheme ? { theme: entry.annotationTheme } : {}),
 		});
 		if (input.enabled) entry.view.webContents.focus();
 	};
 
-	const updateAnnotationDraft = (event: IpcMainEvent, draft: BrowserAnnotationDraft | undefined): void => {
+	const updateAnnotationState = (event: IpcMainEvent, annotationSession: BrowserAnnotationSession | undefined): void => {
 		const entry = tabsByWebContentsId.get(event.sender.id);
-		if (!entry?.annotationEnabled || !isValidAnnotationDraft(draft)) return;
-		entry.annotationDraft = draft;
+		if (!entry || !isValidAnnotationSession(annotationSession)) return;
+		storeAnnotationSession(entry, annotationSession);
+		pushAnnotationState(options, entry, annotationSession);
 	};
 
 	const forwardAnnotationSubmit = async (
@@ -1830,32 +1896,30 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	): Promise<void> => {
 		const entry = tabsByWebContentsId.get(event.sender.id);
 		const viewId = entry?.state.viewId;
-		if (
-			!viewId ||
-			!entry ||
-			!payload ||
-			typeof payload.instruction !== "string" ||
-			!isValidAnnotationSelection(payload.selection)
-		) {
-			return;
-		}
-		const session = entries.get(viewId);
-		if (!session || session.profileSwitching || session.tabs.get(entry.tabId) !== entry) return;
-		await withBrowserOperation(session, async () => {
+		if (!viewId || !entry || !payload || !isValidAnnotationSession(payload.session)) return;
+		const browserSession = entries.get(viewId);
+		if (!browserSession || browserSession.profileSwitching || browserSession.tabs.get(entry.tabId) !== entry) return;
+		const { pageKey, token: sessionToken } = storeAnnotationSession(entry, payload.session);
+		await withBrowserOperation(browserSession, async () => {
 			entry.annotationEnabled = false;
-			entry.annotationDraft = null;
 			// Captured now, before returning: the preload only tears down the
 			// highlight overlay after this handler resolves, so the frame we grab
 			// here still has the selection ring(s) on it and not the prompt box
 			// (the preload hides that synchronously before invoking).
 			const snapshot = await captureAnnotationSnapshot(entry);
-			if (entries.get(viewId) !== session || session.tabs.get(entry.tabId) !== entry || session.profileSwitching) {
+			if (
+				entries.get(viewId) !== browserSession ||
+				browserSession.tabs.get(entry.tabId) !== entry ||
+				browserSession.profileSwitching
+			) {
 				return;
 			}
 			const forwarded: BrowserAnnotationSubmitPayload = {
 				viewId,
-				instruction: payload.instruction,
-				selection: payload.selection,
+				tabId: entry.tabId,
+				pageKey,
+				sessionToken,
+				session: payload.session,
 				...(snapshot ? { snapshot } : {}),
 			};
 			shellWebContents.send("browser:annotation:submitted", forwarded);
@@ -1870,12 +1934,64 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const viewId = entry?.state.viewId;
 		if (!viewId || !entry) return;
 		entry.annotationEnabled = false;
-		entry.annotationDraft = null;
 		const forwarded: BrowserAnnotationCancelPayload = {
 			viewId,
 			reason: payload?.reason ?? "cancel",
 		};
 		shellWebContents.send("browser:annotation:canceled", forwarded);
+	};
+
+	const captureAnnotation = (event: IpcMainInvokeEvent): Promise<BrowserAnnotationSnapshot | undefined> => {
+		const entry = tabsByWebContentsId.get(event.sender.id);
+		return entry ? captureAnnotationSnapshot(entry) : Promise.resolve(undefined);
+	};
+
+	const discardAnnotationSession = (entry: BrowserEntry): void => {
+		entry.annotationSessions.delete(annotationPageKey(entry.view.webContents.getURL()));
+		entry.view.webContents.send("browser:annotation:setMode", {
+			enabled: entry.annotationEnabled,
+			...(entry.annotationTheme ? { theme: entry.annotationTheme } : {}),
+		});
+		pushAnnotationState(options, entry);
+	};
+
+	const discardAnnotationFromPage = (event: IpcMainEvent): void => {
+		const entry = tabsByWebContentsId.get(event.sender.id);
+		if (entry) discardAnnotationSession(entry);
+	};
+
+	const completeAnnotation = (event: IpcMainInvokeEvent, input: BrowserAnnotationCompleteInput): void => {
+		if (!isRendererOwned(event, input.viewId)) return;
+		const browserSession = entries.get(input.viewId);
+		if (!browserSession) return;
+		const entry = browserSession.tabs.get(input.tabId);
+		if (!entry) return;
+		const stored = entry.annotationSessions.get(input.pageKey);
+		if (!stored || stored.token !== input.sessionToken) return;
+		entry.annotationEnabled = false;
+		if (input.success) entry.annotationSessions.delete(input.pageKey);
+		if (activeEntry(browserSession) !== entry) return;
+		entry.view.webContents.send("browser:annotation:setMode", {
+			enabled: false,
+			...(annotationSessionFor(entry) ? { session: annotationSessionFor(entry) } : {}),
+			...(entry.annotationTheme ? { theme: entry.annotationTheme } : {}),
+		});
+		pushAnnotationState(options, entry);
+	};
+
+	const discardAnnotationFromShell = (event: IpcMainInvokeEvent, input: BrowserAnnotationDiscardInput): void => {
+		if (!isRendererOwned(event, input.viewId)) return;
+		const browserSession = entries.get(input.viewId);
+		if (browserSession) discardAnnotationSession(activeEntry(browserSession));
+	};
+
+	const forwardAnnotationAction = (event: IpcMainInvokeEvent, input: BrowserAnnotationActionInput): void => {
+		if (!isRendererOwned(event, input.viewId)) return;
+		const browserSession = entries.get(input.viewId);
+		if (!browserSession) return;
+		const entry = activeEntry(browserSession);
+		if (!entry.annotationEnabled) return;
+		entry.view.webContents.send("browser:annotation:action", input.action);
 	};
 
 	const handle = <Args extends unknown[], Result>(
@@ -1915,6 +2031,34 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const profileId = entries.get(input.viewId)?.profileId;
 		if (!profileId || !options.browserHistoryStore) return [];
 		return options.browserHistoryStore.suggest(profileId, input.query);
+	});
+	handle("browser:history:favicon", (event, input: BrowserHistoryFaviconInput) => {
+		if (
+			!input ||
+			typeof input.viewId !== "string" ||
+			typeof input.url !== "string" ||
+			input.url.length > 4_096 ||
+			!isRendererOwned(event, input.viewId)
+		) {
+			return undefined;
+		}
+		const origin = originOf(input.url);
+		const entry = entries.get(input.viewId);
+		if (!origin || !entry) return undefined;
+		const tabSession = (activeEntry(entry).view.webContents as unknown as WebContents).session;
+		let cache = historyFaviconCache.get(tabSession);
+		if (!cache) {
+			cache = new Map();
+			historyFaviconCache.set(tabSession, cache);
+		}
+		const cached = cache.get(origin);
+		if (cached) return cached;
+		const pending = fetchFaviconFromSession(tabSession, `${origin}/favicon.ico`).then((favicon) => {
+			if (!favicon) cache?.delete(origin);
+			return favicon;
+		});
+		cache.set(origin, pending);
+		return pending;
 	});
 	handle("browser:clear", (event, viewId: string) =>
 		isRendererOwned(event, viewId) ? clear(viewId) : emptyNavState(viewId),
@@ -2034,7 +2178,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (isRendererOwned(event, viewId) && entries.has(viewId)) lastUsedViewId = viewId;
 	});
 	on("browser:panelBlur", (event, viewId: string) => {
-		if (isRendererOwned(event, viewId) && lastUsedViewId === viewId) lastUsedViewId = null;
+		if (isRendererOwned(event, viewId)) forgetBrowserShortcutTarget(viewId);
 	});
 	handle("browser:devtools", (event, input: BrowserDevToolsInput) => {
 		if (!input || typeof input.viewId !== "string" || !isRendererOwned(event, input.viewId)) {
@@ -2069,10 +2213,23 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	handle("browser:annotation:submit", (event, payload: BrowserAnnotationPageSubmitPayload) =>
 		forwardAnnotationSubmit(event, payload),
 	);
+	handle("browser:annotation:capture", (event) => captureAnnotation(event));
+	handle("browser:annotation:complete", (event, input: BrowserAnnotationCompleteInput) =>
+		completeAnnotation(event, input),
+	);
+	handle("browser:annotation:discard", (event, input: BrowserAnnotationDiscardInput) =>
+		discardAnnotationFromShell(event, input),
+	);
+	handle("browser:annotation:action", (event, input: BrowserAnnotationActionInput) =>
+		forwardAnnotationAction(event, input),
+	);
 	on("browser:annotation:cancel", (event, payload: BrowserAnnotationPageCancelPayload) =>
 		forwardAnnotationCancel(event, payload),
 	);
-	on("browser:annotation:draft", (event, draft: BrowserAnnotationDraft) => updateAnnotationDraft(event, draft));
+	on("browser:annotation:state", (event, annotationSession: BrowserAnnotationSession) =>
+		updateAnnotationState(event, annotationSession),
+	);
+	on("browser:annotation:discard", (event) => discardAnnotationFromPage(event));
 
 	return {
 		execute: async (sessionId, action, args = {}, signal) => {
@@ -2368,22 +2525,17 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		isProfileLive,
 		clearProfileData,
 		isLastUsedBrowser: () => lastUsedViewId !== null && entries.has(lastUsedViewId),
-		// Reported live (macOS, maximized/popped-out panel): opening an overlay
-		// (e.g. a toolbar dropdown) over the browser panel blanks the live page
-		// to black instead of showing it behind the dropdown, and a plain bounds
-		// nudge alone was not enough to clear it (confirmed still reproducing
-		// after that first attempt). window-composition.ts documents the same
-		// class of bug for its own shell view — re-adding a WebContentsView to
-		// reorder it above others can leave its *previous* compositor surface on
-		// screen until something forces a real re-composite, and applying
-		// identical bounds is a no-op Electron ignores. That fix only refreshed
-		// the shell; the live page's own view needs an equivalent nudge whenever
-		// the shell is raised above it. A visibility toggle is a stronger,
-		// more direct signal to re-establish the view's compositor surface than
-		// a 1px bounds change alone, so do both.
+		// Reordering the transparent shell above a live page can leave either
+		// WebContentsView showing a stale compositor surface on macOS. A one-pixel
+		// bounds nudge alone is insufficient: Electron also needs a visibility
+		// reset. Hide immediately, then restore visibility together with the
+		// bounds on the next tick. A same-turn setVisible(false)+setVisible(true)
+		// can coalesce into a no-op (symptom: page stays blank until the overlay
+		// closes), which is why the restore must not run synchronously.
 		refreshLastFocusedPanelSurface: () => {
-			if (lastFocusedViewId === null) return;
-			const session = entries.get(lastFocusedViewId);
+			const targetViewId = lastFocusedViewId ?? lastUsedViewId;
+			if (targetViewId === null) return;
+			const session = entries.get(targetViewId);
 			if (!session || !session.visible) return;
 			const entry = activeEntry(session);
 			const bounds = session.bounds;
@@ -2391,7 +2543,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			entry.view.setVisible?.(false);
 			applyBrowserViewBounds(entry.view, { ...bounds, height: Math.max(1, bounds.height - 1) });
 			setTimeout(() => {
-				const current = lastFocusedViewId !== null ? entries.get(lastFocusedViewId) : undefined;
+				const current = entries.get(targetViewId);
 				if (!current || !current.visible) return;
 				applyBrowserViewBounds(activeEntry(current).view, current.bounds, true);
 			}, 0);
@@ -2608,7 +2760,7 @@ function hardenWebContents(
 			shellContents(options).send("browser:navState", entry.state);
 			return;
 		}
-		if (entry.annotationDraft && !isSameAnnotationPage(annotationDraftURL(entry.annotationDraft), url)) {
+		if (!isSameAnnotationPage(contents.getURL(), url)) {
 			cancelAnnotation(options, entry, "navigation");
 		}
 	};
@@ -2630,9 +2782,6 @@ function wireNavEvents(
 		if (isActive()) pushNavState(options, entry);
 	};
 	contents.on("did-navigate", (_event, url) => {
-		if (entry.annotationDraft && !isSameAnnotationPage(annotationDraftURL(entry.annotationDraft), url)) {
-			cancelAnnotation(options, entry, "navigation");
-		}
 		clearStaleFavicon(entry, url);
 		if (isActive()) syncActiveBounds();
 		recordHistory(url, contents.getTitle(), true);
@@ -2647,13 +2796,14 @@ function wireNavEvents(
 		update();
 	});
 	contents.on("did-stop-loading", () => {
-		if (entry.annotationEnabled) {
-			contents.send("browser:annotation:setMode", {
-				enabled: true,
-				...(entry.annotationDraft ? { draft: entry.annotationDraft } : {}),
-			});
-			contents.focus();
-		}
+		const annotationSession = annotationSessionFor(entry);
+		contents.send("browser:annotation:setMode", {
+			enabled: entry.annotationEnabled,
+			...(annotationSession ? { session: annotationSession } : {}),
+			...(entry.annotationTheme ? { theme: entry.annotationTheme } : {}),
+		});
+		if (entry.annotationEnabled) contents.focus();
+		pushAnnotationState(options, entry, annotationSession);
 		recordHistory(contents.getURL(), contents.getTitle(), false);
 		update();
 	});
@@ -2725,6 +2875,13 @@ function originOf(url: string): string | undefined {
 // it carries whatever cookies/proxy config that site's tab already has, and
 // resized/re-encoded like other browser-view thumbnail capture in this file.
 async function fetchFavicon(entry: BrowserEntry, url: string): Promise<string | undefined> {
+	const tabSession = (entry.view.webContents as unknown as WebContents).session;
+	return fetchFaviconFromSession(tabSession, url);
+}
+
+async function fetchFaviconFromSession(tabSession: Session, url: string): Promise<string | undefined> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), FAVICON_REQUEST_TIMEOUT_MS);
 	try {
 		// Some sites inline a tiny favicon as a data: URI rather than serving a
 		// file — decode it directly instead of rejecting it as an unsupported
@@ -2736,17 +2893,67 @@ async function fetchFavicon(entry: BrowserEntry, url: string): Promise<string | 
 		}
 		const parsed = new URL(url);
 		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-		const tabSession = (entry.view.webContents as unknown as WebContents).session;
-		const response = await tabSession.fetch(url);
+		const response = await tabSession.fetch(url, { signal: controller.signal });
 		if (!response.ok) return undefined;
-		const buffer = Buffer.from(await response.arrayBuffer());
-		if (buffer.byteLength === 0 || buffer.byteLength > MAX_FAVICON_BYTES) return undefined;
-		const image = nativeImage.createFromBuffer(buffer);
-		if (image.isEmpty()) return undefined;
-		return image.resize({ width: FAVICON_SIZE, height: FAVICON_SIZE, quality: "good" }).toDataURL();
+		const buffer = await readBoundedResponseBody(response, MAX_FAVICON_BYTES);
+		if (!buffer || buffer.byteLength === 0) return undefined;
+		try {
+			const image = nativeImage.createFromBuffer(buffer);
+			if (!image.isEmpty()) {
+				return image.resize({ width: FAVICON_SIZE, height: FAVICON_SIZE, quality: "good" }).toDataURL();
+			}
+		} catch {
+			// Fall through to the validated ICO path below. Test environments and
+			// some Electron platforms throw rather than returning an empty image.
+		}
+		// nativeImage does not decode ICO buffers on every platform (notably
+		// macOS), while Chromium's <img> decoder does. Preserve a bounded,
+		// structurally valid ICO as local image data rather than falling back to
+		// a direct renderer request that would escape the selected profile.
+		if (isIcoBuffer(buffer)) return `data:image/x-icon;base64,${buffer.toString("base64")}`;
+		return undefined;
 	} catch {
 		return undefined;
+	} finally {
+		clearTimeout(timeout);
 	}
+}
+
+function isIcoBuffer(buffer: Buffer): boolean {
+	return (
+		buffer.byteLength >= 6 &&
+		buffer.readUInt16LE(0) === 0 &&
+		buffer.readUInt16LE(2) === 1 &&
+		buffer.readUInt16LE(4) > 0
+	);
+}
+
+async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<Buffer | undefined> {
+	const declaredLength = Number(response.headers.get("content-length"));
+	if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+		await response.body?.cancel().catch(() => undefined);
+		return undefined;
+	}
+	const reader = response.body?.getReader();
+	if (!reader) return undefined;
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel().catch(() => undefined);
+				return undefined;
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
 }
 
 function cancelAnnotation(
@@ -2756,7 +2963,6 @@ function cancelAnnotation(
 ): void {
 	if (!entry.annotationEnabled) return;
 	entry.annotationEnabled = false;
-	entry.annotationDraft = null;
 	entry.view.webContents.send("browser:annotation:setMode", { enabled: false });
 	shellContents(options).send("browser:annotation:canceled", {
 		viewId: entry.state.viewId,
@@ -2764,8 +2970,42 @@ function cancelAnnotation(
 	});
 }
 
-function annotationDraftURL(draft: BrowserAnnotationDraft): string {
-	return draft.selection.kind === "element" ? draft.selection.context.url : (draft.selection.contexts[0]?.url ?? "");
+function annotationPageKey(url: string): string {
+	try {
+		const parsed = new URL(url);
+		parsed.hash = "";
+		return parsed.href;
+	} catch {
+		return url.split("#")[0] ?? url;
+	}
+}
+
+function annotationSessionFor(entry: BrowserEntry): BrowserAnnotationSession | undefined {
+	return entry.annotationSessions.get(annotationPageKey(entry.view.webContents.getURL()))?.session;
+}
+
+function storeAnnotationSession(
+	entry: BrowserEntry,
+	session: BrowserAnnotationSession,
+): { pageKey: string; token: string } {
+	const pageKey = annotationPageKey(session.page.url);
+	const token = randomUUID();
+	entry.annotationSessions.set(pageKey, { session, token });
+	return { pageKey, token };
+}
+
+function pushAnnotationState(
+	options: BrowserViewHostOptions,
+	entry: BrowserEntry,
+	annotationSession = annotationSessionFor(entry),
+): void {
+	const payload: BrowserAnnotationStatePayload = {
+		viewId: entry.state.viewId,
+		count: annotationSession?.annotations.length ?? 0,
+		screenshotCount: annotationSession?.screenshots.length ?? 0,
+		hasDraft: Boolean(annotationSession?.draft),
+	};
+	shellContents(options).send("browser:annotation:state", payload);
 }
 
 function isSameAnnotationPage(source: string, destination: string): boolean {
@@ -2780,11 +3020,6 @@ function isSameAnnotationPage(source: string, destination: string): boolean {
 	}
 }
 
-function isValidAnnotationDraft(value: unknown): value is BrowserAnnotationDraft {
-	if (!value || typeof value !== "object") return false;
-	const draft = value as Partial<BrowserAnnotationDraft>;
-	return typeof draft.instruction === "string" && isValidAnnotationSelection(draft.selection);
-}
 
 function pushNavState(options: BrowserViewHostOptions, entry: BrowserEntry): BrowserNavState {
 	entry.state = readNavState(entry);

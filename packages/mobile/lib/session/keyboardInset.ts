@@ -1,19 +1,21 @@
 // Bottom-inset arithmetic for the session screen's input dock. Pure so the rule
 // is testable — getting it wrong is what made the dock jump twice whenever the
-// keyboard appeared.
-//
-// The screen already reserves the keyboard (see `rootKeyboardPad`) as padding
-// on its root view, which lifts everything above the keyboard. The dock must
-// therefore add *nothing* more while the keyboard is up: the old code flipped its own padding from
-// `insets.bottom` (34pt on a notched phone) to `8` at the same moment the root
-// gained the keyboard height, so the two moves fought each other and the bar
-// visibly kicked.
+// keyboard appeared. The root reserves the keyboard (see `rootKeyboardPad`),
+// so the dock contributes nothing while it is visible.
 //
 // With the keyboard down there is no root padding, so the dock owes the
 // home-indicator inset itself.
 
 /** Minimum breathing room under the dock on a device with no home indicator. */
 export const MIN_DOCK_INSET = 8;
+
+// KeyboardAvoidingView measures against the window while this screen begins
+// below a native-stack header. Supplying that stack's measured header height
+// reconciles those coordinate spaces without assuming a particular iPhone,
+// orientation, status bar, or Dynamic Type size.
+export function keyboardVerticalOffset(headerHeight: number): number {
+	return Math.max(0, headerHeight);
+}
 
 /**
  * Bottom padding the root view owes to clear the keyboard.
@@ -55,10 +57,9 @@ export function screenKeyboardAvoidance(
 	};
 }
 
-export function dockInset(kbHeight: number, insetsBottom: number): number {
-	// Keyboard up: the root view's padding (rootKeyboardPad) already clears the
-	// keyboard *and* the nav bar beneath it. Anything here is dead space between
-	// the dock and the keyboard.
-	if (kbHeight > 0) return 0;
+export function dockInset(kbHeight: number, insetsBottom: number, keyboardVisible = kbHeight > 0): number {
+	// `keyboardVisible` covers Android's adjustResize path, where the window may
+	// already have shifted before a non-zero height is reported.
+	if (keyboardVisible) return 0;
 	return insetsBottom > 0 ? insetsBottom : MIN_DOCK_INSET;
 }

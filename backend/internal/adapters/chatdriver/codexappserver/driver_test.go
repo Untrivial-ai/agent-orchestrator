@@ -228,6 +228,8 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	conv, err := d.Start(context.Background(), ports.ChatStartConfig{
 		SessionID:     "ao-1",
 		WorkspacePath: "/tmp/ws",
+		Model:         "gpt-test",
+		Effort:        "high",
 		Permissions:   ports.PermissionModeDefault,
 		SystemPrompt:  "standing rules",
 	})
@@ -245,10 +247,12 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 
 	start := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/start" })
 	var params struct {
-		Cwd                   string `json:"cwd"`
-		ApprovalPolicy        string `json:"approvalPolicy"`
-		Sandbox               string `json:"sandbox"`
-		DeveloperInstructions string `json:"developerInstructions"`
+		Cwd                   string            `json:"cwd"`
+		ApprovalPolicy        string            `json:"approvalPolicy"`
+		Sandbox               string            `json:"sandbox"`
+		DeveloperInstructions string            `json:"developerInstructions"`
+		Model                 string            `json:"model"`
+		Config                map[string]string `json:"config"`
 	}
 	if err := json.Unmarshal(start.Params, &params); err != nil {
 		t.Fatalf("thread/start params: %v", err)
@@ -258,6 +262,16 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	}
 	if params.DeveloperInstructions != "standing rules" {
 		t.Errorf("developerInstructions = %q", params.DeveloperInstructions)
+	}
+	if params.Model != "gpt-test" || params.Config["model_reasoning_effort"] != "high" {
+		t.Errorf("model tuning = %#v", params)
+	}
+	var rawParams map[string]json.RawMessage
+	if err := json.Unmarshal(start.Params, &rawParams); err != nil {
+		t.Fatalf("thread/start raw params: %v", err)
+	}
+	if _, ok := rawParams["reasoningEffort"]; ok {
+		t.Fatal("thread/start sent unsupported top-level reasoningEffort")
 	}
 	// Default permissions must match what AO already gives a Codex TUI session.
 	if params.ApprovalPolicy != "never" || params.Sandbox != "danger-full-access" {
@@ -708,6 +722,13 @@ func TestResumeReappliesWorkspaceAndStandingInstructions(t *testing.T) {
 	if params.Config["model_reasoning_effort"] != "high" {
 		t.Fatalf("thread resume effort config = %q, want high", params.Config["model_reasoning_effort"])
 	}
+	var rawParams map[string]json.RawMessage
+	if err := json.Unmarshal(resume.Params, &rawParams); err != nil {
+		t.Fatalf("thread/resume raw params: %v", err)
+	}
+	if _, ok := rawParams["reasoningEffort"]; ok {
+		t.Fatal("thread/resume sent unsupported top-level reasoningEffort")
+	}
 	if params.DeveloperInstructions != "current AO standing instructions" {
 		t.Fatalf("developerInstructions = %q", params.DeveloperInstructions)
 	}
@@ -1045,9 +1066,7 @@ func TestTurnSettingsUseTheTurnLevelWireShapes(t *testing.T) {
 	if _, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
 		Text: "go",
 		Settings: ports.ChatTurnSettings{
-			Model:    "gpt-5.6-terra",
-			Effort:   "high",
-			Approval: ports.PermissionModeAcceptEdits,
+			Model: "gpt-5.6-terra", Effort: "high", Approval: ports.PermissionModeAcceptEdits,
 		},
 	}); err != nil {
 		t.Fatalf("SendTurn: %v", err)

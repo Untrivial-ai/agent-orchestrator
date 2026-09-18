@@ -4,15 +4,33 @@ import {
 	interfaceSwitchUnavailableMessage,
 	interfaceTransitionNextPoll,
 	interfaceTransitionPollInterval,
-	interfaceTransitionSessionGone,
+	mobileInterfaceTransitionIsActive,
+	mobileInterfaceTransitionIsBusy,
+	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 	nativeSessionReadinessAttempts,
 	speculativeFailureAttempts,
 } from "./interfaceTransition";
+import { isSessionGone } from "../connectionError";
 
 const daemonReason =
 	"session: native conversation id is not confirmed for the current terminal launch for claude-code";
 
 describe("mobile interface transition polling", () => {
+	it("keeps an unconfirmed target fenced without polling indefinitely", () => {
+		const transition = { phase: "target_starting", errorCode: "TARGET_STOP_UNCONFIRMED" };
+		expect(mobileInterfaceTransitionIsActive(transition)).toBe(true);
+		expect(mobileInterfaceTransitionIsBusy(transition)).toBe(false);
+		expect(mobileInterfaceTransitionIsCancellable(transition)).toBe(false);
+		expect(interfaceTransitionNextPoll({ status: { transition } })).toBeUndefined();
+		expect(interfaceTransitionNextPoll({ status: { transition }, consecutiveFailures: 1 })).toBeUndefined();
+		expect(mobileInterfaceTransitionRecoveryMessage(transition)).toContain("Restart AO on your computer");
+		expect(mobileInterfaceTransitionRecoveryMessage({ ...transition, errorDetail: "Specific shutdown failure" })).toBe("Specific shutdown failure");
+		expect(mobileInterfaceTransitionRecoveryMessage({ ...transition, phase: "completed" })).toBeUndefined();
+		const resumed = { phase: "target_starting", errorCode: undefined };
+		expect(interfaceTransitionNextPoll({ status: { transition: resumed } })).toBe(300);
+		expect(mobileInterfaceTransitionIsBusy(resumed)).toBe(true);
+	});
 	it("polls quickly while a transition is active", () => {
 		expect(interfaceTransitionPollInterval({ transition: { phase: "draining" } })).toBe(300);
 	});
@@ -178,7 +196,7 @@ describe("failed rechecks back off on their own count", () => {
 
 	it.each([500, 502, 503])("treats a %s as the link's problem, not the session's", (failureStatus) => {
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 1, failureStatus })).toBe(1_000);
-		expect(interfaceTransitionSessionGone(failureStatus)).toBe(false);
+		expect(isSessionGone(failureStatus)).toBe(false);
 	});
 
 	it.each([404, 410])("stops at once on a %s, the daemon's word that the session is gone", (failureStatus) => {
@@ -188,11 +206,11 @@ describe("failed rechecks back off on their own count", () => {
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 0 })).toBe(300);
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 1, failureStatus })).toBeUndefined();
 		expect(interfaceTransitionNextPoll({ status: waiting, consecutiveFailures: 1, failureStatus })).toBeUndefined();
-		expect(interfaceTransitionSessionGone(failureStatus)).toBe(true);
+		expect(isSessionGone(failureStatus)).toBe(true);
 	});
 
 	it("does not mistake a request that never landed for a gone session", () => {
-		expect(interfaceTransitionSessionGone(undefined)).toBe(false);
+		expect(isSessionGone(undefined)).toBe(false);
 		expect(interfaceTransitionNextPoll({ status: draining, consecutiveFailures: 1, failureStatus: undefined })).toBe(1_000);
 	});
 

@@ -20,6 +20,7 @@ import {
 } from "./icons";
 import {
 	attentionZone,
+	defaultProductUITranslator,
 	getDisplayStatusLabel,
 	getKanbanColumnView,
 	getSessionStatusView,
@@ -53,6 +54,7 @@ export type BoardSessionPresentation = {
 	 * send one falls back to the translated {@link status} label.
 	 */
 	displayStatus?: string;
+	statusReadiness?: "checking" | "ready" | "unavailable";
 	/**
 	 * Daemon-confirmed termination fact. `status` can already read "merged"
 	 * while the session is still live (the SCM merged before the session
@@ -255,6 +257,7 @@ export function SessionCardView({
 	translate,
 	usage,
 }: SessionCardViewProps) {
+	const translateStatus = translate ?? defaultProductUITranslator;
 	const badge = getSessionStatusView(session.status, translate);
 	const statusPresentation = session.statusPresentation;
 	const needsAttention = boardSessionNeedsAttention(session);
@@ -269,8 +272,12 @@ export function SessionCardView({
 	const branch = session.branch ?? "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
 	const renderedStatusLabel =
-		statusPresentation?.label ??
-		(session.displayStatus ? getDisplayStatusLabel(session.displayStatus, translate) : badge.label);
+		session.statusReadiness === "checking"
+			? translateStatus("session.statusChecking")
+			: session.statusReadiness === "unavailable"
+				? translateStatus("session.statusUnavailable")
+				: (statusPresentation?.label ??
+					(session.displayStatus ? getDisplayStatusLabel(session.displayStatus, translate) : badge.label));
 	// Additive summary footer, not a replacement for renderedStatusLabel: it
 	// only appears once the daemon confirms the session is actually finished
 	// ("terminated", or "merged" with isTerminated true -- a live session can
@@ -283,8 +290,12 @@ export function SessionCardView({
 			? labels.pr.progress?.(countBoardPullRequests(prs))
 			: undefined;
 	const showStatusLoader =
+		session.statusReadiness === "checking" || (session.statusReadiness !== "unavailable" &&
 		!needsAttention &&
 		session.displayStatus !== "Needs human review" &&
+		// "Draft" describes the PR, not work AO is turning, so it gets no loader
+		// even while the worker is live.
+		session.displayStatus !== "Draft" &&
 		(session.status === "working" ||
 			// The label reads `displayStatus`, so the loader must too. `status`
 			// aggregates the session's WORST open PR while `displayStatus` describes
@@ -294,7 +305,7 @@ export function SessionCardView({
 			// `displayStatus`.
 			(session.displayStatus
 				? IN_PROGRESS_DISPLAY_STATUSES.has(session.displayStatus)
-				: session.status === "review_pending"));
+				: session.status === "review_pending")));
 
 	return (
 		<div
@@ -409,6 +420,7 @@ export function SessionCardView({
 }
 
 function boardSessionNeedsAttention(session: BoardSessionPresentation): boolean {
+	if (session.statusReadiness && session.statusReadiness !== "ready") return false;
 	if (session.statusPresentation) return false;
 	switch (session.displayStatus) {
 		case "Blocked":
@@ -462,7 +474,9 @@ function BoardPullRequestGroup({
 	const statusLabel = labels.states[group.state];
 	const linkClassName = "pr-link hover:underline";
 	return (
-		<div className="flex min-w-0 items-center gap-x-2">
+		// Wraps so a session with several PRs of one state stays inside the card
+		// instead of shrinking its gaps away and spilling past the edge.
+		<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 			{group.prs.map((pr) => {
 				const hasComments = (pr.commentCount ?? 0) > 0;
 				return (

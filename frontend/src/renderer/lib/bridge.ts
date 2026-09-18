@@ -113,6 +113,7 @@ export const aoBridge: AoBridge =
 				isLoading: false,
 			}),
 			historySuggestions: async () => [],
+			historyFavicon: async () => undefined,
 			clear: async (viewId: string) => ({
 				viewId,
 				url: "",
@@ -180,6 +181,9 @@ export const aoBridge: AoBridge =
 			}),
 			destroy: () => undefined,
 			setAnnotationMode: async () => undefined,
+			completeAnnotation: async () => undefined,
+			discardAnnotations: async () => undefined,
+			annotationAction: async () => undefined,
 			onNavState: () => () => undefined,
 			onPageFocus: () => () => undefined,
 			onTabsState: () => () => undefined,
@@ -189,6 +193,7 @@ export const aoBridge: AoBridge =
 			onProfileManage: () => () => undefined,
 			onAnnotationSubmit: () => () => undefined,
 			onAnnotationCancel: () => () => undefined,
+			onAnnotationState: () => () => undefined,
 		},
 		browserProfiles: {
 			list: async () => ({ profiles: [] }),
@@ -221,8 +226,9 @@ export const aoBridge: AoBridge =
 			setMigration: async () => undefined,
 		},
 		updateSettings: {
-			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
+			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false }),
 			set: async () => undefined,
+			setMacDifferentialUpdates: async () => undefined,
 		},
 		uiSettings: {
 			get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -239,6 +245,8 @@ export const aoBridge: AoBridge =
 			returnHome: async () => undefined,
 			download: async () => undefined,
 			install: async () => undefined,
+			isPostUpdateRelaunch: async () => false,
+			relaunch: async () => undefined,
 			onStatus: () => () => undefined,
 			onTelemetry: () => () => undefined,
 		},
@@ -250,6 +258,10 @@ export const aoBridge: AoBridge =
 			getSession: async () => null,
 			signIn: async () => undefined,
 			signOut: async () => undefined,
+			cancelProviderAuth: async () => undefined,
+			connectProviderAuth: async () => {
+				throw new Error("Cloud provider sign-in requires the desktop app.");
+			},
 			localAuthAvailable: async () => false,
 			localRegister: async () => {
 				throw new Error("AO Cloud sign-in requires the desktop app.");

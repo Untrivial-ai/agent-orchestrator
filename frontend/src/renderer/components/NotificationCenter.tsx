@@ -1,3 +1,4 @@
+import { AppLink } from "./AppLink";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useParams } from "@tanstack/react-router";
@@ -21,7 +22,6 @@ import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import type { WorkspaceSummary } from "../types/workspace";
 import { aoBridge } from "../lib/bridge";
-import { openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { formatTimeCompact } from "../lib/format-time";
 import {
 	createNotificationsTransport,
@@ -546,22 +546,20 @@ const NotificationItem = memo(function NotificationItem({
 							{titleLink ? (
 								<>
 									{titleLink.before}
-									<a
+									<AppLink
 										aria-label={t("inspector.openPR", { number: titleLink.number })}
 										className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 										href={titleLink.url}
 										onClick={(event) => {
-											event.preventDefault();
 											event.stopPropagation();
 											void captureRendererEvent("ao.renderer.notification_opened", { target: "pr" });
-											void openLinkInSystemBrowser(titleLink.url);
 										}}
 										rel="noopener noreferrer"
 										target="_blank"
 									>
 										{titleLink.label}
 										<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" strokeWidth={2} />
-									</a>
+									</AppLink>
 									{titleLink.after}
 								</>
 							) : (

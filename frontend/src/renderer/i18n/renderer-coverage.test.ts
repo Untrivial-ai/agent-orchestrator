@@ -20,7 +20,7 @@ const approvedLiterals: Record<string, readonly string[]> = {
 		"Local: http://localhost:5173/",
 	],
 	"components/CenterPane.tsx": ["px"],
-	"components/CreateProjectFlow.tsx": ["my-workspace/", "web-app", "main"],
+	"components/CreateProjectFlow.tsx": ["my-workspace/", "web-app", "main", "github_pat_…"],
 	"components/DaemonStartupLoader.tsx": ["Agent Orchestrator"],
 	"components/ProjectSettingsForm.tsx": [
 		"main", "ao",
@@ -41,6 +41,7 @@ const approvedLiterals: Record<string, readonly string[]> = {
 		"Ctrl+Shift+I",
 		"Ctrl+/",
 	],
+	"components/settings/CloudCredentialsSection.tsx": ["github_pat_…"],
 	"components/settings/ConnectMobileSetup.tsx": ["tailscale ip -4"],
 	"components/settings/UpdatesSection.tsx": ["PR #"],
 };

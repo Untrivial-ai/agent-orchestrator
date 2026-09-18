@@ -14,6 +14,7 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+	AlertTriangle,
 	ChevronRight,
 	Download,
 	Folder,
@@ -44,8 +45,8 @@ import {
 	useRef,
 	useState,
 	type CSSProperties,
-	type MouseEvent,
 	type DragEvent as ReactDragEvent,
+	type MouseEvent,
 	type ReactNode,
 	type RefObject,
 } from "react";
@@ -53,13 +54,18 @@ import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
 import { parseNightlyVersion } from "../lib/build-channel";
+import { IS_DEV } from "../lib/is-dev";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
+	openPRs,
 	type WorkspaceSession,
 	type WorkspaceSummary,
 	sortedWorkerSessions,
 	workerSessions,
+	CLOUD_PROJECT_KIND,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 import { getSessionStatusDotView } from "../lib/session-presentation";
 import { deriveSessionAgentSwitchPresentation } from "../lib/agent-switch-presentation";
@@ -77,22 +83,19 @@ import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
 import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
 import { useShellMaybe } from "../lib/shell-context";
 import { useSidebarUpdateDismissal } from "../hooks/useSidebarUpdateDismissal";
-import { useRequestUpdateInstall } from "../hooks/useRequestUpdateInstall";
-import { useUpdateStatus, requestUpdateDownload } from "../hooks/useUpdateStatus";
+import { useUpdateStatus } from "../hooks/useUpdateStatus";
 import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSessionRename";
 import { effectiveShortcutBindings, shortcutBindingKeys } from "../../shared/shortcuts";
 import {
 	ContextMenu,
 	ContextMenuContent,
 	ContextMenuItem,
-	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "./ui/context-menu";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
-	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import {
@@ -115,41 +118,55 @@ import { OrchestratorIcon } from "./icons";
 import { Badge } from "./ui/badge";
 import aoLogo from "../../../assets/ao-logo.svg";
 import { cn } from "../lib/utils";
-import { useUiStore } from "../stores/ui-store"
+import { useUiStore } from "../stores/ui-store";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
 import { ResizeHandle } from "./ResizeHandle";
-import { isMacPlatform, isWindowsPlatform } from "../lib/platform";
+import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
+import { isMacPlatform } from "../lib/platform";
 import { useCloudSession } from "../lib/cloud-session";
 
 // macOS paints framed chrome: the fixed TitlebarNav cluster carries the
 // sidebar toggle + history arrows above this surface. Windows hangs the sidebar
 // under its custom titlebar.
 const isMac = isMacPlatform();
-const isWindows = isWindowsPlatform();
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
 // Shared styling for the per-project hover action buttons (orchestrator, kebab):
 // a 20px square icon button that tints on hover, matching the old
-// SidebarMenuAction footprint.
+// SidebarMenuAction footprint. Never painted — `.sidebar-icon-action` also
+// opts out of the sidebar focus fill in styles.css.
 const HOVER_ACTION_CLASS =
-	"grid size-5 shrink-0 place-items-center rounded-md bg-transparent text-passive hover:bg-transparent focus:bg-transparent focus-visible:bg-transparent active:bg-transparent data-[state=open]:bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:text-foreground [&_svg]:size-icon-lg";
+	"sidebar-icon-action grid size-5 shrink-0 place-items-center rounded-md !bg-transparent text-passive hover:!bg-transparent focus:!bg-transparent focus-visible:!bg-transparent active:!bg-transparent data-[state=open]:!bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:text-foreground [&_svg]:size-icon-lg";
 
 // Session actions overlay the row without changing its footprint. The primary
 // label only yields their width while the row is hovered or contains focus.
 const SESSION_ACTION_CLASS =
-	"grid size-5 shrink-0 place-items-center rounded-md bg-transparent p-1 text-passive hover:bg-transparent focus:bg-transparent focus-visible:bg-transparent active:bg-transparent data-[state=open]:bg-transparent hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3!";
+	"sidebar-icon-action grid size-5 shrink-0 place-items-center rounded-md !bg-transparent p-1 text-passive hover:!bg-transparent focus:!bg-transparent focus-visible:!bg-transparent active:!bg-transparent data-[state=open]:!bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3!";
 
-// Shared nav-row chrome (Codex-style): inset pill hover/selected, 14px type, no accent bar.
+// Shared nav-row chrome (Codex-style): inset pill, 14px type, no accent bar.
+// Plain fill stays for non-interactive status rows; interactive rows use
+// {@link NavRowHighlight} via {@link NAV_ROW_HIGHLIGHT_HOST_CLASS}.
 const NAV_ROW_CLASS =
-	"h-9 gap-2.5 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-[background-color,color] hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:text-foreground data-[active=true]:bg-interactive-active data-[active=true]:font-medium data-[active=true]:text-foreground";
+	"h-9 gap-2.5 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:text-foreground data-[active=true]:bg-interactive-active data-[active=true]:font-medium data-[active=true]:text-foreground";
+
+/** Expanded footer action row: growing highlight behind icon + label. */
+const FOOTER_NAV_BUTTON_CLASS = cn(
+	NAV_ROW_CLASS,
+	NAV_ROW_HIGHLIGHT_HOST_CLASS,
+	"flex h-9 w-full items-center text-left transition-none",
+);
+
+/** Collapsed footer icon-rail control: same growing highlight in the square. */
+const FOOTER_RAIL_BUTTON_CLASS = cn(
+	NAV_ROW_HIGHLIGHT_HOST_CLASS,
+	"grid size-control-board place-items-center rounded-lg text-muted-foreground [&_svg]:size-icon-base",
+);
 
 // Search + Pinned/Projects section chrome: same type, icon, and row size.
 const SECTION_ROW_CLASS =
 	"flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-passive [&_svg]:size-icon-md [&_svg]:shrink-0";
-// Hover fill only for collapsible section headers (Pinned). Projects is a static label.
-const SECTION_ROW_INTERACTIVE_CLASS = "transition-colors hover:bg-interactive-hover hover:text-foreground";
 
 // Mirrors the daemon's display-name cap (maxDisplayNameLen) and the spawn
 // `--name` flag, so inline edits never round-trip a value the API would reject.
@@ -163,8 +180,7 @@ const REORDER_ACTIVATION_DISTANCE = 4;
 const EMPTY_DRAG_IMAGE = typeof Image === "undefined" ? null : new Image();
 if (EMPTY_DRAG_IMAGE) EMPTY_DRAG_IMAGE.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
-/** Stable drag-context ids: one for the project list, one per project's sessions. */
-export const PROJECT_DND_ID = "sidebar-projects";
+/** Stable drag-context id per project's session list. */
 export const sessionDndId = (projectId: string) => `sidebar-sessions-${projectId}`;
 
 function useReorderSensors() {
@@ -220,8 +236,7 @@ function sortableRowStyle({ transform, transition, isDragging, dropTransitionDis
 	};
 }
 
-// Session drags use their owning list as the visual boundary. Project drags use
-// row-derived bounds below because their list fills the remaining sidebar height.
+// Session drags use their owning list as the visual boundary.
 const restrictToListBounds: Modifier = ({ activeNodeRect, containerNodeRect, transform }) => {
 	if (!activeNodeRect || !containerNodeRect) return transform;
 	const minY = containerNodeRect.top - activeNodeRect.top;
@@ -234,7 +249,6 @@ const restrictToListBounds: Modifier = ({ activeNodeRect, containerNodeRect, tra
 };
 
 type ProjectDropPlacement = "before" | "after";
-
 
 function reorderAtProjectBoundary(
 	ids: string[],
@@ -281,8 +295,13 @@ function useGrabbingCursor(active: boolean) {
 }
 
 export const SIDEBAR_DEFAULT_WIDTH = 240;
+/** Floor/ceiling for sidebar resize — pass the same values to useResizable AND ResizeHandle. */
 export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 420;
+/** Cap the expanded project list until the user clicks Show more.
+ *  One-way for now (no Show less / no persistence) — intentional first cut.
+ *  Collapsed icon rail always shows the full list so projects stay reachable. */
+const SIDEBAR_INITIAL_PROJECT_LIMIT = 12;
 const expandedProjectsStorageKey = "ao.sidebar.expanded-projects";
 
 function readExpandedProjectIds(): ReadonlySet<string> {
@@ -325,7 +344,6 @@ function useSelection() {
 		select: (state) => state.location.pathname,
 	});
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
-	const goAllSessions = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
 	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
 	const goSettings = useCallback((projectId: string) => openProjectSettings(projectId), [openProjectSettings]);
@@ -334,20 +352,23 @@ function useSelection() {
 		[navigate],
 	);
 	const goSession = useCallback(
-		(projectId: string, sessionId: string) =>
+		(projectId: string, sessionId: string) => {
+			if (projectId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+				return;
+			}
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
 				params: { projectId, sessionId },
-			}),
+			});
+		},
 		[navigate],
 	);
 	return useMemo(() => ({
 		isHome: pathname === "/",
-		isAllSessions: pathname === "/sessions",
 		activeProjectId: params.projectId,
 		activeSessionId: params.sessionId,
 		goHome,
-		goAllSessions,
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings,
@@ -355,7 +376,7 @@ function useSelection() {
 		goSettings,
 		goProject,
 		goSession,
-	}), [goAllSessions, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
+	}), [goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
 }
 
 // Colour tracks the session's board section, preserving SCM state while the
@@ -366,13 +387,17 @@ function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 	return (
 		<span
 			aria-hidden="true"
-			className={cn(
-				"size-2 shrink-0 rounded-full",
-				dot.className,
-				dot.breathe && "animate-status-pulse",
-			)}
-			data-session-status={session.status}
-		/>
+			className="relative z-[1] inline-flex shrink-0 items-center justify-center px-1.5"
+		>
+			<span
+				className={cn(
+					"size-2 rounded-full",
+					dot.className,
+					dot.breathe && "animate-status-pulse",
+				)}
+				data-session-status={session.status}
+			/>
+		</span>
 	);
 }
 
@@ -399,12 +424,28 @@ export function Sidebar({
 	const updateStatus = useUpdateStatus();
 	const availableUpdateVersion = updateStatus.state === "available" ? updateStatus.version : undefined;
 	const updateDismissal = useSidebarUpdateDismissal(availableUpdateVersion);
-	const requestUpdateInstall = useRequestUpdateInstall();
+	const openUpdateInstallPrompt = useUiStore((state) => state.openUpdateInstallPrompt);
 	// Daemon status for the smoke suite's sr-only mirror in the footer. Null when
 	// rendered outside the shell (unit tests) — the mirror simply doesn't render.
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
+	const existingProjectPaths = useMemo(
+		() => workspaces
+			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
+			.map((workspace) => workspace.path)
+			.filter((path): path is string => Boolean(path)),
+		[workspaces],
+	);
+	const openExistingProject = useCallback(
+		(path: string) => {
+			const workspace = workspaces.find(
+				(candidate) => candidate.kind !== STANDALONE_PROJECT_KIND && candidate.path === path,
+			);
+			if (workspace) selection.goProject(workspace.id);
+		},
+		[selection, workspaces],
+	);
 	const initialActiveSessionProjectId = useRef(
 		selection.activeSessionId ? selection.activeProjectId : undefined,
 	).current;
@@ -454,7 +495,7 @@ export function Sidebar({
 	const isNightly = typeof appVersion === "string" && appVersion.includes("-nightly.");
 
 	// agent-orchestrator's sidebar resize: drag the right edge (200-420px,
-	// persisted), double-click to reset to 240px. The width variable is written
+	// persisted), double-click to reset to 240px. Drives --ao-sidebar-w on :root,
 	// only to the two layout consumers and fixed titlebar strip, rather than
 	// :root. Dragging clamps
 	// at SIDEBAR_MIN_WIDTH — collapsing stays on the explicit toggle (⌘B /
@@ -468,6 +509,13 @@ export function Sidebar({
 			resizeAuxiliaryTargetRef?.current ?? null,
 		];
 	}, [resizeAuxiliaryTargetRef]);
+	// Stable getter — ResizeHandle keeps callbacks in refs; an inline arrow would
+	// rebuild observers on every Sidebar render (daemon ticks / activity).
+	const getSidebarBorderElement = useCallback(
+		() =>
+			resizeScopeRef.current?.querySelector<HTMLElement>('[data-slot="sidebar-container"]') ?? null,
+		[],
+	);
 	const {
 		onPointerDown: onResizePointerDown,
 		onCollapsedPointerDown: onCollapsedResizePointerDown,
@@ -496,19 +544,36 @@ export function Sidebar({
 		() => applyOrder(workspaces, (workspace) => workspace.id, projectOrder, "end"),
 		[projectOrder, workspaces],
 	);
-	const openExistingProject = useCallback(
-		(path: string) => {
-			const workspace = workspaces.find((candidate) => candidate.path === path);
-			if (workspace) selection.goProject(workspace.id);
-		},
-		[selection, workspaces],
+	const [showAllProjects, setShowAllProjects] = useState(false);
+	const activeProjectBeyondLimit = useMemo(() => {
+		if (showAllProjects || orderedWorkspaces.length <= SIDEBAR_INITIAL_PROJECT_LIMIT) return false;
+		const activeId = selection.activeProjectId;
+		if (!activeId) return false;
+		const index = orderedWorkspaces.findIndex((workspace) => workspace.id === activeId);
+		return index >= SIDEBAR_INITIAL_PROJECT_LIMIT;
+	}, [orderedWorkspaces, selection.activeProjectId, showAllProjects]);
+	useEffect(() => {
+		if (activeProjectBeyondLimit) setShowAllProjects(true);
+	}, [activeProjectBeyondLimit]);
+	const visibleWorkspaces = useMemo(
+		() =>
+			isCollapsed || showAllProjects || orderedWorkspaces.length <= SIDEBAR_INITIAL_PROJECT_LIMIT
+				? orderedWorkspaces
+				: orderedWorkspaces.slice(0, SIDEBAR_INITIAL_PROJECT_LIMIT),
+		[isCollapsed, orderedWorkspaces, showAllProjects],
 	);
-	const projectIds = useMemo(() => orderedWorkspaces.map((workspace) => workspace.id), [orderedWorkspaces]);
+	const hiddenProjectCount = Math.max(0, orderedWorkspaces.length - SIDEBAR_INITIAL_PROJECT_LIMIT);
+	const projectIds = useMemo(
+		() => orderedWorkspaces
+			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
+			.map((workspace) => workspace.id),
+		[orderedWorkspaces],
+	);
+	const projectDragClickGuard = usePostDragClickGuard();
 	const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
-	// Project rows reorder with native HTML5 drag-and-drop. The browser owns the
-	// drag image, so there is no overlay clone, no dnd-kit measurement, and no
-	// re-render while dragging: only the dragged row re-renders (via `isDragged`),
-	// and the drop indicator is a DOM attribute set on dragover, never React state.
+	// Keep the active id and drop target in refs so dragover can decide without a
+	// full-list re-render while dragging: only the dragged row re-renders (via
+	// `isDragged`), and the drop line updates through dedicated React state.
 	const draggingProjectIdRef = useRef<string | null>(null);
 	const projectDropTargetRef = useRef<{ overId: string; placement: ProjectDropPlacement } | null>(null);
 	useGrabbingCursor(draggingProjectId !== null);
@@ -523,6 +588,7 @@ export function Sidebar({
 	}, []);
 
 	const handleProjectDragStart = useCallback((event: ReactDragEvent<HTMLElement>, projectId: string) => {
+		if (!projectIds.includes(projectId)) return;
 		event.dataTransfer.effectAllowed = "move";
 		// Some engines refuse to begin a drag unless the transfer carries data.
 		event.dataTransfer.setData("text/plain", projectId);
@@ -530,13 +596,15 @@ export function Sidebar({
 		draggingProjectIdRef.current = projectId;
 		projectDropTargetRef.current = null;
 		setDraggingProjectId(projectId);
-	}, []);
+	}, [projectIds]);
 
 	const handleProjectDragEnd = useCallback(() => {
+		const projectId = draggingProjectIdRef.current;
+		if (projectId) projectDragClickGuard.markDragEnded(projectId);
 		draggingProjectIdRef.current = null;
 		clearProjectDropIndicator();
 		setDraggingProjectId(null);
-	}, [clearProjectDropIndicator]);
+	}, [clearProjectDropIndicator, projectDragClickGuard]);
 
 	const handleProjectDragOver = useCallback((event: ReactDragEvent<HTMLElement>, overId: string) => {
 		const activeId = draggingProjectIdRef.current;
@@ -604,51 +672,60 @@ export function Sidebar({
 			className={cn(
 				"sidebar-focusless",
 				hideEdgeBorder ? "border-transparent" : "border-r-0 group-data-[side=left]:border-r-0",
+				// Prefer top/bottom over h-svh/inset-y so titlebar offset (`top-(--sidebar-chrome-offset)`)
+				// clears chrome without fighting a second height constraint.
 				!underTopbar
-					? "top-0 h-svh!"
-					: "top-(--sidebar-chrome-offset) h-[calc(100svh-var(--sidebar-chrome-offset))]!",
+					? "top-0 bottom-0"
+					: "top-(--sidebar-chrome-offset) bottom-0 h-auto!",
 			)}
 		>
 			<SidebarHeader className="gap-0 p-0 px-3 pt-2 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:pt-2">
-				{/* Brand (project-sidebar__brand); in the icon rail it becomes the old
-            36px board button wrapping the 22px accent mark. */}
-				<div
+				{/*
+				 * Brand → home. Design contracts (do not regress):
+				 * - Click navigates home; do NOT add hover/focus *fill* (styles.css
+				 *   opts `[data-sidebar-brand]` out of `.sidebar-focusless` wash).
+				 * - Keyboard focus uses the dedicated outline rule in styles.css —
+				 *   never `focus-visible:outline-none` (global kill would leave it blind).
+				 * - No separate "home" affordance on the mark — the whole brand is the control.
+				 */}
+				<button
+					aria-label={t("shell.goHome")}
 					className={cn(
-						"group/brand flex shrink-0 items-center gap-1.5 rounded-md px-0.5 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
+						"group/brand flex w-full shrink-0 items-center gap-1.5 rounded-md px-0.5 text-left",
+						"group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pb-2",
 						commandPaletteEnabled ? "pb-2" : "pb-3",
 					)}
+					data-sidebar-brand=""
+					onClick={() => selection.goHome()}
+					type="button"
 				>
-					<button
-						aria-label={t("shell.openAllSessions")}
+					<span
 						className={cn(
-							"grid h-5.5 w-5.5 shrink-0 place-items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50",
-							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:hover:bg-interactive-hover",
-							selection.isAllSessions && "group-data-[collapsible=icon]:bg-interactive-active",
+							"grid h-5.5 w-5.5 shrink-0 place-items-center",
+							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg",
 						)}
-						onClick={selection.goAllSessions}
-						type="button"
 					>
 						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
-					</button>
-					{isWindows ? (
-						<span
-							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
-						>
-							Agent Orchestrator
-						</span>
-					) : (
-						<span
-							className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
-						>
-							Agent Orchestrator
-						</span>
-					)}
+					</span>
+					<span
+						className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
+					>
+						Agent Orchestrator
+					</span>
 					{isNightly && (
 						<span className="sidebar-expanded-chrome shrink-0 rounded-full bg-purple-subtle px-1.5 py-0.5 text-micro font-semibold leading-none text-purple-accent group-data-[collapsible=icon]:hidden">
 							{t("shell.nightly")}
 						</span>
 					)}
-				</div>
+					{IS_DEV && (
+						<span
+							data-testid="sidebar-dev-badge"
+							className="sidebar-expanded-chrome shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-micro font-semibold leading-none text-amber-600 group-data-[collapsible=icon]:hidden dark:text-amber-400"
+						>
+							{t("shell.dev")}
+						</span>
+					)}
+				</button>
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<button
@@ -707,26 +784,25 @@ export function Sidebar({
 				)}
 
 				{/* Projects — always open; only the trailing "+" is interactive. */}
-				<div className="sidebar-expanded-chrome flex shrink-0 pb-1.5 group-data-[collapsible=icon]:hidden">
+				<div className="sidebar-expanded-chrome flex shrink-0 pb-0.5 group-data-[collapsible=icon]:hidden">
 					<SectionDisclosure
 						label={t("shell.projects")}
 						collapsible={false}
 						trailing={
 							<CreateProjectButton
+								existingProjectPaths={existingProjectPaths}
 								hideTrigger={workspaces.length === 0}
 								onCloneProject={onCloneProject}
 								onCreateProject={onCreateProject}
 								onInitializeProject={onInitializeProject}
 								onOpenExistingProject={openExistingProject}
-								existingProjectPaths={workspaces.map((workspace) => workspace.path)}
-								existingProjectNames={workspaces.map((workspace) => workspace.name)}
 							/>
 						}
 					/>
 				</div>
 			</div>
 
-			<SidebarContent className="project-sidebar-scrollbar gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
+			<SidebarContent className="scrollbar-none gap-0 px-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
 				<SidebarGroup className="min-h-full p-0">
 					{/* Tree (project-sidebar__tree) */}
 					<SidebarGroupContent className="min-h-full">
@@ -737,7 +813,7 @@ export function Sidebar({
 							</div>
 						) : workspaces.length === 0 ? null : (
 							<SidebarMenu className="relative min-h-full gap-0.5 rounded-lg group-data-[collapsible=icon]:gap-1 group-data-[collapsible=icon]:rounded-none">
-								{orderedWorkspaces.map((workspace) => (
+								{visibleWorkspaces.map((workspace) => (
 									<ProjectItem
 										key={workspace.id}
 										workspace={workspace}
@@ -745,6 +821,9 @@ export function Sidebar({
 										suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
 										selection={selection}
 										isDragged={draggingProjectId === workspace.id}
+										projectDragInProgress={draggingProjectId !== null}
+										layoutSettled={layoutSettled}
+										consumeDragClick={projectDragClickGuard.consumeClick}
 										onToggle={toggleProjectDisclosure}
 										onRemoveProject={onRemoveProject}
 										onProjectDragStart={handleProjectDragStart}
@@ -753,6 +832,21 @@ export function Sidebar({
 										onProjectDrop={handleProjectDrop}
 									/>
 								))}
+								{!isCollapsed && !showAllProjects && hiddenProjectCount > 0 ? (
+									<button
+										aria-label={t("shell.showMoreProjects", { count: hiddenProjectCount })}
+										className={cn(
+											SECTION_ROW_CLASS,
+											NAV_ROW_HIGHLIGHT_HOST_CLASS,
+											"mb-1 rounded-lg text-left text-muted-foreground",
+										)}
+										onClick={() => setShowAllProjects(true)}
+										type="button"
+									>
+										<NavRowHighlight />
+										<span className="relative z-[1] truncate">{t("shell.showMore")}</span>
+									</button>
+								) : null}
 								{isCollapsed && <CreateProjectListItem />}
 								<div
 									aria-hidden="true"
@@ -760,15 +854,16 @@ export function Sidebar({
 									className="pointer-events-none absolute inset-x-0 z-[70] h-px rounded-full bg-foreground transition-opacity duration-100"
 									style={{ top: dropLine.top, opacity: dropLine.visible ? 1 : 0 }}
 								/>
-							</SidebarMenu>						)}
+							</SidebarMenu>
+						)}
 					</SidebarGroupContent>
 				</SidebarGroup>
 			</SidebarContent>
 
 			{/* Footer — Settings opens the global settings page directly.
-			    Its hairline and row height match the board Archive bar. Bottom
-			    spacing stays inside the footer so there is no empty strip beneath
-			    the final action. */}
+			    Footer rows share NAV_ROW height so Settings, Connect mobile,
+			    and account actions line up. Bottom spacing stays inside the
+			    footer so there is no empty strip beneath the final action. */}
 			<SidebarFooter
 				className="relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-20 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:overflow-visible group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-2 group-data-[collapsible=icon]:!pt-1.5"
 			>
@@ -792,38 +887,37 @@ export function Sidebar({
 					/>
 					<CloudSignInRow tabIndex={isCollapsed ? -1 : 0} />
 					<CloudAccountRow tabIndex={isCollapsed ? -1 : 0} />
-					{/* Install cue sits above Connect mobile / Settings — never overlays them. */}
 					<UpdateInstallSlide
 						availableDismissed={updateDismissal.dismissed}
-						onRequestInstall={requestUpdateInstall}
+						onRequestInstall={openUpdateInstallPrompt}
 						status={updateStatus}
 						tabIndex={isCollapsed ? -1 : 0}
 					/>
 					<button
 						aria-label={t("settings.connectMobile")}
-						className={cn(
-							NAV_ROW_CLASS,
-							"flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
-						)}
+						className={FOOTER_NAV_BUTTON_CLASS}
 						onClick={() => selection.goConnectMobile()}
 						tabIndex={isCollapsed ? -1 : 0}
 						type="button"
 					>
-						<Smartphone aria-hidden="true" />
-						<span className="tracking-tight">{t("settings.connectMobile")}</span>
+						<NavRowHighlight />
+						<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+							<Smartphone aria-hidden="true" />
+							<span className="tracking-tight">{t("settings.connectMobile")}</span>
+						</span>
 					</button>
 					<button
 						aria-label={t("shell.settings")}
-						className={cn(
-							NAV_ROW_CLASS,
-							"flex h-[42px] w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
-						)}
+						className={FOOTER_NAV_BUTTON_CLASS}
 						onClick={() => selection.goGlobalSettings()}
 						tabIndex={isCollapsed ? -1 : 0}
 						type="button"
 					>
-						<Settings aria-hidden="true" />
-						<span className="tracking-tight">{t("shell.settings")}</span>
+						<NavRowHighlight />
+						<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+							<Settings aria-hidden="true" />
+							<span className="tracking-tight">{t("shell.settings")}</span>
+						</span>
 					</button>
 				</div>
 				<div
@@ -832,7 +926,7 @@ export function Sidebar({
 				>
 					<UpdateStatusRail
 						availableDismissed={updateDismissal.dismissed}
-						onRequestInstall={requestUpdateInstall}
+						onRequestInstall={openUpdateInstallPrompt}
 						status={updateStatus}
 						tabIndex={isCollapsed ? 0 : -1}
 					/>
@@ -842,12 +936,15 @@ export function Sidebar({
 						<TooltipTrigger asChild>
 							<button
 								aria-label={t("settings.connectMobile")}
-								className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+								className={FOOTER_RAIL_BUTTON_CLASS}
 								onClick={() => selection.goConnectMobile()}
 								tabIndex={isCollapsed ? 0 : -1}
 								type="button"
 							>
-								<Smartphone aria-hidden="true" />
+								<NavRowHighlight />
+								<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+									<Smartphone aria-hidden="true" />
+								</span>
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">{t("settings.connectMobile")}</TooltipContent>
@@ -856,12 +953,15 @@ export function Sidebar({
 						<TooltipTrigger asChild>
 							<button
 								aria-label={t("shell.settings")}
-								className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+								className={FOOTER_RAIL_BUTTON_CLASS}
 								onClick={() => selection.goGlobalSettings()}
 								tabIndex={isCollapsed ? 0 : -1}
 								type="button"
 							>
-								<Settings aria-hidden="true" />
+								<NavRowHighlight />
+								<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+									<Settings aria-hidden="true" />
+								</span>
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">{t("shell.settings")}</TooltipContent>
@@ -869,8 +969,11 @@ export function Sidebar({
 				</div>
 			</SidebarFooter>
 
+			{/* Grip follows the painted sidebar-container edge; useResizable owns clamp. */}
 			<ResizeHandle
 				className="group-data-[state=collapsed]:hidden"
+				getBorderElement={getSidebarBorderElement}
+				getObserveElements={getResizeTargets}
 				onDoubleClick={onResizeDoubleClick}
 				onPointerDown={onResizePointerDown}
 				side="right"
@@ -892,7 +995,11 @@ type ProjectItemProps = {
 	workspace: WorkspaceSummary;
 	expanded: boolean;
 	selection: Selection;
-	isDragged: boolean;	onToggle: (projectId: string) => void;
+	isDragged: boolean;
+	projectDragInProgress: boolean;
+	consumeDragClick: (id: string) => boolean;
+	layoutSettled: boolean;
+	onToggle: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<void>;
 	suppressInitialExpandAnimation: boolean;
 	onProjectDragStart: (event: ReactDragEvent<HTMLElement>, projectId: string) => void;
@@ -905,7 +1012,11 @@ const ProjectItem = memo(function ProjectItem({
 	workspace,
 	expanded,
 	selection,
-	isDragged,	onToggle,
+	isDragged,
+	projectDragInProgress,
+	consumeDragClick,
+	layoutSettled,
+	onToggle,
 	onRemoveProject,
 	suppressInitialExpandAnimation,
 	onProjectDragStart,
@@ -937,10 +1048,11 @@ const ProjectItem = memo(function ProjectItem({
 		const id = window.setTimeout(() => setAnimReady(true), 500);
 		return () => window.clearTimeout(id);
 	}, []);
+	const isProjectProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
-	const isProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const projectIsDragging = isDragged;
+	const isStandaloneWorkspace = workspace.kind === STANDALONE_PROJECT_KIND;
 	// Keep completed PR sessions reachable while their runtime still exists.
 	// Only termination removes a worker from the sidebar; archived sessions stay
 	// reachable through SessionsBoard.
@@ -954,12 +1066,13 @@ const ProjectItem = memo(function ProjectItem({
 		[sessionOrder, visibleSessions],
 	);
 	const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
-	// Project and session reordering use nested DnD contexts. While a project is
-	// being dragged, leave the session lists as plain rows: otherwise every
-	// expanded project's DnD context measures its sortable descendants on drop.
-	// With a dense sidebar that turns one project drop into a full-tree layout.
+	const sessionLayoutDependency = useMemo(() => sessionIds.join("\u0000"), [sessionIds]);
+	// While a project is being dragged, leave the session lists as plain rows:
+	// otherwise every expanded project's DnD context measures its sortable
+	// descendants on drop.
 	const sessionSensors = useReorderSensors();
 	const sessionDragClickGuard = usePostDragClickGuard();
+	const [sessionDragging, setSessionDragging] = useState(false);
 	const [dropTransitionDisabledId, setDropTransitionDisabledId] = useState<string | null>(null);
 
 	const commitSessionOrder = useCallback((next: string[] | null) => {
@@ -971,6 +1084,7 @@ const ProjectItem = memo(function ProjectItem({
 		const sessionId = String(active.id);
 		sessionDragClickGuard.markDragEnded(sessionId);
 		if (!over) {
+			setSessionDragging(false);
 			setDropTransitionDisabledId(null);
 			if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 			return;
@@ -980,15 +1094,17 @@ const ProjectItem = memo(function ProjectItem({
 		const next = reorderById(sessionIds, sessionId, String(over.id));
 		// Commit the destination DOM order before dnd-kit removes its live transform.
 		// Otherwise the row briefly snaps back to its derived (usually top) position,
-		// then dnd-kit animates it forward to the persisted destination.
+		// then Motion animates it forward to the persisted destination.
 		flushSync(() => {
 			commitSessionOrder(next);
+			setSessionDragging(false);
 			setDropTransitionDisabledId(sessionId);
 		});
 		requestAnimationFrame(() => setDropTransitionDisabledId(null));
 		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 	}, [commitSessionOrder, sessionDragClickGuard, sessionIds]);
 	const onSessionDragCancel = useCallback(() => {
+		setSessionDragging(false);
 		setDropTransitionDisabledId(null);
 		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 	}, []);
@@ -1008,7 +1124,7 @@ const ProjectItem = memo(function ProjectItem({
 	// Expand a collapsed project so opening the orchestrator also reveals its
 	// session list — otherwise the tree stays shut while you're inside it.
 	const openOrchestrator = async () => {
-		if (isProjectRestarting || isProvisioning) return;
+		if (isProjectProvisioning || isProjectRestarting) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
 			selection.goSession(workspace.id, orchestrator.id);
@@ -1051,6 +1167,12 @@ const ProjectItem = memo(function ProjectItem({
 	// Do not treat orchestratorActive like the board: the project row is the
 	// one-click path back from the orchestrator button.
 	const onProjectClick = () => {
+		if (consumeDragClick(workspace.id)) return;
+		if (workspace.kind === STANDALONE_PROJECT_KIND) {
+			toggleDisclosure();
+			if (!expanded) selection.goHome();
+			return;
+		}
 		if (!expanded) {
 			toggleDisclosure();
 			selection.goProject(workspace.id);
@@ -1066,6 +1188,7 @@ const ProjectItem = memo(function ProjectItem({
 	// select click then a second click (felt like a double-click).
 	const onFolderClick = (event: MouseEvent) => {
 		event.stopPropagation();
+		if (consumeDragClick(workspace.id)) return;
 		toggleDisclosure();
 	};
 
@@ -1074,6 +1197,9 @@ const ProjectItem = memo(function ProjectItem({
 		setRemoveError(null);
 		setConfirmOpen(true);
 	};
+	const openPullRequestCount = new Set(
+		workspace.sessions.flatMap((session) => openPRs(session).map((pr) => pr.url)),
+	).size;
 
 	const handleConfirmRemove = async () => {
 		setConfirmOpen(false);
@@ -1095,25 +1221,28 @@ const ProjectItem = memo(function ProjectItem({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<li
+				<motion.li
 					className={cn(
-						"group/menu-item relative transition-opacity duration-200 group-data-[collapsible=icon]:mb-0",
+						"group/menu-item relative group-data-[collapsible=icon]:mb-0",
 						projectIsDragging && "opacity-50",
 					)}
 					data-dragging={projectIsDragging ? "true" : undefined}
-					data-project-drop-target=""
+					data-project-drop-target={isStandaloneWorkspace ? undefined : ""}
 					data-project-id={workspace.id}
 					data-sidebar="menu-item"
 					data-slot="sidebar-menu-item"
+					layout={!layoutSettled || projectDragInProgress ? false : "position"}
 					onDragOver={(event) => onProjectDragOver(event, workspace.id)}
-					onDrop={onProjectDrop}				>
+					onDrop={onProjectDrop}
+					transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
+				>
 					<div
 						className="relative"
 						data-project-drag-row=""
 						data-project-id={workspace.id}
-						draggable
-						onDragStart={(event) => onProjectDragStart(event, workspace.id)}
-						onDragEnd={onProjectDragEnd}
+						draggable={!isStandaloneWorkspace}
+						onDragStart={isStandaloneWorkspace ? undefined : (event) => onProjectDragStart(event, workspace.id)}
+						onDragEnd={isStandaloneWorkspace ? undefined : onProjectDragEnd}
 					>
 						<div className={cn("relative", projectIsDragging && "cursor-grabbing")}>
 							<div>
@@ -1126,34 +1255,43 @@ const ProjectItem = memo(function ProjectItem({
 									onClick={onProjectClick}
 									className={cn(
 										NAV_ROW_CLASS,
+										NAV_ROW_HIGHLIGHT_HOST_CLASS,
 										// gap-2 matches SectionDisclosure so project icons/labels share the
 										// Projects header's left edge (NAV_ROW defaults to gap-2.5).
-										"cursor-grab gap-2 pr-sidebar-project-actions active:cursor-grabbing [&_svg]:size-icon-md",
+										!isStandaloneWorkspace && "cursor-grab active:cursor-grabbing",
+										"gap-2 pr-sidebar-project-actions [&_svg]:size-icon-md",
 										"transition-none",
 										projectIsDragging && "!cursor-grabbing",
+										projectDragInProgress && "hover:text-muted-foreground active:text-muted-foreground",
 										"group-data-[collapsible=icon]:size-control-board! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-lg group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:font-semibold",
 									)}
 								>
+									<NavRowHighlight active={projectActive} disabled={projectIsDragging} />
 									{/* Expanded sidebar: visual folder/chevron icon (decorative — toggle button is a sibling).
 		    size-icon-md matches the Projects section row; an 18px centered box was
 		    optically indenting these icons relative to the header. */}
 									<span
 										aria-hidden="true"
-										className="relative inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+										className="relative z-[1] inline-flex size-icon-md shrink-0 translate-y-px items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+										data-expanded={expanded ? "" : undefined}
 										data-project-folder-visual=""
 									>
+										{/* 1.2 — contextual icon swap: scale 0.8↔1 (animated); opacity snaps for hide.
+										    Hover paint lives in styles.css (fine pointer only). */}
 										<span
-											className={cn(
-												"inline-flex size-icon-md items-center justify-center transition-opacity duration-150 group-hover/menu-item:opacity-0",
-											)}
+											className="inline-flex size-icon-md items-center justify-center transition-[scale] duration-normal ease-[var(--ease-out)] motion-reduce:transition-none"
+											data-project-folder-icon=""
 										>
 											{expanded ? <FolderOpen strokeWidth={1.75} /> : <Folder strokeWidth={1.75} />}
 										</span>
 										<span
 											className={cn(
-												"absolute inline-flex size-icon-md items-center justify-center opacity-0 transition-[opacity,transform] duration-150 group-hover/menu-item:opacity-100",
+												"absolute inline-flex size-icon-md scale-[0.8] items-center justify-center opacity-0",
+												"transition-[scale,rotate] duration-normal ease-[var(--ease-out)]",
+												"motion-reduce:transition-none",
 												expanded && "rotate-90",
 											)}
+											data-project-chevron-icon=""
 										>
 											<ChevronRight strokeWidth={1.75} />
 										</span>
@@ -1161,12 +1299,12 @@ const ProjectItem = memo(function ProjectItem({
 									{/* Collapsed icon rail: folder icon */}
 									<span
 										aria-hidden="true"
-										className="hidden group-data-[collapsible=icon]:inline-flex size-8 items-center justify-center text-muted-foreground"
+										className="relative z-[1] hidden size-8 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:inline-flex"
 									>
 										{expanded ? <FolderOpen className="size-5" strokeWidth={1.75} /> : <Folder className="size-5" strokeWidth={1.75} />}
 									</span>
 									<span
-										className="sidebar-expanded-chrome min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
+										className="sidebar-expanded-chrome relative z-[1] min-w-0 flex-1 translate-y-px truncate group-data-[collapsible=icon]:hidden"
 										data-project-label=""
 									>
 										{workspace.name}
@@ -1174,7 +1312,7 @@ const ProjectItem = memo(function ProjectItem({
 									{workspace.kind === "cloud" && (
 										<Badge
 											variant="outline"
-											className="sidebar-expanded-chrome h-4 shrink-0 px-1.5 text-2xs group-data-[collapsible=icon]:hidden"
+											className="sidebar-expanded-chrome relative z-[1] h-4 shrink-0 px-1.5 text-2xs group-data-[collapsible=icon]:hidden"
 										>
 											{t("shell.cloudProjectBadge")}
 										</Badge>
@@ -1187,26 +1325,26 @@ const ProjectItem = memo(function ProjectItem({
 										name: workspace.name,
 									})}
 									aria-expanded={expanded}
-									className="absolute inset-y-0 left-0 z-10 w-9 cursor-pointer group-data-[collapsible=icon]:hidden"
+									className="absolute inset-y-0 left-0 z-10 w-9 cursor-pointer bg-transparent group-data-[collapsible=icon]:hidden"
 									data-project-folder=""
 									onClick={onFolderClick}
 									type="button"
 								/>
 							</div>
-							{/* Per-project actions: orchestrator and kebab menu. Inside the scaled visual
-		row, but outside its navigation surface so their own presses stay independent.
-		Always visible (not hover-gated) to avoid CSS :hover group propagation in Chromium. */}
+							{/* Per-project actions: orchestrator and kebab menu. Outside the row's
+		navigation surface so their own presses stay independent. */}
 							<div
 								className={cn(
 									"sidebar-expanded-chrome absolute top-0 right-0.5 z-chrome flex h-control-form items-center gap-px",
 									"group-data-[collapsible=icon]:hidden",
+									projectDragInProgress && "pointer-events-none",
 								)}
 								data-project-actions=""
 								draggable={false}
 								onClick={(event) => event.stopPropagation()}
 								onPointerDown={(event) => event.stopPropagation()}
 							>
-								<Tooltip>
+								{workspace.kind !== STANDALONE_PROJECT_KIND && <Tooltip>
 									<TooltipTrigger asChild>
 										<span className="inline-flex">
 											<button
@@ -1220,8 +1358,8 @@ const ProjectItem = memo(function ProjectItem({
 																name: workspace.name,
 															})
 												}
-											className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
-											disabled={isSpawning || isProjectRestarting || isProvisioning}
+													className={cn(HOVER_ACTION_CLASS, orchestratorActive && "text-foreground")}
+													disabled={isSpawning || isProjectProvisioning || isProjectRestarting}
 												onClick={() => void openOrchestrator()}
 												type="button"
 											>
@@ -1229,58 +1367,65 @@ const ProjectItem = memo(function ProjectItem({
 											</button>
 										</span>
 									</TooltipTrigger>
-									<TooltipContent>
-										{isProjectRestarting
-											? t("shell.restarting")
-											: isSpawning
+										<TooltipContent>
+											{isProjectProvisioning || isProjectRestarting
+												? t("shell.restarting")
+												: isSpawning
 												? t("shell.spawning")
 												: orchestrator
 													? t("shell.orchestrator")
 													: t("shell.spawnOrchestratorLower")}
 									</TooltipContent>
-								</Tooltip>
-								<DropdownMenu>
+								</Tooltip>}
+								{workspace.kind === STANDALONE_PROJECT_KIND ? (
 									<Tooltip>
 										<TooltipTrigger asChild>
-											<DropdownMenuTrigger asChild>
-												<button
-													aria-label={t("shell.projectActions", {
-														name: workspace.name,
-													})}
-													className={HOVER_ACTION_CLASS}
-													type="button"
-												>
-													<MoreVertical aria-hidden="true" />
-												</button>
-											</DropdownMenuTrigger>
+											<button
+												aria-label={t("shell.openNewAgent", { defaultValue: "Open a new agent" })}
+												className={HOVER_ACTION_CLASS}
+												onClick={() => requestNewTask(workspace.id)}
+												type="button"
+											>
+												<Plus aria-hidden="true" />
+											</button>
 										</TooltipTrigger>
 										<TooltipContent>
-											{t("shell.projectActions", {
-												name: workspace.name,
-											})}
+											{t("shell.openNewAgent")}
 										</TooltipContent>
 									</Tooltip>
-									<DropdownMenuContent side="right" align="start" className="min-w-44">
-										<DropdownMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
-											<Plus aria-hidden="true" />
-											{t("shell.newSession")}
-										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
-											<Settings aria-hidden="true" />
-											{t("shell.projectSettings")}
-										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
-											className="text-destructive focus:text-destructive [&_svg]:text-destructive"
-											disabled={isRemoving}
-											onSelect={() => void removeProject()}
-										>
-											<Trash2 aria-hidden="true" />
-											{t("shell.removeProjectTitle")}
-										</DropdownMenuItem>
-									</DropdownMenuContent>
-								</DropdownMenu>
+								) : (
+									<DropdownMenu>
+										<DropdownMenuTrigger asChild>
+											<button
+												aria-label={t("shell.projectActions", {
+													name: workspace.name,
+												})}
+												className={HOVER_ACTION_CLASS}
+												type="button"
+											>
+												<MoreVertical aria-hidden="true" />
+											</button>
+										</DropdownMenuTrigger>
+										<DropdownMenuContent side="right" align="start" className="min-w-44">
+											<DropdownMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
+												<Plus aria-hidden="true" />
+												{t("shell.newTask")}
+											</DropdownMenuItem>
+											<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+												<Settings aria-hidden="true" />
+												{t("shell.projectSettings")}
+											</DropdownMenuItem>
+											<DropdownMenuItem
+												className="text-destructive focus:text-destructive [&_svg]:text-destructive focus:[&_svg]:text-destructive"
+												disabled={isRemoving}
+												onSelect={() => void removeProject()}
+											>
+												<Trash2 aria-hidden="true" />
+												{t("shell.removeProjectTitle")}
+											</DropdownMenuItem>
+										</DropdownMenuContent>
+									</DropdownMenu>
+								)}
 							</div>
 						</div>
 						{/* end outer relative */}
@@ -1320,36 +1465,55 @@ const ProjectItem = memo(function ProjectItem({
 						exit={{ y: -12, opacity: 0 }}
 						transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.14, ease: [0.25, 0.46, 0.45, 0.94] }}
 					>
-											<DndContext
-												collisionDetection={closestCenter}
-												modifiers={[restrictToListBounds]}
-												id={sessionDndId(workspace.id)}
-												onDragCancel={onSessionDragCancel}
-												onDragEnd={onSessionDragEnd}
-												sensors={sessionSensors}
-											>
-												<SortableContext
-													items={sessionIds}
-													strategy={verticalListSortingStrategy}
+											{projectDragInProgress ? (
+												<SidebarMenuSub
+													className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
+													data-testid={`session-list-${workspace.id}`}
 												>
-													<SidebarMenuSub
-														className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
-														data-testid={`session-list-${workspace.id}`}
-													>
-														{sessions.map((session) => (
-															<SortableSessionRow
-																key={session.id}
-																session={session}
-																active={selection.activeSessionId === session.id}
-																consumeDragClick={sessionDragClickGuard.consumeClick}
-																dropTransitionDisabled={dropTransitionDisabledId === session.id}
-																onOpen={openSession}
-															/>
-														))}
-													</SidebarMenuSub>
-												</SortableContext>
-											</DndContext>								</motion.div>
-					</div>
+													{sessions.map((session) => (
+														<SessionRow
+															key={session.id}
+															session={session}
+															active={selection.activeSessionId === session.id}
+															disableLayout
+															onOpen={() => openSession(session.id)}
+														/>
+													))}
+												</SidebarMenuSub>
+											) : (
+												<DndContext
+													collisionDetection={closestCenter}
+													modifiers={[restrictToListBounds]}
+													id={sessionDndId(workspace.id)}
+													onDragStart={() => setSessionDragging(true)}
+													onDragCancel={onSessionDragCancel}
+													onDragEnd={onSessionDragEnd}
+													sensors={sessionSensors}
+												>
+													<SortableContext items={sessionIds} strategy={verticalListSortingStrategy}>
+														<SidebarMenuSub
+															className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 py-1"
+															data-testid={`session-list-${workspace.id}`}
+														>
+															{sessions.map((session) => (
+																<SortableSessionRow
+																	key={session.id}
+																	session={session}
+																	active={selection.activeSessionId === session.id}
+																	consumeDragClick={sessionDragClickGuard.consumeClick}
+																	disableLayout={!layoutSettled}
+																	layoutDependency={sessionLayoutDependency}
+																	listIsDragging={sessionDragging}
+																	dropTransitionDisabled={dropTransitionDisabledId === session.id}
+																	onOpen={openSession}
+																/>
+															))}
+														</SidebarMenuSub>
+													</SortableContext>
+												</DndContext>
+											)}
+								</motion.div>
+							</div>
 							</motion.div>
 						)}
 					</AnimatePresence>
@@ -1360,34 +1524,43 @@ const ProjectItem = memo(function ProjectItem({
 						description={
 							<>
 								<p className="text-sm font-medium text-foreground">{t("shell.removeProjectLead", { name: workspace.name })}</p>
-								<p className="mt-1 text-xs text-muted-foreground">{t("shell.removeProjectBody")}</p>
+								<p className="mt-1 text-xs text-muted-foreground">
+									{workspace.kind === CLOUD_PROJECT_KIND
+										? t("shell.removeCloudProjectBody")
+										: t("shell.removeProjectBody")}
+								</p>
+								{openPullRequestCount > 0 ? (
+									<p className="mt-2 text-xs font-medium text-error">
+										{t("shell.removeProjectOpenPrWarning", { count: openPullRequestCount })}
+									</p>
+								) : null}
 							</>
 						}
 						confirmLabel={t("shell.remove")}
 						destructive
 						onConfirm={handleConfirmRemove}
 					/>
-				</li>
+				</motion.li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
-				<ContextMenuItem disabled={isProjectRestarting || isProvisioning} onSelect={() => requestNewTask(workspace.id)}>
+				<ContextMenuItem disabled={isProjectRestarting} onSelect={() => requestNewTask(workspace.id)}>
 					<Plus aria-hidden="true" />
-					{t("shell.newSession")}
+					{t("shell.newTask")}
 				</ContextMenuItem>
-				<ContextMenuSeparator />
+				{workspace.kind !== STANDALONE_PROJECT_KIND && <>
 				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 					<Settings aria-hidden="true" />
 					{t("shell.projectSettings")}
 				</ContextMenuItem>
-				<ContextMenuSeparator />
 				<ContextMenuItem
-					className="text-destructive focus:text-destructive [&_svg]:text-destructive"
+					className="text-destructive focus:text-destructive [&_svg]:text-destructive focus:[&_svg]:text-destructive"
 					disabled={isRemoving}
 					onSelect={() => void removeProject()}
 				>
 					<Trash2 aria-hidden="true" />
 					{t("shell.removeProjectTitle")}
 				</ContextMenuItem>
+				</>}
 			</ContextMenuContent>
 		</ContextMenu>
 	);
@@ -1414,12 +1587,18 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	session,
 	active,
 	consumeDragClick,
+	disableLayout = false,
+	layoutDependency,
+	listIsDragging,
 	dropTransitionDisabled,
 	onOpen,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	consumeDragClick: (id: string) => boolean;
+	disableLayout?: boolean;
+	layoutDependency: string;
+	listIsDragging: boolean;
 	dropTransitionDisabled: boolean;
 	onOpen: (sessionId: string) => void;
 }) {
@@ -1433,6 +1612,9 @@ const SortableSessionRow = memo(function SortableSessionRow({
 			onOpen={() => {
 				if (!consumeDragClick(session.id)) onOpen(session.id);
 			}}
+			disableLayout={disableLayout}
+			layoutDependency={layoutDependency}
+			listIsDragging={listIsDragging}
 			reorder={{
 				isDragging,
 				listeners,
@@ -1457,19 +1639,25 @@ function SessionRow({
 	session,
 	active,
 	indented = true,
+	layoutDependency,
+	listIsDragging = false,
+	disableLayout = false,
 	onOpen,
 	reorder,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
 	indented?: boolean;
-	/** Not used in the native-drag implementation; accepted for call-site compatibility. */
+	layoutDependency?: string;
+	listIsDragging?: boolean;
+	/** Project drags pause nested session projection work. */
 	disableLayout?: boolean;
 	onOpen: () => void;
 	/** Present only for rows inside a reorderable project list. */
 	reorder?: SessionReorder;
 }) {
 	const { t } = useTranslation();
+	const prefersReducedMotion = useReducedMotion();
 	useGrabbingCursor(Boolean(reorder?.isDragging));
 	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
 	const switchLabel = switchPresentation
@@ -1494,17 +1682,18 @@ function SessionRow({
 			<SidebarMenuSubItem className={cn(indented && "pl-0.5")}>
 				<div
 					className={cn(
-						"relative flex h-8 w-full items-center gap-1.5 rounded-lg py-0 pl-1.5 pr-1",
-						active && "bg-interactive-active text-foreground",
+						"group/nav-row relative flex h-8 w-full items-center gap-1.5 rounded-lg py-0 pl-1.5 pr-1",
+						active && "text-foreground",
 					)}
 					data-session-row=""
 				>
+					<NavRowHighlight active={active} />
 					<SessionStatusDot session={session} />
 					<input
 						aria-label={t("shell.renameSession", { title: session.title })}
 						autoFocus
 						className={cn(
-							"h-full min-w-0 flex-1 appearance-none border-0 bg-transparent! p-0 text-sm text-foreground outline-none ring-0 focus:outline-none focus:ring-0",
+							"relative z-[1] h-full min-w-0 flex-1 appearance-none border-0 bg-transparent! p-0 text-sm text-foreground outline-none ring-0 focus:outline-none focus:ring-0",
 							session.lastUserMessageAt && "pr-[36px]",
 						)}
 						data-session-inline-editor=""
@@ -1538,16 +1727,22 @@ function SessionRow({
 					ref={reorder?.setNodeRef}
 					style={reorder ? sortableRowStyle(reorder) : undefined}
 				>
+			<motion.div
+				layout={disableLayout || listIsDragging ? false : "position"}
+				layoutDependency={disableLayout ? undefined : layoutDependency}
+				transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 42, mass: 0.55 }}
+			>
 				<div
 					className={cn(
-						"group/session-row flex h-8 w-full items-center rounded-lg",
-						"hover:bg-interactive-hover hover:text-foreground",
-						active && "bg-interactive-active text-foreground",
+						"group/session-row group/nav-row relative flex h-8 w-full items-center rounded-lg",
+						"hover:text-foreground",
+						active && "text-foreground",
 					)}
 					data-session-row=""
 					data-dragging={reorder?.isDragging ? "true" : undefined}
 				>
-					<div className={cn("flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
+					<NavRowHighlight active={active} disabled={Boolean(reorder?.isDragging)} />
+					<div className={cn("relative z-[1] flex min-w-0 flex-1", reorder?.isDragging && "cursor-grabbing")}>
 						<button
 							aria-current={active ? "page" : undefined}
 							aria-describedby={describedBy}
@@ -1618,6 +1813,7 @@ function SessionRow({
 						session={session}
 					/>
 				</div>
+			</motion.div>
 				</SidebarMenuSubItem>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="min-w-44">
@@ -1636,7 +1832,7 @@ const SessionMessageAge = memo(function SessionMessageAge({ session }: { session
 
 	return (
 		<time
-			className="absolute inset-y-0 right-1.5 flex min-w-0 shrink-0 items-center whitespace-nowrap font-mono text-micro text-passive opacity-100 transition-opacity duration-100 ease-out group-hover/session-row:opacity-0 group-focus-within/session-row:opacity-0"
+			className="absolute inset-y-0 right-1.5 z-[1] flex min-w-0 shrink-0 items-center whitespace-nowrap font-sans text-micro tabular-nums text-passive opacity-100 group-focus-within/session-row:opacity-0"
 			data-session-message-age=""
 			dateTime={session.lastUserMessageAt}
 			title={t("shell.lastMessageAt", { time: formatTimeCompact(session.lastUserMessageAt) })}
@@ -1666,35 +1862,54 @@ const SessionActions = memo(function SessionActions({
 		>
 			<div
 				className={cn(
-					"absolute inset-y-0 right-0.5 flex items-center gap-px opacity-0 transition-opacity duration-100 ease-out",
+					/* 1.3 — pin/kill: scale 0.8↔1 from center (not origin-right — that reads as a slide) */
+					"absolute inset-y-0 right-0.5 flex origin-center scale-[0.8] items-center gap-px opacity-0",
+					"transition-[scale] duration-normal ease-[var(--ease-out)]",
+					"motion-reduce:transition-none",
 					!isDragging &&
-						"group-hover/session-row:pointer-events-auto group-hover/session-row:opacity-100 group-focus-within/session-row:pointer-events-auto group-focus-within/session-row:opacity-100",
+						"group-focus-within/session-row:pointer-events-auto group-focus-within/session-row:scale-100 group-focus-within/session-row:opacity-100",
 				)}
 				data-session-action-buttons=""
 			>
-				<button
-					aria-label={session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
-					className={cn(SESSION_ACTION_CLASS, session.isPinned && "text-foreground")}
-					onClick={(event) => {
-						event.stopPropagation();
-						session.isPinned ? unpinSession(session) : pinSession(session);
-					}}
-					type="button"
-				>
-					{session.isPinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
-				</button>
-				<button
-					aria-label={t("shell.killSession")}
-					className={cn(SESSION_ACTION_CLASS, "hover:text-destructive")}
-					disabled={isKilling}
-					onClick={(event) => {
-						event.stopPropagation();
-						terminateSession(session);
-					}}
-					type="button"
-				>
-					<Trash2 aria-hidden="true" />
-				</button>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							aria-label={session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
+							className={cn(
+								SESSION_ACTION_CLASS,
+								"focus-visible:text-foreground",
+								session.isPinned && "text-foreground",
+							)}
+							onClick={(event) => {
+								event.stopPropagation();
+								session.isPinned ? unpinSession(session) : pinSession(session);
+							}}
+							type="button"
+						>
+							{session.isPinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="top">
+						{session.isPinned ? t("shell.unpinSession") : t("shell.pinSession")}
+					</TooltipContent>
+				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							aria-label={t("shell.killSession")}
+							className={cn(SESSION_ACTION_CLASS, "hover:text-destructive focus-visible:text-destructive")}
+							disabled={isKilling}
+							onClick={(event) => {
+								event.stopPropagation();
+								terminateSession(session);
+							}}
+							type="button"
+						>
+							<Trash2 aria-hidden="true" />
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="top">{t("shell.killSession")}</TooltipContent>
+				</Tooltip>
 			</div>
 			<SessionMessageAge session={session} />
 		</div>
@@ -1717,16 +1932,16 @@ function CloudSignInRow({ tabIndex }: { tabIndex: number }) {
 	return (
 		<button
 			aria-label={t("shell.signInToAOCloud")}
-			className={cn(
-				NAV_ROW_CLASS,
-				"flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
-			)}
+			className={FOOTER_NAV_BUTTON_CLASS}
 			onClick={onSignIn}
 			tabIndex={tabIndex}
 			type="button"
 		>
-			<LogIn aria-hidden="true" />
-			<span className="tracking-tight">{t("shell.signInToAOCloud")}</span>
+			<NavRowHighlight />
+			<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+				<LogIn aria-hidden="true" />
+				<span className="tracking-tight">{t("shell.signInToAOCloud")}</span>
+			</span>
 		</button>
 	);
 }
@@ -1747,12 +1962,15 @@ function CloudSignInRailButton({ tabIndex }: { tabIndex: number }) {
 			<TooltipTrigger asChild>
 				<button
 					aria-label={t("shell.signInToAOCloud")}
-					className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+					className={FOOTER_RAIL_BUTTON_CLASS}
 					onClick={onSignIn}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<LogIn aria-hidden="true" />
+					<NavRowHighlight />
+					<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+						<LogIn aria-hidden="true" />
+					</span>
 				</button>
 			</TooltipTrigger>
 			<TooltipContent side="right">{t("shell.signInToAOCloud")}</TooltipContent>
@@ -1775,13 +1993,16 @@ function CloudAccountRow({ tabIndex }: { tabIndex: number }) {
 					aria-label={t("shell.signedInAs", {
 						email: session?.user.email ?? "AO Cloud",
 					})}
-					className={cn(NAV_ROW_CLASS, "flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+					className={FOOTER_NAV_BUTTON_CLASS}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<User aria-hidden="true" />
-					<span className="min-w-0 flex-1 truncate tracking-tight">
-						{session?.user.email ?? "AO Cloud"}
+					<NavRowHighlight />
+					<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+						<User aria-hidden="true" />
+						<span className="min-w-0 flex-1 truncate tracking-tight">
+							{session?.user.email ?? "AO Cloud"}
+						</span>
 					</span>
 				</button>
 			</DropdownMenuTrigger>
@@ -1812,12 +2033,15 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
 					aria-label={t("shell.signedInAs", {
 						email: session?.user.email ?? "AO Cloud",
 					})}
-					className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+					className={FOOTER_RAIL_BUTTON_CLASS}
 					onClick={() => void signOut()}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<User aria-hidden="true" />
+					<NavRowHighlight />
+					<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
+						<User aria-hidden="true" />
+					</span>
 				</button>
 			</TooltipTrigger>
 			<TooltipContent side="right">
@@ -1839,17 +2063,15 @@ function CloudAccountRailButton({ tabIndex }: { tabIndex: number }) {
  * this reason, so the staged build is read from there rather than from `state`.
  */
 type SidebarUpdateAction =
-	| { kind: "downloading"; percent?: number; preparing: boolean }
+	| { kind: "downloading"; percent: number }
 	| { kind: "download"; version?: string }
 	| { kind: "install"; version?: string; escalated: boolean }
+	| { kind: "retry" }
 	| null;
 
 function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean): SidebarUpdateAction {
-	// Update failures belong in Settings, where the full message and recovery
-	// action have room. The sidebar stays focused on update progress and actions.
-	if (status.state === "error" && (status.staged === undefined || status.staged.ready === false)) return null;
-	if (status.state === "downloading" || status.state === "preparing" || status.staged?.ready === false) {
-		return { kind: "downloading", percent: status.percent, preparing: status.state === "preparing" || status.staged?.ready === false };
+	if (status.state === "downloading") {
+		return { kind: "downloading", percent: Math.min(100, Math.max(0, status.percent ?? 0)) };
 	}
 	// `staged` is the stamp the main process puts on every status; the
 	// `downloaded` fallback keeps this correct for any status that predates it
@@ -1870,6 +2092,11 @@ function sidebarUpdateAction(status: UpdateStatus, availableDismissed: boolean):
 		return { kind: "download", version: status.version };
 	}
 	if (staged) return { kind: "install", version: staged.version, escalated: staged.escalated };
+	// Ranked below a staged build on purpose: an update ready to install is more
+	// actionable than "checks are failing". Only when there is nothing better to
+	// show does the failure take the row — it used to render nothing at all,
+	// which reads as "up to date" rather than "checks are not getting through".
+	if (status.checksFailing === true) return { kind: "retry" };
 	return null;
 }
 
@@ -1931,23 +2158,26 @@ function UpdateStatusRow({
 							? t("shell.downloadUpdateVersion", { version: action.version })
 							: t("shell.downloadUpdate")
 					}
-					className={cn(NAV_ROW_CLASS, "flex min-w-0 flex-1 items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
-					onClick={() => void requestUpdateDownload()}
+					className={cn(FOOTER_NAV_BUTTON_CLASS, "min-w-0 flex-1")}
+					onClick={() => void aoBridge.updates.download()}
 					tabIndex={tabIndex}
 					type="button"
 				>
-					<Download aria-hidden="true" className="size-icon-lg shrink-0" />
-					<span className="min-w-0 flex-1">
-						<span className="block truncate tracking-tight">{t("shell.downloadUpdate")}</span>
-						{versionLabel && (
-							<span className="block truncate text-caption font-normal text-passive">{versionLabel}</span>
-						)}
+					<NavRowHighlight />
+					<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
+						<Download aria-hidden="true" className="size-icon-lg shrink-0" />
+						<span className="min-w-0 flex-1">
+							<span className="block truncate tracking-tight">{t("shell.updateAvailable")}</span>
+							{versionLabel && (
+								<span className="block truncate text-caption font-normal text-passive">{versionLabel}</span>
+							)}
+						</span>
 					</span>
 				</button>
 				{action.version && (
 					<button
 						aria-label={t("shell.dismissUpdateVersion", { version: action.version })}
-						className="grid size-8 shrink-0 place-items-center text-muted-foreground transition-colors hover:text-foreground"
+						className="grid size-8 shrink-0 place-items-center text-muted-foreground hover:text-foreground"
 						onClick={onDismissAvailable}
 						tabIndex={tabIndex}
 						type="button"
@@ -1959,19 +2189,39 @@ function UpdateStatusRow({
 		);
 	}
 
+	if (action.kind === "downloading") {
+		return (
+			<div
+				aria-live="polite"
+				className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
+				data-testid="sidebar-update-downloading"
+				role="status"
+			>
+				<Download aria-hidden="true" className="size-icon-lg shrink-0" />
+				<span className="min-w-0 flex-1 truncate tabular-nums">
+					{t("settings.updates.downloading", { percent: action.percent })}
+				</span>
+			</div>
+		);
+	}
+
 	return (
-		<div
-			aria-live="polite"
-			className={cn(NAV_ROW_CLASS, "flex w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0")}
-			data-testid="sidebar-update-downloading"
-			role="status"
+		<button
+			aria-label={t("shell.retryUpdateCheck")}
+			className="flex w-full items-center gap-2.5 rounded-lg border border-warning/35 bg-warning/12 p-2.5 text-left text-control font-medium text-warning hover:bg-warning/18 [&_svg]:text-warning"
+			data-testid="sidebar-update-failed"
+			onClick={() => void aoBridge.updates.check()}
+			tabIndex={tabIndex}
+			type="button"
 		>
-			<Download aria-hidden="true" className="size-icon-lg shrink-0" />
-			<span className="min-w-0 flex-1 truncate tabular-nums">
-				{action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent })}
-				{!action.preparing && action.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={action.percent} className="block h-1 w-full mt-1" />}
+			<AlertTriangle aria-hidden="true" className="size-icon-lg shrink-0" />
+			<span className="min-w-0 flex-1">
+				<span className="block truncate tracking-tight">{t("shell.updateCheckFailed")}</span>
+				<span className="block truncate text-caption font-normal text-warning">
+					{t("shell.retryUpdateCheck")}
+				</span>
 			</span>
-		</div>
+		</button>
 	);
 }
 
@@ -2004,8 +2254,7 @@ function UpdateInstallSlide({
 			}
 			className={cn(
 				"mb-1 flex h-9 w-full items-center gap-2.5 rounded-lg bg-muted px-3 text-left text-sm font-normal text-foreground",
-				"transition-colors hover:bg-interactive-hover",
-				"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-200",
+				"hover:bg-interactive-hover",
 			)}
 			data-testid="sidebar-update-ready"
 			onClick={onRequestInstall}
@@ -2055,12 +2304,15 @@ function UpdateStatusRail({
 								? t("shell.downloadUpdateVersion", { version: action.version })
 								: t("shell.downloadUpdate")
 						}
-						className="grid size-9 place-items-center rounded-lg text-passive transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
-						onClick={() => void requestUpdateDownload()}
+						className={cn(FOOTER_RAIL_BUTTON_CLASS, "size-9 text-passive [&_svg]:size-4")}
+						onClick={() => void aoBridge.updates.download()}
 						tabIndex={tabIndex}
 						type="button"
 					>
-						<Download aria-hidden="true" />
+						<NavRowHighlight />
+						<span className="relative z-[1] grid place-items-center [&_svg]:size-4">
+							<Download aria-hidden="true" />
+						</span>
 					</button>
 				</TooltipTrigger>
 				<TooltipContent side="right">{label}</TooltipContent>
@@ -2069,7 +2321,7 @@ function UpdateStatusRail({
 	}
 
 	if (action.kind === "downloading") {
-		const label = action.preparing ? t("settings.updates.preparing", { defaultValue: "Preparing update…" }) : action.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: action.percent });
+		const label = t("settings.updates.downloading", { percent: action.percent });
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -2087,6 +2339,27 @@ function UpdateStatusRail({
 		);
 	}
 
+	if (action.kind === "retry") {
+		return (
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<button
+						aria-label={t("shell.retryUpdateCheck")}
+						className="grid size-9 place-items-center rounded-lg bg-warning/12 text-warning hover:bg-warning/18 [&_svg]:size-4"
+						onClick={() => void aoBridge.updates.check()}
+						tabIndex={tabIndex}
+						type="button"
+					>
+						<AlertTriangle aria-hidden="true" />
+					</button>
+				</TooltipTrigger>
+				<TooltipContent side="right">
+					{t("shell.updateCheckFailed")} · {t("shell.retryUpdateCheck")}
+				</TooltipContent>
+			</Tooltip>
+		);
+	}
+
 	const versionNumber = installVersionNumber(action.version);
 	return (
 		<Tooltip>
@@ -2097,9 +2370,7 @@ function UpdateStatusRail({
 							? t("shell.restartInstallUpdateVersion", { version: versionNumber })
 							: t("shell.restartInstallUpdate")
 					}
-					className={cn(
-						"grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4",
-					)}
+					className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground hover:bg-interactive-hover hover:text-foreground [&_svg]:size-4"
 					onClick={onRequestInstall}
 					tabIndex={tabIndex}
 					type="button"
@@ -2161,17 +2432,25 @@ function SectionDisclosure({
 
 	if (trailing) {
 		return (
-			<div className={cn(SECTION_ROW_CLASS, SECTION_ROW_INTERACTIVE_CLASS, "pr-1", className)}>
+			<div
+				className={cn(
+					SECTION_ROW_CLASS,
+					NAV_ROW_HIGHLIGHT_HOST_CLASS,
+					"rounded-lg pr-1",
+					className,
+				)}
+			>
+				<NavRowHighlight />
 				<button
 					aria-expanded={open}
 					aria-label={label}
-					className="flex min-w-0 flex-1 items-center gap-2 text-left"
+					className="relative z-[1] flex min-w-0 flex-1 items-center gap-2 text-left"
 					onClick={onToggle}
 					type="button"
 				>
 					{labelRow}
 				</button>
-				{trailing}
+				<span className="relative z-[1] shrink-0">{trailing}</span>
 			</div>
 		);
 	}
@@ -2180,11 +2459,19 @@ function SectionDisclosure({
 		<button
 			aria-expanded={open}
 			aria-label={label}
-			className={cn(SECTION_ROW_CLASS, SECTION_ROW_INTERACTIVE_CLASS, "text-left", className)}
+			className={cn(
+				SECTION_ROW_CLASS,
+				NAV_ROW_HIGHLIGHT_HOST_CLASS,
+				"rounded-lg text-left",
+				className,
+			)}
 			onClick={onToggle}
 			type="button"
 		>
-			{labelRow}
+			<NavRowHighlight />
+			<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2">
+				{labelRow}
+			</span>
 		</button>
 	);
 }
@@ -2231,7 +2518,6 @@ function SidebarSearchButton({ onOpen }: { onOpen: () => void }) {
 
 function CreateProjectButton({
 	existingProjectPaths,
-	existingProjectNames,
 	hideTrigger = false,
 	onCloneProject,
 	onCreateProject,
@@ -2239,9 +2525,8 @@ function CreateProjectButton({
 	onOpenExistingProject,
 }: Pick<SidebarProps, "onCloneProject" | "onCreateProject" | "onInitializeProject"> & {
 	existingProjectPaths: readonly string[];
-	existingProjectNames: readonly string[];
 	hideTrigger?: boolean;
-	onOpenExistingProject: (path: string) => void;
+	onOpenExistingProject: (path: string) => void | Promise<void>;
 }) {
 	const { t } = useTranslation();
 	// Single CreateProjectFlow owner for the sidebar: the header "+" stays mounted
@@ -2250,17 +2535,18 @@ function CreateProjectButton({
 	// reuses this flow via requestCreateProject().
 	const createProjectNonce = useUiStore((state) => state.createProjectNonce);
 	const folderDropRequest = useUiStore((state) => state.folderDropRequest);
+	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	return (
 		<CreateProjectFlow
 			droppedPath={folderDropRequest}
+			existingProjectPaths={existingProjectPaths}
 			mode="choose"
 			onCloneProject={onCloneProject}
 			onCreateProject={onCreateProject}
+			onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 			onInitializeProject={onInitializeProject}
 			onOpenExistingProject={onOpenExistingProject}
 			openSignal={createProjectNonce}
-			existingProjectPaths={existingProjectPaths}
-			existingProjectNames={existingProjectNames}
 		>
 			{({ disabled, choosePath, label }) => (
 				<Tooltip>
@@ -2269,7 +2555,7 @@ function CreateProjectButton({
 							<button
 								aria-label={t("shell.newProject")}
 								className={cn(
-									"grid size-icon-xl shrink-0 place-items-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground",
+									"sidebar-icon-action grid size-icon-xl shrink-0 place-items-center rounded-sm !bg-transparent text-passive hover:!bg-transparent focus:!bg-transparent focus-visible:!bg-transparent active:!bg-transparent hover:text-foreground",
 									hideTrigger && "hidden",
 								)}
 								disabled={disabled}

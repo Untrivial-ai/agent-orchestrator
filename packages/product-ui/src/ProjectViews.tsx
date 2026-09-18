@@ -664,6 +664,7 @@ export function ProjectAgentsSettingsView({
 	orchestratorArea,
 	orchestratorModelArea,
 	permissions,
+	orchestratorPermissions,
 	title,
 	workerArea,
 	workerModelArea,
@@ -672,6 +673,7 @@ export function ProjectAgentsSettingsView({
 	orchestratorArea: ReactNode;
 	orchestratorModelArea: ReactNode;
 	permissions: { control: ReactNode; icon?: ReactNode; label: string };
+	orchestratorPermissions?: { control: ReactNode; icon?: ReactNode; label: string };
 	title: string;
 	workerArea: ReactNode;
 	workerModelArea: ReactNode;
@@ -685,6 +687,11 @@ export function ProjectAgentsSettingsView({
 			<ProjectSettingsRow icon={permissions.icon} label={permissions.label}>
 				{permissions.control}
 			</ProjectSettingsRow>
+			{orchestratorPermissions ? (
+				<ProjectSettingsRow icon={orchestratorPermissions.icon} label={orchestratorPermissions.label}>
+					{orchestratorPermissions.control}
+				</ProjectSettingsRow>
+			) : null}
 			{missingRequiredMessage && (
 				<p className="px-1 text-xs leading-row text-error" role="alert">{missingRequiredMessage}</p>
 			)}

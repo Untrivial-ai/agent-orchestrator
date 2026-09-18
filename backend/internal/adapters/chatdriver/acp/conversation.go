@@ -125,6 +125,13 @@ type conversation struct {
 	terminalEventID    string
 	ignorePromptResult bool
 
+	contextTokens     int64
+	contextWindow     int64
+	compactingTurnID  string
+	compactionBefore  int64
+	compactionSummary string
+	compactedTurn     string
+
 	eventMu      sync.RWMutex
 	events       chan ports.ChatEvent
 	eventsClosed bool
@@ -149,6 +156,7 @@ var _ ports.ChatProviderTerminator = (*conversation)(nil)
 var _ ports.ChatLiveReconnector = (*conversation)(nil)
 var _ ports.ChatLiveReconnectActivator = (*conversation)(nil)
 var _ ports.ChatProviderEventAcknowledger = (*conversation)(nil)
+var _ ports.ChatCompactor = (*conversation)(nil)
 var _ acpsdk.Client = (*conversation)(nil)
 var _ acpsdk.ClientExperimental = (*conversation)(nil)
 var _ acpsdk.ExtensionMethodHandler = (*conversation)(nil)
@@ -274,6 +282,7 @@ func (c *conversation) start(
 	}
 	if c.skillsKnown {
 		c.capabilities[ports.ChatCapabilitySkills] = true
+		c.capabilities[ports.ChatCapabilityCompaction] = hasCompactSkill(c.skills)
 	}
 	c.modeFor = modeFor
 	c.optionsFor = optionsFor
@@ -341,6 +350,10 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 	c.mu.Lock()
 	if durableBusy {
 		c.activeTurn = providerTurnID
+		if c.liveState.ActiveCompaction {
+			c.compactingTurnID = providerTurnID
+			c.compactionBefore = c.contextTokens
+		}
 		c.messages = make(map[string]string)
 		c.thoughts = make(map[string]string)
 		c.nestedMessages = make(map[string]nestedMessageState)
@@ -542,6 +555,7 @@ func (c *conversation) finishPrompt(
 	}
 	c.settlingTurn = turnID
 	interrupt := c.interrupt
+	isCompaction := c.compactingTurnID != "" && c.compactingTurnID == turnID
 	c.mu.Unlock()
 	c.settleOpenItems(turnID)
 	interruptedLocally := false
@@ -560,21 +574,21 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	var state domain.TurnState
+	var turnErr error
 	if err != nil {
 		if interruptedLocally || errors.Is(err, context.Canceled) {
 			state = domain.TurnStateInterrupted
 		} else {
 			state = domain.TurnStateFailed
-			if isACPAuthRequired(err) {
-				c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{
-					ReauthRequired: true, ReauthReason: "Provider authentication expired",
-				}})
-				err = normalizeACPError("ACP session/prompt", err)
-			}
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderTurnID: turnID, Err: err})
+			turnErr = normalizeACPError("ACP session/prompt", err)
 		}
 	} else {
 		state = turnState(resp.StopReason)
+		if failure := promptResponseFailure(resp.Meta); failure != nil &&
+			state != domain.TurnStateInterrupted && !interruptedLocally {
+			state = domain.TurnStateFailed
+			turnErr = failure
+		}
 		if resp.Usage != nil {
 			cached := 0
 			if resp.Usage.CachedReadTokens != nil {
@@ -590,12 +604,23 @@ func (c *conversation) finishPrompt(
 			}})
 		}
 	}
+	if isCompaction {
+		if state == domain.TurnStateCompleted {
+			c.settleCompaction(turnID)
+		} else {
+			c.mu.Lock()
+			c.compactingTurnID = ""
+			c.compactionBefore = 0
+			c.compactionSummary = ""
+			c.mu.Unlock()
+		}
+	}
 	c.mu.Lock()
 	c.terminalEventID = eventID
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state,
+		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
 	})
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 
@@ -610,6 +635,134 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+}
+
+func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.ChatCompactionResult{}, err
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ports.ChatCompactionResult{}, errConversationClosed
+	}
+	if !c.capabilities.Has(ports.ChatCapabilityCompaction) {
+		c.mu.Unlock()
+		return ports.ChatCompactionResult{}, errors.New("chat driver cannot compact history")
+	}
+	if c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != "" {
+		c.mu.Unlock()
+		return ports.ChatCompactionResult{}, errors.New("ACP conversation already has a turn in flight")
+	}
+	sessionID := c.sessionID
+	if sessionID == "" {
+		c.mu.Unlock()
+		return ports.ChatCompactionResult{}, errors.New("ACP session is not open")
+	}
+	before := c.contextTokens
+	id := uuid.NewString()
+	c.activeTurn = id
+	c.compactingTurnID = id
+	c.compactionBefore = before
+	c.compactionSummary = ""
+	c.settlingTurn = ""
+	turnCtx, cancel := context.WithCancel(context.Background())
+	c.turnCancel = cancel
+	c.messages = make(map[string]string)
+	c.thoughts = make(map[string]string)
+	c.nestedMessages = make(map[string]nestedMessageState)
+	c.tools = make(map[string]*toolState)
+	c.turnDiffs = nil
+	c.turnDiffTurnID = ""
+	c.providerFailure = nil
+	c.mu.Unlock()
+
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: id})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy})
+
+	go c.runCompactionTurn(turnCtx, sessionID, id)
+	return ports.ChatCompactionResult{TokensBefore: before}, nil
+}
+
+func (c *conversation) runCompactionTurn(ctx context.Context, sessionID, turnID string) {
+	messageID := uuid.NewString()
+	prompt := []acpsdk.ContentBlock{
+		acpsdk.TextBlock("/compact"),
+	}
+	resp, err := c.conn.Prompt(ctx, acpsdk.PromptRequest{
+		SessionId: acpsdk.SessionId(sessionID),
+		MessageId: &messageID,
+		Prompt:    prompt,
+	})
+
+	c.finishPrompt(turnID, resp, err)
+}
+
+func (c *conversation) settleCompaction(turnID string) {
+	c.mu.Lock()
+	before := c.compactionBefore
+	after := c.contextTokens
+	window := c.contextWindow
+	summary := c.compactionSummary
+	c.compactingTurnID = ""
+	c.compactionBefore = 0
+	c.compactionSummary = ""
+	c.compactedTurn = turnID
+	c.mu.Unlock()
+
+	if before > after && after > 0 {
+		summary = compactionSummary(before, after)
+	} else if summary == "" {
+		summary = "Compacted the conversation history"
+	}
+
+	detail := map[string]any{}
+	if before > 0 {
+		detail["tokensBefore"] = before
+	}
+	if after > 0 {
+		detail["tokensAfter"] = after
+	}
+	if before > after && after > 0 {
+		detail["tokensReclaimed"] = before - after
+	}
+	if window > 0 {
+		detail["contextWindow"] = window
+	}
+	var detailBytes []byte
+	if encoded, err := json.Marshal(detail); err == nil {
+		detailBytes = encoded
+	}
+
+	c.emit(ports.ChatEvent{
+		Kind:           ports.ChatEventCompacted,
+		ProviderTurnID: turnID,
+		Summary:        summary,
+		Detail:         detailBytes,
+	})
+}
+
+func (c *conversation) trackContext(used, window int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.contextTokens = used
+	if window > 0 {
+		c.contextWindow = window
+	}
+}
+
+func compactionSummary(before, after int64) string {
+	if before <= 0 || after <= 0 || after >= before {
+		return "Compacted the conversation history"
+	}
+	return fmt.Sprintf("Compacted history, freeing %s of context", formatTokens(before-after))
+}
+
+func formatTokens(tokens int64) string {
+	if tokens < 1000 {
+		return fmt.Sprintf("%d tokens", tokens)
+	}
+	return fmt.Sprintf("%.1fk tokens", float64(tokens)/1000)
 }
 
 func turnState(reason acpsdk.StopReason) domain.TurnState {

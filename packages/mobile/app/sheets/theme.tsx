@@ -10,3 +10,5 @@ export default function ThemeSheetRoute() {
 
 	return <ThemePickerSheet preference={preference} onSelect={setPreference} onClose={() => router.back()} />;
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

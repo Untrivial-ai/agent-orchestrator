@@ -111,8 +111,11 @@ export type WorkspaceSession = {
 	 * {@link status} already produced.
 	 */
 	displayStatus?: string;
+	statusReadiness?: "checking" | "ready" | "unavailable";
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
+	/** Whether the cloud worker has a current control-plane connection. */
+	runtimeConnected?: boolean;
 	chatProviderPreserved?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
 	terminateOnPrMerge?: boolean;
@@ -157,7 +160,12 @@ export type WorkspaceSession = {
 	 * org the session is scoped to so its terminal can be opened against the CP;
 	 * absent for local sessions, which route through the local daemon.
 	 */
-	cloud?: { orgId: string };
+	cloud?: {
+		orgId: string;
+		sandboxProvider?: string;
+		desiredState?: string;
+		observedState?: string;
+	};
 };
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in
@@ -177,6 +185,10 @@ export function canonicalTrackerIssueId(issueId?: string): string | undefined {
 }
 
 export type ProjectKind = "single_repo" | "workspace" | "scratch";
+
+/** UI-only grouping for sessions that have no daemon project row. */
+export const STANDALONE_WORKSPACE_ID = "__standalone__" as const;
+export const STANDALONE_PROJECT_KIND = "standalone" as const;
 
 /** Sentinel `kind` value for projects hosted by the AO cloud control plane. */
 export const CLOUD_PROJECT_KIND = "cloud" as const;
@@ -215,7 +227,7 @@ export function primaryPR(session: WorkspaceSession): PullRequestFacts | undefin
 	return sortedPRs(session)[0];
 }
 
-export function isOrchestratorSession(session: WorkspaceSession): boolean {
+export function isOrchestratorSession(session: Pick<WorkspaceSession, "id" | "kind">): boolean {
 	return session.kind === "orchestrator" || session.id.endsWith("-orchestrator");
 }
 
@@ -313,7 +325,7 @@ export type WorkspaceSummary = {
 	 * the AO cloud control plane carry CLOUD_PROJECT_KIND — branch on
 	 * `kind === CLOUD_PROJECT_KIND`.
 	 */
-	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND;
+	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND | typeof STANDALONE_PROJECT_KIND;
 	/** Local checkout path; empty string for cloud projects (no local folder). */
 	path: string;
 	folderMissing?: boolean;
