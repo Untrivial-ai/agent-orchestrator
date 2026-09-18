@@ -544,6 +544,11 @@ func runGitPreparationAction(ctx context.Context, path, action string, in GitRep
 			return fmt.Errorf("record default branch: %w", err)
 		}
 	case GitPreparationActionCommit:
+		// Empty clones already have .git and skip the init action. Record their
+		// actual initial branch too, before committing so a retry cannot lose it.
+		if err := gitdefault.New("git", nil).RecordInitialBranch(ctx, path); err != nil {
+			return err
+		}
 		if _, err := importGitOutput(ctx, path, "add", "-A"); err != nil {
 			return fmt.Errorf("stage files: %w", err)
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -674,6 +675,30 @@ func TestAgentVendorScriptInstallPersistsInstallVerifySuccessLifecycle(t *testin
 	}
 	if strings.Join(statuses, ",") != "installing,verifying,succeeded" {
 		t.Fatalf("statuses = %v", statuses)
+	}
+}
+
+func TestAgentVendorScriptInstallPreservesPlanEnvironment(t *testing.T) {
+	s := newTestService("windows", "pwsh.exe")
+	captured := make(chan ports.InstallScriptCommand, 1)
+	s.installScripts = installScriptRunnerFunc(func(_ context.Context, command ports.InstallScriptCommand, _, _ io.Writer) (ports.InstallScriptResult, error) {
+		captured <- command
+		return ports.InstallScriptResult{}, nil
+	})
+	s.verifier = harnessVerifierFunc(func(context.Context, Target) (VerifyResult, error) {
+		return VerifyResult{ResolvedPath: `C:\Users\test\.local\bin\goose.exe`}, nil
+	})
+
+	if _, err := s.StartAgent(context.Background(), TargetGoose, "official-installer"); err != nil {
+		t.Fatalf("StartAgent: %v", err)
+	}
+	waitForStatus(t, s, TargetGoose, StatusSucceeded)
+	command := <-captured
+	if !slices.Contains(command.Env, "CONFIGURE=false") {
+		t.Fatalf("installer env = %v, want CONFIGURE=false", command.Env)
+	}
+	if !slices.Contains(command.Env, "NONINTERACTIVE=1") {
+		t.Fatalf("installer env = %v, want AO noninteractive environment", command.Env)
 	}
 }
 

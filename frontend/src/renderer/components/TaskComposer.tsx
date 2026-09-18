@@ -22,6 +22,7 @@ import { type FileAttachmentPayload, useFileAttachments } from "../hooks/useFile
 import { useSettings } from "../hooks/useSettings";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
+import { useSandboxProviderStore } from "../stores/sandbox-provider-store";
 import { cloudSessionsQueryKey, useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import {
 	agentModelsQueryKey,
@@ -29,7 +30,8 @@ import {
 	refreshAgentModels,
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
-import { AgentModelCombobox } from "./settings/AgentModelCombobox";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
+import { AgentModelCombobox, type ModelEffortSelection } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
 type Project = components["schemas"]["Project"];
@@ -40,6 +42,7 @@ type CreateTaskInput = {
 	brief: string;
 	agent?: DelegateAgent;
 	model?: string;
+	effort?: string;
 	mode?: "tui";
 	approvalMode?: "bypass-permissions";
 	attachments?: FileAttachmentPayload[];
@@ -98,9 +101,11 @@ export function TaskComposer({
 	const [isPromptDirty, setIsPromptDirty] = useState(false);
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
+	const [effort, setEffort] = useState("");
 	const [agent, setAgent] = useState("");
 	const [agentTouched, setAgentTouched] = useState(false);
 	const [modelTouched, setModelTouched] = useState(false);
+	const [effortTouched, setEffortTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const [fallbackAction, setFallbackAction] = useState<FallbackAction>();
@@ -117,13 +122,17 @@ export function TaskComposer({
 	// project keeps the existing daemon flow untouched.
 	const { client: cloudClient } = useCloudCp();
 	const { org: cloudOrg } = useCloudOrg();
+	// The user's client-side sandbox-provider preference (when the control plane
+	// offers more than one); omitted lets the control plane use its default.
+	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
 	const cloudProjects = useCloudProjectsQuery();
 	const isCloudProject =
 		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+	const isStandalone = projectId === STANDALONE_WORKSPACE_ID;
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
 	// and the model dropdown spins forever. Local projects keep their scope.
-	const modelsProjectId = isCloudProject ? "" : (projectId ?? "");
+	const modelsProjectId = isCloudProject || isStandalone ? "" : (projectId ?? "");
 
 	const createCloudTask = useCallback(
 		async (input: CreateTaskInput): Promise<string> => {
@@ -136,6 +145,7 @@ export function TaskComposer({
 					harness: input.agent ?? "claude-code",
 					displayName: input.brief.trim().slice(0, 80) || (input.agent ?? "claude-code"),
 					prompt: input.brief,
+					...(selectedProvider ? { provider: selectedProvider } : {}),
 				});
 				// The control plane provisions the sandbox asynchronously; surface the
 				// new session on the board immediately.
@@ -147,7 +157,7 @@ export function TaskComposer({
 				throw err instanceof Error ? err : new Error(t("newTask.unableToStart"));
 			}
 		},
-		[cloudClient, cloudOrg, queryClient, t],
+		[cloudClient, cloudOrg, queryClient, selectedProvider, t],
 	);
 
 	const createLocalTask = useCallback(
@@ -155,11 +165,12 @@ export function TaskComposer({
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			try {
 				const { data, error } = await apiClient.POST("/api/v1/orchestrators/delegate", {
-					body: {
-						projectId: input.projectId,
-						brief: input.brief,
-						agent: input.agent,
-						model: input.model,
+				body: {
+					projectId: input.projectId,
+					brief: input.brief,
+					agent: input.agent,
+					...(input.model ? { model: input.model } : {}),
+					...(input.effort !== undefined ? { effort: input.effort } : {}),
 						...(input.mode ? { mode: input.mode } : {}),
 						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 						...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
@@ -196,17 +207,42 @@ export function TaskComposer({
 		[queryClient, t],
 	);
 
+	const createStandaloneTask = useCallback(
+		async (input: CreateTaskInput): Promise<string> => {
+			void captureRendererEvent("ao.renderer.task_create_requested", { scope: "standalone" });
+			const displayName = input.brief.trim().slice(0, 20) || input.agent || "Standalone agent";
+			const { data, error } = await apiClient.POST("/api/v1/sessions", {
+				body: {
+					kind: "worker",
+					harness: input.agent as components["schemas"]["SpawnSessionRequest"]["harness"],
+					prompt: input.brief,
+					displayName,
+					model: input.model,
+					...(input.mode ? { mode: input.mode } : {}),
+					...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+				},
+			});
+			if (error) {
+				throw new TaskCreateError(apiErrorMessage(error, t("newTask.unableToStart")), apiErrorCode(error), error.details);
+			}
+			if (!data?.session.id) throw new Error(t("newTask.noSession"));
+			void captureRendererEvent("ao.renderer.task_create_succeeded", { scope: "standalone" });
+			return data.session.id;
+		},
+		[t],
+	);
+
 	const createTask = useCallback(
 		(input: CreateTaskInput): Promise<string> =>
-			isCloudProject ? createCloudTask(input) : createLocalTask(input),
-		[isCloudProject, createCloudTask, createLocalTask],
+			isStandalone ? createStandaloneTask(input) : isCloudProject ? createCloudTask(input) : createLocalTask(input),
+		[isStandalone, isCloudProject, createStandaloneTask, createCloudTask, createLocalTask],
 	);
 
 	const projectQuery = useQuery({
 		// A cloud project lives in the control plane, not the local daemon, so this
 		// local lookup would 404 (PROJECT_NOT_FOUND); skip it for cloud projects.
 		queryKey: ["project", projectId],
-		enabled: Boolean(projectId) && !isCloudProject,
+		enabled: Boolean(projectId) && !isCloudProject && !isStandalone,
 		queryFn: async () => {
 			const { data, error: apiError } = await apiClient.GET("/api/v1/projects/{id}", {
 				params: { path: { id: projectId ?? "" } },
@@ -235,6 +271,8 @@ export function TaskComposer({
 		projectQuery.data?.config?.worker?.agentConfig?.model ?? projectQuery.data?.config?.agentConfig?.model ?? "";
 	const defaultWorkerMode =
 		projectQuery.data?.config?.worker?.agentConfig?.mode ?? projectQuery.data?.config?.agentConfig?.mode ?? "";
+	const defaultWorkerEffort =
+		projectQuery.data?.config?.worker?.agentConfig?.effort ?? projectQuery.data?.config?.agentConfig?.effort ?? "";
 	const projectModelForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerModel : "";
 	const projectModeForSelectedAgent = selectedAgent === defaultWorkerAgent ? defaultWorkerMode : "";
 	const agentCatalog = agentsQuery.data;
@@ -296,6 +334,11 @@ export function TaskComposer({
 		const refreshed = await refreshAgentModels(selectedAgent, modelsProjectId);
 		queryClient.setQueryData(agentModelsQueryKey(selectedAgent, modelsProjectId), refreshed);
 	}, [modelsProjectId, queryClient, selectedAgent]);
+	const displayedModelWarning = requiresTuiFallback
+		? t("newTask.tuningRequiresChat")
+		: fallbackAction === "tui"
+			? [modelWarning, t("newTask.tuiTuningDefaults")].filter(Boolean).join(" ")
+			: modelWarning;
 
 	useEffect(() => {
 		if (!agentTouched) setAgent(defaultWorkerAgent);
@@ -306,8 +349,11 @@ export function TaskComposer({
 			setMode(defaultModeForSelectedAgent);
 		}
 	}, [defaultModelForSelectedAgent, defaultModeForSelectedAgent, modelTouched]);
+	useEffect(() => {
+		if (!effortTouched) setEffort(selectedAgent === defaultWorkerAgent ? defaultWorkerEffort : "");
+	}, [defaultWorkerAgent, defaultWorkerEffort, effortTouched, selectedAgent]);
 
-	const isDirty = isPromptDirty || modelTouched || attachments.length > 0;
+	const isDirty = isPromptDirty || modelTouched || effortTouched || attachments.length > 0;
 	const handlePromptChange = useCallback((value: string) => {
 		const nextDirty = value.trim() !== "";
 		setIsPromptDirty((wasDirty) => (wasDirty === nextDirty ? wasDirty : nextDirty));
@@ -349,6 +395,7 @@ export function TaskComposer({
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
 				model: requestedModel,
+				effort: interfaceMode === "tui" || !effortTouched ? undefined : effort,
 				mode: interfaceMode,
 				approvalMode,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
@@ -378,7 +425,7 @@ export function TaskComposer({
 	return (
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
-			canSubmit={Boolean(projectId)}
+			canSubmit={Boolean(projectId) && (!isStandalone || selectedAgent !== "")}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
@@ -404,12 +451,14 @@ export function TaskComposer({
 					setModel("");
 					setMode("");
 					setModelTouched(false);
+					setEffort("");
+					setEffortTouched(false);
 				},
 			}}
 			model={{
 				agentId: selectedAgent,
 				agentLabel: selectedAgentLabel,
-				projectId: projectId ?? "",
+				projectId: isStandalone ? "" : (projectId ?? ""),
 				disabled: isSubmitting,
 				value: model,
 				mode,
@@ -440,7 +489,7 @@ export function TaskComposer({
 				showFallbackAction: fallbackAction !== undefined,
 				error,
 				isSubmitting,
-				modelWarning,
+				modelWarning: displayedModelWarning,
 				onFallbackAction: (brief) =>
 					void (fallbackAction === "bypass-permissions"
 						? submitTask(brief, undefined, "bypass-permissions")
@@ -448,7 +497,15 @@ export function TaskComposer({
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
-			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
+			renderModelControl={(control) => (
+				<TaskModelPicker {...control} onRefresh={refreshSelectedModels}
+					tuning={selectedAgent === "codex" && !requiresTuiFallback ? {
+						effort,
+						onEffortChange: (value) => { setEffort(value); setEffortTouched(true); },
+						onEffortReset: setEffort,
+					} : undefined}
+				/>
+			)}
 		/>
 	);
 }
@@ -475,7 +532,8 @@ function TaskModelPicker({
 	onModelChange,
 	onModeChange,
 	onRefresh,
-}: TaskComposerModelControl & { onRefresh: () => Promise<void> }) {
+	tuning,
+}: TaskComposerModelControl & { onRefresh: () => Promise<void>; tuning?: ModelEffortSelection }) {
 	const { t } = useTranslation();
 
 	// Says what happens with no override, rather than labelling it "Agent default".
@@ -540,6 +598,7 @@ function TaskModelPicker({
 	return (
 		<AgentModelCombobox
 			key={agentId}
+			tuning={tuning}
 			aria-label={t("newTask.model")}
 			value={value}
 			models={displayModels}

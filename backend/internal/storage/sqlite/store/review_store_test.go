@@ -200,6 +200,7 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 		ID: "rev-2", SessionID: rec.ID, ProjectID: rec.ProjectID,
 		Harness: domain.ReviewerHarness("greptile"), PRURL: "https://example/pr/2",
 		ReviewerHandleID: "review-mer-1b",
+		ReviewerLaunchID: "launch-2",
 		CreatedAt:        now, UpdatedAt: now.Add(time.Second),
 	}); err != nil {
 		t.Fatalf("upsert review (second harness): %v", err)
@@ -241,9 +242,9 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	if got.AgentSessionID != "reviewer-native-1" {
 		t.Fatalf("agent session id = %q, want reviewer-native-1", got.AgentSessionID)
 	}
-	updated, err := s.UpdateReviewAgentSessionID(ctx, "rev-1", "claude-native-1")
+	updated, err := s.UpdateReviewActivity(ctx, "rev-1", domain.ActivityIdle, "claude-native-1", "")
 	if err != nil || !updated {
-		t.Fatalf("update claude native session: updated=%v err=%v", updated, err)
+		t.Fatalf("update claude activity/native session: updated=%v err=%v", updated, err)
 	}
 	got, ok, err = s.GetReviewBySessionAndHarness(ctx, rec.ID, domain.ReviewerClaudeCode)
 	if err != nil || !ok {
@@ -252,12 +253,57 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	if got.AgentSessionID != "claude-native-1" {
 		t.Fatalf("claude agent session id = %q, want claude-native-1", got.AgentSessionID)
 	}
+	if got.ReviewerActivityState != domain.ActivityIdle {
+		t.Fatalf("claude reviewer activity state = %q, want idle", got.ReviewerActivityState)
+	}
 	got, ok, err = s.GetReviewBySessionAndHarness(ctx, rec.ID, domain.ReviewerHarness("greptile"))
 	if err != nil || !ok {
 		t.Fatalf("get greptile review after claude update: ok=%v err=%v", ok, err)
 	}
 	if got.AgentSessionID != "reviewer-native-1" {
 		t.Fatalf("greptile agent session id = %q, want reviewer-native-1", got.AgentSessionID)
+	}
+	if got.ReviewerLaunchID != "launch-2" {
+		t.Fatalf("greptile reviewer launch id = %q, want launch-2", got.ReviewerLaunchID)
+	}
+	updated, err = s.UpdateReviewActivity(ctx, "rev-2", domain.ActivityIdle, "", "stale-launch")
+	if err != nil {
+		t.Fatalf("stale launch update: %v", err)
+	}
+	if updated {
+		t.Fatal("stale launch update unexpectedly succeeded")
+	}
+	got, ok, err = s.GetReviewBySessionAndHarness(ctx, rec.ID, domain.ReviewerHarness("greptile"))
+	if err != nil || !ok {
+		t.Fatalf("get greptile review after stale launch update: ok=%v err=%v", ok, err)
+	}
+	if got.ReviewerActivityState != "" {
+		t.Fatalf("stale launch update changed activity state = %q, want empty", got.ReviewerActivityState)
+	}
+	updated, err = s.UpdateReviewActivity(ctx, "rev-2", domain.ActivityBlocked, "legacy-native", "")
+	if err != nil {
+		t.Fatalf("empty launch update against claimed generation: %v", err)
+	}
+	if updated {
+		t.Fatal("empty launch update unexpectedly succeeded against claimed generation")
+	}
+	got, ok, err = s.GetReviewBySessionAndHarness(ctx, rec.ID, domain.ReviewerHarness("greptile"))
+	if err != nil || !ok {
+		t.Fatalf("get greptile review after empty launch update: ok=%v err=%v", ok, err)
+	}
+	if got.ReviewerActivityState != "" || got.AgentSessionID != "reviewer-native-1" {
+		t.Fatalf("empty launch update changed review = %+v", got)
+	}
+	updated, err = s.UpdateReviewActivity(ctx, "rev-2", domain.ActivityIdle, "", "launch-2")
+	if err != nil || !updated {
+		t.Fatalf("matching launch update: updated=%v err=%v", updated, err)
+	}
+	got, ok, err = s.GetReviewBySessionAndHarness(ctx, rec.ID, domain.ReviewerHarness("greptile"))
+	if err != nil || !ok {
+		t.Fatalf("get greptile review after matching launch update: ok=%v err=%v", ok, err)
+	}
+	if got.ReviewerActivityState != domain.ActivityIdle {
+		t.Fatalf("matching launch update changed activity state = %q, want idle", got.ReviewerActivityState)
 	}
 	if err := s.ClearReviewerHandle(ctx, rec.ID); err != nil {
 		t.Fatalf("clear reviewer handle: %v", err)

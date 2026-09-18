@@ -126,7 +126,10 @@ export function reportProblemDestinationUrl(
 		url.searchParams.set("cc", SUPPORT_CC_EMAIL);
 		url.searchParams.set("subject", `AO feedback: ${reportTitle(input)}`);
 		url.searchParams.set("body", formatEmailBody(normalizeInput(input), formatDiagnostics(diagnostics)));
-		return url.toString();
+		// Mail clients treat "+" literally, so encode spaces in the query only; the
+		// recipient must stay untouched or a plus-addressed support address breaks.
+		const query = url.searchParams.toString().replaceAll("+", "%20");
+		return `mailto:${url.pathname}?${query}`;
 	}
 
 	const title = reportTitle(input);

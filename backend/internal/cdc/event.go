@@ -4,10 +4,10 @@
 // in-process subscribers such as terminal session-state fan-out. Future SSE/event
 // endpoints can subscribe here too.
 //
-// There is no durable outbox/JSONL/janitor machinery: the change_log table IS
-// the durable, ordered source of truth, and clients catch up by reading it from
-// their own offset (SSE Last-Event-ID). The poller + broadcaster here are only
-// the LIVE push on top of that.
+// The change_log table is the durable, ordered source of truth while retained;
+// a bounded janitor removes history outside the replay window. Clients catch up
+// by reading it from their own offset (SSE Last-Event-ID), and the poller +
+// broadcaster here are only the LIVE push on top of that.
 package cdc
 
 import (

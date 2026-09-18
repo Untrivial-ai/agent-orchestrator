@@ -254,6 +254,48 @@ export type StoreRow = {
 	action: "check" | "open" | null;
 };
 
+/** The single Settings-row state composed from the independent OTA and store checks. */
+export type SoftwareUpdateRow = {
+	value: string;
+	tone: "default" | "good" | "bad";
+	busy: boolean;
+	action: "check" | "restart" | "store" | null;
+};
+
+type OtaRow = {
+	value: string;
+	tone: "default" | "good" | "bad";
+	busy: boolean;
+	action: "check" | "restart" | null;
+};
+
+/**
+ * Combines the two update mechanisms for presentation only. Native binaries
+ * take priority because an OTA cannot satisfy a native-runtime update. A ready
+ * OTA remains a direct restart and never turns into a sheet.
+ */
+export function describeSoftwareUpdateRow({ ota, store }: { ota: OtaRow; store: StoreRow }): SoftwareUpdateRow {
+	if (store.action === "open") {
+		return { value: "Store update available", tone: "good", busy: false, action: "store" };
+	}
+	if (store.busy || ota.busy) {
+		return { value: "Checking…", tone: "default", busy: true, action: null };
+	}
+	if (ota.action === "restart") {
+		return { value: "Ready to restart", tone: "good", busy: false, action: "restart" };
+	}
+	if (store.tone === "bad" || ota.tone === "bad") {
+		return { value: "Couldn't check", tone: "bad", busy: false, action: "check" };
+	}
+	if (store.value === "Up to date" && ota.value === "Up to date") {
+		return { value: "Up to date", tone: "good", busy: false, action: "check" };
+	}
+	if (store.action === null && ota.action === null) {
+		return { value: "Automatic", tone: "default", busy: false, action: null };
+	}
+	return { value: "Check now", tone: "default", busy: false, action: "check" };
+}
+
 /**
  * One manual check's conclusion. Takes the tier rather than the raw check so
  * the floor weighs in exactly as it does at launch — otherwise a floor-driven

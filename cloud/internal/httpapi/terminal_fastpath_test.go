@@ -70,6 +70,41 @@ func TestPushInputFailsAfterStreamRetired(t *testing.T) {
 	}
 }
 
+func TestRelayOutputDeliversLiveFrame(t *testing.T) {
+	registry := newTerminalStreams()
+	output, unsubscribe := registry.subscribeRelayOutput("term")
+	defer unsubscribe()
+
+	if dropped := registry.relayOutput("term", terminalRelayOutput{
+		sequence: 7,
+		data:     []byte("hello"),
+	}); dropped != 0 {
+		t.Fatalf("dropped=%d, want 0", dropped)
+	}
+	select {
+	case got := <-output:
+		if got.sequence != 7 || string(got.data) != "hello" {
+			t.Fatalf("got sequence=%d data=%q", got.sequence, got.data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay output was not delivered")
+	}
+}
+
+func TestRelayOutputReportsSaturatedClient(t *testing.T) {
+	registry := newTerminalStreams()
+	output, unsubscribe := registry.subscribeRelayOutput("term")
+	defer unsubscribe()
+	for range cap(output) {
+		if dropped := registry.relayOutput("term", terminalRelayOutput{sequence: 1, data: []byte("x")}); dropped != 0 {
+			t.Fatalf("unexpected drop while filling buffer: %d", dropped)
+		}
+	}
+	if dropped := registry.relayOutput("term", terminalRelayOutput{sequence: 2, data: []byte("x")}); dropped != 1 {
+		t.Fatalf("dropped=%d, want 1", dropped)
+	}
+}
+
 func TestTerminalRoutingKeyStableAndBounded(t *testing.T) {
 	a := terminalRoutingKey("session-abc")
 	b := terminalRoutingKey("session-abc")

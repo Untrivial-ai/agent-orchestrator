@@ -5,16 +5,17 @@ import {
 } from "@aoagents/product-ui";
 import { useTranslation } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { components } from "../../api/schema";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
+import { workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
 import { AGENT_OPTIONS } from "../lib/agent-options";
 import {
-	agentLabelCompare,
-	agentUsageCompare,
 	buildRankedAgentOptions,
 	DEFAULT_AGENT_PRIORITY_RANK,
+	defaultAuthorizedAgentForRole,
 	type AgentInfo,
 	unknownAgentReadiness,
 } from "../lib/agent-select-options";
@@ -137,6 +138,13 @@ export function CreateProjectAgentSheet({
 			),
 		[agentOptions],
 	);
+	// This sheet creates local projects only (cloud uses CloudProjectCard),
+	// so local session history is the inference signal.
+	const workspacesQuery = useQuery({ ...workspaceQueryOptions, enabled: open });
+	const sessionHistory = useMemo(
+		() => (workspacesQuery.data ?? []).flatMap((workspace) => workspace.sessions),
+		[workspacesQuery.data],
+	);
 	const isLoadingAgents = agents === undefined && agentsQuery.isFetching;
 	const agentsError = agentsQuery.isError
 		? agentsQuery.error instanceof Error
@@ -183,10 +191,13 @@ export function CreateProjectAgentSheet({
 
 	useEffect(() => {
 		if (!open) return;
-		const defaultAgent = defaultAuthorizedAgent(authorizedAgents);
-		if (!workerAgentTouched) setWorkerAgent(defaultAgent);
-		if (!orchestratorAgentTouched) setOrchestratorAgent(defaultAgent);
-	}, [authorizedAgents, open, orchestratorAgentTouched, workerAgentTouched]);
+		if (!workerAgentTouched) {
+			setWorkerAgent(defaultAuthorizedAgentForRole(authorizedAgents, sessionHistory, "worker"));
+		}
+		if (!orchestratorAgentTouched) {
+			setOrchestratorAgent(defaultAuthorizedAgentForRole(authorizedAgents, sessionHistory, "orchestrator"));
+		}
+	}, [authorizedAgents, open, orchestratorAgentTouched, sessionHistory, workerAgentTouched]);
 
 	return (
 		<Dialog.Root
@@ -558,14 +569,3 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 		</div>
 	);
 });
-
-export function defaultAuthorizedAgent(authorizedAgents: AgentInfo[]): string {
-	return [...authorizedAgents]
-		.sort(
-			(a, b) =>
-				agentUsageCompare(a, b) ||
-				(DEFAULT_AGENT_PRIORITY_RANK.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
-					(DEFAULT_AGENT_PRIORITY_RANK.get(b.id) ?? Number.MAX_SAFE_INTEGER) ||
-				agentLabelCompare(a, b),
-		)[0]?.id ?? "";
-}

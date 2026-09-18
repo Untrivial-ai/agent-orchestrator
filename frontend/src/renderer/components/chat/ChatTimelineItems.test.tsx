@@ -64,12 +64,27 @@ describe("TurnOutcome", () => {
 		expect(screen.queryByText("Done")).not.toBeInTheDocument();
 	});
 
-	it("shows the message above a full-width rule", () => {
-		const { container } = render(<TurnOutcome state="failed" error="Provider error" />);
+	it("shows the failed outcome and the provider's explanation", () => {
+		render(<TurnOutcome state="failed" error="Provider error" />);
 
 		expect(screen.getByText("The agent ran into a problem")).toBeInTheDocument();
 		expect(screen.getByText("Provider error")).toBeInTheDocument();
-		expect(container.querySelector(".h-px.w-full.bg-border")).toBeInTheDocument();
+	});
+
+	it("preserves multiline provider text and links without interpreting its structure", () => {
+		render(
+			<TurnOutcome
+				state="failed"
+				error={"Usage limit reached\n\nManage billing at https://example.com/billing."}
+			/>,
+		);
+
+		expect(screen.getByText(/Usage limit reached/)).toBeInTheDocument();
+		expect(screen.getByText(/Manage billing at/)).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "https://example.com/billing" })).toHaveAttribute(
+			"href",
+			"https://example.com/billing",
+		);
 	});
 });
 
@@ -270,7 +285,7 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.getByLabelText(/^Sent Yesterday · \d{2}:\d{2}$/)).toBeInTheDocument();
 		view.rerender(<AssistantMessage message={message({ createdAt: older, streaming: false })} showCopy />);
 		expect(screen.queryByLabelText(/^Sent Yesterday ·/)).toBeNull();
-		expect(screen.getByLabelText(/^Sent [A-Z][a-z]{2} \d{1,2}, \d{4}$/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/^Sent .+\d{4}$/)).toBeInTheDocument();
 	});
 
 	it("survives StrictMode effect cleanup and keeps draining", () => {

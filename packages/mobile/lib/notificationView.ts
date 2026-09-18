@@ -4,10 +4,29 @@
 import type { Theme } from "./theme";
 
 export type NotificationVisual = {
-	icon: "message-circle" | "git-merge" | "git-pull-request" | "x-circle" | "bell";
+	icon: "message-circle" | "git-pull-request" | "check-circle" | "x-circle" | "bell";
 	color: string;
 	label: string;
 };
+
+export type NotificationSection<T> = {
+	key: "attention" | "earlier";
+	title: "Needs attention" | "Earlier";
+	data: T[];
+};
+
+/**
+ * Keeps actionable unread history ahead of settled items without disturbing
+ * the daemon's newest-first order inside either group.
+ */
+export function notificationSections<T extends { status: string }>(items: readonly T[]): NotificationSection<T>[] {
+	const attention = items.filter((item) => item.status === "unread");
+	const earlier = items.filter((item) => item.status !== "unread");
+	const sections: NotificationSection<T>[] = [];
+	if (attention.length > 0) sections.push({ key: "attention", title: "Needs attention", data: attention });
+	if (earlier.length > 0) sections.push({ key: "earlier", title: "Earlier", data: earlier });
+	return sections;
+}
 
 /** Icon, colour and short label for one notification type. */
 export function notificationVisual(t: Theme, type: string): NotificationVisual {
@@ -15,9 +34,9 @@ export function notificationVisual(t: Theme, type: string): NotificationVisual {
 		case "needs_input":
 			return { icon: "message-circle", color: t.amber, label: "Needs input" };
 		case "ready_to_merge":
-			return { icon: "git-merge", color: t.green, label: "Ready to merge" };
+			return { icon: "git-pull-request", color: t.green, label: "Ready to merge" };
 		case "pr_merged":
-			return { icon: "git-merge", color: t.blue, label: "Merged" };
+			return { icon: "check-circle", color: t.blue, label: "Merged" };
 		case "pr_closed_unmerged":
 			return { icon: "x-circle", color: t.red, label: "Closed" };
 		default:

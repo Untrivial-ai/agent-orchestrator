@@ -46,13 +46,13 @@ INSERT INTO conversation_branches (
     id, conversation_id, session_id, provider_conversation_id,
     parent_branch_id, fork_after_turn_id, replaced_turn_id,
     replacement_turn_id, fork_after_sequence, strategy, replay_cutoff_sequence,
-    replay_truncated, provider_scope_id, created_at
+    replay_truncated, provider_scope_id, provider_ids_scoped, created_at
 ) VALUES (
     sqlc.arg(id), sqlc.arg(conversation_id), sqlc.narg(session_id),
     sqlc.arg(provider_conversation_id), sqlc.narg(parent_branch_id),
     sqlc.narg(fork_after_turn_id), sqlc.narg(replaced_turn_id),
     sqlc.narg(replacement_turn_id), sqlc.arg(fork_after_sequence), sqlc.arg(strategy),
-    sqlc.arg(replay_cutoff_sequence), sqlc.arg(replay_truncated), sqlc.arg(provider_scope_id), sqlc.arg(created_at)
+    sqlc.arg(replay_cutoff_sequence), sqlc.arg(replay_truncated), sqlc.arg(provider_scope_id), sqlc.arg(provider_ids_scoped), sqlc.arg(created_at)
 );
 
 -- name: SelectConversationBranch :one
@@ -342,7 +342,7 @@ WHERE id = ?;
 -- offset, so a multi-byte character here silently corrupts later queries.
 -- name: UpdateConversationTurnSettings :exec
 UPDATE conversations
-SET model = ?, reasoning_effort = ?, approval_mode = ?, updated_at = ?
+SET model = ?, reasoning_effort = ?, approval_mode = ?, opencode_mode = ?, updated_at = ?
 WHERE id = ?;
 
 -- An agent switch starts a new provider/model scope. Clear only the source
@@ -1380,3 +1380,114 @@ SELECT CAST(retry_of_turn_id AS TEXT) AS retry_of_turn_id
 FROM conversation_turns
 WHERE conversation_id = sqlc.arg(conversation_id)
   AND retry_of_turn_id IS NOT NULL;
+
+-- name: SelectConversationQueuedEditDelivery :one
+SELECT request_hash FROM conversation_queued_edit_deliveries
+WHERE conversation_id = ? AND client_message_id = ?;
+
+-- name: InsertConversationQueuedEditDelivery :exec
+INSERT INTO conversation_queued_edit_deliveries
+(conversation_id, client_message_id, request_hash, created_at)
+VALUES (?, ?, ?, ?);
+
+-- name: SelectConversationEditDelivery :one
+SELECT * FROM conversation_edit_deliveries
+WHERE conversation_id = ? AND client_message_id = ?
+LIMIT 1;
+
+
+-- name: InsertConversationEditDeliveryReservation :execrows
+INSERT OR IGNORE INTO conversation_edit_deliveries (
+    conversation_id, client_message_id, request_json, state, created_at, provider_work_started
+) VALUES (?, ?, ?, 'reserved', ?, 0);
+
+-- name: BeginConversationEditProviderWork :execrows
+UPDATE conversation_edit_deliveries
+SET provider_work_started = 1
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND client_message_id = sqlc.arg(client_message_id)
+  AND state = 'reserved' AND provider_work_started = 0
+  AND EXISTS (
+    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.current_session_id
+    WHERE c.id = conversation_edit_deliveries.conversation_id
+      AND s.controller_generation = sqlc.arg(generation)
+      AND s.session_mode = 'chat' AND s.is_terminated = 0
+  );
+
+
+-- name: AcceptConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'accepted',
+    source_branch_id = ?,
+    active_branch_id = ?,
+    turn_id = ?,
+    handled_by_session_id = ?,
+    provider_turn_id = ?,
+    turn_state = ?,
+    turn_requested_at = ?,
+    rejection_kind = '',
+    rejection_message = '',
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+-- name: SelectCompletedEditReplacement :one
+SELECT sqlc.embed(t), b.parent_branch_id
+FROM conversation_messages m
+JOIN conversation_turns t ON t.id = m.turn_id
+JOIN conversation_branches b ON b.id = m.branch_id
+JOIN conversation_edit_deliveries d ON d.conversation_id = m.conversation_id
+  AND d.client_message_id = m.client_message_id
+WHERE d.conversation_id = ? AND d.client_message_id = ?
+  AND d.state = 'reserved' AND t.state = 'completed'
+  AND b.replaced_turn_id = json_extract(d.request_json, '$.sourceTurnId')
+  AND m.role = 'user'
+LIMIT 1;
+
+
+-- name: RejectConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'rejected',
+    rejection_kind = ?,
+    rejection_message = ?,
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+
+-- A steer has no provider-side idempotency guarantee. The row is reserved before
+-- provider I/O and remains reserved when AO cannot prove whether the call landed.
+-- A retry may replay a settled result, but it must never claim a reserved handle.
+-- name: SelectConversationSteerDelivery :one
+SELECT * FROM conversation_steer_deliveries
+WHERE conversation_id = ? AND client_message_id = ?
+LIMIT 1;
+
+-- name: InsertConversationSteerDeliveryReservation :execrows
+INSERT OR IGNORE INTO conversation_steer_deliveries (
+    conversation_id, client_message_id, request_json, state, created_at
+) VALUES (?, ?, ?, 'reserved', ?);
+
+-- name: AcceptConversationSteerDelivery :execrows
+UPDATE conversation_steer_deliveries
+SET state = 'accepted',
+    provider_turn_id = ?,
+    activity_id = ?,
+    rejection_kind = '',
+    rejection_message = '',
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';
+
+-- name: RejectConversationSteerDelivery :execrows
+UPDATE conversation_steer_deliveries
+SET state = 'rejected',
+    rejection_kind = ?,
+    rejection_message = ?,
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved';

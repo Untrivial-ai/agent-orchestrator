@@ -33,12 +33,12 @@ export function CodexAccountLoginTerminalPanel({ activeLogin, pending, onCheckAg
 	}, [operationKey]);
 	useEffect(() => { panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [operationKey]);
 	const status = activeLogin.status === "pending"
-		? t("settings.codexAccounts.loginRunning")
+		? activeLogin.reason
 		: activeLogin.status === "verifying"
 			? t("settings.codexAccounts.loginVerifying")
 			: t(codexAccountReasonKey(activeLogin.reasonCode));
 	const retryable = activeLogin.status === "unauthorized" || activeLogin.status === "expired" || activeLogin.status === "failed";
-	const checkable = activeLogin.status === "unverified";
+	const checkable = activeLogin.status === "retryable";
 	return (
 		<div ref={panelRef} className="scroll-my-3 overflow-hidden rounded-md border border-border bg-terminal" data-testid="codex-account-login-terminal">
 			<div className="flex min-h-10 items-center justify-between gap-3 border-b border-border bg-surface/90 px-3 py-2"><div className="min-w-0"><p className="truncate text-xs font-medium text-foreground">{t("settings.codexAccounts.loginTerminalTitle")}</p><p className="truncate text-[11px] text-muted-foreground" aria-live="polite" role="status">{status}</p></div><button type="button" aria-label={t("settings.codexAccounts.loginClose")} className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-interactive-hover hover:text-foreground disabled:opacity-50" disabled={pending} onClick={onClose}><X className="size-4" aria-hidden="true" /></button></div>

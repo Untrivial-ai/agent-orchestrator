@@ -45,7 +45,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    site: "@aoagents",
+    site: "@ao_build",
     title: `Syndicate Hackathon | ${COMPANY.NAME}`,
     description: "Register for the AO Syndicate hackathon.",
     images: [`${COMPANY.MARKETING_URL}/og-image.png`],

@@ -1,27 +1,11 @@
 import type { AgentProvider } from "../types/workspace";
 
 /**
- * Which sessions actually lose work when the app quits to install an update.
- *
- * Quitting is NOT uniformly destructive, and treating it as if it were would
- * warn on almost every session and teach the user to click through:
- *
- * - TUI sessions run their agent in a detached tmux/conpty runtime, so the
- *   runtime outlives the app and the next boot adopts it.
- * - Chat sessions on the Codex provider run in a detached per-session host
- *   (backend/internal/adapters/chatdriver/persistenthost), which exists so a
- *   daemon or desktop replacement reconnects without stopping an in-flight turn.
- * - Every other Chat driver keeps daemon-owned process lifetime, so its process
- *   dies with the daemon and an in-flight turn is lost.
- *
- * Only the last group is at risk, and only while a turn could be in flight.
- * `working` is the obvious case; `no_signal` is a live session whose agent has
- * not reported in, so AO cannot rule out a turn and must assume one. A
- * `needs_input` session can be paused inside a turn for tool approval or a user
- * answer, so it also needs protection.
+ * TUI runtimes and established persistent Chat hosts outlive daemon replacement.
+ * The daemon reports the actual controller lifetime; do not duplicate provider
+ * registrations here. Missing/unknown ownership remains conservatively at risk
+ * while a turn may be active, including one parked for approval or user input.
  */
-export const PERSISTENT_CHAT_PROVIDERS: ReadonlySet<AgentProvider> = new Set<AgentProvider>(["codex"]);
-
 const TURN_MAY_BE_IN_FLIGHT: ReadonlySet<string> = new Set(["working", "no_signal", "needs_input"]);
 
 export type UpdateRiskSession = {
@@ -33,6 +17,7 @@ export type UpdateRiskSession = {
 	mode?: "chat" | "tui";
 	status: string;
 	isTerminated?: boolean;
+	chatProviderPreserved?: boolean;
 };
 
 /** The sessions a restart-to-update would cost an in-flight turn. */
@@ -41,7 +26,7 @@ export function sessionsAtRiskFromInstall<T extends UpdateRiskSession>(sessions:
 		(session) =>
 			session.isTerminated !== true &&
 			session.mode === "chat" &&
-			!PERSISTENT_CHAT_PROVIDERS.has(session.provider) &&
+			session.chatProviderPreserved !== true &&
 			TURN_MAY_BE_IN_FLIGHT.has(session.status),
 	);
 }

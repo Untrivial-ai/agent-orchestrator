@@ -12,17 +12,11 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
 
 var ErrUnsupportedPolicy = errors.New("coding-agent policy cannot be enforced safely")
-
-const orchestratorSystemPrompt = `You are an AO orchestrator running in an isolated Cloud worker. Delegate independent work through the control plane with:
-- ao spawn --name NAME --agent HARNESS --prompt TEXT
-- ao list
-- ao send SESSION_ID MESSAGE
-- ao kill SESSION_ID
-Workers run in separate sandboxes. Never try to contact a child sandbox directly; use only these ao commands.`
 
 type Command struct {
 	Path    string
@@ -75,14 +69,21 @@ func (b HarnessBuilder) BuildInteractive(
 		)
 	}
 	binary := b.binary(launch.Harness)
-	systemPrompt := ""
+	skillDir := skillassets.Dir(b.DataDir)
+	systemPrompt := workerSystemPrompt(skillDir, launch.ParentSessionID != "")
 	if launch.Kind == "orchestrator" {
-		systemPrompt = orchestratorSystemPrompt
+		systemPrompt = orchestratorSystemPrompt(skillDir)
+	}
+	if launch.Harness == "cursor" {
+		// The cursor launch builder drops SystemPrompt entirely (see
+		// agentruntime.buildCursorLaunch); the installed skill on disk is the
+		// only guidance a cursor agent gets. Known limitation.
+		systemPrompt = ""
 	}
 	var providerArgs []string
 	switch launch.Harness {
 	case "codex":
-		providerArgs = codexActivityHookArgs()
+		providerArgs = codexActivityHookArgs(hookHelperPath(b.DataDir))
 	case "cursor":
 		providerArgs = []string{"--trust"}
 	}
@@ -143,7 +144,7 @@ func (b HarnessBuilder) BuildInteractive(
 		}
 	}
 	if launch.Harness == "cursor" {
-		if err := installCursorActivityHooks(workspace); err != nil {
+		if err := installCursorActivityHooks(hookHelperPath(b.DataDir), workspace); err != nil {
 			if command.Cleanup != nil {
 				command.Cleanup()
 			}
@@ -261,7 +262,7 @@ func (b HarnessBuilder) configureCredential(
 		}
 	case "codex":
 		switch credential.CredentialType {
-		case "api_key", "access_token":
+		case "api_key", "access_token", "auth_json":
 			return b.configureCodexCredential(command, credential)
 		default:
 			return errors.New("unsupported Codex credential type")
@@ -329,9 +330,10 @@ func (b HarnessBuilder) prepareClaudeCloudExperience(command *Command, workspace
 	}); err != nil {
 		return fmt.Errorf("prepare Claude settings: %w", err)
 	}
+	helperBinary := hookHelperPath(b.DataDir)
 	if err := updateJSONFile(
 		filepath.Join(workspace, ".claude", "settings.local.json"),
-		installClaudeActivityHooks,
+		func(settings map[string]any) { installClaudeActivityHooks(helperBinary, settings) },
 	); err != nil {
 		return fmt.Errorf("install Claude activity hooks: %w", err)
 	}
@@ -455,13 +457,37 @@ func (b HarnessBuilder) configureCodexCredential(
 	command *Command,
 	credential worker.CredentialResponse,
 ) error {
-	parent := strings.TrimSpace(b.DataDir)
-	if parent == "" {
-		return errors.New("worker data directory is required for Codex configuration")
+	home, err := b.codexHome()
+	if err != nil {
+		return err
 	}
-	home := filepath.Join(parent, "codex")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("create Codex home: %w", err)
+	}
+	if credential.CredentialType == "auth_json" {
+		path := filepath.Join(home, "auth.json")
+		tmp, err := os.CreateTemp(home, ".ao-codex-auth-*")
+		if err != nil {
+			return fmt.Errorf("create temporary Codex authentication: %w", err)
+		}
+		tmpPath := tmp.Name()
+		defer func() { _ = os.Remove(tmpPath) }()
+		if err := tmp.Chmod(0o600); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("secure temporary Codex authentication: %w", err)
+		}
+		if _, err := tmp.Write([]byte(credential.Secret)); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("write temporary Codex authentication: %w", err)
+		}
+		if err := tmp.Close(); err != nil {
+			return fmt.Errorf("close temporary Codex authentication: %w", err)
+		}
+		if err := os.Rename(tmpPath, path); err != nil {
+			return fmt.Errorf("replace Codex authentication: %w", err)
+		}
+		command.Env["CODEX_HOME"] = home
+		return nil
 	}
 	login := b.CodexLogin
 	if login == nil {
@@ -472,6 +498,17 @@ func (b HarnessBuilder) configureCodexCredential(
 	}
 	command.Env["CODEX_HOME"] = home
 	return nil
+}
+
+func (b HarnessBuilder) codexHome() (string, error) {
+	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
+		return home, nil
+	}
+	parent := strings.TrimSpace(b.DataDir)
+	if parent == "" {
+		return "", errors.New("worker data directory is required for Codex configuration")
+	}
+	return filepath.Join(parent, "codex"), nil
 }
 
 func loginCodex(binary, home, credentialType, secret string) error {
@@ -487,7 +524,11 @@ func loginCodex(binary, home, credentialType, secret string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "login", option)
-	command.Env = append(os.Environ(), "CODEX_HOME="+home)
+	command.Env = []string{
+		"CODEX_HOME=" + home,
+		"HOME=" + os.Getenv("HOME"),
+		"PATH=" + os.Getenv("PATH"),
+	}
 	command.Stdin = strings.NewReader(secret)
 	if err := command.Run(); err != nil {
 		return err

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { notificationTarget, notificationVisual, relativeTime } from "./notificationView";
+import { notificationSections, notificationTarget, notificationVisual, relativeTime } from "./notificationView";
 import { darkTheme } from "./theme";
 
 describe("notificationVisual", () => {
@@ -8,6 +8,13 @@ describe("notificationVisual", () => {
 			(t) => notificationVisual(darkTheme, t).label,
 		);
 		expect(new Set(labels).size).toBe(4);
+	});
+
+	it("gives every known type a distinct semantic icon", () => {
+		const icons = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged"].map(
+			(type) => notificationVisual(darkTheme, type).icon,
+		);
+		expect(new Set(icons).size).toBe(4);
 	});
 
 	it("falls back to a usable label for an unknown type", () => {
@@ -40,6 +47,27 @@ describe("notificationTarget", () => {
 		expect(notificationTarget({ type: "" })).toBe("/prs");
 		expect(notificationTarget({ type: "", sessionId: "abc" })).toBe("/prs");
 		expect(notificationTarget({ type: "something_new", sessionId: "abc" })).toBe("/prs");
+	});
+});
+
+describe("notificationSections", () => {
+	it("puts unread notifications in the attention section before earlier history", () => {
+		const read = { id: "read", status: "read" };
+		const unread = { id: "unread", status: "unread" };
+
+		expect(notificationSections([read, unread])).toEqual([
+			{ key: "attention", title: "Needs attention", data: [unread] },
+			{ key: "earlier", title: "Earlier", data: [read] },
+		]);
+	});
+
+	it("omits empty sections", () => {
+		const read = { id: "read", status: "read" };
+
+		expect(notificationSections([read])).toEqual([
+			{ key: "earlier", title: "Earlier", data: [read] },
+		]);
+		expect(notificationSections([])).toEqual([]);
 	});
 });
 

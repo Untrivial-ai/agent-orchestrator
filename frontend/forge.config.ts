@@ -63,6 +63,7 @@ export function extraResourcesForPlatform(platform: NodeJS.Platform): string[] {
 		"daemon",
 		"agent-browser",
 		"resources/acp-runtime",
+		...(platform === "darwin" ? ["update-helper"] : []),
 		...(platform === "darwin" || platform === "linux" ? ["tmux"] : []),
 		"assets/icon.png",
 		"assets/icon.ico",
@@ -166,6 +167,11 @@ const config: ForgeConfig = {
 		// AO_RELEASE_REPO at build time.
 		prePackage: async (_forgeConfig, platform, arch) => {
 			await prepareNativeDependencies(platform as NodeJS.Platform, arch);
+			if (platform === "darwin") {
+				const helperBuild = spawnSync(process.execPath, [path.resolve("scripts/build-update-helper.mjs"), "--arch", arch], { stdio: "inherit" });
+				if (helperBuild.error) throw helperBuild.error;
+				if (helperBuild.status !== 0) throw new Error("macOS update helper build failed");
+			}
 			const { owner, name } = parseReleaseRepo(process.env.AO_RELEASE_REPO);
 			const yml = [
 				"provider: github",
@@ -200,6 +206,8 @@ const config: ForgeConfig = {
 					const appBundle = readdirSync(outputPath).find((entry) => entry.endsWith(".app"));
 					if (!appBundle) throw new Error(`packaged macOS app bundle missing from ${outputPath}`);
 					resourcesPath = path.join(outputPath, appBundle, "Contents", "Resources");
+					const helper = path.join(resourcesPath, "update-helper", "ao-update-progress");
+					if (!existsSync(helper)) throw new Error(`packaged macOS update helper missing from ${helper}`);
 				}
 				const binary = path.join(resourcesPath, "tmux", "bin", "tmux");
 				if (!existsSync(binary)) throw new Error(`packaged tmux missing from ${binary}`);

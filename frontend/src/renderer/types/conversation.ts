@@ -66,6 +66,18 @@ export type ActivityStatus =
  */
 export type DeliveryState = "queued" | "sending" | "accepted" | "uncertain" | "failed";
 
+/**
+ * Result of attempting to steer a running turn. A typed non-acceptance proves
+ * that the provider did not receive this guidance; transport ambiguity rejects
+ * the promise instead and remains fail-closed in the composer.
+ */
+export type ChatSteerOutcome =
+	| { status: "accepted" }
+	| { status: "not-accepted"; reason: string };
+
+/** Durable inline-edit acceptance; uncertainty remains a rejected promise. */
+export type ChatEditOutcome = ChatSteerOutcome;
+
 /** How far the agent has got with one step of its plan. */
 export type PlanStepStatus = "pending" | "in_progress" | "completed";
 
@@ -143,6 +155,7 @@ export interface ConversationContentSummary {
 }
 
 export interface QueuedMessageEditOptions {
+	clientMessageId?: string;
 	attachments?: { mimeType: string; data: string }[];
 	retainedContent?: number[];
 	expectedRevision?: number;
@@ -389,11 +402,12 @@ export interface SystemEventDetail {
 		| "provider.failure"
 		| "steer"
 		| "plan"
-		| "context.reset";
+		| "context.reset"
+		| "context.boundary";
 	/** model.rerouted */
 	fromModel?: string;
 	toModel?: string;
-	/** provider.failure: provider-neutral classification from an agent protocol extension. */
+	/** provider.failure */
 	category?: string;
 	severity?: "warning" | "error" | (string & {});
 	revision?: number;

@@ -20,6 +20,33 @@ permissions:
   contents: read
 
 jobs:
+  mac-update-helper:
+    runs-on: macos-14
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test native helper build configuration
+        run: node --test scripts/build-update-helper.node-test.mjs
+      - name: Test repair installer packaging and guards
+        run: node --test scripts/build-mac-repair-installer.node-test.mjs
+      - name: Compile helper for both macOS architectures
+        run: |
+          node scripts/build-update-helper.mjs --arch x64
+          lipo update-helper/ao-update-progress -verify_arch x86_64
+          node scripts/build-update-helper.mjs --arch arm64
+          lipo update-helper/ao-update-progress -verify_arch arm64
+      - name: Run native update state tests
+        run: |
+          mkdir -p "$HOME/.ao/build-cache/update-helper/tests"
+          xcrun swiftc -module-cache-path "$HOME/.ao/build-cache/update-helper/tests" native/update-helper/UpdateProgressState.swift native/update-helper/StateTests.swift -o "$HOME/.ao/build-cache/update-helper/state-tests"
+          "$HOME/.ao/build-cache/update-helper/state-tests"
+
   test:
     runs-on: ubuntu-latest
     defaults:

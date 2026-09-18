@@ -6,3 +6,5 @@ import TerminalSessionScreen from "../../lib/session/TerminalSessionScreen";
  * handle, not the Chat session id, identifies this PTY.
  */
 export default TerminalSessionScreen;
+
+export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

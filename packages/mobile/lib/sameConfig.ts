@@ -22,3 +22,8 @@ export function sameServerConfig(a: ServerConfig | null, b: ServerConfig | null)
 		(a.hostId ?? "") === (b.hostId ?? "")
 	);
 }
+
+/** Whether an asynchronous response still belongs to the active pairing. */
+export function pollResultIsCurrent(requested: ServerConfig, active: ServerConfig | null): boolean {
+	return sameServerConfig(requested, active);
+}
