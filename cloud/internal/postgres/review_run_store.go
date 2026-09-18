@@ -74,7 +74,6 @@ func (s *Store) OpenReviewTerminal(
 	orgID, sessionID, reviewRunID, prompt string,
 ) (string, error) {
 	terminalID := uuid.NewString()
-	// Separate transactions guarantee that open sorts before input by created_at.
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(
 			ctx,
@@ -86,11 +85,7 @@ func (s *Store) OpenReviewTerminal(
 		); err != nil {
 			return err
 		}
-		openPayload, err := json.Marshal(worker.TerminalCommand{
-			TerminalID: terminalID,
-			Kind:       "agent",
-			Review:     true,
-		})
+		openPayload, err := json.Marshal(reviewTerminalOpenCommand(terminalID, prompt))
 		if err != nil {
 			return err
 		}
@@ -130,22 +125,19 @@ func (s *Store) OpenReviewTerminal(
 	if err != nil {
 		return "", err
 	}
-	if err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
-		inputPayload, err := json.Marshal(worker.TerminalCommand{
-			TerminalID: terminalID, Data: []byte(prompt + "\r"),
-			Review: true,
-		})
-		if err != nil {
-			return err
-		}
-		_, err = createWorkerRequest(
-			ctx, tx, orgID, sessionID, "terminal.input", inputPayload, reviewTerminalRequestTTL, "",
-		)
-		return err
-	}); err != nil {
-		return "", err
-	}
 	return terminalID, nil
+}
+
+func reviewTerminalOpenCommand(terminalID, prompt string) worker.TerminalCommand {
+	// Start Codex with the prompt instead of sending terminal input after
+	// launch. Its interactive UI can take longer than a fixed delay to
+	// initialize, causing an early terminal write to be discarded.
+	return worker.TerminalCommand{
+		TerminalID: terminalID,
+		Kind:       "agent",
+		Review:     true,
+		Data:       []byte(prompt),
+	}
 }
 
 // CheckSessionWriteAccess authorizes a request that mutates a session-owned
