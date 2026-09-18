@@ -389,4 +389,3 @@ git diff --check main...HEAD
 ```
 
 Expected: only the design, plan, Cursor handoff implementation/tests, and corresponding documentation appear in the implementation worktree.
-

@@ -1,6 +1,6 @@
 # Archived Workspace Cleanup and Retention
 
-**Status:** Proposed  
+**Status:** Proposed
 **Date:** 2026-09-16
 
 ## Summary

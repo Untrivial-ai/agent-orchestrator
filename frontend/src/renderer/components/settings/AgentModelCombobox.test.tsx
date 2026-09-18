@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentModelCombobox, buildModelSearchIndex, searchModelIndex } from "./AgentModelCombobox";
 
 function renderCombobox(
-	models: Array<{ id: string; label: string; provider?: string; isDefault?: boolean }>,
+	models: React.ComponentProps<typeof AgentModelCombobox>["models"],
 	overrides: Partial<React.ComponentProps<typeof AgentModelCombobox>> = {},
 ) {
 	const onChange = vi.fn();
