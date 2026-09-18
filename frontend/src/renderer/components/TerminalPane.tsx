@@ -36,8 +36,8 @@ import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery
 import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useShellTerminals } from "../hooks/useShellTerminals";
 import { useCloudCp } from "../hooks/useCloudCp";
+import { terminalResetNonce, useTerminalResetStore } from "../stores/terminal-reset-store";
 import { createCloudTerminalMux } from "../lib/cloud-terminal-mux";
-import { subscribeSessionEventsBridged } from "../lib/cloud-cp/stream-bridge";
 import { XtermTerminal } from "./XtermTerminal";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -158,8 +158,15 @@ function cacheDescriptor(
 	if (!session?.id || !handleId) return null;
 	const ownerKey = `session:${session.id}:worker`;
 	const generation = session.terminalGeneration ?? "";
+	// The reset nonce discriminates a restored session (same id, new worker epoch,
+	// dead old terminal) from the live one: folding it into the cache key alone
+	// makes restore mount a brand-new entry (which re-mints against the new epoch)
+	// while `generation` stays the raw value the workspace reconcile loop compares
+	// against session.terminalGeneration — so a restore does not look like a
+	// generation change that would dispose the fresh terminal on the next render.
+	const nonce = terminalResetNonce(session.id);
 	return {
-		cacheKey: `${ownerKey}|handle:${handleId}|generation:${generation}`,
+		cacheKey: `${ownerKey}|handle:${handleId}|generation:${generation}|reset:${nonce}`,
 		generation,
 		handleId,
 		kind: "worker",
@@ -317,7 +324,12 @@ export function TerminalCacheProvider({
 			if (!cloud) return muxPool.acquire;
 			const kind = cloudTerminalKind(terminalTarget);
 			const identity = terminalTarget?.kind === "shell" ? terminalTarget.handleId : "agent";
-			const factoryKey = `${paneSession.id}:${kind}:${identity}`;
+			// Include the reset nonce so a restored session (new worker epoch) gets a
+			// brand-new factory closure — and therefore a fresh cursor at 0 — instead
+			// of the cached one whose cursor still points at the dead epoch's replay
+			// position. Without this the rebuilt mux dials `after=<stale>` and the new
+			// epoch (which replays from 0) never sends output, so the pane never opens.
+			const factoryKey = `${paneSession.id}:${kind}:${identity}:${terminalResetNonce(paneSession.id)}`;
 			const cached = cloudMuxFactoriesRef.current.get(factoryKey);
 			if (cached) return cached;
 			const sessionId = paneSession.id;
@@ -334,34 +346,18 @@ export function TerminalCacheProvider({
 					wsBaseUrl: `${cloudCpRef.current.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/api/cloud/v1`,
 					kind,
 					cursor,
-					// #4960: hold the agent pane in "connecting" until the worker's
-					// agent.ready arrives (do not flash the temporary workspace shell).
-					// A workspace/shell terminal attaches to its own kind immediately
-					// and must never be upgraded to the agent terminal, so gate both
-					// the wait and the agent-ready subscription on the agent pane.
-					waitForAgentReady: kind === "agent",
+					// Both kinds open their socket directly; the CP's find-or-create
+					// OpenTerminal + starting/ready messages drive readiness. There is
+					// no agent-ready SSE wait (#4960 flashed the workspace shell only
+					// because it opened that shell first — we now open the agent
+					// terminal itself, so there is nothing to flash), and no client
+					// open timeout (readiness is server-driven).
 					mintTicket: async (ticketKind) => {
 						const response = await cloudCpRef.current.client.createTerminalTicket(orgId, sessionId, {
 							kind: ticketKind,
 						});
 						return response.ticket;
 					},
-					subscribeAgentReady:
-						kind === "agent"
-							? (onReady) => {
-									const controller = new AbortController();
-									void subscribeSessionEventsBridged({
-										baseUrl: cloudCpRef.current.baseUrl,
-										orgId,
-										sessionId,
-										signal: controller.signal,
-										onEvent: (event) => {
-											if (event.type === "agent.ready") onReady();
-										},
-									});
-									return () => controller.abort();
-								}
-							: undefined,
 				});
 			cloudMuxFactoriesRef.current.set(factoryKey, factory);
 			return factory;
@@ -666,6 +662,13 @@ export function TerminalPane({
 	const isOptimisticShell =
 		terminalTarget.kind === "shell" && terminalTarget.handleId.startsWith("pending-shell:");
 	const cache = useContext(TerminalCacheContext);
+	// Subscribe to this session's terminal-reset nonce so a restore (which bumps
+	// it) re-renders the pane and recomputes the descriptor/mux key below, forcing
+	// a fresh mount against the new worker epoch. Reading through the store hook is
+	// what makes the bump reactive; cacheDescriptor/resolveCreateMux read the same
+	// value non-reactively. Placed above the early returns so the hook order is
+	// stable regardless of the render path.
+	useTerminalResetStore((state) => (session?.id ? (state.nonces[session.id] ?? 0) : 0));
 	const terminalKey =
 		terminalTarget?.kind === "reviewer" || terminalTarget?.kind === "shell"
 			? terminalTarget.handleId
@@ -976,6 +979,32 @@ function AttachedTerminal({
 	useEffect(() => {
 		onTerminalStateChange?.(state);
 	}, [onTerminalStateChange, state]);
+	// The immediate reconnecting signal a restore/resume sets (terminal-reset
+	// store). Reactive so the "Connecting…" surface shows the instant restore is
+	// clicked, before the polled runtimeConnected catches up; cleared once the
+	// worker actually connects (not merely when the PTY attaches).
+	const isReconnecting = useTerminalResetStore((store) =>
+		session?.id ? Boolean(store.reconnecting[session.id]) : false,
+	);
+	// The fresh box is genuinely up only once a NEW worker epoch appears past the
+	// one recorded at restore (baselineEpoch). The session DTO reports the current
+	// epoch as terminalGeneration = MAX(agent terminal worker_epoch). Gating on the
+	// epoch — NOT runtimeConnected — is what makes a rapid delete→restore correct:
+	// the old worker's connection lingers for ~10s (so runtimeConnected stays true
+	// and a runtimeConnected-based latch lifts early), and the only attachable
+	// terminal in the provision+boot gap is the OLD epoch's — content shows but its
+	// box is being torn down, so you cannot type. Clear the reconnecting signal the
+	// instant the epoch advances past the baseline, which is also when the pane
+	// re-mints against the new epoch (terminalGeneration drives the mux key).
+	const currentEpoch = session?.terminalGeneration ? Number(session.terminalGeneration) || 0 : 0;
+	const baselineEpoch = useTerminalResetStore((store) =>
+		session?.id ? (store.baselineEpoch[session.id] ?? 0) : 0,
+	);
+	useEffect(() => {
+		if (isReconnecting && session?.id && currentEpoch > baselineEpoch) {
+			useTerminalResetStore.getState().markConnected(session.id);
+		}
+	}, [isReconnecting, currentEpoch, baselineEpoch, session?.id]);
 	useEffect(() => {
 		if (!terminal || state !== "attached" || !inputRequest) return;
 		if (lastInputRequestIdRef.current === inputRequest.id) return;
@@ -1108,7 +1137,21 @@ function AttachedTerminal({
 		Boolean(handleId) &&
 		(!replaySettled || replayPaintPending) &&
 		(state === "connecting" || state === "attached");
-	const showEndedState = state === "exited" || canRestoreSession;
+	// A restored or resuming cloud session brings up a FRESH box (a new sandbox /
+	// container) that rehydrates the saved context. Until its worker connects,
+	// show a calm "Connecting…" instead of the previous box's dead terminal or
+	// the "process exited" strip: the user is connecting to a new box with their
+	// saved state, not looking at a broken session. Lifts the instant the new
+	// terminal attaches. Cloud only, so local terminals are unchanged.
+	// Show the Connecting cover for a restore in flight: from the restore click
+	// (isReconnecting, set synchronously) until the fresh worker's epoch appears
+	// past the baseline (isReconnecting is then cleared, above). This spans the
+	// entire provision+boot gap in which the only attachable terminal is the old,
+	// dead epoch's — so the user sees a calm "Connecting" the whole time instead of
+	// a terminal they cannot type into, and it never flickers back once the new
+	// epoch attaches (the epoch only moves forward). Cloud only.
+	const isBoxComingUp = Boolean(session?.cloud) && isReconnecting;
+	const showEndedState = (state === "exited" || canRestoreSession) && !isBoxComingUp;
 	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"
@@ -1156,6 +1199,11 @@ function AttachedTerminal({
 							<div className="text-terminal">{emptyStateTitle}</div>
 							<div className="mt-2 text-terminal-dim">{emptyStateMessage}</div>
 						</div>
+					</div>
+				)}
+				{isBoxComingUp && !showReplayCover && (
+					<div className="terminal-surface absolute inset-0 grid place-items-center font-mono text-control">
+						<div className="text-terminal">{t("terminal.connecting")}</div>
 					</div>
 				)}
 				{showReplayCover && <ReplayCover message={attachSession?.cloud ? t("terminal.connecting") : undefined} />}

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep protocol-neutral ACP behavior generic and inject Claude-specific terminal classification and daemon-owned cache invalidation through narrow callbacks. Make provider probing conservative, project-scoped, and catalog-oriented, then carry validated model/effort settings through both fresh launch and restore.
 
-**Tech Stack:** Go 1.26, React/TypeScript, Vitest, `httptest`, AWS SDK v2, `golang.org/x/oauth2/google`.
+**Tech Stack:** Go 1.26, React/TypeScript, Vitest, `httptest`, AWS CLI, gcloud CLI.
 
 **Spec:** `docs/superpowers/specs/2026-09-16-claude-auth-provider-correctness-design.md`
 
@@ -58,23 +58,23 @@
 - [ ] Run focused daemon, service, and Claude ACP tests.
 - [ ] Commit the focused change.
 
-### Task 3: Conservative HTTP provider contracts
+### Task 3: Conservative provider contracts
 
 **Files:**
 - Modify: `backend/pkg/agentcreds/agentcreds.go`
 - Modify: `backend/pkg/agentcreds/providers.go`
-- Modify: `backend/pkg/agentcreds/bedrock.go`
+- Modify: `backend/pkg/agentcreds/chain.go`
 - Modify: `backend/pkg/agentcreds/vertex.go`
+- Modify: `backend/pkg/agentcreds/local_test.go`
 - Modify: `backend/pkg/agentcreds/providers_test.go`
-- Modify: `backend/pkg/agentcreds/signing_test.go`
 
 **Interfaces:**
-- Produces: provider-aware response classification and complete paginated model results.
+- Produces: provider-aware response classification, CLI-backed cloud credential resolution, and complete paginated model results.
 
 - [ ] Add failing tests for generic 403 => unknown, gateway 429 => unknown, first-party 429 => valid, and Claude OAuth headers.
 - [ ] Add a failing pagination test asserting `limit` and cursor traversal.
 - [ ] Add a failing Vertex URL-shape test for `/v1beta1/publishers/anthropic/models`.
-- [ ] Add a failing Bedrock test proving model listing is catalog evidence, not launch-readiness proof.
+- [ ] Add a failing Bedrock CLI test proving model listing is catalog evidence, not launch-readiness proof.
 - [ ] Implement the minimal provider-specific classification and pagination behavior.
 - [ ] Run `go test ./pkg/agentcreds`.
 - [ ] Commit the focused change.

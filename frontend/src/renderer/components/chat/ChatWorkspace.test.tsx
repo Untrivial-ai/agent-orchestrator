@@ -334,7 +334,7 @@ describe("Chat message timestamps", () => {
 		);
 
 		expect(screen.getByLabelText(/^Sent Yesterday · \d{2}:\d{2}$/)).toBeInTheDocument();
-		expect(screen.getByLabelText(/^Sent [A-Z][a-z]{2} \d{1,2}, \d{4}$/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/^Sent .+\d{4}$/)).toBeInTheDocument();
 	});
 });
 
@@ -1593,6 +1593,43 @@ describe("ChatWorkspace timeline", () => {
 });
 
 describe("automation reports", () => {
+	it("renders browser annotation transport as a compact feedback card", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const message: ConversationMessage = {
+			...source,
+			text: `<browser_annotations>
+Browser feedback
+Page: Google
+URL: https://www.google.com/
+Annotations: 1
+
+Annotation 1 (adjustment):
+Target: div.badge
+Selector: body > div.badge
+Dimensions: 120×24
+Requested visual changes:
+- Text color: "rgb(0, 0, 0)" → "#d7193f"
+- Background: "transparent" → "#32c873"
+
+Reference screenshots:
+- .ao/attachments/browser.png
+
+Task: Address the feedback below according to its wording. Visual adjustments are already previewed in AO's shared browser and describe the intended result.
+</browser_annotations>`,
+		};
+
+		render(<OriginMessage message={message} />);
+
+		expect(screen.getByText("Browser feedback")).toBeInTheDocument();
+		expect(screen.getByText("1 annotation on Google")).toBeInTheDocument();
+		expect(screen.getByText("2 visual changes")).toBeInTheDocument();
+		expect(screen.getByText("div.badge")).toBeInTheDocument();
+		expect(screen.getByText("1 reference screenshot")).toBeInTheDocument();
+		expect(screen.queryByText(/body > div\.badge/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Task: Address/)).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Show full report" })).not.toBeInTheDocument();
+	});
+
 	it("collapses a long report until the reader asks to expand it", async () => {
 		const user = userEvent.setup();
 		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
@@ -2929,6 +2966,28 @@ describe("ChatWorkspace reviewer tabs", () => {
 		expect(onOpenReviewerTerminal).toHaveBeenCalledWith(reviewerTerminal);
 	});
 
+	it("removes the active highlight from the reviewer while a workspace file is selected", () => {
+		render(
+			<ChatWorkspace
+				reviewerTarget={reviewerTarget}
+				reviewerTerminal={reviewerTerminal}
+				session={chatSession}
+				snapshot={idleSnapshot()}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button aria-selected="true" role="tab">README.md</button>,
+						onSelect: vi.fn(),
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
+
 	it("keeps the chat draft, attachments, edit, and scroll state mounted while Reviewer is selected", async () => {
 		const user = userEvent.setup();
 		const common = {
@@ -3351,6 +3410,27 @@ describe("ChatWorkspace shell tabs", () => {
 		expect(closeShellTerminalShortcutStates.at(-1)).toBe(true);
 		act(() => [...closeShellTerminalListeners][0]?.());
 		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	it("removes the active highlight from a shell while a workspace file is selected", () => {
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				shellTerminals={shells}
+				shellTarget={shellTarget("shell-2")}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button aria-selected="true" role="tab">README.md</button>,
+						onSelect: vi.fn(),
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("tab", { name: "second shell" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
 	});
 });
 

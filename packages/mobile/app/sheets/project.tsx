@@ -34,3 +34,5 @@ export default function ProjectSheetRoute() {
 		/>
 	);
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

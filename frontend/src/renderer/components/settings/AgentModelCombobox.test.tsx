@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,8 +70,11 @@ describe("AgentModelCombobox", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
 		const effortTrigger = screen.getByRole("menuitem", { name: /Reasoning effort/ });
-		await userEvent.click(effortTrigger);
-		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+		act(() => effortTrigger.focus());
+		await userEvent.keyboard("{ArrowRight}");
+		const lowEffort = screen.getByRole("menuitemradio", { name: "Low" });
+		const effortMenu = lowEffort.closest('[role="menu"]');
+		await waitFor(() => expect(effortMenu).toContainElement(document.activeElement as HTMLElement));
 
 		await userEvent.keyboard("{Escape}");
 

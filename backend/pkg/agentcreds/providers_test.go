@@ -9,61 +9,6 @@ import (
 	"testing"
 )
 
-// The provider gate exists so a credential is never sent to a host that should
-// not see it. This is the test that would catch a Bedrock key being leaked to
-// api.anthropic.com.
-func TestProviderGateNeverProbesTheWrongHost(t *testing.T) {
-	anthropic := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("a non-first-party credential must never reach api.anthropic.com")
-	}))
-	defer anthropic.Close()
-
-	bedrock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"modelSummaries":[{"modelId":"anthropic.claude-opus-4-5-v1:0","providerName":"Anthropic"}]}`))
-	}))
-	defer bedrock.Close()
-
-	validator := New(bedrock.Client())
-
-	result := validator.Validate(context.Background(), Credential{
-		Kind: KindAuthToken, Secret: "bedrock-bearer", Source: "AWS_BEARER_TOKEN_BEDROCK",
-		Provider: ProviderBedrock, Region: "us-east-1", BaseURL: bedrock.URL,
-	})
-	if result.State != StateUnknown || len(result.Models) != 1 {
-		t.Fatalf("state/models = %q/%v, want catalog-only unknown with one model", result.State, result.Models)
-	}
-}
-
-func TestBedrockAcceptsOnlyBearerAndSigV4CredentialKinds(t *testing.T) {
-	tests := []struct {
-		name    string
-		cred    Credential
-		wantErr bool
-	}{
-		{name: "bearer", cred: Credential{Kind: KindAuthToken, Secret: "token"}},
-		{name: "sigv4", cred: Credential{Kind: KindAWSSigV4, Secret: "access\nsecret\nsession"}},
-		{name: "oauth token", cred: Credential{Kind: KindOAuthToken, Secret: "token"}, wantErr: true},
-		{name: "api key", cred: Credential{Kind: KindAPIKey, Secret: "key"}, wantErr: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.cred.Provider = ProviderBedrock
-			tc.cred.Region = "us-east-1"
-			spec, err := New(nil).bedrockRequest(context.Background(), tc.cred)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("bedrockRequest() error = %v, wantErr %v", err, tc.wantErr)
-			}
-			if tc.wantErr {
-				return
-			}
-			authorization := spec.request.Header.Get("Authorization")
-			if authorization == "" {
-				t.Fatal("supported Bedrock credential did not add authorization")
-			}
-		})
-	}
-}
-
 // Every probe must hit a model-listing endpoint. A generic identity endpoint
 // would confirm the credential authenticates and say nothing about whether it
 // can reach Claude.
@@ -82,16 +27,6 @@ func TestProbesTargetModelEndpoints(t *testing.T) {
 			name:     "gateway",
 			cred:     Credential{Kind: KindAPIKey, Secret: "k", Provider: ProviderGateway},
 			wantPath: "/v1/models",
-		},
-		{
-			name:     "foundry",
-			cred:     Credential{Kind: KindAzureAPIKey, Secret: "k", Provider: ProviderFoundry, Resource: "r"},
-			wantPath: "/v1/models",
-		},
-		{
-			name:     "bedrock",
-			cred:     Credential{Kind: KindAuthToken, Secret: "k", Provider: ProviderBedrock, Region: "us-east-1"},
-			wantPath: "/foundation-models",
 		},
 		{
 			name: "vertex",
@@ -168,7 +103,7 @@ func TestAnthropicModelDiscoveryRejectsRepeatedCursor(t *testing.T) {
 	}
 }
 
-// For the cloud providers, authenticating is not the same as having Claude.
+// For Vertex, authenticating is not the same as having Claude.
 // A 200 with no Anthropic models means the account will fail on its first turn.
 func TestCloudProvidersRequireClaudeEntitlement(t *testing.T) {
 	tests := []struct {
@@ -176,16 +111,6 @@ func TestCloudProvidersRequireClaudeEntitlement(t *testing.T) {
 		cred Credential
 		body string
 	}{
-		{
-			name: "bedrock without anthropic models",
-			cred: Credential{Kind: KindAuthToken, Secret: "k", Provider: ProviderBedrock, Region: "us-east-1"},
-			body: `{"modelSummaries":[{"modelId":"amazon.titan-text-v1","providerName":"Amazon"}]}`,
-		},
-		{
-			name: "bedrock with an empty list",
-			cred: Credential{Kind: KindAuthToken, Secret: "k", Provider: ProviderBedrock, Region: "us-east-1"},
-			body: `{"modelSummaries":[]}`,
-		},
 		{
 			name: "vertex without anthropic publishers",
 			cred: Credential{
@@ -265,7 +190,7 @@ func TestGatewayCatalogPreservesArbitraryNonEmptyModelIDs(t *testing.T) {
 		},
 		{
 			name:       "foundry",
-			credential: Credential{Kind: KindAzureAPIKey, Secret: "k", Provider: ProviderFoundry},
+			credential: Credential{Kind: KindAPIKey, Secret: "k", Provider: ProviderFoundry},
 			wantState:  StateUnknown,
 		},
 	}
@@ -335,12 +260,6 @@ func TestValidationReturnsThatProvidersModelIDs(t *testing.T) {
 			want: "claude-opus-4-5-20251101",
 		},
 		{
-			name: "bedrock format",
-			cred: Credential{Kind: KindAuthToken, Secret: "k", Provider: ProviderBedrock, Region: "us-east-1"},
-			body: `{"modelSummaries":[{"modelId":"us.anthropic.claude-opus-4-5-v1:0","providerName":"Anthropic"}]}`,
-			want: "us.anthropic.claude-opus-4-5-v1:0",
-		},
-		{
 			name: "vertex format",
 			cred: Credential{
 				Kind: KindGoogleAccessToken, Secret: "k", Provider: ProviderVertex,
@@ -360,12 +279,8 @@ func TestValidationReturnsThatProvidersModelIDs(t *testing.T) {
 			cred := tc.cred
 			cred.BaseURL = server.URL
 			result := New(server.Client()).Validate(context.Background(), cred)
-			wantState := StateValid
-			if tc.cred.Provider == ProviderBedrock {
-				wantState = StateUnknown
-			}
-			if result.State != wantState {
-				t.Fatalf("state = %q (%s), want %q", result.State, result.Detail, wantState)
+			if result.State != StateValid {
+				t.Fatalf("state = %q (%s), want %q", result.State, result.Detail, StateValid)
 			}
 			if len(result.Models) != 1 || result.Models[0].ID != tc.want {
 				t.Fatalf("models = %v, want exactly [%s]", result.Models, tc.want)
@@ -374,54 +289,11 @@ func TestValidationReturnsThatProvidersModelIDs(t *testing.T) {
 	}
 }
 
-// Foundry accepts either credential shape, under different headers.
-func TestFoundryHeaderFollowsKind(t *testing.T) {
-	tests := []struct {
-		kind       Kind
-		wantHeader string
-		wantValue  string
-	}{
-		{KindAzureAPIKey, "Api-Key", "foundry-secret"},
-		{KindAuthToken, "Authorization", "Bearer foundry-secret"},
-	}
-	for _, tc := range tests {
-		t.Run(string(tc.kind), func(t *testing.T) {
-			var got http.Header
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				got = r.Header.Clone()
-				_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5"}]}`))
-			}))
-			defer server.Close()
-
-			result := New(server.Client()).Validate(context.Background(), Credential{
-				Kind: tc.kind, Secret: "foundry-secret", Provider: ProviderFoundry, BaseURL: server.URL,
-			})
-			if result.State != StateValid {
-				t.Fatalf("state = %q (%s)", result.State, result.Detail)
-			}
-			if got.Get(tc.wantHeader) != tc.wantValue {
-				t.Fatalf("%s = %q, want %q", tc.wantHeader, got.Get(tc.wantHeader), tc.wantValue)
-			}
-		})
-	}
-}
-
-// Foundry needs a resource name to build a URL at all. Missing one is Unknown,
-// not a rejection.
-func TestFoundryWithoutAResourceIsUnknown(t *testing.T) {
-	result := New(nil).Validate(context.Background(), Credential{
-		Kind: KindAzureAPIKey, Secret: "k", Provider: ProviderFoundry,
-	})
-	if result.State != StateUnknown {
-		t.Fatalf("state = %q, want unknown", result.State)
-	}
-}
-
 // A credential kind that cannot authenticate to a provider is a programming
 // error, and must surface as Unknown rather than as a bogus rejection.
 func TestMismatchedKindAndProviderIsUnknown(t *testing.T) {
 	result := New(nil).Validate(context.Background(), Credential{
-		Kind: KindAWSSigV4, Secret: "a\nb", Provider: ProviderFirstParty,
+		Kind: KindGoogleAccessToken, Secret: "token", Provider: ProviderFirstParty,
 	})
 	if result.State != StateUnknown {
 		t.Fatalf("state = %q, want unknown", result.State)

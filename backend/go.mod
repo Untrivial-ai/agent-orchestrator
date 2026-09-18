@@ -2,12 +2,9 @@ module github.com/aoagents/agent-orchestrator/backend
 
 go 1.25.7
 
-replace cloud.google.com/go v0.34.0 => cloud.google.com/go v0.110.10
-
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/aymanbagabas/go-pty v0.2.3
-	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
@@ -22,7 +19,6 @@ require (
 	github.com/swaggest/openapi-go v0.2.61
 	github.com/unixshells/vt-go v0.2.0
 	github.com/yuin/goldmark v1.8.2
-	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -30,8 +26,6 @@ require (
 )
 
 require (
-	cloud.google.com/go/compute/metadata v0.3.0 // indirect
-	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260303162955-0b88c25f3fff // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect

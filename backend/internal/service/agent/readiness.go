@@ -97,7 +97,9 @@ func (s *Service) InvalidateAgentAuthentication(agentID string) {
 // RecheckAgent schedules a non-blocking display readiness ensure.
 func (s *Service) RecheckAgent(agentID string) {
 	go func() {
-		_, _ = s.readiness.Ensure(s.readiness.ctx, []string{agentID}, domain.AgentReadinessPurposeDisplay)
+		if _, err := s.readiness.Ensure(s.readiness.ctx, []string{agentID}, domain.AgentReadinessPurposeDisplay); err != nil {
+			s.logger.Warn("agent readiness recheck failed", "agent", agentID, "err", err)
+		}
 	}()
 }
 

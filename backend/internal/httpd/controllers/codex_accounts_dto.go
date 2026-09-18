@@ -1,8 +1,6 @@
 package controllers
 
 import (
-	"strings"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 )
@@ -15,13 +13,12 @@ func newCodexAccountsResponse(input agentsvc.CodexAccounts) CodexAccountsRespons
 	response := CodexAccountsResponse{
 		ActiveAccountID: input.ActiveAccountID, AccountRevision: input.AccountRevision,
 		Accounts: accounts, Capabilities: newCodexCapabilitiesResponse(input.Capabilities),
-	}
-	if input.UnmanagedGlobalAccount != nil {
-		response.UnmanagedGlobalAccount = &CodexUnmanagedGlobalAccountResponse{
-			Label: input.UnmanagedGlobalAccount.Label, AuthMethod: string(input.UnmanagedGlobalAccount.AuthMethod),
-			AccountEmail: input.UnmanagedGlobalAccount.AccountEmail,
-			ReasonCode:   input.UnmanagedGlobalAccount.ReasonCode, Reason: input.UnmanagedGlobalAccount.Reason,
-		}
+		DeviceReconciliation: CodexDeviceReconciliationResponse{
+			Status: string(input.DeviceReconciliation.Status), ActiveAccountVerified: input.DeviceReconciliation.ActiveAccountVerified,
+			ReasonCode: input.DeviceReconciliation.ReasonCode, Retryable: input.DeviceReconciliation.Retryable,
+			AttemptedAt: input.DeviceReconciliation.AttemptedAt, VerifiedAt: input.DeviceReconciliation.VerifiedAt,
+			NextRetryAt: input.DeviceReconciliation.NextRetryAt,
+		},
 	}
 	if input.ActiveLogin != nil {
 		response.ActiveLogin = &CodexActiveLoginResponse{
@@ -127,27 +124,10 @@ func newCodexLoginResponse(input domain.CodexAccountLoginOperation) CodexAccount
 }
 
 func newCodexSwitchResponse(input domain.CodexAccountSwitch) CodexAccountSwitchResponse {
-	sessions := make([]CodexAccountSwitchSessionResponse, len(input.Sessions))
-	for i := range input.Sessions {
-		session := input.Sessions[i]
-		sessions[i] = CodexAccountSwitchSessionResponse{
-			SessionID: string(session.SessionID), InterfaceMode: string(session.InterfaceMode), WasRunning: session.WasRunning,
-			StopState: session.StopState, RestartState: session.RestartState, ErrorCode: redactedCodexSwitchSessionErrorCode(session.ErrorCode),
-			StoppedAt: session.StoppedAt, RestartedAt: session.RestartedAt,
-		}
-	}
 	return CodexAccountSwitchResponse{
-		ID: input.ID, SourceAccountID: input.SourceAccountID, TargetAccountID: input.TargetAccountID,
-		Phase: CodexAccountSwitchPhase(input.Phase), FailureCode: input.FailureCode, Sessions: sessions,
-		CanRecover: input.CanRecover, CredentialsCommittedAt: input.CredentialsCommittedAt,
-		CreatedAt: input.CreatedAt, UpdatedAt: input.UpdatedAt, CompletedAt: input.CompletedAt,
+		ID: input.ID, SourceKind: string(input.SourceKind), SourceAccountID: input.SourceAccountID, TargetAccountID: input.TargetAccountID,
+		Phase: CodexAccountSwitchPhase(input.Phase), FailureCode: input.FailureCode,
+		CredentialsCommittedAt: input.CredentialsCommittedAt,
+		CreatedAt:              input.CreatedAt, UpdatedAt: input.UpdatedAt, CompletedAt: input.CompletedAt,
 	}
-}
-
-func redactedCodexSwitchSessionErrorCode(code string) string {
-	code = strings.TrimSpace(code)
-	if prefix, _, found := strings.Cut(code, ":"); found {
-		return prefix
-	}
-	return code
 }

@@ -44,18 +44,23 @@ func TestPersistentACPFailedPromptAcknowledgementAllowsNextTurn(t *testing.T) {
 		if err := conv.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
 			t.Fatal(err)
 		}
-		for {
+		completed, ready := false, false
+		for !ready {
 			event := nextEvent(t, conv.Events())
-			if event.Kind != ports.ChatEventTurnCompleted {
-				continue
+			switch event.Kind {
+			case ports.ChatEventTurnCompleted:
+				if event.TurnState != want || event.ProviderEventID == "" {
+					t.Fatalf("completion = %#v, want %s with a durable receipt", event, want)
+				}
+				if err := conv.(ports.ChatProviderEventAcknowledger).AcknowledgeProviderEvent(context.Background(), event.ProviderEventID); err != nil {
+					t.Fatal(err)
+				}
+				completed = true
+			case ports.ChatEventControllerState:
+				// TurnCompleted is emitted before the driver releases activeTurn.
+				// ControllerReady is the barrier after which the next turn is valid.
+				ready = completed && event.ControllerState == ports.ChatControllerReady
 			}
-			if event.TurnState != want || event.ProviderEventID == "" {
-				t.Fatalf("completion = %#v, want %s with a durable receipt", event, want)
-			}
-			if err := conv.(ports.ChatProviderEventAcknowledger).AcknowledgeProviderEvent(context.Background(), event.ProviderEventID); err != nil {
-				t.Fatal(err)
-			}
-			break
 		}
 	}
 }

@@ -155,12 +155,12 @@ type fakeIdentityResolver struct {
 	calls    int
 }
 
-func (r *fakeIdentityResolver) AuthenticatedIdentity(context.Context) (ports.SCMIdentity, error) {
+func (r *fakeIdentityResolver) AuthenticatedIdentityForProvider(context.Context, string, string) (ports.SCMIdentity, error) {
 	r.calls++
 	return r.identity, r.err
 }
 
-func (p *fakeProvider) AuthenticatedIdentity(context.Context) (ports.SCMIdentity, error) {
+func (p *fakeProvider) AuthenticatedIdentityForProvider(context.Context, string, string) (ports.SCMIdentity, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.identityCalls++
@@ -273,8 +273,18 @@ func (l *fakeLifecycle) ApplySCMObservation(_ context.Context, _ domain.SessionI
 }
 
 func newTestObserver(store *fakeStore, provider *fakeProvider, lc Lifecycle, now time.Time) *Observer {
-	cfg := Config{Clock: func() time.Time { return now }, Tick: time.Hour, Logger: quietSlog(), CacheMax: 128, IdentityResolver: provider}
-	return New(provider, store, lc, cfg)
+	if provider.identity.Login == "" && provider.identityErr == nil {
+		provider.identity = ports.SCMIdentity{Login: "alice", Human: true}
+	}
+	for repo, prs := range provider.openPRs {
+		for i := range prs {
+			if prs[i].Author == "" {
+				prs[i].Author = "alice"
+			}
+		}
+		provider.openPRs[repo] = prs
+	}
+	return New(provider, store, lc, Config{Clock: func() time.Time { return now }, Tick: time.Hour, Logger: quietSlog(), CacheMax: 128, ScopedIdentityResolver: provider})
 }
 
 func TestDispatchOrderIsDeterministic(t *testing.T) {
@@ -648,6 +658,9 @@ func TestPoll_RepoETag200DiscoversPRAndRefreshesSamePoll(t *testing.T) {
 	if store.writes[0].pr.ProviderID != "PR_stable_1" {
 		t.Fatalf("discovery ProviderID = %q, want PR_stable_1", store.writes[0].pr.ProviderID)
 	}
+	if got := store.writes[0].pr.Author; got != "alice" {
+		t.Fatalf("discovered author = %q, want alice", got)
+	}
 }
 
 func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
@@ -656,17 +669,18 @@ func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
 		repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v2"}},
 		openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {
 			{URL: "https://github.com/o/r/pull/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1", Author: "other"},
-			{URL: "https://github.com/o/r/pull/2", Number: 2, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha2", Author: "ALICE"},
+			{URL: "https://github.com/o/r/pull/2", Number: 2, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha2", Author: " ALICE "},
+			{URL: "https://github.com/o/r/pull/3", Number: 3, SourceBranch: "feat", HeadRepo: "o/r", Author: ""},
 		}},
 		observations: map[string]ports.SCMObservation{prKey(testRepo, 2): testObs(2)},
 	}
-	identity := &fakeIdentityResolver{identity: ports.SCMIdentity{Login: "alice", Human: true}}
+	identity := &fakeIdentityResolver{identity: ports.SCMIdentity{Login: " alice ", Human: true}}
 	obs := New(provider, store, &fakeLifecycle{}, Config{
-		Clock:            func() time.Time { return time.Unix(1, 0).UTC() },
-		Tick:             time.Hour,
-		Logger:           quietSlog(),
-		CacheMax:         128,
-		IdentityResolver: identity,
+		Clock:                  func() time.Time { return time.Unix(1, 0).UTC() },
+		Tick:                   time.Hour,
+		Logger:                 quietSlog(),
+		CacheMax:               128,
+		ScopedIdentityResolver: identity,
 	})
 	if err := obs.Poll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -678,18 +692,21 @@ func TestPoll_DiscoversOnlyPRsFromAuthenticatedHuman(t *testing.T) {
 		t.Fatalf("fetched PRs = %#v, want only authenticated author's PR #2", provider.fetchBatches)
 	}
 	for _, write := range store.writes {
-		if write.pr.Number == 1 {
+		if write.pr.Number != 2 {
 			t.Fatal("foreign author's PR was persisted")
 		}
 	}
 }
 
-func TestPoll_PreservesBranchDiscoveryWithoutHumanIdentity(t *testing.T) {
+func TestPoll_DisablesAutomaticDiscoveryWithoutHumanIdentity(t *testing.T) {
 	tests := []struct {
 		name        string
 		identity    ports.SCMIdentity
 		identityErr error
+		noResolver  bool
 	}{
+		{name: "missing resolver", noResolver: true},
+		{name: "empty login", identity: ports.SCMIdentity{Login: "  ", Human: true}},
 		{name: "lookup error", identityErr: errors.New("identity unavailable")},
 		{name: "bot account", identity: ports.SCMIdentity{Login: "ao-bot", Human: false}},
 	}
@@ -703,12 +720,16 @@ func TestPoll_PreservesBranchDiscoveryWithoutHumanIdentity(t *testing.T) {
 				identity:     tt.identity,
 				identityErr:  tt.identityErr,
 			}
-			obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(1, 0).UTC())
+			var resolver ports.ScopedIdentityResolver = provider
+			if tt.noResolver {
+				resolver = nil
+			}
+			obs := New(provider, store, &fakeLifecycle{}, Config{Logger: quietSlog(), ScopedIdentityResolver: resolver})
 			if err := obs.Poll(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if len(provider.fetchBatches) != 1 || provider.fetchBatches[0][0].Number != 1 {
-				t.Fatalf("branch fallback did not discover PR: %#v", provider.fetchBatches)
+			if len(provider.fetchBatches) != 0 || len(store.writes) != 0 {
+				t.Fatalf("automatic discovery must fail closed: batches=%#v writes=%#v", provider.fetchBatches, store.writes)
 			}
 		})
 	}
@@ -2875,6 +2896,7 @@ func TestPoll_AllFail_ScopedPerProviderError(t *testing.T) {
 	glAuthErr := errors.New("gitlab 401 unauthorized")
 
 	provider := &hostAwareProvider{fakeProvider: &fakeProvider{
+		identity: ports.SCMIdentity{Login: "alice", Human: true},
 		repoGuards: map[string]ports.SCMGuardResult{
 			prKey(testRepo, 0): {ETag: "repo2"},
 			prKey(glRepo, 0):   {ETag: "repo2"},
@@ -2892,11 +2914,11 @@ func TestPoll_AllFail_ScopedPerProviderError(t *testing.T) {
 
 	now := time.Unix(2000, 0).UTC()
 	obs := New(provider, store, &fakeLifecycle{}, Config{
-		Clock:            func() time.Time { return now },
-		Tick:             time.Hour,
-		Logger:           quietSlog(),
-		CacheMax:         128,
-		IdentityResolver: provider.fakeProvider,
+		Clock:                  func() time.Time { return now },
+		Tick:                   time.Hour,
+		Logger:                 quietSlog(),
+		CacheMax:               128,
+		ScopedIdentityResolver: provider.fakeProvider,
 	})
 	obs.Cache.RepoPRListETag[prKey(testRepo, 0)] = "repo1"
 	obs.Cache.RepoPRListETag[prKey(glRepo, 0)] = "repo1"
@@ -3230,14 +3252,15 @@ func TestPoll_NotFoundObservationLogsDebugAndPinsRepo(t *testing.T) {
 		openPRs:        map[string][]ports.SCMPRObservation{},
 		observations:   map[string]ports.SCMObservation{},
 		fetchObsErrors: map[string]error{prKey(testRepo, 1): fmt.Errorf("%w: pull request o/r#1 not in batch response", ports.ErrSCMNotFound)},
+		identity:       ports.SCMIdentity{Login: "alice", Human: true},
 	}
 	var logs bytes.Buffer
 	obs := New(provider, store, &fakeLifecycle{}, Config{
-		Clock:            func() time.Time { return time.Unix(1, 0).UTC() },
-		Tick:             time.Hour,
-		Logger:           slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
-		CacheMax:         128,
-		IdentityResolver: provider,
+		Clock:                  func() time.Time { return time.Unix(1, 0).UTC() },
+		Tick:                   time.Hour,
+		Logger:                 slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		CacheMax:               128,
+		ScopedIdentityResolver: provider,
 	})
 	obs.Cache.RepoPRListETag[prKey(testRepo, 0)] = "v1"
 	if err := obs.Poll(context.Background()); err != nil {
@@ -3327,5 +3350,98 @@ func TestPoll_CompletenessUpgradePersistsWithUnchangedReviewContent(t *testing.T
 	}
 	if store.writes[0].reviewMode != ports.ReviewWriteReplace {
 		t.Fatalf("review mode = %v, want replace", store.writes[0].reviewMode)
+	}
+}
+
+// TestMergeabilityFromProviderFacts_UnstableOutranksBlockers pins issue #2401: an
+// UNSTABLE PR is mergeable-with-a-failing-optional-check, so it must NOT be
+// downgraded to blocked by the ci/review/draft blockers. doc.go rule (3) beats
+// rules (5) and (6), matching the mergeabilityFromGraphQL sibling.
+func TestMergeabilityFromProviderFacts_UnstableOutranksBlockers(t *testing.T) {
+	cases := []struct {
+		name         string
+		mergeable    string
+		state        string
+		ci           string
+		review       string
+		draft        bool
+		want         domain.Mergeability
+		wantBlockers []string
+		wantBehind   bool
+	}{
+		{
+			// The repro from the issue: optional codecov fails, rollup is
+			// FAILURE (-> ci failing), review approved, GitHub still merges.
+			name:      "unstable with failing ci stays unstable",
+			mergeable: "MERGEABLE", state: "UNSTABLE",
+			ci:     string(domain.CIFailing),
+			review: string(domain.ReviewApproved),
+			want:   domain.MergeUnstable,
+		},
+		{
+			name:      "unstable with changes requested stays unstable",
+			mergeable: "MERGEABLE", state: "UNSTABLE",
+			ci:     string(domain.CIPassing),
+			review: string(domain.ReviewChangesRequest),
+			want:   domain.MergeUnstable,
+		},
+		{
+			name:      "unstable behind base keeps the behind_base signal",
+			mergeable: "MERGEABLE", state: "BEHIND_BASE",
+			ci:         string(domain.CIFailing),
+			want:       domain.MergeBlocked,
+			wantBehind: true, wantBlockers: []string{"behind_base", "ci_failing"},
+		},
+		// Regressions guarded: the non-UNSTABLE paths must be untouched.
+		{
+			name:      "conflicting still wins",
+			mergeable: "CONFLICTING", state: "DIRTY",
+			want: domain.MergeConflicting, wantBlockers: []string{"conflicts"},
+		},
+		{
+			name:      "blocked by provider still collects every blocker",
+			mergeable: "MERGEABLE", state: "BLOCKED",
+			ci: string(domain.CIFailing), review: string(domain.ReviewChangesRequest), draft: true,
+			want:         domain.MergeBlocked,
+			wantBlockers: []string{"blocked_by_provider", "draft", "ci_failing", "changes_requested"},
+		},
+		{
+			name:      "clean + failing ci still blocks",
+			mergeable: "MERGEABLE", state: "CLEAN",
+			ci:   string(domain.CIFailing),
+			want: domain.MergeBlocked, wantBlockers: []string{"ci_failing"},
+		},
+		{
+			name:      "clean + approved is mergeable",
+			mergeable: "MERGEABLE", state: "CLEAN",
+			ci: string(domain.CIPassing), review: string(domain.ReviewApproved),
+			want: domain.MergeMergeable,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeabilityFromProviderFacts(tc.mergeable, tc.state, tc.ci, tc.review, tc.draft)
+			if got.State != string(tc.want) {
+				t.Fatalf("State = %q, want %q", got.State, tc.want)
+			}
+			if got.Mergeable != (tc.want == domain.MergeMergeable) {
+				t.Fatalf("Mergeable = %v for state %q", got.Mergeable, got.State)
+			}
+			if got.Conflict != (tc.want == domain.MergeConflicting) {
+				t.Fatalf("Conflict = %v for state %q", got.Conflict, got.State)
+			}
+			if got.BehindBase != tc.wantBehind {
+				t.Fatalf("BehindBase = %v, want %v", got.BehindBase, tc.wantBehind)
+			}
+			if tc.wantBlockers == nil {
+				if len(got.Blockers) != 0 {
+					t.Fatalf("Blockers = %v, want none", got.Blockers)
+				}
+				return
+			}
+			if strings.Join(got.Blockers, ",") != strings.Join(tc.wantBlockers, ",") {
+				t.Fatalf("Blockers = %v, want %v", got.Blockers, tc.wantBlockers)
+			}
+		})
 	}
 }

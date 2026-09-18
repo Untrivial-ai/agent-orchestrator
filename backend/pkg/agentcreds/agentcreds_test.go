@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -91,7 +92,7 @@ func TestHeaderFollowsCredentialKind(t *testing.T) {
 			}
 			if tc.kind == KindOAuthToken {
 				if got.Header.Get("anthropic-beta") != "claude-code-20250219,oauth-2025-04-20" ||
-					got.Header.Get("x-app") != "cli" || !contains(got.Header.Get("user-agent"), "claude-code/") {
+					got.Header.Get("x-app") != "cli" || !strings.Contains(got.Header.Get("user-agent"), "claude-code/") {
 					t.Fatalf("OAuth headers = %#v, want Claude Code request contract", got)
 				}
 			}
@@ -134,8 +135,23 @@ func TestRejectionCarriesTheProviderMessage(t *testing.T) {
 	if !errors.Is(result.Err, ErrInvalidCredential) {
 		t.Fatalf("err = %v, want ErrInvalidCredential", result.Err)
 	}
-	if want := "OAuth access token is invalid."; !contains(result.Detail, want) {
+	if want := "OAuth access token is invalid."; !strings.Contains(result.Detail, want) {
 		t.Fatalf("detail = %q, want it to carry %q", result.Detail, want)
+	}
+}
+
+func TestRejectionDetailRedactsTheSubmittedCredential(t *testing.T) {
+	const secret = "secret-that-must-not-escape"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"authorization ` + secret + ` was rejected"}}`))
+	}))
+	defer server.Close()
+	result := New(server.Client()).Validate(context.Background(), Credential{
+		Kind: KindAPIKey, Secret: secret, Provider: ProviderGateway, BaseURL: server.URL,
+	})
+	if strings.Contains(result.Detail, secret) {
+		t.Fatalf("detail leaked submitted credential: %q", result.Detail)
 	}
 }
 
@@ -167,7 +183,7 @@ func TestCredentialFingerprintIsShortAndNotTheSecret(t *testing.T) {
 	if len(fingerprint) != 12 {
 		t.Fatalf("fingerprint = %q, want 12 characters", fingerprint)
 	}
-	if contains(fingerprint, "sk-ant") || contains(secret, fingerprint) {
+	if strings.Contains(fingerprint, "sk-ant") || strings.Contains(secret, fingerprint) {
 		t.Fatal("the fingerprint must not reveal any part of the secret")
 	}
 	if (Credential{}).Fingerprint() != "" || (Credential{Secret: "  "}).Fingerprint() != "" {
@@ -186,7 +202,7 @@ func TestCredentialFingerprintScopesCacheIdentityToProviderConfiguration(t *test
 	base := Credential{
 		Kind: KindAPIKey, Secret: "shared-secret", Provider: ProviderGateway,
 		BaseURL: "https://gateway.example", Region: "us-east-1",
-		Project: "project-a", Resource: "resource-a",
+		Project: "project-a",
 	}
 	changes := map[string]func(*Credential){
 		"kind":     func(cred *Credential) { cred.Kind = KindOAuthToken },
@@ -194,7 +210,6 @@ func TestCredentialFingerprintScopesCacheIdentityToProviderConfiguration(t *test
 		"base URL": func(cred *Credential) { cred.BaseURL = "https://other.example" },
 		"region":   func(cred *Credential) { cred.Region = "eu-west-1" },
 		"project":  func(cred *Credential) { cred.Project = "project-b" },
-		"resource": func(cred *Credential) { cred.Resource = "resource-b" },
 	}
 
 	for name, change := range changes {
@@ -206,19 +221,6 @@ func TestCredentialFingerprintScopesCacheIdentityToProviderConfiguration(t *test
 			}
 		})
 	}
-}
-
-func contains(haystack, needle string) bool {
-	return len(needle) > 0 && len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
-}
-
-func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
 }
 
 // A 200 with a body we cannot parse is still an acceptance. The model list is

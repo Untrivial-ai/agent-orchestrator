@@ -1134,31 +1134,33 @@ UPDATE sessions SET
     first_signal_at = ?3,
     agent_session_id = ?4,
     agent_session_id_launch_id = ?5,
-    latest_user_prompt = ?6,
-    latest_user_prompt_at = ?7,
-    latest_assistant_update = ?8,
-    conversation_checkpoint_state = ?9,
-    conversation_checkpoint_generation = ?10,
-    conversation_checkpoint_native_id = ?11,
-    conversation_checkpoint_unsettled = ?12,
-    conversation_checkpoint_turn_id = ?13,
-    native_checkpoint_evidence = ?14,
-    native_transcript_path = ?15,
-    updated_at = ?16
-WHERE sessions.id = ?17
-  AND sessions.revision = ?18
+    native_identity_observed_at = ?6,
+    latest_user_prompt = ?7,
+    latest_user_prompt_at = ?8,
+    latest_assistant_update = ?9,
+    latest_assistant_update_at = ?10,
+    conversation_checkpoint_state = ?11,
+    conversation_checkpoint_generation = ?12,
+    conversation_checkpoint_native_id = ?13,
+    conversation_checkpoint_unsettled = ?14,
+    conversation_checkpoint_turn_id = ?15,
+    native_checkpoint_evidence = ?16,
+    native_transcript_path = ?17,
+    updated_at = ?18
+WHERE sessions.id = ?19
+  AND sessions.revision = ?20
   AND sessions.is_terminated = 0
-  AND sessions.harness = ?19
-  AND sessions.session_mode = ?20
+  AND sessions.harness = ?21
+  AND sessions.session_mode = ?22
   AND (
       (
-          ?20 <> 'chat'
-          AND sessions.runtime_launch_id = ?21
+          ?22 <> 'chat'
+          AND sessions.runtime_launch_id = ?23
       )
       OR
       (
-          ?20 = 'chat'
-          AND sessions.controller_generation = ?22
+          ?22 = 'chat'
+          AND sessions.controller_generation = ?24
       )
   )
   AND NOT EXISTS (
@@ -1178,9 +1180,11 @@ type UpdateSessionFromActivitySignalParams struct {
 	FirstSignalAt                    sql.NullTime
 	AgentSessionID                   string
 	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
 	LatestUserPrompt                 string
 	LatestUserPromptAt               sql.NullTime
 	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
 	ConversationCheckpointState      domain.ConversationCheckpointState
 	ConversationCheckpointGeneration string
 	ConversationCheckpointNativeID   string
@@ -1209,9 +1213,11 @@ func (q *Queries) UpdateSessionFromActivitySignal(ctx context.Context, arg Updat
 		arg.FirstSignalAt,
 		arg.AgentSessionID,
 		arg.AgentSessionIDLaunchID,
+		arg.NativeIdentityObservedAt,
 		arg.LatestUserPrompt,
 		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
+		arg.LatestAssistantUpdateAt,
 		arg.ConversationCheckpointState,
 		arg.ConversationCheckpointGeneration,
 		arg.ConversationCheckpointNativeID,

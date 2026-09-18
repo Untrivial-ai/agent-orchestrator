@@ -74,16 +74,8 @@ const (
 	KindOAuthToken Kind = "oauth_token" //nolint:gosec // Credential kind label, not a credential value.
 	// KindAuthToken is ANTHROPIC_AUTH_TOKEN, sent as a bearer token.
 	KindAuthToken Kind = "auth_token"
-	// KindAzureAPIKey is an Azure AI Foundry key, sent as api-key.
-	KindAzureAPIKey Kind = "azure_api_key" //nolint:gosec // Credential kind label, not a credential value.
-	// KindAWSSigV4 is a static AWS access key pair, which signs the request
-	// rather than being sent verbatim.
-	KindAWSSigV4 Kind = "aws_sigv4"
 	// KindGoogleAccessToken is a short-lived Google OAuth access token.
 	KindGoogleAccessToken Kind = "google_access_token"
-	// KindGoogleServiceAccount is a service-account JSON key, which must be
-	// exchanged for an access token before it can be sent.
-	KindGoogleServiceAccount Kind = "google_service_account"
 )
 
 // Credential is a secret plus the metadata needed to send it correctly.
@@ -101,8 +93,6 @@ type Credential struct {
 	Region string
 	// Project is required by Vertex; ignored elsewhere.
 	Project string
-	// Resource is the Azure AI Foundry resource name; ignored elsewhere.
-	Resource string
 	// BaseURL overrides the provider's default endpoint. It is how a gateway
 	// is validated, and how tests point a probe at a local server.
 	BaseURL string
@@ -123,7 +113,6 @@ func (c Credential) Fingerprint() string {
 		strings.TrimSpace(c.BaseURL),
 		strings.TrimSpace(c.Region),
 		strings.TrimSpace(c.Project),
-		strings.TrimSpace(c.Resource),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(sum[:])[:12]
@@ -269,7 +258,7 @@ func (v *Validator) probe(result Result, spec requestSpec) Result {
 	case http.StatusUnauthorized:
 		result.State = StateInvalid
 		result.Err = ErrInvalidCredential
-		result.Detail = rejectionDetail(spec.label, body)
+		result.Detail = rejectionDetail(spec.label, body, spec.request)
 		return result
 	case http.StatusOK, http.StatusTooManyRequests:
 		// Fall through to the entitlement check below.
@@ -383,8 +372,16 @@ func (v *Validator) followAnthropicPages(spec requestSpec, body []byte, models [
 // credential class — "API key is invalid.", "OAuth access token is invalid.",
 // "Invalid bearer token" — which is what makes an actionable error possible
 // instead of a generic "auth failed".
-func rejectionDetail(label string, body []byte) string {
+func rejectionDetail(label string, body []byte, request *http.Request) string {
 	if message := providerErrorMessage(body); message != "" {
+		for _, header := range []string{"Authorization", "X-Api-Key", "Api-Key"} {
+			if request != nil {
+				if secret := strings.TrimSpace(request.Header.Get(header)); secret != "" {
+					message = strings.ReplaceAll(message, secret, "[redacted]")
+					message = strings.ReplaceAll(message, strings.TrimPrefix(secret, "Bearer "), "[redacted]")
+				}
+			}
+		}
 		return fmt.Sprintf("%s rejected the credential: %s", label, message)
 	}
 	return fmt.Sprintf("%s rejected the credential", label)

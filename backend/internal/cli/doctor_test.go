@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestDoctorChecksGitVersion(t *testing.T) {
@@ -809,21 +810,13 @@ func writeHooksLogLines(t *testing.T, dataDir string, lines ...string) {
 	}
 }
 
-func stubDoctorValidator(t *testing.T, handler http.HandlerFunc) {
+func claudeAuthContext(t *testing.T, status ports.AgentAuthStatus, authErr error) *commandContext {
 	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	for _, name := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} {
-		t.Setenv(name, "")
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"}, nil)
+	c.deps.ClaudeAuthStatus = func(context.Context) (ports.AgentAuthStatus, error) {
+		return status, authErr
 	}
-	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-doctor-test")
-	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
-}
-
-func claudeAuthContext(t *testing.T, cliOutput string) *commandContext {
-	t.Helper()
-	return doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
-		func(context.Context, string, ...string) ([]byte, error) { return []byte(cliOutput), nil })
+	return c
 }
 
 func TestDoctorClaudeAuthSkipsWhenNotInstalled(t *testing.T) {
@@ -834,68 +827,36 @@ func TestDoctorClaudeAuthSkipsWhenNotInstalled(t *testing.T) {
 }
 
 func TestDoctorClaudeAuthPassesOnlyWhenTheProviderAccepts(t *testing.T) {
-	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5-20251101"}]}`))
-	})
-	check := claudeAuthContext(t, `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
-	if check.Level != doctorPass || !strings.Contains(check.Message, "accepted the credential") {
-		t.Fatalf("check = %+v, want provider acceptance", check)
+	check := claudeAuthContext(t, ports.AgentAuthStatusAuthorized, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorPass || !strings.Contains(check.Message, "verified") {
+		t.Fatalf("check = %+v, want verified authentication", check)
 	}
 }
 
 func TestDoctorClaudeAuthFailsWhenTheProviderRejects(t *testing.T) {
-	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"message":"API key is invalid."}}`))
-	})
-	check := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
-	if check.Level != doctorFail || !strings.Contains(check.Message, "REJECTED") {
+	check := claudeAuthContext(t, ports.AgentAuthStatusUnauthorized, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorFail || !strings.Contains(check.Message, "claude login") {
 		t.Fatalf("check = %+v, want rejected credential failure", check)
 	}
 }
 
-func TestDoctorClaudeAuthWarnsWhenValidationIsInconclusive(t *testing.T) {
-	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
-	check := claudeAuthContext(t, `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
-	if check.Level != doctorWarn || !strings.Contains(check.Message, "could not validate") {
-		t.Fatalf("check = %+v, want inconclusive warning", check)
+func TestDoctorClaudeAuthWarnsWhenCredentialIsOnlyConfigured(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusConfigured, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "not verified") {
+		t.Fatalf("check = %+v, want configured warning", check)
 	}
 }
 
-func TestDoctorClaudeAuthFailsWhenSignedOut(t *testing.T) {
-	check := claudeAuthContext(t, `{"loggedIn":false}`).checkClaudeAuth(context.Background())
-	if check.Level != doctorFail || !strings.Contains(check.Message, "claude login") {
-		t.Fatalf("check = %+v, want sign-in failure", check)
+func TestDoctorClaudeAuthWarnsWhenStatusIsUnknown(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusUnknown, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "unknown") {
+		t.Fatalf("check = %+v, want unknown warning", check)
 	}
 }
 
-func TestDoctorClaudeAuthWarnsOnUnparsableOutput(t *testing.T) {
-	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"},
-		func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("unsupported subcommand on this version"), errors.New("exit status 1")
-		})
-	if check := c.checkClaudeAuth(context.Background()); check.Level != doctorWarn {
-		t.Fatalf("check = %+v, want WARN", check)
-	}
-}
-
-func TestDoctorClaudeAuthAnnotatesShadowingEnvVar(t *testing.T) {
-	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"message":"API key is invalid."}}`))
-	})
-	check := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","authMethod":"claude.ai","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
-	if check.Level != doctorFail || !strings.Contains(check.Message, "overrides any claude.ai login") {
-		t.Fatalf("check = %+v, want shadowing credential diagnosis", check)
-	}
-}
-
-func TestDoctorClaudeAuthDoesNotWarnAboutWorkingEnvKey(t *testing.T) {
-	stubDoctorValidator(t, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"claude-opus-4-5"}]}`))
-	})
-	check := claudeAuthContext(t, `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"gateway"}`).checkClaudeAuth(context.Background())
-	if check.Level != doctorPass {
-		t.Fatalf("check = %+v, want PASS", check)
+func TestDoctorClaudeAuthWarnsWhenAdapterCheckFails(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusUnknown, errors.New("probe failed")).checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "probe failed") {
+		t.Fatalf("check = %+v, want adapter failure warning", check)
 	}
 }

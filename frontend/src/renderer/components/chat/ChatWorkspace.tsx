@@ -1749,18 +1749,18 @@ function ChatHeader({
 										<DraggableChatTab key={tab.key} value={tab.key}>
 											{tab.kind === "reviewer" ? (
 												<button
-													aria-current={reviewerActive ? true : undefined}
+													aria-current={reviewerActive && !workspaceActiveTabKey ? true : undefined}
 													aria-label="Reviewer"
-													aria-selected={Boolean(reviewerActive)}
+													aria-selected={Boolean(reviewerActive && !workspaceActiveTabKey)}
 													className={cn(
 														"group relative inline-flex min-w-shell-tab-min max-w-shell-tab-max self-stretch cursor-pointer items-center gap-1.5 border-r border-border px-3 text-control font-medium leading-none transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
-														reviewerActive
+														reviewerActive && !workspaceActiveTabKey
 															? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
 															: "text-muted-foreground hover:bg-raised hover:text-foreground",
 													)}
 													onClick={() => onOpenReviewerTerminal?.(tab.terminal)}
 													role="tab"
-													tabIndex={reviewerActive ? 0 : -1}
+													tabIndex={reviewerActive && !workspaceActiveTabKey ? 0 : -1}
 													title={tab.terminal.harness}
 													type="button"
 												>
@@ -1770,7 +1770,7 @@ function ChatHeader({
 											) : tab.kind === "shell" ? (
 												<ShellTerminalTab
 													appearance="connected"
-													isActive={tab.terminal.handleId === shellActiveHandleId}
+													isActive={tab.terminal.handleId === shellActiveHandleId && !workspaceActiveTabKey}
 													onClose={() => onCloseShellTerminal?.(tab.terminal.handleId)}
 													onRename={onRenameShellTerminal ? (title) => onRenameShellTerminal(tab.terminal.handleId, title) : undefined}
 													onSelect={() => onSelectShellTerminal?.(tab.terminal.handleId)}

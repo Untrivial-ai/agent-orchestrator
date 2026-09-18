@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -363,6 +363,20 @@ async function openCreateProjectDialog(
 	return user;
 }
 
+function fireDrag(
+	type: "dragStart" | "dragOver" | "drop",
+	element: Element,
+	props: { clientY?: number },
+) {
+	const dataTransfer = { setData: () => {}, getData: () => "", setDragImage: () => {}, dropEffect: "", effectAllowed: "" };
+	const event = createEvent[type](element);
+	Object.defineProperty(event, "dataTransfer", { value: dataTransfer, configurable: true });
+	if (props.clientY !== undefined) {
+		Object.defineProperty(event, "clientY", { value: props.clientY, configurable: true });
+	}
+	fireEvent(element, event);
+}
+
 beforeEach(() => {
 	window.localStorage.clear();
 	dragEnds.clear();
@@ -472,6 +486,16 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText("Signed in as user@example.com")).not.toBeInTheDocument();
 	});
 
+	it("navigates home from the brand row", async () => {
+		const user = userEvent.setup();
+		mockParams.projectId = "proj-1";
+		renderSidebar();
+
+		await user.click(screen.getByRole("button", { name: "Go to home" }));
+
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
+	});
+
 	it("suppresses focus chrome without removing keyboard focusability", () => {
 		renderSidebar();
 
@@ -484,7 +508,8 @@ describe("Sidebar", () => {
 
 		const footer = document.querySelector('[data-sidebar="footer"]');
 		expect(footer).toHaveClass("border-t", "border-border-strong", "!py-2");
-		expect(screen.getAllByRole("button", { name: "Settings" })[0]).toHaveClass("h-[42px]");
+		expect(screen.getAllByRole("button", { name: "Settings" })[0]).toHaveClass("h-9");
+		expect(screen.getAllByRole("button", { name: "Connect mobile" })[0]).toHaveClass("h-9");
 		expect(footer?.className).not.toContain("--size-center-panel-bottom-inset");
 		expect(footer?.className).not.toContain("--size-center-panel-inset-mac");
 	});
@@ -517,12 +542,12 @@ describe("Sidebar", () => {
 		expect(collapsedButton?.closest('[aria-hidden="true"]')).toBeNull();
 	});
 
-	it("keeps sidebar scrolling functional with overflow-y-auto", () => {
+	it("keeps sidebar scrolling functional without a layout gutter", () => {
 		renderSidebar();
 
 		const content = document.querySelector('[data-sidebar="content"]');
-		expect(content).toHaveClass("overflow-y-auto", "project-sidebar-scrollbar");
-		expect(content).not.toHaveClass("scrollbar-none");
+		expect(content).toHaveClass("overflow-y-auto", "scrollbar-none");
+		expect(content).not.toHaveClass("project-sidebar-scrollbar");
 		expect(content).not.toContainElement(screen.getByText("Projects"));
 	});
 
@@ -632,7 +657,7 @@ describe("Sidebar", () => {
 		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
 
 		await user.click(screen.getByLabelText("Project actions for Project One"));
-		await user.click(await screen.findByRole("menuitem", { name: /New session/ }));
+		await user.click(await screen.findByRole("menuitem", { name: /New task/ }));
 
 		const request = useUiStore.getState().newTaskRequest;
 		expect(request?.projectId).toBe("proj-1");
@@ -739,17 +764,18 @@ describe("Sidebar", () => {
 			"absolute",
 			"right-0.5",
 			"opacity-0",
-			"group-hover/session-row:pointer-events-auto",
-			"group-hover/session-row:opacity-100",
+			"scale-[0.8]",
+			"duration-normal",
 			"group-focus-within/session-row:pointer-events-auto",
+			"group-focus-within/session-row:scale-100",
 			"group-focus-within/session-row:opacity-100",
 		);
+		expect(actionButtons).toHaveAttribute("data-session-action-buttons", "");
 		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
 		expect(time).toHaveClass(
 			"absolute",
 			"right-1.5",
 			"opacity-100",
-			"group-hover/session-row:opacity-0",
 			"group-focus-within/session-row:opacity-0",
 		);
 		expect(openSession).toHaveClass("pl-1.5");
@@ -773,17 +799,6 @@ describe("Sidebar", () => {
 		expect(row).toContainElement(openSession);
 		expect(row).toContainElement(status as HTMLElement);
 		expect(row).toContainElement(screen.getByLabelText("Pin session"));
-	});
-
-	it("applies a tap scale effect to session rows", () => {
-		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
-
-		const openSession = screen.getByLabelText("Open fix login");
-		const row = openSession.closest<HTMLElement>("[data-session-row]");
-		if (!row) throw new Error("Session row not found");
-
-		fireEvent.pointerDown(openSession);
-		expect(row).toHaveClass("scale-[0.97]");
 	});
 
 	it("toggles project sessions from the folder icon without selecting the project first", async () => {
@@ -1664,34 +1679,56 @@ describe("Sidebar", () => {
 		expect(dialog).toHaveTextContent("repository folder");
 	});
 
+	it("warns when removing a project would hide open pull requests", async () => {
+		const user = userEvent.setup();
+		const workspaceWithPullRequests = {
+			...workspace,
+			sessions: [
+				{ ...session, prs: [sidebarPR()] },
+				{
+					...session,
+					id: "proj-1-2",
+					prs: [
+						sidebarPR(),
+						sidebarPR({ number: 8, state: "draft", url: "https://github.com/acme/project-one/pull/8" }),
+						sidebarPR({ number: 9, state: "merged", url: "https://github.com/acme/project-one/pull/9" }),
+					],
+				},
+			],
+		};
+		renderSidebar({ workspaces: [workspaceWithPullRequests] });
+
+		await user.click(screen.getByLabelText("Project actions for Project One"));
+		await user.click(await screen.findByRole("menuitem", { name: "Remove project" }));
+
+		expect(await screen.findByRole("dialog", { name: "Remove project" })).toHaveTextContent(
+			"2 open pull requests belong to this project. Removing it will hide those pull requests from AO, but will not close them.",
+		);
+	});
+
 	it("renames a session inline by double-clicking its name", async () => {
 		const user = userEvent.setup();
 		const workspaceWithSession = { ...workspace, sessions: [session] };
 		renderSidebar({ workspaces: [workspaceWithSession] });
 
 		await user.dblClick(screen.getByRole("button", { name: "Open fix login" }));
-		expect(navigateMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledTimes(1);
 		const input = screen.getByLabelText("Rename fix login");
 		await user.clear(input);
 		await user.type(input, "polish login{Enter}");
 
 		await waitFor(() => expect(renameSessionMock).toHaveBeenCalledWith("proj-1-1", "polish login"));
-		expect(navigateMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("still opens a session after an unpaired single click", async () => {
-		vi.useFakeTimers();
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
 
 		fireEvent.click(screen.getByRole("button", { name: "Open fix login" }), { detail: 1 });
-		await act(async () => {
-			vi.advanceTimersByTime(500);
-		});
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "proj-1-1" },
 		});
-		vi.useRealTimers();
 	});
 
 	it("starts the same inline rename from the session context menu", async () => {
@@ -1736,9 +1773,17 @@ describe("Sidebar", () => {
 		expect(input).toHaveClass("border-0", "bg-transparent!", "p-0", "ring-0");
 		expect(input).not.toHaveClass("rounded-xs", "border-accent", "px-1", "focus-visible:ring-1");
 		expect(input.parentElement).toHaveAttribute("data-session-row");
-		expect(input.parentElement).toHaveClass("bg-interactive-active", "text-foreground", "pr-1");
+		expect(input.parentElement?.className).toContain("group/nav-row");
+		expect(input.parentElement).toHaveClass("text-foreground", "pr-1");
+		expect(input.parentElement).not.toHaveClass("bg-interactive-active");
+		const highlight = input.parentElement?.querySelector("[data-nav-row-highlight]");
+		expect(highlight).toBeTruthy();
+		expect(highlight?.className).toMatch(/bg-interactive-active/);
+		expect(highlight?.className).toMatch(/opacity-100/);
 		expect(time).toHaveAttribute("data-session-message-age", "");
 		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
+		expect(time).toHaveClass("font-sans", "tabular-nums");
+		expect(time).not.toHaveClass("font-mono");
 	});
 
 	it("offers F2 as a keyboard rename path", async () => {
@@ -1791,24 +1836,47 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Project actions for Project One")).not.toHaveClass("opacity-0");
 	});
 
-	it("applies a tap scale effect to project rows", () => {
-		renderSidebar();
-
-		const projectRow = screen.getByText("Project One").closest('button, [role="button"]');
-		const dragRow = projectRow?.closest<HTMLElement>("[data-project-drag-row]");
-
-		if (!projectRow || !dragRow) throw new Error("Project drag row not found");
-
-		fireEvent.pointerDown(projectRow);
-		expect(dragRow.firstElementChild).toHaveClass("scale-[0.98]");
-	});
-
 	it("optically aligns the project folder and label with its action icons", () => {
 		renderSidebar();
 
 		const projectRow = screen.getByText("Project One").closest('button, [role="button"]');
 		expect(projectRow?.querySelector("[data-project-folder-visual]")).toHaveClass("translate-y-px");
 		expect(projectRow?.querySelector("[data-project-label]")).toHaveClass("translate-y-px");
+	});
+
+	it("caps the project list at 12 until Show more is clicked", async () => {
+		const user = userEvent.setup();
+		const manyProjects = Array.from({ length: 14 }, (_, index) => ({
+			...workspace,
+			id: `proj-${index + 1}`,
+			name: `Project ${index + 1}`,
+			path: `/repo/project-${index + 1}`,
+		}));
+		renderSidebar({ workspaces: manyProjects });
+
+		expect(screen.getByText("Project 12")).toBeInTheDocument();
+		expect(screen.queryByText("Project 13")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 2 more projects" })).toBeVisible();
+
+		await user.click(screen.getByRole("button", { name: "Show 2 more projects" }));
+
+		expect(screen.getByText("Project 13")).toBeInTheDocument();
+		expect(screen.getByText("Project 14")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /more projects/ })).not.toBeInTheDocument();
+	});
+
+	it("shows the full project list in the collapsed icon rail without Show more", () => {
+		const manyProjects = Array.from({ length: 14 }, (_, index) => ({
+			...workspace,
+			id: `proj-${index + 1}`,
+			name: `Project ${index + 1}`,
+			path: `/repo/project-${index + 1}`,
+		}));
+		renderSidebar({ workspaces: manyProjects, initialOpen: false });
+
+		expect(screen.getByText("Project 13")).toBeInTheDocument();
+		expect(screen.getByText("Project 14")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /more projects/ })).not.toBeInTheDocument();
 	});
 
 	it("clamps width at minimum when dragged past the resize floor (no auto-collapse)", async () => {
@@ -1833,34 +1901,21 @@ describe("Sidebar", () => {
 		).toBe(`${SIDEBAR_MIN_WIDTH}px`);
 	});
 
-	it("flushes any queued rAF frame on pointer-up and persists the clamped width", async () => {
-		let queuedFrame: FrameRequestCallback | undefined;
-		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-			queuedFrame = callback;
-			return 1;
-		});
-		const cancelAnimationFrameSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+	it("persists the clamped width on pointer-up (sync apply during drag)", async () => {
+		renderSidebar();
 
-		try {
-			renderSidebar();
+		const resizeHandle = screen.getByTestId("resize-handle");
 
-			const resizeHandle = screen.getByTestId("resize-handle");
+		fireEvent.pointerDown(resizeHandle, { clientX: SIDEBAR_DEFAULT_WIDTH });
+		fireEvent.pointerMove(window, { clientX: SIDEBAR_MIN_WIDTH + 5 });
+		expect(
+			document
+				.querySelector<HTMLElement>('[data-slot="sidebar-gap"]')
+				?.style.getPropertyValue("--ao-sidebar-w"),
+		).toBe(`${SIDEBAR_MIN_WIDTH + 5}px`);
 
-			fireEvent.pointerDown(resizeHandle, { clientX: SIDEBAR_DEFAULT_WIDTH });
-			fireEvent.pointerMove(window, { clientX: SIDEBAR_MIN_WIDTH + 5 });
-			fireEvent.pointerUp(window);
-
-			// rAF was queued; pointerUp should flush it via cancelAnimationFrame.
-			expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(1);
-			expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
-
-			// Firing the stale frame after cancellation should not overwrite width.
-			queuedFrame?.(performance.now());
-			expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
-		} finally {
-			requestAnimationFrameSpy.mockRestore();
-			cancelAnimationFrameSpy.mockRestore();
-		}
+		fireEvent.pointerUp(window);
+		expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
 	});
 
 	it("paints the dot from its board section while activity drives the pulse", () => {
@@ -2247,11 +2302,11 @@ describe("Sidebar", () => {
 		// A build ready to install is more actionable than "checks are failing".
 		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
 		const readyRow = screen.getByTestId("sidebar-update-ready");
-		expect(readyRow).toHaveClass("border-primary/35", "bg-primary/12", "rounded-lg", "w-full");
-		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12");
+		expect(readyRow).toHaveClass("bg-muted", "rounded-lg", "w-full");
+		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12", "border-primary/35", "bg-primary/12");
 		expect(within(readyRow).getByText("Restart to update")).toBeVisible();
-		expect(within(readyRow).getByText("v9.9.9 ready")).toBeVisible();
-		expect(within(readyRow).queryByText(/Nightly/)).not.toBeInTheDocument();
+		expect(within(readyRow).getByText("9.9.9")).toBeVisible();
+		expect(within(readyRow).queryByText(/ready|Nightly/)).not.toBeInTheDocument();
 		expect(readyRow.querySelector(".rounded-full")).toBeNull();
 		expect(screen.queryAllByLabelText("Retry update check")).toHaveLength(0);
 		// Stays above Connect mobile / Settings — not overlaid on them.
@@ -2286,8 +2341,9 @@ describe("Sidebar", () => {
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(within(readyRow).getByText("Restart to update")).toBeVisible();
-		expect(within(readyRow).getByText("Nightly 0.12.11 · Sep 2")).toBeVisible();
-		expect(screen.getAllByLabelText("Restart to install update v0.12.11-nightly.202609021713")).not.toHaveLength(0);
+		expect(within(readyRow).getByText("0.12.11")).toBeVisible();
+		expect(within(readyRow).queryByText(/Nightly|Sep/)).not.toBeInTheDocument();
+		expect(screen.getAllByLabelText("Restart to install update v0.12.11")).not.toHaveLength(0);
 	});
 
 	it("stays quiet for a one-off update failure that has not become a streak", async () => {
@@ -2312,11 +2368,11 @@ describe("Sidebar", () => {
 		const buttons = await screen.findAllByLabelText("Restart to install update v9.9.9");
 		expect(buttons.length).toBeGreaterThan(0);
 		for (const button of buttons) {
-			expect(button).toHaveClass("bg-working/12");
-			expect(button).not.toHaveClass("text-success");
+			expect(button).toHaveClass("bg-muted");
+			expect(button).not.toHaveClass("text-success", "bg-working/12");
 		}
 		expect(screen.getByTestId("sidebar-update-ready")).toHaveTextContent("Restart to update");
-		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("v9.9.9 ready")).toBeVisible();
+		expect(within(screen.getByTestId("sidebar-update-ready")).getByText("9.9.9")).toBeVisible();
 	});
 
 	it("keeps install label and version number on one line without nightly copy", async () => {
@@ -2329,9 +2385,9 @@ describe("Sidebar", () => {
 
 		const readyRow = await screen.findByTestId("sidebar-update-ready");
 		expect(readyRow).toHaveTextContent("Restart to update");
-		expect(readyRow).toHaveTextContent("Nightly 0.12.11 · Sep 2");
-		expect(within(readyRow).queryByText(/ready/)).not.toBeInTheDocument();
-		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11-nightly.202609021713");
+		expect(readyRow).toHaveTextContent("0.12.11");
+		expect(within(readyRow).queryByText(/Nightly|ready/)).not.toBeInTheDocument();
+		expect(readyRow).toHaveAccessibleName("Restart to install update v0.12.11");
 	});
 
 	it("commits a project drop", () => {
@@ -2342,16 +2398,12 @@ describe("Sidebar", () => {
 			],
 		});
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
-			dragOvers.get("sidebar-projects")?.({
-				active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
-				activatorEvent: null,
-				delta: { x: 0, y: 0 },
-				over: { id: "alpha", rect: { height: 20, top: 0 } },
-			});
-			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
-		});
+		const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+		const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+		fireDrag("dragStart", bravoRow, {});
+		// jsdom rows measure as zero-height, so clientY 0 lands in the top half — drop before Alpha.
+		fireDrag("dragOver", alphaTarget, { clientY: 0 });
+		fireDrag("drop", alphaTarget, {});
 
 		expect(Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent)).toEqual(["Bravo", "Alpha"]);
 	});
@@ -2372,34 +2424,24 @@ describe("Sidebar", () => {
 		});
 		const labels = () => Array.from(document.querySelectorAll("[data-project-label]"), (node) => node.textContent);
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: "alpha" } });
-			dragOvers.get("sidebar-projects")?.({
-				active: { id: "alpha", rect: { current: { initial: null, translated: null } } },
-				activatorEvent: null,
-				delta: { x: 0, y: 0 },
-				over: { id: STANDALONE_WORKSPACE_ID, rect: { height: 20, top: 40 } },
-			});
-			dragEnds.get("sidebar-projects")?.({ active: { id: "alpha" }, over: { id: STANDALONE_WORKSPACE_ID } });
-		});
+		const alphaRow = document.querySelector('[data-project-drag-row][data-project-id="alpha"]')!;
+		const standaloneTarget = document.querySelector(`li[data-project-id="${STANDALONE_WORKSPACE_ID}"]`)!;
+		fireDrag("dragStart", alphaRow, {});
+		fireDrag("dragOver", standaloneTarget, { clientY: 40 });
+		fireDrag("drop", standaloneTarget, {});
 		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID } });
-			dragEnds.get("sidebar-projects")?.({ active: { id: STANDALONE_WORKSPACE_ID }, over: { id: "alpha" } });
-		});
+		const standaloneRow = document.querySelector(`[data-project-drag-row][data-project-id="${STANDALONE_WORKSPACE_ID}"]`)!;
+		const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+		fireDrag("dragStart", standaloneRow, {});
+		fireDrag("dragOver", alphaTarget, { clientY: 0 });
+		fireDrag("drop", alphaTarget, {});
 		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
 
-		act(() => {
-			dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
-			dragOvers.get("sidebar-projects")?.({
-				active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
-				activatorEvent: null,
-				delta: { x: 0, y: 0 },
-				over: { id: "alpha", rect: { height: 20, top: 0 } },
-			});
-			dragEnds.get("sidebar-projects")?.({ active: { id: "bravo" }, over: { id: "alpha" } });
-		});
+		const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+		fireDrag("dragStart", bravoRow, {});
+		fireDrag("dragOver", alphaTarget, { clientY: 0 });
+		fireDrag("drop", alphaTarget, {});
 		expect(labels()).toEqual(["Bravo", "Alpha", "Ad hoc agents"]);
 	});
 
@@ -2432,20 +2474,23 @@ describe("Sidebar", () => {
 				],
 			});
 
-			act(() => {
-				dragStarts.get("sidebar-projects")?.({ active: { id: "bravo" } });
-				dragOvers.get("sidebar-projects")?.({
-					active: { id: "bravo", rect: { current: { initial: null, translated: null } } },
-					activatorEvent: null,
-					delta: { x: 0, y: 0 },
-					over: { id: "alpha", rect: { height: 20, top: 0 } },
-				});
-			});
+			const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
+			const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
+			fireDrag("dragStart", bravoRow, {});
+			fireDrag("dragOver", alphaTarget, { clientY: 0 });
 
-			const indicator = document.querySelector('[data-project-drop-target][data-project-id="alpha"]');
-			expect(indicator).toHaveAttribute("data-drop-indicator", "before");
+			const indicator = document.querySelector("[data-project-drop-line]");
+			expect(indicator).not.toBeNull();
+			expect(indicator).toHaveClass("bg-foreground");
+			expect(indicator).not.toHaveClass("bg-white");
 		} finally {
 			document.documentElement.classList.remove("dark");
 		}
+	});
+
+	it("marks the brand with a dev badge in dev builds so the unpackaged window is distinguishable", () => {
+		renderSidebar();
+
+		expect(screen.getByTestId("sidebar-dev-badge")).toHaveTextContent("dev");
 	});
 });

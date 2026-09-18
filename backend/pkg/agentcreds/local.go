@@ -13,6 +13,9 @@ import (
 // It is the single call the daemon needs, and it upholds the additive rule at
 // every branch — anything it cannot determine comes back Unknown.
 func (v *Validator) ValidateLocal(ctx context.Context, reportedProvider string, opts ResolveOptions) Result {
+	if err := ctx.Err(); err != nil {
+		return Result{State: StateUnknown, CheckedAt: time.Now(), Detail: "credential validation was canceled", Err: err}
+	}
 	provider, ok := ResolveProvider(reportedProvider, opts)
 	if !ok {
 		// An apiProvider this build does not recognize. Probing anything now
@@ -22,8 +25,26 @@ func (v *Validator) ValidateLocal(ctx context.Context, reportedProvider string, 
 			Detail: "the configured API provider is not one this build can validate",
 		}
 	}
-
 	cred, found := ResolveLocal(ctx, provider, opts)
+	return v.ValidateResolvedLocal(ctx, provider, cred, found, opts)
+}
+
+// ValidateResolvedLocal validates a provider and credential that the caller
+// already resolved from the same local environment.
+func (v *Validator) ValidateResolvedLocal(
+	ctx context.Context,
+	provider Provider,
+	cred Credential,
+	found bool,
+	opts ResolveOptions,
+) Result {
+	if provider == ProviderFoundry {
+		return Result{
+			State: StateUnknown, Provider: provider, Models: configuredFoundryModels(opts), CheckedAt: time.Now(),
+			Detail: "Azure AI Foundry deployments were read from Claude configuration; invocation permission was not verified",
+		}
+	}
+
 	if !found {
 		// Nothing readable. For Bedrock and Vertex that is the expected case
 		// rather than an error: the credential almost certainly exists, in a
@@ -34,7 +55,7 @@ func (v *Validator) ValidateLocal(ctx context.Context, reportedProvider string, 
 		case ProviderVertex:
 			project := firstNonEmpty(opts.env("ANTHROPIC_VERTEX_PROJECT_ID"), opts.env("GOOGLE_CLOUD_PROJECT"))
 			region := firstNonEmpty(opts.env("CLOUD_ML_REGION"), opts.env("GOOGLE_CLOUD_REGION"), "us-east5")
-			return v.validateVertexViaCLI(ctx, project, region, "", opts.commandInvocation())
+			return v.validateVertexViaCLI(ctx, project, region, opts.env("ANTHROPIC_VERTEX_BASE_URL"), opts.commandInvocation())
 		default:
 			return Result{
 				State: StateUnknown, Provider: provider, CheckedAt: time.Now(),
@@ -42,7 +63,6 @@ func (v *Validator) ValidateLocal(ctx context.Context, reportedProvider string, 
 			}
 		}
 	}
-
 	result := v.Validate(ctx, cred)
 
 	// A rejection that came from AO sending a malformed request is our bug,
@@ -57,17 +77,11 @@ func (v *Validator) ValidateLocal(ctx context.Context, reportedProvider string, 
 		}
 	}
 
-	// A signed Bedrock or Vertex probe that could not even be built — a
-	// malformed key file, a missing region — is worth one CLI attempt before
-	// giving up, since the CLI needs none of what we were missing.
+	// A Vertex probe that could not be built is worth one gcloud attempt before
+	// giving up, since gcloud can resolve credentials AO cannot read directly.
 	if result.State == StateUnknown && result.Err != nil && !errors.Is(result.Err, ErrInvalidCredential) {
-		switch provider {
-		case ProviderBedrock:
-			if cliResult := v.validateBedrockViaCLI(ctx, cred.Region, opts.commandInvocation()); cliResult.State != StateUnknown {
-				return cliResult
-			}
-		case ProviderVertex:
-			if cliResult := v.validateVertexViaCLI(ctx, cred.Project, cred.Region, "", opts.commandInvocation()); cliResult.State != StateUnknown {
+		if provider == ProviderVertex {
+			if cliResult := v.validateVertexViaCLI(ctx, cred.Project, cred.Region, cred.BaseURL, opts.commandInvocation()); cliResult.State != StateUnknown {
 				return cliResult
 			}
 		}

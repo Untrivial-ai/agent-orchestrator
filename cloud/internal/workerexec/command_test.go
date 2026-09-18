@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+	"runtime"
 	"strings"
 )
 
@@ -66,6 +67,43 @@ func TestBuildInteractiveUsesConfiguredDurableCodexHomeOnRestore(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveWritesOpaqueCodexAuthJSONWithoutRelogin(t *testing.T) {
+	codexHome := filepath.Join(t.TempDir(), "codex")
+	t.Setenv("CODEX_HOME", codexHome)
+	loginCalled := false
+	credential := `{"tokens":{"access_token":"opaque"}}`
+	command, err := (HarnessBuilder{CodexLogin: func(_, _, _, _ string) error {
+		loginCalled = true
+		return nil
+	}}).BuildInteractive(worker.LaunchContext{
+		SessionID: "session-1", Harness: "codex", Mode: "standard",
+	}, worker.CredentialResponse{Provider: "codex", CredentialType: "auth_json", Secret: credential}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loginCalled {
+		t.Fatal("auth JSON must be handed to Codex as its native file, not passed through login")
+	}
+	got, err := os.ReadFile(filepath.Join(codexHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != credential || command.Env["CODEX_HOME"] != codexHome {
+		t.Fatalf("Codex auth handoff = %q, home = %q", got, command.Env["CODEX_HOME"])
+	}
+	info, err := os.Stat(filepath.Join(codexHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedPerm := os.FileMode(0o600)
+	if runtime.GOOS == "windows" {
+		expectedPerm = 0o666
+	}
+	if info.Mode().Perm() != expectedPerm {
+		t.Errorf("auth.json permissions = %#o, want %#o", info.Mode().Perm(), expectedPerm)
+	}
+}
+
 func containsAdjacent(values []string, first, second string) bool {
 	for index := 0; index+1 < len(values); index++ {
 		if values[index] == first && values[index+1] == second {
@@ -122,8 +160,9 @@ func TestBuildInteractiveOrchestratorPrompt(t *testing.T) {
 		"ao spawn --name",
 		"ao list",
 		"ao kill",
-		"skills/using-ao/SKILL.md",
+		"using-ao/SKILL.md",
 		"coordination-only",
+		"Never guess file names",
 	} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("orchestrator prompt missing %q", needle)
@@ -149,10 +188,11 @@ func TestBuildInteractiveWorkerPromptWithParent(t *testing.T) {
 	for _, needle := range []string{
 		"AO Worker Role",
 		"ao report",
+		"never paste diffs",
 		"$AO_PULL_REQUEST_HELP",
 		"$AO_SESSION_BRANCH",
 		"ao claim-pr",
-		"skills/using-ao/SKILL.md",
+		"using-ao/SKILL.md",
 	} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("worker prompt missing %q", needle)

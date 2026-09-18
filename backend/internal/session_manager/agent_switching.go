@@ -241,9 +241,6 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 	if !ok {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrNotFound)
 	}
-	if (rec.Harness == domain.HarnessCodex || cfg.TargetHarness == domain.HarnessCodex) && m.codexAccountSwitchIsActive() {
-		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	if rec.IsTerminated {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrTerminated)
 	}
@@ -1357,12 +1354,6 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("system prompt file: %w", err)
 	}
-	baseConfig := effectiveAgentConfig(rec.Kind, project.Config)
-	if roleOverride(rec.Kind, project.Config).Harness != harness {
-		baseConfig.Model = ""
-		baseConfig.Effort = ""
-		baseConfig.Mode = ""
-	}
 	config, err := m.resolveAgentConfig(ctx, ports.SpawnConfig{
 		ProjectID: rec.ProjectID,
 		Kind:      rec.Kind,
@@ -1370,7 +1361,7 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 		AgentConfig: ports.AgentConfig{
 			Model: strings.TrimSpace(modelOverride),
 		},
-	}, domain.ProjectConfig{AgentConfig: baseConfig})
+	}, project.Config)
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("target config: %w", err)
 	}

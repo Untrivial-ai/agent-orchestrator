@@ -14,7 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
@@ -71,6 +73,7 @@ type Deps struct {
 	LookPath              func(file string) (string, error)
 	CommandOutput         func(ctx context.Context, name string, args ...string) ([]byte, error)
 	CommandOutputInDir    func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
+	ClaudeAuthStatus      func(ctx context.Context) (ports.AgentAuthStatus, error)
 	RunInteractiveCommand func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error
 	ReadSecret            func(io.Reader) ([]byte, error)
 	// DoctorGitHubRESTBase lets tests point the doctor GitHub token probe at
@@ -96,6 +99,7 @@ func DefaultDeps() Deps {
 		LookPath:              exec.LookPath,
 		CommandOutput:         commandOutput,
 		CommandOutputInDir:    commandOutputInDir,
+		ClaudeAuthStatus:      claudecode.New().AuthStatus,
 		RunInteractiveCommand: runInteractiveCommand,
 		ReadSecret:            readSecret,
 		DoctorGitHubRESTBase:  defaultDoctorGitHubRESTBase,
@@ -146,6 +150,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.CommandOutputInDir == nil {
 		d.CommandOutputInDir = def.CommandOutputInDir
+	}
+	if d.ClaudeAuthStatus == nil {
+		d.ClaudeAuthStatus = def.ClaudeAuthStatus
 	}
 	if d.RunInteractiveCommand == nil {
 		d.RunInteractiveCommand = def.RunInteractiveCommand

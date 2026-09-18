@@ -629,10 +629,18 @@ func (c *conversation) finishPrompt(
 			}})
 		}
 	}
-	if errors.Is(turnErr, ports.ErrChatAuthRequired) && c.onAuthRejected != nil {
+	if errors.Is(turnErr, ports.ErrChatAuthRequired) {
 		// The provider has just contradicted whatever the readiness cache holds.
 		// Correct it for both request errors and structured prompt failures.
-		c.onAuthRejected()
+		if c.onAuthRejected != nil {
+			c.onAuthRejected()
+		}
+	} else if turnErr == nil && state == domain.TurnStateCompleted {
+		// A successful provider turn is affirmative recovery evidence, including
+		// after a daemon restart where this conversation has no in-memory memory
+		// of the earlier rejection. The projector ignores this when no durable
+		// reauthentication demand exists.
+		c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{ReauthRecovered: true}})
 	}
 	if isCompaction {
 		if state == domain.TurnStateCompleted {

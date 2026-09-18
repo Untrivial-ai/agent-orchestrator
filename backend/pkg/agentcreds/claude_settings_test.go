@@ -19,7 +19,8 @@ func TestClaudeSettingsCommandContext(t *testing.T) {
 			explicit := map[string]string{"AWS_PROFILE": "project-sso", "CLOUDSDK_CONFIG": "/project/gcloud", "LAUNCH_ONLY": "kept"}
 			opts := (ResolveOptions{Env: envFrom(nil), ConfigDir: t.TempDir(), WorkingDir: project, CommandEnv: explicit}).WithClaudeSettings()
 			called := false
-			validator := newWithCommandRunner(nil, func(_ context.Context, invocation commandInvocation, name string, _ ...string) (commandOutput, error) {
+			validator := New(nil)
+			validator.execCmd = func(_ context.Context, invocation commandInvocation, name string, _ ...string) (commandOutput, error) {
 				called = true
 				wantName := "aws"
 				if provider == ProviderVertex {
@@ -32,7 +33,7 @@ func TestClaudeSettingsCommandContext(t *testing.T) {
 					t.Error("unapproved settings key passed to command")
 				}
 				return commandOutput{Stderr: []byte("fixture diagnostic")}, errors.New("fixture command unavailable")
-			})
+			}
 			result := validator.ValidateLocal(context.Background(), string(provider), opts)
 			if !called || result.State != StateUnknown || result.Err == nil || !strings.Contains(result.Err.Error(), "fixture diagnostic") {
 				t.Fatal("chain failure lost its safe unknown verdict or stderr diagnostic")

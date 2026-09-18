@@ -3,6 +3,7 @@ package agentcreds
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,15 +33,15 @@ const (
 // a credential to a host that should never have seen it.
 func ParseProvider(value string) (Provider, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "firstparty", "anthropic", "first_party":
+	case "", "firstparty":
 		return ProviderFirstParty, true
-	case "gateway", "proxy":
+	case "gateway":
 		return ProviderGateway, true
-	case "foundry", "azure":
+	case "foundry":
 		return ProviderFoundry, true
-	case "bedrock", "aws":
+	case "bedrock":
 		return ProviderBedrock, true
-	case "vertex", "gcp", "google":
+	case "vertex":
 		return ProviderVertex, true
 	default:
 		return "", false
@@ -52,10 +53,8 @@ func (v *Validator) requestFor(ctx context.Context, provider Provider, cred Cred
 	switch provider {
 	case ProviderFirstParty, ProviderGateway:
 		return v.anthropicRequest(ctx, provider, cred)
-	case ProviderFoundry:
-		return v.foundryRequest(ctx, cred)
-	case ProviderBedrock:
-		return v.bedrockRequest(ctx, cred)
+	case ProviderFoundry, ProviderBedrock:
+		return requestSpec{}, errors.New("agentcreds: Azure AI Foundry does not expose a models endpoint")
 	case ProviderVertex:
 		return v.vertexRequest(ctx, cred)
 	default:
@@ -122,41 +121,8 @@ func setAnthropicAuth(request *http.Request, cred Credential) error {
 	return nil
 }
 
-// foundryRequest builds the Azure AI Foundry probe. Foundry accepts either an
-// api-key header or a bearer token, mirroring its two credential env vars.
-func (v *Validator) foundryRequest(ctx context.Context, cred Credential) (requestSpec, error) {
-	secret := strings.TrimSpace(cred.Secret)
-	if secret == "" {
-		return requestSpec{}, fmt.Errorf("agentcreds: no Foundry secret from %s", cred.Source)
-	}
-	base := cred.BaseURL
-	if base == "" {
-		resource := strings.TrimSpace(cred.Resource)
-		if resource == "" {
-			return requestSpec{}, fmt.Errorf("agentcreds: Foundry needs a resource name")
-		}
-		base = fmt.Sprintf("https://%s.services.ai.azure.com/anthropic", resource)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/v1/models", http.NoBody)
-	if err != nil {
-		return requestSpec{}, err
-	}
-	request.Header.Set("anthropic-version", anthropicAPIVersion)
-	switch cred.Kind {
-	case KindAzureAPIKey, KindAPIKey:
-		request.Header.Set("api-key", secret)
-	case KindAuthToken, KindOAuthToken:
-		request.Header.Set("authorization", "Bearer "+secret)
-	default:
-		return requestSpec{}, fmt.Errorf("agentcreds: credential kind %q cannot authenticate to Foundry", cred.Kind)
-	}
-	return requestSpec{
-		request: request, parseModels: parseAnthropicModels,
-		requireModels: true, label: "Azure AI Foundry",
-	}, nil
-}
-
-// parseAnthropicModels reads the first-party model list, which Foundry mirrors.
+// parseAnthropicModels reads the first-party model list and compatible gateway
+// responses.
 //
 // It also reads capabilities.effort, which is the only authoritative source for
 // which reasoning levels a given model accepts. Those differ across the catalog

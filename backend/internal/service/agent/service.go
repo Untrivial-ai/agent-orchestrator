@@ -60,15 +60,8 @@ type Service struct {
 	modelCallMu   sync.Mutex
 	modelCalls    map[string]*modelCatalogCall
 	codexAccounts *codexAccountManager
-	codexSwitches CodexAccountSwitchCoordinator
-}
-
-// CodexAccountSwitchCoordinator owns global switch execution and recovery.
-type CodexAccountSwitchCoordinator interface {
-	CodexAccountSwitchInProgress() bool
-	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
-	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
-	GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error)
+	codexSwitches *codexAccountSwitchCoordinator
+	logger        *slog.Logger
 }
 
 // Deps contains optional durable dependencies for the agent catalog service.
@@ -84,7 +77,7 @@ type Deps struct {
 	CodexSwitchStagingRoot string
 	CodexGlobalHome        string
 	CodexAccounts          ports.CodexAccountClientFactory
-	CodexAccountState      CodexAccountStateStore
+	CodexAccountSwitches   ports.CodexAccountSwitchStore
 	CodexOperationGate     ports.CodexOperationGate
 	// Clock overrides time.Now for deterministic account-bootstrap retry tests.
 	Clock func() time.Time
@@ -112,8 +105,11 @@ func New() *Service {
 func NewWithDeps(deps Deps) *Service {
 	agents := agentregistry.Harnessed()
 	svc := newService(agents, deps.Cache, deps.Projects, deps.Discoverer)
+	if deps.Logger != nil {
+		svc.logger = deps.Logger
+	}
 	if deps.CodexAccountRoot != "" && deps.CodexGlobalHome != "" {
-		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.CodexAccountState, deps.Logger, deps.CodexOperationGate)
+		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.Logger, deps.CodexOperationGate)
 		if deps.Clock != nil {
 			svc.codexAccounts.now = deps.Clock
 		}
@@ -122,6 +118,17 @@ func NewWithDeps(deps Deps) *Service {
 		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,
 		AuthenticationCheck: svc.structuredCodexAuthentication,
 	})
+	if svc.codexAccounts != nil {
+		svc.codexAccounts.onAuthenticationChanged = func() {
+			svc.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+		}
+	}
+	if svc.codexAccounts != nil && deps.CodexAccountSwitches != nil && deps.CodexOperationGate != nil {
+		svc.codexSwitches = newCodexAccountSwitchCoordinator(
+			deps.Context, svc, deps.CodexAccountSwitches, deps.CodexOperationGate,
+			deps.Clock, svc.PublishCodexAccounts,
+		)
+	}
 	svc.sessions = deps.Sessions
 	return svc
 }
@@ -139,7 +146,7 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 	for _, item := range agents {
 		resolverMu[string(item.Harness)] = &sync.Mutex{}
 	}
-	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}}
+	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, logger: slog.Default()}
 }
 
 // WarmModelCatalogs starts a non-blocking, sequential refresh of the Claude

@@ -269,8 +269,9 @@ type TerminalCommand struct {
 
 // TerminalStreamFrame is one message on the persistent duplex terminal
 // stream between a worker and the control plane. "output" carries PTY bytes
-// up (acked with the persisted row sequence); "input" pushes user keystrokes
-// down; "error" tells the worker to fall back to the polled transport.
+// up with the terminal-local, gap-free ID used for durable replay; "input"
+// pushes user keystrokes down; "error" tells the worker to fall back to the
+// polled transport.
 type TerminalStreamFrame struct {
 	Type     string `json:"type"`
 	Data     []byte `json:"data,omitempty"`
@@ -280,6 +281,7 @@ type TerminalStreamFrame struct {
 }
 
 type TerminalOutputRequest struct {
+	ID   int64  `json:"id,omitempty"`
 	Data []byte `json:"data"`
 }
 

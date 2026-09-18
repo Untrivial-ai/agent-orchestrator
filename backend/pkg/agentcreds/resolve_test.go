@@ -81,6 +81,23 @@ func TestCredentialsFileIsSourceFive(t *testing.T) {
 	}
 }
 
+func TestClaudeConfigDirIgnoresXDGConfigHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := claudeConfigDir(ResolveOptions{
+		Env:  envFrom(map[string]string{"XDG_CONFIG_HOME": t.TempDir()}),
+		GOOS: "linux",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".claude"); got != want {
+		t.Fatalf("config dir = %q, want %q", got, want)
+	}
+}
+
 // Every env source must outrank the file, or AO validates the subscription
 // while the agent uses the env var.
 func TestEnvBeatsCredentialsFile(t *testing.T) {
@@ -263,10 +280,18 @@ func TestResolveProvider(t *testing.T) {
 		{name: "reported wins", reported: "bedrock", want: ProviderBedrock, wantOK: true},
 		{name: "vertex", reported: "vertex", want: ProviderVertex, wantOK: true},
 		{name: "foundry", reported: "foundry", want: ProviderFoundry, wantOK: true},
+		{name: "aws alias is not canonical", reported: "aws", wantOK: false},
+		{name: "google alias is not canonical", reported: "google", wantOK: false},
+		{name: "azure alias is not canonical", reported: "azure", wantOK: false},
 		{
 			name: "project provider overrides stale CLI report", reported: "firstParty",
 			env: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "1"}, want: ProviderBedrock, wantOK: true,
 		},
+		{name: "false bedrock flag is disabled", reported: "vertex", env: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "false"}, want: ProviderVertex, wantOK: true},
+		{name: "non-standard truthy flag is disabled", env: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "on"}, want: ProviderFirstParty, wantOK: true},
+		{name: "foundry requires its flag", env: map[string]string{"ANTHROPIC_FOUNDRY_API_KEY": "stale"}, want: ProviderFirstParty, wantOK: true},
+		{name: "foundry flag selects foundry", env: map[string]string{"CLAUDE_CODE_USE_FOUNDRY": "1", "ANTHROPIC_FOUNDRY_API_KEY": "key"}, want: ProviderFoundry, wantOK: true},
+		{name: "conflicting project providers are rejected", env: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "true"}, wantOK: false},
 		{name: "empty defaults to first party", want: ProviderFirstParty, wantOK: true},
 		{
 			name: "bedrock inferred from env when the CLI could not be asked",
@@ -292,40 +317,43 @@ func TestResolveProvider(t *testing.T) {
 	}
 }
 
-func TestResolveBedrockCredentialShapes(t *testing.T) {
-	bearer, ok := ResolveLocal(context.Background(), ProviderBedrock, ResolveOptions{
-		Env: envFrom(map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "bt", "AWS_REGION": "us-east-1"}),
-	})
-	if !ok || bearer.Kind != KindAuthToken || bearer.Region != "us-east-1" {
-		t.Fatalf("bearer credential = %+v", bearer)
-	}
-
-	static, ok := ResolveLocal(context.Background(), ProviderBedrock, ResolveOptions{
-		Env: envFrom(map[string]string{
-			"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "secret",
-			"AWS_SESSION_TOKEN": "session", "AWS_REGION": "eu-west-1",
-		}),
-	})
-	if !ok || static.Kind != KindAWSSigV4 {
-		t.Fatalf("static credential = %+v", static)
-	}
-	keys, err := parseAWSKeys(static.Secret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if keys.AccessKeyID != "AKIA" || keys.SecretAccessKey != "secret" || keys.SessionToken != "session" {
-		t.Fatalf("keys = %+v", keys)
-	}
-
-	// Chain-sourced: nothing readable, and that is the correct answer.
-	if _, ok := ResolveLocal(context.Background(), ProviderBedrock, ResolveOptions{
-		Env: envFrom(map[string]string{"AWS_PROFILE": "sso-profile"}),
-	}); ok {
-		t.Fatal("an SSO profile must not resolve to a readable credential")
+func TestResolveBedrockAlwaysDelegatesCredentialsToAWSCLI(t *testing.T) {
+	for _, env := range []map[string]string{
+		{"AWS_BEARER_TOKEN_BEDROCK": "bt", "AWS_REGION": "us-east-1"},
+		{"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "secret", "AWS_REGION": "eu-west-1"},
+		{"AWS_PROFILE": "sso-profile"},
+	} {
+		if credential, ok := ResolveLocal(context.Background(), ProviderBedrock, ResolveOptions{Env: envFrom(env)}); ok {
+			t.Fatalf("Bedrock credential resolved in-process: %+v", credential)
+		}
 	}
 }
 
-func TestResolveVertexReadsProjectFromServiceAccountKey(t *testing.T) {
+func TestVertexAccessTokenCarriesEndpointOverride(t *testing.T) {
+	vertex, ok := ResolveLocal(context.Background(), ProviderVertex, ResolveOptions{Env: envFrom(map[string]string{
+		"GOOGLE_OAUTH_ACCESS_TOKEN": "token", "GOOGLE_CLOUD_PROJECT": "p", "ANTHROPIC_VERTEX_BASE_URL": "https://vertex.proxy",
+	})})
+	if !ok || vertex.BaseURL != "https://vertex.proxy" {
+		t.Fatalf("vertex credential = %+v", vertex)
+	}
+}
+
+func TestResolveLocalReadsCredentialFileSynchronously(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(`{"accessToken":"token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	credential, ok := ResolveLocal(ctx, ProviderFirstParty, ResolveOptions{
+		Env: envFrom(nil), ConfigDir: dir, GOOS: "linux",
+	})
+	if !ok || credential.Secret != "token" {
+		t.Fatalf("credential = %+v, ok = %v", credential, ok)
+	}
+}
+
+func TestResolveVertexDelegatesServiceAccountFilesToGcloud(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sa.json")
 	key := map[string]string{
@@ -340,11 +368,8 @@ func TestResolveVertexReadsProjectFromServiceAccountKey(t *testing.T) {
 	cred, ok := ResolveLocal(context.Background(), ProviderVertex, ResolveOptions{
 		Env: envFrom(map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path}),
 	})
-	if !ok || cred.Kind != KindGoogleServiceAccount {
-		t.Fatalf("credential = %+v", cred)
-	}
-	if cred.Project != "from-key-file" {
-		t.Fatalf("project = %q, want it read from the key file", cred.Project)
+	if ok {
+		t.Fatalf("service-account credential resolved in-process: %+v", cred)
 	}
 }
 

@@ -53,6 +53,11 @@ export function elapsedLabel(startedAt: string | undefined, nowMs: number): stri
 	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+export function workingElapsedLabel(startedAt: string | undefined, nowMs: number): string | undefined {
+	const label = elapsedLabel(startedAt, nowMs);
+	return label === "0s" ? "1s" : label;
+}
+
 export function resetLabel(seconds?: number): string | undefined {
 	if (seconds === undefined || seconds < 0) return undefined;
 	if (seconds < 60) return `${Math.ceil(seconds)}s`;

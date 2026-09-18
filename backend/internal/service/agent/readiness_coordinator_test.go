@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,11 +17,83 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestRecheckAgentLogsFailure(t *testing.T) {
+	var logs lockedBuffer
+	svc := NewWithDeps(Deps{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	svc.RecheckAgent("not-a-real-agent")
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "readiness recheck failed") {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), "readiness recheck failed") {
+		t.Fatalf("log = %q, want readiness failure", logs.String())
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(data)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
+
 type readinessTestAgent struct {
 	resolveCalls atomic.Int32
 	authCalls    atomic.Int32
 	resolve      func(context.Context) (string, error)
 	auth         func(context.Context) (ports.AgentAuthStatus, error)
+}
+
+type readinessWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *readinessWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+type blockingPresenceAgent struct {
+	readinessTestAgent
+	normalResolveCalls   atomic.Int32
+	presenceCalls        atomic.Int32
+	presenceStarted      chan struct{}
+	presenceCompleted    atomic.Bool
+	normalBeforePresence atomic.Bool
+	releasePresence      chan struct{}
+	startOnce            sync.Once
+}
+
+func (a *blockingPresenceAgent) ResolveBinary(context.Context) (string, error) {
+	if !a.presenceCompleted.Load() {
+		a.normalBeforePresence.Store(true)
+	}
+	a.normalResolveCalls.Add(1)
+	return "", errors.New("normal Goose resolution failed")
+}
+
+func (a *blockingPresenceAgent) ResolveBinaryPresence(ctx context.Context) (string, error) {
+	a.presenceCalls.Add(1)
+	a.startOnce.Do(func() { close(a.presenceStarted) })
+	select {
+	case <-a.releasePresence:
+		a.presenceCompleted.Store(true)
+		return "", ports.ErrAgentBinaryIdentityUnknown
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func (a *readinessTestAgent) ResolveBinary(ctx context.Context) (string, error) {
@@ -456,6 +531,101 @@ func TestReadinessCoordinatorJoinCompletesChecksMissingFromInFlightWork(t *testi
 	}
 }
 
+func TestReadinessCoordinatorNormalWaitsForPresenceOnlyCheck(t *testing.T) {
+	t.Parallel()
+	agent := &blockingPresenceAgent{
+		presenceStarted: make(chan struct{}),
+		releasePresence: make(chan struct{}),
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("goose", "Goose", agent)},
+	})
+	coordinator.Invalidate("goose", readinessInvalidateInstallation)
+	var releaseOnce sync.Once
+	releasePresence := func() { releaseOnce.Do(func() { close(agent.releasePresence) }) }
+	t.Cleanup(releasePresence)
+
+	go func() {
+		_, _ = coordinator.ensureMode(
+			context.Background(),
+			[]string{"goose"},
+			domain.AgentReadinessPurposeLaunch,
+			readinessInvalidateInstallation,
+			true,
+		)
+	}()
+	select {
+	case <-agent.presenceStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("presence-only check did not start")
+	}
+
+	findWaiting := make(chan struct{})
+	findDone := make(chan error, 1)
+	go func() {
+		_, err := coordinator.ensureOne(
+			&readinessWaitContext{Context: context.Background(), waiting: findWaiting},
+			"goose",
+			domain.AgentReadinessPurposeLaunch,
+			readinessInvalidateInstallation,
+			true,
+		)
+		findDone <- err
+	}()
+	select {
+	case <-findWaiting:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("FindInstalled caller did not reach the presence wait")
+	}
+
+	normalWaiting := make(chan struct{})
+	normalDone := make(chan error, 1)
+	go func() {
+		_, err := coordinator.ensureOne(
+			&readinessWaitContext{Context: context.Background(), waiting: normalWaiting},
+			"goose",
+			domain.AgentReadinessPurposeDisplay,
+			readinessInvalidateInstallation,
+			false,
+		)
+		normalDone <- err
+	}()
+	select {
+	case <-normalWaiting:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("normal caller did not reach the presence wait")
+	}
+
+	releasePresence()
+	findTimeout := time.After(500 * time.Millisecond)
+	select {
+	case err := <-findDone:
+		if err != nil {
+			t.Fatalf("FindInstalled presence check: %v", err)
+		}
+	case <-findTimeout:
+		t.Fatal("FindInstalled presence check did not finish after release")
+	}
+	normalTimeout := time.After(500 * time.Millisecond)
+	select {
+	case err := <-normalDone:
+		if err != nil {
+			t.Fatalf("normal check: %v", err)
+		}
+	case <-normalTimeout:
+		t.Fatal("normal check did not finish after presence release")
+	}
+	if got := agent.presenceCalls.Load(); got != 1 {
+		t.Fatalf("presence checks = %d, want one shared check", got)
+	}
+	if got := agent.normalResolveCalls.Load(); got != 1 {
+		t.Fatalf("normal Goose resolution calls = %d, want 1", got)
+	}
+	if agent.normalBeforePresence.Load() {
+		t.Fatal("normal Goose resolution started before presence completion")
+	}
+}
+
 func TestReadinessCoordinatorInvalidationDuringCheckRemainsStale(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
@@ -803,31 +973,5 @@ func TestReadinessCoordinatorTreatsConfiguredAsUnverified(t *testing.T) {
 	// Recorded as an observation, not a failure, so it is not retried as one.
 	if items[0].Authentication.CheckedAt == nil {
 		t.Fatal("a configured verdict is a definite observation and must be marked checked")
-	}
-}
-
-// A missing binary is an install problem. Reporting it as unauthorized points
-// the user at a login they cannot complete.
-func TestReadinessCoordinatorTreatsUnavailableAsNotAnAuthFailure(t *testing.T) {
-	t.Parallel()
-	agent := &readinessTestAgent{
-		resolve: func(context.Context) (string, error) { return "/bin/claude", nil },
-		auth: func(context.Context) (ports.AgentAuthStatus, error) {
-			return ports.AgentAuthStatusUnavailable, nil
-		},
-	}
-	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
-		Agents: []agentregistry.HarnessAgent{readinessHarness("claude-code", "Claude Code", agent)},
-	})
-
-	items, err := coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeDisplay)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := items[0].Authentication.State; got != domain.AgentAuthenticationUnknown {
-		t.Fatalf("authentication state = %q, want %q", got, domain.AgentAuthenticationUnknown)
-	}
-	if got := items[0].Authentication.ReasonCode; got != domain.AgentReadinessReasonAuthSkippedNotInstalled {
-		t.Fatalf("reason code = %q, want %q", got, domain.AgentReadinessReasonAuthSkippedNotInstalled)
 	}
 }

@@ -623,11 +623,7 @@ func isACPAuthRequired(err error) bool {
 	if !errors.As(err, &requestErr) {
 		return false
 	}
-	switch requestErr.Code {
-	case -32000, -32001:
-		return true
-	}
-	return false
+	return requestErr.Code == -32000
 }
 
 // isACPMethodNotFound reports whether err is a JSON-RPC -32601 "Method not

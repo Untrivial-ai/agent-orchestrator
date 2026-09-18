@@ -34,6 +34,7 @@ func TestACPDriverPromptResponseFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			authRejected := 0
+			authRecovered := 0
 			meta := testPromptFailureMeta(map[string]any{
 				"id": "incident-1", "revision": 1, "category": tc.category,
 				"severity": "error", "title": tc.title, "details": tc.details, "actions": tc.actions,
@@ -76,7 +77,10 @@ func TestACPDriverPromptResponseFailure(t *testing.T) {
 					case ports.ChatEventError:
 						t.Fatalf("terminal failure emitted a second timeline event: %#v", event)
 					case ports.ChatEventAccountChanged:
-						t.Fatalf("terminal failure emitted a second account event: %#v", event)
+						if event.Account == nil || !event.Account.ReauthRecovered || attempt != 1 {
+							t.Fatalf("unexpected account event: %#v", event)
+						}
+						authRecovered++
 					case ports.ChatEventUsage:
 						usagesSeen++
 						if event.Usage == nil || event.Usage.TotalTokens != 15 {
@@ -128,6 +132,9 @@ func TestACPDriverPromptResponseFailure(t *testing.T) {
 			}
 			if authRejected != wantAuthRejected {
 				t.Fatalf("auth cache invalidations = %d, want %d", authRejected, wantAuthRejected)
+			}
+			if authRecovered != 1 {
+				t.Fatalf("auth recovery signals = %d, want 1", authRecovered)
 			}
 		})
 	}

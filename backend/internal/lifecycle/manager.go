@@ -96,6 +96,7 @@ type preparedChatSpawnStore interface {
 		context.Context,
 		domain.SessionRecord,
 		domain.ConversationBranch,
+		*domain.ChatProviderHandoff,
 		func(context.Context) error,
 	) error
 }
@@ -518,6 +519,11 @@ const maxActivitySignalProjectionRetries = 3
 // native agent session id carried alongside it. Metadata-only hooks leave the
 // existing activity and first-signal facts untouched.
 func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, s ports.ActivitySignal) error {
+	// Subagent answers, including prompt suggestions, are not root-conversation
+	// facts. Their usage is collected independently from lifecycle metadata.
+	if s.Event == "subagent-stop" {
+		return nil
+	}
 	s.AgentSessionID = strings.TrimSpace(s.AgentSessionID)
 	s.LatestUserPrompt = strings.TrimSpace(s.LatestUserPrompt)
 	s.LatestAssistantUpdate = strings.TrimSpace(s.LatestAssistantUpdate)
@@ -662,8 +668,16 @@ retryProjection:
 	// generation, and main turn. Reduce it as one durable state machine so a Stop
 	// whose UserPromptSubmit was lost can never borrow the prior turn's prompt.
 	checkpoint := rec.Metadata
-	nativeIdentityChanged := s.AgentSessionID != "" && rec.Metadata.AgentSessionID != "" &&
-		s.AgentSessionID != rec.Metadata.AgentSessionID
+	previousNativeID := rec.Metadata.AgentSessionID
+	if previousNativeID == "" {
+		previousNativeID = rec.Metadata.ProviderConversationID
+	}
+	nativeIdentityChanged := s.AgentSessionID != "" && previousNativeID != "" && s.AgentSessionID != previousNativeID
+	if nativeIdentityChanged && !s.Timestamp.IsZero() &&
+		!rec.Metadata.NativeIdentityObservedAt.IsZero() && !s.Timestamp.After(rec.Metadata.NativeIdentityObservedAt) {
+		m.mu.Unlock()
+		return nil
+	}
 	resetConversationCheckpoint :=
 		nativeIdentityChanged ||
 			(s.AgentSessionID != "" && s.LaunchID != "" &&
@@ -673,11 +687,13 @@ retryProjection:
 	if resetConversationCheckpoint {
 		checkpoint.LatestUserPrompt = ""
 		checkpoint.LatestAssistantUpdate = ""
+		checkpoint.LatestAssistantUpdateAt = time.Time{}
 		checkpoint.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		checkpoint.ConversationCheckpointGeneration = ""
 		checkpoint.ConversationCheckpointNativeID = ""
 		checkpoint.ConversationCheckpointTurnID = ""
 		if nativeIdentityChanged {
+			checkpoint.NativeTranscriptPath = ""
 			checkpoint.ConversationCheckpointUnsettled = false
 			checkpoint.NativeCheckpointEvidence = ""
 		}
@@ -751,6 +767,7 @@ retryProjection:
 				checkpoint.LatestUserPromptAt = promptAt
 			}
 			checkpoint.LatestAssistantUpdate = ""
+			checkpoint.LatestAssistantUpdateAt = time.Time{}
 			checkpoint.ConversationCheckpointUnsettled = false
 			checkpoint.ConversationCheckpointGeneration = ""
 			checkpoint.ConversationCheckpointNativeID = ""
@@ -791,11 +808,13 @@ retryProjection:
 			checkpoint.ConversationCheckpointTurnID = ""
 		} else if checkpoint.ConversationCheckpointState == domain.ConversationCheckpointPrompt &&
 			!checkpoint.ConversationCheckpointUnsettled &&
+			(s.Timestamp.IsZero() || !s.Timestamp.Before(checkpoint.LatestUserPromptAt)) &&
 			ownerGeneration != "" && checkpointNativeID != "" &&
 			checkpoint.ConversationCheckpointGeneration == ownerGeneration &&
 			checkpoint.ConversationCheckpointNativeID == checkpointNativeID &&
 			(checkpoint.ConversationCheckpointTurnID == "" || checkpoint.ConversationCheckpointTurnID == s.ProviderTurnID) {
 			checkpoint.LatestAssistantUpdate = s.LatestAssistantUpdate
+			checkpoint.LatestAssistantUpdateAt = timeOr(s.Timestamp, now)
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointComplete
 		} else if ownerGeneration != "" && checkpointNativeID != "" {
 			// A scoped Stop without its prompt boundary proves some completed turn
@@ -811,6 +830,7 @@ retryProjection:
 			// but it has no owner boundary that would make it a trusted history gate.
 			// Retain it as legacy text without ever borrowing an earlier user prompt.
 			checkpoint.LatestAssistantUpdate = s.LatestAssistantUpdate
+			checkpoint.LatestAssistantUpdateAt = timeOr(s.Timestamp, now)
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointLegacy
 			checkpoint.ConversationCheckpointGeneration = ""
 			checkpoint.ConversationCheckpointNativeID = ""
@@ -835,6 +855,7 @@ retryProjection:
 	// (old CLIs, adapters without tool identity) retain their activity semantics,
 	// but only event-tagged main-turn facts may advance checkpoint text or time.
 	checkpointChanged := checkpoint.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
+		!checkpoint.LatestAssistantUpdateAt.Equal(rec.Metadata.LatestAssistantUpdateAt) ||
 		!checkpoint.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) ||
 		checkpoint.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
 		checkpoint.ConversationCheckpointState != rec.Metadata.ConversationCheckpointState ||
@@ -844,6 +865,7 @@ retryProjection:
 		checkpoint.NativeCheckpointEvidence != rec.Metadata.NativeCheckpointEvidence ||
 		checkpoint.ConversationCheckpointUnsettled != rec.Metadata.ConversationCheckpointUnsettled
 	metadataChanged := (s.AgentSessionID != "" && rec.Metadata.AgentSessionID != s.AgentSessionID) ||
+		(s.AgentSessionID != "" && s.Timestamp.After(rec.Metadata.NativeIdentityObservedAt)) ||
 		(s.AgentSessionID != "" && rec.Metadata.AgentSessionIDLaunchID != s.LaunchID) ||
 		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath) ||
 		checkpointChanged
@@ -1429,7 +1451,7 @@ func (m *Manager) MarkChatReconnected(ctx context.Context, id domain.SessionID, 
 
 // MarkSpawned marks a newly spawned or restored session live and stores runtime/workspace handles.
 func (m *Manager) MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
-	return m.markSpawned(ctx, id, metadata, nil, nil)
+	return m.markSpawned(ctx, id, metadata, nil, nil, nil)
 }
 
 // MarkChatSpawned atomically marks a Chat controller live and publishes the
@@ -1446,7 +1468,7 @@ func (m *Manager) MarkChatSpawned(
 		strings.TrimSpace(metadata.ControllerGeneration) == "" {
 		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
 	}
-	return m.markSpawned(ctx, id, metadata, &boundary, nil)
+	return m.markSpawned(ctx, id, metadata, &boundary, nil, nil)
 }
 
 // MarkChatSpawnedPrepared publishes native history together with its reserved
@@ -1458,6 +1480,7 @@ func (m *Manager) MarkChatSpawnedPrepared(
 	id domain.SessionID,
 	metadata domain.SessionMetadata,
 	boundary domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	if prepare == nil {
@@ -1469,7 +1492,7 @@ func (m *Manager) MarkChatSpawnedPrepared(
 		strings.TrimSpace(metadata.ControllerGeneration) == "" {
 		return fmt.Errorf("lifecycle: Chat provider boundary for %q has incomplete or mismatched ownership", id)
 	}
-	return m.markSpawned(ctx, id, metadata, &boundary, prepare)
+	return m.markSpawned(ctx, id, metadata, &boundary, handoff, prepare)
 }
 
 func (m *Manager) markSpawned(
@@ -1477,6 +1500,7 @@ func (m *Manager) markSpawned(
 	id domain.SessionID,
 	metadata domain.SessionMetadata,
 	boundary *domain.ConversationBranch,
+	handoff *domain.ChatProviderHandoff,
 	prepare func(context.Context) error,
 ) error {
 	launchID := strings.TrimSpace(metadata.RuntimeLaunchID)
@@ -1525,7 +1549,7 @@ func (m *Manager) markSpawned(
 			if !ok {
 				return nil, errors.New("lifecycle: atomic Chat provider-history persistence is unavailable")
 			}
-			if err := writer.CommitChatSpawnPrepared(ctx, rec, *boundary, prepare); err != nil {
+			if err := writer.CommitChatSpawnPrepared(ctx, rec, *boundary, handoff, prepare); err != nil {
 				return nil, err
 			}
 		}
@@ -1881,6 +1905,12 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	if !in.LatestUserPromptAt.IsZero() {
 		base.LatestUserPromptAt = in.LatestUserPromptAt
 	}
+	if !in.LatestAssistantUpdateAt.IsZero() {
+		base.LatestAssistantUpdateAt = in.LatestAssistantUpdateAt
+	}
+	if !in.NativeIdentityObservedAt.IsZero() {
+		base.NativeIdentityObservedAt = in.NativeIdentityObservedAt
+	}
 	set(&base.LatestAssistantUpdate, in.LatestAssistantUpdate)
 	set(&base.NativeTranscriptPath, in.NativeTranscriptPath)
 	set(&base.Model, in.Model)
@@ -1901,6 +1931,9 @@ func applyActivityMetadata(meta *domain.SessionMetadata, signal ports.ActivitySi
 	if signal.AgentSessionID != "" {
 		meta.AgentSessionID = signal.AgentSessionID
 		meta.AgentSessionIDLaunchID = signal.LaunchID
+		if signal.Timestamp.After(meta.NativeIdentityObservedAt) {
+			meta.NativeIdentityObservedAt = signal.Timestamp
+		}
 	}
 	if signal.TranscriptPath != "" {
 		meta.NativeTranscriptPath = signal.TranscriptPath

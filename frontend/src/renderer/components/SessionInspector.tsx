@@ -27,7 +27,6 @@ import {
 	ArrowUpRight,
 	ChevronDown,
 	ChevronRight,
-	Files as FilesIcon,
 	GitPullRequest,
 	GitMerge,
 	Info,
@@ -129,7 +128,21 @@ const VIEW_DEFS: {
 	{
 		id: "files",
 		labelKey: "inspector.files",
-		icon: <FilesIcon aria-hidden="true" />,
+		icon: (
+			<svg
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="1.7"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				aria-hidden="true"
+				data-testid="files-viewer-icon"
+			>
+				<path d="M3.5 7.5V5.75A1.75 1.75 0 0 1 5.25 4h4l2 2h7.5a1.75 1.75 0 0 1 1.75 1.75V18a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7.5Z" />
+				<path d="M7 10h10M7 13.5h8M7 17h6" />
+			</svg>
+		),
 	},
 ];
 
@@ -1148,7 +1161,12 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 								<button
 									aria-label={t("inspector.terminate")}
 									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-									onClick={() => clearTerminateSessionState(queryClient, session.id)}
+									onClick={() => {
+										clearTerminateSessionState(queryClient, session.id);
+										// Force the confirm open instead of toggling it, so repeated
+										// trash taps keep the dialog up rather than dismissing it.
+										setConfirmOpen(true);
+									}}
 									type="button"
 								>
 									<Trash2 className="size-icon-sm" aria-hidden="true" />

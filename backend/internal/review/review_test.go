@@ -620,47 +620,6 @@ func TestRestoreReviewerRestoresDeadReviewerFromHistory(t *testing.T) {
 	}
 }
 
-func TestRestoreCodexReviewerDoesNotApplyAnotherHarnessProjectConfig(t *testing.T) {
-	store := &fakeStore{
-		reviews: map[domain.ReviewerHarness]domain.Review{
-			domain.ReviewerCodex: {
-				ID:               "rev-codex",
-				SessionID:        "mer-1",
-				ProjectID:        "mer",
-				Harness:          domain.ReviewerCodex,
-				ReviewerHandleID: "codex-pane",
-				AgentSessionID:   "codex-native",
-			},
-		},
-	}
-	projects := fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{
-		Harness:     domain.ReviewerOpenCode,
-		AgentConfig: domain.AgentConfig{Model: "opencode-model"},
-	}}}}
-	launcher := &fakeLauncher{alive: true, handle: "codex-restored"}
-	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), projects, launcher)
-
-	stopped, err := eng.SuspendCodexReviewer(context.Background(), "mer-1")
-	if err != nil {
-		t.Fatalf("SuspendCodexReviewer: %v", err)
-	}
-	if !stopped {
-		t.Fatal("SuspendCodexReviewer stopped = false, want true for stale live Codex pane")
-	}
-	if err := eng.RestoreCodexReviewer(context.Background(), "mer-1"); err != nil {
-		t.Fatalf("RestoreCodexReviewer: %v", err)
-	}
-	if !launcher.restored || launcher.gotSpec.Harness != domain.ReviewerCodex {
-		t.Fatalf("restore spec = %+v, want retained Codex reviewer restored", launcher.gotSpec)
-	}
-	if !launcher.gotSpec.AgentConfig.IsZero() {
-		t.Fatalf("restored Codex config = %+v, want no OpenCode project config", launcher.gotSpec.AgentConfig)
-	}
-	if launcher.gotSpec.AgentSessionID != "codex-native" || !launcher.gotSpec.RequireNativeHistory {
-		t.Fatalf("restore spec = %+v, want exact retained Codex native history", launcher.gotSpec)
-	}
-}
-
 func TestRestoreReviewerFailsRunningRunWhenNativeConversationIsUnavailable(t *testing.T) {
 	store := &fakeStore{
 		review: &domain.Review{

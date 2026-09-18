@@ -206,8 +206,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					// to these whenever SessionView mounts with window.ao.browser present, so
 					// an incomplete browser shape would crash the session-detail/preview specs.
 					setAnnotationMode: async () => undefined,
+					completeAnnotation: async () => undefined,
+					discardAnnotations: async () => undefined,
+					annotationAction: async () => undefined,
 					onAnnotationSubmit: unsubscribe,
 					onAnnotationCancel: unsubscribe,
+					onAnnotationState: unsubscribe,
 					onNavState: unsubscribe,
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,
@@ -251,6 +255,9 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					set: async (next: UpdateSettings) => {
 						currentUpdateSettings = next;
 					},
+					setMacDifferentialUpdates: async (enabled: boolean) => {
+						currentUpdateSettings = { ...currentUpdateSettings, macDifferentialUpdates: enabled };
+					},
 				},
 				uiSettings: {
 					get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -268,6 +275,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					download: async () => undefined,
 					install: async () => undefined,
 					isPostUpdateRelaunch: async () => false,
+					relaunch: async () => undefined,
 					onStatus: (listener: (status: UpdateStatus) => void) => {
 						updateListeners.add(listener);
 						return () => {
@@ -286,6 +294,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					getSession: async () => null,
 					signIn: async () => undefined,
 					signOut: async () => undefined,
+					cancelProviderAuth: async () => undefined,
+					connectProviderAuth: async () => undefined,
 					localAuthAvailable: async () => false,
 					localRegister: async () => {
 						throw new Error("local auth is unavailable in e2e");
@@ -759,8 +769,12 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					// to these whenever SessionView mounts with window.ao.browser present, so
 					// an incomplete browser shape would crash the session-detail/preview specs.
 					setAnnotationMode: async () => undefined,
+					completeAnnotation: async () => undefined,
+					discardAnnotations: async () => undefined,
+					annotationAction: async () => undefined,
 					onAnnotationSubmit: unsubscribe,
 					onAnnotationCancel: unsubscribe,
+					onAnnotationState: unsubscribe,
 					onNavState: unsubscribe,
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,
@@ -794,8 +808,15 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				tray: { setAttentionState: () => undefined, onOpenSession: unsubscribe },
 				appState: { getMigration: async () => ({ status: "completed" }), setMigration: async () => undefined },
 				updateSettings: {
-					get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
+					get: async () => ({
+						enabled: false,
+						channel: "latest",
+						nightlyAck: false,
+						feature: null,
+						macDifferentialUpdates: false,
+					}),
 					set: async () => undefined,
+					setMacDifferentialUpdates: async () => undefined,
 				},
 				uiSettings: {
 					get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -813,6 +834,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					download: async () => undefined,
 					install: async () => undefined,
 					isPostUpdateRelaunch: async () => false,
+					relaunch: async () => undefined,
 					onStatus: unsubscribe,
 					onTelemetry: unsubscribe,
 				},
@@ -826,6 +848,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					getSession: async () => null,
 					signIn: async () => undefined,
 					signOut: async () => undefined,
+					cancelProviderAuth: async () => undefined,
+					connectProviderAuth: async () => undefined,
 					localAuthAvailable: async () => false,
 					localRegister: async () => {
 						throw new Error("local auth is unavailable in e2e");

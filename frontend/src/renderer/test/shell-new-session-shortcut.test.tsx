@@ -148,8 +148,7 @@ vi.mock("../lib/bridge", () => ({
 	},
 }));
 
-vi.mock("../hooks/useWorkspaceQuery", async (importOriginal) => ({
-	workspaceStatusesChecking: (await importOriginal<typeof import("../hooks/useWorkspaceQuery")>()).workspaceStatusesChecking,
+vi.mock("../hooks/useWorkspaceQuery", () => ({
 	useWorkspaceQuery: () => shellMocks.state.workspaceQuery,
 	useWorkspaceTraySessions: () => ({ data: [] }),
 	workspaceQueryKey: ["workspaces"],
@@ -177,6 +176,10 @@ vi.mock("../lib/daemon-status", () => ({
 // settings/query path out of the provider-free harness.
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({ client: {}, ready: false, baseUrl: "" }),
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: undefined, isLoading: false, error: undefined, ready: false }),
 }));
 
 // The shell layout opens standalone terminals; this suite only covers the
@@ -503,7 +506,7 @@ describe("shell workspace startup", () => {
 		expect(document.querySelector(".center-panel-shell--session > .center-panel-surface")).toBeInTheDocument();
 	});
 
-	it("waits for session recovery and then reveals ready or unavailable cards", async () => {
+	it("reveals the shell while session recovery remains pending", async () => {
 		const checking: WorkspaceSummary[] = workspaces.map((workspace) => ({ ...workspace,
 			sessions: workspace.sessions.map((session) => ({ ...session, statusReadiness: "checking" })),
 		}));
@@ -511,17 +514,10 @@ describe("shell workspace startup", () => {
 		shellMocks.state.workspaceQuery = { data: checking, dataUpdatedAt: 100, isError: false, isSuccess: true };
 		shellMocks.queryClient.getQueryState.mockReturnValue({ dataUpdatedAt: 100 });
 		shellMocks.queryClient.fetchQuery.mockResolvedValueOnce(checking);
-		const view = await renderShell();
-		await act(async () => {});
-		expect(screen.getByTestId("daemon-startup-loader")).toBeInTheDocument();
-		expect(screen.queryByTestId("sidebar-provider")).not.toBeInTheDocument();
-		const settled = checking.map((workspace) => ({ ...workspace,
-			sessions: workspace.sessions.map((session, index) => ({ ...session, statusReadiness: index === 0 ? "ready" as const : "unavailable" as const })),
-		}));
-		shellMocks.state.workspaceQuery = { data: settled, dataUpdatedAt: 101, isError: false, isSuccess: true };
-		view.rerender(<Suspense fallback={null}><ShellRoute /></Suspense>);
+		await renderShell();
 		await waitFor(() => expect(shellMocks.state.shellValue?.workspaceStartupState).toBe("ready"));
-		view.unmount();
+		expect(screen.queryByTestId("daemon-startup-loader")).not.toBeInTheDocument();
+		expect(screen.getByTestId("sidebar-provider")).toBeInTheDocument();
 	});
 
 	it("forces a confirmed fetch and preserves a collapsed sidebar preference", async () => {

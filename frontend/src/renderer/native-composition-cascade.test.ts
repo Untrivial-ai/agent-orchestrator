@@ -119,16 +119,26 @@ describe("native-composition transparency cascade", () => {
 		expect(frameRule?.body).toMatch(/right:\s*var\(--browser-popout-inline-inset\)/);
 	});
 
-	it("centers the compact browser address bar between equal side tracks", () => {
+	it("shifts the browser address bar clear of the inspector tabs", () => {
 		const topbarRule = rules().find((rule) => rule.selector.endsWith(".session-inspector__topbar--browser"));
 		expect(topbarRule?.body).toMatch(
 			/grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 240px\) minmax\(0, 1fr\)/,
+		);
+		const addressBarRule = rules().find(
+			(rule) => rule.selector.endsWith(".browser-panel__topbar-host > .browser-panel__address-bar"),
+		);
+		expect(addressBarRule?.body).toMatch(/transform:\s*translateX\(clamp\(32px, 6cqw, 48px\)\)/);
+		expect(css).toMatch(
+			/\.session-inspector__topbar--browser:has\(\.browser-panel__address-bar--editing\)\s*{[^}]*clamp\(240px, 52cqw, 560px\)/,
 		);
 		expect(css).toMatch(
 			/@container inspector \(max-width: 440px\)[\s\S]*?\.session-inspector__topbar--browser\s*{[\s\S]*?grid-template-rows:\s*var\(--size-inspector-tabs\) var\(--size-inspector-tabs\)/,
 		);
 		expect(css).toMatch(
 			/@container inspector \(max-width: 440px\)[\s\S]*?> \.browser-panel__topbar-host\s*{[\s\S]*?grid-row:\s*2;[\s\S]*?width:\s*180px/,
+		);
+		expect(css).toMatch(
+			/@container inspector \(max-width: 440px\)[\s\S]*?> \.browser-panel__topbar-host[\s\S]*?> \.browser-panel__address-bar\s*{[\s\S]*?transform:\s*none/,
 		);
 	});
 });

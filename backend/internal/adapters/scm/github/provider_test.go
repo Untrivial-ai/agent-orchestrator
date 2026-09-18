@@ -1838,3 +1838,96 @@ func TestFetchPullRequestsStampsNotFoundPlaceholder(t *testing.T) {
 		t.Fatalf("aligned hit = Fetched:%v #%d, want fetched #42 at index 1", obs[1].Fetched, obs[1].PR.Number)
 	}
 }
+
+// TestMergeabilityObservation_UnstableOutranksBlockers pins issue #2401: an
+// UNSTABLE PR is mergeable-with-a-failing-optional-check, so it must NOT be
+// downgraded to blocked by the ci/review/draft blockers. doc.go rule (3) beats
+// rules (5) and (6), matching the mergeabilityFromGraphQL sibling.
+func TestMergeabilityObservation_UnstableOutranksBlockers(t *testing.T) {
+	cases := []struct {
+		name         string
+		mergeable    string
+		state        string
+		ci           string
+		review       string
+		draft        bool
+		want         domain.Mergeability
+		wantBlockers []string
+		wantBehind   bool
+	}{
+		{
+			// The repro from the issue: optional codecov fails, rollup is
+			// FAILURE (-> ci failing), review approved, GitHub still merges.
+			name:      "unstable with failing ci stays unstable",
+			mergeable: "MERGEABLE", state: "UNSTABLE",
+			ci:     string(domain.CIFailing),
+			review: string(domain.ReviewApproved),
+			want:   domain.MergeUnstable,
+		},
+		{
+			name:      "unstable with changes requested stays unstable",
+			mergeable: "MERGEABLE", state: "UNSTABLE",
+			ci:     string(domain.CIPassing),
+			review: string(domain.ReviewChangesRequest),
+			want:   domain.MergeUnstable,
+		},
+		{
+			name:      "unstable behind base keeps the behind_base signal",
+			mergeable: "MERGEABLE", state: "BEHIND_BASE",
+			ci:         string(domain.CIFailing),
+			want:       domain.MergeBlocked,
+			wantBehind: true, wantBlockers: []string{"behind_base", "ci_failing"},
+		},
+		// Regressions guarded: the non-UNSTABLE paths must be untouched.
+		{
+			name:      "conflicting still wins",
+			mergeable: "CONFLICTING", state: "DIRTY",
+			want: domain.MergeConflicting, wantBlockers: []string{"conflicts"},
+		},
+		{
+			name:      "blocked by provider still collects every blocker",
+			mergeable: "MERGEABLE", state: "BLOCKED",
+			ci: string(domain.CIFailing), review: string(domain.ReviewChangesRequest), draft: true,
+			want:         domain.MergeBlocked,
+			wantBlockers: []string{"blocked_by_provider", "draft", "ci_failing", "changes_requested"},
+		},
+		{
+			name:      "clean + failing ci still blocks",
+			mergeable: "MERGEABLE", state: "CLEAN",
+			ci:   string(domain.CIFailing),
+			want: domain.MergeBlocked, wantBlockers: []string{"ci_failing"},
+		},
+		{
+			name:      "clean + approved is mergeable",
+			mergeable: "MERGEABLE", state: "CLEAN",
+			ci: string(domain.CIPassing), review: string(domain.ReviewApproved),
+			want: domain.MergeMergeable,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeabilityObservation(tc.mergeable, tc.state, tc.ci, tc.review, tc.draft)
+			if got.State != string(tc.want) {
+				t.Fatalf("State = %q, want %q", got.State, tc.want)
+			}
+			if got.Mergeable != (tc.want == domain.MergeMergeable) {
+				t.Fatalf("Mergeable = %v for state %q", got.Mergeable, got.State)
+			}
+			if got.Conflict != (tc.want == domain.MergeConflicting) {
+				t.Fatalf("Conflict = %v for state %q", got.Conflict, got.State)
+			}
+			if got.BehindBase != tc.wantBehind {
+				t.Fatalf("BehindBase = %v, want %v", got.BehindBase, tc.wantBehind)
+			}
+			if tc.wantBlockers == nil {
+				if len(got.Blockers) != 0 {
+					t.Fatalf("Blockers = %v, want none", got.Blockers)
+				}
+				return
+			}
+			if strings.Join(got.Blockers, ",") != strings.Join(tc.wantBlockers, ",") {
+				t.Fatalf("Blockers = %v, want %v", got.Blockers, tc.wantBlockers)
+			}
+		})
+	}
+}

@@ -17,7 +17,7 @@ func TestIsACPAuthRequiredRecognizesProtocolAuthCodes(t *testing.T) {
 		want bool
 	}{
 		{"acp auth_required code", &acpsdk.RequestError{Code: -32000, Message: "authentication required"}, true},
-		{"alternate auth_required code", &acpsdk.RequestError{Code: -32001, Message: "auth required"}, true},
+		{"unassigned server code", &acpsdk.RequestError{Code: -32001, Message: "auth required"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

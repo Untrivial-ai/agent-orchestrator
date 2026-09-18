@@ -82,6 +82,38 @@ a ZIP for electron-updater. The ZIP and `latest-mac.yml` must remain available:
 electron-updater cannot install an update from a DMG. Nightly and preview
 channels omit the first-install DMG.
 
+## Isolated macOS differential v2
+
+Current AO uses full-ZIP macOS updates. It explicitly sets
+`disableDifferentialDownload = true` before checks. The local rollout stop is
+false and the v2 signing keyring is empty. Windows/Linux updater and feed
+behavior is unchanged. No bridge release is part of this design.
+
+Legacy macOS feeds permanently remain free of `blockMapSize`, blockmap or v2
+references, and conventional `.zip.blockmap` assets. Old clients derive that
+conventional suffix regardless of Developer Mode and may seed their next cache
+cycle even after full fallback. Their discovery paths must remain empty.
+
+The separately gated v2 resolver uses signed `ao-diff-v2-mac.json` and versioned
+`.zip.aoblockmap` assets on the same GitHub release. Those names are never
+requested by legacy clients. No public build/feed/publish hook generates them.
+A future independently reviewed conductor change must verify exact signed
+metadata and asset inventories without relaxing the legacy prohibition.
+
+The v2 MacUpdater subclass uses the dependency's declared protected extension
+and exclusively owned handles. Range failures, including 416, settle before
+MacUpdater starts one full fallback. Stock 6.8.9's unsafe differential worker
+is never invoked. Current AO remains on the stock full-only path.
+
+See [the v2 protocol and acceptance contract](mac-differential-v2.md) for exact
+schema, naming, signing, generation/verification, rollback and runtime limits.
+The production client reauthorizes marked final-cache hits against a fresh signed
+manifest and byte-verifies them before handoff. Cancellation remains terminal
+through the protected downloaded-event boundary immediately before Squirrel.
+The feature stays locally disabled until real packaged macOS acceptance and the
+private conductor inventory, signing, draft-redownload, and rollback gates are
+complete. No public repository workflow publishes or activates v2 assets.
+
 ## Incident rule
 
 Exactly one publisher is a correctness requirement. If the conductor is
