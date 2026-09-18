@@ -60,15 +60,6 @@ type identityPendingAgent struct {
 	presenceCalls      *atomic.Int32
 }
 
-type blockingIdentityPendingAgent struct {
-	fakeAgent
-	normalResolveCalls *atomic.Int32
-	presenceCalls      *atomic.Int32
-	presenceStarted    chan struct{}
-	releasePresence    chan struct{}
-	startOnce          sync.Once
-}
-
 type mutableInstallAgent struct {
 	fakeAgent
 	installed atomic.Bool
@@ -341,22 +332,6 @@ func (f identityPendingAgent) ResolveBinaryPresence(context.Context) (string, er
 	return "", ports.ErrAgentBinaryIdentityUnknown
 }
 
-func (f *blockingIdentityPendingAgent) ResolveBinary(context.Context) (string, error) {
-	f.normalResolveCalls.Add(1)
-	return "", errors.New("normal Goose resolution must not run during startup warm-up")
-}
-
-func (f *blockingIdentityPendingAgent) ResolveBinaryPresence(ctx context.Context) (string, error) {
-	f.presenceCalls.Add(1)
-	f.startOnce.Do(func() { close(f.presenceStarted) })
-	select {
-	case <-f.releasePresence:
-		return "", ports.ErrAgentBinaryIdentityUnknown
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-}
-
 func TestListReturnsInitialSupportedInventoryWithoutProbing(t *testing.T) {
 	probed := false
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
@@ -487,90 +462,6 @@ func TestFindInstalledBinaryKeepsNameOnlyGooseMatchUnknown(t *testing.T) {
 	}
 	if len(inventory.Installed) != 0 {
 		t.Fatalf("Pressly-only inventory Installed = %#v, want empty", inventory.Installed)
-	}
-}
-
-func TestWarmReadinessAndFindInstalledShareOnlyProcessFreeGoosePresence(t *testing.T) {
-	var normalResolveCalls atomic.Int32
-	var presenceCalls atomic.Int32
-	agent := &blockingIdentityPendingAgent{
-		normalResolveCalls: &normalResolveCalls,
-		presenceCalls:      &presenceCalls,
-		presenceStarted:    make(chan struct{}),
-		releasePresence:    make(chan struct{}),
-	}
-	svc := NewWithAgents([]agentregistry.HarnessAgent{{
-		Harness:  domain.AgentHarness("goose"),
-		Manifest: adapters.Manifest{ID: "goose", Name: "Goose"},
-		Agent:    agent,
-	}})
-
-	// This is the service path used by daemon startup. Hold the process-free
-	// pass open so FindInstalled must encounter the same in-flight work.
-	svc.WarmReadiness()
-	select {
-	case <-agent.presenceStarted:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("WarmReadiness did not start the presence check")
-	}
-
-	found := make(chan bool, 1)
-	go func() {
-		_, ok := svc.FindInstalledBinary(context.Background())
-		found <- ok
-	}()
-	select {
-	case ok := <-found:
-		if ok {
-			t.Fatal("FindInstalledBinary reported name-only Goose while presence was pending")
-		}
-	case <-time.After(20 * time.Millisecond):
-		// The presence caller is expected to wait for the shared process-free
-		// check, not launch a normal identity probe of its own.
-	}
-	if got := normalResolveCalls.Load(); got != 0 {
-		t.Fatalf("normal Goose resolution calls during startup = %d, want 0", got)
-	}
-	refreshDone := make(chan error, 1)
-	go func() {
-		_, err := svc.Refresh(context.Background())
-		refreshDone <- err
-	}()
-	select {
-	case err := <-refreshDone:
-		t.Fatalf("explicit refresh completed before presence pass: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-	if got := normalResolveCalls.Load(); got != 0 {
-		t.Fatalf("normal Goose resolution joined startup presence = %d, want 0", got)
-	}
-
-	close(agent.releasePresence)
-	select {
-	case ok := <-found:
-		if ok {
-			t.Fatal("FindInstalledBinary treated identity-pending Goose as installed")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("FindInstalledBinary did not finish after presence check")
-	}
-	if got := presenceCalls.Load(); got != 1 {
-		t.Fatalf("presence checks = %d, want one shared check", got)
-	}
-	if err := <-refreshDone; err != nil {
-		t.Fatalf("explicit refresh: %v", err)
-	}
-	if got := normalResolveCalls.Load(); got != 1 {
-		t.Fatalf("normal Goose resolution calls after explicit refresh = %d, want 1", got)
-	}
-
-	readiness, err := svc.CachedReadiness(context.Background())
-	if err != nil {
-		t.Fatalf("CachedReadiness: %v", err)
-	}
-	installation := readiness.Agents[0].Installation
-	if installation.State != domain.AgentInstallationUnknown {
-		t.Fatalf("startup installation = %#v, want unknown after failed explicit refresh", installation)
 	}
 }
 

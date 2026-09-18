@@ -12,14 +12,24 @@ const source = (route: string) => readFileSync(new URL(route, appDir), "utf8");
 // An exported fallback here could not render: see RouteErrorBoundary.
 const rootLayout = "_layout.tsx";
 
-const screenRoutes = ["onboarding.tsx", "pair.tsx", "session/[id].tsx", "shell/[handleId].tsx", "preview/[id].tsx"];
+const screenRoutes = [
+	"onboarding.tsx",
+	"pair.tsx",
+	"preview/[id].tsx",
+	"project/[id].tsx",
+	"session/[id].tsx",
+	"settings.tsx",
+	"shell/[handleId].tsx",
+];
 
 const sheetRoutes = [
 	"sheets/agent.tsx",
 	"sheets/chat-settings.tsx",
 	"sheets/composer-picker.tsx",
 	"sheets/connect.tsx",
+	"sheets/conversation-actions.tsx",
 	"sheets/conversation-map.tsx",
+	"sheets/conversation-rename.tsx",
 	"sheets/model.tsx",
 	"sheets/project.tsx",
 	"sheets/store-update.tsx",
@@ -33,9 +43,8 @@ const sheetRoutes = [
 const deferredRoutes = [
 	"(tabs)/_layout.tsx",
 	"(tabs)/index.tsx",
-	"(tabs)/orchestrator.tsx",
+	"(tabs)/projects.tsx",
 	"(tabs)/prs.tsx",
-	"(tabs)/settings.tsx",
 	"notifications.tsx",
 	"spawn.tsx",
 ];
