@@ -343,6 +343,44 @@ func (s *Supervisor) handle(
 		}
 	case "workspace.diff":
 		response, err = workspace.Diff(ctx)
+	case "workspace.review.summary":
+		response, err = workspace.ReviewSummary(ctx)
+	case "workspace.review.tree":
+		var input worker.WorkspaceReviewTreeRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewTree(ctx, input)
+		}
+	case "workspace.review.search":
+		var input worker.WorkspaceReviewSearchRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewSearch(ctx, input)
+		}
+	case "workspace.review.file":
+		var input worker.WorkspaceReviewFileRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewFile(ctx, input)
+		}
+	case "workspace.review.diffs":
+		var input worker.WorkspaceReviewDiffsRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewDiffs(ctx, input)
+		}
+	case "workspace.review.revision":
+		var input worker.WorkspaceReviewRevisionRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewRevision(ctx, input)
+		}
+	case "workspace.review.write":
+		var input worker.WorkspaceReviewWriteRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewWrite(ctx, input)
+		}
 	case "browser.fetch":
 		var input worker.BrowserFetchRequest
 		err = decodePayload(request.Payload, &input)
@@ -663,6 +701,12 @@ func decodePayload(payload any, target any) error {
 
 func transportError(err error) (string, string) {
 	switch {
+	case errors.Is(err, ErrWorkspaceSnapshotStale):
+		return "WORKSPACE_SNAPSHOT_STALE", "The workspace changed while it was being reviewed."
+	case errors.Is(err, ErrWorkspaceFingerprintStale):
+		return "WORKSPACE_FILE_STALE", "The file changed after it was opened."
+	case errors.Is(err, ErrWorkspaceCommitNotFound):
+		return "WORKSPACE_COMMIT_NOT_FOUND", "The requested commit is outside the workspace review range."
 	case errors.Is(err, errUnsafePath):
 		return "INVALID_WORKSPACE_PATH", "The requested path is outside the workspace."
 	case errors.Is(err, os.ErrNotExist):
