@@ -75,14 +75,14 @@ func TestPrimeCredentialEvidence(t *testing.T) {
 		{name: "unresolved command", provider: "anthropic", auth: `{"anthropic":{"type":"api_key","key":"!echo test-key"}}`, want: ports.AgentAuthStatusUnknown},
 		{name: "unresolved env reference", provider: "anthropic", auth: `{"anthropic":{"type":"api_key","key":"MY_API_KEY"}}`, want: ports.AgentAuthStatusUnknown},
 		{name: "resolved env reference", provider: "anthropic", auth: `{"anthropic":{"type":"api_key","key":"MY_API_KEY"}}`, env: map[string]string{"MY_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
-		{name: "fresh OAuth", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","expires":4102444800000}}`, want: ports.AgentAuthStatusConfigured},
-		{name: "expired OAuth", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","expires":1}}`, want: ports.AgentAuthStatusUnauthorized},
+		{name: "fresh OAuth", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","refresh":"","expires":4102444800000}}`, want: ports.AgentAuthStatusConfigured},
+		{name: "expired OAuth", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","refresh":"","expires":1}}`, want: ports.AgentAuthStatusUnauthorized},
 		{name: "refreshable OAuth", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","refresh":"refresh-token","expires":1}}`, want: ports.AgentAuthStatusConfigured},
 		{name: "refresh alone", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","refresh":"refresh-token","expires":1}}`, want: ports.AgentAuthStatusUnknown},
-		{name: "invalid expiry", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","expires":-1}}`, want: ports.AgentAuthStatusUnknown},
-		{name: "unsupported OAuth provider", provider: "openai", auth: `{"openai":{"type":"oauth","access":"test-token","expires":4102444800000}}`, want: ports.AgentAuthStatusUnknown},
-		{name: "stored expiry beats unrelated environment", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","expires":1}}`, env: map[string]string{"OPENAI_API_KEY": "test-key"}, want: ports.AgentAuthStatusUnauthorized},
-		{name: "runtime key beats expiry", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","expires":1}}`, args: []string{"--api-key", "runtime-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "invalid expiry", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","refresh":"","expires":-1}}`, want: ports.AgentAuthStatusUnknown},
+		{name: "unsupported OAuth provider", provider: "openai", auth: `{"openai":{"type":"oauth","access":"test-token","refresh":"","expires":4102444800000}}`, want: ports.AgentAuthStatusUnknown},
+		{name: "stored expiry beats unrelated environment", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","refresh":"","expires":1}}`, env: map[string]string{"OPENAI_API_KEY": "test-key"}, want: ports.AgentAuthStatusUnauthorized},
+		{name: "runtime key beats expiry", provider: "openai-codex", auth: `{"openai-codex":{"type":"oauth","access":"test-token","refresh":"","expires":1}}`, args: []string{"--api-key", "runtime-key"}, want: ports.AgentAuthStatusConfigured},
 		{name: "key flag missing value", provider: "anthropic", args: []string{"--api-key", "--print"}, want: ports.AgentAuthStatusUnknown},
 		{name: "prompt cannot supply flags", provider: "anthropic", args: []string{"--", "--api-key", "prompt-key"}, want: ports.AgentAuthStatusUnknown},
 		{name: "custom model key", provider: "custom", models: `{"providers":{"custom":{"baseUrl":"https://example.test/v1","apiKey":"test-key","models":[{"id":"test"}]}}}`, want: ports.AgentAuthStatusConfigured},
@@ -197,6 +197,78 @@ func TestPrimeUnknownModelDoesNotReuseDefaultProvider(t *testing.T) {
 	writePrimeAuth(t, filepath.Join(home, ".prime", "agent", "settings.json"), `{"defaultProvider":"openai"}`)
 	if got := primeStatusForTest(t, ports.AgentAuthCheck{Args: []string{"prime-agent", "--model", "unknown/test"}}); got != ports.AgentAuthStatusUnknown {
 		t.Fatalf("unknown model status = %q, want unknown", got)
+	}
+}
+
+func TestPrimeExplicitUnqualifiedModelDoesNotBorrowSavedProvider(t *testing.T) {
+	for _, tt := range []struct {
+		name, model, key string
+		args             []string
+		want             ports.AgentAuthStatus
+	}{
+		{"scoped unresolved model", "gpt-test", "ANTHROPIC_API_KEY", nil, ports.AgentAuthStatusUnknown},
+		{"argument unresolved model", "", "ANTHROPIC_API_KEY", []string{"--model", "gpt-test"}, ports.AgentAuthStatusUnknown},
+		{"scoped custom model rejects saved credential", "custom-test", "ANTHROPIC_API_KEY", nil, ports.AgentAuthStatusUnknown},
+		{"argument custom model rejects saved credential", "", "ANTHROPIC_API_KEY", []string{"--model=custom-test"}, ports.AgentAuthStatusUnknown},
+		{"scoped custom model resolves independently", "custom-test", "OPENAI_API_KEY", nil, ports.AgentAuthStatusConfigured},
+		{"argument custom model resolves independently", "", "OPENAI_API_KEY", []string{"--model", "custom-test"}, ports.AgentAuthStatusConfigured},
+		{"explicit provider remains authoritative", "gpt-test", "ANTHROPIC_API_KEY", []string{"--provider", "anthropic"}, ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolatePrimeAuth(t)
+			writePrimeAuth(t, filepath.Join(home, ".prime", "agent", "settings.json"), `{"defaultProvider":"anthropic","defaultModel":"saved-model"}`)
+			writePrimeAuth(t, filepath.Join(home, ".prime", "agent", "models.json"), `{"providers":{"openai":{"models":[{"id":"custom-test"}]}}}`)
+			scope := ports.AgentAuthCheck{Config: ports.AgentConfig{Model: tt.model}, Args: tt.args, Env: map[string]string{tt.key: "test-key"}}
+			if got := primeStatusForTest(t, scope); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrimePromptOptionValuesCannotBecomeAuthFlags(t *testing.T) {
+	for _, option := range []string{"--system-prompt", "--append-system-prompt"} {
+		for _, tt := range []struct {
+			name string
+			args []string
+			env  map[string]string
+			want ports.AgentAuthStatus
+		}{
+			{"split API key", []string{option, "--api-key", "prompt-key"}, nil, ports.AgentAuthStatusUnknown},
+			{"inline API key", []string{option, "--api-key=prompt-key"}, nil, ports.AgentAuthStatusUnknown},
+			{"provider text", []string{option, "--provider", "openai"}, map[string]string{"OPENAI_API_KEY": "unrelated-key"}, ports.AgentAuthStatusUnknown},
+			{"model text", []string{option, "--model=openai/test"}, map[string]string{"ANTHROPIC_API_KEY": "test-key"}, ports.AgentAuthStatusConfigured},
+			{"real flag after consumed value", []string{option, "--api-key", "--api-key", "real-key"}, nil, ports.AgentAuthStatusConfigured},
+		} {
+			t.Run(option+"/"+tt.name, func(t *testing.T) {
+				home := isolatePrimeAuth(t)
+				writePrimeAuth(t, filepath.Join(home, ".prime", "agent", "settings.json"), `{"defaultProvider":"anthropic"}`)
+				if got := primeStatusForTest(t, ports.AgentAuthCheck{Args: tt.args, Env: tt.env}); got != tt.want {
+					t.Fatalf("status = %q, want %q", got, tt.want)
+				}
+			})
+		}
+	}
+}
+
+func TestPrimeOAuthRequiresPresentStringRefresh(t *testing.T) {
+	for _, tt := range []struct {
+		name, refresh string
+		want          ports.AgentAuthStatus
+	}{
+		{"missing", "", ports.AgentAuthStatusUnknown},
+		{"null", `,"refresh":null`, ports.AgentAuthStatusUnknown},
+		{"number", `,"refresh":42`, ports.AgentAuthStatusUnknown},
+		{"object", `,"refresh":{}`, ports.AgentAuthStatusUnknown},
+		{"empty string", `,"refresh":""`, ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolatePrimeAuth(t)
+			writePrimeAuth(t, filepath.Join(home, ".prime", "agent", "auth.json"), `{"openai-codex":{"type":"oauth","access":"test-token","expires":4102444800000`+tt.refresh+`}}`)
+			if got := primeStatusForTest(t, ports.AgentAuthCheck{Args: []string{"--provider", "openai-codex"}}); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -34,11 +34,11 @@ func (p *Plugin) AuthStatusFor(ctx context.Context, scope ports.AgentAuthCheck) 
 }
 
 type primeAuthEntry struct {
-	Type    string `json:"type"`
-	Key     string `json:"key"`
-	Access  string `json:"access"`
-	Refresh string `json:"refresh"`
-	Expires *int64 `json:"expires"`
+	Type    string  `json:"type"`
+	Key     string  `json:"key"`
+	Access  string  `json:"access"`
+	Refresh *string `json:"refresh"`
+	Expires *int64  `json:"expires"`
 }
 type primeModelProvider struct {
 	APIKey  string `json:"apiKey"`
@@ -120,6 +120,7 @@ func primeAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil
 	}
 	provider := settings.DefaultProvider
 	model := strings.TrimSpace(scope.Config.Model)
+	explicitModel := model != ""
 	if model == "" {
 		model = settings.DefaultModel
 	}
@@ -130,28 +131,57 @@ func primeAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil
 			break
 		}
 		name, value, inline := strings.Cut(arg, "=")
-		if name != "--provider" && name != "--model" && name != "--api-key" {
+		switch name {
+		case "--provider", "--model", "--api-key", "--cwd", "--mode", "--daemon-socket",
+			"--system-prompt", "--append-system-prompt", "--fork", "--session-dir", "--models",
+			"--tools", "-t", "--thinking", "--extension", "-e", "--skill", "--prompt-template", "--theme",
+			"--autonomous-gate", "--autonomous-gate-retries", "--autonomous-gate-timeout-ms",
+			"--autonomous-max-continuations", "--autonomous-max-turns", "--autonomous-max-tokens",
+			"--autonomous-timeout-ms", "--goal", "--goal-token-budget", "--resume", "-r",
+			"--print", "-p", "--export", "--list-models":
+		default:
 			continue
 		}
-		if !inline && i+1 < len(scope.Args) && !strings.HasPrefix(scope.Args[i+1], "-") {
-			i++
-			value = scope.Args[i]
+		if !inline && i+1 < len(scope.Args) {
+			next := scope.Args[i+1]
+			// Native prompt values are arbitrary text, including auth-looking flags.
+			consume := !strings.HasPrefix(next, "-")
+			switch name {
+			case "--system-prompt", "--append-system-prompt":
+				consume = true
+			case "--goal", "--autonomous-gate":
+				consume = !strings.HasPrefix(next, "--")
+			case "--resume", "-r", "--list-models":
+				consume = consume && !strings.HasPrefix(next, "@")
+			case "--print", "-p":
+				consume = (consume || strings.HasPrefix(next, "---")) && !strings.HasPrefix(next, "@")
+			}
+			if consume && next != "--" {
+				i++
+				value = next
+			}
 		}
 		switch name {
 		case "--provider":
 			explicitProvider = value
 		case "--model":
 			model = value
+			explicitModel = true
 		case "--api-key":
 			runtimeKey = value
 		}
+	}
+	// A launch model is not paired with the saved provider. Resolve it on its
+	// own (or use an explicit provider), never borrow the saved provider's key.
+	if explicitModel {
+		provider = ""
 	}
 	if prefix, _, ok := strings.Cut(model, "/"); ok {
 		if !primeKnownProvider(prefix, models.Providers) && explicitProvider == "" {
 			return ports.AgentAuthStatusUnknown, nil
 		}
 		provider = prefix
-	} else if model != "" && provider == "" {
+	} else if model != "" && provider == "" && explicitProvider == "" {
 		for id, item := range models.Providers {
 			for _, candidate := range item.Models {
 				if candidate.ID == model {
@@ -262,10 +292,10 @@ func primeEntryStatus(entry primeAuthEntry, provider string, d authutil.Dependen
 			return ports.AgentAuthStatusConfigured
 		}
 	case "oauth":
-		if !primeOAuthProvider(provider) || !primeLiteralCredential(entry.Access) || entry.Expires == nil || *entry.Expires <= 0 {
+		if !primeOAuthProvider(provider) || !primeLiteralCredential(entry.Access) || entry.Refresh == nil || entry.Expires == nil || *entry.Expires <= 0 {
 			return ports.AgentAuthStatusUnknown
 		}
-		return authutil.ExpiryEvidence(time.UnixMilli(*entry.Expires), primeLiteralCredential(entry.Refresh), d.Now()).Status
+		return authutil.ExpiryEvidence(time.UnixMilli(*entry.Expires), primeLiteralCredential(*entry.Refresh), d.Now()).Status
 	}
 	return ports.AgentAuthStatusUnknown
 }

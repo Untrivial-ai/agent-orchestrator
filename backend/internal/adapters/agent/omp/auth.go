@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -74,12 +75,12 @@ type ompSettings struct {
 	BrokerToken ompAuthString `yaml:"auth.broker.token"`
 }
 type ompCredential struct {
-	Type    string `json:"type"`
-	Key     string `json:"key"`
-	Access  string `json:"access"`
-	Refresh string `json:"refresh"`
-	Expires *int64 `json:"expires"`
-	Source  string `json:"source"`
+	Type    string  `json:"type"`
+	Key     string  `json:"key"`
+	Access  string  `json:"access"`
+	Refresh *string `json:"refresh"`
+	Expires *int64  `json:"expires"`
+	Source  string  `json:"source"`
 }
 type ompCredentialRow struct {
 	Provider   string
@@ -91,6 +92,7 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 		return ports.AgentAuthStatusUnknown, err
 	}
 	inherited := d.Getenv
+	processEnv := inherited == nil
 	if inherited == nil {
 		inherited = os.Getenv
 	}
@@ -154,12 +156,66 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 		}
 		return dotenv[name]
 	}
-	// These newer native routing controls require resolving a different config
-	// topology. Until supported, never borrow credentials from the default one.
-	for _, key := range []string{"OMP_PROFILE", "PI_PROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "PI_CONFIG_FILES"} {
-		if strings.TrimSpace(d.Getenv(key)) != "" {
+	profile := d.Getenv("OMP_PROFILE")
+	_, scopedProfile := scope.Env["OMP_PROFILE"]
+	canonicalProfileSet := scopedProfile || inherited("OMP_PROFILE") != ""
+	if processEnv {
+		_, present := os.LookupEnv("OMP_PROFILE")
+		canonicalProfileSet = canonicalProfileSet || present
+	}
+	if !canonicalProfileSet && profile == "" {
+		profile = d.Getenv("PI_PROFILE")
+	}
+	provider, model, runtimeKey := "", scope.Config.Model, ""
+	for i := 0; i < len(scope.Args); i++ {
+		arg := scope.Args[i]
+		if arg == "--" {
+			break
+		}
+		name, value, inline := strings.Cut(arg, "=")
+		switch name {
+		case "--provider", "--model", "--api-key", "--profile", "--alias", "--config",
+			"--cwd", "--add-dir", "--mode", "--fork", "--smol", "--slow", "--plan",
+			"--prewalk-into", "--plan-yolo-into", "--max-time", "--service-tier",
+			"--system-prompt", "--append-system-prompt", "--provider-session-id", "--prompt-cache-key",
+			"--session-dir", "--models", "--tools", "--thinking", "--export", "--hook",
+			"--extension", "-e", "--trusted-extension", "--plugin-dir", "--skills", "--approval-mode":
+			// Native built-in string options consume flag-looking values too.
+			if !inline && i+1 < len(scope.Args) {
+				// Native profile bootstrap treats --plan specially because an
+				// extension can shadow it as a boolean. Do not guess that routing.
+				if name == "--plan" && strings.HasPrefix(scope.Args[i+1], "-") {
+					return ports.AgentAuthStatusUnknown, nil
+				}
+				i++
+				value = scope.Args[i]
+			}
+		case "--resume", "-r", "--session":
+			if !inline && i+1 < len(scope.Args) && !strings.HasPrefix(scope.Args[i+1], "-") && scope.Args[i+1] != "" {
+				i++
+			}
+			continue
+		default:
+			continue
+		}
+		switch name {
+		case "--provider":
+			provider = value
+		case "--model":
+			model = value
+		case "--api-key":
+			runtimeKey = value
+		case "--profile":
+			profile = value
+		case "--config", "--alias":
 			return ports.AgentAuthStatusUnknown, nil
 		}
+	}
+	// Named profiles and config overlays remain unresolved. Explicit default
+	// (including a scoped empty canonical env value) is the native default root.
+	profile = strings.TrimSpace(profile)
+	if (profile != "" && profile != "default") || strings.TrimSpace(d.Getenv("PI_CONFIG_FILES")) != "" {
+		return ports.AgentAuthStatusUnknown, nil
 	}
 	var settings ompSettings
 	for _, name := range []string{"config.yml", "config.yaml"} {
@@ -171,6 +227,22 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 			settings = ompSettings{}
 		}
 		break
+	}
+	if scope.WorkingDir != "" {
+		var project struct {
+			ModelRoles map[string]*ompAuthString `yaml:"modelRoles"`
+		}
+		if authutil.ReadYAML(ctx, d.Dependencies, filepath.Join(scope.WorkingDir, ".omp", "config.yml"), &project) == nil {
+			if settings.ModelRoles == nil {
+				settings.ModelRoles = make(map[string]ompAuthString)
+			}
+			for role, value := range project.ModelRoles {
+				// Native project null clears the override, exposing the global role.
+				if value != nil {
+					settings.ModelRoles[role] = *value
+				}
+			}
+		}
 	}
 	var models struct {
 		Providers map[string]ompProviderConfig `yaml:"providers"`
@@ -185,34 +257,8 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 		}
 		break
 	}
-	provider, model, runtimeKey := "", scope.Config.Model, ""
 	if model == "" {
 		model = string(settings.ModelRoles["default"])
-	}
-	for i := 0; i < len(scope.Args); i++ {
-		arg := scope.Args[i]
-		if arg == "--" {
-			break
-		}
-		name, value, inline := strings.Cut(arg, "=")
-		if name == "--profile" || name == "--config" {
-			return ports.AgentAuthStatusUnknown, nil
-		}
-		if name != "--provider" && name != "--model" && name != "--api-key" {
-			continue
-		}
-		if !inline && i+1 < len(scope.Args) && !strings.HasPrefix(scope.Args[i+1], "-") {
-			i++
-			value = scope.Args[i]
-		}
-		switch name {
-		case "--provider":
-			provider = value
-		case "--model":
-			model = value
-		case "--api-key":
-			runtimeKey = value
-		}
 	}
 	if provider == "" && model != "" {
 		if prefix, _, ok := strings.Cut(model, "/"); ok {
@@ -291,6 +337,22 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 		}
 	}
 	var rows []ompCredentialRow
+	// XDG_CONFIG_HOME is unused by the native resolver; state roots do not
+	// route auth. Data/cache redirect only for the default agent directory on
+	// Linux/macOS when the corresponding migrated app root already exists.
+	xdgRoot := func(key, fallback string) string {
+		platform := d.GOOS
+		if platform == "" {
+			platform = runtime.GOOS
+		}
+		if (platform == "linux" || platform == "darwin") && dir == filepath.Join(root, "agent") && d.Getenv(key) != "" {
+			path := resolvePath(filepath.Join(d.Getenv(key), "omp"))
+			if _, err := d.Lstat(path); err == nil {
+				return path
+			}
+		}
+		return fallback
+	}
 	if brokerURL != "" {
 		// Broker selection replaces local SQLite; never silently mix credential pools.
 		if strings.TrimSpace(d.Getenv("OMP_AUTH_BROKER_ACCOUNT_POOL_FILE")) != "" {
@@ -304,11 +366,11 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 		}
 		cachePath := d.Getenv("OMP_AUTH_BROKER_SNAPSHOT_CACHE")
 		if cachePath == "" {
-			cachePath = filepath.Join(root, "cache", "auth-broker-snapshot.enc")
+			cachePath = filepath.Join(xdgRoot("XDG_CACHE_HOME", root), "cache", "auth-broker-snapshot.enc")
 		}
 		rows = ompBrokerCache(ctx, d, resolvePath(cachePath), brokerURL, brokerToken)
 	} else {
-		rows = ompDatabaseCredentials(ctx, d, filepath.Join(dir, "agent.db"), provider)
+		rows = ompDatabaseCredentials(ctx, d, filepath.Join(xdgRoot("XDG_DATA_HOME", dir), "agent.db"), provider)
 	}
 	var fallback map[string]json.RawMessage
 	if brokerURL == "" {
@@ -467,10 +529,10 @@ func ompCredentialStatus(c ompCredential, provider string, d ompAuthDependencies
 			return ports.AgentAuthStatusConfigured
 		}
 	case "oauth":
-		if !ompOAuthProviders[provider] || !ompLiteralCredential(c.Access) || c.Expires == nil || *c.Expires <= 0 {
+		if !ompOAuthProviders[provider] || !ompLiteralCredential(c.Access) || c.Refresh == nil || c.Expires == nil || *c.Expires <= 0 {
 			return ports.AgentAuthStatusUnknown
 		}
-		return authutil.ExpiryEvidence(time.UnixMilli(*c.Expires), ompLiteralCredential(c.Refresh), d.Now()).Status
+		return authutil.ExpiryEvidence(time.UnixMilli(*c.Expires), ompLiteralCredential(*c.Refresh), d.Now()).Status
 	}
 	return ports.AgentAuthStatusUnknown
 }

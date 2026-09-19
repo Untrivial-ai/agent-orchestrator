@@ -96,13 +96,13 @@ func TestOMPDatabaseCredentialEvidence(t *testing.T) {
 		{"unresolved command", []ompTestRow{{"anthropic", "api_key", `{"key":"!echo test-key"}`, nil}}, ports.AgentAuthStatusUnknown},
 		{"unresolved variable", []ompTestRow{{"anthropic", "api_key", `{"key":"MY_API_KEY"}`, nil}}, ports.AgentAuthStatusUnknown},
 		{"unrelated provider", []ompTestRow{{"openai", "api_key", `{"key":"test-key"}`, nil}}, ports.AgentAuthStatusUnknown},
-		{"fresh OAuth", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","expires":4102444800000}`, nil}}, ports.AgentAuthStatusConfigured},
-		{"expired OAuth", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","expires":1}`, nil}}, ports.AgentAuthStatusUnauthorized},
+		{"fresh OAuth", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","refresh":"","expires":4102444800000}`, nil}}, ports.AgentAuthStatusConfigured},
+		{"expired OAuth", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","refresh":"","expires":1}`, nil}}, ports.AgentAuthStatusUnauthorized},
 		{"refreshable OAuth", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","refresh":"refresh-token","expires":1}`, nil}}, ports.AgentAuthStatusConfigured},
 		{"refresh alone", []ompTestRow{{"anthropic", "oauth", `{"refresh":"refresh-token","expires":1}`, nil}}, ports.AgentAuthStatusUnknown},
-		{"invalid expiry", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","expires":-1}`, nil}}, ports.AgentAuthStatusUnknown},
+		{"invalid expiry", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","refresh":"","expires":-1}`, nil}}, ports.AgentAuthStatusUnknown},
 		{"valid sibling after malformed", []ompTestRow{{"anthropic", "api_key", "{", nil}, {"anthropic", "api_key", `{"key":"test-key"}`, nil}}, ports.AgentAuthStatusConfigured},
-		{"usable sibling after expired", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","expires":1}`, nil}, {"anthropic", "api_key", `{"key":"test-key"}`, nil}}, ports.AgentAuthStatusConfigured},
+		{"usable sibling after expired", []ompTestRow{{"anthropic", "oauth", `{"access":"test-token","refresh":"","expires":1}`, nil}, {"anthropic", "api_key", `{"key":"test-key"}`, nil}}, ports.AgentAuthStatusConfigured},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,7 +152,7 @@ func TestOMPFileAndEnvironmentEvidence(t *testing.T) {
 		{name: "disabled selected provider", provider: "anthropic", config: "disabledProviders: [anthropic]\n", env: map[string]string{"ANTHROPIC_API_KEY": "test-key"}, want: ports.AgentAuthStatusUnknown},
 		{name: "settings model role", config: "modelRoles:\n  default: openai/gpt-test\n", env: map[string]string{"ANTHROPIC_API_KEY": "test-key"}, want: ports.AgentAuthStatusUnknown},
 		{name: "runtime API key", provider: "anthropic", args: []string{"--api-key", "runtime-key"}, want: ports.AgentAuthStatusConfigured},
-		{name: "missing runtime value", provider: "anthropic", args: []string{"--api-key", "--print"}, want: ports.AgentAuthStatusUnknown},
+		{name: "flag-shaped runtime key is a native string value", provider: "anthropic", args: []string{"--api-key", "--print"}, want: ports.AgentAuthStatusConfigured},
 		{name: "prompt flags ignored", provider: "anthropic", args: []string{"--", "--api-key", "prompt-key"}, want: ports.AgentAuthStatusUnknown},
 		{name: "fallback auth JSON", provider: "anthropic", auth: `{"anthropic":{"type":"api_key","key":"test-key"}}`, want: ports.AgentAuthStatusConfigured},
 		{name: "fallback wrong type", provider: "anthropic", auth: `{"anthropic":{"type":"other","key":"test-key"}}`, want: ports.AgentAuthStatusUnknown},
@@ -377,7 +377,7 @@ func TestOMPNativeOAuthProviderRows(t *testing.T) {
 	for _, provider := range []string{"kilo", "perplexity", "alibaba-coding-plan", "alibaba-token-plan", "cloudflare-ai-gateway", "xiaomi", "openai-codex-device"} {
 		t.Run(provider, func(t *testing.T) {
 			home := isolateOMPAuth(t)
-			writeOMPDatabase(t, filepath.Join(home, ".omp", "agent", "agent.db"), []ompTestRow{{provider, "oauth", `{"access":"test-token","expires":4102444800000}`, nil}})
+			writeOMPDatabase(t, filepath.Join(home, ".omp", "agent", "agent.db"), []ompTestRow{{provider, "oauth", `{"access":"test-token","refresh":"","expires":4102444800000}`, nil}})
 			if got := ompStatusForTest(t, ports.AgentAuthCheck{Args: []string{"omp", "--provider", provider}}); got != ports.AgentAuthStatusConfigured {
 				t.Fatalf("status = %q, want configured", got)
 			}
@@ -386,7 +386,7 @@ func TestOMPNativeOAuthProviderRows(t *testing.T) {
 }
 
 func TestOMPUnresolvedNativeOverridesDoNotReadDefaultCredentials(t *testing.T) {
-	for _, key := range []string{"OMP_PROFILE", "PI_PROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "PI_CONFIG_FILES"} {
+	for _, key := range []string{"OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_FILES"} {
 		t.Run(key, func(t *testing.T) {
 			home := isolateOMPAuth(t)
 			writeFile(t, filepath.Join(home, ".omp", "agent", "auth.json"), `{"anthropic":{"type":"api_key","key":"default-key"}}`)
@@ -404,6 +404,130 @@ func TestOMPUnresolvedNativeOverridesDoNotReadDefaultCredentials(t *testing.T) {
 			}
 		})
 	}
+	t.Run("profile after extension-shadowable plan", func(t *testing.T) {
+		home := isolateOMPAuth(t)
+		writeFile(t, filepath.Join(home, ".omp", "agent", "auth.json"), `{"anthropic":{"type":"api_key","key":"default-key"}}`)
+		if got := ompStatusForTest(t, ports.AgentAuthCheck{Args: []string{"--provider", "anthropic", "--plan", "--profile", "work"}}); got != ports.AgentAuthStatusUnknown {
+			t.Fatalf("status = %q, want unknown for unresolved plan/profile routing", got)
+		}
+	})
+}
+
+func TestOMPStringOptionValuesCannotBecomeAuthOrRoutingFlags(t *testing.T) {
+	for _, option := range []string{"--system-prompt", "--append-system-prompt", "--provider-session-id", "--prompt-cache-key", "--session-dir", "--skills", "--extension", "-e"} {
+		for _, tt := range []struct {
+			name string
+			args []string
+			env  map[string]string
+			want ports.AgentAuthStatus
+		}{
+			{"split API key", []string{option, "--api-key", "prompt-key"}, nil, ports.AgentAuthStatusUnknown},
+			{"inline API key", []string{option, "--api-key=prompt-key"}, nil, ports.AgentAuthStatusUnknown},
+			{"provider text", []string{option, "--provider", "openai"}, map[string]string{"OPENAI_API_KEY": "unrelated-key"}, ports.AgentAuthStatusUnknown},
+			{"model text", []string{option, "--model=openai/test"}, map[string]string{"ANTHROPIC_API_KEY": "test-key"}, ports.AgentAuthStatusConfigured},
+			{"profile text", []string{option, "--profile", "work"}, map[string]string{"ANTHROPIC_API_KEY": "test-key"}, ports.AgentAuthStatusConfigured},
+			{"config text", []string{option, "--config=other.yml"}, map[string]string{"ANTHROPIC_API_KEY": "test-key"}, ports.AgentAuthStatusConfigured},
+			{"real flag after consumed value", []string{option, "--api-key", "--api-key", "real-key"}, nil, ports.AgentAuthStatusConfigured},
+		} {
+			t.Run(option+"/"+tt.name, func(t *testing.T) {
+				home := isolateOMPAuth(t)
+				writeFile(t, filepath.Join(home, ".omp", "agent", "config.yml"), "modelRoles:\n  default: anthropic/test\n")
+				if got := ompStatusForTest(t, ports.AgentAuthCheck{Args: tt.args, Env: tt.env}); got != tt.want {
+					t.Fatalf("status = %q, want %q", got, tt.want)
+				}
+			})
+		}
+	}
+}
+
+func TestOMPProjectModelRolesOverrideGlobalRoles(t *testing.T) {
+	for _, tt := range []struct {
+		name, global, project, model string
+		args                         []string
+		want                         ports.AgentAuthStatus
+	}{
+		{"project rejects unrelated global credential", "modelRoles: {default: anthropic/test}", "modelRoles: {default: openai/test}", "", nil, ports.AgentAuthStatusUnknown},
+		{"project selects matching credential", "modelRoles: {default: openai/test}", "modelRoles: {default: anthropic/test}", "", nil, ports.AgentAuthStatusConfigured},
+		{"other project role retains global default", "modelRoles: {default: openai/test}", "modelRoles: {smol: anthropic/test}", "", nil, ports.AgentAuthStatusUnknown},
+		{"null project role retains global default", "modelRoles: {default: openai/test}", "modelRoles: {default: null}", "", nil, ports.AgentAuthStatusUnknown},
+		{"global disabled providers retained", "disabledProviders: [anthropic]\nmodelRoles: {default: openai/test}", "modelRoles: {default: anthropic/test}", "", nil, ports.AgentAuthStatusUnknown},
+		{"scoped model wins over project", "modelRoles: {default: anthropic/test}", "modelRoles: {default: anthropic/test}", "openai/test", nil, ports.AgentAuthStatusUnknown},
+		{"argument model wins over project", "modelRoles: {default: anthropic/test}", "modelRoles: {default: anthropic/test}", "", []string{"--model", "openai/test"}, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateOMPAuth(t)
+			work := filepath.Join(home, "project")
+			writeFile(t, filepath.Join(home, ".omp", "agent", "config.yml"), tt.global)
+			writeFile(t, filepath.Join(work, ".omp", "config.yml"), tt.project)
+			writeFile(t, filepath.Join(home, ".omp", "agent", "auth.json"), `{"anthropic":{"type":"api_key","key":"test-key"}}`)
+			if got := ompStatusForTest(t, ports.AgentAuthCheck{WorkingDir: work, Config: ports.AgentConfig{Model: tt.model}, Args: tt.args}); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOMPOAuthRequiresPresentStringRefresh(t *testing.T) {
+	for _, source := range []string{"database", "fallback"} {
+		for _, tt := range []struct {
+			name, refresh string
+			want          ports.AgentAuthStatus
+		}{
+			{"missing", "", ports.AgentAuthStatusUnknown},
+			{"null", `,"refresh":null`, ports.AgentAuthStatusUnknown},
+			{"number", `,"refresh":42`, ports.AgentAuthStatusUnknown},
+			{"object", `,"refresh":{}`, ports.AgentAuthStatusUnknown},
+			{"empty string", `,"refresh":""`, ports.AgentAuthStatusConfigured},
+		} {
+			t.Run(source+"/"+tt.name, func(t *testing.T) {
+				home := isolateOMPAuth(t)
+				payload := `{"type":"oauth","access":"test-token","expires":4102444800000` + tt.refresh + `}`
+				if source == "database" {
+					writeOMPDatabase(t, filepath.Join(home, ".omp", "agent", "agent.db"), []ompTestRow{{"anthropic", "oauth", payload, nil}})
+				} else {
+					writeFile(t, filepath.Join(home, ".omp", "agent", "auth.json"), `{"anthropic":`+payload+`}`)
+				}
+				if got := ompStatusForTest(t, ports.AgentAuthCheck{Args: []string{"--provider", "anthropic"}}); got != tt.want {
+					t.Fatalf("status = %q, want %q", got, tt.want)
+				}
+			})
+		}
+	}
+}
+
+func TestOMPDefaultAndUnaffectedRoutingStillReadsCredentials(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  map[string]string
+		args []string
+	}{
+		{"canonical default", map[string]string{"OMP_PROFILE": "default"}, nil},
+		{"legacy default", map[string]string{"PI_PROFILE": "default"}, nil},
+		{"canonical default overrides legacy", map[string]string{"OMP_PROFILE": "default", "PI_PROFILE": "work"}, nil},
+		{"canonical empty overrides legacy", map[string]string{"OMP_PROFILE": "", "PI_PROFILE": "work"}, nil},
+		{"argument default", nil, []string{"--profile", "default"}},
+		{"argument default overrides environment", map[string]string{"OMP_PROFILE": "work"}, []string{"--profile=default"}},
+		{"unused config root", map[string]string{"XDG_CONFIG_HOME": "xdg"}, nil},
+		{"unmigrated data root", map[string]string{"XDG_DATA_HOME": "xdg"}, nil},
+		{"unmigrated cache root", map[string]string{"XDG_CACHE_HOME": "xdg"}, nil},
+		{"state does not route credentials", map[string]string{"XDG_STATE_HOME": "xdg"}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateOMPAuth(t)
+			env := make(map[string]string)
+			for key, value := range tt.env {
+				if strings.HasPrefix(key, "XDG_") {
+					value = filepath.Join(home, value)
+				}
+				env[key] = value
+			}
+			writeFile(t, filepath.Join(home, ".omp", "agent", "auth.json"), `{"anthropic":{"type":"api_key","key":"default-key"}}`)
+			args := append([]string{"--provider", "anthropic"}, tt.args...)
+			if got := ompStatusForTest(t, ports.AgentAuthCheck{Args: args, Env: env}); got != ports.AgentAuthStatusConfigured {
+				t.Fatalf("status = %q, want configured", got)
+			}
+		})
+	}
 }
 
 func TestOMPBrokerAccountPoolRequiresResolution(t *testing.T) {
@@ -411,5 +535,46 @@ func TestOMPBrokerAccountPoolRequiresResolution(t *testing.T) {
 	env := map[string]string{"OMP_AUTH_BROKER_URL": "https://broker.example.test", "OMP_AUTH_BROKER_TOKEN": "broker-token", "OMP_AUTH_BROKER_ACCOUNT_POOL_FILE": filepath.Join(home, "pool.json")}
 	if got := ompStatusForTest(t, ports.AgentAuthCheck{Env: env}); got != ports.AgentAuthStatusUnknown {
 		t.Fatalf("unresolved account pool = %q, want unknown", got)
+	}
+}
+
+func TestOMPXDGDatabaseRouting(t *testing.T) {
+	for _, tt := range []struct {
+		name, platform string
+		custom         bool
+		defaultKey     bool
+		want           ports.AgentAuthStatus
+	}{
+		{"migrated data rejects old database", "linux", false, true, ports.AgentAuthStatusUnknown},
+		{"migrated data uses selected database", "linux", false, false, ports.AgentAuthStatusConfigured},
+		{"macOS uses migrated data", "darwin", false, false, ports.AgentAuthStatusConfigured},
+		{"Windows ignores XDG", "windows", false, true, ports.AgentAuthStatusConfigured},
+		{"custom agent directory ignores XDG", "linux", true, true, ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			dir := filepath.Join(home, ".omp", "agent")
+			if tt.custom {
+				dir = filepath.Join(home, "custom")
+			}
+			defaultRows, routedRows := []ompTestRow{}, []ompTestRow{}
+			key := ompTestRow{"anthropic", "api_key", `{"key":"test-key"}`, nil}
+			if tt.defaultKey {
+				defaultRows = append(defaultRows, key)
+			} else {
+				routedRows = append(routedRows, key)
+			}
+			writeOMPDatabase(t, filepath.Join(dir, "agent.db"), defaultRows)
+			writeOMPDatabase(t, filepath.Join(home, "xdg", "omp", "agent.db"), routedRows)
+			env := map[string]string{"HOME": home, "XDG_DATA_HOME": filepath.Join(home, "xdg")}
+			if tt.custom {
+				env["PI_CODING_AGENT_DIR"] = dir
+			}
+			d := ompAuthDependencies{Dependencies: authutil.Dependencies{Getenv: func(key string) string { return env[key] }, GOOS: tt.platform}}
+			got, err := ompAuthStatus(context.Background(), ports.AgentAuthCheck{Args: []string{"--provider", "anthropic"}}, d)
+			if err != nil || got != tt.want {
+				t.Fatalf("status = %q, error %v, want %q", got, err, tt.want)
+			}
+		})
 	}
 }
