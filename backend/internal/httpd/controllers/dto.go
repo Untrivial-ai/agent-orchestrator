@@ -618,9 +618,11 @@ func (r *SetSessionAutoReviewRequest) UnmarshalJSON(data []byte) error {
 
 // SetSessionPreviewRequest is the body of POST /api/v1/sessions/{sessionId}/preview.
 // An empty url asks the daemon to autodetect a static entry point in the
-// session workspace; a non-empty url is used verbatim as the preview target.
+// session workspace; a non-empty url is resolved as a workspace file when
+// possible and otherwise retained as an external target.
 type SetSessionPreviewRequest struct {
-	URL string `json:"url,omitempty" description:"Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace."`
+	URL                  string `json:"url,omitempty" description:"Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace."`
+	RequireWorkspaceFile bool   `json:"requireWorkspaceFile,omitempty" description:"Reject the target unless it resolves to an existing file in the session workspace."`
 }
 
 // StartPreviewServerRequest selects one named entry from .ao/launch.json. The

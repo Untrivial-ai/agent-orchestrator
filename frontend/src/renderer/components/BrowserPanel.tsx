@@ -38,6 +38,7 @@ import {
 	Camera,
 	Check,
 	ChevronRight,
+	Copy,
 	Download,
 	Eye,
 	ExternalLink,
@@ -83,6 +84,7 @@ import { handleTabListKeyDown } from "../lib/terminal-tabs";
 import { useBrowserDownloads } from "../hooks/useBrowserDownloads";
 import { BrowserDownloadsList } from "./BrowserDownloadsList";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { aoBridge } from "../lib/bridge";
 
 // One-click viewport width presets for responsive testing — height is shown
 // for reference but not enforced (only width drives CSS breakpoints, and
@@ -417,6 +419,7 @@ export function BrowserPanelView({
 		annotationAction = async () => undefined,
 	} = browserView;
 	const [urlInput, setUrlInput] = useState(navState.url);
+	const [urlCopied, setUrlCopied] = useState(false);
 	const [historySuggestions, setHistorySuggestions] = useState<Array<{ url: string; title?: string }>>([]);
 	const historyMenuId = useId();
 	const [activeHistorySuggestion, setActiveHistorySuggestion] = useState(-1);
@@ -441,6 +444,7 @@ export function BrowserPanelView({
 	const urlInputRef = useRef<HTMLInputElement>(null);
 	const historyMenuRef = useRef<HTMLDivElement>(null);
 	const historyRequestGenerationRef = useRef(0);
+	const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
 	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
 	const {
@@ -611,6 +615,8 @@ export function BrowserPanelView({
 
 	useEffect(() => {
 		setUrlInput(navState.url);
+		setUrlCopied(false);
+		clearTimeout(copyFeedbackTimeoutRef.current);
 		setHistorySuggestions([]);
 		setActiveHistorySuggestion(-1);
 		// A prior submit (typed, or pasted, then Enter) leaves the caret at the
@@ -622,7 +628,10 @@ export function BrowserPanelView({
 		const frame = window.requestAnimationFrame(() => {
 			if (urlInputRef.current) urlInputRef.current.scrollLeft = 0;
 		});
-		return () => window.cancelAnimationFrame(frame);
+		return () => {
+			window.cancelAnimationFrame(frame);
+			clearTimeout(copyFeedbackTimeoutRef.current);
+		};
 	}, [navState.url]);
 
 	useEffect(() => {
@@ -759,6 +768,18 @@ export function BrowserPanelView({
 		void openLinkInSystemBrowser(navState.url);
 	};
 
+	const copyCurrentURL = async () => {
+		if (!navState.url) return;
+		try {
+			await aoBridge.clipboard.writeText(navState.url);
+			setUrlCopied(true);
+			clearTimeout(copyFeedbackTimeoutRef.current);
+			copyFeedbackTimeoutRef.current = setTimeout(() => setUrlCopied(false), 1_200);
+		} catch {
+			showGlobalToast(t("browser.urlCopyFailed"), undefined, "top-center");
+		}
+	};
+
 	const toggleAnnotationMode = async () => {
 		if (!canAnnotate || status === "sending") return;
 		if (canRetryAnnotation) {
@@ -819,6 +840,8 @@ export function BrowserPanelView({
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
 	const suggestionsOpen = urlEditing && historySuggestions.length > 0;
+	const currentURLIsWeb = isWebLink(navState.url);
+	const copyURLLabel = t(urlCopied ? "browser.urlCopied" : "browser.copyUrl");
 	const browserAddressBar = (
 		<form
 			className={cn(
@@ -862,7 +885,39 @@ export function BrowserPanelView({
 							ref={urlInputRef}
 							value={urlEditing || poppedOut ? urlInput : getDisplayUrl(navState.url)}
 						/>
-						{isWebLink(navState.url) ? (
+						{navState.url ? (
+							<BrowserControlTooltip label={copyURLLabel}>
+								<Button
+									aria-label={copyURLLabel}
+									className={cn(
+										"browser-panel__url-copy",
+										!currentURLIsWeb && "browser-panel__url-copy--only",
+									)}
+									onClick={() => void copyCurrentURL()}
+									size="icon-sm"
+									type="button"
+									variant="ghost"
+								>
+									<span className="relative size-icon-base">
+										<Copy
+											aria-hidden="true"
+											className={cn(
+												"absolute inset-0 size-icon-base transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												urlCopied ? "scale-75 opacity-0" : "scale-100 opacity-100",
+											)}
+										/>
+										<Check
+											aria-hidden="true"
+											className={cn(
+												"absolute inset-0 size-icon-base text-success transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												urlCopied ? "scale-100 opacity-100" : "scale-75 opacity-0",
+											)}
+										/>
+									</span>
+								</Button>
+							</BrowserControlTooltip>
+						) : null}
+						{currentURLIsWeb ? (
 							<BrowserControlTooltip label={t("inspector.openInSystemBrowser")}>
 									<Button
 										aria-label={t("inspector.openInSystemBrowser")}
