@@ -2463,6 +2463,11 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	// Restore resolves the project model while retaining this session's pinned
 	// permission policy independently of future project defaults.
 	agentConfig := restoredAgentConfig(rec, project.Config)
+	// A non-empty model picked in ChatUI is a durable session-level choice and
+	// must win over the project default for every harness on a TUI rebuild.
+	if model := strings.TrimSpace(rec.Metadata.Model); model != "" {
+		agentConfig.Model = model
+	}
 	if rec.Metadata.Permissions != "" {
 		agentConfig.Permissions = rec.Metadata.Permissions
 	}
@@ -2623,6 +2628,31 @@ func (m *Manager) getRecord(ctx context.Context, id domain.SessionID) (domain.Se
 		return domain.SessionRecord{}, fmt.Errorf("get %s: %w", id, ErrNotFound)
 	}
 	return rec, nil
+}
+
+// PersistChatModel records the model the user picked in ChatUI onto the
+// session before the next prompt routes. The durable, API-visible session
+// metadata is the exact source a TUI rebuild reads to refresh the model, so a
+// later interface transition back to TUI keeps the same selection instead of
+// reverting to the project's configured default. Model-only writes never touch
+// the conversation or spawn a new provider session, so history is preserved.
+func (m *Manager) PersistChatModel(ctx context.Context, id domain.SessionID, model string) error {
+	want := strings.TrimSpace(model)
+	if want == "" {
+		return nil
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return fmt.Errorf("persist chat model %s: %w", id, err)
+	}
+	if !ok {
+		return fmt.Errorf("persist chat model %s: %w", id, ErrNotFound)
+	}
+	if strings.TrimSpace(rec.Metadata.Model) == want {
+		return nil
+	}
+	rec.Metadata.Model = want
+	return m.store.UpdateSession(ctx, rec)
 }
 
 // SaveAndTeardownAll captures uncommitted work and tears down every live
