@@ -31,6 +31,7 @@ export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundar
 export default function FleetScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
+
 	const router = useRouter();
 	const insets = useSafeAreaInsets();
 	const { configured, loading, error, errorStatus, connection, config, refresh, sessions, projects, notificationsUnread, activeEndpoints } =
@@ -40,6 +41,24 @@ export default function FleetScreen() {
 	const [searchRequested, setSearchRequested] = useState(false);
 	const [controlsOpen, setControlsOpen] = useState(false);
 	const [workerProjectId, setWorkerProjectId] = useState(ALL_WORKER_PROJECTS);
+	// Stable identities so the memoised dock is not rebuilt on every poll — a
+	// re-render mid-tap is what made the filter menu open only sometimes.
+	const openSearch = useCallback(() => setSearchRequested(true), []);
+	const closeSearch = useCallback(() => {
+		Keyboard.dismiss();
+		setQuery("");
+		setSearchRequested(false);
+	}, []);
+	const openControls = useCallback(() => {
+		Keyboard.dismiss();
+		haptics.tap();
+		setControlsOpen(true);
+	}, []);
+	const spawnWorker = useCallback(() => {
+		Keyboard.dismiss();
+		haptics.tap();
+		router.push({ pathname: "/spawn", params: spawnProjectParam(workerProjectId) });
+	}, [router, workerProjectId]);
 	// Two selectors rather than the whole state object, so the board re-renders
 	// only when one of these two values actually changes.
 	//
@@ -179,26 +198,14 @@ export default function FleetScreen() {
 					query={query}
 					onQueryChange={setQuery}
 					searchOpen={searchOpen}
-					onSearchOpen={() => setSearchRequested(true)}
-					onSearchClose={() => {
-						Keyboard.dismiss();
-						setQuery("");
-						setSearchRequested(false);
-					}}
-					onOpenControls={() => {
-						Keyboard.dismiss();
-						haptics.tap();
-						setControlsOpen(true);
-					}}
+					onSearchOpen={openSearch}
+					onSearchClose={closeSearch}
+					onOpenControls={openControls}
 					projectFiltered={workerProjectId !== ALL_WORKER_PROJECTS}
 					projects={projects}
 					selectedProjectId={workerProjectId}
 					onSelectProject={setWorkerProjectId}
-					onSpawn={() => {
-						Keyboard.dismiss();
-						haptics.tap();
-						router.push({ pathname: "/spawn", params: spawnProjectParam(workerProjectId) });
-					}}
+					onSpawn={spawnWorker}
 				/>
 			</View>
 

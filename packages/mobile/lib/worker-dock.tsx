@@ -1,5 +1,5 @@
 import { Button, Host, TextInput, useNativeState } from "@expo/ui";
-import { useEffect } from "react";
+import { memo, useEffect } from "react";
 import { StyleSheet, View } from "react-native";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import { workerDockVisibility } from "./worker-dock-layout";
@@ -19,7 +19,7 @@ export type WorkerDockProps = {
 	onSelectProject: (projectId: string) => void;
 };
 
-export function WorkerDock({
+export const WorkerDock = memo(function WorkerDock({
 	query,
 	onQueryChange,
 	onSpawn,
@@ -87,7 +87,7 @@ export function WorkerDock({
 			</Host> : null}
 		</View>
 	);
-}
+});
 
 const styles = StyleSheet.create({
 	row: { height: 52, flexDirection: "row", gap: space.sm },

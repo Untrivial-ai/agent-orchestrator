@@ -15,7 +15,7 @@ import {
 	textFieldStyle,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
-import { useEffect } from "react";
+import { memo, useEffect } from "react";
 import { glassCircle, glassField } from "./glass";
 import { GLASS_CIRCLE_SIZE } from "./native-header-button.ios";
 import { haptics } from "./haptics";
@@ -26,7 +26,7 @@ import type { WorkerDockProps } from "./worker-dock";
 import { workerDockVisibility } from "./worker-dock-layout";
 import { workerSearchClearState } from "./worker-search";
 
-export function WorkerDock({
+export const WorkerDock = memo(function WorkerDock({
 	query,
 	onQueryChange,
 	onSpawn,
@@ -170,4 +170,4 @@ export function WorkerDock({
 			</GlassEffectContainer>
 		</Host>
 	);
-}
+});

@@ -19,7 +19,7 @@ const MAJOR = 44; // control size: header, dock and drawer circles
 
 // Defaults ON in a dev build while the four corner controls are being measured —
 // no hunting for the toggle. Flip back to `false` once the review is done.
-let enabled = __DEV__;
+let enabled = false;
 const listeners = new Set<(value: boolean) => void>();
 
 export function toggleLayoutGrid(next?: boolean): void {
