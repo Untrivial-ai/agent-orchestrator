@@ -2,8 +2,10 @@ import { BadgeCheck, Bot, CircleHelp, Cloud, Globe2, Keyboard, RefreshCw, Settin
 import { lazy, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import type { GlobalSettingsSection } from "../../stores/ui-store";
+import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { CloudCredentialsSection } from "./CloudCredentialsSection";
+import { CloudProviderSection } from "./CloudProviderSection";
 import { CodexAccountsSection } from "./CodexAccountsSection";
 import { ConnectMobileContent } from "./ConnectMobileContent";
 import { GeneralSettingsSection } from "./GeneralSettingsSection";
@@ -57,14 +59,26 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		id: "browserProfiles",
 		icon: Globe2,
 		label: (t) => t("settings.browserProfiles"),
-		render: (_t, titleHidden) => <BrowserProfilesSection titleHidden={titleHidden} />,
+		render: (_t, titleHidden) => (
+			<>
+				<BrowserProfilesSection titleHidden={titleHidden} />
+				<div className="border-t border-border/60 pt-5">
+					<BrowserDownloadsSection />
+				</div>
+			</>
+		),
 	},
 	{
 		id: "cloud",
 		icon: Cloud,
 		label: (t) => t("settings.cloud"),
 		visible: ({ cloudEnabled }) => cloudEnabled,
-		render: (_t, titleHidden) => <CloudCredentialsSection titleHidden={titleHidden} />,
+		render: (_t, titleHidden) => (
+			<>
+				<CloudProviderSection titleHidden={titleHidden} />
+				<CloudCredentialsSection titleHidden={titleHidden} />
+			</>
+		),
 	},
 	{
 		id: "mobile",

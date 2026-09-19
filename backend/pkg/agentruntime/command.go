@@ -241,6 +241,7 @@ func buildClaudeRestore(cfg RestoreConfig, identity string) ([]string, error) {
 	cmd = append(cmd, ClaudePermissionArgs(cfg.Permission)...)
 	cmd = appendClaudeToolArgs(cmd, cfg.AllowedTools, cfg.DisallowedTools)
 	cmd = append(cmd, cfg.ProviderArgs...)
+	// Apply the caller's model selection. A blank value leaves it to Claude.
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		cmd = append(cmd, "--model", model)
 	}

@@ -57,4 +57,22 @@ describe("launchCommand", () => {
 			expect.objectContaining({ windowsVerbatimArguments: true }),
 		);
 	});
+	it.each(["cmd.exe", "C:\\Windows\\System32\\CMD.EXE"])("preserves prequoted command strings for %s", async (command) => {
+		const child = childProcessDouble();
+		const spawnProcess = vi.fn(() => child);
+		const workspace = "C:\\work trees\\feature & fix";
+		const args = ["/d", "/s", "/v:off", "/k", `""C:\\Program Files\\Neovim\\bin\\nvim.exe" "${workspace}""`];
+		const result = launchCommand(command, args, workspace, {
+			spawnProcess,
+			platform: "win32",
+			settleMs: 0,
+		});
+		child.emit("spawn");
+		await result;
+		expect(spawnProcess).toHaveBeenCalledWith(
+			command,
+			args,
+			expect.objectContaining({ windowsVerbatimArguments: true }),
+		);
+	});
 });

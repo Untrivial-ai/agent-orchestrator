@@ -14,3 +14,11 @@ export function composerSurfaceStyle(t: Theme) {
 		paddingBottom: 14,
 	};
 }
+
+export function userMessageSurfaceStyle(t: Theme) {
+	return {
+		backgroundColor: t.bgElevated,
+		borderColor: t.borderDefault,
+		foregroundColor: t.textPrimary,
+	};
+}

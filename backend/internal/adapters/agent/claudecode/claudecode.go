@@ -213,13 +213,14 @@ func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 }
 
 // GetRestoreCommand rebuilds the argv that continues an existing Claude Code
-// session: `claude [--permission-mode <mode>] --resume <agentSessionId>`. It
-// prefers the hook-captured native session id from
-// cfg.Session.Metadata["agentSessionId"]; for sessions created before hooks
-// captured it, it falls back to the deterministic UUID AO pins via
+// session: `claude [--model <model>] [--permission-mode <mode>]
+// --resume <agentSessionId>`. It prefers the hook-captured native session id
+// from cfg.Session.Metadata["agentSessionId"]; for sessions created before
+// hooks captured it, it falls back to the deterministic UUID AO pins via
 // --session-id at launch. ok is false only when neither is available, so the
-// caller fresh-spawns. The command re-applies the permission mode and current
-// standing system instructions. When Prompt is present it is passed as the
+// caller fresh-spawns. The command applies the caller's model selection,
+// permission mode, and current standing system instructions. A blank model
+// leaves model selection to Claude. When Prompt is present it is passed as the
 // resume-time user turn, avoiding a fragile terminal paste into Claude's TUI.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
@@ -357,13 +358,15 @@ func isUUID(value string) bool {
 }
 
 // AuthStatus checks Claude Code's local authentication state without starting a
-// session.
+// session. Environment credentials are treated as definitive; otherwise the
+// bounded `claude auth status` probe is preferred over durable ~/.claude.json
+// identity markers, which can survive logout or exist before login completes.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	binary, err := p.claudeBinary(ctx)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if status, ok, err := claudeLocalAuthStatus(ctx); err != nil {
+	if status, ok, err := claudeEnvAuthStatus(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	} else if ok {
 		return status, nil
@@ -378,10 +381,19 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	if status, ok := claudeAuthStatusFromOutput(out); ok {
 		return status, nil
 	}
-	// An unfamiliar non-zero result is not affirmative evidence of missing
-	// credentials. Keep this advisory probe unknown and let launch report the
-	// authoritative failure.
+	// CLI output was unparseable. Fall back to conservative local config
+	// heuristics (never bare userID). An unfamiliar non-zero result is not
+	// affirmative evidence of missing credentials.
 	_ = err
+	cfgPath, cfgErr := claudeConfigPath()
+	if cfgErr != nil {
+		return ports.AgentAuthStatusUnknown, cfgErr
+	}
+	if status, ok, cfgErr := claudeConfigAuthStatus(cfgPath); cfgErr != nil {
+		return ports.AgentAuthStatusUnknown, cfgErr
+	} else if ok {
+		return status, nil
+	}
 	return ports.AgentAuthStatusUnknown, nil
 }
 
@@ -403,7 +415,7 @@ func claudeAuthStatusFromOutput(out []byte) (ports.AgentAuthStatus, bool) {
 	return ports.AgentAuthStatusUnauthorized, true
 }
 
-func claudeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
+func claudeEnvAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
@@ -412,11 +424,7 @@ func claudeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, er
 			return ports.AgentAuthStatusAuthorized, true, nil
 		}
 	}
-	cfgPath, err := claudeConfigPath()
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	return claudeConfigAuthStatus(cfgPath)
+	return ports.AgentAuthStatusUnknown, false, nil
 }
 
 func claudeConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
@@ -438,13 +446,8 @@ func claudeConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	if raw := root["hasAvailableSubscription"]; len(raw) > 0 {
 		_ = json.Unmarshal(raw, &hasSubscription)
 	}
-	var userID string
-	if raw := root["userID"]; len(raw) > 0 {
-		_ = json.Unmarshal(raw, &userID)
-	}
-	if strings.TrimSpace(userID) != "" {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
+	// Bare userID is install/analytics identity, not proof of login. It survives
+	// logout and appears after first start before auth completes (#5561, #3289).
 	var oauthAccount map[string]any
 	if raw := root["oauthAccount"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &oauthAccount); err != nil {

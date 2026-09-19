@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { LuFile, LuFolder } from "react-icons/lu";
 import type { ActiveDemo } from "../../types";
 

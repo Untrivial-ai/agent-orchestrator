@@ -1,7 +1,6 @@
 "use client";
 
 import { AnimatePresence, domAnimation, LazyMotion, m, motion } from "motion/react";
-import { GeistMono } from "geist/font/mono";
 import {
 	Bell,
 	ChevronRight,
@@ -990,7 +989,7 @@ function PreviewSidebar({
 				</div>
 			</div>
 			<div className="flex shrink-0 items-center gap-1.5 px-3 pb-2">
-				<img src="/ao-logo.svg" alt="" className="size-[18px] shrink-0 rounded-md" draggable={false} />
+				<img src="/ao-logo.svg" alt="" className="size-[18px] shrink-0 rounded-md" draggable={false} loading="lazy" decoding="async" />
 				<span className="truncate text-sm font-semibold tracking-tight text-[var(--preview-foreground)]">Agent Orchestrator</span>
 			</div>
 			<div className="flex shrink-0 flex-col px-2">
@@ -1169,7 +1168,7 @@ function PreviewTopbar({
 		<div className="flex h-9 shrink-0 items-stretch border-b border-[var(--preview-border)] bg-[var(--preview-background)]">
 			<div className="flex min-w-0 flex-1 items-center">
 				<span className="relative inline-flex min-w-0 shrink-0 self-stretch items-center gap-1.5 border-r border-[var(--preview-border)] bg-[var(--preview-overlay)] px-2.5 after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-[#fafafa]">
-					<img src={meta.icon} alt="" aria-hidden="true" className="size-[13px] shrink-0 object-contain" draggable={false} />
+					<img src={meta.icon} alt="" aria-hidden="true" className="size-[13px] shrink-0 object-contain" draggable={false} loading="lazy" decoding="async" />
 					<span className="inline-flex min-w-0 items-center gap-1.5 text-[10.5px] font-medium leading-none text-[var(--preview-foreground)]">
 						<span className="truncate">{meta.tabLabel}</span>
 						<span
@@ -1223,11 +1222,11 @@ function TerminalPane({
 	return (
 		<main
 			ref={scrollRef}
-			className={`${GeistMono.className} flex min-h-0 min-w-0 flex-1 flex-col justify-end overflow-hidden bg-[var(--preview-terminal)] px-3 py-2.5`}
+			className="flex min-h-0 min-w-0 flex-1 flex-col justify-end overflow-hidden bg-[var(--preview-terminal)] px-3 py-2.5 font-mono"
 			style={{ fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace", fontVariantEmoji: "text" }}
 		>
 			<div className="mb-2 flex items-start gap-2">
-				<img src={meta.icon} alt="" aria-hidden="true" className="mt-0.5 size-[22px] shrink-0" draggable={false} />
+				<img src={meta.icon} alt="" aria-hidden="true" className="mt-0.5 size-[22px] shrink-0" draggable={false} loading="lazy" decoding="async" />
 				<div className="min-w-0 text-[10px] leading-[1.5]">
 					<div>
 						<span className="font-bold text-[var(--preview-terminal-fg)]">{meta.title}</span>

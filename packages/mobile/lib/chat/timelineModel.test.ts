@@ -54,6 +54,18 @@ describe("mobile Chat timeline model", () => {
 		]);
 	});
 
+	it("titles a marker with the human's words rather than AO's staged attachment list", () => {
+		const value = snapshot();
+		const [first, second] = value.items;
+		if (first.kind !== "message" || second.kind !== "message") throw new Error("fixture");
+		first.text = "See screenshot\n\nAttached files (read these files in the workspace):\n- .ao/attachments/attachment-a.png";
+		second.text = "Attached files (read these files in the workspace):\n- .ao/attachments/attachment-b.png\n- .ao/attachments/attachment-c.png";
+		expect(conversationMarkers(value)).toMatchObject([
+			{ sequence: 1, title: "See screenshot" },
+			{ sequence: 2, title: "2 attachments" },
+		]);
+	});
+
 	it("keys a loaded turn by durable identity rather than its current page boundary", () => {
 		const value = snapshot();
 		value.items = value.items.filter((item) => item.id !== "u1");
@@ -69,6 +81,22 @@ describe("mobile Chat timeline model", () => {
 			activity("usage", 5, "t1"), activity("reasoning", 6, "t1"), activity("plan", 7, "t1"), activity("system", 8, "t1"),
 		);
 		expect(readableConversationItems(value).slice(-1)[0]).toMatchObject({ activityKind: "system" });
+	});
+
+	it("docks queued human messages instead of rendering them as sent timeline turns", () => {
+		const value = snapshot();
+		value.turns[1].state = "queued";
+		value.items = value.items.filter((item) => item.id !== "a2");
+		const queuedMessages = (
+			timelineModel as unknown as {
+				queuedConversationMessages?: (snapshot: ConversationSnapshot) => Array<{ turnId: string; message: { text: string } }>;
+			}
+		).queuedConversationMessages;
+
+		expect(queuedMessages?.(value)).toMatchObject([
+			{ turnId: "t2", message: { text: "Queued task" } },
+		]);
+		expect(readableConversationItems(value).map((item) => item.id)).not.toContain("u2");
 	});
 
 	it("gates rollback on the daemon capability, accepted history and idle state", () => {

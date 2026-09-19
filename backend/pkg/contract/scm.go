@@ -114,11 +114,16 @@ type PullRequestSubmittedReview struct {
 
 // PullRequestReviewSummary is the latest aggregate provider review observation.
 type PullRequestReviewSummary struct {
-	Decision                   ReviewDecision                  `json:"decision"`
-	HasUnresolvedHumanComments bool                            `json:"hasUnresolvedHumanComments"`
-	UnresolvedBy               []PullRequestUnresolvedReviewer `json:"unresolvedBy"`
-	ResolvedBy                 []PullRequestUnresolvedReviewer `json:"resolvedBy,omitempty"`
-	Reviews                    []PullRequestSubmittedReview    `json:"reviews"`
+	Decision                   ReviewDecision `json:"decision"`
+	HasUnresolvedHumanComments bool           `json:"hasUnresolvedHumanComments"`
+	// UnresolvedThreadCount counts unresolved human review threads, rather than
+	// individual comments (a thread can contain several comments). It is a
+	// pointer so an unknown count (never observed, or observed only partially)
+	// stays absent on the wire while an observed zero serializes explicitly.
+	UnresolvedThreadCount *int                            `json:"unresolvedThreadCount,omitempty"`
+	UnresolvedBy          []PullRequestUnresolvedReviewer `json:"unresolvedBy"`
+	ResolvedBy            []PullRequestUnresolvedReviewer `json:"resolvedBy,omitempty"`
+	Reviews               []PullRequestSubmittedReview    `json:"reviews"`
 }
 
 // PullRequestConflictFile is one file involved in a merge conflict.
@@ -145,6 +150,7 @@ type PullRequestSummary struct {
 	Provider         string                         `json:"provider"`
 	Repo             string                         `json:"repository"`
 	Author           string                         `json:"author"`
+	AuthorAvatarURL  string                         `json:"authorAvatarUrl,omitempty"`
 	SourceBranch     string                         `json:"sourceBranch"`
 	TargetBranch     string                         `json:"targetBranch"`
 	HeadSHA          string                         `json:"headSha"`

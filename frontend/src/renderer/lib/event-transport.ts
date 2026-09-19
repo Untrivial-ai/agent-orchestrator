@@ -11,6 +11,7 @@ import { sessionUsageQueryRoot } from "../hooks/useSessionUsageSummaries";
 import { agentSwitchVisibility } from "./agent-switch-visibility";
 import { codexAccountsQueryKey, writeCodexAccounts } from "../hooks/codex-accounts-state";
 import type { components } from "../../api/schema";
+import { editorHandoffQueryKey, editorHandoffQueryRoot } from "../hooks/useEditorHandoff";
 
 export type EventTransport = {
 	connect: () => () => void;
@@ -44,8 +45,9 @@ const CDC_EVENT_TYPES = [
  *   - daemon lifecycle over Electron IPC (coming up/down changes session availability)
  *   - the backend CDC stream over SSE (project/session/PR changes)
  *   - the Codex account stream over SSE (account, capacity, and switch state)
- * Both invalidate the ["workspaces"] query so the UI refetches. Invalidations are
- * batched because a single user action can emit a burst of CDC events.
+ * Lifecycle and CDC events invalidate the workspace cache; durable per-session
+ * updates also refresh editor-handoff readiness. Invalidations are batched
+ * because a single user action can emit a burst of CDC events.
  */
 export function createEventTransport(queryClient: QueryClient): EventTransport {
 	return {
@@ -54,8 +56,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
+			const pendingEditorHandoffSessions = new Set<string>();
 			let workspaceInvalidationPending = false;
 			let allConversationsInvalidationPending = false;
+			let allEditorHandoffsInvalidationPending = false;
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
@@ -92,6 +96,40 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					// A malformed transient event cannot replace the cached safe snapshot.
 				}
 			};
+			// The scheduled flush body. Extracted so a leading-edge event can run
+			// it immediately without waiting out a full window.
+			let lastFlushAt = Number.NEGATIVE_INFINITY;
+			const flushPending = () => {
+				if (allConversationsInvalidationPending) {
+					invalidate(conversationQueryRoot);
+					allConversationsInvalidationPending = false;
+				}
+				if (workspaceInvalidationPending) {
+					invalidate(workspaceQueryKey);
+					invalidate(agentSwitchesQueryRoot);
+					invalidate(sessionScmSummaryQueryKey());
+					invalidate(sessionUsageQueryRoot);
+					workspaceInvalidationPending = false;
+				}
+				if (allEditorHandoffsInvalidationPending) {
+					invalidate(editorHandoffQueryRoot);
+					allEditorHandoffsInvalidationPending = false;
+					pendingEditorHandoffSessions.clear();
+				} else {
+					for (const sessionId of pendingEditorHandoffSessions) {
+						invalidate(editorHandoffQueryKey(sessionId));
+					}
+					pendingEditorHandoffSessions.clear();
+				}
+				for (const sessionId of pendingConversationSessions) {
+					invalidate(conversationQueryKey(sessionId));
+				}
+				pendingConversationSessions.clear();
+				for (const sessionId of pendingInterfaceTransitionSessions) {
+					invalidate(["session-interface-transition", sessionId]);
+				}
+				pendingInterfaceTransitionSessions.clear();
+			};
 			const refreshWorkspaces = (event?: Event) => {
 				if (disposed) return;
 				let conversationOnly = false;
@@ -103,11 +141,13 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					// the header reporting that clamp, so refresh every conversation instead of
 					// leaving an open chat frozen on its pre-gap snapshot.
 					allConversationsInvalidationPending = true;
+					allEditorHandoffsInvalidationPending = true;
 				}
 				if (event && "data" in event) {
 					try {
 						const decoded = JSON.parse(String((event as MessageEvent).data)) as {
 							sessionId?: unknown;
+							type?: unknown;
 							payload?: unknown;
 						};
 						// The SSE endpoint sends the complete durable CDC event. Routing
@@ -139,37 +179,40 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							pendingConversationSessions.add(decoded.sessionId);
 							conversationOnly = true;
 						}
+						if (
+							decoded.type === "session_updated" &&
+							typeof decoded.sessionId === "string" &&
+							decoded.sessionId &&
+							typeof payload?.conversationId !== "string" &&
+							typeof payload?.interfaceTransitionId !== "string"
+						) {
+							pendingEditorHandoffSessions.add(decoded.sessionId);
+						}
 					} catch {
 						// A malformed CDC payload still invalidates workspaces; it simply
 						// cannot target a conversation cache precisely.
 					}
 				}
 				if (!conversationOnly) workspaceInvalidationPending = true;
-				// Keep the first event's deadline: a busy stream must not postpone
-				// visible updates until traffic stops. Later events join this window.
+				// A busy stream must not postpone visible updates until traffic
+				// stops, and the first event after a quiet period must not wait out
+				// a full window either. Flush on the leading edge when the last
+				// flush is at least one window old; otherwise coalesce this and
+				// later events into a single trailing flush. invalidate() still
+				// dedups the resulting refetches per key, so the leading edge
+				// cannot start a refetch storm.
 				if (refreshTimer !== undefined) return;
+				const sinceLastFlush = Date.now() - lastFlushAt;
+				if (sinceLastFlush >= INVALIDATE_WINDOW_MS) {
+					lastFlushAt = Date.now();
+					flushPending();
+					return;
+				}
 				refreshTimer = setTimeout(() => {
 					refreshTimer = undefined;
-					if (allConversationsInvalidationPending) {
-						invalidate(conversationQueryRoot);
-						allConversationsInvalidationPending = false;
-					}
-					if (workspaceInvalidationPending) {
-						invalidate(workspaceQueryKey);
-						invalidate(agentSwitchesQueryRoot);
-						invalidate(sessionScmSummaryQueryKey());
-						invalidate(sessionUsageQueryRoot);
-						workspaceInvalidationPending = false;
-					}
-					for (const sessionId of pendingConversationSessions) {
-						invalidate(conversationQueryKey(sessionId));
-					}
-					pendingConversationSessions.clear();
-					for (const sessionId of pendingInterfaceTransitionSessions) {
-						invalidate(["session-interface-transition", sessionId]);
-					}
-					pendingInterfaceTransitionSessions.clear();
-				}, INVALIDATE_WINDOW_MS);
+					lastFlushAt = Date.now();
+					flushPending();
+				}, INVALIDATE_WINDOW_MS - sinceLastFlush);
 			};
 
 			// Consecutive scheduled rebuilds since the stream last opened. Paces

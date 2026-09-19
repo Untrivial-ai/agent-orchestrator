@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIsMac = vi.hoisted(() => vi.fn(() => false));
 const mockIsLinux = vi.hoisted(() => vi.fn(() => false));
+const mockIsFullScreen = vi.hoisted(() => vi.fn(() => false));
 const uiState = vi.hoisted(() => ({ isSidebarOpen: true }));
 vi.mock("../lib/platform", () => ({
 	isMacPlatform: mockIsMac,
 	isLinuxPlatform: mockIsLinux,
 }));
 
-vi.mock("../hooks/useWindowFullScreen", () => ({ useWindowFullScreen: () => false }));
+vi.mock("../hooks/useWindowFullScreen", () => ({ useWindowFullScreen: mockIsFullScreen }));
 vi.mock("../stores/ui-store", () => ({
 	sidebarOccupiesLayout: (state: { isSidebarOpen: boolean }) => state.isSidebarOpen,
 	useUiStore: (sel: (s: { isSidebarOpen: boolean }) => unknown) => sel(uiState),
@@ -21,6 +22,7 @@ describe("CenterPanelShell platform classes", () => {
 	beforeEach(() => {
 		mockIsMac.mockReturnValue(false);
 		mockIsLinux.mockReturnValue(false);
+		mockIsFullScreen.mockReturnValue(false);
 		uiState.isSidebarOpen = true;
 	});
 
@@ -39,6 +41,23 @@ describe("CenterPanelShell platform classes", () => {
 	it("does not apply center-panel-shell--mac on Windows", () => {
 		const { container } = render(<CenterPanelShell>x</CenterPanelShell>);
 		expect(container.firstElementChild!.classList.contains("center-panel-shell--mac")).toBe(false);
+	});
+
+	it("places the session drag strip in the outer frame", () => {
+		const { container } = render(<CenterPanelShell draggableSessionFrame>x</CenterPanelShell>);
+		const frame = container.firstElementChild!;
+		const strip = frame.querySelector(".center-panel-session-drag-strip");
+
+		expect(frame).toHaveClass("center-panel-shell--draggable-session-frame");
+		expect(strip?.nextElementSibling).toHaveClass("center-panel-surface");
+	});
+
+	it("hides the session drag strip in fullscreen", () => {
+		mockIsFullScreen.mockReturnValue(true);
+		const { container } = render(<CenterPanelShell draggableSessionFrame>x</CenterPanelShell>);
+
+		expect(container.querySelector(".center-panel-session-drag-strip")).toBeNull();
+		expect(container.firstElementChild).not.toHaveClass("center-panel-shell--draggable-session-frame");
 	});
 
 	it("pads the framed titlebar past the Linux nav cluster when the sidebar is collapsed", () => {

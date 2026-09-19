@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitydispatch"
@@ -44,16 +47,20 @@ const (
 // native payload when present. All four are optional: an old daemon decodes
 // the body leniently and simply ignores them.
 type setActivityAPIRequest struct {
-	State                 string             `json:"state,omitempty"`
-	Event                 string             `json:"event,omitempty"`
-	ToolName              string             `json:"toolName,omitempty"`
-	ToolUseID             string             `json:"toolUseId,omitempty"`
-	AgentSessionID        string             `json:"agentSessionId,omitempty"`
-	LatestUserPrompt      string             `json:"latestUserPrompt,omitempty"`
-	LatestAssistantUpdate string             `json:"latestAssistantUpdate,omitempty"`
-	TranscriptPath        string             `json:"transcriptPath,omitempty"`
-	LaunchID              string             `json:"launchId,omitempty"`
-	Usage                 *usageHookMetadata `json:"usage,omitempty"`
+	ObservedAt                   time.Time                           `json:"observedAt,omitempty"`
+	State                        string                              `json:"state,omitempty"`
+	Event                        string                              `json:"event,omitempty"`
+	ToolName                     string                              `json:"toolName,omitempty"`
+	ToolUseID                    string                              `json:"toolUseId,omitempty"`
+	AgentSessionID               string                              `json:"agentSessionId,omitempty"`
+	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty"`
+	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty"`
+	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty"`
+	ProviderTurnID               string                              `json:"providerTurnId,omitempty"`
+	SubmissionID                 string                              `json:"submissionId,omitempty"`
+	TranscriptPath               string                              `json:"transcriptPath,omitempty"`
+	LaunchID                     string                              `json:"launchId,omitempty"`
+	Usage                        *usageHookMetadata                  `json:"usage,omitempty"`
 }
 
 type usageHookMetadata struct {
@@ -238,38 +245,76 @@ func hookRouteFlagEnabled(value string) bool {
 }
 
 type hookConversationSnapshot struct {
+	ProviderTurnID        string
 	LatestUserPrompt      string
 	LatestAssistantUpdate string
+	CheckpointOrigin      domain.ConversationCheckpointOrigin
 	TranscriptPath        string
 }
 
-func hookConversationFacts(payload []byte) hookConversationSnapshot {
+func hookConversationFacts(agent domain.AgentHarness, event string, payload []byte) hookConversationSnapshot {
 	var p struct {
-		Prompt                    string `json:"prompt"`
-		UserPrompt                string `json:"user_prompt"`
-		UserPromptCamel           string `json:"userPrompt"`
-		LastAssistantMessage      string `json:"last_assistant_message"`
-		LastAssistantMessageCamel string `json:"lastAssistantMessage"`
-		AssistantMessage          string `json:"assistant_message"`
-		AssistantMessageCamel     string `json:"assistantMessage"`
-		TranscriptPath            string `json:"transcript_path"`
-		TranscriptPathCamel       string `json:"transcriptPath"`
+		Prompt               string `json:"prompt"`
+		TurnID               string `json:"turn_id"`
+		PromptID             string `json:"prompt_id"`
+		UserPrompt           string `json:"user_prompt"`
+		UserPromptCamel      string `json:"userPrompt"`
+		LastAssistantMessage string `json:"last_assistant_message"`
+		TranscriptPath       string `json:"transcript_path"`
+		TranscriptPathCamel  string `json:"transcriptPath"`
+		SubagentID           string `json:"agent_id"`
 	}
 	_ = json.Unmarshal(payload, &p)
-	userPrompt := firstHookValue(p.Prompt, p.UserPrompt, p.UserPromptCamel)
-	assistant := firstHookValue(p.LastAssistantMessage, p.LastAssistantMessageCamel, p.AssistantMessage, p.AssistantMessageCamel)
+	observedPrompt := firstHookValue(p.Prompt, p.UserPrompt, p.UserPromptCamel)
+	var userPrompt, assistant, turnID string
+	origin := domain.ConversationCheckpointOriginUnknown
+	// Conversation checkpoints are trusted only at the main-turn boundaries that
+	// own each fact. Several Claude payloads repeat prompt/assistant aliases on
+	// unrelated events, and SubagentStop uses the same shape as the main Stop.
+	// Treating those copies as current main-thread facts can permanently make an
+	// otherwise healthy provider replay look incomplete.
+	if strings.TrimSpace(p.SubagentID) == "" {
+		if event == "user-prompt-submit" || event == "stop" {
+			switch agent {
+			case domain.HarnessCodex:
+				turnID = strings.TrimSpace(p.TurnID)
+			case domain.HarnessClaudeCode:
+				// Queued submissions reuse the executing prompt's ID. Preserve it as
+				// native evidence; only the adapter can resolve its actual ancestry.
+				turnID = strings.TrimSpace(p.PromptID)
+			}
+			if len(turnID) > maxActivityMetaLen || domain.SanitizeControlChars(turnID) != turnID {
+				turnID = ""
+			}
+		}
+		switch event {
+		case "user-prompt-submit":
+			userPrompt = observedPrompt
+			origin = domain.ConversationCheckpointOriginHuman
+		case "stop":
+			// Claude and Continue's Claude-compatible hooks report this field on
+			// Stop. Similar-looking fields from Codex do not carry the same
+			// main-turn guarantee and must not become hard replay checkpoints.
+			if agent == domain.HarnessClaudeCode || agent == domain.HarnessContinue {
+				assistant = p.LastAssistantMessage
+			}
+		}
+	}
 	// AO's own handoff request and continuation kickoff are coordination turns,
 	// not the latest real user instruction. They remain in provider history but
 	// must not overwrite deterministic user intent.
-	if strings.HasPrefix(strings.TrimSpace(userPrompt), "<ao-handoff-request") {
-		assistant = ""
-	}
-	if isAOCoordinationMessage(userPrompt) {
+	if isAOCoordinationMessage(observedPrompt) {
 		userPrompt = ""
+		assistant = ""
+		if event == "user-prompt-submit" || event == "stop" {
+			origin = domain.ConversationCheckpointOriginCoordination
+		}
 	}
 	return hookConversationSnapshot{
+		ProviderTurnID:        turnID,
 		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
 		LatestAssistantUpdate: capHookText(assistant, maxHookInteractionLen),
+		CheckpointOrigin:      origin,
 		TranscriptPath:        capHookText(firstHookValue(p.TranscriptPath, p.TranscriptPathCamel), maxHookTranscriptPath),
 	}
 }
@@ -315,6 +360,70 @@ type cursorPermissionHookOutput struct {
 	Permission string `json:"permission"`
 }
 
+// claudePermissionHookOutput is Claude Code's PermissionRequest decision: the
+// hook answers the prompt in place of a human.
+type claudePermissionHookOutput struct {
+	HookSpecificOutput struct {
+		HookEventName string `json:"hookEventName"`
+		Decision      struct {
+			Behavior string `json:"behavior"`
+			Message  string `json:"message,omitempty"`
+		} `json:"decision"`
+	} `json:"hookSpecificOutput"`
+}
+
+// reviewerSubmitCommandPattern matches the exact command shapes the review
+// prompt dictates: a single-quoted JSON literal fed through `printf '%s'` into
+// either the GitHub review POST or `ao review submit`. Claude Code ≥ 2.1.257
+// prompts on any Bash command its analyzer cannot verify statically, and allow
+// rules never match such commands, so the headless reviewer would hang. The
+// shape is safe to auto-allow: `printf '%s'` performs no format interpretation
+// and a single-quoted operand (quote-backslash-quote-quote for embedded single
+// quotes, as the prompt instructs) cannot expand or run anything. The
+// captured session id is checked against AO_REVIEW_WORKER_SESSION_ID after the
+// match.
+const reviewerSubmitJSONLiteral = `'[^']*(?:'\\''[^']*)*'`
+
+var reviewerSubmitCommandPattern = regexp.MustCompile(`^printf '%s' ` + reviewerSubmitJSONLiteral + ` \| (?:` +
+	`gh api --method POST repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pulls/[0-9]+/reviews --input - --jq '\.id'` +
+	`|ao review submit --session (?P<session>[A-Za-z0-9_-]+) --reviews -)$`)
+
+const reviewerPermissionDenyMessage = "AO headless reviewer: no human can answer permission prompts. " +
+	"Use only the allowlisted read commands (git diff/log/show/status, gh pr view/diff/checks, Read, Grep, Glob) " +
+	"and the exact single-line `printf '%s' '<json>' | ...` submit commands from the review task."
+
+// reviewerPermissionDecision answers a Claude Code reviewer's PermissionRequest:
+// allow the exact submit shapes, deny everything else so the session degrades
+// into a denial the model can route around instead of an unanswered prompt.
+func reviewerPermissionDecision(payload []byte, workerSessionID string) claudePermissionHookOutput {
+	var p struct {
+		ToolName  string `json:"tool_name"`
+		ToolInput struct {
+			Command string `json:"command"`
+		} `json:"tool_input"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	var out claudePermissionHookOutput
+	out.HookSpecificOutput.HookEventName = "PermissionRequest"
+	out.HookSpecificOutput.Decision.Behavior = "deny"
+	out.HookSpecificOutput.Decision.Message = reviewerPermissionDenyMessage
+	if p.ToolName != "Bash" {
+		return out
+	}
+	m := reviewerSubmitCommandPattern.FindStringSubmatch(strings.TrimSpace(p.ToolInput.Command))
+	if m == nil {
+		return out
+	}
+	if session := m[reviewerSubmitCommandPattern.SubexpIndex("session")]; workerSessionID == "" || (session != "" && session != workerSessionID) {
+		// An unset AO_REVIEW_WORKER_SESSION_ID means a broken launch (the
+		// launcher always sets it); admit nothing rather than any worker.
+		return out
+	}
+	out.HookSpecificOutput.Decision.Behavior = "allow"
+	out.HookSpecificOutput.Decision.Message = ""
+	return out
+}
+
 // newHooksCommand builds the hidden `ao hooks <agent> <event>` command that
 // agent CLIs invoke from their workspace-local hook config. It reads the native
 // hook payload from stdin and the AO session id from AO_SESSION_ID, derives an
@@ -336,6 +445,7 @@ func newHooksCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) runHook(ctx context.Context, agent, event string) error {
+	observedAt := c.deps.Now()
 	if isAgyModernHookEvent(agent, event) {
 		// AGY requires every modern hook handler to return a JSON object, even
 		// when the command is running outside an AO-managed session.
@@ -400,29 +510,62 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	conversation := hookConversationSnapshot{}
 	switch domain.AgentHarness(agent) {
 	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue:
-		conversation = hookConversationFacts(payload)
+		conversation = hookConversationFacts(domain.AgentHarness(agent), event, payload)
 	}
 	path := "sessions/" + url.PathEscape(sessionID) + "/activity"
 	req := setActivityAPIRequest{
-		Event:                 event,
-		ToolName:              toolName,
-		ToolUseID:             toolUseID,
-		AgentSessionID:        agentSessionID,
-		LatestUserPrompt:      conversation.LatestUserPrompt,
-		LatestAssistantUpdate: conversation.LatestAssistantUpdate,
-		TranscriptPath:        conversation.TranscriptPath,
-		LaunchID:              launchID,
-		Usage:                 usage,
+		ObservedAt:                   observedAt,
+		Event:                        event,
+		ToolName:                     toolName,
+		ToolUseID:                    toolUseID,
+		AgentSessionID:               agentSessionID,
+		LatestUserPrompt:             conversation.LatestUserPrompt,
+		LatestAssistantUpdate:        conversation.LatestAssistantUpdate,
+		ConversationCheckpointOrigin: conversation.CheckpointOrigin,
+		ProviderTurnID:               conversation.ProviderTurnID,
+		TranscriptPath:               conversation.TranscriptPath,
+		LaunchID:                     launchID,
+		Usage:                        usage,
 	}
 	if hasActivity {
 		req.State = string(state)
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if domain.AgentHarness(agent) == domain.HarnessClaudeCode && event == "user-prompt-submit" &&
+		launchID != "" && agentSessionID != "" && conversation.CheckpointOrigin != domain.ConversationCheckpointOriginUnknown {
+		req.SubmissionID = uuid.NewString()
+		output := sessionStartHookOutput{}
+		output.HookSpecificOutput.HookEventName = "UserPromptSubmit"
+		output.HookSpecificOutput.AdditionalContext = domain.NativeSubmissionContext(req.SubmissionID)
+		if err := json.NewEncoder(c.deps.Out).Encode(output); err != nil {
+			return fmt.Errorf("emit native submission correlation: %w", err)
+		}
+	}
+	if err := c.postActivityHook(ctx, path, req); err != nil {
 		// Surface the failure for diagnosis, but exit 0: a failed activity
 		// report must not disrupt the agent.
 		c.reportHookFailure(agent, event, sessionID, err)
 	}
 	return nil
+}
+
+func (c *commandContext) postActivityHook(ctx context.Context, path string, req setActivityAPIRequest) error {
+	for attempt := 0; ; attempt++ {
+		err := c.postJSON(ctx, path, req, nil)
+		var response apiResponseError
+		// Only this response guarantees the signal did not commit. Retrying
+		// transport errors or generic 503s could duplicate an applied Stop.
+		if attempt >= 3 || !errors.As(err, &response) || response.StatusCode != http.StatusServiceUnavailable ||
+			response.ErrorBody.Code != "ACTIVITY_PROJECTION_BUSY" {
+			return err
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func isCursorPermissionHook(agent, event string) bool {
@@ -454,7 +597,7 @@ func (c *commandContext) runCursorPermissionHook(ctx context.Context, agent, eve
 		AgentSessionID: hookAgentSessionID(payload),
 		LaunchID:       launchID,
 	}
-	if err := c.postJSON(ctx, path, req, nil); err != nil {
+	if err := c.postActivityHook(ctx, path, req); err != nil {
 		c.reportHookFailure(agent, event, sessionID, err)
 		if decision.Permission == "ask" {
 			return fmt.Errorf("persist blocked Cursor activity: %w", err)
@@ -488,6 +631,14 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 		if err != nil {
 			c.reportHookFailure(agent, event, reviewSessionID, fmt.Errorf("read stdin: %w", err))
 		}
+	}
+	if domain.AgentHarness(agent) == domain.HarnessClaudeCode && event == "permission-request" {
+		// Answered here, so the reviewer never parks in blocked (#4810).
+		out := reviewerPermissionDecision(payload, strings.TrimSpace(os.Getenv("AO_REVIEW_WORKER_SESSION_ID")))
+		if err := json.NewEncoder(c.deps.Out).Encode(out); err != nil {
+			c.reportHookFailure(agent, event, reviewSessionID, fmt.Errorf("write permission response: %w", err))
+		}
+		return nil
 	}
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""

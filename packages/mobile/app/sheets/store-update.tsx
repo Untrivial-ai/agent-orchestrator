@@ -39,3 +39,5 @@ export default function StoreUpdateSheetRoute() {
 		/>
 	);
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

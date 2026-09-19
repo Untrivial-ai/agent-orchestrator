@@ -143,7 +143,7 @@ for (const animated of [false, true]) {
 		await page.goto(`/#/projects/${projectId}/sessions/${sessionA}`);
 		await expect(page.getByRole("combobox", { name: "Message the agent" })).toBeVisible();
 		await openProjectMenu(page);
-		await page.getByRole("menuitem", { name: /New session/ }).click();
+		await page.getByRole("menuitem", { name: /New task/ }).click();
 		await expect(page.getByRole("dialog")).toBeVisible();
 		await expectPromptTakesTyping(page);
 	});
@@ -155,7 +155,7 @@ for (const animated of [false, true]) {
 		await page.goto(`/#/projects/${projectId}/sessions/${sessionA}`);
 		await expect(page.getByRole("combobox", { name: "Message the agent" })).toBeVisible();
 		await openProjectMenu(page);
-		await page.getByRole("menuitem", { name: /New session/ }).click();
+		await page.getByRole("menuitem", { name: /New task/ }).click();
 		await expect(page.getByRole("dialog")).toBeVisible();
 		await page.keyboard.press("Escape");
 		await expect(page.getByRole("dialog")).toBeHidden();
@@ -174,7 +174,7 @@ test("renderer: New task from the sidebar project context menu focuses the compo
 		.getByRole("button", { name: new RegExp(`Project actions for ${projectId}`) })
 		.first()
 		.click({ button: "right", force: true });
-	await page.getByRole("menuitem", { name: /New session/ }).click();
+	await page.getByRole("menuitem", { name: /New task/ }).click();
 	await expect(page.getByRole("dialog")).toBeVisible();
 	await expectPromptTakesTyping(page);
 });
@@ -290,7 +290,7 @@ test("renderer: a context-menu dialog returns focus to where the menu opened fro
 
 	const openedFrom = `Project actions for ${projectId}`;
 	await page.getByRole("button", { name: new RegExp(openedFrom) }).first().click({ button: "right", force: true });
-	await page.getByRole("menuitem", { name: /New session/ }).click();
+	await page.getByRole("menuitem", { name: /New task/ }).click();
 	await expect(page.getByRole("dialog")).toBeVisible();
 	await page.keyboard.press("Escape");
 	await expect(page.getByRole("dialog")).toBeHidden();

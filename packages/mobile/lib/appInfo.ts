@@ -40,17 +40,3 @@ export function formatVersionLine(info: BuildInfo): string {
 	const update = info.embedded === false && info.updateId ? ` · ${info.updateId.slice(0, 8)}` : "";
 	return formatVersion(info) + update;
 }
-
-/** A one-line device/build string for prefilling a bug report. */
-export function bugReportBody(info: BuildInfo, platform: string, osVersion: string | number): string {
-	const update = formatUpdate(info);
-	const runtime = info.runtimeVersion ? ` (runtime ${info.runtimeVersion.slice(0, 8)})` : "";
-	return [
-		"",
-		"",
-		"---",
-		`AO mobile: ${formatVersion(info)}`,
-		...(update ? [`Update: ${update}${runtime}`] : []),
-		`Platform: ${platform} ${osVersion}`,
-	].join("\n");
-}

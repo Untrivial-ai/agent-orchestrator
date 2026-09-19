@@ -52,9 +52,10 @@ const plans = {
 			methods: [{ id: "official-installer", label: "Official installer", available: true, recommended: true, command: "bash <downloaded from https://cursor.com/install>", reinstallAvailable: false, reinstallReason: "No headless reinstall" }],
 		},
 		{
-			agentId: "goose", available: false, automatic: false, method: "manual",
-			reason: "Goose does not publish a native Windows CLI installer; use WSL or the desktop download.",
-			documentationUrl: "https://block.github.io/goose/index.html", methods: [],
+			agentId: "goose", available: true, automatic: true, method: "official-installer",
+			command: "pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>",
+			documentationUrl: "https://goose-docs.ai/docs/getting-started/installation/",
+			methods: [{ id: "official-installer", label: "Official installer", available: true, recommended: true, command: "pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>", reinstallAvailable: false, reinstallReason: "No headless reinstall" }],
 		},
 	],
 };
@@ -173,22 +174,32 @@ describe("HarnessSettingsSection", () => {
 		}));
 	});
 
-	it("shows no reinstall or instructions actions for installed harnesses", async () => {
+	it("offers a safe reinstall action for installed harnesses", async () => {
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalogWithInstalled("claude-code", "cursor") } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
 			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
 			return { data: undefined } as never;
 		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/{agent}/install") {
+				return { data: { target: "claude-code", status: "installing", method: "homebrew" } } as never;
+			}
+			return { data: undefined } as never;
+		});
+		const user = userEvent.setup();
 		renderSection();
 		const claudeRow = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		const cursorRow = (await screen.findByText("Cursor")).closest('[data-agent="cursor"]') as HTMLElement;
 
-		for (const row of [claudeRow, cursorRow]) {
-			expect(row).toHaveTextContent("Installed");
-			expect(within(row).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
-			expect(within(row).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
-		}
+		expect(claudeRow).toHaveTextContent("Installed");
+		await user.click(within(claudeRow).getByRole("button", { name: "Reinstall" }));
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/install", {
+			params: { path: { agent: "claude-code" } },
+			body: { method: "homebrew", operation: "reinstall" },
+		}));
+		expect(within(cursorRow).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
+		expect(within(cursorRow).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
 	});
 
 	it("starts an official vendor installer with one click and no instructions dialog", async () => {
@@ -213,11 +224,11 @@ describe("HarnessSettingsSection", () => {
 		expect(row).toHaveTextContent("Installing…");
 	});
 
-	it("does not show instructions for harnesses without an automatic installer", async () => {
+	it("shows the official Goose installer", async () => {
 		renderSection();
 		const row = (await screen.findByText("Goose")).closest('[data-agent="goose"]') as HTMLElement;
-		expect(within(row).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
-		expect(within(row).queryByRole("button", { name: "Install" })).not.toBeInTheDocument();
+		await waitFor(() => expect(row).toHaveTextContent("Available via Official"));
+		expect(within(row).getByRole("button", { name: "Install" })).toBeInTheDocument();
 	});
 
 	it("does not treat a historical successful job as current installation inventory", async () => {
@@ -343,10 +354,10 @@ describe("HarnessSettingsSection", () => {
 		const user = userEvent.setup();
 		renderSection();
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
-		await user.click(await within(row).findByRole("button", { name: "Show details" }));
+		await user.click(await within(row).findByRole("button", { name: "Show diagnostics" }));
 		expect(row).toHaveTextContent("permission denied");
 		expect(row).toHaveTextContent("/Users/test/.npm/bin/codex");
-		await user.click(within(row).getByRole("button", { name: "Copy details" }));
+		await user.click(within(row).getByRole("button", { name: "Copy diagnostics" }));
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("permission denied"));
 	});
 

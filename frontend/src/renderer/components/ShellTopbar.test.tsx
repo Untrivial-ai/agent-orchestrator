@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
 import {
 	CLOUD_PROJECT_KIND,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
 	type SessionActivityState,
 	type WorkspaceSession,
 	type WorkspaceSummary,
@@ -42,6 +44,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 			...query,
 			data: {
 				project,
+				hasWorkerSessions: project?.sessions.some((candidate: WorkspaceSession) => candidate.kind !== "orchestrator") ?? false,
 				session,
 				orchestrator: project?.sessions.find((candidate: WorkspaceSession) => candidate.kind === "orchestrator"),
 			},
@@ -63,7 +66,10 @@ vi.mock("../lib/api-client", () => ({
 	},
 }));
 
-vi.mock("../lib/spawn-orchestrator", () => ({ spawnOrchestrator: spawnMock }));
+vi.mock("../lib/spawn-orchestrator", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/spawn-orchestrator")>(),
+	spawnOrchestrator: spawnMock,
+}));
 vi.mock("../lib/telemetry", () => ({
 	addRendererExceptionStep: vi.fn(),
 	captureRendererEvent: vi.fn(),
@@ -149,7 +155,7 @@ function renderTopbarSessions(
 			sessions,
 		},
 	];
-	useWorkspaceQueryMock.mockReturnValue({ data, isError: false, isLoading: false });
+	useWorkspaceQueryMock.mockReturnValue({ data, isError: false, isLoading: false, isSuccess: true });
 	paramsMock.projectId = sessions[0].workspaceId;
 	paramsMock.sessionId = sessionId;
 	const queryClient = new QueryClient();
@@ -204,7 +210,7 @@ beforeEach(() => {
 	postMock.mockReset();
 	postMock.mockResolvedValue({ data: { ok: true, sessionId: "sess-1" }, error: undefined });
 	useWorkspaceQueryMock.mockReset();
-	useWorkspaceQueryMock.mockReturnValue({ data: [], isError: false, isLoading: false });
+	useWorkspaceQueryMock.mockReturnValue({ data: [], isError: false, isLoading: false, isSuccess: true });
 	useUiStore.setState({ inspectorSessions: {}, settingsModal: null });
 });
 
@@ -440,6 +446,24 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
+	it("hides project-only orchestrator actions for ad hoc sessions", () => {
+		renderTopbarSessions(
+			[
+				sessionWith({
+					workspaceId: STANDALONE_WORKSPACE_ID,
+					workspaceName: "Ad hoc agents",
+					branch: undefined,
+				}),
+			],
+			"sess-1",
+			false,
+			undefined,
+			STANDALONE_PROJECT_KIND,
+		);
+
+		expect(screen.queryByRole("button", { name: "Open orchestrator" })).not.toBeInTheDocument();
+	});
+
 	it("switches from a worker to its orchestrator as soon as termination is confirmed", async () => {
 		postMock.mockReturnValue(new Promise(() => {}));
 		renderTopbarSessions([worker, orchestrator], worker.id);
@@ -455,6 +479,17 @@ describe("ShellTopbar orchestrator actions", () => {
 });
 
 describe("ShellTopbar inspector state", () => {
+	it("reserves space for orchestrator controls without duplicating notifications", () => {
+		const view = renderTopbarSessions([orchestrator], orchestrator.id);
+		const reserve = screen.getByTestId("session-pinned-actions-reserve");
+		expect(reserve).toHaveAttribute("data-state", "expanded");
+		expect(screen.queryByRole("button", { name: "Notifications" })).not.toBeInTheDocument();
+		useUiStore.setState({ inspectorSessions: { [orchestrator.id]: { isOpen: true, view: "browser" } } });
+		view.rerenderTopbar();
+		expect(reserve).toHaveAttribute("data-state", "collapsed");
+		expect(screen.queryByRole("button", { name: "Notifications" })).not.toBeInTheDocument();
+	});
+
 	it("keeps the expanded worker controls out of the center topbar", () => {
 		renderTopbarSessions([worker], "sess-1");
 

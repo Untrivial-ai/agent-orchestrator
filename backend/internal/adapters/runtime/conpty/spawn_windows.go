@@ -65,6 +65,9 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 
 	// Build: <exe> pty-host <sessionID> <cwd> <shellCmd> <shellArgs...>
 	args := append([]string{"pty-host", sessionID, cwd}, argv...)
+	if err := validateWindowsCommandLine(append([]string{exe}, args...)); err != nil {
+		return "", 0, fmt.Errorf("conpty spawn: %w", err)
+	}
 
 	// Merge and normalize the environment for an interactive true-color PTY.
 	merged := interactiveTerminalEnv(os.Environ(), env, envAssignments)

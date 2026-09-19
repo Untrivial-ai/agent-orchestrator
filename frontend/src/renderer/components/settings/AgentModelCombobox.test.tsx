@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentModelCombobox, buildModelSearchIndex, searchModelIndex } from "./AgentModelCombobox";
 
@@ -25,6 +26,33 @@ function renderCombobox(
 
 describe("AgentModelCombobox", () => {
 	beforeEach(() => window.localStorage.clear());
+
+	it("keeps effort selection with the model and clears unsupported effort after switching models", async () => {
+		function Picker() {
+			const [model, setModel] = useState("capable");
+			const [effort, setEffort] = useState("high");
+			return <AgentModelCombobox aria-label="Worker model" value={model}
+				models={[
+					{ id: "capable", label: "Capable", efforts: ["low", "high"] },
+					{ id: "plain", label: "Plain", efforts: ["low"] },
+				]}
+				onChange={setModel} onCustom={setModel} compact
+				tuning={{ effort, onEffortChange: setEffort }} />;
+		}
+		render(<Picker />);
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		expect(picker).toHaveTextContent("Capable · High");
+		await userEvent.click(picker);
+		expect(screen.getByRole("menuitem", { name: "Capable" })).toHaveAttribute("aria-current", "true");
+		await userEvent.click(screen.getByRole("menuitem", { name: "Plain" }));
+		expect(picker).toHaveTextContent("Plain · Provider default");
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		expect(screen.queryByRole("menuitemradio", { name: "High" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Provider default" })).toHaveAttribute("aria-checked", "true");
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+		expect(picker).toHaveTextContent("Plain · Low");
+	});
 
 	it("keeps the model menu closed while its owning operation is pending", async () => {
 		renderCombobox([{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }], { disabled: true });

@@ -10,13 +10,19 @@ import (
 
 const claudeTerminalSurfaceLookbackLines = 12
 
+// claudeComposerChromeLabels names provider-owned text that Claude Code paints
+// into the current composer row with default styling (observed during drain
+// failures: a bare "Claude Code" product label between the composer rules).
+// It is not human input and must not fail an interface switch.
+var claudeComposerChromeLabels = []string{"Claude Code"}
+
 // InspectTerminalSurface reports independent work and composer facts from
 // Claude Code's current TUI. Claude may keep its composer visible while a turn
 // is active, so an empty composer never overrides an active footer marker.
 func (p *Plugin) InspectTerminalSurface(output string) ports.TerminalSurfaceObservation {
-	composer := terminalui.LastBorderedPromptComposerState(output, "❯")
+	composer := terminalui.LastBorderedPromptComposerState(output, "❯", claudeComposerChromeLabels...)
 	if composer == terminalui.ComposerUnknown {
-		composer = terminalui.LastPromptComposerState(output, "❯")
+		composer = terminalui.LastPromptComposerState(output, "❯", claudeComposerChromeLabels...)
 	}
 
 	observation := ports.TerminalSurfaceObservation{Composer: claudeComposerState(composer)}
@@ -29,6 +35,26 @@ func (p *Plugin) InspectTerminalSurface(output string) ports.TerminalSurfaceObse
 		observation.Composer = ports.TerminalComposerUnknown
 	case observation.Composer != ports.TerminalComposerUnknown:
 		observation.Work = ports.TerminalSurfaceWorkIdle
+	}
+	if observation.Work == ports.TerminalSurfaceWorkIdle && observation.Composer == ports.TerminalComposerEmpty {
+		// The banner must still be visible, with only the current composer and
+		// no provider response. An empty composer alone also follows real work.
+		header, prompts, response := false, 0, false
+		for _, line := range terminalui.PlainTerminalLines(output) {
+			line = strings.TrimSpace(line)
+			// The startup mascot animation can overwrite the brand separator
+			// in the captured viewport while leaving both banner labels intact.
+			if strings.Contains(line, "Claude") && strings.Contains(line, "Code v") {
+				header = true
+			}
+			if strings.HasPrefix(line, "❯") {
+				prompts++
+			}
+			if strings.HasPrefix(line, "⏺") {
+				response = true
+			}
+		}
+		observation.NativeConversationNotStarted = header && prompts == 1 && !response
 	}
 	return observation
 }

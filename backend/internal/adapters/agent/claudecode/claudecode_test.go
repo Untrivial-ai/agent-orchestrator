@@ -691,12 +691,10 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 }
 
 func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
-	// ChatUI can change the model on the session; rebuilding the TUI must pass
-	// that model into the harness restore command so the resumed Claude session
-	// does not silently flip back to a different model (#4893).
+	// The caller's session model selection must reach native resume (#3218).
 	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Config:      ports.AgentConfig{Model: "  claude-opus-4-5  "},
 		Permissions: ports.PermissionModeBypassPermissions,
-		Config:      ports.AgentConfig{Model: "claude-opus-4-5"},
 		Session: ports.SessionRef{
 			ID:       "sess-r",
 			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "claude-native-1"},
@@ -706,6 +704,24 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
 	}
 	want := []string{"claude", "--permission-mode", "bypassPermissions", "--model", "claude-opus-4-5", "--resume", "claude-native-1"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
+func TestGetRestoreCommandOmitsBlankConfiguredModel(t *testing.T) {
+	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Config:      ports.AgentConfig{Model: "   "},
+		Permissions: ports.PermissionModeBypassPermissions,
+		Session: ports.SessionRef{
+			ID:       "sess-r",
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "claude-native-1"},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
+	}
+	want := []string{"claude", "--permission-mode", "bypassPermissions", "--resume", "claude-native-1"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
@@ -895,9 +911,11 @@ func TestClaudeConfigAuthStatusAuthorizedWithOAuthAccount(t *testing.T) {
 	}
 }
 
-func TestClaudeConfigAuthStatusAuthorizedWithUserID(t *testing.T) {
+func TestClaudeConfigAuthStatusUnknownWithBareUserID(t *testing.T) {
+	// userID is install/analytics identity and survives logout / pre-login
+	// first start. It must not count as authorized (#5561).
 	path := filepath.Join(t.TempDir(), ".claude.json")
-	if err := os.WriteFile(path, []byte(`{"userID":"user-1"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"userID":"user-1","installMethod":"native"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -905,8 +923,31 @@ func TestClaudeConfigAuthStatusAuthorizedWithUserID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestAuthStatusPrefersCLIOverStaleUserID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake claude auth status binary uses a Unix shebang")
+	}
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	binDir := t.TempDir()
+	bin := filepath.Join(binDir, "claude")
+	script := "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  printf '%s\\n' '{\"loggedIn\":false,\"authMethod\":\"none\"}'\n  exit 0\nfi\nexit 2\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{resolvedBinary: bin}
+	status, err := p.AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("AuthStatus = %q, want %q (CLI loggedIn:false must win over any ~/.claude.json userID)", status, ports.AgentAuthStatusUnauthorized)
 	}
 }
 
@@ -1287,6 +1328,72 @@ func TestInspectTerminalSurfaceSeparatesClaudeWorkFromComposer(t *testing.T) {
 				"❯\u00a0",
 			wantWork:   ports.TerminalSurfaceWorkIdle,
 			wantEditor: ports.TerminalComposerEmpty,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := plugin.InspectTerminalSurface(tt.output)
+			if got.Work != tt.wantWork || got.Composer != tt.wantEditor {
+				t.Fatalf("InspectTerminalSurface() = %+v, want work=%v composer=%v", got, tt.wantWork, tt.wantEditor)
+			}
+		})
+	}
+}
+
+// Fixtures captured from Claude Code 2.1.273 during a real drain failure
+// (issue #5482): the composer is empty, but Claude paints a multi-line
+// non-dim statusline below the lower rule and transient non-dim chrome
+// between the rules. Provider chrome must never read as a human draft.
+func TestInspectTerminalSurfaceClaude273DoesNotReadChromeAsDraft(t *testing.T) {
+	plugin := &Plugin{}
+	rule := "\x1b[38;2;136;136;136m" + strings.Repeat("─", 118) + "\x1b[m"
+	tests := []struct {
+		name       string
+		output     string
+		wantWork   ports.TerminalSurfaceWorkState
+		wantEditor ports.TerminalComposerState
+	}{
+		{
+			name: "idle empty composer above a multi-line provider statusline",
+			output: "  \x1b[38;2;153;153;153m40100 tokens\x1b[39m\n" +
+				rule + "\n\x1b[39m❯ \x1b[7m \x1b[0m\n" + rule + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]\n" +
+				"  cwd: /Users/example/worktree\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// Mismatched rules make the boxed layout unknown, but the footer-free
+			// fallback still closes the composer at the rule below the prompt:
+			// the statusline below it is provider chrome, not a draft.
+			name: "unmatched composer rules do not read status chrome as draft",
+			output: "\x1b[38;5;244m" + strings.Repeat("─", 48) + "\x1b[39m\n" +
+				"\x1b[39m❯ \x1b[7m \x1b[0m\n" +
+				strings.Repeat("─", 24) + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// Captured live from a stuck session: a bare default-styled
+			// "Claude Code" product label sits on the composer prompt row
+			// between matching rules. It is provider chrome, not a draft.
+			name: "provider product label on the prompt row is not a draft",
+			output: rule + "\n❯  Claude Code\n" + rule + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]\n" +
+				"  cwd: /Users/example/worktree\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// The same label followed by real typed text stays a draft.
+			name: "human text after the label is still a draft",
+			output: rule + "\n❯  Claude Code review please\n" + rule + "\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerDraft,
 		},
 	}
 	for _, tt := range tests {

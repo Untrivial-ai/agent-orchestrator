@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/commanddetail"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -84,7 +85,7 @@ func (c *conversation) RequestPermission(
 	if params.ToolCall.Title != nil && strings.TrimSpace(*params.ToolCall.Title) != "" {
 		summary = *params.ToolCall.Title
 	}
-	selected, err := c.RequestApproval(ctx, ClientApprovalRequest{
+	selected, err := c.requestApproval(ctx, stableACPRequestID(params.Meta), ClientApprovalRequest{
 		Summary: summary, ActivityKind: activityKindFromTool(pointerValue(params.ToolCall.Kind)),
 		Detail:    approvalToolDetail(params.ToolCall, activityKindFromTool(pointerValue(params.ToolCall.Kind))),
 		Decisions: decisions,
@@ -102,22 +103,39 @@ func (c *conversation) RequestApproval(
 	ctx context.Context,
 	params ClientApprovalRequest,
 ) (string, error) {
+	return c.requestApproval(ctx, "", params)
+}
+
+func (c *conversation) requestApproval(
+	ctx context.Context,
+	requestID string,
+	params ClientApprovalRequest,
+) (string, error) {
 	if len(params.Decisions) == 0 {
 		return "", nil
 	}
-	requestID := uuid.NewString()
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
 	options := make(map[string]json.RawMessage, len(params.Decisions))
 	for _, option := range params.Decisions {
 		options[option.ID] = append(json.RawMessage(nil), option.Raw...)
 	}
-	request := &parkedPermission{options: options, result: make(chan string, 1)}
+	request := &parkedPermission{
+		options: options, result: make(chan string, 1), ready: make(chan struct{}),
+	}
 
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return "", nil
 	}
-	c.pending[requestID] = request
+	accepted, hasAccepted := c.accepted[requestID]
+	if hasAccepted && accepted.Kind == persistentInteractionApproval {
+		delete(c.accepted, requestID)
+	} else {
+		c.pending[requestID] = request
+	}
 	turnID := c.activeTurn
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{
@@ -131,6 +149,11 @@ func (c *conversation) RequestApproval(
 		RequestID:      requestID,
 		Decisions:      params.Decisions,
 	})
+	close(request.ready)
+	if hasAccepted && accepted.Kind == persistentInteractionApproval {
+		c.emit(persistentInteractionEvent(accepted))
+		request.result <- accepted.Decision.ID
+	}
 
 	timer := timeAfter(approvalWait)
 	select {
@@ -138,7 +161,9 @@ func (c *conversation) RequestApproval(
 		return selected, nil
 	case <-ctx.Done():
 		c.discardPermission(requestID)
-		c.emit(ports.ChatEvent{Kind: ports.ChatEventApprovalResolved, RequestID: requestID})
+		if !c.providerDetaching() {
+			c.emit(ports.ChatEvent{Kind: ports.ChatEventApprovalResolved, RequestID: requestID})
+		}
 		return "", nil
 	case <-timer:
 		c.discardPermission(requestID)
@@ -192,7 +217,13 @@ func (c *conversation) UnstableCreateElicitation(
 		return acpsdk.NewUnstableCreateElicitationResponseCancel(), errors.New("ACP elicitation has no mode")
 	}
 
-	response, err := c.RequestInput(ctx, request)
+	requestID := ""
+	if params.Form != nil {
+		requestID = stableACPRequestID(params.Form.Meta)
+	} else if params.Url != nil {
+		requestID = stableACPRequestID(params.Url.Meta)
+	}
+	response, err := c.requestInput(ctx, requestID, request)
 	if err != nil {
 		return acpsdk.NewUnstableCreateElicitationResponseCancel(), err
 	}
@@ -204,14 +235,31 @@ func (c *conversation) RequestInput(
 	ctx context.Context,
 	request ports.ChatInputRequest,
 ) (ports.ChatInputResponse, error) {
-	requestID := uuid.NewString()
-	parked := &parkedInput{request: request, result: make(chan ports.ChatInputResponse, 1)}
+	return c.requestInput(ctx, "", request)
+}
+
+func (c *conversation) requestInput(
+	ctx context.Context,
+	requestID string,
+	request ports.ChatInputRequest,
+) (ports.ChatInputResponse, error) {
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	parked := &parkedInput{
+		request: request, result: make(chan ports.ChatInputResponse, 1), ready: make(chan struct{}),
+	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return ports.ChatInputResponse{Action: ports.ChatInputActionCancel}, nil
 	}
-	c.pendingInputs[requestID] = parked
+	accepted, hasAccepted := c.accepted[requestID]
+	if hasAccepted && accepted.Kind == persistentInteractionInput {
+		delete(c.accepted, requestID)
+	} else {
+		c.pendingInputs[requestID] = parked
+	}
 	turnID := c.activeTurn
 	c.mu.Unlock()
 
@@ -219,6 +267,11 @@ func (c *conversation) RequestInput(
 		Kind: ports.ChatEventInputRequested, ProviderTurnID: turnID,
 		RequestID: requestID, Input: &request, Summary: request.Message,
 	})
+	close(parked.ready)
+	if hasAccepted && accepted.Kind == persistentInteractionInput {
+		c.emit(persistentInteractionEvent(accepted))
+		parked.result <- *accepted.Input
+	}
 
 	timer := timeAfter(approvalWait)
 	select {
@@ -226,13 +279,26 @@ func (c *conversation) RequestInput(
 		return response, nil
 	case <-ctx.Done():
 		c.discardInput(requestID)
-		c.emit(ports.ChatEvent{Kind: ports.ChatEventInputResolved, RequestID: requestID})
+		if !c.providerDetaching() {
+			c.emit(ports.ChatEvent{Kind: ports.ChatEventInputResolved, RequestID: requestID})
+		}
 		return ports.ChatInputResponse{Action: ports.ChatInputActionCancel}, nil
 	case <-timer:
 		c.discardInput(requestID)
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventInputResolved, RequestID: requestID})
 		return ports.ChatInputResponse{Action: ports.ChatInputActionCancel}, nil
 	}
+}
+
+func (c *conversation) providerDetaching() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.detaching
+}
+
+func stableACPRequestID(meta map[string]any) string {
+	requestID, _ := meta[persistenthost.ACPRequestIDMetaKey].(string)
+	return strings.TrimSpace(requestID)
 }
 
 // UpdatePlan publishes a provider extension plan on the active AO turn.
@@ -263,14 +329,23 @@ func (c *conversation) ResolveInput(
 	}
 	delete(c.pendingInputs, requestID)
 	c.mu.Unlock()
-
-	select {
-	case request.result <- response:
-		c.emit(ports.ChatEvent{Kind: ports.ChatEventInputResolved, RequestID: requestID})
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	command := persistentInteractionCommand{
+		RequestID: requestID, Kind: persistentInteractionInput, Input: &response,
 	}
+	eventID, err := c.recordPersistentInteraction(ctx, command)
+	if err != nil {
+		c.mu.Lock()
+		if !c.closed {
+			c.pendingInputs[requestID] = request
+		}
+		c.mu.Unlock()
+		return err
+	}
+	command.EventID = eventID
+
+	c.emit(persistentInteractionEvent(command))
+	request.result <- response
+	return nil
 }
 
 func (c *conversation) UnstableCompleteElicitation(
@@ -468,6 +543,16 @@ func (c *conversation) discardPermission(requestID string) {
 }
 
 func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNotification) error {
+	// Keep replay normalization off the SDK's bounded notification queue.
+	if c.captureReplayUpdate(params) {
+		return nil
+	}
+	return c.processUpdate(params)
+}
+
+// processUpdate runs the full ACP -> AO normalization for one update: live
+// notifications and replayed updates during the post-load drain.
+func (c *conversation) processUpdate(params acpsdk.SessionNotification) error {
 	if c.prepareHistoryUpdate(params.Update) {
 		return nil
 	}
@@ -478,6 +563,15 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 	if sessionID != "" && string(params.SessionId) != sessionID {
 		return fmt.Errorf("ACP update for unexpected session %q", params.SessionId)
 	}
+	sourceID := stableACPEventID(params.Meta)
+	sourceIndex := 0
+	emit := func(event ports.ChatEvent) {
+		if sourceID != "" {
+			event.ProviderEventID = fmt.Sprintf("%s:%d", sourceID, sourceIndex)
+			sourceIndex++
+		}
+		c.emit(event)
+	}
 
 	update := params.Update
 	providerOutputResumed := update.AgentMessageChunk != nil ||
@@ -485,10 +579,21 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		update.ToolCall != nil ||
 		update.Plan != nil
 	if providerOutputResumed {
-		c.completeProviderFailure(turnID)
+		c.completeProviderFailure(turnID, emit)
 	}
 	switch {
 	case update.AgentMessageChunk != nil:
+		c.mu.Lock()
+		isCompacting := c.compactingTurnID != "" && c.compactingTurnID == turnID
+		c.mu.Unlock()
+		if isCompacting {
+			if delta := contentText(update.AgentMessageChunk.Content); delta != "" {
+				c.mu.Lock()
+				c.compactionSummary += delta
+				c.mu.Unlock()
+			}
+			break
+		}
 		id := c.providerItemID(messageID(update.AgentMessageChunk.MessageId, "assistant", turnID))
 		if delta := contentText(update.AgentMessageChunk.Content); delta != "" {
 			if parentID := c.providerItemID(parentToolUseID(update.AgentMessageChunk.Meta)); parentID != "" {
@@ -500,20 +605,26 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 				c.mu.Unlock()
 				detail, _ := json.Marshal(map[string]any{"parentProviderItemId": parentID, "nestedAgent": true})
 				if !existed {
-					c.emit(ports.ChatEvent{Kind: ports.ChatEventActivityStarted, ProviderTurnID: turnID,
+					emit(ports.ChatEvent{Kind: ports.ChatEventActivityStarted, ProviderTurnID: turnID,
 						ProviderItemID: id, ActivityKind: domain.ActivityKindMCPTool,
 						ActivityStatus: domain.ActivityStatusRunning, Summary: "Subagent response", Detail: detail})
 				}
-				c.emit(ports.ChatEvent{Kind: ports.ChatEventActivityText, ProviderTurnID: turnID,
+				emit(ports.ChatEvent{Kind: ports.ChatEventActivityText, ProviderTurnID: turnID,
 					ProviderItemID: id, Delta: delta})
 				break
 			}
 			c.mu.Lock()
 			c.messages[id] += delta
 			c.mu.Unlock()
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
+			emit(ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
 		}
 	case update.AgentThoughtChunk != nil:
+		c.mu.Lock()
+		isCompacting := c.compactingTurnID != "" && c.compactingTurnID == turnID
+		c.mu.Unlock()
+		if isCompacting {
+			break
+		}
 		id := c.providerItemID(messageID(update.AgentThoughtChunk.MessageId, "thought", turnID))
 		if delta := contentText(update.AgentThoughtChunk.Content); delta != "" {
 			c.mu.Lock()
@@ -521,11 +632,11 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			c.thoughts[id] += delta
 			c.mu.Unlock()
 			if !existed {
-				c.emit(ports.ChatEvent{Kind: ports.ChatEventActivityStarted, ProviderTurnID: turnID,
+				emit(ports.ChatEvent{Kind: ports.ChatEventActivityStarted, ProviderTurnID: turnID,
 					ProviderItemID: id, ActivityKind: domain.ActivityKindReasoning,
 					ActivityStatus: domain.ActivityStatusRunning, Summary: "Reasoning"})
 			}
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
+			emit(ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
 		}
 	case update.ToolCall != nil:
 		tool := &toolState{
@@ -538,25 +649,25 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		c.mu.Lock()
 		c.tools[tool.id] = tool
 		c.mu.Unlock()
-		c.emit(c.toolEvent(turnID, tool, toolTerminal(tool.status)))
-		c.emitDiffs(turnID, tool.content)
+		emit(c.toolEvent(turnID, tool, toolTerminal(tool.status)))
+		c.emitDiffs(turnID, tool.id, tool.content, emit)
 	case update.ToolCallUpdate != nil:
 		tool := c.mergeToolUpdate(update.ToolCallUpdate)
 		if delta := terminalOutput(update.ToolCallUpdate.Meta); delta != "" {
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventCommandOutputDelta, ProviderTurnID: turnID,
+			emit(ports.ChatEvent{Kind: ports.ChatEventCommandOutputDelta, ProviderTurnID: turnID,
 				ProviderItemID: c.providerItemID(tool.id), Delta: delta})
 		}
-		c.emit(c.toolEvent(turnID, tool, toolTerminal(tool.status)))
-		c.emitDiffs(turnID, tool.content)
+		emit(c.toolEvent(turnID, tool, toolTerminal(tool.status)))
+		c.emitDiffs(turnID, tool.id, tool.content, emit)
 	case update.Plan != nil:
-		c.emit(ports.ChatEvent{Kind: ports.ChatEventPlanUpdated, ProviderTurnID: turnID, Plan: normalizePlan(update.Plan.Entries)})
+		emit(ports.ChatEvent{Kind: ports.ChatEventPlanUpdated, ProviderTurnID: turnID, Plan: normalizePlan(update.Plan.Entries)})
 	case update.SessionInfoUpdate != nil:
 		if update.SessionInfoUpdate.Title != nil {
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventThreadRenamed, Title: *update.SessionInfoUpdate.Title})
+			emit(ports.ChatEvent{Kind: ports.ChatEventThreadRenamed, Title: *update.SessionInfoUpdate.Title})
 		}
 		if turnID != "" {
-			if event, ok := c.sessionFailureEvent(turnID, update.SessionInfoUpdate.Meta); ok {
-				c.emit(event)
+			if event, ok := c.sessionFailureEvent(turnID, sourceID, update.SessionInfoUpdate.Meta); ok {
+				emit(event)
 			}
 		}
 	case update.ConfigOptionUpdate != nil:
@@ -569,6 +680,7 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 		// when its configuration changes, so retaining absent entries is wrong.
 		c.replaceAvailableCommands(update.AvailableCommandsUpdate.AvailableCommands)
 	case update.UsageUpdate != nil:
+		c.trackContext(int64(update.UsageUpdate.Used), int64(update.UsageUpdate.Size))
 		usage := &ports.ChatUsage{
 			ContextUsed: int64(update.UsageUpdate.Used), ContextWindow: int64(update.UsageUpdate.Size),
 			ContextKnown: true,
@@ -578,12 +690,17 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 			usage.Cost = &cost
 			usage.Currency = update.UsageUpdate.Cost.Currency
 		}
-		c.emit(ports.ChatEvent{Kind: ports.ChatEventUsage, Usage: usage})
+		emit(ports.ChatEvent{Kind: ports.ChatEventUsage, Usage: usage})
 		if limits := claudeRateLimits(update.UsageUpdate.Meta); limits != nil {
-			c.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: limits})
+			emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: limits})
 		}
 	}
 	return nil
+}
+
+func stableACPEventID(meta map[string]any) string {
+	eventID, _ := meta[persistenthost.ACPEventIDMetaKey].(string)
+	return strings.TrimSpace(eventID)
 }
 
 func contentText(content acpsdk.ContentBlock) string {
@@ -643,9 +760,28 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 	if tool.terminalOutput != "" {
 		output = tool.terminalOutput
 	}
+	activityKind := activityKindFromTool(tool.kind)
 	detailMap := map[string]any{
 		"protocol": "acp", "toolKind": tool.kind, "locations": tool.locations,
 		"input": tool.rawInput, "output": output, "content": tool.content,
+	}
+	if activityKind == domain.ActivityKindFileChange {
+		files := make([]map[string]any, 0)
+		for _, item := range tool.content {
+			if item.Diff == nil {
+				continue
+			}
+			stats := diffFileFromSnapshot(item.Diff.Path, item.Diff.OldText, item.Diff.NewText)
+			files = append(files, map[string]any{
+				"path": item.Diff.Path, "status": stats.Status,
+				"additions": stats.Additions, "deletions": stats.Deletions,
+				"patch":   acpFilePatch(item.Diff.Path, item.Diff.OldText, item.Diff.NewText),
+				"oldText": item.Diff.OldText, "newText": item.Diff.NewText,
+			})
+		}
+		if len(files) > 0 {
+			detailMap["files"] = files
+		}
 	}
 	if claude := nestedMap(tool.meta, "claudeCode"); claude != nil {
 		copyDetail(detailMap, claude, "toolName", "providerToolName")
@@ -666,7 +802,7 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 		copyDetail(detailMap, terminal, "exit_code", "exitCode")
 		copyDetail(detailMap, terminal, "signal", "signal")
 	}
-	if activityKindFromTool(tool.kind) == domain.ActivityKindCommand {
+	if activityKind == domain.ActivityKindCommand {
 		if rawCommand := rawCommandFromInput(tool.rawInput); rawCommand != "" {
 			// The neutral command-detail contract (`detail.command`) is what the
 			// chat timeline renders as the row's subject. rawInput is a
@@ -692,9 +828,26 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 	}
 	return ports.ChatEvent{
 		Kind: kind, ProviderTurnID: turnID, ProviderItemID: c.providerItemID(tool.id),
-		ActivityKind: activityKindFromTool(tool.kind), ActivityStatus: status,
+		ActivityKind: activityKind, ActivityStatus: status,
 		Summary: summary, Detail: detail,
 	}
+}
+
+func acpFilePatch(path string, oldText *string, newText string) string {
+	oldLines := []string{}
+	if oldText != nil {
+		oldLines = strings.Split(strings.ReplaceAll(*oldText, "\r\n", "\n"), "\n")
+	}
+	newLines := strings.Split(strings.ReplaceAll(newText, "\r\n", "\n"), "\n")
+	lines := make([]string, 0, 2+len(oldLines)+len(newLines))
+	lines = append(lines, "--- "+path, "+++ "+path)
+	for _, line := range oldLines {
+		lines = append(lines, "-"+line)
+	}
+	for _, line := range newLines {
+		lines = append(lines, "+"+line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // toolOutputText translates ACP's provider-defined rawOutput into AO's neutral
@@ -778,24 +931,15 @@ func nestedMap(meta map[string]any, key string) map[string]any {
 // namespace. A stable provider item id makes successive retry attempts update one
 // row; settling the enclosing turn then settles this running status with it.
 func (c *conversation) sessionFailureEvent(
-	turnID string,
+	turnID, sourceID string,
 	meta map[string]any,
 ) (ports.ChatEvent, bool) {
-	jetbrains := nestedMap(meta, "jetbrains")
-	air := nestedMap(jetbrains, "air")
-	version, versionOK := number(air["version"])
-	failure := nestedMap(air, "sessionFailure")
-	if !versionOK || version < 1 || failure == nil {
+	failure := sessionFailure(meta)
+	if failure == nil {
 		return ports.ChatEvent{}, false
 	}
-
-	id, _ := failure["id"].(string)
 	title, _ := failure["title"].(string)
-	id = strings.TrimSpace(id)
 	title = strings.TrimSpace(title)
-	if id == "" || title == "" {
-		return ports.ChatEvent{}, false
-	}
 
 	detailMap := map[string]any{"event": "provider.failure"}
 	for _, key := range []string{"category", "severity"} {
@@ -813,26 +957,63 @@ func (c *conversation) sessionFailureEvent(
 	event := ports.ChatEvent{
 		Kind:           ports.ChatEventActivityStarted,
 		ProviderTurnID: turnID,
-		// Some adapters mint a fresh extension incident id for every retry when
-		// their provider turn id is not known yet. AO already has the durable turn
-		// boundary, so key the live failure to that boundary and update one row.
-		ProviderItemID: c.providerItemID("session-failure:" + turnID),
 		ActivityKind:   domain.ActivityKindSystem,
 		ActivityStatus: domain.ActivityStatusRunning,
 		Summary:        title,
 		Detail:         detail,
 	}
 	c.mu.Lock()
+	if c.providerFailure != nil && c.providerFailure.ProviderTurnID == turnID {
+		event.ProviderItemID = c.providerFailure.ProviderItemID
+	} else {
+		// One row per uninterrupted retry episode. Host identity survives replay;
+		// direct connections have no replay ID and need a fresh local identity.
+		if sourceID == "" {
+			sourceID = uuid.NewString()
+		}
+		event.ProviderItemID = c.providerItemID("session-failure:" + sourceID)
+	}
 	c.providerFailure = &event
 	c.mu.Unlock()
 	return event, true
 }
 
-// completeProviderFailure removes a stale retry warning as soon as the provider
-// produces substantive output again. The AIR extension advances failures but
-// deliberately sends no recovery update, so AO closes its normalized activity
-// on the first message, thought, tool call, or plan after the failure.
-func (c *conversation) completeProviderFailure(turnID string) {
+func sessionFailure(meta map[string]any) map[string]any {
+	air := nestedMap(nestedMap(meta, "jetbrains"), "air")
+	version, versionOK := number(air["version"])
+	failure := nestedMap(air, "sessionFailure")
+	id, _ := failure["id"].(string)
+	title, _ := failure["title"].(string)
+	if !versionOK || version < 1 || strings.TrimSpace(id) == "" || strings.TrimSpace(title) == "" {
+		return nil
+	}
+	return failure
+}
+
+// Claude puts negotiated terminal failures on the prompt response, which still
+// has stopReason=end_turn. Translate the protocol's severity and actions into the
+// shared provider-failure contract; never match provider prose or maintain a list
+// of subscription/limit error messages.
+func promptResponseFailure(meta map[string]any) error {
+	failure := sessionFailure(meta)
+	if failure["severity"] != "error" {
+		return nil
+	}
+	title, _ := failure["title"].(string)
+	details, _ := failure["details"].(string)
+	var cause error
+	if actions, ok := failure["actions"].([]any); ok {
+		for _, action := range actions {
+			if action == "login" {
+				cause = ports.ErrChatAuthRequired
+			}
+		}
+	}
+	return ports.NewChatProviderFailure(title, details, cause)
+}
+
+// AIR sends no recovery update, so output completes the active retry episode.
+func (c *conversation) completeProviderFailure(turnID string, emit func(ports.ChatEvent)) {
 	c.mu.Lock()
 	if c.providerFailure == nil || c.providerFailure.ProviderTurnID != turnID {
 		c.mu.Unlock()
@@ -844,7 +1025,7 @@ func (c *conversation) completeProviderFailure(turnID string) {
 
 	event.Kind = ports.ChatEventActivityCompleted
 	event.ActivityStatus = domain.ActivityStatusCompleted
-	c.emit(event)
+	emit(event)
 }
 
 func cloneMeta(meta map[string]any) map[string]any {
@@ -945,37 +1126,42 @@ func toolTerminal(status acpsdk.ToolCallStatus) bool {
 	return status == acpsdk.ToolCallStatusCompleted || status == acpsdk.ToolCallStatusFailed
 }
 
-func (c *conversation) emitDiffs(turnID string, content []acpsdk.ToolCallContent) {
-	files := make([]ports.ChatDiffFile, 0)
+func (c *conversation) emitDiffs(
+	turnID, toolID string,
+	content []acpsdk.ToolCallContent,
+	emit func(ports.ChatEvent),
+) {
+	// One tool call contributes at most one entry per path. If the provider
+	// lists the same path more than once in a single content payload, the last
+	// snapshot wins — summing those would reintroduce inflated counts.
+	byPath := make(map[string]ports.ChatDiffFile)
+	var pathOrder []string
 	for _, item := range content {
 		if item.Diff == nil {
 			continue
 		}
-		status := "modified"
-		deletions := 0
-		if item.Diff.OldText == nil {
-			status = "added"
-		} else {
-			deletions = lineCount(*item.Diff.OldText)
-			if item.Diff.NewText == "" {
-				status = "deleted"
-			}
+		path := item.Diff.Path
+		if _, exists := byPath[path]; !exists {
+			pathOrder = append(pathOrder, path)
 		}
-		files = append(files, ports.ChatDiffFile{
-			Path: item.Diff.Path, Status: status,
-			Additions: lineCount(item.Diff.NewText), Deletions: deletions,
-		})
+		byPath[path] = diffFileFromSnapshot(path, item.Diff.OldText, item.Diff.NewText)
 	}
-	if len(files) > 0 {
-		c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnDiff, ProviderTurnID: turnID, Diff: &ports.ChatTurnDiff{Files: files}})
+	if len(byPath) == 0 {
+		return
 	}
-}
-
-func lineCount(value string) int {
-	if value == "" {
-		return 0
+	files := make([]ports.ChatDiffFile, 0, len(pathOrder))
+	for _, path := range pathOrder {
+		files = append(files, byPath[path])
 	}
-	return strings.Count(value, "\n") + 1
+	c.mu.Lock()
+	if c.turnDiffTurnID != turnID || c.turnDiffs == nil {
+		c.turnDiffs = &turnDiffAccumulator{}
+		c.turnDiffTurnID = turnID
+	}
+	c.turnDiffs.replaceTool(toolID, files)
+	aggregated := c.turnDiffs.aggregate()
+	c.mu.Unlock()
+	emit(ports.ChatEvent{Kind: ports.ChatEventTurnDiff, ProviderTurnID: turnID, Diff: &ports.ChatTurnDiff{Files: aggregated}})
 }
 
 func normalizePlan(entries []acpsdk.PlanEntry) *domain.ConversationPlan {

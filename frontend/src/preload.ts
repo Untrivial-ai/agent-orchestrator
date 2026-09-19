@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, SET_TERMINAL_FOCUSED_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, type KeybindingOverrides } from "./shared/shortcuts";
+import {
+	SET_CHAT_DRAFT_RISK_CHANNEL,
+	type ChatDraftBoundaryKind,
+	type ChatDraftDialogCopy,
+} from "./shared/chat-draft-risk";
 import type {
 	BrowserAgentActivityState,
 	BrowserDevToolsInput,
@@ -31,7 +36,7 @@ import {
 	type TelemetryPolicyView,
 } from "./shared/telemetry-policy";
 import type { MigrationState } from "./main/app-state";
-import type { UpdateSettings, UpdateStatus } from "./main/update-settings";
+import type { UpdateSettings, UpdateStatus, UpdateInstallResult } from "./main/update-settings";
 import type { CloudAccount } from "./shared/cloud-account";
 import type { LocalLoginInput, LocalRegisterInput } from "./main/cloud-auth-local";
 import type {
@@ -48,8 +53,12 @@ import {
 	type AgentSwitchVisibilitySignalBody,
 } from "./shared/agent-switch-observability";
 import type {
+	BrowserAnnotationActionInput,
 	BrowserAnnotationCancelPayload,
+	BrowserAnnotationCompleteInput,
+	BrowserAnnotationDiscardInput,
 	BrowserAnnotationModeInput,
+	BrowserAnnotationStatePayload,
 	BrowserAnnotationSubmitPayload,
 } from "./shared/browser-annotations";
 import type {
@@ -66,6 +75,10 @@ import type {
 	BrowserImportRequest,
 	BrowserImportResult,
 } from "./shared/browser-profile-import";
+import type {
+	BrowserDownloadActionInput,
+	BrowserDownloadsState,
+} from "./shared/browser-downloads";
 
 if (typeof document !== "undefined") {
 	const markNativeBrowserComposition = () => {
@@ -102,6 +115,8 @@ export type ImportRepoScan = {
 	branch: string;
 	remote: string;
 	hasRemote: boolean;
+	isRepo: boolean;
+	hasCommit: boolean;
 	status?: "ok" | "error";
 	reason?: string;
 	needsGitInit?: boolean;
@@ -159,7 +174,8 @@ function isRendererQueuePurgeRequest(value: unknown): value is RendererTelemetry
 const api = {
 	app: {
 		getVersion: () => ipcRenderer.invoke("app:getVersion") as Promise<string>,
-		chooseDirectory: (title?: string) => ipcRenderer.invoke("app:chooseDirectory", title) as Promise<string | null>,
+		chooseDirectory: (input?: string | { title?: string; defaultPath?: string }) => ipcRenderer.invoke("app:chooseDirectory", input) as Promise<string | null>,
+		checkGitRepository: (remoteUrl: string) => ipcRenderer.invoke("app:checkGitRepository", remoteUrl) as Promise<boolean>,
 		openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url) as Promise<void>,
 		scanImportFolder: (input: { path: string; mode: ImportFolderMode }) =>
 			ipcRenderer.invoke("app:scanImportFolder", input) as Promise<ImportFolderScan>,
@@ -167,6 +183,11 @@ const api = {
 			ipcRenderer.invoke("app:checkAncestorRepo", path) as Promise<string | undefined>,
 		getRepositoryBranch: (path: string) =>
 			ipcRenderer.invoke("app:getRepositoryBranch", path) as Promise<string | undefined>,
+		getGitHubLogin: (repoPath?: string) => ipcRenderer.invoke("app:getGitHubLogin", repoPath) as Promise<string>,
+		getCachedGitHubOwners: () => ipcRenderer.invoke("app:getCachedGitHubOwners") as Promise<Array<{ login: string; avatarUrl: string }>>,
+		refreshGitHubOwners: () => ipcRenderer.invoke("app:refreshGitHubOwners") as Promise<Array<{ login: string; avatarUrl: string }>>,
+		checkGitHubRepositoryAvailability: (input: { owner: string; name: string }) =>
+			ipcRenderer.invoke("app:checkGitHubRepositoryAvailability", input) as Promise<{ available: boolean; message?: string }>,
 		// Resolves a dropped File's real filesystem path. Synchronous passthrough
 		// (not ipcRenderer.invoke — a File can't cross that boundary) so it must be
 		// called directly on the File from a drop event, in the same tick, per
@@ -219,6 +240,9 @@ const api = {
 		},
 		setCloseShellTerminalShortcutEnabled: (enabled: boolean) => {
 			ipcRenderer.send(SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, enabled);
+		},
+		setChatDraftRisk: (risks: readonly ChatDraftBoundaryKind[], copy?: ChatDraftDialogCopy) => {
+			ipcRenderer.send(SET_CHAT_DRAFT_RISK_CHANNEL, risks, copy);
 		},
 		onOpenSettingsShortcut: (listener: () => void) => {
 			const wrapped = () => listener();
@@ -362,11 +386,27 @@ const api = {
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
 		historySuggestions: (input: { viewId: string; query: string }) =>
 			ipcRenderer.invoke("browser:history:suggest", input) as Promise<BrowserHistorySuggestion[]>,
+		historyFavicon: (input: { viewId: string; url: string }) =>
+			ipcRenderer.invoke("browser:history:favicon", input) as Promise<string | undefined>,
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
 		goBack: (viewId: string) => ipcRenderer.invoke("browser:goBack", viewId) as Promise<BrowserNavState>,
 		goForward: (viewId: string) => ipcRenderer.invoke("browser:goForward", viewId) as Promise<BrowserNavState>,
 		reload: (viewId: string) => ipcRenderer.invoke("browser:reload", viewId) as Promise<BrowserNavState>,
 		stop: (viewId: string) => ipcRenderer.invoke("browser:stop", viewId) as Promise<BrowserNavState>,
+		captureScreenshot: (viewId: string) => ipcRenderer.invoke("browser:captureScreenshot", viewId) as Promise<void>,
+		downloads: {
+			list: () => ipcRenderer.invoke("browser:downloads:list") as Promise<BrowserDownloadsState>,
+			action: (input: BrowserDownloadActionInput) =>
+				ipcRenderer.invoke("browser:downloads:action", input) as Promise<BrowserDownloadsState>,
+			clear: () => ipcRenderer.invoke("browser:downloads:clear") as Promise<BrowserDownloadsState>,
+			onChanged: (listener: (state: BrowserDownloadsState) => void) => {
+				const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserDownloadsState) => listener(state);
+				ipcRenderer.on("browser:downloadsChanged", wrapped);
+				return () => {
+					ipcRenderer.off("browser:downloadsChanged", wrapped);
+				};
+			},
+		},
 		getTabs: (viewId: string) => ipcRenderer.invoke("browser:getTabs", viewId) as Promise<BrowserTabsState>,
 		selectTab: (input: { viewId: string; tabId: string }) =>
 			ipcRenderer.invoke("browser:selectTab", input) as Promise<BrowserTabsState>,
@@ -401,6 +441,12 @@ const api = {
 		destroy: (viewId: string) => ipcRenderer.send("browser:destroy", viewId),
 		setAnnotationMode: (input: BrowserAnnotationModeInput) =>
 			ipcRenderer.invoke("browser:annotation:setMode", input) as Promise<void>,
+		completeAnnotation: (input: BrowserAnnotationCompleteInput) =>
+			ipcRenderer.invoke("browser:annotation:complete", input) as Promise<void>,
+		discardAnnotations: (input: BrowserAnnotationDiscardInput) =>
+			ipcRenderer.invoke("browser:annotation:discard", input) as Promise<void>,
+		annotationAction: (input: BrowserAnnotationActionInput) =>
+			ipcRenderer.invoke("browser:annotation:action", input) as Promise<void>,
 		onNavState: (listener: (state: BrowserNavState) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserNavState) => listener(state);
 			ipcRenderer.on("browser:navState", wrapped);
@@ -466,6 +512,13 @@ const api = {
 				ipcRenderer.off("browser:annotation:canceled", wrapped);
 			};
 		},
+		onAnnotationState: (listener: (payload: BrowserAnnotationStatePayload) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, payload: BrowserAnnotationStatePayload) => listener(payload);
+			ipcRenderer.on("browser:annotation:state", wrapped);
+			return () => {
+				ipcRenderer.off("browser:annotation:state", wrapped);
+			};
+		},
 	},
 	browserProfiles: {
 		list: () => ipcRenderer.invoke("browserProfiles:list") as Promise<BrowserProfileListState>,
@@ -518,6 +571,8 @@ const api = {
 	updateSettings: {
 		get: () => ipcRenderer.invoke("updateSettings:get") as Promise<UpdateSettings>,
 		set: (settings: UpdateSettings) => ipcRenderer.invoke("updateSettings:set", settings) as Promise<void>,
+		setMacDifferentialUpdates: (enabled: boolean) =>
+			ipcRenderer.invoke("updateSettings:setMacDifferentialUpdates", enabled) as Promise<void>,
 	},
 	uiSettings: {
 		get: () => ipcRenderer.invoke("uiSettings:get") as Promise<UiSettings>,
@@ -534,7 +589,11 @@ const api = {
 		check: (options?: UpdateCheckOptions) => ipcRenderer.invoke("updates:check", options) as Promise<void>,
 		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
 		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
-		install: () => ipcRenderer.invoke("updates:install") as Promise<void>,
+		install: (confirmedVersion?: string) => ipcRenderer.invoke("updates:install", confirmedVersion) as Promise<UpdateInstallResult>,
+		// True only when this boot is a genuine post-update relaunch; lets the
+		// startup loader swap "Connecting" copy for "Updating / Restarting".
+		isPostUpdateRelaunch: () => ipcRenderer.invoke("updates:isPostUpdateRelaunch") as Promise<boolean>,
+		relaunch: () => ipcRenderer.invoke("updates:relaunch") as Promise<void>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
 			ipcRenderer.on("updates:status", wrapped);
@@ -560,6 +619,9 @@ const api = {
 		getSession: () => ipcRenderer.invoke("cloud:getSession") as Promise<CloudAccount | null>,
 		signIn: () => ipcRenderer.invoke("cloud:signIn") as Promise<void>,
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
+		cancelProviderAuth: () => ipcRenderer.invoke("cloud:cancelProviderAuth") as Promise<void>,
+		connectProviderAuth: (input: { baseUrl: string; orgId: string; provider: string }) =>
+			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<void>,
 		// Dev-only local (email/password) sign-in against a loopback Docker CP.
 		// Whether the surface is offered is decided in main (unpackaged/dev +
 		// loopback); the renderer only mirrors it for UI visibility.

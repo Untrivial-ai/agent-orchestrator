@@ -31,13 +31,13 @@ const (
 // CodexAccounts is the display-safe account-management view. Credentials and
 // filesystem locations remain daemon-private.
 type CodexAccounts struct {
-	ActiveAccountID        string                              `json:"activeAccountId,omitempty"`
-	AccountRevision        int64                               `json:"accountRevision"`
-	Accounts               []domain.CodexAccountSnapshot       `json:"accounts"`
-	Capabilities           domain.CodexAccountCapabilities     `json:"capabilities"`
-	UnmanagedGlobalAccount *domain.CodexUnmanagedGlobalAccount `json:"unmanagedGlobalAccount,omitempty"`
-	ActiveLogin            *CodexActiveLogin                   `json:"activeLogin,omitempty"`
-	CurrentSwitch          *domain.CodexAccountSwitch          `json:"currentSwitch,omitempty"`
+	ActiveAccountID      string                           `json:"activeAccountId,omitempty"`
+	AccountRevision      int64                            `json:"accountRevision"`
+	Accounts             []domain.CodexAccountSnapshot    `json:"accounts"`
+	Capabilities         domain.CodexAccountCapabilities  `json:"capabilities"`
+	DeviceReconciliation domain.CodexDeviceReconciliation `json:"deviceReconciliation"`
+	ActiveLogin          *CodexActiveLogin                `json:"activeLogin,omitempty"`
+	CurrentSwitch        *domain.CodexAccountSwitch       `json:"currentSwitch,omitempty"`
 }
 
 // CodexActiveLogin is the safe in-memory login state needed to reattach the
@@ -69,18 +69,19 @@ type CodexAccountLoginTerminalStart struct {
 type codexAccountLoginTerminalService interface {
 	OpenCommandTerminal(context.Context, shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error)
 	CloseShellTerminal(context.Context, string) error
+	IsShellTerminalChildAlive(context.Context, string) (bool, error)
 }
 
-// CodexAccountStateStore persists only the active-account pointer and revision.
-// Account descriptors and credentials remain filesystem-owned.
-type CodexAccountStateStore interface {
-	GetCodexActiveAccount(context.Context) (domain.CodexActiveAccount, bool, error)
-	SetCodexActiveAccount(context.Context, string, int64, time.Time) (domain.CodexActiveAccount, error)
+type accountAuthCall struct {
+	done     chan struct{}
+	previous domain.AgentAuthenticationObservation
+	retry    bool
 }
-
-type accountAuthCall struct{ done chan struct{} }
 type accountAuthState struct {
-	invalidated              bool
+	invalidated bool
+	// launchVerified reports that a protected Codex account call succeeded.
+	// account/read only discovers local account metadata and never sets it.
+	launchVerified           bool
 	reauthenticationRequired bool
 	failures                 int
 	nextRetryAt              time.Time
@@ -96,26 +97,29 @@ type accountReconcileCall struct {
 	err  error
 }
 type accountLoginOperation struct {
-	snapshot        domain.CodexAccountLoginOperation
-	targetAccountID string
-	pendingDir      string
-	home            string
-	terminalHandle  string
-	terminalTitle   string
-	terminalCreated time.Time
-	closing         bool
-	committing      bool
-	commitDone      chan struct{}
+	snapshot                 domain.CodexAccountLoginOperation
+	targetAccountID          string
+	deviceState              codexFileState
+	startingGlobalCredential []byte
+	targetWasActive          bool
+	pendingDir               string
+	home                     string
+	terminalHandle           string
+	terminalTitle            string
+	terminalCreated          time.Time
+	closing                  bool
+	committing               bool
+	commitDone               chan struct{}
 }
 
 type codexAccountManager struct {
 	ctx               context.Context
 	catalog           *codexAccountCatalog
 	factory           ports.CodexAccountClientFactory
-	stateStore        CodexAccountStateStore
 	operationGate     ports.CodexOperationGate
 	logger            *slog.Logger
 	now               func() time.Time
+	after             func(time.Duration) <-chan time.Time
 	newID             func() string
 	processes         chan struct{}
 	mutations         chan struct{}
@@ -125,25 +129,31 @@ type codexAccountManager struct {
 	pendingRoot       string
 	switchStagingRoot string
 
-	mu                 sync.Mutex
-	bootstrapCall      *accountReconcileCall
-	bootstrapErr       error
-	bootstrapNextRetry time.Time
-	bootstrapFailures  int
-	auth               map[string]*accountAuthState
-	usage              map[string]*accountUsageState
-	capabilities       domain.CodexAccountCapabilities
-	active             domain.CodexActiveAccount
-	globalAuth         domain.AgentAuthenticationObservation
-	unmanaged          *domain.CodexUnmanagedGlobalAccount
-	login              *accountLoginOperation
-	reconcile          *accountReconcileCall
-	bootstrapped       bool
-	capacity           *codexCapacityCoordinator
-	subscribers        map[chan CodexAccounts]struct{}
+	mu                      sync.Mutex
+	accountStoreCall        *accountReconcileCall
+	accountStoreErr         error
+	accountStoreNextRetry   time.Time
+	accountStoreFailures    int
+	auth                    map[string]*accountAuthState
+	usage                   map[string]*accountUsageState
+	capabilities            domain.CodexAccountCapabilities
+	snapshotRevision        int64
+	deviceAccountID         string
+	deferredAccountID       string
+	deviceCredentialPresent bool
+	login                   *accountLoginOperation
+	reconcile               *accountReconcileCall
+	reconcileRequested      bool
+	reconciliation          domain.CodexDeviceReconciliation
+	reconcileFailures       int
+	reconcileScheduled      bool
+	accountStoreReady       bool
+	capacity                *codexCapacityCoordinator
+	onAuthenticationChanged func()
+	subscribers             map[chan CodexAccounts]struct{}
 }
 
-func newCodexAccountManager(ctx context.Context, accountRoot, pendingRoot, switchStagingRoot, globalHome string, factory ports.CodexAccountClientFactory, stateStore CodexAccountStateStore, logger *slog.Logger, operationGates ...ports.CodexOperationGate) *codexAccountManager {
+func newCodexAccountManager(ctx context.Context, accountRoot, pendingRoot, switchStagingRoot, globalHome string, factory ports.CodexAccountClientFactory, logger *slog.Logger, operationGates ...ports.CodexOperationGate) *codexAccountManager {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -155,13 +165,17 @@ func newCodexAccountManager(ctx context.Context, accountRoot, pendingRoot, switc
 		operationGate = operationGates[0]
 	}
 	m := &codexAccountManager{
-		ctx: ctx, catalog: newCodexAccountCatalog(accountRoot, logger), factory: factory, stateStore: stateStore, operationGate: operationGate,
+		ctx: ctx, catalog: newCodexAccountCatalog(accountRoot, logger), factory: factory, operationGate: operationGate,
 		logger: logger, now: func() time.Time { return time.Now().UTC() }, newID: uuid.NewString,
+		after:     time.After,
 		processes: make(chan struct{}, codexAccountProcessLimit), mutations: make(chan struct{}, 1), executable: os.Executable,
 		globalHome: canonicalPath(globalHome), pendingRoot: canonicalPath(pendingRoot), switchStagingRoot: canonicalPath(switchStagingRoot),
 		auth: map[string]*accountAuthState{}, usage: map[string]*accountUsageState{},
 		capabilities: unavailableCodexCapabilities(), subscribers: map[chan CodexAccounts]struct{}{},
-		globalAuth: uncheckedAuthentication(),
+		snapshotRevision: time.Now().UTC().UnixNano(),
+		reconciliation: domain.CodexDeviceReconciliation{
+			Status: domain.CodexDeviceReconciliationNotChecked, ReasonCode: "not_checked",
+		},
 	}
 	m.mutations <- struct{}{}
 	m.capacity = newCodexCapacityCoordinator(m)
@@ -198,7 +212,7 @@ func (m *codexAccountManager) acquireGlobalMutation(ctx context.Context) (ports.
 
 func unavailableCodexCapabilities() domain.CodexAccountCapabilities {
 	unknown := domain.CodexCapabilityObservation{State: domain.CodexCapabilityUnknown, ReasonCode: domain.CodexCapabilityReasonUnknown, Reason: "Codex capability detection has not completed."}
-	return domain.CodexAccountCapabilities{AccountRead: unknown, NativeLogin: unknown, CapacityRead: unknown, UsageRead: unknown, ResetCreditConsume: unknown, ThreadResume: unknown, AccountManagement: unknown, GlobalSwitch: unknown}
+	return domain.CodexAccountCapabilities{AccountRead: unknown, NativeLogin: unknown, CapacityRead: unknown, UsageRead: unknown, ResetCreditConsume: unknown, GlobalSwitch: unknown}
 }
 
 func (m *codexAccountManager) detectCapabilities(ctx context.Context) domain.CodexAccountCapabilities {
@@ -206,12 +220,15 @@ func (m *codexAccountManager) detectCapabilities(ctx context.Context) domain.Cod
 		return unavailableCodexCapabilities()
 	}
 	capabilities := m.factory.Capabilities(ctx)
-	if capabilities.AccountRead.State == domain.CodexCapabilitySupported {
-		if err := m.validateGlobalCredentialStore(); err != nil {
-			capabilities.GlobalSwitch = domain.CodexCapabilityObservation{
-				State: domain.CodexCapabilityUnsupported, ReasonCode: "global_credential_store_unsupported",
-				Reason: "Device-global account switching requires a file-backed Codex sign-in.",
-			}
+	if err := m.validateGlobalCredentialStore(); err != nil {
+		capabilities.GlobalSwitch = domain.CodexCapabilityObservation{
+			State: domain.CodexCapabilityUnsupported, ReasonCode: "global_credential_store_unsupported",
+			Reason: "Device-global account switching requires a file-backed Codex sign-in.",
+		}
+	} else {
+		capabilities.GlobalSwitch = domain.CodexCapabilityObservation{
+			State: domain.CodexCapabilitySupported, ReasonCode: domain.CodexCapabilityReasonSupported,
+			Reason: "AO can switch file-backed Codex credentials on this device.",
 		}
 	}
 	m.mu.Lock()
@@ -226,7 +243,11 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 		return CodexAccounts{}, mapUnknownCodexAccount(err)
 	}
 	m.mu.Lock()
-	active, capabilities, unmanaged := m.active, m.capabilities, m.unmanaged
+	snapshotRevision, capabilities, reconciliation := m.snapshotRevision, m.capabilities, m.reconciliation
+	deviceAccountID := ""
+	if reconciliation.ActiveAccountVerified {
+		deviceAccountID = m.deviceAccountID
+	}
 	var activeLogin *CodexActiveLogin
 	if m.login != nil && m.login.terminalHandle != "" && !terminalLoginStatus(m.login.snapshot.Status) {
 		activeLogin = &CodexActiveLogin{
@@ -242,7 +263,7 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 	accounts := make([]domain.CodexAccountSnapshot, 0, len(records))
 	for _, record := range records {
 		snapshot := record.Snapshot
-		snapshot.Active = snapshot.ID == active.AccountID
+		snapshot.Active = deviceAccountID != "" && snapshot.ID == deviceAccountID
 		snapshot.Capacity = m.capacity.snapshot(snapshot.ID)
 		m.mu.Lock()
 		if usage := m.usage[snapshot.ID]; usage != nil && usage.value != nil {
@@ -252,9 +273,9 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 		m.mu.Unlock()
 		accounts = append(accounts, snapshot)
 	}
-	if active.AccountID != "" {
+	if deviceAccountID != "" {
 		for i := range accounts {
-			if accounts[i].ID == active.AccountID && i > 0 {
+			if accounts[i].ID == deviceAccountID && i > 0 {
 				item := accounts[i]
 				copy(accounts[1:i+1], accounts[0:i])
 				accounts[0] = item
@@ -262,24 +283,35 @@ func (m *codexAccountManager) view(ids []string) (CodexAccounts, error) {
 			}
 		}
 	}
-	return CodexAccounts{ActiveAccountID: active.AccountID, AccountRevision: active.Revision, Accounts: accounts, Capabilities: capabilities, UnmanagedGlobalAccount: unmanaged, ActiveLogin: activeLogin}, nil
+	return CodexAccounts{ActiveAccountID: deviceAccountID, AccountRevision: snapshotRevision, Accounts: accounts, Capabilities: capabilities, DeviceReconciliation: reconciliation, ActiveLogin: activeLogin}, nil
 }
 
 func (m *codexAccountManager) cached() CodexAccounts { result, _ := m.view(nil); return result }
 
 func (m *codexAccountManager) accountContext(record codexAccountRecord) ports.CodexAccountContext {
+	if record.useSavedHome {
+		return ports.CodexAccountContext{Home: record.Home, Managed: true}
+	}
 	home := record.Home
 	m.mu.Lock()
-	active := m.active.AccountID
-	unmanaged := m.unmanaged != nil
+	active, associated := m.deviceAccountID, m.reconciliation.ActiveAccountVerified
 	m.mu.Unlock()
-	if record.Snapshot.ID == active && !unmanaged {
+	// The global home is safe for a saved slot only after the current device
+	// credential has been positively associated with that exact slot.
+	if associated && record.Snapshot.ID == active {
 		return ports.CodexAccountContext{Home: m.globalHome, Managed: false}
 	}
 	return ports.CodexAccountContext{Home: home, Managed: true}
 }
 
-func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeUsage bool, installation domain.AgentInstallationState) (CodexAccounts, error) {
+func (m *codexAccountManager) deferAccountRead(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	associated := m.reconciliation.ActiveAccountVerified && id == m.deviceAccountID
+	return id != "" && id == m.deferredAccountID && !associated
+}
+
+func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeUsage, forceAuthentication bool, installation domain.AgentInstallationState) (CodexAccounts, error) {
 	if err := m.catalog.refresh(); err != nil {
 		return CodexAccounts{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account discovery is unavailable")
 	}
@@ -287,16 +319,35 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	if err != nil {
 		return CodexAccounts{}, mapUnknownCodexAccount(err)
 	}
+	eligible := make([]codexAccountRecord, 0, len(records))
+	for _, record := range records {
+		// A targeted metadata refresh belongs to the saved account, not the
+		// device-global credential. Keeping it isolated avoids turning a row
+		// expansion into a device-account state transition.
+		record.useSavedHome = len(ids) > 0
+		if !m.deferAccountRead(record.Snapshot.ID) {
+			eligible = append(eligible, record)
+		}
+	}
 	if installation == domain.AgentInstallationNotInstalled {
+		m.recordAuthenticationUnavailable(eligible, domain.AgentReadinessReasonAuthSkippedNotInstalled, "Authentication was not checked because Codex is not installed.")
 		return m.view(ids)
 	}
-	if err := m.reconcileGlobal(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		m.logger.Debug("Codex global account reconciliation degraded", "failure_category", "global_account_reconciliation")
-	}
 	capabilities := m.detectCapabilities(ctx)
-	for _, record := range records {
-		if record.Snapshot.Status == domain.CodexAccountStatusValid && capabilities.AccountRead.State == domain.CodexCapabilitySupported {
-			if _, err := m.ensureAuthentication(ctx, record, domain.AgentReadinessPurposeDisplay, false); err != nil {
+	if capabilities.AccountRead.State != domain.CodexCapabilitySupported {
+		code, reason := domain.AgentReadinessReasonAuthCheckInconclusive, "Authentication could not be checked."
+		if capabilities.AccountRead.State == domain.CodexCapabilityUnsupported {
+			code, reason = domain.AgentReadinessReasonAuthCheckUnsupported, "This Codex version cannot check authentication."
+		}
+		m.recordAuthenticationUnavailable(eligible, code, reason)
+		return m.view(ids)
+	}
+	if forceAuthentication {
+		m.forceAuthenticationRetry(eligible)
+	}
+	for _, record := range eligible {
+		if record.Snapshot.Status == domain.CodexAccountStatusValid {
+			if _, err := m.ensureAuthentication(ctx, record, domain.AgentReadinessPurposeDisplay); err != nil {
 				return CodexAccounts{}, err
 			}
 		}
@@ -305,11 +356,21 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	if err != nil {
 		return CodexAccounts{}, mapUnknownCodexAccount(err)
 	}
-	if err := m.capacity.ensure(ctx, records, capabilities); err != nil && !errors.Is(err, context.Canceled) {
+	// Authentication checks above update the catalog snapshots. Capacity must
+	// consume those refreshed observations, while still excluding the one stale
+	// pointer whose device ownership has not been established.
+	eligible = eligible[:0]
+	for _, record := range records {
+		record.useSavedHome = len(ids) > 0
+		if !m.deferAccountRead(record.Snapshot.ID) {
+			eligible = append(eligible, record)
+		}
+	}
+	if err := m.capacity.ensure(ctx, eligible, capabilities, forceAuthentication); err != nil && !errors.Is(err, context.Canceled) {
 		m.logger.Debug("Codex account capacity ensure degraded", "failure_category", "capacity_read")
 	}
 	if includeUsage && capabilities.UsageRead.State == domain.CodexCapabilitySupported {
-		for _, record := range records {
+		for _, record := range eligible {
 			if record.Snapshot.Status == domain.CodexAccountStatusValid &&
 				record.Snapshot.Authentication.State == domain.AgentAuthenticationAuthorized &&
 				record.Snapshot.AuthMethod == domain.CodexAuthMethodChatGPT {
@@ -322,102 +383,201 @@ func (m *codexAccountManager) ensure(ctx context.Context, ids []string, includeU
 	return result, err
 }
 
-func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record codexAccountRecord, purpose domain.AgentReadinessPurpose, refreshToken bool) (domain.AgentAuthenticationObservation, error) {
+func (m *codexAccountManager) recordAuthenticationUnavailable(records []codexAccountRecord, code, reason string) {
+	attempted := m.now()
+	observation := failedAuthentication(attempted, code, reason)
+	for _, record := range records {
+		if record.Snapshot.Status != domain.CodexAccountStatusValid {
+			continue
+		}
+		m.catalog.updateSnapshot(record.Snapshot.ID, func(snapshot *domain.CodexAccountSnapshot) {
+			preserveAuthenticationFailure(&snapshot.Authentication, observation)
+		})
+	}
+	m.publish()
+}
+
+func (m *codexAccountManager) forceAuthenticationRetry(records []codexAccountRecord) {
 	m.mu.Lock()
-	state := m.auth[record.Snapshot.ID]
-	if state == nil {
-		state = &accountAuthState{invalidated: true}
-		m.auth[record.Snapshot.ID] = state
+	for _, record := range records {
+		if record.Snapshot.Status != domain.CodexAccountStatusValid {
+			continue
+		}
+		state := m.auth[record.Snapshot.ID]
+		if state == nil {
+			state = &accountAuthState{}
+			m.auth[record.Snapshot.ID] = state
+		}
+		state.invalidated = true
+		state.nextRetryAt = time.Time{}
 	}
-	current, _ := m.catalog.record(record.Snapshot.ID)
-	if state.reauthenticationRequired {
-		out := current.Snapshot.Authentication
+	m.mu.Unlock()
+	for _, record := range records {
+		if record.Snapshot.Status == domain.CodexAccountStatusValid {
+			m.capacity.invalidate(record.Snapshot.ID, false)
+		}
+	}
+}
+
+func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record codexAccountRecord, purpose domain.AgentReadinessPurpose) (domain.AgentAuthenticationObservation, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return domain.AgentAuthenticationObservation{}, err
+		}
+		m.mu.Lock()
+		state := m.auth[record.Snapshot.ID]
+		if state == nil {
+			state = &accountAuthState{invalidated: true}
+			m.auth[record.Snapshot.ID] = state
+		}
+		current, _ := m.catalog.record(record.Snapshot.ID)
+		if state.reauthenticationRequired {
+			out := current.Snapshot.Authentication
+			m.mu.Unlock()
+			return out, nil
+		}
+		ttl := codexAccountDisplayTTL
+		if purpose == domain.AgentReadinessPurposeLaunch {
+			ttl = codexAccountLaunchTTL
+		}
+		fresh := current.Snapshot.Authentication.CheckedAt != nil && m.now().Sub(*current.Snapshot.Authentication.CheckedAt) < ttl
+		if !state.invalidated && fresh {
+			out := current.Snapshot.Authentication
+			m.mu.Unlock()
+			return out, nil
+		}
+		if purpose == domain.AgentReadinessPurposeDisplay && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
+			out := current.Snapshot.Authentication
+			m.mu.Unlock()
+			return out, nil
+		}
+		if state.call != nil {
+			call := state.call
+			m.mu.Unlock()
+			select {
+			case <-call.done:
+				if call.retry {
+					continue
+				}
+				latest, _ := m.catalog.record(record.Snapshot.ID)
+				return latest.Snapshot.Authentication, nil
+			case <-ctx.Done():
+				return domain.AgentAuthenticationObservation{}, ctx.Err()
+			}
+		}
+		call := &accountAuthCall{done: make(chan struct{}), previous: current.Snapshot.Authentication}
+		state.call = call
+		m.catalog.updateSnapshot(record.Snapshot.ID, func(s *domain.CodexAccountSnapshot) { s.Authentication.Freshness = domain.AgentReadinessChecking })
 		m.mu.Unlock()
-		return out, nil
-	}
-	ttl := codexAccountDisplayTTL
-	if purpose == domain.AgentReadinessPurposeLaunch {
-		ttl = codexAccountLaunchTTL
-	}
-	fresh := current.Snapshot.Authentication.CheckedAt != nil && m.now().Sub(*current.Snapshot.Authentication.CheckedAt) < ttl
-	if !state.invalidated && fresh {
-		out := current.Snapshot.Authentication
-		m.mu.Unlock()
-		return out, nil
-	}
-	if purpose == domain.AgentReadinessPurposeDisplay && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
-		out := current.Snapshot.Authentication
-		m.mu.Unlock()
-		return out, nil
-	}
-	if state.call != nil {
-		call := state.call
-		m.mu.Unlock()
+		go m.runAuthentication(record, call)
 		select {
 		case <-call.done:
+			if call.retry {
+				continue
+			}
 			latest, _ := m.catalog.record(record.Snapshot.ID)
 			return latest.Snapshot.Authentication, nil
 		case <-ctx.Done():
 			return domain.AgentAuthenticationObservation{}, ctx.Err()
 		}
 	}
-	call := &accountAuthCall{done: make(chan struct{})}
-	state.call = call
-	m.catalog.updateSnapshot(record.Snapshot.ID, func(s *domain.CodexAccountSnapshot) { s.Authentication.Freshness = domain.AgentReadinessChecking })
-	m.mu.Unlock()
-	go m.runAuthentication(record, refreshToken, call)
-	select {
-	case <-call.done:
-		latest, _ := m.catalog.record(record.Snapshot.ID)
-		return latest.Snapshot.Authentication, nil
-	case <-ctx.Done():
-		return domain.AgentAuthenticationObservation{}, ctx.Err()
-	}
 }
 
-func (m *codexAccountManager) runAuthentication(record codexAccountRecord, refresh bool, call *accountAuthCall) {
+func (m *codexAccountManager) runAuthentication(record codexAccountRecord, call *accountAuthCall) {
 	attempted := m.now()
+	ctx, cancel := context.WithTimeout(m.ctx, codexAccountAuthTimeout)
+	defer cancel()
 	select {
 	case m.processes <- struct{}{}:
 		defer func() { <-m.processes }()
-	case <-m.ctx.Done():
-		m.finishAuthentication(record.Snapshot.ID, failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckFailed, "Authentication check stopped."), domain.CodexAuthMethodUnknown, nil, true, call)
+	case <-ctx.Done():
+		m.finishAuthentication(ctx, record.Snapshot.ID, failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckFailed, "Authentication check stopped."), domain.CodexAuthMethodUnknown, nil, true, call)
 		return
 	}
-	ctx, cancel := context.WithTimeout(m.ctx, codexAccountAuthTimeout)
-	defer cancel()
 	account := m.accountContext(record)
 	releaseGlobal, err := m.acquireGlobalRead(ctx, account)
 	if err != nil {
-		m.finishAuthentication(record.Snapshot.ID, failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckFailed, "Authentication check stopped."), domain.CodexAuthMethodUnknown, nil, true, call)
+		m.finishAuthentication(ctx, record.Snapshot.ID, failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckFailed, "Authentication check stopped."), domain.CodexAuthMethodUnknown, nil, true, call)
 		return
 	}
-	defer releaseGlobal()
-	if refresh {
-		release, err := m.acquireAccountMutation(ctx)
-		if err != nil {
-			m.finishAuthentication(record.Snapshot.ID, failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckFailed, "Authentication check stopped."), domain.CodexAuthMethodUnknown, nil, true, call)
-			return
+	releasedGlobal := false
+	releaseGlobalOnce := func() {
+		if !releasedGlobal {
+			releaseGlobal()
+			releasedGlobal = true
 		}
-		defer release()
+	}
+	defer releaseGlobalOnce()
+	if m.globalCredentialMissingFor(account) {
+		releaseGlobalOnce()
+		_ = m.reconcileGlobalWithPolicy(m.ctx, true)
+		m.retryAuthenticationAfterDeviceChange(record.Snapshot.ID, call)
+		return
 	}
 	client, err := m.factory.Open(ctx, account)
 	if err != nil {
-		m.finishAuthentication(record.Snapshot.ID, failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckFailed, "Authentication check failed."), domain.CodexAuthMethodUnknown, nil, true, call)
+		if m.globalCredentialMissingFor(account) {
+			releaseGlobalOnce()
+			_ = m.reconcileGlobalWithPolicy(m.ctx, true)
+			m.retryAuthenticationAfterDeviceChange(record.Snapshot.ID, call)
+			return
+		}
+		m.finishAuthentication(ctx, record.Snapshot.ID, failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckFailed, "Authentication check failed."), domain.CodexAuthMethodUnknown, nil, true, call)
 		return
 	}
-	defer func() { _ = client.Close() }()
-	observation, err := client.Read(ctx, refresh)
+	clientClosed := false
+	closeClientOnce := func() {
+		if !clientClosed {
+			_ = client.Close()
+			clientClosed = true
+		}
+	}
+	defer closeClientOnce()
+	// account/read is metadata discovery only. Remote authentication is proved
+	// separately by a protected account call.
+	observation, err := client.Read(ctx, false)
+	if m.globalCredentialMissingFor(account) {
+		closeClientOnce()
+		releaseGlobalOnce()
+		_ = m.reconcileGlobalWithPolicy(m.ctx, true)
+		m.retryAuthenticationAfterDeviceChange(record.Snapshot.ID, call)
+		return
+	}
 	if err != nil {
 		code, reason := domain.AgentReadinessReasonAuthCheckFailed, "Authentication check failed."
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			code, reason = domain.AgentReadinessReasonAuthCheckTimeout, "Authentication check timed out."
 		}
-		m.finishAuthentication(record.Snapshot.ID, failedAuthentication(attempted, code, reason), domain.CodexAuthMethodUnknown, nil, true, call)
+		m.finishAuthentication(ctx, record.Snapshot.ID, failedAuthentication(attempted, code, reason), domain.CodexAuthMethodUnknown, nil, true, call)
 		return
 	}
 	result := accountAuthenticationObservation(m.now(), observation.Authentication)
-	m.finishAuthentication(record.Snapshot.ID, result, observation.Method, observation.Email, observation.Authentication == domain.AgentAuthenticationUnknown, call)
+	m.finishAuthentication(ctx, record.Snapshot.ID, result, observation.Method, observation.Email, observation.Authentication == domain.AgentAuthenticationUnknown, call)
+}
+
+func (m *codexAccountManager) globalCredentialMissingFor(account ports.CodexAccountContext) bool {
+	if canonicalPath(account.Home) != m.globalHome {
+		return false
+	}
+	_, state, err := readCodexDeviceFileState(m.globalCredentialPath(), true)
+	return err == nil && !state.exists
+}
+
+func (m *codexAccountManager) retryAuthenticationAfterDeviceChange(id string, call *accountAuthCall) {
+	m.mu.Lock()
+	state := m.auth[id]
+	if state != nil && state.call == call {
+		m.catalog.updateSnapshot(id, func(snapshot *domain.CodexAccountSnapshot) {
+			snapshot.Authentication = call.previous
+		})
+		state.invalidated = true
+		state.nextRetryAt = time.Time{}
+		state.call = nil
+		call.retry = true
+		close(call.done)
+	}
+	m.mu.Unlock()
+	m.publish()
 }
 
 func accountAuthenticationObservation(at time.Time, state domain.AgentAuthenticationState) domain.AgentAuthenticationObservation {
@@ -433,30 +593,79 @@ func accountAuthenticationObservation(at time.Time, state domain.AgentAuthentica
 	}
 }
 
-func (m *codexAccountManager) finishAuthentication(id string, observation domain.AgentAuthenticationObservation, method domain.CodexAuthMethod, email *string, failed bool, call *accountAuthCall) {
+func (m *codexAccountManager) finishAuthentication(ctx context.Context, id string, observation domain.AgentAuthenticationObservation, method domain.CodexAuthMethod, email *string, failed bool, call *accountAuthCall) {
 	m.mu.Lock()
 	state := m.auth[id]
-	if failed {
-		m.catalog.updateSnapshot(id, func(s *domain.CodexAccountSnapshot) { preserveAuthenticationFailure(&s.Authentication, observation) })
-		state.invalidated = true
-		state.failures++
-		if state.failures <= len(defaultReadinessRetryDelays) {
-			state.nextRetryAt = m.now().Add(defaultReadinessRetryDelays[state.failures-1])
+	if !state.reauthenticationRequired {
+		if failed {
+			m.catalog.updateSnapshot(id, func(s *domain.CodexAccountSnapshot) { preserveAuthenticationFailure(&s.Authentication, observation) })
+			state.invalidated = true
+			state.failures++
+			if state.failures <= len(defaultReadinessRetryDelays) {
+				state.nextRetryAt = m.now().Add(defaultReadinessRetryDelays[state.failures-1])
+			}
+		} else {
+			// An unauthorized read reports no account, so it carries no identity. The
+			// saved slot still belongs to the same account, and discarding its label
+			// would both hide who must sign in again and break global reconciliation's
+			// identity match.
+			identified := observation.State == domain.AgentAuthenticationAuthorized || observation.State == domain.AgentAuthenticationNotApplicable
+			m.catalog.updateSnapshot(id, func(s *domain.CodexAccountSnapshot) {
+				s.Authentication = observation
+				if identified {
+					s.AuthMethod = method
+					s.AccountEmail = email
+					s.Label = accountLabel(email)
+				}
+			})
+			if identified {
+				// Reconciliation may create the account from local auth.json before
+				// Codex supplies display metadata. Persist the first successful
+				// account/read result so a later catalog refresh or daemon restart
+				// cannot regress the label to the internal account-id fallback.
+				if err := m.catalog.updateVerifiedDescriptor(ctx, id, ports.CodexAccountObservation{Method: method, Email: email}); err != nil {
+					m.logger.Warn("Codex account display metadata could not be persisted", "accountID", id)
+				}
+			}
+			state.invalidated = false
+			state.launchVerified = false
+			state.failures = 0
+			state.nextRetryAt = time.Time{}
 		}
-	} else {
-		m.catalog.updateSnapshot(id, func(s *domain.CodexAccountSnapshot) {
-			s.Authentication = observation
-			s.AuthMethod = method
-			s.AccountEmail = email
-			s.Label = accountLabel(id, method, email)
-		})
-		state.invalidated = false
-		state.failures = 0
-		state.nextRetryAt = time.Time{}
 	}
 	state.call = nil
 	close(call.done)
 	m.mu.Unlock()
+	m.publish()
+}
+
+type codexAuthenticationEvidence uint8
+
+const codexAuthenticationCredentialRejected codexAuthenticationEvidence = 1
+
+// recordProtectedAuthenticationEvidence is the single owner for authentication
+// conclusions learned by other protected Codex calls. Capacity only reports the
+// typed rejection; it never refreshes credentials or mutates authentication.
+func (m *codexAccountManager) recordProtectedAuthenticationEvidence(id string, evidence codexAuthenticationEvidence) {
+	if evidence == codexAuthenticationCredentialRejected {
+		m.requireReauthentication(id)
+	}
+}
+
+func (m *codexAccountManager) authenticationVerification(id string) (verified, reauthenticationRequired bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.auth[id]
+	if state == nil {
+		return false, false
+	}
+	return state.launchVerified, state.reauthenticationRequired
+}
+
+func (m *codexAccountManager) authenticationChanged() {
+	if m.onAuthenticationChanged != nil {
+		m.onAuthenticationChanged()
+	}
 	m.publish()
 }
 
@@ -475,6 +684,32 @@ func (m *codexAccountManager) invalidate(id string) {
 	m.publish()
 }
 
+// invalidateCredentialEvidence clears conclusions made about credentials that
+// reconciliation has just replaced. In particular, an expired-token result for
+// the previous auth.json must not suppress verification of a newly rotated or
+// externally refreshed credential for the same account.
+func (m *codexAccountManager) invalidateCredentialEvidence(id string) {
+	m.mu.Lock()
+	state := m.auth[id]
+	if state == nil {
+		state = &accountAuthState{}
+		m.auth[id] = state
+	}
+	state.reauthenticationRequired = false
+	state.launchVerified = false
+	state.invalidated = true
+	state.failures = 0
+	state.nextRetryAt = time.Time{}
+	delete(m.usage, id)
+	m.mu.Unlock()
+	m.catalog.updateSnapshot(id, func(snapshot *domain.CodexAccountSnapshot) {
+		snapshot.Authentication = uncheckedAuthentication()
+		snapshot.UsageSummary = nil
+	})
+	m.capacity.invalidate(id, true)
+	m.publish()
+}
+
 func (m *codexAccountManager) requireReauthentication(id string) {
 	m.mu.Lock()
 	state := m.auth[id]
@@ -484,6 +719,7 @@ func (m *codexAccountManager) requireReauthentication(id string) {
 	}
 	state.reauthenticationRequired = true
 	state.invalidated = false
+	state.launchVerified = true
 	state.failures = 0
 	state.nextRetryAt = time.Time{}
 	delete(m.usage, id)
@@ -494,7 +730,7 @@ func (m *codexAccountManager) requireReauthentication(id string) {
 		snapshot.UsageSummary = nil
 	})
 	m.capacity.replace(id, staticCodexCapacity(domain.CodexCapacityUnknown, domain.CodexCapacityReasonSkippedSignedOut, "Sign in to Codex to see subscription capacity."), "reauthentication_required")
-	m.publish()
+	m.authenticationChanged()
 }
 
 func (m *codexAccountManager) clearReauthenticationRequired(id string) {
@@ -506,6 +742,7 @@ func (m *codexAccountManager) clearReauthenticationRequired(id string) {
 	}
 	state.reauthenticationRequired = false
 	state.invalidated = false
+	state.launchVerified = false
 	state.failures = 0
 	state.nextRetryAt = time.Time{}
 	m.mu.Unlock()
@@ -693,6 +930,13 @@ func (m *codexAccountManager) subscribe(ctx context.Context) <-chan CodexAccount
 	return ch
 }
 func (m *codexAccountManager) publish() {
+	m.mu.Lock()
+	next := m.now().UnixNano()
+	if next <= m.snapshotRevision {
+		next = m.snapshotRevision + 1
+	}
+	m.snapshotRevision = next
+	m.mu.Unlock()
 	snapshot := m.cached()
 	m.mu.Lock()
 	defer m.mu.Unlock()

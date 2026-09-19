@@ -18,8 +18,9 @@ import type {
 	PRCardPresentation,
 	PRSummaryMetadata,
 } from "./pull-request-models";
+import { scmUserAvatarUrl } from "./scm-avatar";
 import { cn } from "./utils";
-import { GithubAvatar } from "./GithubAvatar";
+import { UserAvatar } from "./UserAvatar";
 
 export type InspectorView = "summary" | "reviews" | "browser" | "files";
 
@@ -106,9 +107,22 @@ export function SessionInspectorShellView({
 
 	return (
 		<aside className={inspectorShellClass} aria-label={ariaLabel}>
-			<div className="session-inspector__topbar flex h-inspector-tabs shrink-0 items-center border-b border-border pl-1">
-				{isVisible ? (
-					<div className="session-inspector__tablist flex min-w-0 flex-1 items-center justify-start gap-1" role="tablist">
+			<div
+				className={cn(
+					"session-inspector__topbar flex h-inspector-tabs shrink-0 items-center border-b border-border-strong pl-1",
+					activeView === "browser" && "session-inspector__topbar--browser",
+				)}
+			>
+				{isVisible && tabs.length === 1 ? (
+					<span className="min-w-0 flex-1 px-2 text-sm text-passive">{tabs[0].label}</span>
+				) : isVisible ? (
+					<div
+						className={cn(
+							"session-inspector__tablist flex min-w-0 items-center justify-start gap-1",
+							activeView === "browser" ? "shrink-0" : "flex-1",
+						)}
+						role="tablist"
+					>
 						{tabs.map((tab, index) => (
 							<button
 								aria-label={tab.label}
@@ -223,6 +237,7 @@ export function SessionInspectorSummaryView({
 	pullRequestTitle,
 	reviews,
 	usage,
+	workers,
 }: {
 	activity: ReactNode;
 	activityTitle: string;
@@ -231,9 +246,15 @@ export function SessionInspectorSummaryView({
 	pullRequestTitle: string;
 	reviews?: ReactNode;
 	usage?: ReactNode;
+	/**
+	 * The sessions this orchestrator spawned. Rendered first: for an
+	 * orchestrator, its workers are the summary's primary content.
+	 */
+	workers?: ReactNode;
 }) {
 	return (
 		<div role="tabpanel">
+			{workers}
 			<InspectorSection surface={false} title={pullRequestTitle}>
 				<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
 			</InspectorSection>
@@ -973,7 +994,11 @@ function ExternalReviewCard({
 	const collapsible = bodyOverflows || hasNestedContent;
 	const headerContent = (
 		<>
-			<GithubAvatar className="size-6 shrink-0" login={entry.reviewerId} />
+			<UserAvatar
+				className="size-6 shrink-0"
+				imageUrl={scmUserAvatarUrl("github", entry.pullRequestUrl, entry.reviewerId)}
+				name={entry.reviewerId}
+			/>
 			<span className="flex min-w-0 flex-col gap-0.5">
 				<span className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-foreground">
 					<span className="min-w-0 break-words">{entry.reviewerId}</span>

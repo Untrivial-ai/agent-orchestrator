@@ -15,6 +15,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import {
 	AndroidStudioIcon,
+	AntigravityIcon,
 	CursorIcon,
 	JetBrainsIcon,
 	SublimeIcon,
@@ -31,6 +32,7 @@ const editorIcons: Record<string, typeof VSCodeIcon> = {
 	cursor: CursorIcon,
 	windsurf: WindsurfIcon,
 	zed: ZedIcon,
+	antigravity: AntigravityIcon,
 	sublime: SublimeIcon,
 	"android-studio": AndroidStudioIcon,
 	intellij: JetBrainsIcon,
@@ -48,6 +50,7 @@ const editorColors: Record<string, string> = {
 	vscode: "#1F9CF0",
 	"vscode-insiders": "#1F9CF0",
 	vscodium: "#2F80ED",
+	antigravity: "#4285F4",
 	sublime: "#FF9800",
 	"android-studio": "#3DDC84",
 };
@@ -66,14 +69,18 @@ function TargetIcon({ target, className }: { target?: OpenTarget; className?: st
 export function TopbarOpenEditorButton({
 	sessionId,
 	projectId,
+	sessionCreatedAt,
+	sessionTerminated,
 	style,
 }: {
 	sessionId: string;
 	projectId: string;
+	sessionCreatedAt?: string;
+	sessionTerminated?: boolean;
 	style?: React.CSSProperties;
 }) {
 	const { t } = useTranslation();
-	const stateQuery = useEditorHandoffState(sessionId);
+	const stateQuery = useEditorHandoffState(sessionId, { sessionCreatedAt, sessionTerminated });
 	const open = useOpenSessionTarget();
 	const state = stateQuery.data;
 	const [menuOpen, setMenuOpen] = useState(false);
@@ -81,8 +88,6 @@ export function TopbarOpenEditorButton({
 	const editors = targets.filter((target) => target.kind === "editor");
 	const preferred = editors.find((target) => target.id === state?.preferredEditorId);
 	const safeTargets = targets.filter((target) => target.kind !== "editor");
-	const fileManagerName = safeTargets.find((target) => target.kind === "file_manager")?.name ?? t("editor.fileManager");
-	const terminalName = safeTargets.find((target) => target.kind === "terminal")?.name ?? t("editor.terminal");
 	const workspaceAvailable = state?.workspaceAvailable === true;
 	const busy = stateQuery.isPending || open.isPending;
 	const mainDisabled = busy || !workspaceAvailable || !preferred;
@@ -93,19 +98,23 @@ export function TopbarOpenEditorButton({
 		open.mutate({ sessionId, projectId, ...(targetId ? { targetId } : {}) });
 	};
 	const launchError = open.error instanceof Error ? open.error.message : null;
-	const guidance = !stateQuery.isPending && !workspaceAvailable
+	const workspaceError = !stateQuery.isPending && !workspaceAvailable
 		? state?.unavailableReason ?? t("editor.workspaceUnavailable")
-		: !stateQuery.isPending && editors.length === 0
-			? t("editor.noEditorGuidance", { fileManager: fileManagerName, terminal: terminalName })
-			: null;
-	const mainTitle = guidance
-		?? (preferred ? t("editor.openWorkspaceInTitle", { name: preferred.name }) : t("editor.chooseEditorTitle"));
+		: null;
+	const visibleActionError = launchError ?? workspaceError;
+	const noEditorInstalled = !stateQuery.isPending && workspaceAvailable && editors.length === 0;
+	const mainTitle = stateQuery.isPending
+		? t("editor.preparingWorkspace")
+		: (workspaceError
+			?? (preferred
+				? t("editor.openWorkspaceInTitle", { name: preferred.name })
+				: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditorTitle"))));
 
 	return (
 		<>
-			{launchError || guidance ? (
-				<TopbarActionError className="max-w-content-max truncate" title={launchError ?? guidance ?? undefined}>
-					{launchError ?? guidance}
+			{visibleActionError ? (
+				<TopbarActionError className="max-w-content-max truncate" title={visibleActionError}>
+					{visibleActionError}
 				</TopbarActionError>
 			) : null}
 			<div
@@ -117,7 +126,11 @@ export function TopbarOpenEditorButton({
 					<TooltipTrigger asChild>
 						<span className="inline-flex">
 							<TopbarButton
-								aria-label={preferred ? t("editor.openInAria", { name: preferred.name }) : t("editor.chooseEditor")}
+								aria-label={stateQuery.isPending
+									? t("editor.preparingWorkspace")
+									: preferred
+										? t("editor.openInAria", { name: preferred.name })
+										: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditor"))}
 								className="hover:bg-transparent"
 								disabled={mainDisabled}
 								onClick={() => launch()}

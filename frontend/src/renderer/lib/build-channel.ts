@@ -19,15 +19,17 @@ export function parseNightlyVersion(version?: string): { base: string; builtAt: 
 	const match = /^(\d+\.\d+\.\d+)-nightly\.(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(?:[.+]|$)/.exec(version ?? "");
 	if (!match) return null;
 	const [, base, year, month, day, hour, minute] = match;
+	// The nightly stamp encodes the build time in UTC, so it must be parsed as
+	// UTC components. The local Date constructor would read the stamp as local
+	// wall time and shift the instant by the machine's UTC offset, which then
+	// renders a wrong time (or the wrong calendar day) in the sidebar, the
+	// Settings Updates section, and the restart dialog.
 	const builtAt = new Date(
-		Number(year),
-		Number(month) - 1,
-		Number(day),
-		Number(hour),
-		Number(minute),
+		Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)),
 	);
 	// A stamp like 202699999999 parses into a nonsense date; treat it as unusable
-	// rather than rendering "Invalid Date" into the sidebar.
-	if (Number.isNaN(builtAt.getTime()) || builtAt.getMonth() !== Number(month) - 1) return null;
+	// rather than rendering "Invalid Date" into the sidebar. Validate with the
+	// UTC getters so the check does not depend on the machine timezone either.
+	if (Number.isNaN(builtAt.getTime()) || builtAt.getUTCMonth() !== Number(month) - 1) return null;
 	return { base, builtAt };
 }

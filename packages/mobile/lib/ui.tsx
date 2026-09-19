@@ -14,6 +14,11 @@ import {
 	type ViewStyle,
 } from "react-native";
 import { haptics } from "./haptics";
+import { BREATHE_MS, shouldBreathe } from "./motion";
+import { NativeHeaderButton, type NativeHeaderButtonIcon } from "./native-header-button";
+import { useOptionalSidebarNavigation } from "./sidebar-navigation-shell";
+import { useReducedMotion } from "./useReducedMotion";
+import { fontScaleCap } from "./tokens";
 import type { ConnStatus } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
@@ -33,25 +38,38 @@ export const Dot = memo(function Dot({
 	breathing?: boolean;
 }) {
 	const pulse = useRef(new Animated.Value(1)).current;
+	// Consumed here rather than at the call sites: this is the most-repeated
+	// animation in the app, so honouring the setting once inside the primitive
+	// fixes every `<Dot breathing>` — status badges, the connection lamp, project
+	// rows — without touching any of them.
+	const reduceMotion = useReducedMotion();
+	const animate = shouldBreathe(reduceMotion, breathing);
 	useEffect(() => {
-		if (!breathing) return;
+		// Deliberately not a zero duration: a zero-length loop is a busy loop, so
+		// the animation must not start at all.
+		if (!animate) return;
 		const loop = Animated.loop(
 			Animated.sequence([
 				Animated.timing(pulse, {
 					toValue: 0.35,
-					duration: 1200,
+					duration: BREATHE_MS,
 					useNativeDriver: true,
 				}),
 				Animated.timing(pulse, {
 					toValue: 1,
-					duration: 1200,
+					duration: BREATHE_MS,
 					useNativeDriver: true,
 				}),
 			]),
 		);
 		loop.start();
-		return () => loop.stop();
-	}, [breathing, pulse]);
+		return () => {
+			loop.stop();
+			// Leave the dot at full opacity; a stopped loop otherwise freezes it
+			// mid-fade, which reads as a rendering bug rather than a resting state.
+			pulse.setValue(1);
+		};
+	}, [animate, pulse]);
 
 	return (
 		<Animated.View
@@ -60,7 +78,7 @@ export const Dot = memo(function Dot({
 				height: size,
 				borderRadius: size / 2,
 				backgroundColor: color,
-				opacity: breathing ? pulse : 1,
+				opacity: animate ? pulse : 1,
 			}}
 		/>
 	);
@@ -90,7 +108,11 @@ export function Pill({
 			}}
 			style={[s.pill, active && s.pillActive, style]}
 		>
-			<Text numberOfLines={1} style={[s.pillText, active && s.pillTextActive, textStyle]}>
+			<Text
+				numberOfLines={1}
+				maxFontSizeMultiplier={fontScaleCap.chrome}
+				style={[s.pillText, active && s.pillTextActive, textStyle]}
+			>
 				{label}
 			</Text>
 		</Pressable>
@@ -104,7 +126,9 @@ export function StatusBadge({ status }: { status?: string | null }) {
 	return (
 		<View style={s.badge}>
 			<Dot color={v.color} breathing={v.breathing} size={8} />
-			<Text style={[s.badgeText, { color: v.color }]}>{v.label}</Text>
+			<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={[s.badgeText, { color: v.color }]}>
+				{v.label}
+			</Text>
 		</View>
 	);
 }
@@ -131,7 +155,11 @@ export function Chip({
 	return (
 		<View style={[s.chip, { backgroundColor: bg }]}>
 			{icon ? <Feather name={icon} size={11} color={fg} style={{ marginRight: 4 }} /> : null}
-			<Text style={[s.chipText, { color: fg }, mono && { fontFamily: t.fontMono, fontSize: 11 }]} numberOfLines={1}>
+			<Text
+				style={[s.chipText, { color: fg }, mono && { fontFamily: t.fontMono, fontSize: 11 }]}
+				numberOfLines={1}
+				maxFontSizeMultiplier={fontScaleCap.chrome}
+			>
 				{label}
 			</Text>
 		</View>
@@ -167,8 +195,14 @@ export function SectionHeader({ label, color, count }: { label: string; color: s
 	return (
 		<View style={s.sectionHeader}>
 			<View style={[s.sectionBar, { backgroundColor: color }]} />
-			<Text style={s.sectionLabel}>{label.toUpperCase()}</Text>
-			{count !== undefined ? <Text style={s.sectionCount}>{count}</Text> : null}
+			<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.sectionLabel}>
+				{label.toUpperCase()}
+			</Text>
+			{count !== undefined ? (
+				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.sectionCount}>
+					{count}
+				</Text>
+			) : null}
 		</View>
 	);
 }
@@ -181,28 +215,26 @@ export function HeaderIconButton({
 	onPress,
 	badge = 0,
 }: {
-	icon: keyof typeof Feather.glyphMap;
+	icon: NativeHeaderButtonIcon;
 	/** Required — the control has no visible text. */
 	label: string;
 	onPress: () => void;
 	/** Non-zero shows an unread dot. The number itself is not drawn. */
 	badge?: number;
 }) {
-	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
 	return (
-		<Pressable
-			hitSlop={10}
-			accessibilityLabel={badge > 0 ? `${label}, ${badge} unread` : label}
-			onPress={() => {
-				haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [s.headerIconBtn, pressed && { opacity: 0.6 }]}
-		>
-			<Feather name={icon} size={21} color={t.textSecondary} />
+		<View style={s.headerIconBtn} accessibilityLabel={badge > 0 ? `${label}, ${badge} unread` : label}>
+			<NativeHeaderButton
+				icon={icon}
+				label={badge > 0 ? `${label}, ${badge} unread` : label}
+				onPress={() => {
+					haptics.tap();
+					onPress();
+				}}
+			/>
 			{badge > 0 ? <View style={s.headerBadge} /> : null}
-		</Pressable>
+		</View>
 	);
 }
 
@@ -210,27 +242,30 @@ export function HeaderIconButton({
 // green when the daemon is reachable and goes dark when it isn't. The tip sits
 // at ~85% across and ~7% down `mascot.png` — where `wandTip`/`wandHalo` below
 // get their offsets from.
-function MascotLamp({ status }: { status?: ConnStatus }) {
+export function MascotLamp({ status, size = 40 }: { status?: ConnStatus; size?: number }) {
 	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
 	const color = status === "open" ? t.green : status === "connecting" ? t.amber : t.textFaint;
 	const lit = status === "open" || status === "connecting";
 	const label = status === "open" ? "Connected" : status === "connecting" ? "Connecting" : "Offline";
+	// Every offset below is a fraction of the artwork's 40x35 box, so the lamp
+	// stays on the wand tip at whatever size the logo is drawn.
+	const k = size / 40;
 	return (
 		<View
-			style={s.mascotWrap}
+			style={[s.mascotWrap, { width: size, height: 35 * k }]}
 			accessible
 			accessibilityRole="image"
 			accessibilityLabel={status ? `AO mascot, ${label}` : "AO mascot"}
 		>
-			<Image source={MASCOT} style={s.mascot} resizeMode="contain" />
+			<Image source={MASCOT} style={{ width: size, height: 35 * k }} resizeMode="contain" />
 			{status ? (
 				<>
 					{/* Halo first, dot on top: RN has no boxShadow, so the glow is a
 					    larger translucent circle plus a platform shadow/elevation. */}
-					{lit ? <View style={[s.wandHalo, { backgroundColor: color, shadowColor: color }]} /> : null}
-					<View style={s.wandTip}>
-						<Dot color={color} size={7} breathing={status === "connecting"} />
+					{lit ? <View style={[s.wandHalo, { left: 26 * k, top: -4 * k, width: 16 * k, height: 16 * k, borderRadius: 8 * k, backgroundColor: color, shadowColor: color }]} /> : null}
+					<View style={[s.wandTip, { left: 30.5 * k }]}>
+						<Dot color={color} size={7 * k} breathing={status === "connecting"} />
 					</View>
 				</>
 			) : null}
@@ -240,31 +275,42 @@ function MascotLamp({ status }: { status?: ConnStatus }) {
 
 export function ScreenHeader({
 	title,
-	subtitle,
+	left,
 	right,
-	status,
 }: {
 	title: string;
-	subtitle?: string;
+	/** Detail routes can supply a back action instead of the sidebar button. */
+	left?: ReactNode;
 	right?: ReactNode;
-	/** Drives the wand-tip lamp. Omit to render the mascot with no lamp. */
-	status?: ConnStatus;
 }) {
 	const s = useThemedStyles(makeStyles);
+	const sidebar = useOptionalSidebarNavigation();
 	return (
 		<View style={s.screenHeader}>
+			{left ?? (sidebar ? <HeaderIconButton icon="menu" label="Open navigation" onPress={sidebar.openSidebar} /> : null)}
 			<View style={{ flex: 1 }}>
-				<View style={s.titleRow}>
-					<Text style={s.screenTitle}>{title}</Text>
-					<MascotLamp status={status} />
-				</View>
-				{subtitle ? (
-					<Text style={s.screenSubtitle} numberOfLines={1}>
-						{subtitle}
-					</Text>
-				) : null}
+				<Text maxFontSizeMultiplier={fontScaleCap.title} style={s.screenTitle}>
+					{title}
+				</Text>
 			</View>
 			{right}
+		</View>
+	);
+}
+
+export function ListSectionHeader({ label, count }: { label: string; count?: number }) {
+	const s = useThemedStyles(makeStyles);
+	return (
+		<View style={s.listSectionHeader}>
+			<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.listSectionLabel}>
+				{label}
+			</Text>
+			<View style={s.listSectionRule} />
+			{count !== undefined ? (
+				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.listSectionCount}>
+					{count}
+				</Text>
+			) : null}
 		</View>
 	);
 }
@@ -317,7 +363,9 @@ export function Button({
 			) : (
 				<View style={s.btnInner}>
 					{icon ? <Feather name={icon} size={15} color={fg} style={{ marginRight: 7 }} /> : null}
-					<Text style={[s.btnText, { color: fg }]}>{title}</Text>
+					<Text maxFontSizeMultiplier={fontScaleCap.body} style={[s.btnText, { color: fg }]}>
+						{title}
+					</Text>
 				</View>
 			)}
 		</Pressable>
@@ -491,7 +539,11 @@ export function SettingsRow({
 	const body = (
 		<>
 			{icon ? <Feather name={icon} size={17} color={iconColor} style={s.rowIcon} /> : null}
-			<Text style={[s.rowLabel, { color: labelColor }]} numberOfLines={1}>
+			<Text
+				style={[s.rowLabel, { color: labelColor }]}
+				numberOfLines={1}
+				maxFontSizeMultiplier={fontScaleCap.body}
+			>
 				{label}
 			</Text>
 			{right ?? (
@@ -499,7 +551,11 @@ export function SettingsRow({
 					{loading ? <ActivityIndicator size="small" color={t.textTertiary} /> : null}
 					{!loading && leading ? leading : null}
 					{!loading && value ? (
-						<Text style={[s.rowValue, valueColor ? { color: valueColor } : null]} numberOfLines={1}>
+						<Text
+							style={[s.rowValue, valueColor ? { color: valueColor } : null]}
+							numberOfLines={1}
+							maxFontSizeMultiplier={fontScaleCap.chrome}
+						>
 							{value}
 						</Text>
 					) : null}
@@ -637,8 +693,14 @@ export function EmptyState({
 			<View style={s.emptyIcon}>
 				<Feather name={icon} size={26} color={t.textTertiary} />
 			</View>
-			<Text style={s.emptyTitle}>{title}</Text>
-			{message ? <Text style={s.emptyMsg}>{message}</Text> : null}
+			<Text maxFontSizeMultiplier={fontScaleCap.body} style={s.emptyTitle}>
+				{title}
+			</Text>
+			{message ? (
+				<Text maxFontSizeMultiplier={fontScaleCap.body} style={s.emptyMsg}>
+					{message}
+				</Text>
+			) : null}
 			{action ? <View style={{ marginTop: 18 }}>{action}</View> : null}
 		</View>
 	);
@@ -646,6 +708,18 @@ export function EmptyState({
 
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
+		listSectionHeader: {
+			flexDirection: "row",
+			alignItems: "center",
+			gap: 10,
+			paddingHorizontal: 18,
+			paddingTop: 18,
+			paddingBottom: 5,
+		},
+		listSectionLabel: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
+		listSectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle },
+		// Mono and tabular so a count changing from 9 to 10 does not shift the rule.
+		listSectionCount: { color: t.textFaint, fontSize: 12, fontWeight: "700", fontFamily: t.fontMono },
 		badge: { flexDirection: "row", alignItems: "center", gap: 6 },
 		badgeText: { fontSize: 12, fontWeight: "600" },
 
@@ -938,7 +1012,7 @@ const makeStyles = (t: Theme) =>
  * orchestrator's project card.
  *
  * These three had byte-identical style blocks, each with a comment
- * acknowledging the duplication ("Matches SessionCard's shell so a PR card and
+ * acknowledging the duplication ("Matches the session card shell so a PR card and
  * a session card read as siblings"). Comments cannot keep them in step — a
  * radius changed in one place would quietly make one card a different shape
  * from its neighbours in the same scroll view. This is what those comments were

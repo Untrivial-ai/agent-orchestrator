@@ -1,5 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { isChatPreflightError, OrchestratorSpawnError, spawnOrchestrator } from "./spawn-orchestrator";
+import {
+	canBypassOrchestratorApprovals,
+	isChatPreflightError,
+	OrchestratorSpawnError,
+	spawnOrchestrator,
+} from "./spawn-orchestrator";
 import { apiClient } from "./api-client";
 import { captureRendererEvent } from "./telemetry";
 
@@ -12,6 +17,10 @@ vi.mock("./api-client", () => ({
 	apiErrorRequestId: (error: unknown) =>
 		typeof error === "object" && error !== null && "requestId" in error
 			? String((error as { requestId: unknown }).requestId)
+			: undefined,
+	apiErrorDetails: (error: unknown) =>
+		typeof error === "object" && error !== null && "details" in error
+			? (error as { details: Record<string, unknown> }).details
 			: undefined,
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => {
 		if (typeof error === "object" && error !== null && "message" in error) {
@@ -135,5 +144,51 @@ describe("spawnOrchestrator", () => {
 		});
 		expect((error as Error).message).toBe("chat driver is unavailable (CHAT_DRIVER_UNAVAILABLE)");
 		expect(isChatPreflightError(error)).toBe(true);
+	});
+
+	it("sends an approval override only when the caller passes one", async () => {
+		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
+			data: { orchestrator: { id: "proj-3" } },
+			error: undefined,
+			response: { status: 201 },
+		});
+		await spawnOrchestrator("proj", "board", false, undefined, "bypass-permissions");
+		expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/orchestrators", {
+			body: { projectId: "proj", clean: false, approvalMode: "bypass-permissions" },
+		});
+	});
+
+	it("carries daemon error details for the approvals fallback", async () => {
+		const details = { missingCapabilities: ["approvals"], allowedApprovalModes: ["bypass-permissions"] };
+		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
+			data: undefined,
+			error: {
+				code: "SESSION_MODE_UNSUPPORTED",
+				message: "chat needs approvals",
+				requestId: "request-7",
+				details,
+			},
+			response: { status: 400 },
+		});
+
+		const error = await spawnOrchestrator("proj", "board").catch((caught: unknown) => caught);
+		expect(error).toMatchObject({ code: "SESSION_MODE_UNSUPPORTED", details });
+		expect(canBypassOrchestratorApprovals(
+			(error as OrchestratorSpawnError).code,
+			(error as OrchestratorSpawnError).details,
+		)).toBe(true);
+	});
+
+	it("refuses the bypass fallback for non-approvals preflight failures", () => {
+		expect(canBypassOrchestratorApprovals("CHAT_AUTH_REQUIRED", undefined)).toBe(false);
+		expect(canBypassOrchestratorApprovals("SESSION_MODE_UNSUPPORTED", { missingCapabilities: ["models"] })).toBe(
+			false,
+		);
+		expect(
+			canBypassOrchestratorApprovals("SESSION_MODE_UNSUPPORTED", {
+				missingCapabilities: ["approvals"],
+				allowedApprovalModes: ["accept-edits"],
+			}),
+		).toBe(false);
 	});
 });

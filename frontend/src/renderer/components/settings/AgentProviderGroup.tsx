@@ -13,6 +13,7 @@ export function AgentProviderGroup({
 	action,
 	expanded,
 	onExpandedChange,
+	collapsible = true,
 	collapseLocked = false,
 	children,
 }: {
@@ -22,11 +23,19 @@ export function AgentProviderGroup({
 	action?: ReactNode;
 	expanded: boolean;
 	onExpandedChange: (expanded: boolean) => void;
+	collapsible?: boolean;
 	collapseLocked?: boolean;
 	children: ReactNode;
 }) {
 	const headingId = useId();
 	const contentId = useId();
+	const identity = <>
+		<AgentAvatar className="size-8 shrink-0" decorative provider={provider} />
+		<div className="min-w-0">
+			<span id={headingId} className="block truncate text-sm font-medium text-foreground">{name}</span>
+			{summary ? <p className="mt-0.5 text-xs text-muted-foreground">{summary}</p> : null}
+		</div>
+	</>;
 
 	return (
 		<section
@@ -35,7 +44,7 @@ export function AgentProviderGroup({
 			data-agent-provider={provider}
 		>
 			<header className="flex min-h-16 items-center justify-between gap-4 px-4 py-3">
-				<button
+				{collapsible ? <button
 					type="button"
 					aria-controls={contentId}
 					aria-expanded={expanded}
@@ -43,16 +52,12 @@ export function AgentProviderGroup({
 					disabled={collapseLocked}
 					onClick={() => onExpandedChange(!expanded)}
 				>
-					<AgentAvatar className="size-8 shrink-0" decorative provider={provider} />
-					<div className="min-w-0">
-						<span id={headingId} className="block truncate text-sm font-medium text-foreground">{name}</span>
-						{summary ? <p className="mt-0.5 text-xs text-muted-foreground">{summary}</p> : null}
-					</div>
+					{identity}
 					<ChevronDown
 						aria-hidden="true"
 						className={`ml-auto size-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "" : "-rotate-90"}`}
 					/>
-				</button>
+				</button> : <div className="flex min-w-0 flex-1 items-center gap-3">{identity}</div>}
 				{action ? <div className="shrink-0">{action}</div> : null}
 			</header>
 			{expanded ? <div id={contentId} className="border-t border-border">{children}</div> : null}

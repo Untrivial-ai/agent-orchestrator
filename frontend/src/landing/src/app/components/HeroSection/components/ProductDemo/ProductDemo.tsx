@@ -1,21 +1,28 @@
 "use client";
 
-import Image from "next/image";
 import { AppMockup } from "../AppMockup";
 
-const PREVIEW_BACKGROUND_IMAGE = "/optimized/hero-background.webp";
+// The LCP element. Single-format srcset on purpose: with a <picture> the
+// preload scanner would fetch the <img> candidate while the element resolves to
+// an <source> candidate, downloading the hero twice.
+const HERO_WIDTHS = [720, 1080, 1440] as const;
+const HERO_SRCSET = HERO_WIDTHS.map(
+	(w) => `/optimized/hero-background-${w}.webp ${w}w`,
+).join(", ");
 
 export function ProductDemo() {
 	return (
 		<div className="relative w-full max-w-full">
 			<div className="relative aspect-[1140/700] overflow-hidden bg-card p-2 shadow-[0_40px_120px_-50px_rgba(0,0,0,0.9)] sm:aspect-auto sm:min-h-[560px] sm:p-4 lg:min-h-[720px] lg:p-6">
-				<Image
-					src={PREVIEW_BACKGROUND_IMAGE}
-					alt=""
-					fill
-					preload
+				<img
+					src="/optimized/hero-background-1440.webp"
+					srcSet={HERO_SRCSET}
 					sizes="(max-width: 1536px) 100vw, 1536px"
-					className="pointer-events-none select-none object-cover"
+					alt=""
+					fetchPriority="high"
+					decoding="async"
+					draggable={false}
+					className="pointer-events-none absolute inset-0 h-full w-full select-none object-cover"
 				/>
 				<div className="pointer-events-none absolute inset-0 bg-background/15" />
 				<div className="pointer-events-none absolute inset-x-8 top-8 h-24 rounded-full bg-foreground/[0.16] blur-3xl" />
