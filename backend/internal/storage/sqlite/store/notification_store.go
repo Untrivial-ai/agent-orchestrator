@@ -265,7 +265,8 @@ func (s *Store) MarkAllNotificationsRead(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-// ClearAllNotifications deletes every notification.
+// ClearAllNotifications hides every visible notification while retaining open
+// rows for dedupe until their underlying condition resolves.
 func (s *Store) ClearAllNotifications(ctx context.Context) (int64, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

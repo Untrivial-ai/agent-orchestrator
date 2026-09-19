@@ -14,7 +14,10 @@ import (
 )
 
 const clearAllNotifications = `-- name: ClearAllNotifications :execrows
-DELETE FROM notifications
+UPDATE notifications
+SET dismissed_at = CURRENT_TIMESTAMP,
+    status = 'read'
+WHERE dismissed_at IS NULL
 `
 
 func (q *Queries) ClearAllNotifications(ctx context.Context) (int64, error) {
@@ -29,6 +32,7 @@ const countUnreadNotifications = `-- name: CountUnreadNotifications :one
 SELECT COUNT(*)
 FROM notifications
 WHERE status = 'unread'
+  AND dismissed_at IS NULL
 `
 
 func (q *Queries) CountUnreadNotifications(ctx context.Context) (int64, error) {
@@ -42,6 +46,7 @@ const countUnresolvedNotifications = `-- name: CountUnresolvedNotifications :one
 SELECT COUNT(*)
 FROM notifications
 WHERE resolved_at IS NULL
+  AND dismissed_at IS NULL
   AND type IN ('needs_input', 'ready_to_merge')
 `
 
@@ -56,7 +61,7 @@ const createNotification = `-- name: CreateNotification :one
 INSERT INTO notifications (
     id, session_id, project_id, pr_url, type, title, body, status, created_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 `
 
 type CreateNotificationParams struct {
@@ -95,12 +100,13 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 		&i.Status,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.DismissedAt,
 	)
 	return i, err
 }
 
 const getOpenNotificationByDedupe = `-- name: GetOpenNotificationByDedupe :one
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 FROM notifications
 WHERE session_id = ?
   AND type = ?
@@ -129,14 +135,16 @@ func (q *Queries) GetOpenNotificationByDedupe(ctx context.Context, arg GetOpenNo
 		&i.Status,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.DismissedAt,
 	)
 	return i, err
 }
 
 const listNotificationsPage = `-- name: ListNotificationsPage :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 FROM notifications
-WHERE (
+WHERE dismissed_at IS NULL
+  AND (
     CAST(?1 AS TEXT) = ''
     OR created_at < ?2
     OR (created_at = ?2 AND id < CAST(?1 AS TEXT))
@@ -171,6 +179,7 @@ func (q *Queries) ListNotificationsPage(ctx context.Context, arg ListNotificatio
 			&i.Status,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -186,7 +195,7 @@ func (q *Queries) ListNotificationsPage(ctx context.Context, arg ListNotificatio
 }
 
 const listOpenReadyToMergeNotifications = `-- name: ListOpenReadyToMergeNotifications :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 FROM notifications
 WHERE type = 'ready_to_merge'
   AND resolved_at IS NULL
@@ -216,6 +225,7 @@ func (q *Queries) ListOpenReadyToMergeNotifications(ctx context.Context) ([]Noti
 			&i.Status,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -231,9 +241,10 @@ func (q *Queries) ListOpenReadyToMergeNotifications(ctx context.Context) ([]Noti
 }
 
 const listUnreadNotificationsPage = `-- name: ListUnreadNotificationsPage :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 FROM notifications
 WHERE status = 'unread'
+  AND dismissed_at IS NULL
   AND (
     CAST(?1 AS TEXT) = ''
     OR created_at < ?2
@@ -269,6 +280,7 @@ func (q *Queries) ListUnreadNotificationsPage(ctx context.Context, arg ListUnrea
 			&i.Status,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -284,9 +296,10 @@ func (q *Queries) ListUnreadNotificationsPage(ctx context.Context, arg ListUnrea
 }
 
 const listUnresolvedNotificationsPage = `-- name: ListUnresolvedNotificationsPage :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 FROM notifications
 WHERE resolved_at IS NULL
+  AND dismissed_at IS NULL
   AND type IN ('needs_input', 'ready_to_merge')
   AND (
     CAST(?1 AS TEXT) = ''
@@ -326,6 +339,7 @@ func (q *Queries) ListUnresolvedNotificationsPage(ctx context.Context, arg ListU
 			&i.Status,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -344,6 +358,7 @@ const markAllNotificationsRead = `-- name: MarkAllNotificationsRead :execrows
 UPDATE notifications
 SET status = 'read'
 WHERE status = 'unread'
+  AND dismissed_at IS NULL
 `
 
 func (q *Queries) MarkAllNotificationsRead(ctx context.Context) (int64, error) {
@@ -357,8 +372,10 @@ func (q *Queries) MarkAllNotificationsRead(ctx context.Context) (int64, error) {
 const markNotificationRead = `-- name: MarkNotificationRead :one
 UPDATE notifications
 SET status = 'read'
-WHERE id = ? AND status = 'unread'
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+WHERE id = ?
+  AND status = 'unread'
+  AND dismissed_at IS NULL
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 `
 
 func (q *Queries) MarkNotificationRead(ctx context.Context, id string) (Notification, error) {
@@ -375,6 +392,7 @@ func (q *Queries) MarkNotificationRead(ctx context.Context, id string) (Notifica
 		&i.Status,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.DismissedAt,
 	)
 	return i, err
 }
@@ -385,7 +403,7 @@ SET resolved_at = ?1
 WHERE pr_url = ?2
   AND type = ?3
   AND resolved_at IS NULL
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 `
 
 type ResolvePRNotificationsByTypeParams struct {
@@ -414,6 +432,7 @@ func (q *Queries) ResolvePRNotificationsByType(ctx context.Context, arg ResolveP
 			&i.Status,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -434,7 +453,7 @@ SET resolved_at = ?1
 WHERE session_id = ?2
   AND type = ?3
   AND resolved_at IS NULL
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 `
 
 type ResolveSessionNotificationsByTypeParams struct {
@@ -463,6 +482,7 @@ func (q *Queries) ResolveSessionNotificationsByType(ctx context.Context, arg Res
 			&i.Status,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -487,7 +507,7 @@ WHERE type = 'needs_input'
     WHERE is_terminated = TRUE
        OR activity_state NOT IN ('waiting_input', 'blocked')
   )
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 `
 
 // Restart reconciliation: a resolution transition observed while the daemon was
@@ -513,6 +533,7 @@ func (q *Queries) ResolveStaleNeedsInputNotifications(ctx context.Context, resol
 			&i.Status,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
