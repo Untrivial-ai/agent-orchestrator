@@ -438,16 +438,32 @@ type piModelsFile struct {
 	Providers map[string]piModelsProvider `json:"providers"`
 }
 
+// Only omission may leave this empty. JSON calls this decoder for every
+// present value, including null, so invalid fields cannot inherit an API.
+type piModelsAPI string
+
+func (api *piModelsAPI) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if !piAPIIdentifier(value) {
+		return errors.New("api must be a nonempty identifier")
+	}
+	*api = piModelsAPI(value)
+	return nil
+}
+
 type piModelsProvider struct {
 	BaseURL string          `json:"baseUrl"`
-	API     string          `json:"api"`
+	API     piModelsAPI     `json:"api"`
 	APIKey  *string         `json:"apiKey"`
 	Models  []piModelsModel `json:"models"`
 }
 
 type piModelsModel struct {
-	ID  string `json:"id"`
-	API string `json:"api"`
+	ID  string      `json:"id"`
+	API piModelsAPI `json:"api"`
 }
 
 func piModelsProviderStatus(ctx context.Context, d authutil.Dependencies, path, provider string) ports.AgentAuthStatus {
@@ -481,9 +497,9 @@ func piModelsProviderValid(provider string, config piModelsProvider) bool {
 		if strings.TrimSpace(model.ID) == "" {
 			return false
 		}
-		api := strings.TrimSpace(model.API)
+		api := string(model.API)
 		if api == "" {
-			api = strings.TrimSpace(config.API)
+			api = string(config.API)
 		}
 		if api == "" {
 			if builtIn {

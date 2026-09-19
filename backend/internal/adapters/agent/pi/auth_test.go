@@ -276,6 +276,69 @@ func TestPiCustomProviderRejectsMalformedAPIs(t *testing.T) {
 	}
 }
 
+func TestPiExplicitInvalidAPIMustNotInherit(t *testing.T) {
+	for _, provider := range []string{"openai", "custom"} {
+		for _, field := range []string{"provider", "model"} {
+			for _, tc := range []struct{ name, value string }{
+				{"empty", `""`},
+				{"null", `null`},
+				{"whitespace", `"   "`},
+				{"number", `42`},
+				{"object", `{}`},
+				{"array", `[]`},
+				{"boolean", `false`},
+			} {
+				t.Run(provider+"/"+field+"/"+tc.name, func(t *testing.T) {
+					providerAPI, modelAPI := `"openai-completions"`, `"openai-responses"`
+					if field == "provider" {
+						providerAPI = tc.value
+					} else {
+						modelAPI = tc.value
+					}
+					models := `{"providers":{"` + provider + `":{"baseUrl":"http://127.0.0.1:8080/v1","api":` + providerAPI + `,"models":[{"id":"model","api":` + modelAPI + `}]}}}`
+					if got := piTestStatus(t, provider, map[string]string{"models.json": models}, nil, authutil.Dependencies{}); got != ports.AgentAuthStatusUnknown {
+						t.Fatalf("status = %q, want unknown for explicit invalid %s api", got, field)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPiOmittedAPIInheritsOnlyAvailableDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, providerAPI, modelAPI string
+		want                                  ports.AgentAuthStatus
+	}{
+		{"built-in default", "openai", "", "", ports.AgentAuthStatusNotApplicable},
+		{"custom has no built-in default", "custom", "", "", ports.AgentAuthStatusUnknown},
+		{"model inherits provider API", "custom", `,"api":"openai-completions"`, "", ports.AgentAuthStatusNotApplicable},
+		{"model supplies missing provider API", "custom", "", `,"api":"openai-responses"`, ports.AgentAuthStatusNotApplicable},
+		{"empty provider cannot inherit built-in", "openai", `,"api":""`, "", ports.AgentAuthStatusUnknown},
+		{"null provider cannot inherit built-in", "openai", `,"api":null`, "", ports.AgentAuthStatusUnknown},
+		{"empty model cannot inherit built-in", "openai", "", `,"api":""`, ports.AgentAuthStatusUnknown},
+		{"null model cannot inherit built-in", "openai", "", `,"api":null`, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			models := `{"providers":{"` + tc.provider + `":{"baseUrl":"http://127.0.0.1:8080/v1"` + tc.providerAPI + `,"models":[{"id":"model"` + tc.modelAPI + `}]}}}`
+			if got := piTestStatus(t, tc.provider, map[string]string{"models.json": models}, nil, authutil.Dependencies{}); got != tc.want {
+				t.Fatalf("status = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPiInvalidAPIInvalidatesModelsFile(t *testing.T) {
+	for _, value := range []string{`""`, `null`, `42`} {
+		t.Run(value, func(t *testing.T) {
+			models := `{"providers":{"custom":{"baseUrl":"http://127.0.0.1:8080/v1","api":"openai-completions","models":[{"id":"model"}]},"other":{"api":` + value + `}}}`
+			if got := piTestStatus(t, "custom", map[string]string{"models.json": models}, nil, authutil.Dependencies{}); got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, want unknown for invalid models.json schema", got)
+			}
+		})
+	}
+}
+
 func TestPiNativeProviderCheck(t *testing.T) {
 	tests := map[string]struct {
 		out     string
