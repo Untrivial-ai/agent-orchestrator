@@ -2020,5 +2020,20 @@
 	"home.newStandaloneAgent": "New standalone agent",
 	"createProject.standaloneDesc": "Start an agent without a project, repository, or workspace.",
 	"newTask.standaloneDescription": "Start a worker without attaching it to a project or repository.",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"projectSummary.title": "Project summary",
+	"projectSummary.open": "Open project summary",
+	"projectSummary.close": "Close project summary",
+	"projectSummary.refresh": "Refresh project summary",
+	"projectSummary.loading": "Preparing the latest briefing...",
+	"projectSummary.loadFailed": "Could not load the project summary.",
+	"projectSummary.updateFailed": "Could not update the briefing. Showing the last good summary.",
+	"projectSummary.updated": "Updated {{date}}",
+	"projectSummary.counts": "Project counts",
+	"projectSummary.active": "Active",
+	"projectSummary.complete": "Complete",
+	"projectSummary.needsInput": "Needs input",
+	"projectSummary.attention": "Needs your input",
+	"projectSummary.discuss": "Discuss in chat",
+	"projectSummary.discussPrompt": "Regarding {{name}}: {{question}}"
 }
