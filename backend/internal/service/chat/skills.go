@@ -32,5 +32,38 @@ func (s *Service) Skills(ctx context.Context, id domain.SessionID) ([]ports.Chat
 	if !ok {
 		return nil, ErrSkillsUnsupported
 	}
-	return lister.ListSkills(ctx)
+	skills, err := lister.ListSkills(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(skills) > 0 {
+		return skills, nil
+	}
+	// Empty means one of two things and the live conversation cannot tell them
+	// apart: the provider said "none", or it has not said anything yet. ACP only
+	// ever pushes its catalog -- on session/new and on commands_changed, never on
+	// reattach -- so a controller that took over a surviving provider answers empty
+	// for the rest of the session with no way to ask again. The last catalog AO
+	// wrote down is the better answer, superseded the moment the provider pushes.
+	// A provider that genuinely has none wrote an empty list, so this stays empty.
+	record, err := s.store.ConversationForSession(ctx, id)
+	if err != nil {
+		return skills, nil
+	}
+	return persistedSkills(record), nil
+}
+
+// persistedSkills converts the stored catalog back to the driver's shape.
+func persistedSkills(record domain.ConversationRecord) []ports.ChatSkill {
+	out := make([]ports.ChatSkill, 0, len(record.Skills))
+	for _, skill := range record.Skills {
+		out = append(out, ports.ChatSkill{
+			Name:        skill.Name,
+			DisplayName: skill.DisplayName,
+			Description: skill.Description,
+			InputHint:   skill.InputHint,
+			Source:      skill.Source,
+		})
+	}
+	return out
 }

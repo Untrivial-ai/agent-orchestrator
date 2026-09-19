@@ -451,6 +451,11 @@ UPDATE conversations
 SET mcp_servers_json = ?
 WHERE id = ?;
 
+-- name: UpdateConversationSkills :exec
+UPDATE conversations
+SET skills_json = ?
+WHERE id = ?;
+
 -- name: NextConversationSequence :one
 UPDATE conversations
 SET latest_sequence = latest_sequence + 1, updated_at = ?

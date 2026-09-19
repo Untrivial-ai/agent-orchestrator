@@ -195,6 +195,11 @@ type ConversationRecord struct {
 	// because it answers a question the timeline cannot: a tool call that failed
 	// because its server never started is not the agent's mistake.
 	MCPServers []ConversationMCPServer `json:"mcpServers,omitempty"`
+	// Skills is the last catalog the provider pushed. Held here because the push is
+	// the only way AO ever learns it -- there is no request to ask again -- so
+	// without a durable copy a restart leaves the conversation unable to answer at
+	// all, which renders identically to a provider that has no skills.
+	Skills []ConversationSkill `json:"skills,omitempty"`
 	// AppliedTitle is the last provider title AO wrote into the session's display
 	// name. It is what makes "replace a label AO chose" distinguishable from
 	// "overwrite a label a person chose". Empty means AO has never named it.
@@ -425,6 +430,16 @@ type ConversationMCPServer struct {
 	// FailureReason is the provider's classification, e.g.
 	// "reauthenticationRequired", which is actionable in a way a message is not.
 	FailureReason string `json:"failureReason,omitempty"`
+}
+
+// ConversationSkill is one named skill the provider will let this conversation
+// invoke. Mirrors ports.ChatSkill, which is what the driver reports.
+type ConversationSkill struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
+	Description string `json:"description,omitempty"`
+	InputHint   string `json:"inputHint,omitempty"`
+	Source      string `json:"source,omitempty"`
 }
 
 // PlanStepStatus is where one plan step stands.

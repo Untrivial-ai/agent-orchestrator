@@ -54,6 +54,12 @@ func (c *conversation) replaceAvailableCommands(commands []acpsdk.AvailableComma
 		c.capabilities[ports.ChatCapabilityCompaction] = hasCompact
 	}
 	c.mu.Unlock()
+
+	// Emitted so the catalog outlives this process. ACP pushes it on session/new and
+	// on commands_changed and never again -- in particular not when AO reattaches to
+	// a surviving provider -- so a restart that did not write this down left the
+	// conversation permanently unable to answer what skills it has.
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: cloneSkills(skills)})
 }
 
 func cloneSkills(skills []ports.ChatSkill) []ports.ChatSkill {

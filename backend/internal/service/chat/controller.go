@@ -123,6 +123,7 @@ type Store interface {
 	RecordAccount(ctx context.Context, conversationID string, account domain.ConversationAccount, now time.Time) error
 	RecordThreadState(ctx context.Context, conversationID string, state domain.ConversationThreadState) error
 	RecordMCPServers(ctx context.Context, conversationID string, servers []domain.ConversationMCPServer) error
+	RecordSkills(ctx context.Context, conversationID string, skills []domain.ConversationSkill) error
 
 	UpsertActivity(ctx context.Context, conversationID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
 	MarkCompacted(ctx context.Context, conversationID string, at time.Time) error
@@ -2520,6 +2521,7 @@ func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (b
 		"account":                event.Account,
 		"threadState":            event.ThreadState,
 		"mcpServers":             event.MCPServers,
+		"skills":                 event.Skills,
 	}
 	if c.harness == domain.HarnessCodex {
 		// Codex account identity and subscription capacity are daemon-memory
@@ -2847,6 +2849,9 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			return nil
 		}
 		return c.applyMCPServers(ctx, event.MCPServers)
+
+	case ports.ChatEventSkills:
+		return c.applySkills(ctx, event.Skills)
 
 	case ports.ChatEventCompacted:
 		// A fact about the conversation, emitted from a provider-owned turn that AO
@@ -3250,6 +3255,29 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 	c.mu.Unlock()
 
 	return c.store.RecordMCPServers(ctx, c.conversation.ID, servers)
+}
+
+// applySkills records the catalog the provider just pushed.
+//
+// A whole-list replacement, unlike applyMCPServers: the provider re-sends every
+// command on each change, so merging would resurrect a skill the user just
+// uninstalled. An empty push is recorded rather than dropped -- it is the provider
+// answering "none", which is a different fact from never having answered.
+func (c *Controller) applySkills(ctx context.Context, skills []ports.ChatSkill) error {
+	stored := make([]domain.ConversationSkill, 0, len(skills))
+	for _, skill := range skills {
+		if skill.Name == "" {
+			continue
+		}
+		stored = append(stored, domain.ConversationSkill{
+			Name:        skill.Name,
+			DisplayName: skill.DisplayName,
+			Description: skill.Description,
+			InputHint:   skill.InputHint,
+			Source:      skill.Source,
+		})
+	}
+	return c.store.RecordSkills(ctx, c.conversation.ID, stored)
 }
 
 // ErrMCPReloadUnsupported reports a driver whose provider cannot restart its tool

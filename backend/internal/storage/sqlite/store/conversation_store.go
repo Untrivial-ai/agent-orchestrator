@@ -1563,6 +1563,37 @@ func (s *Store) RecordMCPServers(
 	return nil
 }
 
+// RecordSkills stores the catalog of named skills the provider last pushed.
+//
+// The whole catalog is written because every push replaces it: the provider sends
+// the complete list on each change rather than a delta. An empty list is stored as
+// an empty array rather than NULL, for the reason RecordMCPServers does it -- "the
+// provider says there are none" has to stay distinguishable from "the provider has
+// never said", and only the first should leave the composer without a menu.
+func (s *Store) RecordSkills(
+	ctx context.Context,
+	conversationID string,
+	skills []domain.ConversationSkill,
+) error {
+	if skills == nil {
+		skills = []domain.ConversationSkill{}
+	}
+	encoded, err := json.Marshal(skills)
+	if err != nil {
+		return fmt.Errorf("encode skills for %s: %w", conversationID, err)
+	}
+	q, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	if err := q.UpdateConversationSkills(ctx,
+		gen.UpdateConversationSkillsParams{
+			SkillsJson: sql.NullString{String: string(encoded), Valid: true},
+			ID:         conversationID,
+		}); err != nil {
+		return fmt.Errorf("record skills for %s: %w", conversationID, err)
+	}
+	return nil
+}
+
 // SetTurnPlan overwrites a turn's plan and reports whether the turn was found.
 //
 // A plan for a turn AO never recorded happens after a restart, when a controller
@@ -3062,6 +3093,9 @@ func conversationToDomain(row gen.Conversation) domain.ConversationRecord {
 	rec.ThreadState = decodeJSONColumn[domain.ConversationThreadState](row.ThreadStateJson)
 	if servers := decodeJSONColumn[[]domain.ConversationMCPServer](row.McpServersJson); servers != nil {
 		rec.MCPServers = *servers
+	}
+	if skills := decodeJSONColumn[[]domain.ConversationSkill](row.SkillsJson); skills != nil {
+		rec.Skills = *skills
 	}
 	return rec
 }
