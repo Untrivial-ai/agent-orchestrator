@@ -208,6 +208,9 @@ func TestConfigureKeepsTheUsersOwnInlineConfig(t *testing.T) {
 
 func TestConfigureNeverRelaxesAWorktreePolicy(t *testing.T) {
 	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
 		[]byte(`{"permission":{"bash":"deny","edit":{"*":"allow","infra/**":"deny"}}}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -243,6 +246,9 @@ func TestConfigureDeclinesToGrantAgainstAnUnreadablePolicy(t *testing.T) {
 	workspace := t.TempDir()
 	// Comments are valid for OpenCode and not for encoding/json. A policy AO
 	// cannot read is one it must not override.
+	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
 		[]byte("{\n  // repo policy\n  \"permission\": {\"bash\": \"deny\"}\n}"), 0o600); err != nil {
 		t.Fatal(err)

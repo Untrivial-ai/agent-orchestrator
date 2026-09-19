@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -382,9 +383,11 @@ type opencodeInlineConfig struct {
 }
 
 type opencodeAgentSettings struct {
-	Mode       string            `json:"mode,omitempty"`
-	Prompt     string            `json:"prompt,omitempty"`
-	Permission map[string]string `json:"permission,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+	// Either a ruleset or OpenCode's scalar form, and it outranks every config
+	// layer — which is what makes bypass a true bypass.
+	Permission any `json:"permission,omitempty"`
 }
 
 // opencodePermissionConfig maps AO's approval vocabulary to OpenCode's native
@@ -423,13 +426,14 @@ func opencodePermissionConfig(mode ports.PermissionMode) map[string]string {
 
 func opencodeConfigEnvPrefix(permissions ports.PermissionMode, inlinePrompt, promptFile, sessionID string) ([]string, string, error) {
 	permission := opencodePermissionConfig(permissions)
-	// The interactive TUI has a native all-access flag. Keep using it for
-	// bypass rather than adding a redundant inline rule, which also preserves
-	// the exact established launch shape for existing resumed sessions. Note
-	// that flag is an alias of --auto, so a user's explicit deny rules still
-	// apply here, where Chat's `"*": "allow"` overrides them.
+	// Bypass goes on the agent, not in the config body. OpenCode's native flag
+	// is an alias of --auto, which still enforces explicit deny rules, and a
+	// config-level rule here would lose to a project policy — either way the
+	// mode would stop short of the full access it promises, and of what Chat
+	// does. Agent rules outrank every config layer, so this matches Chat.
+	var agentPermission any
 	if ports.NormalizePermissionMode(permissions) == ports.PermissionModeBypassPermissions {
-		permission = nil
+		agentPermission, permission = "allow", nil
 	}
 	// Both overlays ride on the AO-owned config file, never on
 	// OPENCODE_CONFIG_CONTENT. That variable is the highest-precedence config
@@ -454,7 +458,7 @@ func opencodeConfigEnvPrefix(permissions ports.PermissionMode, inlinePrompt, pro
 		Schema:     "https://opencode.ai/config.json",
 		Permission: permission,
 		Agent: map[string]opencodeAgentSettings{
-			agentName: {Mode: "primary", Prompt: prompt},
+			agentName: {Mode: "primary", Prompt: prompt, Permission: agentPermission},
 		},
 	}
 	data, err := json.MarshalIndent(config, "", "  ")
@@ -492,14 +496,6 @@ var acpAgentPermissions = map[string]ports.PermissionMode{
 	ACPAgentBypass:      ports.PermissionModeBypassPermissions,
 }
 
-// An agent's permission ruleset, which unlike the Terminal UI's config file may
-// also be OpenCode's scalar full-access form.
-type opencodeACPAgent struct {
-	Mode       string `json:"mode,omitempty"`
-	Prompt     string `json:"prompt,omitempty"`
-	Permission any    `json:"permission,omitempty"`
-}
-
 // acpAgentPermission composes one tier's ruleset for the inline overlay.
 //
 // The overlay is OpenCode's last config layer and an agent's rules outrank the
@@ -511,7 +507,7 @@ type opencodeACPAgent struct {
 //
 // Bypass is the documented exception, and uses the scalar form rather than a
 // wildcard rule so a more specific deny elsewhere cannot leave it blocked.
-func acpAgentPermission(mode ports.PermissionMode, project any, projectReadable bool) any {
+func acpAgentPermission(mode ports.PermissionMode, project any) any {
 	if ports.NormalizePermissionMode(mode) == ports.PermissionModeBypassPermissions {
 		return "allow"
 	}
@@ -519,8 +515,9 @@ func acpAgentPermission(mode ports.PermissionMode, project any, projectReadable 
 	if len(tier) == 0 {
 		return nil
 	}
-	if !projectReadable {
-		return nil
+	out := make(map[string]any, len(tier))
+	for key, action := range tier {
+		out[key] = action
 	}
 	switch rules := project.(type) {
 	case string:
@@ -528,31 +525,59 @@ func acpAgentPermission(mode ports.PermissionMode, project any, projectReadable 
 			return nil
 		}
 	case map[string]any:
-		out := make(map[string]any, len(tier)+len(rules))
-		for key, action := range tier {
-			out[key] = action
-		}
-		for key, action := range rules {
-			out[key] = action
-		}
-		return out
-	}
-	out := make(map[string]any, len(tier))
-	for key, action := range tier {
-		out[key] = action
+		maps.Copy(out, rules)
 	}
 	return out
 }
 
-// projectPermissionRules reads the permission policy a repository commits to
-// its worktree. The second result reports whether AO knows the answer: a config
-// it cannot parse is treated as one it must not override.
-func projectPermissionRules(workspacePath string) (any, bool) {
+// projectPermissionRules collects the permission policy OpenCode will load for
+// this workspace. OpenCode looks in the working directory and then walks up to
+// the nearest Git directory, so AO reads the same range rather than the
+// workspace root alone; a nearer config overrides one further up.
+//
+// A file AO cannot parse, and a blanket rule other than "allow", both answer
+// "deny": neither is a policy AO may grant against, and acpAgentPermission
+// contributes nothing when it sees one.
+func projectPermissionRules(workspacePath string) any {
 	if strings.TrimSpace(workspacePath) == "" {
-		return nil, true
+		return nil
 	}
+	dirs := []string{}
+	for dir := filepath.Clean(workspacePath); ; {
+		dirs = append(dirs, dir)
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	merged := map[string]any{}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		rules, ok := directoryPermissionRules(dirs[i])
+		if !ok {
+			return "deny"
+		}
+		switch policy := rules.(type) {
+		case string:
+			if policy != "allow" {
+				return policy
+			}
+		case map[string]any:
+			maps.Copy(merged, policy)
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func directoryPermissionRules(dir string) (any, bool) {
 	for _, name := range []string{"opencode.json", "opencode.jsonc"} {
-		data, err := os.ReadFile(filepath.Join(workspacePath, name))
+		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			continue
 		}
@@ -591,7 +616,7 @@ func PrepareACPConfigContent(
 	existing, systemPrompt, workspacePath string,
 	permissions ports.PermissionMode,
 ) (string, error) {
-	project, projectReadable := projectPermissionRules(workspacePath)
+	project := projectPermissionRules(workspacePath)
 	config := map[string]any{}
 	if strings.TrimSpace(existing) != "" {
 		if err := json.Unmarshal([]byte(existing), &config); err != nil {
@@ -609,9 +634,9 @@ func PrepareACPConfigContent(
 		agents = map[string]any{}
 	}
 	for name, mode := range acpAgentPermissions {
-		agents[name] = opencodeACPAgent{
+		agents[name] = opencodeAgentSettings{
 			Mode: "primary", Prompt: systemPrompt,
-			Permission: acpAgentPermission(mode, project, projectReadable),
+			Permission: acpAgentPermission(mode, project),
 		}
 	}
 	config["agent"] = agents

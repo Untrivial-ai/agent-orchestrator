@@ -1075,3 +1075,84 @@ func contains(values []string, needle string) bool {
 	}
 	return false
 }
+
+// Bypass promises full access on both surfaces. A config-level rule would lose
+// to a project policy and the native flag is an alias of --auto, which still
+// enforces explicit denies, so the rule rides the agent, which outranks both.
+func TestGetLaunchCommandBypassesEvenAWorktreePolicy(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "opencode"}
+	promptFile := filepath.Join(t.TempDir(), "system.md")
+	if _, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SessionID: "sess-1", SystemPromptFile: promptFile,
+		Permissions: ports.PermissionModeBypassPermissions,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var config opencodeInlineConfig
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(promptFile), "opencode.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if got := config.Agent["ao-sess-1"].Permission; got != "allow" {
+		t.Fatalf("agent permission = %#v, want OpenCode's scalar full access", got)
+	}
+	if config.Permission != nil {
+		t.Fatalf("config permission = %#v, want the rule on the agent alone", config.Permission)
+	}
+}
+
+func TestProjectPermissionRulesWalksToTheGitRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "services", "api")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// OpenCode reads the working directory and then walks up to the nearest Git
+	// directory, so a policy above the workspace still applies — and a nearer
+	// one overrides it.
+	write := func(dir, body string) {
+		if err := os.WriteFile(filepath.Join(dir, "opencode.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(root, `{"permission":{"bash":"deny","webfetch":"deny"}}`)
+	write(nested, `{"permission":{"webfetch":"ask"}}`)
+
+	rules, ok := projectPermissionRules(nested).(map[string]any)
+	if !ok {
+		t.Fatalf("rules = %#v, want a merged map", projectPermissionRules(nested))
+	}
+	if rules["bash"] != "deny" {
+		t.Fatalf("bash = %#v, want the repository root's deny", rules["bash"])
+	}
+	if rules["webfetch"] != "ask" {
+		t.Fatalf("webfetch = %#v, want the nearer config to win", rules["webfetch"])
+	}
+	// The walk stops at the Git directory, so nothing outside the repository is read.
+	if got := projectPermissionRules(root); got == nil {
+		t.Fatal("root policy was not read")
+	}
+}
+
+func TestProjectPermissionRulesTreatsUnreadablePolicyAsDeny(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "opencode.jsonc"),
+		[]byte("{\n  // repo policy\n  \"permission\": {\"bash\": \"deny\"}\n}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectPermissionRules(root); got != "deny" {
+		t.Fatalf("rules = %#v, want deny for a policy AO cannot parse", got)
+	}
+	if got := acpAgentPermission(ports.PermissionModeAuto, "deny"); got != nil {
+		t.Fatalf("auto tier = %#v, want no AO rules against an unreadable policy", got)
+	}
+}
