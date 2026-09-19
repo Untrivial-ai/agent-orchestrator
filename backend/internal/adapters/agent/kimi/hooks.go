@@ -166,7 +166,7 @@ func seedKimiCredential(sourcePath, targetPath string) error {
 	if err != nil {
 		return fmt.Errorf("read source Kimi credentials %s: %w", sourcePath, err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
+	if !ok || status != ports.AgentAuthStatusConfigured {
 		return nil
 	}
 	data, err := os.ReadFile(sourcePath) //nolint:gosec // user Kimi credentials copied into AO's isolated Kimi home.
@@ -239,7 +239,7 @@ func kimiSourceOAuthAuthorized(sourceHome string) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("read source Kimi credentials %s: %w", path, err)
 		}
-		if ok && status == ports.AgentAuthStatusAuthorized {
+		if ok && status == ports.AgentAuthStatusConfigured {
 			return true, nil
 		}
 	}

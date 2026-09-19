@@ -3,144 +3,175 @@ package grok
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
-	"github.com/pelletier/go-toml/v2"
-
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
+var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
-// AuthStatus returns the plugin's local authentication status.
+// AuthStatus checks device-wide defaults using the same resolver as launches.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
-	_, err := p.ResolveBinary(ctx)
-	if err != nil {
+	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
+}
+
+func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
+	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if status, ok, err := grokLocalAuthStatus(ctx); err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	} else if ok {
-		return status, nil
-	}
-	return ports.AgentAuthStatusUnknown, nil
+	return grokAuthStatus(ctx, check)
 }
 
 func grokLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
+	status, err := grokAuthStatus(ctx, ports.AgentAuthCheck{})
+	return status, status != ports.AgentAuthStatusUnknown, err
+}
+
+type grokAuthConfig struct {
+	Models struct {
+		Default string `toml:"default"`
+	} `toml:"models"`
+	Model map[string]struct {
+		APIKey  string `toml:"api_key"`
+		EnvKey  string `toml:"env_key"`
+		BaseURL string `toml:"base_url"`
+	} `toml:"model"`
+	Endpoints struct {
+		DeploymentKey string `toml:"deployment_key"`
+	} `toml:"endpoints"`
+}
+
+func grokAuthStatus(ctx context.Context, check ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+		return ports.AgentAuthStatusUnknown, err
 	}
-	if strings.TrimSpace(os.Getenv("XAI_API_KEY")) != "" {
-		return ports.AgentAuthStatusAuthorized, true, nil
+	getenv := func(name string) string {
+		if value, exists := check.Env[name]; exists {
+			return strings.TrimSpace(value)
+		}
+		return strings.TrimSpace(os.Getenv(name))
 	}
+	home := getenv("GROK_HOME")
+	if home == "" {
+		userHome := getenv("HOME")
+		if runtime.GOOS == "windows" {
+			userHome = getenv("USERPROFILE")
+		}
+		if userHome != "" {
+			home = filepath.Join(userHome, ".grok")
+		}
+	}
+	if home != "" && !filepath.IsAbs(home) {
+		if filepath.IsAbs(check.WorkingDir) {
+			home = filepath.Join(check.WorkingDir, home)
+		} else {
+			home = ""
+		}
+	}
+	d := authutil.Dependencies{Getenv: getenv}
+	var config grokAuthConfig
+	if home != "" {
+		// Discard malformed sources completely, including partially decoded data.
+		if authutil.ReadTOML(ctx, d, filepath.Join(home, "config.toml"), &config) != nil {
+			config = grokAuthConfig{}
+		}
+	}
+	model := strings.TrimSpace(check.Config.Model)
+	for i, arg := range check.Args {
+		if arg == "--" {
+			break
+		}
+		if (arg == "--model" || arg == "-m") && i+1 < len(check.Args) {
+			model = strings.TrimSpace(check.Args[i+1])
+		}
+		if value, ok := strings.CutPrefix(arg, "--model="); ok {
+			model = strings.TrimSpace(value)
+		}
+	}
+	if model == "" {
+		model = getenv("GROK_DEFAULT_MODEL")
+	}
+	if model == "" {
+		model = strings.TrimSpace(config.Models.Default)
+	}
+	if model == "" {
+		model = "grok-build"
+	}
+	selected, exists := config.Model[model]
+	if exists {
+		if grokSecret(selected.APIKey) || (strings.TrimSpace(selected.EnvKey) != "" && getenv(selected.EnvKey) != "") {
+			return ports.AgentAuthStatusConfigured, ctx.Err()
+		}
+		// BYOK models cannot borrow credentials from the hosted Grok login.
+		if strings.TrimSpace(selected.EnvKey) != "" || !grokHostedEndpoint(selected.BaseURL) {
+			return ports.AgentAuthStatusUnknown, ctx.Err()
+		}
+	} else if !strings.HasPrefix(model, "grok-") {
+		return ports.AgentAuthStatusUnknown, ctx.Err()
+	}
+	if getenv("XAI_API_KEY") != "" || getenv("GROK_DEPLOYMENT_KEY") != "" || grokSecret(config.Endpoints.DeploymentKey) {
+		return ports.AgentAuthStatusConfigured, ctx.Err()
+	}
+	if grokStoredKey([]byte(getenv("GROK_AUTH"))) {
+		return ports.AgentAuthStatusConfigured, ctx.Err()
+	}
+	path := getenv("GROK_AUTH_PATH")
+	if path == "" && home != "" {
+		path = filepath.Join(home, "auth.json")
+	}
+	if path != "" && !filepath.IsAbs(path) {
+		if filepath.IsAbs(check.WorkingDir) {
+			path = filepath.Join(check.WorkingDir, path)
+		} else {
+			path = ""
+		}
+	}
+	if path != "" {
+		if data, err := authutil.ReadFile(ctx, d, path); err == nil && grokStoredKey(data) {
+			return ports.AgentAuthStatusConfigured, ctx.Err()
+		}
+	}
+	return ports.AgentAuthStatusUnknown, ctx.Err()
+}
 
-	grokHome, err := grokConfigDir()
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+func grokHostedEndpoint(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return true
 	}
-	if grokHome == "" {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	configStatus, configOK, err := grokConfigAuthStatus(filepath.Join(grokHome, "config.toml"))
-	if err != nil || configOK {
-		return configStatus, configOK, err
-	}
-	path := filepath.Join(grokHome, "auth.json")
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if strings.TrimSpace(string(data)) == "" {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
+	u, err := url.Parse(value)
+	return err == nil && u.Scheme == "https" && u.Host == "api.x.ai" && u.User == nil
+}
 
+func grokSecret(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !strings.HasPrefix(value, "$")
+}
+
+// Auth entries are one fixed level under account identifiers; arbitrary nested
+// keys and the old access_token/refresh_token fields are not credential evidence.
+func grokStoredKey(data []byte) bool {
+	if len(data) > authutil.MaxFileSize {
+		return false
+	}
 	var entries map[string]json.RawMessage
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+	if json.Unmarshal(data, &entries) != nil {
+		return false
 	}
-	if len(entries) == 0 {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	for key, value := range entries {
-		if strings.TrimSpace(key) == "" {
+	for account, raw := range entries {
+		if strings.TrimSpace(account) == "" {
 			continue
 		}
-		var session struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
+		var entry struct {
+			Key string `json:"key"`
 		}
-		if json.Unmarshal(value, &session) == nil &&
-			(strings.TrimSpace(session.AccessToken) != "" || strings.TrimSpace(session.RefreshToken) != "") {
-			return ports.AgentAuthStatusAuthorized, true, nil
-		}
-	}
-	return ports.AgentAuthStatusUnknown, false, nil
-}
-
-// grokConfigDir follows Grok Build's GROK_HOME override for all local state.
-func grokConfigDir() (string, error) {
-	if home := strings.TrimSpace(os.Getenv("GROK_HOME")); home != "" {
-		return home, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	if home == "" {
-		return "", nil
-	}
-	return filepath.Join(home, ".grok"), nil
-}
-
-// grokConfigAuthStatus recognizes the documented per-model api_key and
-// env_key settings. Other config values (model IDs, base URLs, etc.) are not
-// evidence of authentication.
-func grokConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	var config map[string]any
-	if err := toml.Unmarshal(data, &config); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if hasGrokConfiguredSecret(config) {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	return ports.AgentAuthStatusUnknown, false, nil
-}
-
-func hasGrokConfiguredSecret(value any) bool {
-	switch value := value.(type) {
-	case map[string]any:
-		for key, child := range value {
-			switch key {
-			case "api_key":
-				if s, ok := child.(string); ok && strings.TrimSpace(s) != "" && !strings.HasPrefix(strings.TrimSpace(s), "$") {
-					return true
-				}
-			case "env_key":
-				if name, ok := child.(string); ok && strings.TrimSpace(os.Getenv(strings.TrimSpace(name))) != "" {
-					return true
-				}
-			}
-			if hasGrokConfiguredSecret(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range value {
-			if hasGrokConfiguredSecret(child) {
-				return true
-			}
+		if json.Unmarshal(raw, &entry) == nil && grokSecret(entry.Key) {
+			return true
 		}
 	}
 	return false
