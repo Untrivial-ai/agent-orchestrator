@@ -120,6 +120,15 @@ func primeAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil
 			models.Providers = nil
 		}
 	}
+	// Prime overlays project settings on its global agent directory. Decode
+	// into a copy so a missing or malformed project file cannot partially
+	// overwrite the usable global settings.
+	if filepath.IsAbs(scope.WorkingDir) {
+		projectSettings := settings
+		if authutil.ReadJSON(ctx, d, filepath.Join(scope.WorkingDir, ".prime", "agent", "settings.json"), &projectSettings) == nil {
+			settings = projectSettings
+		}
+	}
 	provider := settings.DefaultProvider
 	model := strings.TrimSpace(scope.Config.Model)
 	explicitModel := model != ""

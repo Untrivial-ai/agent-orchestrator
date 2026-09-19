@@ -304,3 +304,18 @@ func TestPrimeGoogleProjectAliasesAndInjectedEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestPrimeProjectProviderOverridesExpiredGlobalCredential(t *testing.T) {
+	home := isolatePrimeAuth(t)
+	workspace := t.TempDir()
+	writePrimeAuth(t, filepath.Join(home, ".prime", "agent", "settings.json"), `{"defaultProvider":"anthropic","defaultModel":"claude"}`)
+	writePrimeAuth(t, filepath.Join(home, ".prime", "agent", "auth.json"), `{"anthropic":{"type":"oauth","access":"expired-token","refresh":"","expires":1}}`)
+	writePrimeAuth(t, filepath.Join(workspace, ".prime", "agent", "settings.json"), `{"defaultProvider":"openai","defaultModel":"gpt-5"}`)
+	t.Setenv("OPENAI_API_KEY", "fixture-key")
+	if got := primeStatusForTest(t, ports.AgentAuthCheck{WorkingDir: workspace}); got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("project provider status = %q, want configured", got)
+	}
+	if got := primeStatusForTest(t, ports.AgentAuthCheck{WorkingDir: workspace, Args: []string{"--provider", "anthropic"}}); got != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("explicit provider status = %q, want unauthorized", got)
+	}
+}

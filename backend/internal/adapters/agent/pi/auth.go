@@ -160,7 +160,7 @@ func piNativeAuthStatus(ctx context.Context, binary, provider string, check port
 			return output.data, err
 		}
 	}
-	out, err := run(probeCtx, binary, "auth", "check", "--provider", provider)
+	out, err := run(probeCtx, binary, "auth", "check", "--provider", provider, "--no-refresh")
 	if ctx.Err() != nil {
 		return ports.AgentAuthStatusUnknown, false, ctx.Err()
 	}
@@ -172,7 +172,8 @@ func piNativeAuthStatus(ctx context.Context, binary, provider string, check port
 	}
 	output := strings.TrimSpace(string(out))
 	if output == "ready" && err == nil {
-		return ports.AgentAuthStatusAuthorized, false, nil
+		// Native ready means credentials are available, not provider-validated.
+		return ports.AgentAuthStatusConfigured, false, nil
 	}
 	if output == "not_ready" && piExitCode(err) == 1 {
 		return ports.AgentAuthStatusUnauthorized, false, nil

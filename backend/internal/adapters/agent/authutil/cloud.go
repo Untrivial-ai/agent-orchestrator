@@ -257,9 +257,12 @@ func GoogleADCEvidence(ctx context.Context, d Dependencies) Evidence {
 	}
 	paths := make([]string, 0, 2)
 	if explicit := d.getenv("GOOGLE_APPLICATION_CREDENTIALS"); explicit != "" {
-		if path, ok := d.resolvePath(explicit); ok {
-			paths = append(paths, path)
+		if path, ok := d.resolvePath(explicit); ok && validADC(ctx, d, path) {
+			return configured("google-adc-file")
 		}
+		// Native ADC fails on an invalid explicit override; it does not
+		// substitute another account from the well-known credentials file.
+		return unknown()
 	}
 	if dir := d.getenv("CLOUDSDK_CONFIG"); dir != "" {
 		if path, ok := d.resolvePath(dir); ok {

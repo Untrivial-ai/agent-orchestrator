@@ -346,7 +346,7 @@ func TestPiNativeProviderCheck(t *testing.T) {
 		timeout bool
 		want    ports.AgentAuthStatus
 	}{
-		"ready":             {out: "ready\n", want: ports.AgentAuthStatusAuthorized},
+		"ready":             {out: "ready\n", want: ports.AgentAuthStatusConfigured},
 		"not ready":         {out: "not_ready\n", err: piTestExitError(1), want: ports.AgentAuthStatusUnauthorized},
 		"invalid":           {out: "invalid\n", err: piTestExitError(2), want: ports.AgentAuthStatusUnknown},
 		"unexpected output": {out: "logged in", want: ports.AgentAuthStatusUnknown},
@@ -392,7 +392,7 @@ func TestPiNativeProviderCheck(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("status = %q, want %q", got, tc.want)
 			}
-			if gotName != "/opt/pi" || !reflect.DeepEqual(gotArgs, []string{"auth", "check", "--provider", "openai"}) {
+			if gotName != "/opt/pi" || !reflect.DeepEqual(gotArgs, []string{"auth", "check", "--provider", "openai", "--no-refresh"}) {
 				t.Fatalf("command = %q %q", gotName, gotArgs)
 			}
 		})
@@ -501,7 +501,7 @@ func TestPiNativeCheckPrecedesCloudFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
+	if got != ports.AgentAuthStatusConfigured {
 		t.Fatalf("status = %q, want authorized", got)
 	}
 	if cloudCalled {

@@ -351,8 +351,7 @@ func TestGoogleADCDefaultPathsAndFallback(t *testing.T) {
 	for _, goos := range []string{"linux", "windows", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			root := t.TempDir()
-			env := map[string]string{"HOME": root, "APPDATA": filepath.Join(root, "appdata"), "GOOGLE_APPLICATION_CREDENTIALS": filepath.Join(root, "malformed.json")}
-			writeFixture(t, env["GOOGLE_APPLICATION_CREDENTIALS"], "{")
+			env := map[string]string{"HOME": root, "APPDATA": filepath.Join(root, "appdata")}
 			path := filepath.Join(root, ".config", "gcloud", "application_default_credentials.json")
 			if goos == "windows" {
 				path = filepath.Join(env["APPDATA"], "gcloud", "application_default_credentials.json")
@@ -536,4 +535,19 @@ func TestAzureDefaultDoesNotExecuteCLI(t *testing.T) {
 		t.Fatal("default cloud discovery executed a CLI")
 	}
 	assertCloud(t, got, "unknown", "")
+}
+
+func TestGoogleADCExplicitOverrideDoesNotFallThrough(t *testing.T) {
+	for _, content := range []string{"", "{malformed"} {
+		t.Run(content, func(t *testing.T) {
+			home := t.TempDir()
+			explicit := filepath.Join(home, "explicit.json")
+			if content != "" {
+				writeFixture(t, explicit, content)
+			}
+			writeFixture(t, filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"), `{"type":"authorized_user","client_id":"fixture","client_secret":"fixture","refresh_token":"fixture"}`)
+			deps := cloudDeps(t, map[string]string{"HOME": home, "GOOGLE_APPLICATION_CREDENTIALS": explicit})
+			assertCloud(t, GoogleADCEvidence(context.Background(), deps), "unknown", "")
+		})
+	}
 }
