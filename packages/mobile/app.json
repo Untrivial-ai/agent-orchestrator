@@ -44,7 +44,11 @@
 				"NSLocalNetworkUsageDescription": "AO connects to Agent Orchestrator running on your computer over your local network.",
 				"NSPhotoLibraryUsageDescription": "AO uses your photo library so you can attach images to an agent conversation.",
 				"NSAppTransportSecurity": {
-					"NSAllowsLocalNetworking": true
+					"NSAllowsLocalNetworking": true,
+					"NSExceptionDomains": {
+						"100.64.0.0/10": { "NSExceptionAllowsInsecureHTTPLoads": true },
+						"ts.net": { "NSIncludesSubdomains": true, "NSExceptionAllowsInsecureHTTPLoads": true }
+					}
 				},
 				"LSApplicationQueriesSchemes": ["github"]
 			}
