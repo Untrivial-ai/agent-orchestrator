@@ -42,6 +42,7 @@ import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
+import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
 import { OrchestratorChildrenSection } from "./OrchestratorChildrenSection";
 import { ProductExternalLink } from "./ProductExternalLink";
 import {
@@ -329,6 +330,7 @@ const SummaryView = memo(function SummaryView({
 			completion={<SessionControls session={session} />}
 			pullRequestCards={
 				<div className="flex flex-col gap-1.5">
+					<GitHubOnboardingNotice />
 					{hasPRs ? (
 						prSummaries.map((pr) => (
 							<PRSummaryCard

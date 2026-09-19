@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useShell } from "../lib/shell-context";
 import { CreateProjectFlow } from "./CreateProjectFlow";
-import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
+import { DetectedHarnesses } from "./DetectedHarnesses";
 import { WelcomePanel } from "./WelcomePanel";
 import { useUiStore } from "../stores/ui-store";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
@@ -19,6 +19,7 @@ export function BoardWelcome() {
 				data-testid="board-welcome"
 			>
 				<div className="flex w-full max-w-preview-content flex-col items-center gap-4">
+					<DetectedHarnesses />
 					<CreateProjectFlow
 						embedded
 						mode="choose"
@@ -27,7 +28,6 @@ export function BoardWelcome() {
 						onInitializeProject={initializeProjectRepository}
 						onCreateStandaloneAgent={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
 					/>
-					<GitHubOnboardingNotice />
 				</div>
 			</div>
 		</WelcomePanel>

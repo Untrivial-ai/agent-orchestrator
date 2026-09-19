@@ -98,7 +98,7 @@ describe("buildRankedAgentOptions", () => {
 		});
 
 		expect(options[0]).toMatchObject({ id: "claude-code", disabled: false, status: "Install unknown" });
-		expect(options[1]).toMatchObject({ id: "codex", disabled: true, status: "Needs auth" });
+		expect(options[1]).toMatchObject({ id: "codex", disabled: true, status: "Sign in to use" });
 	});
 
 	it("keeps stale known-good agents selectable while checking", () => {
