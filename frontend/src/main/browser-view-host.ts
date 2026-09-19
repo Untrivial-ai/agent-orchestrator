@@ -329,6 +329,9 @@ export type BrowserViewHostOptions = {
 	browserDownloadManager?: BrowserDownloadManager;
 	clearBrowserProfileData?: (partition: string) => Promise<void>;
 	clipboard?: Pick<Clipboard, "writeImage">;
+	// Test hook: how long a tab's initial about:blank load may take before
+	// awaiting callers get a typed failure instead of hanging forever.
+	entryReadyTimeoutMs?: number;
 };
 
 export type BrowserViewHost = {
@@ -559,7 +562,40 @@ export function scaleBoundsForZoom(rect: BrowserRect, zoomFactor: number): Brows
 	};
 }
 
+// Tab readiness bounds the initial about:blank load every tab performs: CDP
+// commands await it, so a load that never settles would wedge the session's
+// entire command queue (#5369 wedge family). The default sits above the 55s
+// wait-action ceiling, so only a genuinely stuck load trips it.
+const DEFAULT_ENTRY_READY_TIMEOUT_MS = 60_000;
+
+const loadEntryReady = (
+	view: { webContents: { loadURL: (url: string) => Promise<void> } },
+	timeoutMs: number,
+): Promise<void> => {
+	const ready = view.webContents.loadURL("about:blank");
+	// Keep an unobserved tab initialization failure from becoming an unhandled
+	// rejection; callers that need the target still await the raced promise.
+	void ready.catch(() => undefined);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			reject(
+				Object.assign(new Error("Browser tab initialization timed out"), {
+					code: "BROWSER_DEVTOOLS_UNAVAILABLE",
+				}),
+			);
+		}, timeoutMs);
+	});
+	return Promise.race([
+		ready.finally(() => {
+			if (timer !== undefined) clearTimeout(timer);
+		}),
+		deadline,
+	]);
+};
+
 export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserViewHost {
+	const entryReadyTimeoutMs = options.entryReadyTimeoutMs ?? DEFAULT_ENTRY_READY_TIMEOUT_MS;
 	const entries = new Map<string, BrowserSessionEntry>();
 	const historyFaviconCache = new WeakMap<Session, Map<string, Promise<string | undefined>>>();
 	const signalWatchers = new Map<
@@ -798,7 +834,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		// A newly-created WebContentsView reports about:blank before its renderer
 		// has actually been initialized. CDP commands can hang until that initial
 		// document has completed, so make readiness explicit for every tab.
-		entry.ready = view.webContents.loadURL("about:blank");
+		entry.ready = loadEntryReady(view, entryReadyTimeoutMs);
 		// Keep an unobserved tab initialization failure from becoming an unhandled
 		// rejection; callers that need the target still await the original promise.
 		void entry.ready.catch(() => undefined);
@@ -1551,7 +1587,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			applySessionBounds(session, entry);
 			forgetNativeFocus(viewId);
 			forgetBrowserShortcutTarget(viewId);
-			entry.ready = entry.view.webContents.loadURL("about:blank");
+			entry.ready = loadEntryReady(entry.view, entryReadyTimeoutMs);
 			await entry.ready;
 			entry.view.webContents.clearHistory();
 			return pushNavState(options, entry);
