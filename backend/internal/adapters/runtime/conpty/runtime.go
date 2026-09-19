@@ -84,6 +84,7 @@ type Runtime struct {
 	killHost       func(string) error
 	pidIsAlive     func(int) bool
 	processFinder  func(int) (processKiller, error)
+	killTree       func(int) error
 	registerHost   func(context.Context, ptyregistry.Entry) error
 	unregisterHost func(context.Context, string) error
 	destroyWait    time.Duration
@@ -109,6 +110,7 @@ func New(opts Options) *Runtime {
 		killHost:       clientKill,
 		pidIsAlive:     pidAlive,
 		processFinder:  findProcess,
+		killTree:       killProcessTree,
 		registerHost:   ptyregistry.Register,
 		unregisterHost: unregisterHost,
 		destroyWait:    500 * time.Millisecond,
@@ -281,21 +283,33 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 		return errors.Join(gracefulErr, waitErr)
 	}
 
-	var forceErr error
+	var forceErr, treeErr error
 	if !exited {
-		process, findErr := r.processFinder(sess.pid)
-		if findErr != nil {
-			forceErr = fmt.Errorf("find pty-host pid %d: %w", sess.pid, findErr)
-		} else if err := process.Kill(); err != nil {
-			forceErr = fmt.Errorf("force-kill pty-host pid %d: %w", sess.pid, err)
-		}
+		// Tree-kill first so the host's descendants (the real agent running
+		// under the supervise wrapper) die with it instead of being orphaned
+		// and keeping the session's RAM after teardown (issue #4317).
+		// Best-effort: the PID-fenced force-kill below still runs when the
+		// tree kill fails or the PID is alive afterwards.
+		treeErr = r.killTree(sess.pid)
 		exited, waitErr = r.waitForPIDExit(ctx, sess.pid)
 		if waitErr != nil {
-			return errors.Join(gracefulErr, forceErr, waitErr)
+			return errors.Join(gracefulErr, treeErr, waitErr)
+		}
+		if !exited {
+			process, findErr := r.processFinder(sess.pid)
+			if findErr != nil {
+				forceErr = fmt.Errorf("find pty-host pid %d: %w", sess.pid, findErr)
+			} else if err := process.Kill(); err != nil {
+				forceErr = fmt.Errorf("force-kill pty-host pid %d: %w", sess.pid, err)
+			}
+			exited, waitErr = r.waitForPIDExit(ctx, sess.pid)
+			if waitErr != nil {
+				return errors.Join(gracefulErr, treeErr, forceErr, waitErr)
+			}
 		}
 	}
 	if !exited {
-		return errors.Join(gracefulErr, forceErr, fmt.Errorf("conpty: pty-host pid %d is still alive after teardown", sess.pid))
+		return errors.Join(gracefulErr, treeErr, forceErr, fmt.Errorf("conpty: pty-host pid %d is still alive after teardown", sess.pid))
 	}
 
 	if err := r.unregisterHost(ctx, handle.ID); err != nil {

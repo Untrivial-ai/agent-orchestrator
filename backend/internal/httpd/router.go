@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,8 +29,17 @@ import (
 // ControlDeps carries the daemon-control hooks the router exposes, such as the
 // callback that requests a graceful shutdown.
 type ControlDeps struct {
-	RequestShutdown   func()
+	RequestShutdown   func(ShutdownRequest)
 	AgentSwitchPolicy AgentSwitchPolicyControl
+}
+
+// ShutdownRequest is the optional body of POST /shutdown. An empty body (how
+// `ao stop`, daemon replace, and the supervisor watchdog shut down) means a
+// plain shutdown: sessions survive and the next boot adopts them. The desktop
+// app sends TeardownSessions on user quit so worker processes are put away
+// instead of being left behind eating RAM after the IDE closes.
+type ShutdownRequest struct {
+	TeardownSessions bool `json:"teardownSessions"`
 }
 
 // AgentSwitchPolicyControl coordinates the daemon side of desktop telemetry
@@ -184,13 +194,30 @@ func mountControl(r chi.Router, deps ControlDeps) {
 			})
 			return
 		}
+		shutdown := decodeShutdownRequest(req)
 		envelope.WriteJSON(w, http.StatusAccepted, map[string]any{
 			"status":  "shutting_down",
 			"service": daemonmeta.ServiceName,
 			"pid":     os.Getpid(),
 		})
-		deps.RequestShutdown()
+		deps.RequestShutdown(shutdown)
 	})
+}
+
+// decodeShutdownRequest parses the optional POST /shutdown body. Any parse
+// failure (including an empty body) yields the zero value: a plain shutdown
+// with no session teardown, preserving the historical behavior.
+func decodeShutdownRequest(req *http.Request) ShutdownRequest {
+	if req.Body == nil {
+		return ShutdownRequest{}
+	}
+	defer func() { _ = req.Body.Close() }()
+	var decoded ShutdownRequest
+	dec := json.NewDecoder(io.LimitReader(req.Body, 4<<10))
+	if err := dec.Decode(&decoded); err != nil {
+		return ShutdownRequest{}
+	}
+	return decoded
 }
 
 // mountMobile registers the Connect Mobile control routes: status, enable,

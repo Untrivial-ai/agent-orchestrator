@@ -150,6 +150,7 @@ func TestPartialCreateCleanupFailureReturnsRuntimeEffectEvidence(t *testing.T) {
 	}})
 	rt.killHost = func(string) error { return errors.New("cleanup denied") }
 	rt.pidIsAlive = func(int) bool { return true }
+	rt.killTree = func(int) error { return errors.New("tree kill denied") }
 	rt.processFinder = func(int) (processKiller, error) { return nil, errors.New("permission denied") }
 	rt.destroyWait = 0
 
@@ -854,6 +855,7 @@ func TestDestroyRetainsSessionWhenPIDCannotBeStopped(t *testing.T) {
 	rt.sessions["sess-stuck"] = &hostSession{addr: "127.0.0.1:1", pid: 424242}
 	rt.killHost = func(string) error { return errors.New("graceful transport failed") }
 	rt.pidIsAlive = func(int) bool { return true }
+	rt.killTree = func(int) error { return errors.New("tree kill denied") }
 	rt.processFinder = func(int) (processKiller, error) {
 		return processKillerFunc(func() error { return errors.New("access denied") }), nil
 	}

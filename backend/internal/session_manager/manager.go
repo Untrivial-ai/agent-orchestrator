@@ -2654,6 +2654,73 @@ func (m *Manager) SaveAndTeardownAll(ctx context.Context) error {
 	return nil
 }
 
+// TeardownForAppQuit puts every live session away for desktop app quit: work
+// is stashed and worker processes are stopped so no agent processes are left
+// behind eating RAM after the IDE closes. Sessions with a workspace go
+// through the same save path as SaveAndTeardownAll (one-shot restore markers,
+// relaunched by RestoreAll on the next boot). Sessions that path skips — no
+// workspace or branch to preserve, e.g. scratch sessions — only get their
+// worker processes stopped; their rows stay live and their worktrees stay on
+// disk so the next boot's reconcileLive relaunches them in place.
+//
+// Every per-session step is best-effort: a failure is logged and the loop
+// continues, and the caller bounds the total budget (quit must never hang).
+// TeardownForAppQuit never destroys worktrees outside the save path and never
+// marks skipped sessions terminated, so a partial run degrades to the
+// pre-existing adopt-on-boot behavior instead of losing work.
+func (m *Manager) TeardownForAppQuit(ctx context.Context) error {
+	// Per-session save failures are logged and skipped inside
+	// SaveAndTeardownAll; only a session-listing failure propagates here.
+	if err := m.SaveAndTeardownAll(ctx); err != nil {
+		m.logger.Error("app-quit teardown: save pass failed", "error", err)
+	}
+	recs, err := m.store.ListAllSessions(ctx)
+	if err != nil {
+		return fmt.Errorf("app-quit teardown: list sessions: %w", err)
+	}
+	for _, rec := range recs {
+		if rec.IsTerminated {
+			continue
+		}
+		if rec.Metadata.WorkspacePath != "" && rec.Metadata.Branch != "" {
+			continue
+		}
+		m.teardownQuitSkippedSession(ctx, rec)
+	}
+	return nil
+}
+
+// teardownQuitSkippedSession stops the worker processes of one session the
+// save path skipped (nothing durable to preserve), leaving its row live and
+// its worktree untouched for the next boot to reconcile. All steps are
+// best-effort; failures are logged, never returned.
+func (m *Manager) teardownQuitSkippedSession(ctx context.Context, rec domain.SessionRecord) {
+	// Scoped shell terminals are their own pty-host processes: drain them too,
+	// or they linger holding the worktree's cwd after quit. Unlike Kill, no
+	// worktree is removed here, so the gate is released immediately after the
+	// drain instead of being held across worktree work.
+	if release, err := m.beginShellTerminalTeardown(ctx, rec.ID); err != nil {
+		m.logger.Warn("app-quit teardown: close shell terminals failed", "sessionID", rec.ID, "error", err)
+	} else if release != nil {
+		release()
+	}
+	if err := m.terminateNativeSession(ctx, rec); err != nil {
+		m.logger.Warn("app-quit teardown: terminate native session failed", "sessionID", rec.ID, "error", err)
+	}
+	// Same controller split as Kill: a chat session owns an app-server child,
+	// a TUI session owns a runtime handle.
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		m.stopChatBestEffort(ctx, rec.ID)
+	} else if handle := runtimeHandle(rec.Metadata); handle.ID != "" {
+		if err := m.runtime.Destroy(ctx, handle); err != nil {
+			m.logger.Warn("app-quit teardown: runtime destroy failed", "sessionID", rec.ID, "error", err)
+		}
+	}
+	if err := m.teardownReviewerTerminal(ctx, rec.ID); err != nil {
+		m.logger.Warn("app-quit teardown: teardown reviewer failed", "sessionID", rec.ID, "error", err)
+	}
+}
+
 // saveAndTeardownOne runs the capture-then-destroy sequence for a single
 // session. The DB write (UpsertSessionWorktree) is committed before
 // ForceDestroy; if either capture or the DB write fails, ForceDestroy is
@@ -2716,9 +2783,13 @@ func (m *Manager) saveAndTeardownOne(ctx context.Context, rec domain.SessionReco
 		return fmt.Errorf("save %s: mark terminated: %w", rec.ID, err)
 	}
 
-	// 5. Runtime teardown (best-effort; same pattern as Kill).
+	// 5. Controller teardown (best-effort; same split as Kill: a chat
+	// session owns an app-server child process, not a runtime handle, so
+	// stopping only the runtime would leave the agent running after quit.
 	handle := runtimeHandle(rec.Metadata)
-	if handle.ID != "" {
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		m.stopChatBestEffort(ctx, rec.ID)
+	} else if handle.ID != "" {
 		if err := m.runtime.Destroy(ctx, handle); err != nil {
 			m.logger.Warn("save-teardown-all: runtime destroy failed", "sessionID", rec.ID, "error", err)
 		}

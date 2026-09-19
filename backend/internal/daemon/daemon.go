@@ -881,10 +881,32 @@ func Run() error {
 	})
 
 	// Both graceful shutdown paths (SIGTERM and POST /shutdown) funnel through
-	// srv.Run returning. We deliberately do NOT tear down sessions here: they
-	// survive the daemon exit and the next boot's Reconcile adopts them,
-	// preserving session IDs. The narrowed sessionLifecycle interface makes
-	// teardown-on-shutdown a compile error.
+	// srv.Run returning. Plain shutdowns deliberately do NOT tear down
+	// sessions here: they survive the daemon exit and the next boot's
+	// Reconcile adopts them, preserving session IDs.
+	//
+	// The one exception is an explicit desktop app quit (POST /shutdown with
+	// teardownSessions, sent by the IDE's before-quit handler for an
+	// app-owned daemon): sessions are put away — work stashed, worker
+	// processes stopped, one-shot restore markers written — so no agent
+	// processes are left behind eating RAM after the IDE closes. The next
+	// boot restores them via RestoreAll/reconcileLive.
+	if srv.TeardownSessionsRequested() {
+		if sessMgr == nil {
+			log.Error("app-quit session teardown requested with no session manager")
+		} else {
+			// Bounded by ShutdownTimeout on top of the identical budget
+			// Server.run already spent draining connections; in practice the
+			// drain returns as soon as connections close, so the budgets do
+			// not stack. The daemon process may linger briefly after the IDE
+			// window closes while sessions are put away — never the reverse.
+			teardownCtx, teardownCancel := context.WithTimeout(context.WithoutCancel(context.Background()), cfg.ShutdownTimeout)
+			if err := sessMgr.TeardownForAppQuit(teardownCtx); err != nil {
+				log.Error("app-quit session teardown failed", "err", err)
+			}
+			teardownCancel()
+		}
+	}
 
 	// Shut the background goroutines down in order: cancel the context FIRST so
 	// their loops exit, then wait for them to drain. Doing this explicitly (not
