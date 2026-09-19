@@ -43,10 +43,11 @@ const DEFAULT_REGISTRY: BrowserProfileRegistry = {
 	version: BROWSER_PROFILE_REGISTRY_VERSION,
 	profiles: [],
 	bindings: {},
+	defaultProfileId: null,
 };
 
 function emptyRegistry(): BrowserProfileRegistry {
-	return { version: DEFAULT_REGISTRY.version, profiles: [], bindings: {} };
+	return { version: DEFAULT_REGISTRY.version, profiles: [], bindings: {}, defaultProfileId: null };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -120,7 +121,12 @@ function parseRegistry(raw: unknown): BrowserProfileRegistry {
 		bindings[sessionId] = { profileId, updatedAt: value.updatedAt };
 	}
 
-	return { version: BROWSER_PROFILE_REGISTRY_VERSION, profiles, bindings };
+	const defaultProfileId = raw.defaultProfileId ?? null;
+	if (defaultProfileId !== null && (!isBrowserProfileId(defaultProfileId) || !profileIds.has(defaultProfileId))) {
+		throw invalidRegistry("The browser profile registry has an invalid default profile.");
+	}
+
+	return { version: BROWSER_PROFILE_REGISTRY_VERSION, profiles, bindings, defaultProfileId };
 }
 
 function cloneRegistry(registry: BrowserProfileRegistry): BrowserProfileRegistry {
@@ -130,6 +136,7 @@ function cloneRegistry(registry: BrowserProfileRegistry): BrowserProfileRegistry
 		bindings: Object.fromEntries(
 			Object.entries(registry.bindings).map(([sessionId, binding]) => [sessionId, { ...binding }]),
 		),
+		defaultProfileId: registry.defaultProfileId,
 	};
 }
 
@@ -186,6 +193,7 @@ export class BrowserProfileStore {
 	private listState(): BrowserProfileListState {
 		return {
 			profiles: this.loadError ? [] : this.registry.profiles.map((profile) => ({ ...profile })),
+			defaultProfileId: this.loadError ? null : this.registry.defaultProfileId,
 			...(this.loadError ? { error: { ...this.loadError } } : {}),
 		};
 	}
@@ -207,6 +215,11 @@ export class BrowserProfileStore {
 	getSessionProfileId(sessionId: string): string | undefined {
 		if (this.loadError) return undefined;
 		return this.registry.bindings[sessionId]?.profileId;
+	}
+
+	getDefaultProfileId(): string | null {
+		if (this.loadError) return null;
+		return this.registry.defaultProfileId;
 	}
 
 	isProfileOperationInProgress(profileId: string): boolean {
@@ -337,9 +350,22 @@ export class BrowserProfileStore {
 					...current,
 					profiles: current.profiles.filter((profile) => profile.id !== profileId),
 					bindings,
+					defaultProfileId: current.defaultProfileId === profileId ? null : current.defaultProfileId,
 				},
 				result: undefined,
 			};
+		});
+	}
+
+	async setDefaultProfileId(profileId: string | null): Promise<void> {
+		if (profileId !== null && !isBrowserProfileId(profileId)) {
+			throw new BrowserProfileStoreError("INVALID_ARGUMENT", "Profile ID is invalid.");
+		}
+		return this.enqueueMutation((current) => {
+			if (profileId !== null && !current.profiles.some((profile) => profile.id === profileId)) {
+				throw new BrowserProfileStoreError("BROWSER_PROFILE_NOT_FOUND", "Browser profile was not found.");
+			}
+			return { registry: { ...current, defaultProfileId: profileId }, result: undefined };
 		});
 	}
 

@@ -262,7 +262,7 @@ describe("BrowserPanel", () => {
 		window.ao!.browser.captureScreenshot = vi.fn(async () => undefined);
 		window.ao!.browser.downloads.list = vi.fn(async () => ({ downloads: [] }));
 		window.ao!.browser.selectProfile = vi.fn(async () => undefined);
-		window.ao!.browserProfiles.list = vi.fn(async () => ({ profiles: [] }));
+		window.ao!.browserProfiles.list = vi.fn(async () => ({ profiles: [], defaultProfileId: null }));
 		window.ao!.browser.notifyPanelUsed = vi.fn();
 		window.ao!.browser.notifyPanelBlur = vi.fn();
 		window.ao!.browser.onFocusLocation = vi.fn((listener: (viewId: string) => void) => {
@@ -689,6 +689,7 @@ describe("BrowserPanel", () => {
 					updatedAt: "2026-01-01T00:00:00.000Z",
 				},
 			],
+			defaultProfileId: null,
 		}));
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 

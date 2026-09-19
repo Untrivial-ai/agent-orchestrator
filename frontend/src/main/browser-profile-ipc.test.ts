@@ -80,7 +80,7 @@ describe("browser profile IPC", () => {
 	it("rejects untrusted profile management and invalid renderer ownership", async () => {
 		const { invoke, renderer, host } = await setup();
 
-		expect(await invoke("browserProfiles:list", renderer)).toEqual({ profiles: [] });
+		expect(await invoke("browserProfiles:list", renderer)).toEqual({ profiles: [], defaultProfileId: null });
 		await expect(invoke("browserProfiles:create", renderer, { name: "Work" })).rejects.toMatchObject({
 			code: "INVALID_ARGUMENT",
 		});

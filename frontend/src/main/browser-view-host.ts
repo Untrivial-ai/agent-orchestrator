@@ -815,7 +815,10 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const viewId = existingViewId ?? `${rendererId ?? 0}:${sessionId}`;
 		let session = entries.get(viewId);
 		if (!session) {
-			const boundProfileId = options.browserProfileStore?.getSessionProfileId(sessionId);
+			const boundProfileId =
+				options.browserProfileStore?.getSessionProfileId(sessionId) ??
+				options.browserProfileStore?.getDefaultProfileId() ??
+				undefined;
 			const boundProfile = boundProfileId ? options.browserProfileStore?.getProfile(boundProfileId) : undefined;
 			const profileId = boundProfile ? boundProfile.id : null;
 			session = {
@@ -879,7 +882,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const store = options.browserProfileStore;
 		if (store) {
 			for (;;) {
-				const boundProfileId = store.getSessionProfileId(sessionId);
+				const boundProfileId = store.getSessionProfileId(sessionId) ?? store.getDefaultProfileId() ?? undefined;
 				if (!boundProfileId || !store.isProfileOperationInProgress(boundProfileId)) break;
 				await store.waitForProfileOperation(boundProfileId);
 			}
