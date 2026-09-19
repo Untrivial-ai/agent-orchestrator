@@ -478,26 +478,19 @@ func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 		name       string
 		permission ports.PermissionMode
 		want       map[string]string
-		wantFlag   bool
+		wantFlag   string
 	}{
 		{name: "default", permission: ports.PermissionModeDefault},
 		{name: "empty", permission: ""},
 		{
 			name:       "accept-edits",
 			permission: ports.PermissionModeAcceptEdits,
-			want: map[string]string{
-				"edit": "allow", "bash": "ask", "webfetch": "ask", "websearch": "ask", "task": "ask",
-			},
+			want:       map[string]string{"edit": "allow"},
 		},
-		{
-			name:       "auto",
-			permission: ports.PermissionModeAuto,
-			want: map[string]string{
-				"edit": "allow", "bash": "allow", "webfetch": "allow", "websearch": "allow",
-				"task": "allow", "skill": "allow", "external_directory": "allow", "doom_loop": "allow",
-			},
-		},
-		{name: "bypass-permissions", permission: ports.PermissionModeBypassPermissions, wantFlag: true},
+		// Auto is OpenCode's own --auto, so the launch carries the flag and no
+		// rules of AO's: the provider decides what "not explicitly denied" means.
+		{name: "auto", permission: ports.PermissionModeAuto, wantFlag: "--auto"},
+		{name: "bypass-permissions", permission: ports.PermissionModeBypassPermissions, wantFlag: "--dangerously-skip-permissions"},
 	}
 
 	for _, tt := range tests {
@@ -510,8 +503,10 @@ func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if has := contains(cmd, "--dangerously-skip-permissions"); has != tt.wantFlag {
-				t.Fatalf("command %#v has bypass flag=%v, want %v", cmd, has, tt.wantFlag)
+			for _, flag := range []string{"--auto", "--dangerously-skip-permissions"} {
+				if has := contains(cmd, flag); has != (flag == tt.wantFlag) {
+					t.Fatalf("command %#v has %s=%v, want flag %q", cmd, flag, has, tt.wantFlag)
+				}
 			}
 			var config opencodeInlineConfig
 			data, err := os.ReadFile(filepath.Join(filepath.Dir(promptFile), "opencode.json"))
@@ -1264,5 +1259,36 @@ func TestProjectPermissionRulesFollowsUpstreamSourceOrder(t *testing.T) {
 	rules, _ := projectPermissionRules(filepath.Join(root, "api")).(map[string]any)
 	if rules["bash"] != "deny" {
 		t.Fatalf("bash = %#v, want the root .opencode to merge last", rules["bash"])
+	}
+}
+
+// Auto means what OpenCode's --auto means: everything that is not explicitly
+// denied, wherever that deny was written.
+func TestAutoTierApprovesWhatIsNotExplicitlyDenied(t *testing.T) {
+	policy := map[string]any{
+		"bash":     map[string]any{"*": "ask", "rm *": "deny"},
+		"webfetch": "ask",
+		"task":     "deny",
+	}
+	tier, ok := acpAgentPermission(ports.PermissionModeAuto, policy).(map[string]any)
+	if !ok {
+		t.Fatalf("tier = %#v", acpAgentPermission(ports.PermissionModeAuto, policy))
+	}
+	if tier["*"] != "allow" {
+		t.Fatalf("tier = %#v, want a blanket allow", tier)
+	}
+	if tier["task"] != "deny" {
+		t.Fatalf("task = %#v, want the explicit deny kept", tier["task"])
+	}
+	if bash, _ := tier["bash"].(map[string]any); bash["rm *"] != "deny" || bash["*"] != nil {
+		t.Fatalf("bash = %#v, want only the denied pattern kept", tier["bash"])
+	}
+	// An ask is a default the mode is entitled to approve, so it is not carried.
+	if _, carried := tier["webfetch"]; carried {
+		t.Fatalf("tier = %#v, want asks approved rather than preserved", tier)
+	}
+	// And OpenCode's own .env deny survives the blanket allow.
+	if read, _ := tier["read"].(map[string]any); read["*.env"] != "deny" {
+		t.Fatalf("read = %#v, want the .env deny kept", tier["read"])
 	}
 }

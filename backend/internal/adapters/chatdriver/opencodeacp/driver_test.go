@@ -158,21 +158,29 @@ func TestConfigureInjectsThePermissionTiersOpenCodeEnforces(t *testing.T) {
 					t.Fatalf("tier %q prompt = %q", tier, agent.Prompt)
 				}
 				if rules, ok := agent.Permission.(map[string]any); ok {
-					if _, reads := rules["read"]; reads {
-						t.Fatalf("tier %q overrides read; OpenCode's own .env deny must survive", tier)
+					read, named := rules["read"].(map[string]any)
+					if named && read["*.env"] != "deny" {
+						t.Fatalf("tier %q reads .env files; OpenCode denies them by default", tier)
 					}
 				}
 			}
 			if config.Agent["ao-default"].Permission != nil {
 				t.Fatalf("default tier = %#v, want the user's own rules", config.Agent["ao-default"].Permission)
 			}
+			// Accept edits adds the one grant OpenCode has no mode for; auto is
+			// --auto, so it allows whatever is not explicitly denied.
 			acceptEdits, _ := config.Agent["ao-accept-edits"].Permission.(map[string]any)
-			if acceptEdits["edit"] != "allow" || acceptEdits["bash"] != "ask" {
+			if acceptEdits["edit"] != "allow" || len(acceptEdits) != 1 {
 				t.Fatalf("accept-edits tier = %#v", acceptEdits)
 			}
 			auto, _ := config.Agent["ao-auto"].Permission.(map[string]any)
-			if auto["bash"] != "allow" || auto["external_directory"] != "allow" {
+			if auto["*"] != "allow" {
 				t.Fatalf("auto tier = %#v", auto)
+			}
+			// Except OpenCode's own .env deny, which --auto keeps too.
+			read, _ := auto["read"].(map[string]any)
+			if read["*.env"] != "deny" {
+				t.Fatalf("auto read rules = %#v, want the .env deny kept", auto["read"])
 			}
 			// OpenCode's scalar full-access form: a wildcard rule can still lose
 			// to a more specific deny contributed by another config layer.
@@ -220,6 +228,8 @@ func TestConfigureNeverRelaxesAWorktreePolicy(t *testing.T) {
 	})
 	// AO grants what the repository has not ruled on, and keeps its rules for
 	// what it has — including a nested pattern map, which survives whole.
+	// Both tiers keep every explicit deny, which is what --auto does; a rule the
+	// repository merely asks about is the tier's to change.
 	for _, tier := range []string{"ao-accept-edits", "ao-auto"} {
 		permission, ok := agents[tier]["permission"].(map[string]any)
 		if !ok {
@@ -230,11 +240,11 @@ func TestConfigureNeverRelaxesAWorktreePolicy(t *testing.T) {
 		}
 		edit, ok := permission["edit"].(map[string]any)
 		if !ok || edit["infra/**"] != "deny" {
-			t.Fatalf("tier %q edit = %#v, want the worktree's pattern rules", tier, permission["edit"])
+			t.Fatalf("tier %q edit = %#v, want the worktree's pattern deny", tier, permission["edit"])
 		}
-		if permission["webfetch"] == nil {
-			t.Fatalf("tier %q dropped a rule the worktree does not mention: %#v", tier, permission)
-		}
+	}
+	if permission, _ := agents["ao-auto"]["permission"].(map[string]any); permission["*"] != "allow" {
+		t.Fatalf("auto tier = %#v, want everything else allowed", permission)
 	}
 	// Bypass is the documented exception and stays full access.
 	if got := agents["ao-bypass"]["permission"]; got != "allow" {

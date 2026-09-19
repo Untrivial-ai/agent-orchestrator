@@ -365,11 +365,16 @@ func opencodeDBCount(ctx context.Context, db *sql.DB, query string) (int, error)
 	return count, nil
 }
 
-// appendPermissionFlags preserves OpenCode's native all-access flag. The other
-// AO permission modes are represented by an inline permission config because
-// OpenCode has no corresponding interactive CLI flags.
+// appendPermissionFlags uses OpenCode's own approval flags where it has them.
+// --auto approves whatever is not explicitly denied, which is exactly AO's auto
+// mode, so the Terminal UI runs the provider's implementation rather than an
+// emulation of it. Bypass keeps the established alias and carries its
+// full-access rule on the AO agent, which outranks every config layer.
 func appendPermissionFlags(cmd *[]string, permissions ports.PermissionMode) {
-	if ports.NormalizePermissionMode(permissions) == ports.PermissionModeBypassPermissions {
+	switch ports.NormalizePermissionMode(permissions) {
+	case ports.PermissionModeAuto:
+		*cmd = append(*cmd, "--auto")
+	case ports.PermissionModeBypassPermissions:
 		*cmd = append(*cmd, "--dangerously-skip-permissions")
 	}
 }
@@ -390,37 +395,44 @@ type opencodeAgentSettings struct {
 	Permission any `json:"permission,omitempty"`
 }
 
-// opencodePermissionConfig maps AO's approval vocabulary to OpenCode's native
-// permission rules. One table serves both surfaces so a mode means the same
-// thing in the Terminal UI and in Chat.
+// opencodePermissionConfig maps AO's approval vocabulary onto what OpenCode
+// itself does, so a mode behaves the way the same session would outside AO.
 //
-// Rules name tools explicitly rather than using "*", because OpenCode's own
-// defaults are permissive — most permissions default to "allow", and only
-// doom_loop and external_directory default to "ask". A mode that only ever
-// loosened would therefore be indistinguishable from Default on a stock
-// configuration. `read` is never named, so OpenCode's default `.env` deny
-// survives every mode but bypass.
+//   - default: no rule. OpenCode's own configuration decides, unchanged.
+//   - accept-edits: allow edits. OpenCode has no such mode, so this is the one
+//     grant AO adds; everything else stays as OpenCode would have it.
+//   - auto: OpenCode's --auto, which approves whatever is not explicitly denied.
+//     Permissions that merely ask, including its external_directory and
+//     doom_loop guards, are approved; explicit deny rules still apply.
+//   - bypass-permissions: `permission: "allow"`, OpenCode's own full-access
+//     setting, which is the one mode that also passes explicit denies.
 //
-//   - default: OpenCode's configuration, unchanged.
-//   - accept-edits: edits run; shell, network, and subagents ask.
-//   - auto: those run too, including the two guards OpenCode asks about by
-//     default. This overrides a user's own deny rules for the named tools.
-//   - bypass-permissions: every tool, which is what the mode promises.
+// `read` is never named, so OpenCode's default `.env` deny survives every mode
+// but bypass.
 func opencodePermissionConfig(mode ports.PermissionMode) map[string]string {
 	switch ports.NormalizePermissionMode(mode) {
 	case ports.PermissionModeAcceptEdits:
-		return map[string]string{
-			"edit": "allow", "bash": "ask", "webfetch": "ask", "websearch": "ask", "task": "ask",
-		}
+		return map[string]string{"edit": "allow"}
 	case ports.PermissionModeAuto:
-		return map[string]string{
-			"edit": "allow", "bash": "allow", "webfetch": "allow", "websearch": "allow",
-			"task": "allow", "skill": "allow", "external_directory": "allow", "doom_loop": "allow",
-		}
-	case ports.PermissionModeBypassPermissions:
-		return map[string]string{"*": "allow"}
+		return nil // the caller supplies OpenCode's --auto, or emulates it
 	default:
 		return nil
+	}
+}
+
+// autoPermissionRules emulate --auto where no flag exists, as Chat's inline
+// overlay does. The carve-out repeats OpenCode's own default for `read`,
+// because a bare wildcard on the agent would outrank it and start reading the
+// .env files it denies — a default --auto itself keeps.
+func autoPermissionRules() map[string]any {
+	return map[string]any{
+		"*": "allow",
+		"read": map[string]any{
+			"*":             "allow",
+			"*.env":         "deny",
+			"*.env.*":       "deny",
+			"*.env.example": "allow",
+		},
 	}
 }
 
@@ -498,34 +510,53 @@ var acpAgentPermissions = map[string]ports.PermissionMode{
 
 // acpAgentPermission composes one tier's ruleset for the inline overlay.
 //
-// The overlay is OpenCode's last config layer and an agent's rules outrank the
-// merged config, so an unqualified grant here would silently override a policy
-// the repository committed. Project rules are therefore applied over AO's, key
-// by key: AO grants what the repository has not ruled on, and never relaxes
-// what it has. When the project states a blanket rule, or states one AO cannot
-// read, AO contributes nothing and the repository's policy governs alone.
-//
-// Bypass is the documented exception, and uses the scalar form rather than a
-// wildcard rule so a more specific deny elsewhere cannot leave it blocked.
-func acpAgentPermission(mode ports.PermissionMode, project any) any {
+// Chat has no CLI flags, so auto is assembled to mean what --auto means: allow
+// everything, then restore every rule the user or repository explicitly denied.
+// Without that second step a blanket grant on the agent, which outranks the
+// merged config, would also pass denies — and only bypass may do that.
+func acpAgentPermission(mode ports.PermissionMode, policy any) any {
 	if ports.NormalizePermissionMode(mode) == ports.PermissionModeBypassPermissions {
 		return "allow"
 	}
-	tier := opencodePermissionConfig(mode)
-	if len(tier) == 0 {
-		return nil
+	out := map[string]any{}
+	if ports.NormalizePermissionMode(mode) == ports.PermissionModeAuto {
+		out = autoPermissionRules()
 	}
-	out := make(map[string]any, len(tier))
-	for key, action := range tier {
+	for key, action := range opencodePermissionConfig(mode) {
 		out[key] = action
 	}
-	switch rules := project.(type) {
+	if len(out) == 0 {
+		return nil
+	}
+	switch rules := policy.(type) {
 	case string:
+		// A blanket policy, or one AO could not parse. Either way OpenCode's own
+		// resolution is stricter than the tier, so AO adds nothing.
 		if rules != "allow" {
 			return nil
 		}
 	case map[string]any:
-		mergePermissionRules(out, rules)
+		mergePermissionRules(out, denyRules(rules))
+	}
+	return out
+}
+
+// denyRules keeps only what a policy forbids, including single patterns inside
+// a tool's rule map. Everything else is a default the tier is entitled to
+// change.
+func denyRules(rules map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range rules {
+		switch rule := value.(type) {
+		case string:
+			if rule == "deny" {
+				out[key] = rule
+			}
+		case map[string]any:
+			if nested := denyRules(rule); len(nested) > 0 {
+				out[key] = nested
+			}
+		}
 	}
 	return out
 }
@@ -562,12 +593,15 @@ func projectPermissionRules(workspacePath string) any {
 }
 
 // projectConfigPaths lists every config OpenCode may load for this workspace,
-// in the order it applies them: the furthest ancestor first, and within one
-// directory the `.opencode` copy after the bare file.
+// in the order it applies them: the global config, then the bare project files
+// from the furthest ancestor down, then every `.opencode` directory, then the
+// home one. Auto has to see a deny wherever it was written, not only in the
+// repository, because --auto honours all of them.
 func projectConfigPaths(workspacePath string) []string {
 	if strings.TrimSpace(workspacePath) == "" {
 		return nil
 	}
+	paths := globalConfigPaths()
 	dirs := []string{}
 	for dir := filepath.Clean(workspacePath); ; {
 		dirs = append(dirs, dir)
@@ -580,7 +614,6 @@ func projectConfigPaths(workspacePath string) []string {
 		}
 		dir = parent
 	}
-	paths := make([]string, 0, len(dirs)*4)
 	// Bare project files: OpenCode reverses the upward walk, so the furthest
 	// ancestor merges first and the nearest wins. It looks for .jsonc before
 	// .json, so within one directory .json merges last.
@@ -595,6 +628,32 @@ func projectConfigPaths(workspacePath string) []string {
 		paths = append(paths,
 			filepath.Join(dir, ".opencode", "opencode.json"),
 			filepath.Join(dir, ".opencode", "opencode.jsonc"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths,
+			filepath.Join(home, ".opencode", "opencode.json"),
+			filepath.Join(home, ".opencode", "opencode.jsonc"))
+	}
+	return paths
+}
+
+// globalConfigPaths are the user-level configs OpenCode merges before anything
+// in the project: its global config directory, then an explicit OPENCODE_CONFIG.
+func globalConfigPaths() []string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if strings.TrimSpace(dir) == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	paths := []string{
+		filepath.Join(dir, "opencode", "opencode.json"),
+		filepath.Join(dir, "opencode", "opencode.jsonc"),
+	}
+	if custom := strings.TrimSpace(os.Getenv(opencodeConfigEnvVar)); custom != "" {
+		paths = append(paths, custom)
 	}
 	return paths
 }
