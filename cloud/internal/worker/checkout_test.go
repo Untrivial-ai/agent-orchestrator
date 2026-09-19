@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,4 +79,80 @@ func TestCloneIntoNonEmptyWorkspaceStagesInsideWorkspace(t *testing.T) {
 			t.Fatalf("staging dir %q was left behind in the workspace", e.Name())
 		}
 	}
+}
+
+func TestEnsureWorkspaceReviewBaseRecordsRemoteMergeBaseOnce(t *testing.T) {
+	repo := initReviewBaseRepository(t)
+	base := gitOutput(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "update-ref", "refs/remotes/origin/main", base)
+	gitRun(t, repo, "checkout", "-b", "ao/session")
+	os.WriteFile(filepath.Join(repo, "README.md"), []byte("second\n"), 0o644)
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "session change")
+
+	if err := EnsureWorkspaceReviewBase(context.Background(), ExecGitRunner{}, repo, "main"); err != nil {
+		t.Fatalf("EnsureWorkspaceReviewBase: %v", err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", WorkspaceReviewBaseRef); got != base {
+		t.Fatalf("review base = %s, want %s", got, base)
+	}
+
+	gitRun(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	if err := EnsureWorkspaceReviewBase(context.Background(), ExecGitRunner{}, repo, "main"); err != nil {
+		t.Fatalf("second EnsureWorkspaceReviewBase: %v", err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", WorkspaceReviewBaseRef); got != base {
+		t.Fatalf("existing review base moved to %s, want %s", got, base)
+	}
+}
+
+func TestEnsureWorkspaceReviewBaseFallsBackToRootCommit(t *testing.T) {
+	repo := initReviewBaseRepository(t)
+	root := gitOutput(t, repo, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(repo, "README.md"), []byte("second\n"), 0o644)
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "later")
+
+	if err := EnsureWorkspaceReviewBase(context.Background(), ExecGitRunner{}, repo, "missing"); err != nil {
+		t.Fatalf("EnsureWorkspaceReviewBase: %v", err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", WorkspaceReviewBaseRef); got != root {
+		t.Fatalf("fallback review base = %s, want root %s", got, root)
+	}
+}
+
+func initReviewBaseRepository(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-b", "main")
+	gitRun(t, repo, "config", "user.name", "AO Test")
+	gitRun(t, repo, "config", "user.email", "ao@example.test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "initial")
+	return repo
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }

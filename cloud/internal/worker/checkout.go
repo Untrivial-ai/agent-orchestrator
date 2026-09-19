@@ -18,6 +18,9 @@ const scratchRepositoryHost = "scratch.ao.local"
 const (
 	cloudGitAuthorName  = "AO Cloud Agent"
 	cloudGitAuthorEmail = "noreply@aoagents.com"
+	// WorkspaceReviewBaseRef is an immutable, AO-owned baseline stored with the
+	// checkout so committed changes survive worker restarts and restores.
+	WorkspaceReviewBaseRef = "refs/ao/diff-base"
 )
 
 type GitRunner interface {
@@ -112,6 +115,39 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 		return err
 	}
 	return validateOrigin(ctx, runner, workspace, expected)
+}
+
+// EnsureWorkspaceReviewBase records the checkout's comparison baseline once.
+// Existing refs are deliberately left untouched even when a later fetch moves
+// origin/<defaultBranch>.
+func EnsureWorkspaceReviewBase(ctx context.Context, runner GitRunner, workspace, defaultBranch string) error {
+	if runner == nil {
+		return errors.New("git runner is required")
+	}
+	if _, err := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", WorkspaceReviewBaseRef); err == nil {
+		return nil
+	}
+
+	candidate := ""
+	if branch := strings.TrimSpace(defaultBranch); branch != "" {
+		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "origin/"+branch, "HEAD"); err == nil {
+			candidate = strings.TrimSpace(output)
+		}
+	}
+	if candidate == "" {
+		output, err := runner.Run(ctx, workspace, nil, "rev-list", "--max-parents=0", "--reverse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("resolve workspace review base: %w", err)
+		}
+		candidate = strings.TrimSpace(strings.SplitN(output, "\n", 2)[0])
+	}
+	if candidate == "" {
+		return errors.New("resolve workspace review base: repository has no commits")
+	}
+	if _, err := runner.Run(ctx, workspace, nil, "update-ref", WorkspaceReviewBaseRef, candidate); err != nil {
+		return fmt.Errorf("record workspace review base: %w", err)
+	}
+	return nil
 }
 
 // cloneIntoNonEmptyWorkspace clones the authorized repository into a staging

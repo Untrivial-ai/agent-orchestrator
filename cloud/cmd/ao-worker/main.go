@@ -308,6 +308,11 @@ func prepareWorkspace(
 			return fmt.Errorf("configure repository tooling: %w", err)
 		}
 	}
+	if err := worker.EnsureWorkspaceReviewBase(
+		ctx, worker.ExecGitRunner{}, workspace, bootstrap.Launch.DefaultBranch,
+	); err != nil {
+		return fmt.Errorf("record workspace review base: %w", err)
+	}
 	return nil
 }
 
