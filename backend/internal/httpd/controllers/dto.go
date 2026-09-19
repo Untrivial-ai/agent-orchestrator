@@ -1656,6 +1656,68 @@ type ShellTerminalEnvelope struct {
 	ShellTerminal ShellTerminalResponse `json:"shellTerminal"`
 }
 
+// CueIDParam is the {cueId} path parameter of the /cues/{cueId} routes.
+type CueIDParam struct {
+	CueID string `path:"cueId" description:"Cue identifier."`
+}
+
+// CueProjectIDParam is the {projectId} path parameter of the project-scoped
+// /projects/{projectId}/cues routes.
+type CueProjectIDParam struct {
+	ProjectID string `path:"projectId" description:"Project whose cues are listed or extended."`
+}
+
+// CreateCueRequest is the body of POST /api/v1/projects/{projectId}/cues.
+type CreateCueRequest struct {
+	Name        string `json:"name" maxLength:"64" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
+	Description string `json:"description,omitempty" maxLength:"240" description:"Optional human note about the cue, at most 240 bytes."`
+	Type        string `json:"type" description:"Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB."`
+	Command     string `json:"command,omitempty" maxLength:"4096" description:"Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues."`
+	Prompt      string `json:"prompt,omitempty" maxLength:"16384" description:"Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues."`
+}
+
+// UpdateCueRequest is the body of PATCH /api/v1/cues/{cueId}.
+type UpdateCueRequest struct {
+	Name        string `json:"name" maxLength:"64" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
+	Description string `json:"description,omitempty" maxLength:"240" description:"Optional human note about the cue, at most 240 bytes."`
+	Type        string `json:"type" description:"Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB."`
+	Command     string `json:"command,omitempty" maxLength:"4096" description:"Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues."`
+	Prompt      string `json:"prompt,omitempty" maxLength:"16384" description:"Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues."`
+}
+
+// CueResponse is one project-scoped reusable quick action.
+type CueResponse struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"projectId"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Type        string    `json:"type"`
+	Command     string    `json:"command,omitempty"`
+	Prompt      string    `json:"prompt,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// ListCuesResponse is the body of GET /api/v1/projects/{projectId}/cues.
+type ListCuesResponse struct {
+	Cues []CueResponse `json:"cues"`
+}
+
+// InvokeCueRequest is the optional body of POST /api/v1/cues/{cueId}/invoke.
+type InvokeCueRequest struct {
+	SessionID string `json:"sessionId,omitempty" description:"Session to message. Omit the field to create a worker in the cue's project. A supplied id must be non-blank and reachable; an explicit blank, null, unavailable, or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB."`
+}
+
+// InvokeCueResponse is the body of POST /api/v1/cues/{cueId}/invoke.
+type InvokeCueResponse struct {
+	SessionID string `json:"sessionId" description:"Session that received the cue: the messaged session, or the newly spawned worker."`
+}
+
+// CueEnvelope is the { cue } response body for cue reads and mutations.
+type CueEnvelope struct {
+	Cue CueResponse `json:"cue"`
+}
+
 // MarkAllNotificationsReadRequest is the optional body of
 // POST /api/v1/notifications/read-all.
 type MarkAllNotificationsReadRequest struct {

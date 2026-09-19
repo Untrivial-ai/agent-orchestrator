@@ -45,6 +45,10 @@ vi.mock("./GlobalSettingsForm", () => ({
 	GlobalSettingsForm: ({ section }: { section: string }) => <div data-testid="global-settings-section">{section}</div>,
 }));
 
+vi.mock("./CuesDialog", () => ({
+	CuesSettings: ({ projectId }: { projectId: string }) => <div data-testid="project-cues-settings">{projectId}</div>,
+}));
+
 // The dialog reads the cloud gate to decide whether the Cloud nav page exists;
 // mocked so these tests need no QueryClientProvider (same pattern as Sidebar).
 vi.mock("../hooks/useCloudGate", () => ({
@@ -74,6 +78,19 @@ describe("SettingsDialog", () => {
 
 		await userEvent.keyboard("{Escape}");
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
+	});
+
+	it("keeps cue management in project settings without the project save action", async () => {
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderSettingsDialog();
+
+		const cuesSection = await screen.findByRole("button", { name: "Cues" });
+		expect(cuesSection.querySelector(".lucide-disc-3")).not.toBeNull();
+		await userEvent.click(cuesSection);
+
+		expect(screen.getByTestId("project-cues-settings")).toHaveTextContent("proj-1");
+		expect(cuesSection).toHaveAttribute("aria-current", "page");
+		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
 	});
 
 	it("opens the requested global settings page", async () => {

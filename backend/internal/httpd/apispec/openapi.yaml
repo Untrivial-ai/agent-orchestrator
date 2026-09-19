@@ -1084,6 +1084,216 @@ paths:
       summary: Check whether the desktop browser runtime is connected for a session
       tags:
       - browser
+  /api/v1/cues/{cueId}:
+    delete:
+      operationId: deleteCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Delete a cue
+      tags:
+      - cues
+    get:
+      operationId: getCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get one cue
+      tags:
+      - cues
+    patch:
+      operationId: updateCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCueRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Replace a cue's definition
+      tags:
+      - cues
+  /api/v1/cues/{cueId}/invoke:
+    post:
+      operationId: invokeCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvokeCueRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvokeCueResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Dispatch a cue to the specified session; create a worker only when
+        sessionId is omitted
+      tags:
+      - cues
   /api/v1/desktop/sessions/{sessionId}/workspace:
     get:
       operationId: getDesktopSessionWorkspace
@@ -2203,6 +2413,107 @@ paths:
       summary: Remember project permissions for future sessions
       tags:
       - projects
+  /api/v1/projects/{projectId}/cues:
+    get:
+      operationId: listProjectCues
+      parameters:
+      - description: Project whose cues are listed or extended.
+        in: path
+        name: projectId
+        required: true
+        schema:
+          description: Project whose cues are listed or extended.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCuesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List a project's cues in name order
+      tags:
+      - cues
+    post:
+      operationId: createCue
+      parameters:
+      - description: Project whose cues are listed or extended.
+        in: path
+        name: projectId
+        required: true
+        schema:
+          description: Project whose cues are listed or extended.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCueRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueEnvelope'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Create a cue for a project
+      tags:
+      - cues
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -9171,6 +9482,73 @@ components:
       - cachedTokens
       - totalTokens
       type: object
+    CreateCueRequest:
+      properties:
+        command:
+          description: Shell command for a command cue. At most 4096 bytes; cleared
+            when saving agent cues.
+          maxLength: 4096
+          type: string
+        description:
+          description: Optional human note about the cue, at most 240 bytes.
+          maxLength: 240
+          type: string
+        name:
+          description: Short cue name, unique within the project. Trimmed; must be
+            non-empty and at most 64 bytes.
+          maxLength: 64
+          type: string
+        prompt:
+          description: Agent instruction for an agent cue. At most 16384 bytes; cleared
+            when saving command cues.
+          maxLength: 16384
+          type: string
+        type:
+          description: 'Cue kind: command asks an agent to run a shell command; agent
+            sends an authored prompt. Definition body limit: 128 KiB.'
+          type: string
+      required:
+      - name
+      - type
+      type: object
+    CueEnvelope:
+      properties:
+        cue:
+          $ref: '#/components/schemas/CueResponse'
+      required:
+      - cue
+      type: object
+    CueResponse:
+      properties:
+        command:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        description:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        projectId:
+          type: string
+        prompt:
+          type: string
+        type:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - projectId
+      - name
+      - description
+      - type
+      - createdAt
+      - updatedAt
+      type: object
     DegradedProject:
       properties:
         id:
@@ -9806,6 +10184,24 @@ components:
       - target
       - status
       type: object
+    InvokeCueRequest:
+      properties:
+        sessionId:
+          description: 'Session to message. Omit the field to create a worker in the
+            cue''s project. A supplied id must be non-blank and reachable; an explicit
+            blank, null, unavailable, or incompatible session returns an error and
+            never creates a replacement worker. Invocation body limit: 4 KiB.'
+          type: string
+      type: object
+    InvokeCueResponse:
+      properties:
+        sessionId:
+          description: 'Session that received the cue: the messaged session, or the
+            newly spawned worker.'
+          type: string
+      required:
+      - sessionId
+      type: object
     KillReviewResponse:
       properties:
         reviewerHandleId:
@@ -9888,6 +10284,15 @@ components:
           type: array
       required:
       - sessions
+      type: object
+    ListCuesResponse:
+      properties:
+        cues:
+          items:
+            $ref: '#/components/schemas/CueResponse'
+          type: array
+      required:
+      - cues
       type: object
     ListNotificationsResponse:
       properties:
@@ -12168,6 +12573,35 @@ components:
       required:
       - token
       - deleted
+      type: object
+    UpdateCueRequest:
+      properties:
+        command:
+          description: Shell command for a command cue. At most 4096 bytes; cleared
+            when saving agent cues.
+          maxLength: 4096
+          type: string
+        description:
+          description: Optional human note about the cue, at most 240 bytes.
+          maxLength: 240
+          type: string
+        name:
+          description: Short cue name, unique within the project. Trimmed; must be
+            non-empty and at most 64 bytes.
+          maxLength: 64
+          type: string
+        prompt:
+          description: Agent instruction for an agent cue. At most 16384 bytes; cleared
+            when saving command cues.
+          maxLength: 16384
+          type: string
+        type:
+          description: 'Cue kind: command asks an agent to run a shell command; agent
+            sends an authored prompt. Definition body limit: 128 KiB.'
+          type: string
+      required:
+      - name
+      - type
       type: object
     UpdateProjectSettingsInput:
       properties:

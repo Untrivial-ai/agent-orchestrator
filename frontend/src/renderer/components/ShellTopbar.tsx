@@ -39,6 +39,7 @@ import {
 	deriveSessionAgentSwitchPresentation,
 } from "../lib/agent-switch-presentation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { ProjectCueMenu } from "./chat/CueComposerMenu";
 
 const isMac = isMacPlatform();
 const dragStyle = isMac ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
@@ -194,7 +195,15 @@ export function ShellTopbar({
 				data-testid="workspace-topbar-actions"
 			>
 				{!boardActionsInPanel && isProjectBoardRoute ? (
-					<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} style={noDragStyle} />
+					<>
+						<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} style={noDragStyle} />
+						<span className="inline-flex" style={noDragStyle}>
+							<ProjectCueMenu
+								projectId={projectId!}
+								disabled={isProjectRestarting || isProvisioning}
+							/>
+						</span>
+					</>
 				) : null}
 				{isSessionRoute ? (
 					<>

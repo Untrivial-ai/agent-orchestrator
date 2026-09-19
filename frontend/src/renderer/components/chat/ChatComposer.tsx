@@ -144,6 +144,7 @@ export const ChatComposer = memo(function ChatComposer({
 	disabled,
 	disabledPlaceholder,
 	settings,
+	cueTrigger,
 	approval,
 	skills = [],
 	filePaths = [],
@@ -185,6 +186,8 @@ export const ChatComposer = memo(function ChatComposer({
 		retainedContent?: number[],
 	) => void | Promise<unknown>;
 	settings?: ReactNode;
+	/** Extra message-tools controls rendered ahead of settings. */
+	cueTrigger?: ReactNode;
 	/** A provider decision that temporarily replaces ordinary message entry. */
 	approval?: ReactNode;
 	/** A send is in flight. */
@@ -1579,6 +1582,7 @@ export const ChatComposer = memo(function ChatComposer({
 								</Tooltip>
 							</>
 						) : null}
+						{cueTrigger}
 						{settings}
 					</div>
 
