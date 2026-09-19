@@ -16,10 +16,12 @@ export function buildTerminalThemes(): { dark: ITheme; light: ITheme } {
 		: cssVar("--color-bg-terminal-opaque") || cssVar("--color-bg-terminal");
 	const terminalForeground = namedThemeActive ? cssVar("--foreground") : cssVar("--color-text-terminal");
 	const terminalCursor = namedThemeActive ? cssVar("--primary") : cssVar("--color-working");
-	// Collapse ANSI black into the plate. Agent TUIs (Cursor's prompt bar) fill
-	// rows with "black"; leaving the slot as a true dark color paints a black
-	// stripe on the light canvas. Same approach as packages/mobile/lib/theme.ts.
-	const ansiBlack = terminalBg;
+	// Collapse ANSI black into the plate for dark mode so Agent TUIs that fill
+	// rows with "black" don't paint a dark stripe on a dark canvas. In light
+	// mode use the foreground instead: mapping black to the light background
+	// makes any ANSI-black text invisible (same colour as the plate).
+	const darkAnsiBlack = terminalBg;
+	const lightAnsiBlack = terminalForeground || "#1a1a1a";
 	const dark: ITheme = {
 		background: terminalBg,
 		foreground: terminalForeground,
@@ -27,7 +29,7 @@ export function buildTerminalThemes(): { dark: ITheme; light: ITheme } {
 		cursorAccent: terminalBg,
 		selectionBackground: cssVar("--color-term-selection-dark"),
 		selectionInactiveBackground: cssVar("--color-term-selection-inactive"),
-		black: ansiBlack,
+		black: darkAnsiBlack,
 		red: cssVar("--color-term-red"),
 		green: cssVar("--color-term-green"),
 		yellow: cssVar("--color-term-yellow"),
@@ -56,7 +58,7 @@ export function buildTerminalThemes(): { dark: ITheme; light: ITheme } {
 		cursorAccent: terminalBg,
 		selectionBackground: cssVar("--color-term-selection-light"),
 		selectionInactiveBackground: cssVar("--color-term-selection-inactive-light"),
-		black: ansiBlack,
+		black: lightAnsiBlack,
 		red: cssVar("--color-term-red"),
 		green: cssVar("--color-term-green"),
 		yellow: cssVar("--color-term-yellow"),
