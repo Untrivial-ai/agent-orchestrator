@@ -1090,3 +1090,52 @@ INSERT INTO projects (id, path, registered_at) VALUES ('alpha', '/repos/alpha', 
 		t.Fatalf("OpenReadOnly migrated projects schema:\n%s", schema)
 	}
 }
+
+// TestMigration0148AddsZcodeToLegacyQMConstraint seeds the QM-variant OMP-era
+// constraint (0095's second preserved schema: ... 'omp', 'qm', 'fake') and
+// runs only migration 0148, asserting the QM replace pair inserted 'zcode'.
+// Without the QM pair, the replace() source string omits 'qm' and no-ops,
+// leaving zcode session inserts to fail with a CHECK violation on installs
+// that took 0095's legacy branch.
+func TestMigration0148AddsZcodeToLegacyQMConstraint(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	upTo(t, db, 147)
+
+	// Simulate a legacy QM-variant database: swap the post-0133 constraint
+	// (omp, no qm) to the QM variant (omp, qm).
+	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
+		t.Fatalf("enable writable_schema: %v", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE sqlite_master
+SET sql = replace(sql, ?, ?)
+WHERE type = 'table' AND name = 'sessions'`,
+		sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP,
+		sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP,
+	); err != nil {
+		t.Fatalf("seed legacy qm harness constraint: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA writable_schema = RESET`); err != nil {
+		t.Fatalf("reparse legacy qm harness constraint: %v", err)
+	}
+
+	// Run only migration 0148 (versions 1–133 are already applied).
+	upTo(t, db, 148)
+
+	var schema string
+	if err := db.QueryRow(
+		"SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+	).Scan(&schema); err != nil {
+		t.Fatalf("read sessions schema: %v", err)
+	}
+	for _, harness := range []string{"'zcode'", "'qm'", "'omp'"} {
+		if !strings.Contains(schema, harness) {
+			t.Fatalf("sessions.harness CHECK is missing %s after migration 0148:\n%s", harness, schema)
+		}
+	}
+}

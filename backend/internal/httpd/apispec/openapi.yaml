@@ -9269,6 +9269,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - zcode
           - fake
           type: string
         approvalMode:
@@ -9839,6 +9840,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - zcode
           - cloudflared
           type: string
         updatedAt:
@@ -11836,6 +11838,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - zcode
           type: string
         issueId:
           type: string
