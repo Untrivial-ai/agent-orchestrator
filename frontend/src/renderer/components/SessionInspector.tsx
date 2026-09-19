@@ -328,21 +328,24 @@ const SummaryView = memo(function SummaryView({
 			activityTitle={t("inspector.activity")}
 			completion={<SessionControls session={session} />}
 			pullRequestCards={
-				<div className="flex flex-col gap-1.5">
-					{hasPRs ? (
-						prSummaries.map((pr) => (
-							<PRSummaryCard
-								canOpenReviews={canOpenReviews}
-								key={pr.url || pr.htmlUrl || pr.number}
-								onOpenReviews={onOpenReviews}
-								pr={pr}
-								sessionId={session.id}
-							/>
-						))
-					) : (
-						<p className={inspectorEmptyClass}>{t("inspector.noPROpened")}</p>
-					)}
-				</div>
+				<>
+					<div className="flex flex-col gap-1.5">
+						{hasPRs ? (
+							prSummaries.map((pr) => (
+								<PRSummaryCard
+									canOpenReviews={canOpenReviews}
+									key={pr.url || pr.htmlUrl || pr.number}
+									onOpenReviews={onOpenReviews}
+									pr={pr}
+									sessionId={session.id}
+								/>
+							))
+						) : (
+							<p className={inspectorEmptyClass}>{t("inspector.noPROpened")}</p>
+						)}
+					</div>
+					<SessionPRCompletionControl session={session} />
+				</>
 			}
 			pullRequestTitle={prSectionTitle}
 			workers={showWorkers ? <OrchestratorChildrenSection session={session} /> : undefined}
@@ -1091,39 +1094,15 @@ function ResumeAgentControl({ session }: { session: WorkspaceSession }) {
 	);
 }
 
-function SessionControls({ session }: { session: WorkspaceSession }) {
+// The terminate row (label + trash-icon popover). Shared by the standalone
+// "Session controls" section and the merged-PR contextual action so both keep
+// identical confirmation and post-termination navigation behavior.
+function SessionTerminateAction({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const terminate = useTerminateSession();
-	const policy = useMutation({
-		mutationFn: async (terminateOnPrMerge: boolean) => {
-			if (usePreviewData) return;
-			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/merge-policy", {
-				params: { path: { sessionId: session.id } },
-				body: { terminateOnPrMerge },
-			});
-			if (error) throw new Error(apiErrorMessage(error, `Failed to update merge policy (${response.status})`));
-		},
-		onMutate: async (terminateOnPrMerge) => {
-			await queryClient.cancelQueries({ queryKey: workspaceQueryKey });
-			const previous = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
-			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (current) =>
-				updateSessionMergePolicy(current, session.id, terminateOnPrMerge),
-			);
-			return { previous };
-		},
-		onError: (_error, _next, context) => {
-			if (context?.previous) queryClient.setQueryData(workspaceQueryKey, context.previous);
-		},
-		onSettled: () => {
-			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-		},
-	});
-	const policyError = policy.error instanceof Error ? policy.error.message : null;
-	const canTerminateNow = session.status === "merged";
-	const isStandaloneSession = session.workspaceId === STANDALONE_WORKSPACE_ID;
 
 	const confirmTermination = () => {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
@@ -1144,9 +1123,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 		void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 	};
 
-	if (session.isTerminated === true) return null;
-
-	const terminateAction = (
+	return (
 		<div className="flex items-center justify-between gap-3 py-1">
 			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
 			<Tooltip>
@@ -1179,36 +1156,91 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 			</Tooltip>
 		</div>
 	);
+}
+
+// Rendered inside the "Pull request(s)" section, below the PR cards, because
+// the completion behavior is tied to PR merge state. Before merge it shows the
+// "Terminate on merge" toggle; after merge (when the user opted out of
+// auto-termination) it surfaces the manual terminate action contextually.
+function SessionPRCompletionControl({ session }: { session: WorkspaceSession }) {
+	const { t } = useTranslation();
+	const queryClient = useQueryClient();
+	const policy = useMutation({
+		mutationFn: async (terminateOnPrMerge: boolean) => {
+			if (usePreviewData) return;
+			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/merge-policy", {
+				params: { path: { sessionId: session.id } },
+				body: { terminateOnPrMerge },
+			});
+			if (error) throw new Error(apiErrorMessage(error, `Failed to update merge policy (${response.status})`));
+		},
+		onMutate: async (terminateOnPrMerge) => {
+			await queryClient.cancelQueries({ queryKey: workspaceQueryKey });
+			const previous = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
+			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (current) =>
+				updateSessionMergePolicy(current, session.id, terminateOnPrMerge),
+			);
+			return { previous };
+		},
+		onError: (_error, _next, context) => {
+			if (context?.previous) queryClient.setQueryData(workspaceQueryKey, context.previous);
+		},
+		onSettled: () => {
+			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+	});
+	const policyError = policy.error instanceof Error ? policy.error.message : null;
+
+	// Orchestrators have no merge policy; standalone sessions keep their direct
+	// terminate control in the "Session controls" section; terminated sessions
+	// have nothing to complete.
+	if (session.isTerminated === true) return null;
+	if (session.kind === "orchestrator") return null;
+	if (session.workspaceId === STANDALONE_WORKSPACE_ID) return null;
+
+	if (session.status === "merged") {
+		return <SessionTerminateAction session={session} />;
+	}
+
+	return (
+		<>
+			<InspectorPolicyRow
+				ariaLabel={t("inspector.terminateOnMerge")}
+				checked={Boolean(session.terminateOnPrMerge)}
+				description={t("inspector.terminateOnMergeDescription")}
+				disabled={policy.isPending}
+				id={`merge-policy-${session.id}`}
+				label={t("inspector.terminateOnMergeShort")}
+				onCheckedChange={(checked) => policy.mutate(checked)}
+				tooltipClassName="max-w-60"
+			/>
+			{policyError ? (
+				<p className="mt-1 text-2xs leading-normal text-error" role="status">
+					{policyError}
+				</p>
+			) : null}
+		</>
+	);
+}
+
+function SessionControls({ session }: { session: WorkspaceSession }) {
+	const { t } = useTranslation();
+	const isStandaloneSession = session.workspaceId === STANDALONE_WORKSPACE_ID;
+
+	if (session.isTerminated === true) return null;
 
 	if (isStandaloneSession) {
-		return <Section title={t("inspector.sessionControls")}>{terminateAction}</Section>;
+		return (
+			<Section title={t("inspector.sessionControls")}>
+				<SessionTerminateAction session={session} />
+			</Section>
+		);
 	}
 
 	return (
 		<Section title={t("inspector.sessionControls")}>
 			<AutoInjectCIPolicyControl session={session} />
 			<AutoInjectReviewPolicyControl session={session} />
-			{session.kind === "orchestrator" ? null : canTerminateNow ? (
-				terminateAction
-			) : (
-				<>
-					<InspectorPolicyRow
-						ariaLabel={t("inspector.terminateOnMerge")}
-						checked={Boolean(session.terminateOnPrMerge)}
-						description={t("inspector.terminateOnMergeDescription")}
-						disabled={policy.isPending}
-						id={`merge-policy-${session.id}`}
-						label={t("inspector.terminateOnMergeShort")}
-						onCheckedChange={(checked) => policy.mutate(checked)}
-						tooltipClassName="max-w-60"
-					/>
-					{policyError ? (
-						<p className="mt-1 text-2xs leading-normal text-error" role="status">
-							{policyError}
-						</p>
-					) : null}
-				</>
-			)}
 		</Section>
 	);
 }
