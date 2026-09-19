@@ -96,6 +96,14 @@ describe("rankSkills", () => {
 		expect(rankSkills(skills, "zzzz")).toEqual([]);
 	});
 
+	// Claude's ACP catalog is ~250 commands. A cap here silently hid everything
+	// past the fiftieth name while the TUI showed the lot.
+	it("does not cap a large catalog", () => {
+		const many = Array.from({ length: 250 }, (_, i) => skill(`skill-${String(i).padStart(3, "0")}`));
+		expect(rankSkills(many, "")).toHaveLength(250);
+		expect(rankSkills(many, "skill-")).toHaveLength(250);
+	});
+
 	it("is empty when the provider reported no skills", () => {
 		expect(rankSkills([], "rev")).toEqual([]);
 		expect(rankSkills([], "")).toEqual([]);
