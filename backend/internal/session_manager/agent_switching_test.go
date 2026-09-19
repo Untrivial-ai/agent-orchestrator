@@ -871,6 +871,74 @@ func (a *switchTestAgent) GetRestoreCommand(_ context.Context, cfg ports.Restore
 
 type switchTestAgents map[domain.AgentHarness]ports.Agent
 
+type scopedSwitchAgent struct {
+	*switchTestAgent
+	checks []ports.AgentAuthCheck
+	status ports.AgentAuthStatus
+	err    error
+}
+
+func (a *scopedSwitchAgent) AuthStatusFor(_ context.Context, in ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
+	env := make(map[string]string, len(in.Env))
+	for key, value := range in.Env {
+		env[key] = value
+	}
+	in.Env = env
+	a.checks = append(a.checks, in)
+	return a.status, a.err
+}
+
+func TestSwitchAgentScopedAuthUsesFinalLaunchAndPreservesGlobalReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  ports.AgentAuthStatus
+		err     error
+		blocked bool
+	}{
+		{"authorized", ports.AgentAuthStatusAuthorized, nil, false},
+		{"configured", ports.AgentAuthStatusConfigured, nil, false},
+		{"unknown", ports.AgentAuthStatusUnknown, nil, false},
+		{"not applicable", ports.AgentAuthStatusNotApplicable, nil, false},
+		{"unauthorized", ports.AgentAuthStatusUnauthorized, nil, true},
+		{"inconclusive error", ports.AgentAuthStatusUnauthorized, errors.New("probe failed"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+			manager, store, _ := newSwitchTestManager(t, runtime)
+			agents := manager.agents.(switchTestAgents)
+			agent := &scopedSwitchAgent{switchTestAgent: agents[domain.HarnessCodex].(*switchTestAgent), status: tc.status, err: tc.err}
+			agents[domain.HarnessCodex] = agent
+			project := store.projects["proj"]
+			project.Config.Env = map[string]string{"PROVIDER": "local"}
+			store.projects["proj"] = project
+			readiness := &switchReadinessProvider{snapshot: domain.AgentReadinessSnapshot{Authentication: domain.AgentAuthenticationObservation{State: domain.AgentAuthenticationUnauthorized}}}
+			before := readiness.snapshot
+			manager.SetAgentReadiness(readiness)
+			sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, Model: "local-model", IdempotencyKey: "scoped"})
+			if tc.blocked {
+				if !errors.Is(err, ErrTargetAgentUnauthorized) || runtime.destroyed != 0 || runtime.created != 0 {
+					t.Fatalf("unauthorized switch affected source: %v", err)
+				}
+			} else if err != nil || sw.State != domain.AgentSwitchCompleted {
+				t.Fatalf("switch failed: %v (%s)", err, sw.State)
+			}
+			if len(agent.checks) == 0 {
+				t.Fatal("scoped authentication was not checked")
+			}
+			got := agent.checks[len(agent.checks)-1]
+			if got.WorkingDir != store.sessions["proj-1"].Metadata.WorkspacePath || got.DataDir != manager.dataDir || got.Config.Model != "local-model" || got.Env["PROVIDER"] != "local" || got.Env[EnvRuntimeLaunchID] == "" || !got.Interactive {
+				t.Fatalf("wrong scope: %+v", got)
+			}
+			if !tc.blocked && !reflect.DeepEqual(got.Args, []string{"agent", "fresh", agent.launchPrompt}) {
+				t.Fatalf("scoped args did not include final continuation: %v", got.Args)
+			}
+			if readiness.calls != 0 || !reflect.DeepEqual(before, readiness.snapshot) {
+				t.Fatal("switch changed global readiness")
+			}
+		})
+	}
+}
+
 func (a switchTestAgents) Agent(h domain.AgentHarness) (ports.Agent, bool) {
 	agent, ok := a[h]
 	return agent, ok

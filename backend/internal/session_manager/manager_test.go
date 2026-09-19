@@ -745,6 +745,111 @@ func (a promptStrategyErrorAgent) GetPromptDeliveryStrategy(context.Context, por
 
 type singleAgent struct{ agent ports.Agent }
 
+type scopedLaunchAgent struct {
+	fakeAgent
+	checks      []ports.AgentAuthCheck
+	status      ports.AgentAuthStatus
+	err         error
+	globalCalls int
+}
+
+func (a *scopedLaunchAgent) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	a.globalCalls++
+	return ports.AgentAuthStatusUnauthorized, nil
+}
+
+func (a *scopedLaunchAgent) AuthStatusFor(_ context.Context, in ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
+	env := make(map[string]string, len(in.Env))
+	for key, value := range in.Env {
+		env[key] = value
+	}
+	in.Env = env
+	a.checks = append(a.checks, in)
+	return a.status, a.err
+}
+
+func (a *scopedLaunchAgent) AugmentRuntimeEnv(env map[string]string, dataDir string) {
+	env["SCOPED_AGENT_HOME"] = filepath.Join(dataDir, "agent-config")
+}
+
+func (a *scopedLaunchAgent) GetLaunchCommand(_ context.Context, in ports.LaunchConfig) ([]string, error) {
+	return []string{"launch", "--model", in.Config.Model}, nil
+}
+
+func TestSpawnScopedAuthUsesResolvedLaunchWithoutChangingGlobalReadiness(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.dataDir = t.TempDir()
+	agent := &scopedLaunchAgent{status: ports.AgentAuthStatusNotApplicable}
+	m.agents = singleAgent{agent: agent}
+	readiness := &switchReadinessProvider{snapshot: domain.AgentReadinessSnapshot{
+		Authentication: domain.AgentAuthenticationObservation{State: domain.AgentAuthenticationUnauthorized},
+	}}
+	m.SetAgentReadiness(readiness)
+	before := readiness.snapshot
+	for _, model := range []string{"local/model", "cloud/model"} {
+		project := st.projects["mer"]
+		project.Config.Env = map[string]string{"PROVIDER": model}
+		project.Config.Worker = domain.RoleOverride{Harness: domain.HarnessOpenCode, AgentConfig: domain.AgentConfig{Model: "role-model"}}
+		st.projects["mer"] = project
+		ws.path = t.TempDir()
+		rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, AgentConfig: ports.AgentConfig{Model: model}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(agent.checks) == 0 {
+			t.Fatal("scoped authentication was not checked")
+		}
+		got := agent.checks[len(agent.checks)-1]
+		if got.WorkingDir != ws.path || got.WorkingDir != rec.Metadata.WorkspacePath || got.DataDir != m.dataDir || got.Config.Model != model || !got.Interactive {
+			t.Fatalf("wrong launch scope: %+v", got)
+		}
+		if got.Env["SCOPED_AGENT_HOME"] != filepath.Join(m.dataDir, "agent-config") || got.Env[EnvRuntimeLaunchID] == "" || got.Env["PROVIDER"] != model || got.Env[EnvSessionID] != string(rec.ID) || !reflect.DeepEqual(got.Env, rt.lastCfg.Env) {
+			t.Fatal("scoped environment differs from resolved runtime environment")
+		}
+		if !reflect.DeepEqual(got.Args, []string{"launch", "--model", model}) {
+			t.Fatalf("args = %v", got.Args)
+		}
+	}
+	if len(agent.checks) != 2 || agent.checks[0].WorkingDir == agent.checks[1].WorkingDir {
+		t.Fatal("scopes were reused across workspaces")
+	}
+	if readiness.calls != 0 || agent.globalCalls != 0 || !reflect.DeepEqual(readiness.snapshot, before) {
+		t.Fatal("scoped checks changed global readiness")
+	}
+}
+
+func TestSpawnScopedAuthOnlyRejectsUnauthorized(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  ports.AgentAuthStatus
+		err     error
+		blocked bool
+	}{
+		{"authorized", ports.AgentAuthStatusAuthorized, nil, false},
+		{"configured", ports.AgentAuthStatusConfigured, nil, false},
+		{"unknown", ports.AgentAuthStatusUnknown, nil, false},
+		{"not applicable", ports.AgentAuthStatusNotApplicable, nil, false},
+		{"unauthorized", ports.AgentAuthStatusUnauthorized, nil, true},
+		{"inconclusive error", ports.AgentAuthStatusUnauthorized, errors.New("probe failed"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, rt, _ := newManager()
+			m.agents = singleAgent{agent: &scopedLaunchAgent{status: tc.status, err: tc.err}}
+			_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode})
+			if tc.blocked {
+				if !errors.Is(err, ports.ErrAgentScopedAuthUnauthorized) {
+					t.Fatalf("error = %v", err)
+				}
+				if rt.created != 0 || len(st.sessions) != 0 {
+					t.Fatal("unauthorized spawn left a runtime or session")
+				}
+			} else if err != nil || rt.created != 1 {
+				t.Fatalf("launch blocked: created=%d err=%v", rt.created, err)
+			}
+		})
+	}
+}
+
 func (s singleAgent) Agent(domain.AgentHarness) (ports.Agent, bool) { return s.agent, true }
 
 type scratchHookAgent struct {

@@ -1058,10 +1058,15 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, err)
 	}
 	m.augmentRuntimePATHForLaunchBinary(ctx, env, argv)
+	nativeArgv := argv
 	argv, launchID, err := m.superviseAgentProcess(agent, id, env, argv)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnSupervisor, err)
+	}
+	if err := m.checkScopedAgentAuth(ctx, agent, launchCfg, env, nativeArgv); err != nil {
+		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, err)
 	}
 	if err := m.lcm.PrepareLaunch(id, launchID); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
@@ -4811,6 +4816,28 @@ func (m *Manager) cleanupAgentWorkspace(ctx context.Context, rec domain.SessionR
 			m.logger.Warn("workspace cleanup: agent cleanup failed", "sessionID", rec.ID, "workspacePath", workspacePath, "error", err)
 		}
 	}
+}
+
+// checkScopedAgentAuth is deliberately uncached: two invocations of the same
+// adapter may select different providers. Probe failures remain advisory.
+func (m *Manager) checkScopedAgentAuth(ctx context.Context, agent ports.Agent, cfg ports.LaunchConfig, env map[string]string, argv []string) error {
+	checker, ok := agent.(ports.AgentScopedAuthChecker)
+	if !ok {
+		return nil
+	}
+	status, err := checker.AuthStatusFor(ctx, ports.AgentAuthCheck{
+		WorkingDir: cfg.WorkspacePath, DataDir: cfg.DataDir, Config: cfg.Config,
+		Env: env, Args: argv, Interactive: true,
+	})
+	if err != nil {
+		// Adapter errors can contain credential-bearing command output. Keep
+		// the advisory failure out of logs and let the native launch decide.
+		return nil
+	}
+	if status == ports.AgentAuthStatusUnauthorized {
+		return ports.ErrAgentScopedAuthUnauthorized
+	}
+	return nil
 }
 
 func (m *Manager) deliverAfterStartPrompt(ctx context.Context, agent ports.Agent, cfg ports.LaunchConfig, handle ports.RuntimeHandle, id domain.SessionID, prompt string) error {

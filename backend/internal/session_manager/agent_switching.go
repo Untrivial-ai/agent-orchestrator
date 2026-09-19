@@ -1327,14 +1327,15 @@ func (m *Manager) preserveCurrentNativeSession(ctx context.Context, store ports.
 
 func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.AgentSwitchStore, rec domain.SessionRecord, project domain.ProjectRecord, agent ports.Agent, caps ports.ContinuationCapabilities, sw domain.AgentSwitch, modelOverride string) (preparedTargetActivation, error) {
 	harness := sw.TargetHarness
-	if m.agentReadiness != nil {
+	_, scopedAuth := agent.(ports.AgentScopedAuthChecker)
+	if !scopedAuth && m.agentReadiness != nil {
 		readiness, readinessErr := m.agentReadiness.EnsureAgentReadiness(ctx, string(harness), domain.AgentReadinessPurposeLaunch)
 		if readinessErr != nil {
 			m.logger.Warn("agent switch: target readiness check failed; launch remains authoritative", "sessionID", rec.ID, "harness", harness, "error", readinessErr)
 		} else if readiness.Authentication.State == domain.AgentAuthenticationUnauthorized {
 			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
 		}
-	} else if checker, ok := agent.(ports.AgentAuthChecker); ok {
+	} else if checker, ok := agent.(ports.AgentAuthChecker); ok && !scopedAuth {
 		status, authErr := checker.AuthStatus(ctx)
 		if authErr != nil {
 			m.logger.Warn("agent switch: target auth probe failed; launch remains authoritative", "sessionID", rec.ID, "harness", harness, "error", authErr)
@@ -1417,9 +1418,13 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 		return preparedTargetActivation{}, err
 	}
 	m.augmentRuntimePATHForLaunchBinary(ctx, env, argv)
+	nativeArgv := argv
 	argv, rawLaunchID, err := m.superviseAgentProcessForSwitch(agent, rec.ID, env, argv)
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("supervisor: %w", err)
+	}
+	if err := m.checkScopedAgentAuth(ctx, agent, launch, env, nativeArgv); err != nil {
+		return preparedTargetActivation{}, ErrTargetAgentUnauthorized
 	}
 	launchID := domain.AgentGenerationID(rawLaunchID)
 	now := m.clock()
@@ -1551,6 +1556,9 @@ func (m *Manager) prepareTargetLaunchPrompt(ctx context.Context, rec domain.Sess
 	wrapped, err := m.wrapAgentProcessWithLaunchID(target.agent, rec.ID, target.env, raw, string(target.launchID), true)
 	if err != nil {
 		return fmt.Errorf("supervisor: %w", err)
+	}
+	if err := m.checkScopedAgentAuth(ctx, target.agent, launch, target.env, raw); err != nil {
+		return ErrTargetAgentUnauthorized
 	}
 	target.launch = launch
 	target.argv = wrapped

@@ -9,6 +9,10 @@ import (
 // ErrSessionNotFound reports an observation for an unknown session id.
 var ErrSessionNotFound = errors.New("session not found")
 
+// ErrAgentScopedAuthUnauthorized rejects this invocation only. It must not
+// invalidate the device-wide authentication observation for the same agent.
+var ErrAgentScopedAuthUnauthorized = errors.New("agent authentication rejected for this invocation")
+
 // ErrActivityProjectionContention means no signal projection committed after
 // retrying concurrent session writes. The same hook payload may be retried.
 var ErrActivityProjectionContention = errors.New("activity projection contention")

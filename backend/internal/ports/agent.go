@@ -87,6 +87,24 @@ type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
 }
 
+// AgentAuthCheck describes the effective native invocation. Env contains the
+// launch overrides; adapters may consult inherited environment for other keys.
+// Args is the native command, before AO's process-supervisor wrapper.
+type AgentAuthCheck struct {
+	WorkingDir  string
+	DataDir     string
+	Config      AgentConfig
+	Env         map[string]string
+	Args        []string
+	Interactive bool
+}
+
+// AgentScopedAuthChecker optionally checks the selected workspace/provider.
+// Its results are ephemeral and must never update device-wide readiness.
+type AgentScopedAuthChecker interface {
+	AuthStatusFor(context.Context, AgentAuthCheck) (AgentAuthStatus, error)
+}
+
 // AgentBinaryResolver is the optional capability adapters expose when their
 // binary can be checked without constructing a real session launch command.
 type AgentBinaryResolver interface {
