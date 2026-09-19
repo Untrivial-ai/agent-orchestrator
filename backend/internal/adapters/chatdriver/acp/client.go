@@ -546,6 +546,10 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 	if c.prepareHistoryUpdate(params.Update) {
 		return nil
 	}
+	// Any live session update is evidence the agent is still working. Record it so
+	// the idle watchdog only surfaces a stall when the provider has gone genuinely
+	// silent, not merely quiet between streamed chunks.
+	c.noteActivity()
 	c.mu.Lock()
 	sessionID := c.sessionID
 	turnID := c.activeTurn
