@@ -1,0 +1,74 @@
+---
+title: Docker (headless daemon)
+description: Run the AO daemon in Docker with a mounted workspace and Connect Mobile LAN access.
+---
+
+Run AO without the Electron desktop app. The published image includes the `ao` CLI and a long-running daemon. It does **not** serve the desktop supervisor UI in a browser — the daemon has no embedded web UI. Remote access uses the authenticated [Connect Mobile](/docs/configuration/remote-access) LAN listener (default port `3011`).
+
+```bash
+docker run --rm --init \
+  --name ao-daemon \
+  -e AO_MOBILE_ENABLE=1 \
+  -e AO_MOBILE_PASSWORD='ReplaceMe1' \
+  -p 3011:3011 \
+  -v "$PWD:/workspace" \
+  -v ao-data:/ao/data \
+  ghcr.io/untrivial-ai/agent-orchestrator/daemon:latest
+```
+
+Then register the workspace and pair a client:
+
+```bash
+docker exec ao-daemon ao project add /workspace
+docker exec ao-daemon ao status
+```
+
+Point the AO mobile app (or an API client) at `http://<docker-host>:3011` with bearer password `ReplaceMe1`.
+
+Do **not** publish port `3001` to untrusted networks. That listener is unauthenticated; Connect Mobile on `3011` is the supported remote path.
+
+## Image tags
+
+Stable Git tags (`vX.Y.Z`) publish multi-arch images to GHCR:
+
+- `ghcr.io/untrivial-ai/agent-orchestrator/daemon:<version>`
+- `ghcr.io/untrivial-ai/agent-orchestrator/daemon:latest`
+
+## Agent CLIs and credentials
+
+The image includes `git`, `tmux`, `curl`, and `jq`. It does not bundle Claude Code, Codex, Cursor Agent, or other harnesses.
+
+Mount host installs and auth directories:
+
+```bash
+docker run --rm --init \
+  --name ao-daemon \
+  -e AO_MOBILE_ENABLE=1 \
+  -e AO_MOBILE_PASSWORD='ReplaceMe1' \
+  -p 3011:3011 \
+  -v "$PWD:/workspace" \
+  -v ao-data:/ao/data \
+  -v "$HOME/.claude:/home/ao/.claude" \
+  -v "$HOME/.codex:/home/ao/.codex" \
+  -v "$HOME/.config/gh:/home/ao/.config/gh" \
+  -v /usr/local/bin/claude:/usr/local/bin/claude:ro \
+  ghcr.io/untrivial-ai/agent-orchestrator/daemon:latest
+```
+
+Or derive an image that `npm install -g`s the harnesses you need, and pass API keys at runtime (`-e ANTHROPIC_API_KEY=…`) or via mounted config. Never bake secrets into the image.
+
+## Environment
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AO_DATA_DIR` | `/ao/data` | Durable daemon state |
+| `AO_RUN_FILE` | `/ao/data/running.json` | PID/port handshake file |
+| `AO_MOBILE_ENABLE` | unset | `1` / `true` enables Connect Mobile on boot |
+| `AO_MOBILE_PASSWORD` | generated when enable is set | LAN bearer password |
+| `AO_MOBILE_PORT` | `3011` | Preferred LAN port |
+
+Persist `/ao/data` so projects and the connection password survive restarts.
+
+## Security
+
+Connect Mobile uses plaintext HTTP on a trusted network by design. Do not expose port `3011` on the public internet. See [Connect Mobile](/docs/configuration/remote-access) for the full model.

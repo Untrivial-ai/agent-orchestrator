@@ -1,0 +1,26 @@
+# Shared by repo-root docker builds (docker/, test/cli/). Cloud builds use cloud/.
+.git
+.github
+**/.DS_Store
+**/node_modules
+frontend
+packages
+cloud
+translations
+experiments
+private
+pricing
+assets
+docs
+contracts
+scripts
+test/docker
+test/e2e-pod
+test/fixtures
+test/submodule
+*.md
+go.work
+go.work.sum
+flake.nix
+flake.lock
+desktop-version-floor.json

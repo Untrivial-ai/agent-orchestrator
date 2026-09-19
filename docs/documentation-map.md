@@ -26,6 +26,7 @@ in CI. Fix the prose.
 | [docs/architecture.md](architecture.md)                     | Backend mental model, lifecycle, persistence/CDC, status derivation.         |
 | [docs/backend-code-structure.md](backend-code-structure.md) | Package ownership rules for the Go backend.                                  |
 | [docs/development.md](development.md)                       | Prerequisites, build, test, and troubleshooting for local development.       |
+| [docs/docker.md](docker.md)                                 | Headless daemon Docker image, GHCR publish, Connect Mobile LAN access.       |
 | [docs/STATUS.md](STATUS.md)                                 | What ships on `main` today and what is in flight.                            |
 | [docs/adr/](adr/)                                           | Architecture decision records: why a boundary exists, not just what it is.   |
 | https://orchestrator.inc/docs                                      | Published product documentation for end users.                               |

@@ -73,7 +73,9 @@ Mobile defaults new workers and orchestrators to Chat when the selected harness 
 
 The desktop daemon's primary listener is deliberately bound to `127.0.0.1` without authentication. Do not expose it through a public bind or reverse proxy. Connect Mobile is the only built-in off-device listener and is deliberately limited to an explicitly enabled home-network workflow.
 
-For unattended work, keep the desktop host awake and reachable on its local network. AO does not turn the local desktop product into a hosted multi-user service.
+For a headless host, run the [Docker daemon image](/docs/docker): mount a workspace, set a Connect Mobile password, and publish port `3011`. The image does not serve the desktop UI in a browser; use the mobile app or an API client against the LAN listener.
+
+For unattended work, keep the host awake and reachable on its local network. AO does not turn the local desktop product into a hosted multi-user service.
 
 ## Next
 
