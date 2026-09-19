@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestNotificationStore_InsertListAndDedupe(t *testing.T) {
@@ -372,6 +373,70 @@ func TestNotificationStore_ReconcileAppliesFullReadyToMergePredicate(t *testing.
 			}
 			if count != wantCount {
 				t.Fatalf("unresolved count = %d, want %d", count, wantCount)
+			}
+		})
+	}
+}
+
+func TestNotificationStore_ReconcileTreatsAnchoredBotCommentsAsActionable(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		comment      domain.PullRequestComment
+		wantResolved bool
+	}{
+		{
+			name: "anchored bot comment",
+			comment: domain.PullRequestComment{
+				ID: "bot-1", Author: "review-bot[bot]", IsBot: true,
+				File: "main.go", Line: 7, Body: "please fix", CreatedAt: time.Now().UTC(),
+			},
+			wantResolved: true,
+		},
+		{
+			name: "unanchored bot chatter",
+			comment: domain.PullRequestComment{
+				ID: "bot-2", Author: "review-bot[bot]", IsBot: true,
+				Body: "status update", CreatedAt: time.Now().UTC(),
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+			seedProject(t, s, "mer")
+			sess, err := s.CreateSession(ctx, sampleRecord("mer"))
+			if err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			now := time.Now().UTC().Truncate(time.Second)
+			prURL := "https://github.com/o/r/pull/1"
+			pr := domain.PullRequest{
+				URL: prURL, SessionID: sess.ID, CI: domain.CIPassing,
+				Review: domain.ReviewApproved, Mergeability: domain.MergeMergeable, UpdatedAt: now,
+			}
+			if err := s.WriteSCMObservation(ctx, pr, nil, nil, nil, []domain.PullRequestComment{tt.comment}, ports.ReviewWriteReplace); err != nil {
+				t.Fatalf("WriteSCMObservation: %v", err)
+			}
+			rec := domain.NotificationRecord{
+				ID: "ntf_ready", SessionID: sess.ID, ProjectID: sess.ProjectID, PRURL: prURL,
+				Type: domain.NotificationReadyToMerge, Title: "ready", Status: domain.NotificationUnread, CreatedAt: now,
+			}
+			if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+				t.Fatalf("CreateNotification inserted=%v err=%v", inserted, err)
+			}
+
+			resolved, err := s.ReconcileResolvedNotifications(ctx, now.Add(time.Minute))
+			if err != nil {
+				t.Fatalf("ReconcileResolvedNotifications: %v", err)
+			}
+			gotResolved := false
+			for _, r := range resolved {
+				if r.ID == "ntf_ready" {
+					gotResolved = true
+				}
+			}
+			if gotResolved != tt.wantResolved {
+				t.Fatalf("resolved = %v, want %v", gotResolved, tt.wantResolved)
 			}
 		})
 	}

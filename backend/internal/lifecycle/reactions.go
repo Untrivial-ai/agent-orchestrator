@@ -578,11 +578,8 @@ func scmObservationIsReadyToMerge(o ports.SCMObservation) bool {
 
 func hasUnresolvedSCMComments(threads []ports.SCMReviewThreadObservation) bool {
 	for _, th := range threads {
-		if th.Resolved || th.IsBot {
-			continue
-		}
 		for _, c := range th.Comments {
-			if !c.IsBot {
+			if domain.IsActionableReviewComment(th.Resolved, c.IsBot, th.Path, th.Line) {
 				return true
 			}
 		}
@@ -614,7 +611,6 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 	if pr.Mergeability == "" {
 		pr.Mergeability = domain.MergeUnknown
 	}
-
 	checkCommit := firstSCMNonEmpty(o.CI.HeadSHA, o.PR.HeadSHA)
 	for _, ch := range o.CI.FailedChecks {
 		status := domain.PRCheckStatus(ch.Status)
@@ -639,7 +635,7 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 func prCommentObservations(comments []domain.PullRequestComment) []ports.PRCommentObservation {
 	out := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, comment := range comments {
-		if comment.Resolved || comment.IsBot {
+		if !domain.IsActionableReviewComment(comment.Resolved, comment.IsBot, comment.File, comment.Line) {
 			continue
 		}
 		out = append(out, ports.PRCommentObservation{

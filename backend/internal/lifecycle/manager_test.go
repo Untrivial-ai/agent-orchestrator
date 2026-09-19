@@ -2658,6 +2658,47 @@ func TestPRObservation_ReviewCommentsNudgeAgent(t *testing.T) {
 	}
 }
 
+func TestPRObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{
+		{ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true, File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true},
+		{ID: "bot-2", ThreadID: "thread-2", Author: "react-doctor[bot]", IsBot: true, Body: "summary chatter", AutoInjectReview: true},
+	}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("want one actionable bot nudge, got %v", msg.msgs)
+	}
+	if !strings.Contains(msg.msgs[0], "src/App.tsx:42 (@react-doctor[bot]):") || !strings.Contains(msg.msgs[0], "avoid this pattern") {
+		t.Fatalf("anchored bot feedback missing from nudge: %q", msg.msgs[0])
+	}
+	if strings.Contains(msg.msgs[0], "summary chatter") {
+		t.Fatalf("unanchored bot chatter was injected: %q", msg.msgs[0])
+	}
+}
+
+func TestPRObservation_HumanReplyInBotThreadStillNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{
+		{ID: "bot-1", ThreadID: "thread-1", Author: "review-bot[bot]", IsBot: true, Body: "automated summary", AutoInjectReview: true},
+		{ID: "human-1", ThreadID: "thread-1", Author: "alice", Body: "i agree, please fix this", AutoInjectReview: true},
+	}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "i agree, please fix this") {
+		t.Fatalf("human reply was not delivered: %v", msg.msgs)
+	}
+	if strings.Contains(msg.msgs[0], "automated summary") {
+		t.Fatalf("unanchored bot comment was injected with human reply: %q", msg.msgs[0])
+	}
+}
+
 func TestPRObservation_ReviewFeedbackNotInjectedWhenDisabled(t *testing.T) {
 	m, st, msg := newManager()
 	rec := working("mer-1")
@@ -4453,6 +4494,106 @@ func TestSCMObservation_Notifications(t *testing.T) {
 				t.Fatalf("intent = %+v, want type %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSCMObservation_AnchoredBotReviewSuppressesReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1},
+		CI:      ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review: ports.SCMReviewObservation{
+			Decision: string(domain.ReviewNone),
+			Threads: []ports.SCMReviewThreadObservation{{
+				ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+				Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+			}},
+		},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("ready notification raced actionable bot feedback: %+v", sink.intents)
+	}
+}
+
+func TestSCMObservation_AnchoredBotReviewResolvesExistingReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	prURL := "https://github.com/o/r/pull/1"
+	ready := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: prURL, Number: 1},
+		CI:      ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review:  ports.SCMReviewObservation{Decision: string(domain.ReviewApproved)},
+		Mergeability: ports.SCMMergeabilityObservation{
+			State: string(domain.MergeMergeable),
+		},
+	}
+	if err := m.ApplySCMObservation(ctx, "mer-1", ready); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationReadyToMerge {
+		t.Fatalf("initial intents = %+v, want one ready-to-merge notification", sink.intents)
+	}
+
+	st.comments[prURL] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	blocked := ready
+	blocked.Review = ports.SCMReviewObservation{
+		Decision: string(domain.ReviewApproved),
+		Threads: []ports.SCMReviewThreadObservation{{
+			ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+			Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+		}},
+	}
+	if err := m.ApplySCMObservation(ctx, "mer-1", blocked); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("bot feedback emitted a competing intent: %+v", sink.intents)
+	}
+	if len(sink.resolutions) != 1 {
+		t.Fatalf("resolutions = %+v, want existing ready notification resolved", sink.resolutions)
+	}
+	got := sink.resolutions[0]
+	if got.Type != domain.NotificationReadyToMerge || got.SessionID != "mer-1" || got.PRURL != prURL {
+		t.Fatalf("resolution = %+v", got)
+	}
+}
+
+func TestSCMObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: "pr1"},
+		Review: ports.SCMReviewObservation{Threads: []ports.SCMReviewThreadObservation{{
+			ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+			Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+		}}},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "src/App.tsx:42") || !strings.Contains(msg.msgs[0], "avoid this pattern") {
+		t.Fatalf("anchored bot feedback was not delivered through scm lifecycle: %v", msg.msgs)
 	}
 }
 
