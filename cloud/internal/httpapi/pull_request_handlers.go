@@ -170,6 +170,9 @@ type aoReviewRunResponse struct {
 }
 
 func toAOReviewRunResponse(run domain.ReviewRunPullRequest, harness string) aoReviewRunResponse {
+	if run.Harness != "" {
+		harness = run.Harness
+	}
 	return aoReviewRunResponse{
 		ID:        run.ID,
 		ReviewID:  run.ID,
@@ -214,10 +217,21 @@ func (s *Server) sessionReviewPayload(r *http.Request, orgID, sessionID string) 
 	if err != nil {
 		return nil, err
 	}
+	reviewerHarness := session.ReviewerHarness
+	if reviewerHarness == "" {
+		reviewerHarness = session.Harness
+	}
+	availableReviewerHarnesses := []string{}
+	if preferences, ok := s.store.(sessionPreferencesStore); ok {
+		availableReviewerHarnesses, err = preferences.AvailableSessionReviewerHarnesses(r.Context(), principalFrom(r), orgID, sessionID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	allRuns := make([]aoReviewRunResponse, 0, len(runs))
 	runsByPR := make(map[string][]domain.ReviewRunPullRequest, len(prs))
 	for _, run := range runs {
-		allRuns = append(allRuns, toAOReviewRunResponse(run, session.Harness))
+		allRuns = append(allRuns, toAOReviewRunResponse(run, reviewerHarness))
 		runsByPR[run.PullRequestID] = append(runsByPR[run.PullRequestID], run)
 	}
 	reviews := make([]aoPullRequestReviewStateResponse, 0, len(prs))
@@ -229,24 +243,25 @@ func (s *Server) sessionReviewPayload(r *http.Request, orgID, sessionID string) 
 			TargetSHA: pr.HeadSHA, Status: state,
 		}
 		if current := runsByPR[pr.ID]; len(current) > 0 {
-			latest := toAOReviewRunResponse(current[0], session.Harness)
+			latest := toAOReviewRunResponse(current[0], reviewerHarness)
 			response.LatestRun = &latest
 			if latest.Status == "running" && current[0].ReviewTerminalID != "" {
 				reviewerHandleID = current[0].ReviewTerminalID
 			}
 			if len(current) > 1 {
-				previous := toAOReviewRunResponse(current[1], session.Harness)
+				previous := toAOReviewRunResponse(current[1], reviewerHarness)
 				response.PreviousRun = &previous
 			}
 		}
 		reviews = append(reviews, response)
 	}
 	return map[string]any{
-		"sessionId":        sessionID,
-		"reviewerHandleId": reviewerHandleID,
-		"reviewerHarness":  session.Harness,
-		"reviews":          nonNilReviews(reviews),
-		"runs":             allRuns,
+		"sessionId":                  sessionID,
+		"reviewerHandleId":           reviewerHandleID,
+		"reviewerHarness":            reviewerHarness,
+		"availableReviewerHarnesses": availableReviewerHarnesses,
+		"reviews":                    nonNilReviews(reviews),
+		"runs":                       allRuns,
 	}, nil
 }
 
@@ -270,6 +285,15 @@ func reviewStateForPullRequest(pr domain.PullRequest, runs []domain.ReviewRunPul
 		}
 	}
 	return "needs_review"
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) getSessionReviewState(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +328,26 @@ func (s *Server) triggerSessionReviews(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	session, err := s.store.GetSession(r.Context(), principalFrom(r), orgID, sessionID)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	reviewerHarness := session.ReviewerHarness
+	if reviewerHarness == "" {
+		reviewerHarness = session.Harness
+	}
+	if preferences, ok := s.store.(sessionPreferencesStore); ok {
+		available, availabilityErr := preferences.AvailableSessionReviewerHarnesses(r.Context(), principalFrom(r), orgID, sessionID)
+		if availabilityErr != nil {
+			s.writeStoreError(w, r, availabilityErr)
+			return
+		}
+		if !containsString(available, reviewerHarness) {
+			writeError(w, r, http.StatusUnprocessableEntity, "REVIEWER_HARNESS_UNAVAILABLE", "The selected reviewer harness is not connected for this session.")
+			return
+		}
+	}
 	prs, err := s.store.ListPullRequestsBySession(r.Context(), principalFrom(r), orgID, sessionID)
 	if err != nil {
 		s.writeStoreError(w, r, err)
@@ -316,7 +360,7 @@ func (s *Server) triggerSessionReviews(w http.ResponseWriter, r *http.Request) {
 		if pr.Draft || pr.State != contract.PRStateOpen || pr.HeadSHA == "" {
 			continue
 		}
-		run, didCreate, err := s.reviewService.TriggerReview(r.Context(), orgID, sessionID, pr)
+		run, didCreate, err := s.reviewService.TriggerReview(r.Context(), orgID, sessionID, reviewerHarness, pr)
 		if err != nil {
 			s.logger.Error("trigger cloud review", "error", err, "request_id", requestID(r), "pull_request_id", pr.ID)
 			if len(startedRunIDs) > 0 {

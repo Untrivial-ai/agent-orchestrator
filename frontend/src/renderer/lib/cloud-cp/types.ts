@@ -188,6 +188,10 @@ export interface CloudCpSession {
 	projectId: string;
 	kind: string;
 	harness: string;
+	reviewerHarness?: string;
+	autoInjectCI: boolean;
+	autoInjectReview: boolean;
+	terminateOnPrMerge: boolean;
 	displayName: string;
 	branch: string;
 	mode: string;
@@ -215,6 +219,13 @@ export interface CloudCpSession {
 
 export interface CloudCpSessionResponse {
 	session: CloudCpSession;
+}
+
+export interface CloudCpUpdateSessionPreferencesRequest {
+	reviewerHarness?: string;
+	autoInjectCI?: boolean;
+	autoInjectReview?: boolean;
+	terminateOnPrMerge?: boolean;
 }
 
 export interface CloudCpSessionListResponse {
@@ -310,6 +321,7 @@ export interface CloudCpSessionReviewState {
 	sessionId: string;
 	reviewerHandleId?: string;
 	reviewerHarness?: string;
+	availableReviewerHarnesses: string[];
 	reviews: CloudCpPRReviewState[];
 	runs: CloudCpAOReviewRun[];
 }

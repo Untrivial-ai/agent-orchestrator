@@ -57,15 +57,19 @@ const (
 )
 
 type Supervisor struct {
-	Control         Control
-	Workspace       string
-	Shell           string
-	AgentCommand    workerexec.Command
-	ReviewCommand   workerexec.Command
-	AgentTerminalID string
-	Started         chan<- error
-	PollInterval    time.Duration
-	Logger          *slog.Logger
+	Control       Control
+	Workspace     string
+	Shell         string
+	AgentCommand  workerexec.Command
+	ReviewCommand workerexec.Command
+	// ReviewCommandFactory resolves a fresh, provider-specific command on each
+	// review launch. It lets the Cloud reviewer selector change independently
+	// from the session's already-running interactive harness.
+	ReviewCommandFactory func(context.Context, string) (workerexec.Command, error)
+	AgentTerminalID      string
+	Started              chan<- error
+	PollInterval         time.Duration
+	Logger               *slog.Logger
 	// Streams, when non-nil, holds a persistent duplex terminal stream per
 	// open terminal for low-latency input/output. The polled transport stays
 	// authoritative whenever a stream is absent or unhealthy.
@@ -276,6 +280,13 @@ func (s *Supervisor) SetReviewCommand(command workerexec.Command) {
 	s.ReviewCommand = command
 }
 
+// SetReviewCommandFactory configures provider-specific fresh reviewer commands.
+func (s *Supervisor) SetReviewCommandFactory(factory func(context.Context, string) (workerexec.Command, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ReviewCommandFactory = factory
+}
+
 func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	// Do not claim a queued user turn until the agent PTY is actually live. The
 	// workspace transport starts first, so claiming here would otherwise mark
@@ -473,7 +484,15 @@ func (s *Supervisor) terminalCommand(
 	if input.Kind == "agent" {
 		commandConfig := s.AgentCommand
 		if input.Review {
-			commandConfig = s.ReviewCommand
+			if s.ReviewCommandFactory != nil {
+				var err error
+				commandConfig, err = s.ReviewCommandFactory(ctx, input.Harness)
+				if err != nil {
+					return nil, func() {}, err
+				}
+			} else {
+				commandConfig = s.ReviewCommand
+			}
 		}
 		if commandConfig.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")

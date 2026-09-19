@@ -65,24 +65,28 @@ type createSessionRequest struct {
 }
 
 type sessionResponse struct {
-	ID               string   `json:"id"`
-	OrgID            string   `json:"orgId"`
-	ProjectID        string   `json:"projectId"`
-	Kind             string   `json:"kind"`
-	Harness          string   `json:"harness"`
-	DisplayName      string   `json:"displayName"`
-	Branch           string   `json:"branch"`
-	Mode             string   `json:"mode"`
-	DeniedCommands   []string `json:"deniedCommands"`
-	ActivityState    string   `json:"activityState"`
-	Status           string   `json:"status"`
-	RuntimeConnected bool     `json:"runtimeConnected"`
-	SandboxProvider  string   `json:"sandboxProvider,omitempty"`
-	DesiredState     string   `json:"desiredState,omitempty"`
-	ObservedState    string   `json:"observedState,omitempty"`
-	RuntimeState     string   `json:"runtimeState,omitempty"`
-	RuntimeError     string   `json:"runtimeError,omitempty"`
-	IsTerminated     bool     `json:"isTerminated"`
+	ID                 string   `json:"id"`
+	OrgID              string   `json:"orgId"`
+	ProjectID          string   `json:"projectId"`
+	Kind               string   `json:"kind"`
+	Harness            string   `json:"harness"`
+	ReviewerHarness    string   `json:"reviewerHarness,omitempty"`
+	AutoInjectCI       bool     `json:"autoInjectCI"`
+	AutoInjectReview   bool     `json:"autoInjectReview"`
+	TerminateOnPRMerge bool     `json:"terminateOnPrMerge"`
+	DisplayName        string   `json:"displayName"`
+	Branch             string   `json:"branch"`
+	Mode               string   `json:"mode"`
+	DeniedCommands     []string `json:"deniedCommands"`
+	ActivityState      string   `json:"activityState"`
+	Status             string   `json:"status"`
+	RuntimeConnected   bool     `json:"runtimeConnected"`
+	SandboxProvider    string   `json:"sandboxProvider,omitempty"`
+	DesiredState       string   `json:"desiredState,omitempty"`
+	ObservedState      string   `json:"observedState,omitempty"`
+	RuntimeState       string   `json:"runtimeState,omitempty"`
+	RuntimeError       string   `json:"runtimeError,omitempty"`
+	IsTerminated       bool     `json:"isTerminated"`
 	// WorkerEpoch advances on every fresh worker connection (resume, restore,
 	// re-provision). Clients key their terminal on it so a resumed session
 	// re-attaches to the live agent instead of the dead epoch's terminal.
@@ -803,27 +807,31 @@ func toProjectResponse(project domain.Project) projectResponse {
 // pass nil only for a session that provably has none yet (just created).
 func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionResponse {
 	return sessionResponse{
-		ID:               session.ID,
-		OrgID:            session.OrgID,
-		ProjectID:        session.ProjectID,
-		Kind:             session.Kind,
-		Harness:          session.Harness,
-		DisplayName:      session.DisplayName,
-		Branch:           session.Branch,
-		Mode:             session.Mode,
-		DeniedCommands:   nonNilStrings(session.DeniedCommands),
-		ActivityState:    string(session.ActivityState),
-		Status:           string(session.Status(time.Now().UTC(), prs)),
-		RuntimeConnected: session.RuntimeConnected,
-		SandboxProvider:  session.SandboxProvider,
-		DesiredState:     session.DesiredState,
-		ObservedState:    session.ObservedState,
-		RuntimeState:     session.RuntimeState,
-		RuntimeError:     session.RuntimeError,
-		IsTerminated:     session.IsTerminated,
-		WorkerEpoch:      session.WorkerEpoch,
-		CreatedAt:        session.CreatedAt,
-		UpdatedAt:        session.UpdatedAt,
+		ID:                 session.ID,
+		OrgID:              session.OrgID,
+		ProjectID:          session.ProjectID,
+		Kind:               session.Kind,
+		Harness:            session.Harness,
+		ReviewerHarness:    session.ReviewerHarness,
+		AutoInjectCI:       session.AutoInjectCI,
+		AutoInjectReview:   session.AutoInjectReview,
+		TerminateOnPRMerge: session.TerminateOnPRMerge,
+		DisplayName:        session.DisplayName,
+		Branch:             session.Branch,
+		Mode:               session.Mode,
+		DeniedCommands:     nonNilStrings(session.DeniedCommands),
+		ActivityState:      string(session.ActivityState),
+		Status:             string(session.Status(time.Now().UTC(), prs)),
+		RuntimeConnected:   session.RuntimeConnected,
+		SandboxProvider:    session.SandboxProvider,
+		DesiredState:       session.DesiredState,
+		ObservedState:      session.ObservedState,
+		RuntimeState:       session.RuntimeState,
+		RuntimeError:       session.RuntimeError,
+		IsTerminated:       session.IsTerminated,
+		WorkerEpoch:        session.WorkerEpoch,
+		CreatedAt:          session.CreatedAt,
+		UpdatedAt:          session.UpdatedAt,
 	}
 }
 
