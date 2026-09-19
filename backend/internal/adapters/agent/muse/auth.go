@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -97,10 +98,12 @@ func museAuthJSONStatusWith(ctx context.Context, path string, d authutil.Depende
 		Storage   string `json:"storage"`
 		Providers struct {
 			Meta struct {
-				Storage     string `json:"storage"`
-				Mechanism   string `json:"mechanism"`
-				AccessToken string `json:"access_token"`
-				APIKey      string `json:"api_key"`
+				Storage      string          `json:"storage"`
+				Mechanism    string          `json:"mechanism"`
+				AccessToken  string          `json:"access_token"`
+				RefreshToken string          `json:"refresh_token"`
+				ExpiresAt    json.RawMessage `json:"expires_at"`
+				APIKey       string          `json:"api_key"`
 			} `json:"meta"`
 		} `json:"providers"`
 	}
@@ -119,6 +122,23 @@ func museAuthJSONStatusWith(ctx context.Context, path string, d authutil.Depende
 	switch strings.ToLower(strings.TrimSpace(meta.Mechanism)) {
 	case "oauth":
 		if strings.TrimSpace(meta.AccessToken) != "" {
+			if len(meta.ExpiresAt) > 0 {
+				// The native auth.json field is an integer Unix timestamp.
+				var seconds int64
+				if json.Unmarshal(meta.ExpiresAt, &seconds) != nil {
+					return ports.AgentAuthStatusUnknown, false, nil
+				}
+				expires, ok := authutil.ParseExpiry(seconds)
+				if !ok {
+					return ports.AgentAuthStatusUnknown, false, nil
+				}
+				now := time.Now()
+				if d.Now != nil {
+					now = d.Now()
+				}
+				evidence := authutil.ExpiryEvidence(expires, strings.TrimSpace(meta.RefreshToken) != "", now)
+				return evidence.Status, true, nil
+			}
 			return ports.AgentAuthStatusConfigured, true, nil
 		}
 	case "api_key", "api-key", "apikey":

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -251,5 +252,34 @@ func museAuthDependencies(t *testing.T, env map[string]string) authutil.Dependen
 			t.Fatal("unexpected command or unconfirmed keychain selector")
 			return nil, errors.New("unexpected command")
 		},
+	}
+}
+
+func TestMuseAuthStatusOAuthExpiry(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		want         ports.AgentAuthStatus
+	}{
+		{"unexpired", `"expires_at":2000000000`, ports.AgentAuthStatusConfigured},
+		{"expired", `"expires_at":1000000000`, ports.AgentAuthStatusUnauthorized},
+		{"expires now", `"expires_at":1500000000`, ports.AgentAuthStatusUnauthorized},
+		{"expired refreshable", `"expires_at":1000000000,"refresh_token":"fixture-refresh"`, ports.AgentAuthStatusConfigured},
+		{"expired empty refresh", `"expires_at":1000000000,"refresh_token":" "`, ports.AgentAuthStatusUnauthorized},
+		{"malformed expiry", `"expires_at":"not-a-time"`, ports.AgentAuthStatusUnknown},
+		{"negative expiry", `"expires_at":-1`, ports.AgentAuthStatusUnknown},
+		{"fractional expiry", `"expires_at":2000000000.5`, ports.AgentAuthStatusUnknown},
+		{"string expiry", `"expires_at":"2000000000"`, ports.AgentAuthStatusUnknown},
+		{"null expiry", `"expires_at":null`, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "auth.json")
+			writeMuseAuthFixture(t, path, `{"providers":{"meta":{"mechanism":"oauth","access_token":"fixture-access",`+tc.fields+`}}}`)
+			d := museAuthDependencies(t, map[string]string{"MUSE_AUTH_PATH": path})
+			d.Now = func() time.Time { return time.Unix(1500000000, 0) }
+			status, err := museAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
+			if err != nil || status != tc.want {
+				t.Fatalf("status=(%q, %v), want %q", status, err, tc.want)
+			}
+		})
 	}
 }

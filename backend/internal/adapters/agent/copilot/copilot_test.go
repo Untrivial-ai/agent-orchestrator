@@ -438,9 +438,9 @@ func TestCopilotClassicPATIsNotAnAuthorizationSignal(t *testing.T) {
 	}
 }
 
-func TestCopilotConfigAuthStatusConfiguredWithPlainTextToken(t *testing.T) {
+func TestCopilotConfigAuthStatusConfiguredWithNativePlainTextToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(configPath, []byte(`{"authToken":"token"}`), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"copilot_tokens":{"https://github.com:fixture":"gho_token"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -485,7 +485,7 @@ func TestCopilotConfigAuthStatusDoesNotTreatAuthModeAsCredential(t *testing.T) {
 
 func clearCopilotAuthEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_TYPE", "COPILOT_PROVIDER_API_KEY", "COPILOT_MODEL", "COPILOT_HOME"} {
+	for _, name := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_TYPE", "COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_MODEL", "COPILOT_HOME"} {
 		t.Setenv(name, "")
 	}
 	home := t.TempDir()
