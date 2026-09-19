@@ -27,6 +27,7 @@ type vibeConfigLayer struct {
 
 type vibeProviderLayer struct {
 	Name         *string `toml:"name"`
+	APIBase      *string `toml:"api_base"`
 	APIKeyEnvVar *string `toml:"api_key_env_var"`
 }
 
@@ -38,6 +39,7 @@ type vibeModelLayer struct {
 
 type vibeResolvedProvider struct {
 	Name         string
+	APIBase      string
 	APIKeyEnvVar string
 }
 
@@ -57,8 +59,8 @@ func defaultVibeConfig() vibeResolvedConfig {
 	return vibeResolvedConfig{
 		ActiveModel: vibeDefaultModelAlias,
 		Providers: map[string]vibeResolvedProvider{
-			"mistral":  {Name: "mistral", APIKeyEnvVar: vibeDefaultAPIKeyEnvVar},
-			"llamacpp": {Name: "llamacpp"},
+			"mistral":  {Name: "mistral", APIBase: "https://api.mistral.ai/v1", APIKeyEnvVar: vibeDefaultAPIKeyEnvVar},
+			"llamacpp": {Name: "llamacpp", APIBase: "http://localhost:8080/v1"},
 		},
 		Models: map[string]vibeResolvedModel{
 			vibeDefaultModelAlias: {Name: "mistral-vibe-cli-latest", Provider: "mistral", Alias: vibeDefaultModelAlias},
@@ -67,10 +69,12 @@ func defaultVibeConfig() vibeResolvedConfig {
 	}
 }
 
+// AuthStatus reports the effective device-wide Vibe credential state.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor reports Vibe credentials for one effective invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -124,21 +128,30 @@ func vibeAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil.
 			}
 		}
 	}
+	if activeModel := strings.TrimSpace(d.Getenv("VIBE_ACTIVE_MODEL")); activeModel != "" {
+		resolved.ActiveModel = activeModel
+	}
+	if activeModel := strings.TrimSpace(check.Config.Model); activeModel != "" {
+		resolved.ActiveModel = activeModel
+	}
+	if ok := applyVibeAgentProfile(ctx, d, check, home, &resolved); !ok {
+		return ports.AgentAuthStatusUnknown, ctx.Err()
+	}
+	if _, ok := resolved.Models[resolved.ActiveModel]; !ok {
+		resolved.ActiveModel = vibeDefaultModelAlias
+	}
 
 	model, ok := resolved.Models[resolved.ActiveModel]
-	if !ok || strings.TrimSpace(model.Provider) == "" {
+	if !ok || strings.TrimSpace(model.Name) == "" || strings.TrimSpace(model.Provider) == "" {
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	provider, ok := resolved.Providers[model.Provider]
-	if !ok {
+	if !ok || strings.TrimSpace(provider.Name) == "" || strings.TrimSpace(provider.APIBase) == "" {
 		return ports.AgentAuthStatusUnknown, nil
-	}
-	if provider.Name == "llamacpp" {
-		return ports.AgentAuthStatusNotApplicable, nil
 	}
 	envName := strings.TrimSpace(provider.APIKeyEnvVar)
 	if envName == "" {
-		return ports.AgentAuthStatusUnknown, nil
+		return ports.AgentAuthStatusNotApplicable, nil
 	}
 	if usableSecret(d.Getenv(envName)) {
 		return ports.AgentAuthStatusConfigured, nil
@@ -149,7 +162,7 @@ func vibeAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil.
 	}
 	values, err := authutil.ParseDotenv(data)
 	if err != nil {
-		return ports.AgentAuthStatusUnknown, nil
+		return ports.AgentAuthStatusUnknown, nil //nolint:nilerr // malformed optional dotenv is inconclusive
 	}
 	if usableSecret(values[envName]) {
 		return ports.AgentAuthStatusConfigured, nil
@@ -187,6 +200,9 @@ func applyVibeConfigFile(ctx context.Context, d authutil.Dependencies, path stri
 		seenProviders[name] = true
 		provider := resolved.Providers[name]
 		provider.Name = name
+		if patch.APIBase != nil {
+			provider.APIBase = strings.TrimSpace(*patch.APIBase)
+		}
 		if patch.APIKeyEnvVar != nil {
 			provider.APIKeyEnvVar = strings.TrimSpace(*patch.APIKeyEnvVar)
 		}
@@ -222,6 +238,87 @@ func applyVibeConfigFile(ctx context.Context, d authutil.Dependencies, path stri
 		resolved.Models[key] = model
 	}
 	return true
+}
+
+func applyVibeAgentProfile(ctx context.Context, d authutil.Dependencies, check ports.AgentAuthCheck, home string, resolved *vibeResolvedConfig) bool {
+	agent, addDirs := vibeInvocationSelection(check.Args, check.WorkingDir)
+	if agent == "" {
+		return true
+	}
+	if agent == "lean" {
+		resolved.ActiveModel = "leanstral"
+		resolved.Providers["mistral-testing"] = vibeResolvedProvider{
+			Name: "mistral-testing", APIBase: "https://api.mistral.ai/v1", APIKeyEnvVar: vibeDefaultAPIKeyEnvVar,
+		}
+		resolved.Models["leanstral"] = vibeResolvedModel{
+			Name: "labs-leanstral-1-5", Provider: "mistral-testing", Alias: "leanstral",
+		}
+		return true
+	}
+	for _, builtin := range []string{"ask", "plan", "accept-edits", "smart-approve", "auto-approve", "explore"} {
+		if agent == builtin {
+			return true
+		}
+	}
+	candidates := make([]string, 0, len(addDirs)+2)
+	for _, root := range addDirs {
+		candidates = append(candidates, filepath.Join(root, ".vibe", "agents", agent+".toml"))
+	}
+	if filepath.IsAbs(check.WorkingDir) {
+		paths, err := authutil.FindUpward(ctx, d, check.WorkingDir, filepath.Join(".vibe", "agents", agent+".toml"))
+		if err != nil {
+			return false
+		}
+		candidates = append(candidates, paths...)
+	}
+	candidates = append(candidates, filepath.Join(home, "agents", agent+".toml"))
+	for _, path := range candidates {
+		_, exists, err := vibeOptionalFile(ctx, d, path)
+		if err != nil {
+			return false
+		}
+		if exists {
+			return applyVibeConfigFile(ctx, d, path, resolved)
+		}
+	}
+	return false
+}
+
+func vibeInvocationSelection(args []string, workingDir string) (string, []string) {
+	agent := ""
+	var addDirs []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			break
+		}
+		name, value, inline := strings.Cut(args[i], "=")
+		if name != "--agent" && name != "--add-dir" {
+			continue
+		}
+		if !inline {
+			if i+1 >= len(args) {
+				continue
+			}
+			i++
+			value = args[i]
+		}
+		value = strings.TrimSpace(value)
+		switch name {
+		case "--agent":
+			agent = value
+		case "--add-dir":
+			if value == "" {
+				continue
+			}
+			if !filepath.IsAbs(value) && filepath.IsAbs(workingDir) {
+				value = filepath.Join(workingDir, value)
+			}
+			if filepath.IsAbs(value) {
+				addDirs = append(addDirs, filepath.Clean(value))
+			}
+		}
+	}
+	return agent, addDirs
 }
 
 func vibeOptionalFile(ctx context.Context, d authutil.Dependencies, path string) ([]byte, bool, error) {

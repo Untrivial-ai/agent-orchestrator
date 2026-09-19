@@ -60,6 +60,102 @@ func TestAutohandAuthStatusConfigSelectionPrecedence(t *testing.T) {
 	}
 }
 
+func TestAutohandAuthStatusAppliesWorkspaceLocalSettings(t *testing.T) {
+	root := t.TempDir()
+	autohandHome := filepath.Join(root, "autohand-home")
+	workspace := filepath.Join(root, "workspace")
+	writeAutohandPath(t, filepath.Join(autohandHome, "config.json"), `{
+  "provider":"openrouter",
+  "openrouter":{"apiKey":"global-key","model":"global-model"},
+  "ollama":{"model":"local-model"}
+}`)
+	writeAutohandPath(t, filepath.Join(workspace, ".autohand", "settings.local.json"), `{
+  "provider":"ollama",
+  "model":"workspace-model"
+}`)
+
+	got := runAutohandAuth(t, ports.AgentAuthCheck{WorkingDir: workspace}, map[string]string{
+		"HOME": root, "AUTOHAND_HOME": autohandHome,
+	}, nil)
+	if got != ports.AgentAuthStatusNotApplicable {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusNotApplicable)
+	}
+}
+
+func TestAutohandAuthStatusAppliesCLIOverridesInOrder(t *testing.T) {
+	path := writeAutohandFixture(t, "json", `{
+  "provider":"openrouter",
+  "openrouter":{"apiKey":"global-key","model":"global-model"},
+  "ollama":{"model":"local-model"},
+  "llamacpp":{"model":"llama-model"},
+  "profiles":{"local":{"provider":"ollama"}}
+}`)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "profile", args: []string{"--config", path, "--profile", "local"}},
+		{name: "set", args: []string{"--config", path, "--set", "provider=ollama"}},
+		{name: "provider wins over set", args: []string{"--config", path, "--set=provider=ollama", "--provider", "llamacpp"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: test.args}, map[string]string{"HOME": t.TempDir()}, nil)
+			if got != ports.AgentAuthStatusNotApplicable {
+				t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusNotApplicable)
+			}
+		})
+	}
+}
+
+func TestAutohandAuthStatusIgnoresUnrelatedSetAndAppliesNestedAuthSet(t *testing.T) {
+	t.Run("unrelated setting leaves provider readiness intact", func(t *testing.T) {
+		path := writeAutohandFixture(t, "json", `{"provider":"openrouter","openrouter":{"apiKey":"fixture-key","model":"fixture"}}`)
+		got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path, "--set", "ui.theme=dark"}}, map[string]string{"HOME": t.TempDir()}, nil)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+		}
+	})
+	t.Run("nested auth setting completes selected provider", func(t *testing.T) {
+		path := writeAutohandFixture(t, "json", `{"provider":"openai","openai":{"authMode":"chatgpt","model":"gpt-5","chatgptAuth":{"accountId":"account"}}}`)
+		got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path, "--set=openai.chatgptAuth.accessToken=access"}}, map[string]string{"HOME": t.TempDir()}, nil)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+		}
+	})
+}
+
+func TestAutohandAuthStatusEnvironmentCreatesProviderSectionsBeforeRunOverrides(t *testing.T) {
+	t.Run("profile selects Autohand AI environment section", func(t *testing.T) {
+		path := writeAutohandFixture(t, "json", `{"profiles":{"cloud":{"provider":"autohandai"}}}`)
+		got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path, "--profile", "cloud"}}, map[string]string{
+			"HOME": t.TempDir(), "AUTOHAND_AI_API_KEY": "fixture-key",
+		}, nil)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+		}
+	})
+	t.Run("provider flag selects Azure environment section", func(t *testing.T) {
+		path := writeAutohandFixture(t, "json", `{}`)
+		got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path, "--provider", "azure"}}, map[string]string{
+			"HOME": t.TempDir(), "AZURE_OPENAI_ENDPOINT": "https://fixture.openai.azure.com/openai/deployments/test", "AZURE_OPENAI_KEY": "fixture-key",
+		}, nil)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+		}
+	})
+}
+
+func TestAutohandAuthStatusProviderFlagCreatesAccountBackedAutohandAI(t *testing.T) {
+	path := writeAutohandFixture(t, "json", `{"auth":{"token":"ahc_fixture-token","expiresAt":"2000-01-01T00:00:00Z"}}`)
+	got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path, "--provider", "autohandai"}}, map[string]string{
+		"HOME": t.TempDir(),
+	}, nil)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+	}
+}
+
 func TestAutohandAuthStatusUsesOnlySelectedProviderCredentials(t *testing.T) {
 	path := writeAutohandFixture(t, "json", `{
   "provider":"openrouter",
@@ -212,6 +308,133 @@ func TestAutohandAuthStatusCloudCredentialChains(t *testing.T) {
 	}
 }
 
+func TestAutohandAuthStatusProviderSpecificOAuth(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		want   ports.AgentAuthStatus
+	}{
+		{
+			name:   "OpenAI ChatGPT auth",
+			config: `{"provider":"openai","openai":{"authMode":"chatgpt","model":"gpt-5","chatgptAuth":{"accessToken":"access","accountId":"account"}}}`,
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:   "OpenAI API key cannot satisfy ChatGPT auth",
+			config: `{"provider":"openai","openai":{"authMode":"chatgpt","model":"gpt-5","apiKey":"unrelated"}}`,
+			want:   ports.AgentAuthStatusUnknown,
+		},
+		{
+			name:   "xAI OAuth",
+			config: `{"provider":"xai","xai":{"authMode":"oauth","model":"grok","oauthAuth":{"accessToken":"access"}}}`,
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:   "xAI API key cannot satisfy OAuth",
+			config: `{"provider":"xai","xai":{"authMode":"oauth","model":"grok","apiKey":"unrelated"}}`,
+			want:   ports.AgentAuthStatusUnknown,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeAutohandFixture(t, "json", test.config)
+			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path}}, map[string]string{"HOME": t.TempDir()}, nil)
+			if got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAutohandAuthStatusBedrockAPIModeDefaults(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		env    map[string]string
+		want   ports.AgentAuthStatus
+	}{
+		{
+			name:   "converse defaults to AWS credentials",
+			config: `{"provider":"bedrock","bedrock":{"apiMode":"converse","region":"us-east-1","model":"fixture"}}`,
+			env:    map[string]string{"AWS_ACCESS_KEY_ID": "fixture-id", "AWS_SECRET_ACCESS_KEY": "fixture-secret"},
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:   "OpenAI chat defaults to Bedrock API key",
+			config: `{"provider":"bedrock","bedrock":{"apiMode":"openai-chat","apiKey":"fixture-key","region":"us-east-1","model":"fixture"}}`,
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:   "OpenAI responses does not accept AWS credentials by default",
+			config: `{"provider":"bedrock","bedrock":{"apiMode":"openai-responses","region":"us-east-1","model":"fixture"}}`,
+			env:    map[string]string{"AWS_ACCESS_KEY_ID": "fixture-id", "AWS_SECRET_ACCESS_KEY": "fixture-secret"},
+			want:   ports.AgentAuthStatusUnknown,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeAutohandFixture(t, "json", test.config)
+			if test.env == nil {
+				test.env = make(map[string]string)
+			}
+			test.env["HOME"] = t.TempDir()
+			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path}}, test.env, nil)
+			if got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAutohandAuthStatusAzureShapesAndAuthIsolation(t *testing.T) {
+	azureEvidence := authutil.Dependencies{LoadAzure: func(context.Context) (authutil.CloudCredential, error) {
+		return authutil.CloudCredential{Token: "fixture-token"}, nil
+	}}
+	tests := []struct {
+		name   string
+		config string
+		deps   *authutil.Dependencies
+		want   ports.AgentAuthStatus
+	}{
+		{
+			name:   "base URL with API key",
+			config: `{"provider":"azure","azure":{"authMethod":"api-key","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","apiKey":"fixture-key","model":"fixture"}}`,
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:   "resource and deployment with Entra credentials",
+			config: `{"provider":"azure","azure":{"authMethod":"entra-id","resourceName":"fixture","deploymentName":"deploy","tenantId":"tenant","clientId":"client","clientSecret":"secret","model":"fixture"}}`,
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:   "managed identity uses Azure evidence",
+			config: `{"provider":"azure","azure":{"authMethod":"managed-identity","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","model":"fixture"}}`,
+			deps:   &azureEvidence,
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:   "API key mode ignores identity evidence",
+			config: `{"provider":"azure","azure":{"authMethod":"api-key","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","model":"fixture"}}`,
+			deps:   &azureEvidence,
+			want:   ports.AgentAuthStatusUnknown,
+		},
+		{
+			name:   "managed identity ignores API key",
+			config: `{"provider":"azure","azure":{"authMethod":"managed-identity","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","apiKey":"unrelated","model":"fixture"}}`,
+			want:   ports.AgentAuthStatusUnknown,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeAutohandFixture(t, "json", test.config)
+			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path}}, map[string]string{"HOME": t.TempDir()}, test.deps)
+			if got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAutohandAuthStatusUsesSelectedBedrockProfile(t *testing.T) {
 	home := t.TempDir()
 	writeAutohandPath(t, filepath.Join(home, ".aws", "credentials"), "[work]\naws_access_key_id=fixture-id\naws_secret_access_key=fixture-secret\n")
@@ -261,6 +484,11 @@ func TestAutohandAuthStatusAccountExpiryAndCredentialSeparation(t *testing.T) {
 			want:   ports.AgentAuthStatusUnauthorized,
 		},
 		{
+			name:   "durable account token ignores stale expiry",
+			config: `{"provider":"autohandai","autohandai":{"plan":"cloud","authMode":"account","model":"fantail"},"auth":{"token":"ahc_fixture-token","expiresAt":"2026-09-18T12:00:00Z"}}`,
+			want:   ports.AgentAuthStatusConfigured,
+		},
+		{
 			name:   "malformed account expiry",
 			config: `{"provider":"autohandai","autohandai":{"plan":"cloud","authMode":"account","model":"fantail"},"auth":{"token":"fixture-token","expiresAt":"not-a-date"}}`,
 			want:   ports.AgentAuthStatusUnknown,
@@ -287,6 +515,31 @@ func TestAutohandAuthStatusAccountExpiryAndCredentialSeparation(t *testing.T) {
 			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path}}, map[string]string{"HOME": t.TempDir()}, &deps)
 			if got != test.want {
 				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAutohandAuthStatusValidatesSelectedProviderConfiguration(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{name: "missing local section", config: `{"provider":"ollama"}`},
+		{name: "local missing model", config: `{"provider":"ollama","ollama":{"baseUrl":"http://localhost:11434"}}`},
+		{name: "ordinary missing model", config: `{"provider":"openrouter","openrouter":{"apiKey":"fixture-key"}}`},
+		{name: "custom missing base URL", config: `{"provider":"custom:acme","customProviders":{"acme":{"id":"acme","displayName":"Acme","apiFormat":"openai-compatible","apiKey":"fixture-key","model":"fixture"}}}`},
+		{name: "custom missing model", config: `{"provider":"custom:acme","customProviders":{"acme":{"id":"acme","displayName":"Acme","apiFormat":"openai-compatible","baseUrl":"https://acme.invalid/v1","apiKey":"fixture-key"}}}`},
+		{name: "custom mismatched ID", config: `{"provider":"custom:acme","customProviders":{"acme":{"id":"other","displayName":"Acme","apiFormat":"openai-compatible","baseUrl":"https://acme.invalid/v1","apiKey":"fixture-key","model":"fixture"}}}`},
+		{name: "custom missing display name", config: `{"provider":"custom:acme","customProviders":{"acme":{"id":"acme","apiFormat":"openai-compatible","baseUrl":"https://acme.invalid/v1","apiKey":"fixture-key","model":"fixture"}}}`},
+		{name: "extension missing model", config: `{"provider":"extension:release","extensionProviders":{"extension:release":{"apiKey":"fixture-key","baseUrl":"https://extension.invalid/v1"}}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeAutohandFixture(t, "json", test.config)
+			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path}}, map[string]string{"HOME": t.TempDir()}, nil)
+			if got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusUnknown)
 			}
 		})
 	}

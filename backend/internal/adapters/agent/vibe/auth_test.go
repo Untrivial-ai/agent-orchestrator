@@ -150,6 +150,169 @@ func TestVibeAuthStatusReturnsNotApplicableForSelectedLlamaCpp(t *testing.T) {
 	}
 }
 
+func TestVibeAuthStatusAppliesRuntimeLayersInNativePrecedence(t *testing.T) {
+	root := t.TempDir()
+	vibeHome := filepath.Join(root, "vibe-home")
+	project := filepath.Join(root, "workspace")
+	dataDir := filepath.Join(root, "ao-data")
+	agentRoot := filepath.Join(dataDir, "prompts", "session-1", "vibe")
+	writeVibeFixture(t, filepath.Join(vibeHome, "config.toml"), `
+active_model = "user"
+
+[[providers]]
+name = "user-provider"
+api_base = "https://user.invalid/v1"
+api_key_env_var = "USER_KEY"
+
+[[providers]]
+name = "project-provider"
+api_base = "https://project.invalid/v1"
+api_key_env_var = "PROJECT_KEY"
+
+[[providers]]
+name = "env-provider"
+api_base = "https://env.invalid/v1"
+api_key_env_var = "ENV_KEY"
+
+[[providers]]
+name = "runtime-provider"
+api_base = "https://runtime.invalid/v1"
+api_key_env_var = "RUNTIME_KEY"
+
+[[models]]
+name = "user-model"
+alias = "user"
+provider = "user-provider"
+
+[[models]]
+name = "project-model"
+alias = "project"
+provider = "project-provider"
+
+[[models]]
+name = "env-model"
+alias = "env"
+provider = "env-provider"
+
+[[models]]
+name = "runtime-model"
+alias = "runtime"
+provider = "runtime-provider"
+`)
+	writeVibeFixture(t, filepath.Join(project, ".vibe", "config.toml"), `active_model = "project"`)
+	writeVibeFixture(t, filepath.Join(agentRoot, ".vibe", "agents", "review.toml"), `
+active_model = "profile"
+
+[[providers]]
+name = "profile-provider"
+api_base = "https://profile.invalid/v1"
+api_key_env_var = "PROFILE_KEY"
+
+[[models]]
+name = "profile-model"
+alias = "profile"
+provider = "profile-provider"
+`)
+
+	baseEnv := map[string]string{
+		"HOME": root, "VIBE_HOME": vibeHome, "VIBE_ACTIVE_MODEL": "env",
+	}
+	t.Run("environment overrides project", func(t *testing.T) {
+		env := cloneStringMap(baseEnv)
+		env["ENV_KEY"] = "selected"
+		got := runVibeAuth(t, ports.AgentAuthCheck{WorkingDir: project}, env)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+		}
+	})
+	t.Run("AO model overrides environment", func(t *testing.T) {
+		env := cloneStringMap(baseEnv)
+		env["RUNTIME_KEY"] = "selected"
+		got := runVibeAuth(t, ports.AgentAuthCheck{
+			WorkingDir: project,
+			Config:     ports.AgentConfig{Model: "runtime"},
+		}, env)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+		}
+	})
+	t.Run("agent profile overrides AO model", func(t *testing.T) {
+		env := cloneStringMap(baseEnv)
+		env["PROFILE_KEY"] = "selected"
+		got := runVibeAuth(t, ports.AgentAuthCheck{
+			WorkingDir: project,
+			DataDir:    dataDir,
+			Config:     ports.AgentConfig{Model: "runtime"},
+			Args:       []string{"vibe", "--add-dir", agentRoot, "--agent", "review"},
+		}, env)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+		}
+	})
+}
+
+func TestVibeAuthStatusUnknownAliasFallsBackToDefault(t *testing.T) {
+	root := t.TempDir()
+	vibeHome := filepath.Join(root, "vibe-home")
+	writeVibeFixture(t, filepath.Join(vibeHome, "config.toml"), `active_model = "removed-alias"`)
+
+	got := runVibeAuth(t, ports.AgentAuthCheck{}, map[string]string{
+		"HOME": root, "VIBE_HOME": vibeHome, vibeDefaultAPIKeyEnvVar: "fixture-key",
+	})
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want default model status %q", got, ports.AgentAuthStatusConfigured)
+	}
+}
+
+func TestVibeAuthStatusProviderWithoutAPIKeyIsNotApplicable(t *testing.T) {
+	root := t.TempDir()
+	vibeHome := filepath.Join(root, "vibe-home")
+	writeVibeFixture(t, filepath.Join(vibeHome, "config.toml"), `
+active_model = "keyless"
+
+[[providers]]
+name = "keyless-provider"
+api_base = "http://127.0.0.1:9000/v1"
+api_key_env_var = ""
+
+[[models]]
+name = "local-model"
+alias = "keyless"
+provider = "keyless-provider"
+`)
+
+	got := runVibeAuth(t, ports.AgentAuthCheck{}, map[string]string{"HOME": root, "VIBE_HOME": vibeHome})
+	if got != ports.AgentAuthStatusNotApplicable {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusNotApplicable)
+	}
+}
+
+func TestVibeAuthStatusAppliesBuiltinAgentModelOverride(t *testing.T) {
+	root := t.TempDir()
+	vibeHome := filepath.Join(root, "vibe-home")
+	writeVibeFixture(t, filepath.Join(vibeHome, "config.toml"), `active_model = "local"`)
+
+	got := runVibeAuth(t, ports.AgentAuthCheck{Args: []string{"vibe", "--agent", "lean"}}, map[string]string{
+		"HOME": root, "VIBE_HOME": vibeHome, vibeDefaultAPIKeyEnvVar: "fixture-key",
+	})
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+	}
+}
+
+func TestVibeAuthStatusRejectsMissingSelectedAgentProfile(t *testing.T) {
+	root := t.TempDir()
+	vibeHome := filepath.Join(root, "vibe-home")
+	writeVibeFixture(t, filepath.Join(vibeHome, "config.toml"), `active_model = "local"`)
+
+	got := runVibeAuth(t, ports.AgentAuthCheck{Args: []string{"vibe", "--agent", "missing"}}, map[string]string{
+		"HOME": root, "VIBE_HOME": vibeHome,
+	})
+	if got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestVibeAuthStatusReturnsUnknownForMalformedOrUnresolvableConfig(t *testing.T) {
 	for _, config := range []string{
 		`active_model = [`,
@@ -194,4 +357,12 @@ func writeVibeFixture(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	cloned := make(map[string]string, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
 }
