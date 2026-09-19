@@ -1236,6 +1236,11 @@ func mapSessionError(err error) error {
 		return apierr.Invalid("BRANCH_NOT_FETCHED", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceBranchInvalid):
 		return apierr.Invalid("INVALID_BRANCH", err.Error(), nil)
+	case errors.Is(err, ports.ErrWorkspaceCreateFailed):
+		// The underlying git error (lock contention, corrupted clone, full
+		// disk...) is the only actionable signal; keep it in the message so
+		// spawn failures stop collapsing to an opaque 500 (#4350).
+		return apierr.Conflict("WORKSPACE_CREATE_FAILED", err.Error(), nil)
 	case errors.Is(err, ports.ErrAgentBinaryNotFound):
 		return apierr.Invalid("AGENT_BINARY_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, ports.ErrRuntimePrerequisite):

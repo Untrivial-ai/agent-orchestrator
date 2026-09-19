@@ -3,12 +3,14 @@ package gitworktree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -1112,6 +1114,137 @@ func exitStatusOne(t *testing.T) error {
 		t.Fatal("expected exit error")
 	}
 	return err
+}
+
+// Concurrent spawns against one repo race `git fetch` + `git worktree add`
+// (each writes .git/config via git's config.lock). The adapter already
+// serializes the *teardown* lane per repo (repoTeardownLock); the spawn lane
+// has no equivalent, so 15 parallel `ao spawn`s on one project lose ~7 to
+// `could not lock config file ... exit status 255` and surface ISELLOWEN 500
+// (#4350). This mirrors the teardown fixture so the create lane gets the same
+// per-repo serialization guarantee.
+func TestWorkspace_ConcurrentSpawnsOnSameRepoAllSucceed(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found")
+	}
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin.git")
+	seed := filepath.Join(tmp, "seed")
+	repoRoot := filepath.Join(tmp, "repo")
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command(git, args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	run := func(args ...string) {
+		cmd := exec.Command(git, args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	// Create bare origin repo
+	run("init", "--bare", origin)
+	// Create seed repo with initial commit
+	run("init", seed)
+	runGit(seed, "config", "core.autocrlf", "false")
+	runGit(seed, "config", "user.email", "ao@example.com")
+	runGit(seed, "config", "user.name", "Ao Agents")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	runGit(seed, "add", "README.md")
+	runGit(seed, "commit", "-m", "seed")
+	runGit(seed, "branch", "-M", "main")
+	runGit(seed, "remote", "add", "origin", origin)
+	runGit(seed, "push", "-u", "origin", "main")
+	runGit(origin, "symbolic-ref", "HEAD", "refs/heads/main")
+	// Clone to get the working repo
+	run("clone", origin, repoRoot)
+	runGit(repoRoot, "config", "core.autocrlf", "false")
+	runGit(repoRoot, "config", "user.email", "ao@example.com")
+	runGit(repoRoot, "config", "user.name", "Ao Agents")
+	runGit(repoRoot, "checkout", "main")
+	runGit(repoRoot, "reset", "--hard", "HEAD")
+
+	ws, err := New(Options{
+		ManagedRoot:  t.TempDir(),
+		RepoResolver: StaticRepoResolver{"proj": repoRoot},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 15
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		fails []string
+	)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		cfg := ports.WorkspaceConfig{
+			ProjectID: "proj",
+			SessionID: domain.SessionID(fmt.Sprintf("sess-%d", i)),
+			Branch:    fmt.Sprintf("feature/spawn-%d", i),
+		}
+		go func(cfg ports.WorkspaceConfig) {
+			defer wg.Done()
+			if err := ws.FetchDefaultBranch(context.Background(), repoRoot, ports.WorkspaceDefaultBranch{
+				Remote:  "origin",
+				Branch:  "main",
+				BaseRef: "refs/remotes/origin/main",
+			}); err != nil {
+				mu.Lock()
+				fails = append(fails, fmt.Sprintf("fetch %s: %v", cfg.Branch, err))
+				mu.Unlock()
+				return
+			}
+			info, err := ws.Create(context.Background(), cfg)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				fails = append(fails, fmt.Sprintf("%s: %v", cfg.Branch, err))
+				return
+			}
+			if info.Path == "" {
+				fails = append(fails, cfg.Branch+": no workspace returned")
+			}
+		}(cfg)
+	}
+	wg.Wait()
+	if len(fails) != 0 {
+		t.Fatalf("concurrent spawns on one repo failed (%d):\n%s", len(fails), strings.Join(fails, "\n"))
+	}
+}
+
+func TestCreate_WrapsErrWorkspaceCreateFailedOnWorktreeAddFailure(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"p-1": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "worktree add") {
+			return nil, errors.New("exit status 255: could not lock config file .git/config: File exists")
+		}
+		return []byte("abc123\n"), nil
+	}
+	_, err = ws.Create(context.Background(), ports.WorkspaceConfig{
+		ProjectID:  "p-1",
+		SessionID:  "s-1",
+		Branch:     "ao/s-1/root",
+		BaseBranch: "main",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ports.ErrWorkspaceCreateFailed) {
+		t.Fatalf("expected ErrWorkspaceCreateFailed, got %v", err)
+	}
 }
 
 func TestGitWorktreeExitStatusOneHelper(t *testing.T) {
