@@ -139,6 +139,10 @@ func TestGooseCustomNativeSchema(t *testing.T) {
 		{"wrong headers type", `"engine":"openai"`, `"engine":"openai","headers":{"Authorization":42}`, ports.AgentAuthStatusUnknown},
 		{"wrong top timeout", `"engine":"openai"`, `"engine":"openai","timeout_seconds":"bad"`, ports.AgentAuthStatusUnknown},
 		{"null requires auth", `"engine":"openai"`, `"engine":"openai","requires_auth":null`, ports.AgentAuthStatusUnknown},
+		{"valid thinking preservation format", `"context_limit":8192`, `"context_limit":8192,"thinking_preservation_format":"content_xml"`, ports.AgentAuthStatusConfigured},
+		{"invalid thinking preservation format", `"context_limit":8192`, `"context_limit":8192,"thinking_preservation_format":"invalid"`, ports.AgentAuthStatusUnknown},
+		{"valid setup metadata", `"engine":"openai"`, `"engine":"openai","setup":{"category":"model","setup_method":"single_api_key","group":"default"}`, ports.AgentAuthStatusConfigured},
+		{"malformed setup metadata", `"engine":"openai"`, `"engine":"openai","setup":42`, ports.AgentAuthStatusUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			metadata := valid

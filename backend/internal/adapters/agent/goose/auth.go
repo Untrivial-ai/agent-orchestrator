@@ -60,6 +60,130 @@ var gooseProviderKeys = map[string]string{
 	"zai": "ZHIPU_API_KEY", "zhipu": "ZHIPU_API_KEY",
 }
 
+type gooseThinkingPreservationFormat string
+
+func (f *gooseThinkingPreservationFormat) UnmarshalJSON(data []byte) error {
+	value, err := gooseEnumValue(data, "content_prepend", "content_xml", "reasoning_content")
+	if err != nil {
+		return err
+	}
+	*f = gooseThinkingPreservationFormat(value)
+	return nil
+}
+
+type gooseProviderSetupCategory string
+
+func (c *gooseProviderSetupCategory) UnmarshalJSON(data []byte) error {
+	value, err := gooseEnumValue(data, "agent", "model")
+	if err != nil {
+		return err
+	}
+	*c = gooseProviderSetupCategory(value)
+	return nil
+}
+
+type gooseProviderSetupMethod string
+
+func (m *gooseProviderSetupMethod) UnmarshalJSON(data []byte) error {
+	value, err := gooseEnumValue(data, "none", "single_api_key", "config_fields", "host_with_oauth_fallback", "oauth_browser", "oauth_device_code", "cloud_credentials", "local", "cli_auth")
+	if err != nil {
+		return err
+	}
+	*m = gooseProviderSetupMethod(value)
+	return nil
+}
+
+type gooseProviderSetupGroup string
+
+func (g *gooseProviderSetupGroup) UnmarshalJSON(data []byte) error {
+	value, err := gooseEnumValue(data, "default", "additional")
+	if err != nil {
+		return err
+	}
+	*g = gooseProviderSetupGroup(value)
+	return nil
+}
+
+func gooseEnumValue(data []byte, allowed ...string) (string, error) {
+	var value string
+	if json.Unmarshal(data, &value) != nil {
+		return "", errors.New("invalid provider enum")
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value, nil
+		}
+	}
+	return "", errors.New("invalid provider enum")
+}
+
+type gooseProviderSetupMetadata struct {
+	Category           gooseProviderSetupCategory `json:"category"`
+	ACP                bool                       `json:"acp"`
+	SetupMethod        gooseProviderSetupMethod   `json:"setup_method"`
+	Group              gooseProviderSetupGroup    `json:"group"`
+	DocsURL            *string                    `json:"docs_url"`
+	Aliases            []*string                  `json:"aliases"`
+	NativeConnectQuery *string                    `json:"native_connect_query"`
+	BinaryName         *string                    `json:"binary_name"`
+	SetupCapabilities  *struct {
+		Install    *bool `json:"install"`
+		Auth       *bool `json:"auth"`
+		AuthStatus *bool `json:"auth_status"`
+	} `json:"setup_capabilities"`
+	ShowOnlyWhenInstalled bool `json:"show_only_when_installed"`
+	FieldOverrides        []*struct {
+		Key          *string `json:"key"`
+		Label        *string `json:"label"`
+		Placeholder  *string `json:"placeholder"`
+		DefaultValue *string `json:"default_value"`
+	} `json:"field_overrides"`
+}
+
+func (m *gooseProviderSetupMetadata) UnmarshalJSON(data []byte) error {
+	type wire gooseProviderSetupMetadata
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return errors.New("invalid provider setup metadata")
+	}
+	if value.Category == "" || value.SetupMethod == "" || value.Group == "" {
+		return errors.New("missing provider setup metadata")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return errors.New("invalid provider setup metadata")
+	}
+	allowed := map[string]bool{
+		"category": true, "acp": true, "setup_method": true, "group": true,
+		"docs_url": true, "aliases": true, "native_connect_query": true,
+		"binary_name": true, "setup_capabilities": true,
+		"show_only_when_installed": true, "field_overrides": true,
+	}
+	for name := range fields {
+		if !allowed[name] {
+			return errors.New("unknown provider setup field")
+		}
+	}
+	if gooseHasNullField(fields, "acp", "aliases", "setup_capabilities", "show_only_when_installed", "field_overrides") {
+		return errors.New("invalid null provider setup field")
+	}
+	for _, alias := range value.Aliases {
+		if alias == nil {
+			return errors.New("invalid provider setup alias")
+		}
+	}
+	if value.SetupCapabilities != nil && (value.SetupCapabilities.Install == nil || value.SetupCapabilities.Auth == nil || value.SetupCapabilities.AuthStatus == nil) {
+		return errors.New("invalid provider setup capabilities")
+	}
+	for _, field := range value.FieldOverrides {
+		if field == nil || field.Key == nil || field.Label == nil {
+			return errors.New("invalid provider setup field override")
+		}
+	}
+	*m = gooseProviderSetupMetadata(value)
+	return nil
+}
+
 type gooseProviderMetadata struct {
 	Name         string  `json:"name"`
 	DisplayName  *string `json:"display_name"`
@@ -69,30 +193,31 @@ type gooseProviderMetadata struct {
 	APIKeyEnv    string  `json:"api_key_env"`
 	RequiresAuth *bool   `json:"requires_auth"`
 	Models       *[]struct {
-		Name                       *string                    `json:"name"`
-		ResolvedModel              *string                    `json:"resolved_model"`
-		ContextLimit               *uint64                    `json:"context_limit"`
-		InputTokenCost             *float64                   `json:"input_token_cost"`
-		OutputTokenCost            *float64                   `json:"output_token_cost"`
-		Currency                   *string                    `json:"currency"`
-		SupportsCacheControl       *bool                      `json:"supports_cache_control"`
-		Reasoning                  bool                       `json:"reasoning"`
-		ThinkingPreservationFormat *string                    `json:"thinking_preservation_format"`
-		RequestParams              map[string]json.RawMessage `json:"request_params"`
+		Name                       *string                          `json:"name"`
+		ResolvedModel              *string                          `json:"resolved_model"`
+		ContextLimit               *uint64                          `json:"context_limit"`
+		InputTokenCost             *float64                         `json:"input_token_cost"`
+		OutputTokenCost            *float64                         `json:"output_token_cost"`
+		Currency                   *string                          `json:"currency"`
+		SupportsCacheControl       *bool                            `json:"supports_cache_control"`
+		Reasoning                  bool                             `json:"reasoning"`
+		ThinkingPreservationFormat *gooseThinkingPreservationFormat `json:"thinking_preservation_format"`
+		RequestParams              map[string]json.RawMessage       `json:"request_params"`
 	} `json:"models"`
-	Headers                 map[string]*string `json:"headers"`
-	TimeoutSeconds          *uint64            `json:"timeout_seconds"`
-	SupportsStreaming       *bool              `json:"supports_streaming"`
-	DynamicModels           *bool              `json:"dynamic_models"`
-	SessionIDHeaderOverride *string            `json:"session_id_header_override"`
-	CatalogProviderID       *string            `json:"catalog_provider_id"`
-	BasePath                *string            `json:"base_path"`
-	ModelDocLink            *string            `json:"model_doc_link"`
-	SetupSteps              []*string          `json:"setup_steps"`
-	SkipCanonicalFiltering  bool               `json:"skip_canonical_filtering"`
-	ToolShim                bool               `json:"toolshim"`
-	PreservesThinking       bool               `json:"preserves_thinking"`
-	EmitClearThinking       bool               `json:"emit_clear_thinking"`
+	Headers                 map[string]*string          `json:"headers"`
+	TimeoutSeconds          *uint64                     `json:"timeout_seconds"`
+	SupportsStreaming       *bool                       `json:"supports_streaming"`
+	DynamicModels           *bool                       `json:"dynamic_models"`
+	SessionIDHeaderOverride *string                     `json:"session_id_header_override"`
+	CatalogProviderID       *string                     `json:"catalog_provider_id"`
+	BasePath                *string                     `json:"base_path"`
+	ModelDocLink            *string                     `json:"model_doc_link"`
+	SetupSteps              []*string                   `json:"setup_steps"`
+	SkipCanonicalFiltering  bool                        `json:"skip_canonical_filtering"`
+	ToolShim                bool                        `json:"toolshim"`
+	PreservesThinking       bool                        `json:"preserves_thinking"`
+	EmitClearThinking       bool                        `json:"emit_clear_thinking"`
+	Setup                   *gooseProviderSetupMetadata `json:"setup"`
 	Auth                    *struct {
 		Command         string    `json:"command"`
 		Args            []*string `json:"args"`
