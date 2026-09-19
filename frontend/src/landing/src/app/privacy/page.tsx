@@ -329,14 +329,30 @@ export default function PrivacyPage() {
               </Bullet>
             </Bullets>
             <p>
-              Events are sent as <Strong>anonymous</Strong> PostHog events — no
-              person profiles are created and the app never calls{" "}
-              <Code>identify()</Code>. A random install identifier generated on
-              first run and stored at{" "}
+              Events are otherwise <Strong>anonymous</Strong> PostHog events. A
+              random install identifier generated on first run and stored at{" "}
               <Code>~/.ao/data/telemetry_install_id</Code> is used to
-              deduplicate counts. It is not linked to any account, email, or
-              name. Approximate country is derived by PostHog from the
-              connection's IP address; AO itself never sends location data.
+              deduplicate counts. It is not linked to any email or name.
+              Approximate location (country, and where available region and
+              city) is derived by PostHog from the connection's IP address when
+              each event is received, and AO leaves this enabled so it can
+              understand which areas AO is used in. This applies to all installs,
+              is used only in aggregate, and is not tied to your GitHub handle. AO
+              itself never resolves or sends precise location and does not store
+              your IP address. There is no separate switch for it; turning
+              telemetry off stops it with everything else.
+            </p>
+            <p>
+              One exception: AO sends the GitHub username signed in to its GitHub
+              integration on session-start events, both as an event property and
+              as a PostHog person property, so we can see which developers are
+              most active. AO only sends a personal (human) account, never an
+              organization or a bot token, and sends nothing if no GitHub token is
+              available. The handle is part of product telemetry and has no
+              separate switch: turning telemetry off stops it, because the
+              session-start event that carries it is then never sent. Anything
+              already stored in PostHog from earlier events is not deleted
+              retroactively.
             </p>
             <p>
               The desktop app does <Strong>not</Strong> currently send PostHog{" "}

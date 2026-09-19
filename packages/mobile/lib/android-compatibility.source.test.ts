@@ -53,20 +53,26 @@ describe("Android native compatibility boundaries", () => {
 		expect(spawn).toContain("BottomSheetView");
 		expect(spawn).toContain("enablePanDownToClose");
 		expect(spawn).not.toContain("KeyboardAvoidingView");
+		// The controls stick to the keyboard instead, which is the only approach
+		// that moves in step with it inside a native form sheet.
+		expect(spawn).toContain("KeyboardStickyView");
 		expect(spawn).not.toContain("androidGrabber");
 		expect(spawn).toContain('Platform.OS === "ios" ? <View style={styles.flexSpacer} /> : null');
 		expect(spawn).toContain('promptHost: { width: "100%", height: 112 }');
 		expect(source("../app/_layout.tsx")).toContain('presentation: Platform.OS === "ios" ? "formSheet" : "transparentModal"');
 	});
 
-	it("uses a compact Android option sheet instead of exposed dropdown fields for Spawn", () => {
+	// Spawn is itself a bottom sheet on Android, so its choices open inside it.
+	// They used to be a second sheet over the first: two grabbers, and only the
+	// top one answered a swipe down.
+	it("shows Spawn's choices inside Spawn's own sheet", () => {
 		const android = source("./spawn-composer-controls.android.tsx");
-		expect(android).toContain("Modal");
-		expect(android).toContain("OptionSheet");
+		expect(android).toContain("OptionList");
+		expect(android).not.toMatch(/\bModal\b/);
+		expect(android).not.toContain("@expo/ui/community/bottom-sheet");
 		expect(android).not.toContain("Picker");
 		expect(android).not.toContain("@expo/ui");
 		expect(android).toContain("AgentLogo");
-		expect(source("../app/project/[id].tsx")).not.toContain('style={{ width: "100%"');
 	});
 
 	it("uses a rounded native Android attachment chooser instead of the square popup menu", () => {
@@ -123,7 +129,9 @@ describe("Android native compatibility boundaries", () => {
 
 	it("keeps the iOS Spawn prompt geometry aligned with Android", () => {
 		const ios = source("./spawn-prompt-input.ios.tsx");
-		expect(ios).toContain("height: 112");
+		// 112 is now the default for the optional `height` prop rather than a literal
+		// in the style, so the field can grow into whatever room the sheet has left.
+		expect(ios).toContain("height = 112");
 		expect(ios).toMatch(/paddingHorizontal:\s*16/);
 		expect(ios).toMatch(/paddingVertical:\s*14/);
 		expect(ios).not.toContain("height: 154");
@@ -140,11 +148,12 @@ describe("Android native compatibility boundaries", () => {
 		const path = fileURLToPath(new URL("./chat/ChatSettingsModal.android.tsx", import.meta.url));
 		expect(existsSync(path)).toBe(true);
 		const android = existsSync(path) ? source("./chat/ChatSettingsModal.android.tsx") : "";
-		expect(android).toContain("OptionSheet");
+		expect(android).toContain("ChoicePage");
 		expect(android).toContain("SettingRow");
 		expect(android).not.toContain("Picker");
-		expect(android).toContain('@expo/ui/community/bottom-sheet');
-		expect(android).toContain("enablePanDownToClose");
+		// The turn-settings route is already a native form sheet, so a choice list
+		// opens as a page within it rather than a sheet on top.
+		expect(android).not.toContain('@expo/ui/community/bottom-sheet');
 		expect(android).not.toMatch(/\bModal\b/);
 		expect(android).toContain('numberOfLines={1}');
 		expect(android).not.toContain('description ? <Text numberOfLines={1} style={styles.rowDescription}');

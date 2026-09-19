@@ -60,6 +60,10 @@ vi.mock("../lib/api-client", () => ({
 		typeof error === "object" && error !== null && "requestId" in error
 			? String((error as { requestId: unknown }).requestId)
 			: undefined,
+	apiErrorDetails: (error: unknown) =>
+		typeof error === "object" && error !== null && "details" in error
+			? (error as { details: Record<string, unknown> }).details
+			: undefined,
 	apiErrorMessage: (error: unknown) => {
 		if (error instanceof Error) return error.message;
 		if (typeof error === "object" && error !== null && "message" in error) {

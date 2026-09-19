@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyboardOverlap, workerDockKeyboardLayout, workerDockVisibility, workerListBottomInset } from "./worker-dock-layout";
+import { workerDockKeyboardLayout, workerDockVisibility, workerListBottomInset } from "./worker-dock-layout";
 
 describe("worker dock keyboard layout", () => {
 	it("anchors the controls directly above the keyboard", () => {
@@ -26,16 +26,6 @@ describe("worker dock keyboard layout", () => {
 	it("reserves scroll room above the floating search dock", () => {
 		expect(workerListBottomInset(348)).toBe(416);
 		expect(workerListBottomInset(46)).toBe(114);
-	});
-});
-
-describe("keyboardOverlap", () => {
-	it("derives visible keyboard overlap from its screen frame", () => {
-		expect(keyboardOverlap(844, 508, 336)).toBe(336);
-	});
-
-	it("returns zero once the keyboard frame is below the window", () => {
-		expect(keyboardOverlap(844, 844, 336)).toBe(0);
 	});
 });
 

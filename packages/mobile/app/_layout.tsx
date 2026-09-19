@@ -2,6 +2,7 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { OnboardingGate } from "../lib/OnboardingGate";
 import { TelemetryManager } from "../lib/TelemetryManager";
@@ -29,7 +30,6 @@ const SHEET_ROUTES = [
 	{ name: "sheets/conversation-actions", detents: [0.6, 0.95] },
 	{ name: "sheets/conversation-rename", detents: [0.35, 0.65] },
 	{ name: "sheets/composer-picker", detents: [0.6, 0.95] },
-	{ name: "sheets/theme", detents: "fitToContents" },
 	{ name: "sheets/store-update", detents: "fitToContents" },
 ] as const;
 
@@ -61,13 +61,19 @@ export default function RootLayout() {
 	// consume a provider its own component renders.
 	return (
 		<GestureHandlerRootView style={{ flex: 1 }}>
-			<SafeAreaProvider>
-				<ThemeProvider>
-					<AppProvider>
-						<Shell />
-					</AppProvider>
-				</ThemeProvider>
-			</SafeAreaProvider>
+			{/* Sits above everything that positions itself against the keyboard. It
+			    reports the IME frame-by-frame, which the platform listeners cannot:
+			    Android only fires `keyboardDidShow` once the keyboard has finished
+			    animating, so every dock and composer arrived a beat late. */}
+			<KeyboardProvider>
+				<SafeAreaProvider>
+					<ThemeProvider>
+						<AppProvider>
+							<Shell />
+						</AppProvider>
+					</ThemeProvider>
+				</SafeAreaProvider>
+			</KeyboardProvider>
 		</GestureHandlerRootView>
 	);
 }
@@ -110,7 +116,6 @@ function Shell() {
 				<Stack.Screen name="session/[id]" options={{ title: "Session", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="shell/[handleId]" options={{ title: "Worktree shell", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="preview/[id]" options={{ title: "Preview", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
-				<Stack.Screen name="project/[id]" options={{ title: "Project", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen
 					name="spawn"
 					options={{
@@ -121,7 +126,11 @@ function Shell() {
 						presentation: Platform.OS === "ios" ? "formSheet" : "transparentModal",
 						headerShown: false,
 						sheetAllowedDetents: Platform.OS === "ios" ? [0.5, 0.9] : undefined,
-						sheetInitialDetentIndex: 0,
+						// Opens tall on iOS. At the half detent the keyboard is taller
+						// than the sheet, so the selectors and Start task had nowhere to
+						// go and ended up clipped beneath it; dragging down to half is
+						// still there for anyone who wants the board behind it.
+						sheetInitialDetentIndex: Platform.OS === "ios" ? 1 : 0,
 						sheetGrabberVisible: Platform.OS === "ios",
 						sheetCornerRadius: 24,
 						contentStyle: { backgroundColor: Platform.OS === "ios" ? t.bgSurface : "transparent" },
@@ -136,6 +145,8 @@ function Shell() {
 						headerShown: false,
 					}}
 				/>
+				{/* Draws its own header, like notifications, so the title can be the project. */}
+				<Stack.Screen name="project/[id]" options={{ headerShown: false }} />
 				<Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
 				<Stack.Screen name="pair" options={{ presentation: "modal", headerShown: false }} />
 

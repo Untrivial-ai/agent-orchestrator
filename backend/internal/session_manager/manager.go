@@ -2751,6 +2751,13 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 	}
 	projectKind := projectKindForSession(project, rec.ProjectID)
 	if rec.Metadata.WorkspacePath == "" || (rec.Metadata.Branch == "" && projectKind != domain.ProjectKindScratch) {
+		// The previous daemon died before Spawn committed a workspace (e.g. the
+		// app was closed while "Preparing the worker terminal" was still
+		// creating the worktree). Nothing observable was ever built, so — same
+		// as an ordinary in-request spawn failure — remove the seed row instead
+		// of leaving a non-terminated phantom that can never launch sitting in
+		// the sidebar forever.
+		m.rollbackSpawnSeedRow(ctx, rec.ID)
 		return nil
 	}
 	isChat := domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat

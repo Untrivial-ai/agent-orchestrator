@@ -1000,9 +1000,9 @@ button.settings-row-bar {
 	opacity: 0.75;
 }
 
-/* The composer is one continuous surface. Agent and model share equal, stable
-   tracks so changing provider names never moves the model or the primary action;
-   transparent controls keep the row reading as card padding rather than a form. */
+/* The composer is one continuous surface. Agent and model sit as separate
+   equal-width dropdowns in a horizontal row so changing provider names never
+   moves the model or the primary action. */
 .composer-toolbar {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto auto;
@@ -1023,39 +1023,21 @@ button.settings-row-bar {
 .composer-run-controls {
 	display: grid;
 	min-width: 0;
-	grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 	align-items: center;
-	overflow: hidden;
-	border-radius: var(--radius-md);
-	/* Same mix formula as the settings-modal dropdown trigger, but anchored to
-	   --card (an opaque color) instead of --color-bg-settings-row (transparent
-	   by design there, since it always sits inside an already-painted dialog
-	   surface) — this pill floats on its own with nothing painted behind it. */
-	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground));
+	column-gap: var(--space-2);
 }
 
 .composer-toolbar-slot {
 	min-width: 0;
 }
 
-.composer-toolbar-divider {
-	align-self: stretch;
-	width: 1px;
-	height: 100%;
-	background-color: var(--color-border);
-}
-
-/* The divider is the shared edge between the two segments — when either one
-   is focused, it becomes part of that segment's own border/focus ring
-   instead of staying a disconnected neutral line. */
-.composer-run-controls:has(.composer-toolbar-slot :focus-within) .composer-toolbar-divider {
-	background-color: var(--bridge-accent);
-}
-
 .composer-toolbar .composer-toolbar-option {
 	height: var(--size-settings-action-height);
-	border-radius: 0 !important;
-	background-color: transparent !important;
+	/* Same mix formula as the settings-modal dropdown trigger, but anchored to
+	   --card (an opaque color) instead of --color-bg-settings-row. */
+	border-radius: var(--radius-md) !important;
+	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground)) !important;
 }
 
 .composer-toolbar .composer-toolbar-option:hover:not(:disabled),
@@ -1067,8 +1049,8 @@ button.settings-row-bar {
 	box-shadow: none;
 }
 
-/* Inline value control inside the task composer's bottom toolbar. Reads as a
-   value you can change, not as a form field: no visible chrome until hover/focus. */
+/* Inline value control inside the task composer's bottom toolbar. Each chip is
+   its own dropdown trigger with the quiet filled chrome settings uses. */
 @utility composer-chip {
 	display: inline-flex;
 	width: auto;
@@ -1078,11 +1060,8 @@ button.settings-row-bar {
 	align-items: center;
 	gap: calc(var(--spacing) * 2);
 	border: 1px solid transparent;
-	/* SelectTrigger and settings-option-trigger bring different radii. The
-	   shared container now owns the rounding, so each segment stays square and
-	   only the outer edge reads as one pill. */
-	border-radius: 0 !important;
-	background-color: transparent;
+	border-radius: var(--radius-md);
+	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground));
 	padding-inline: var(--space-2);
 	font-size: var(--font-size-base);
 	color: var(--color-foreground);
@@ -2752,9 +2731,21 @@ html.sidebar-reordering * {
 	box-shadow: none;
 }
 
-:root[data-theme="light"] .cursor-chat-human-message {
-	background: color-mix(in srgb, var(--color-bg-secondary) 78%, var(--color-bg-tertiary));
+/* Light theme collapses the surface stack the dark bubble relies on: `--card`
+   and `--background` are the same near-white, so `--color-bg-secondary` cannot
+   sit above the canvas. Take the unwashed tertiary step and paint the hairline
+   this rule has always declared, so the message still reads as enclosed. */
+:root[data-theme="light"] .cursor-chat-human-message:not([data-queued]) {
+	border-width: 1px;
+	background: var(--color-bg-tertiary);
 	border-color: color-mix(in oklch, var(--color-text-primary) 14%, transparent);
+}
+
+/* Queued keeps its dashed, unfilled outline: the agent has not seen it yet, and
+   a fill would make it read as sent. */
+:root[data-theme="light"] .cursor-chat-human-message[data-queued] {
+	background: transparent;
+	border-color: color-mix(in oklch, var(--color-text-primary) 22%, transparent);
 }
 
 :root[data-theme="light"] .cursor-chat-origin-message,

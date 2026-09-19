@@ -6,22 +6,20 @@ import { File } from "expo-file-system";
 import { useEffect, useMemo, useState } from "react";
 import {
 	InteractionManager,
-	Keyboard,
 	Platform,
 	Pressable,
 	ScrollView,
 	StyleSheet,
 	Text,
-	useWindowDimensions,
 	View,
 } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { agentErrorCopy } from "../lib/agentError";
 import { defaultAgent, rankAgents } from "../lib/agentPicker";
 import { ApiError, getAgentModels, getAgents, getProject, getSettings, type AgentCatalog, type AgentModelCatalog, type ProjectDetail, type SessionMode } from "../lib/api";
 import { classifyConnectionFailure, describeConnectionFailure } from "../lib/connectionError";
 import { chatErrorCopy, isChatPreflightError } from "../lib/chatError";
 import { haptics } from "../lib/haptics";
-import { keyboardOverlap } from "../lib/worker-dock-layout";
 import { resolveSpawnProject } from "../lib/projectFilter";
 import { modelOverride, resolveSpawnAgent, resolveSpawnModel, spawnModelSourceChanged } from "../lib/spawnModel";
 import { appendSpawnAttachments, type SpawnAttachment } from "../lib/spawn-attachments";
@@ -32,11 +30,12 @@ import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { Button } from "../lib/ui";
 
+export { SheetErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
+
 export default function SpawnModal() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
-	const { height: windowHeight } = useWindowDimensions();
 	const { projectId: routeProjectId } = useLocalSearchParams<{ projectId?: string }>();
 	const { projects, projectsKnown, activeProjectId, config, spawn } = useApp();
 
@@ -57,37 +56,13 @@ export default function SpawnModal() {
 	const [modelError, setModelError] = useState<string>();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [keyboardHeight, setKeyboardHeight] = useState(0);
 
 	const [catalog, setCatalog] = useState<AgentCatalog | null>(null);
 	const [catalogError, setCatalogError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [offerTUI, setOfferTUI] = useState(false);
 
-	useEffect(() => {
-		if (Platform.OS === "ios") {
-			const updateFromFrame = (event: Parameters<typeof Keyboard.scheduleLayoutAnimation>[0]) => {
-				setKeyboardHeight(
-					keyboardOverlap(windowHeight, event.endCoordinates.screenY, event.endCoordinates.height),
-				);
-			};
-			const willChange = Keyboard.addListener("keyboardWillChangeFrame", (event) => {
-				Keyboard.scheduleLayoutAnimation(event);
-				updateFromFrame(event);
-			});
-			const didChange = Keyboard.addListener("keyboardDidChangeFrame", updateFromFrame);
-			const didHide = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
-			return () => {
-				willChange.remove();
-				didChange.remove();
-				didHide.remove();
-			};
-		}
 
-		// The native Android form sheet already resizes for the IME. Adding the
-		// keyboard height a second time pushed the selector rail below the sheet.
-		return undefined;
-	}, [windowHeight]);
 
 	// Seed from the active project, or the only project. Mirrors the store's
 	// `targetProject()`; kept here because the screen needs it as UI state to
@@ -324,6 +299,15 @@ export default function SpawnModal() {
 					{offerTUI ? <Button title="Create as Terminal UI instead" variant="ghost" icon="terminal" onPress={() => { selectMode("tui"); setOfferTUI(false); setError(null); }} /> : null}
 				</View> : null}
 
+				{/* The controls ride the keyboard on the UI thread.
+				    iOS does not lift this form sheet for the IME, and every
+				    height-based attempt moved late or not at all: a settled keyboard
+				    height only lands after the animation, animated padding is
+				    interpolated on the JS thread, and a keyboard-avoiding wrapper
+				    mismeasures its own frame inside a sheet, leaving Start task behind
+				    the keyboard. A sticky view translates by the live offset, so
+				    the selectors and the button sit directly above it. */}
+				<KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
 				<SpawnComposerControls
 					projects={projects.map((item) => ({ id: item.id, label: item.name }))}
 					projectId={project?.id ?? null}
@@ -340,6 +324,7 @@ export default function SpawnModal() {
 					busy={busy}
 					disabled={!projectId || !harness || busy || modelLoading || loading}
 				/>
+				</KeyboardStickyView>
 		</View>
 	);
 
@@ -361,7 +346,7 @@ export default function SpawnModal() {
 		);
 	}
 
-	return <View style={[styles.screen, { paddingBottom: keyboardHeight }]}>{content}</View>;
+	return <View style={styles.screen}>{content}</View>;
 }
 
 // Human copy for a failed spawn, matching every other screen. This one used to
