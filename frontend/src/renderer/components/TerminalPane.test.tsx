@@ -999,6 +999,27 @@ describe("terminal link preview", () => {
 		}
 	});
 
+	it("withholds the AO Browser handler on a session-less pane", () => {
+		// The harness and Codex login shells in Settings mount a pane with no
+		// session. Passing a handler that can only no-op left the terminal's
+		// "Open in AO Browser" item enabled and silently doing nothing.
+		const view = renderPane();
+		try {
+			expect(terminalLinkHandler).toBeUndefined();
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("withholds the AO Browser handler for a terminated session", () => {
+		const view = renderPane({ ...worker, status: "terminated" });
+		try {
+			expect(terminalLinkHandler).toBeUndefined();
+		} finally {
+			view.restore();
+		}
+	});
+
 	it("opens orchestrator links in its Browser inspector", () => {
 		const view = renderPane(orchestrator);
 		try {
