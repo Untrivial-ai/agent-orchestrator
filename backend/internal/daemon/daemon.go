@@ -56,10 +56,12 @@ import (
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
@@ -214,6 +216,9 @@ func Run() error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
+		return fmt.Errorf("recover report delivery claims: %w", err)
+	}
 	if err := store.ConfigureAgentSwitchFailureEventEncoder(context.Background(), sentryobs.AgentSwitchEventEncoder{}); err != nil {
 		return fmt.Errorf("configure agent switch failure event encoder: %w", err)
 	}
@@ -522,6 +527,26 @@ func Run() error {
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log})
+	reportSessions, ok := sessMgr.(reportSemanticSession)
+	if !ok {
+		return errors.New("wire report delivery: session manager lacks semantic send support")
+	}
+	var reportCoordinator *reportsvc.Coordinator
+	reportSvc := reportsvc.New(reportsvc.Deps{Store: store, OnCreated: func(domain.ReportRecord) {
+		if reportCoordinator != nil {
+			reportCoordinator.Wake()
+		}
+	}})
+	reportCoordinator = reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{
+		Store:    store,
+		Delivery: reportSemanticDelivery{chat: chatSvc, sessions: reportSessions, store: store},
+	})
+	chatSvc.SetReportCoordinator(reportCoordinator)
+	reportDeliveryDone := reportCoordinator.Start(ctx)
+	defer func() {
+		stop()
+		<-reportDeliveryDone
+	}()
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, tracker, log)
 
 	hostCommands := systemexec.New(cfg.DataDir)
@@ -766,6 +791,7 @@ func Run() error {
 		PRs:                prActions,
 		Reviews:            reviewSvc,
 		Notifications:      notifier,
+		Reports:            reportSvc,
 		NotificationStream: notificationHub,
 		Push:               pushRegistry,
 		Presence:           presenceTracker,
@@ -960,6 +986,53 @@ func Run() error {
 		log.Error("cdc pipeline shutdown", "err", err)
 	}
 	return runErr
+}
+
+type reportSemanticSession interface {
+	SendSemantic(context.Context, domain.SessionID, string, string) error
+	InterruptTUI(context.Context, domain.SessionID) error
+}
+
+type reportSemanticDelivery struct {
+	chat     *chatsvc.Service
+	sessions reportSemanticSession
+	store    interface {
+		GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
+	}
+}
+
+func (d reportSemanticDelivery) Submit(ctx context.Context, id domain.SessionID, message, idempotencyKey string) error {
+	if d.sessions == nil {
+		return reportsvc.ErrReportDeliveryModeUnsupported
+	}
+	return d.sessions.SendSemantic(ctx, id, message, idempotencyKey)
+}
+
+func (d reportSemanticDelivery) Interrupt(ctx context.Context, id domain.SessionID) error {
+	if d.store == nil {
+		return reportsvc.ErrReportDeliveryModeUnsupported
+	}
+	rec, ok, err := d.store.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return sessionmanager.ErrNotFound
+	}
+	if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
+		if d.sessions == nil {
+			return reportsvc.ErrReportDeliveryModeUnsupported
+		}
+		return d.sessions.InterruptTUI(ctx, id)
+	}
+	if d.chat == nil {
+		return reportsvc.ErrReportDeliveryModeUnsupported
+	}
+	err = d.chat.Interrupt(ctx, id)
+	if errors.Is(err, chatsvc.ErrNoActiveTurn) {
+		return nil
+	}
+	return err
 }
 
 func installedAgentHarness(target systeminstall.Target) (string, bool) {

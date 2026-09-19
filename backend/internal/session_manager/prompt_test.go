@@ -155,6 +155,27 @@ func TestBuildSystemPrompt_WorkerWithOrchestratorUsesOrchestratorParallelHandoff
 	}
 }
 
+func TestBuildSystemPrompt_WorkerRequiresDurableReports(t *testing.T) {
+	got := buildSystemPromptText(systemPromptConfig{
+		Role:                  sessionPromptRoleWorker,
+		Project:               promptProject{ID: "mer", Name: "Mercury"},
+		OrchestratorSessionID: "mer-orchestrator",
+	})
+	for _, want := range []string{
+		"## Worker Reports",
+		"ao report --checkpoint --note <text>",
+		"ao report --needs-input --note <text>",
+		"ao report --stuck --note <text>",
+		"ao report --done --note <text>",
+		"Do not narrate routine commands",
+		"`--done` does not terminate the session",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("worker prompt missing report instruction %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestBuildProjectRules_ReadsInlineAndFileRules(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte("File rule.\n"), 0o644); err != nil {
