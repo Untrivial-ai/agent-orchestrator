@@ -1890,6 +1890,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.ProvisionState = domain.SessionProvisionReady
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.Metadata.Permissions = tc.want
 		if tc.saved == "" {

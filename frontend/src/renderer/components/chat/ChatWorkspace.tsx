@@ -1378,6 +1378,8 @@ function ChatWorkspaceContent({
 					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}
+						provisionState={session?.provisionState}
+						provisionError={session?.provisionError}
 						transitioning={controllerTransitioning}
 						onResume={newWorkDisabled ? undefined : onResumeAgent}
 						resuming={resumingAgent}
@@ -1453,7 +1455,7 @@ function ChatWorkspaceContent({
 									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 									settings={composerSettings}
 									busy={busy}
-									willQueue={Boolean(turn)}
+									willQueue={Boolean(turn) || session?.provisionState === "provisioning"}
 									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
@@ -1835,6 +1837,8 @@ function ChatHeader({
  */
 function ControllerBanner({
 	controller,
+	provisionState,
+	provisionError,
 	transitioning,
 	onResume,
 	resuming,
@@ -1844,6 +1848,8 @@ function ControllerBanner({
 	shellError,
 }: {
 	controller: { state: ControllerState; error?: string };
+	provisionState?: WorkspaceSession["provisionState"];
+	provisionError?: string;
 	transitioning?: boolean;
 	onResume?: () => void;
 	resuming?: boolean;
@@ -1852,11 +1858,15 @@ function ControllerBanner({
 	openingShell?: boolean;
 	shellError?: string;
 }) {
+	const provisioning = provisionState === "provisioning";
+	const failed = provisionState === "failed";
+	const starting = provisioning || failed;
+
 	// The transition coordinator intentionally stops one controller before it
 	// starts the other. The top-bar handoff state already explains that interval;
 	// presenting its intermediate snapshot as a crash produces a red false alarm.
-	if (transitioning && controller.state === "stopped") return null;
-	if (controller.state === "ready" || controller.state === "busy") return null;
+	if (!starting && transitioning && controller.state === "stopped") return null;
+	if (!starting && (controller.state === "ready" || controller.state === "busy")) return null;
 
 	const copy: Partial<Record<ControllerState, { title: string; tone: string }>> = {
 		connecting: {
@@ -1872,16 +1882,21 @@ function ControllerBanner({
 			tone: "text-destructive",
 		},
 	};
-	const shown = copy[controller.state];
+	const shown = provisioning
+		? { title: "Starting this session…", tone: "text-muted-foreground" }
+		: failed
+			? { title: "This session could not be started", tone: "text-destructive" }
+			: copy[controller.state];
 	if (!shown) return null;
+	const loading = provisioning || (!failed && controller.state === "connecting");
 
 	return (
 		<div
-			role={controller.state === "stopped" ? "alert" : "status"}
+			role={failed || controller.state === "stopped" ? "alert" : "status"}
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
-			{controller.state === "connecting" ? (
+			{loading ? (
 				<Loader2
 					aria-hidden="true"
 					className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
@@ -1891,10 +1906,26 @@ function ControllerBanner({
 			)}
 			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<strong className={cn("text-xs font-medium", shown.tone)}>{shown.title}</strong>
-				{controller.error ? (
+				{provisioning ? (
+					<span className="text-[11px] leading-snug text-muted-foreground">
+						Setting up the worktree and the agent. Keep typing — your messages are
+						queued and sent in order as soon as it is ready.
+					</span>
+				) : failed ? (
+					<>
+						{provisionError ? (
+							<span className="text-[11px] leading-snug text-muted-foreground">
+								{provisionError}
+							</span>
+						) : null}
+						<span className="text-[11px] leading-snug text-muted-foreground">
+							Nothing you typed was lost: your messages are still queued here.
+						</span>
+					</>
+				) : controller.error ? (
 					<span className="text-[11px] leading-snug text-muted-foreground">{controller.error}</span>
 				) : null}
-				{controller.state === "stopped" ? (
+				{!starting && controller.state === "stopped" ? (
 					<>
 						<span className="text-[11px] leading-snug text-muted-foreground">
 							History is kept. Resume the agent or open a shell in the same worktree.

@@ -1128,6 +1128,43 @@ describe("ChatWorkspace timeline", () => {
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
+	// An asynchronous spawn puts the session on screen before its agent exists.
+	// That is not a controller that stopped, and the composer has to stay open:
+	// what the user types while it starts is queued, not lost.
+	it("explains a session that is still starting and keeps it typeable", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{ ...chatFixtureSettled, controller: { state: "connecting" } }}
+				session={{ ...chatSession, provisionState: "provisioning" }}
+				onResumeAgent={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Starting this session…");
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.getByTestId("chat-conversation-panel")).not.toHaveAttribute("inert");
+	});
+
+	it("keeps a failed start and its queued messages instead of reporting a crash", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{ ...chatFixtureSettled, controller: { state: "stopped" } }}
+				session={{
+					...chatSession,
+					provisionState: "failed",
+					provisionError: "spawn mer-1: create workspace: branch already checked out",
+				}}
+				onResumeAgent={vi.fn()}
+			/>,
+		);
+
+		const banner = screen.getByRole("alert");
+		expect(banner).toHaveTextContent("This session could not be started");
+		expect(banner).toHaveTextContent("branch already checked out");
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+	});
+
 	it("shows connecting during the controller gap, then restores the composer when ready", () => {
 		const { rerender } = render(
 			<ChatWorkspace

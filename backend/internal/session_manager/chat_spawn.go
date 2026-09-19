@@ -53,6 +53,13 @@ type ChatLauncher interface {
 	HasLiveChatController(id domain.SessionID) bool
 	// StopChat releases a session's controller.
 	StopChat(ctx context.Context, id domain.SessionID) error
+	// QueueChatPrompt records the opening prompt as a queued turn instead of
+	// sending it. An asynchronous spawn has no controller yet; DrainChatQueue
+	// delivers this turn, and anything the user typed after it, in order.
+	QueueChatPrompt(ctx context.Context, id domain.SessionID, text string) (string, error)
+	// DrainChatQueue dispatches what accumulated while the session had no
+	// controller.
+	DrainChatQueue(ctx context.Context, id domain.SessionID) error
 }
 
 // ChatStart is what the launcher needs. It mirrors the terminal path's
@@ -89,6 +96,10 @@ type chatSpawn struct {
 	workspaceProject *ports.WorkspaceProjectInfo
 	prompt           string
 	systemPrompt     string
+	// promptQueued means the opening prompt is already a durable queued turn
+	// (asynchronous spawn). The controller drains it; sending it again here
+	// would deliver the user's brief twice.
+	promptQueued bool
 }
 
 // launchChatController starts the provider controller for a chat session and
@@ -203,7 +214,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	// The initial prompt is a normal turn through the controller. There is no
 	// paste-and-Enter equivalent here, and no "deliver after start" variant: the
 	// provider either accepts the turn or reports why.
-	if in.prompt != "" {
+	if in.prompt != "" && !in.promptQueued {
 		if _, err := m.chat.StartChatTurn(ctx, id, in.prompt); err != nil {
 			m.stopChatAfterSpawnFailure(ctx, id)
 			m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, in.record, in.workspace, in.workspaceProject, true)

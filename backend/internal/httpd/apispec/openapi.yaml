@@ -8463,6 +8463,14 @@ components:
           type: string
         projectId:
           type: string
+        provisionError:
+          type: string
+        provisionState:
+          enum:
+          - provisioning
+          - ready
+          - failed
+          type: string
         prs:
           items:
             $ref: '#/components/schemas/SessionPRFacts'

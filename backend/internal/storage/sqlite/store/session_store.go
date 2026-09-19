@@ -50,6 +50,53 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 	return rec, nil
 }
 
+// SetSessionProvisionedWorkspace records the worktree as soon as it exists,
+// ahead of the controller commit that writes the rest of the row.
+func (s *Store) SetSessionProvisionedWorkspace(
+	ctx context.Context,
+	id domain.SessionID,
+	branch, workspacePath, workspaceRepoPath string,
+	now time.Time,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionProvisionedWorkspace(ctx, gen.SetSessionProvisionedWorkspaceParams{
+		Branch:            branch,
+		WorkspacePath:     workspacePath,
+		WorkspaceRepoPath: workspaceRepoPath,
+		UpdatedAt:         now,
+		ID:                id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("record provisioned workspace for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// SetSessionProvisionState publishes an asynchronous Chat spawn's progress. It
+// writes only these two fields: the background start races the controller
+// commit, which owns the rest of the row.
+func (s *Store) SetSessionProvisionState(
+	ctx context.Context,
+	id domain.SessionID,
+	state domain.SessionProvisionState,
+	provisionError string,
+	now time.Time,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionProvisionState(ctx, gen.SetSessionProvisionStateParams{
+		ProvisionState: state.WithDefault(),
+		ProvisionError: provisionError,
+		UpdatedAt:      now,
+		ID:             id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set provision state for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateSession writes the full mutable state of an existing session. The
 // id/project/num/created_at are immutable and not touched here.
 func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) error {
@@ -511,6 +558,8 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		CleanupGeneration: row.CleanupGeneration,
 		CreatedAt:         row.CreatedAt,
 		UpdatedAt:         row.UpdatedAt,
+		ProvisionState:    row.ProvisionState.WithDefault(),
+		ProvisionError:    row.ProvisionError,
 	}
 }
 
@@ -581,6 +630,8 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		SessionPermissions:               string(rec.Metadata.Permissions),
 		CreatedAt:                        rec.CreatedAt,
 		UpdatedAt:                        rec.UpdatedAt,
+		ProvisionState:                   rec.ProvisionState.WithDefault(),
+		ProvisionError:                   rec.ProvisionError,
 	}
 }
 
@@ -636,6 +687,8 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
 		Model:                            rec.Metadata.Model,
 		UpdatedAt:                        rec.UpdatedAt,
+		ProvisionState:                   rec.ProvisionState.WithDefault(),
+		ProvisionError:                   rec.ProvisionError,
 	}
 }
 

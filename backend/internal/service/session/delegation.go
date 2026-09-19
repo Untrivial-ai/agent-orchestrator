@@ -76,6 +76,10 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		EffortOverride: effortOverride,
 		RequestedMode:  in.RequestedMode,
 		Attachments:    in.Attachments,
+		// This is the desktop's new-task path: there is a UI waiting to navigate
+		// to the session. A Chat worker answers as soon as it is addressable and
+		// finishes starting in the background.
+		Async: true,
 	})
 	if err != nil {
 		return DelegateTaskOutcome{}, toSpawnAPIError(err)

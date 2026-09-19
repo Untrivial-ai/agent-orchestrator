@@ -88,6 +88,31 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	f.sessions[rec.ID] = rec
 	return nil
 }
+func (f *fakeStore) SetSessionProvisionedWorkspace(_ context.Context, id domain.SessionID, branch, workspacePath, workspaceRepoPath string, now time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || rec.ProvisionState != domain.SessionProvisionProvisioning {
+		return false, nil
+	}
+	rec.Metadata.Branch = branch
+	rec.Metadata.WorkspacePath = workspacePath
+	rec.Metadata.WorkspaceRepoPath = workspaceRepoPath
+	rec.UpdatedAt = now
+	f.sessions[id] = rec
+	return true, nil
+}
+
+func (f *fakeStore) SetSessionProvisionState(_ context.Context, id domain.SessionID, state domain.SessionProvisionState, message string, now time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	rec.ProvisionState = state
+	rec.ProvisionError = message
+	rec.UpdatedAt = now
+	f.sessions[id] = rec
+	return true, nil
+}
+
 func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error) {
 	if f.updateSessionErr != nil {
 		return false, f.updateSessionErr

@@ -144,7 +144,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions,
+    provision_state, provision_error
 FROM sessions WHERE id = ?
 `
 
@@ -202,6 +203,8 @@ type GetSessionRow struct {
 	AutoReviewEnabled                bool
 	Model                            string
 	SessionPermissions               string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -261,6 +264,8 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.AutoReviewEnabled,
 		&i.Model,
 		&i.SessionPermissions,
+		&i.ProvisionState,
+		&i.ProvisionError,
 	)
 	return i, err
 }
@@ -277,9 +282,10 @@ INSERT INTO sessions (
     native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
-    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
+    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
+    provision_state, provision_error
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -336,6 +342,8 @@ type InsertSessionParams struct {
 	PinnedAt                         sql.NullTime
 	AutoInjectReview                 bool
 	AutoInjectCI                     bool
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -392,6 +400,8 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.PinnedAt,
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
+		arg.ProvisionState,
+		arg.ProvisionError,
 	)
 	return err
 }
@@ -408,7 +418,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions,
+    provision_state, provision_error
 FROM sessions ORDER BY project_id, num
 `
 
@@ -466,6 +477,8 @@ type ListAllSessionsRow struct {
 	AutoReviewEnabled                bool
 	Model                            string
 	SessionPermissions               string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -531,6 +544,8 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.AutoReviewEnabled,
 			&i.Model,
 			&i.SessionPermissions,
+			&i.ProvisionState,
+			&i.ProvisionError,
 		); err != nil {
 			return nil, err
 		}
@@ -557,7 +572,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions,
+    provision_state, provision_error
 FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
@@ -615,6 +631,8 @@ type ListSessionsByProjectRow struct {
 	AutoReviewEnabled                bool
 	Model                            string
 	SessionPermissions               string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -680,6 +698,8 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.AutoReviewEnabled,
 			&i.Model,
 			&i.SessionPermissions,
+			&i.ProvisionState,
+			&i.ProvisionError,
 		); err != nil {
 			return nil, err
 		}
@@ -977,6 +997,74 @@ func (q *Queries) SetSessionPreviewURL(ctx context.Context, arg SetSessionPrevie
 	return result.RowsAffected()
 }
 
+const setSessionProvisionState = `-- name: SetSessionProvisionState :execrows
+UPDATE sessions SET
+    provision_state = ?1,
+    provision_error = ?2,
+    updated_at = ?3
+WHERE id = ?4
+`
+
+type SetSessionProvisionStateParams struct {
+	ProvisionState domain.SessionProvisionState
+	ProvisionError string
+	UpdatedAt      time.Time
+	ID             domain.SessionID
+}
+
+// Publish start-up progress for an asynchronous Chat spawn. Deliberately narrow:
+// it must not replay any other fact of a row the background start is racing with
+// (the controller commit writes the same row from its own goroutine).
+func (q *Queries) SetSessionProvisionState(ctx context.Context, arg SetSessionProvisionStateParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionProvisionState,
+		arg.ProvisionState,
+		arg.ProvisionError,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setSessionProvisionedWorkspace = `-- name: SetSessionProvisionedWorkspace :execrows
+UPDATE sessions SET
+    branch = ?1,
+    workspace_path = ?2,
+    workspace_repo_path = ?3,
+    updated_at = ?4
+WHERE id = ?5 AND provision_state = 'provisioning'
+`
+
+type SetSessionProvisionedWorkspaceParams struct {
+	Branch            string
+	WorkspacePath     string
+	WorkspaceRepoPath string
+	UpdatedAt         time.Time
+	ID                domain.SessionID
+}
+
+// Publish the worktree the moment it exists, rather than waiting for the
+// controller commit at the end of an asynchronous start. Until this lands the
+// row claims no workspace, so every workspace-scoped read answers
+// SESSION_WORKSPACE_NOT_FOUND for the whole start, long enough for the
+// desktop's bounded readiness poll to give up on a session that is fine.
+// Restricted to a provisioning row so a late call cannot overwrite a live one.
+func (q *Queries) SetSessionProvisionedWorkspace(ctx context.Context, arg SetSessionProvisionedWorkspaceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionProvisionedWorkspace,
+		arg.Branch,
+		arg.WorkspacePath,
+		arg.WorkspaceRepoPath,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setSessionReviewerConfig = `-- name: SetSessionReviewerConfig :execrows
 UPDATE sessions SET reviewer_harness = ?, reviewer_agent_config = ?, updated_at = ? WHERE id = ?
 `
@@ -1081,7 +1169,8 @@ UPDATE sessions SET
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
+    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
+    provision_state = ?, provision_error = ?
 WHERE id = ?
 `
 
@@ -1132,6 +1221,8 @@ type UpdateSessionParams struct {
 	PinnedAt                         sql.NullTime
 	AutoInjectReview                 bool
 	AutoInjectCI                     bool
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
 	ID                               domain.SessionID
 }
 
@@ -1183,6 +1274,8 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.PinnedAt,
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
+		arg.ProvisionState,
+		arg.ProvisionError,
 		arg.ID,
 	)
 	return err

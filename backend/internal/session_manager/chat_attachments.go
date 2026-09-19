@@ -41,9 +41,15 @@ func (m *Manager) StageAttachments(
 	if !ok {
 		return nil, ports.ErrSessionNotFound
 	}
-	if rec.Metadata.WorkspacePath == "" {
-		// Nothing to write into. Refusing beats writing somewhere the agent cannot
-		// reach and then telling the user their image was attached.
+	// A session that is still starting has no worktree yet, but it is on screen
+	// and typeable, so a file attached to the next message has to go somewhere.
+	// The canonical copy is already the durable half of every attachment;
+	// completeAsyncChatSpawn materializes it as soon as the worktree exists.
+	provisioning := rec.ProvisionState.IsProvisioning()
+	if rec.Metadata.WorkspacePath == "" && !provisioning {
+		// Nothing to write into, and nothing on the way. Refusing beats writing
+		// somewhere the agent cannot reach and then telling the user their image
+		// was attached.
 		return nil, fmt.Errorf("session %s has no workspace", id)
 	}
 
@@ -60,7 +66,11 @@ func (m *Manager) StageAttachments(
 				return nil, fmt.Errorf("name attachment %d: %w", i+1, err)
 			}
 			name = "attachment-" + suffix + ext
-			err = m.attachments.Put(ctx, id, rec.Metadata.WorkspacePath, name, a.Data)
+			if rec.Metadata.WorkspacePath == "" {
+				err = m.attachments.PutCanonical(ctx, id, name, a.Data)
+			} else {
+				err = m.attachments.Put(ctx, id, rec.Metadata.WorkspacePath, name, a.Data)
+			}
 			if err == nil {
 				break
 			}
@@ -78,6 +88,11 @@ func (m *Manager) StageAttachments(
 	// Keep the directory out of git status. Best-effort for the same reason spawn
 	// treats it that way: the files are already written and usable, and a session
 	// the user cannot attach to is worse than a worktree that reads as dirty.
+	// There is no worktree to exclude anything in yet while provisioning; the
+	// spawn adds the same exclude once it creates one.
+	if rec.Metadata.WorkspacePath == "" {
+		return refs, nil
+	}
 	if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
 		m.logger.Warn("stage attachments: exclude attachments dir", "sessionID", id, "error", err)
 	}

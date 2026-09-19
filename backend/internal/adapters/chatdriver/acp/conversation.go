@@ -627,8 +627,11 @@ func (c *conversation) finishPrompt(
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
 		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
 	})
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
-
+	// Release the turn before announcing readiness, not after. A consumer that
+	// reacts to ChatControllerReady by sending the next turn — AO's own queue
+	// drain does exactly that — would otherwise race this unlock and be refused
+	// with "already has a turn in flight", depending purely on which goroutine
+	// the scheduler picks. Ready has to mean ready.
 	c.mu.Lock()
 	if c.activeTurn == turnID {
 		c.activeTurn = ""
@@ -640,6 +643,8 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
 
 func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {

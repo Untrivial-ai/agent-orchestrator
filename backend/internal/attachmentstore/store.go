@@ -53,6 +53,32 @@ func New(dataDir string) *Store {
 // Returning success therefore means both the history copy and the agent-visible
 // copy exist.
 func (s *Store) Put(ctx context.Context, id domain.SessionID, workspacePath, name string, data []byte) error {
+	if strings.TrimSpace(workspacePath) == "" {
+		return errors.New("attachment workspace path is empty")
+	}
+	if err := s.PutCanonical(ctx, id, name, data); err != nil {
+		return err
+	}
+	sessionRoot, err := s.openCanonicalSession(ctx, id, true)
+	if err != nil {
+		return fmt.Errorf("open canonical attachment directory: %w", err)
+	}
+	defer func() { _ = sessionRoot.Close() }()
+	if err := writeReaderAtomicUnder(ctx, workspacePath, filepath.FromSlash(WorkspaceDir), name, bytes.NewReader(data), false); err != nil {
+		if removeErr := sessionRoot.Remove(name); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return errors.Join(fmt.Errorf("write workspace attachment: %w", err), fmt.Errorf("rollback canonical attachment: %w", removeErr))
+		}
+		return fmt.Errorf("write workspace attachment: %w", err)
+	}
+	return nil
+}
+
+// PutCanonical stores an attachment for a session that has no worktree yet.
+// An asynchronous spawn answers the API before its worktree exists, so a file
+// attached to a message typed in that window has nowhere to be written; the
+// canonical copy is already the durable source of truth, and
+// MaterializeWorkspace replays it once the worktree lands.
+func (s *Store) PutCanonical(ctx context.Context, id domain.SessionID, name string, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -68,9 +94,6 @@ func (s *Store) Put(ctx context.Context, id domain.SessionID, workspacePath, nam
 	if len(data) > MaxFileBytes {
 		return errTooLarge
 	}
-	if strings.TrimSpace(workspacePath) == "" {
-		return errors.New("attachment workspace path is empty")
-	}
 	if s.dataDir == "" {
 		return errors.New("attachment data directory is empty")
 	}
@@ -81,12 +104,6 @@ func (s *Store) Put(ctx context.Context, id domain.SessionID, workspacePath, nam
 	defer func() { _ = sessionRoot.Close() }()
 	if err := writeReaderAtomicRoot(ctx, sessionRoot, ".", name, bytes.NewReader(data), false); err != nil {
 		return fmt.Errorf("write canonical attachment: %w", err)
-	}
-	if err := writeReaderAtomicUnder(ctx, workspacePath, filepath.FromSlash(WorkspaceDir), name, bytes.NewReader(data), false); err != nil {
-		if removeErr := sessionRoot.Remove(name); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-			return errors.Join(fmt.Errorf("write workspace attachment: %w", err), fmt.Errorf("rollback canonical attachment: %w", removeErr))
-		}
-		return fmt.Errorf("write workspace attachment: %w", err)
 	}
 	return nil
 }

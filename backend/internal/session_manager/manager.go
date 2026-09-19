@@ -406,6 +406,11 @@ type Manager struct {
 	clock                       func() time.Time
 	reconcileWorkers            int
 	defaultBranchRefreshTimeout time.Duration
+	// runBackground runs an asynchronous spawn's remaining work. Nil means a
+	// plain goroutine; tests substitute a synchronous runner.
+	runBackground    func(func())
+	publishedSpawnMu sync.Mutex
+	publishedSpawns  map[domain.SessionID]struct{}
 	// openTranscriptFile is os.Open in production. The narrow seam lets tests
 	// deterministically prove that a post-stop transcript read failure falls
 	// back without advertising the provider path.
@@ -951,6 +956,26 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if branch == "" {
 		branch = DefaultSpawnBranch(id, cfg.Kind, sessionPrefix(project), projectKind, m.dataDir)
 	}
+
+	// An asynchronous Chat spawn stops here and answers the caller. Everything
+	// below — the remote refresh, the worktree, the controller — is the same
+	// work, run in the background while the user already has the session open.
+	// The attachments are named now (spawnAttachmentRefs is derived, not read
+	// from disk) so the opening prompt is complete before the files land.
+	if asyncChatSpawnEligible(cfg, mode) && m.chat != nil {
+		return m.beginAsyncChatSpawn(ctx, asyncChatSpawn{
+			cfg:               cfg,
+			project:           project,
+			projectKind:       projectKind,
+			record:            rec,
+			branch:            branch,
+			prompt:            appendAttachmentReferences(prompt, spawnAttachmentRefs(cfg.Attachments)),
+			systemPrompt:      systemPrompt,
+			promptBytes:       promptBytes,
+			systemPromptBytes: systemPromptBytes,
+		})
+	}
+
 	baseRefs := m.refreshDefaultBranchesBestEffort(ctx, project)
 	ws, workspaceProject, err := m.createSessionWorkspace(ctx, project, cfg, id, branch, baseRefs)
 	if err != nil {
@@ -1742,6 +1767,15 @@ func (m *Manager) markSpawnFailedTerminatedWithoutWorkspace(ctx context.Context,
 // rows still in seed state; if the row has progressed or the delete itself
 // fails, fall back to parking it terminated so a phantom row never looks live.
 func (m *Manager) rollbackSpawnSeedRow(ctx context.Context, id domain.SessionID) {
+	// A published session is one the client already holds an id for and is very
+	// likely looking at. Deleting it — which an empty-brief asynchronous spawn
+	// still qualifies for, since nothing has written a prompt to the row — would
+	// turn its open session into a 404. Terminate it instead, so the failure is
+	// something the user can see.
+	if m.spawnPublished(id) {
+		m.markSpawnFailedTerminated(ctx, id)
+		return
+	}
 	if deleted, err := m.store.DeleteSession(ctx, id); err == nil && deleted {
 		m.cleanupSystemPromptDir(id)
 		m.cleanupAttachments(ctx, id)
@@ -2749,6 +2783,16 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 	if err != nil {
 		return err
 	}
+	// An asynchronous Chat spawn is mid-flight or was interrupted: it may have no
+	// workspace yet, or a worktree published ahead of its controller. Neither is
+	// a session this pass can act on. They are also not phantoms — the API handed
+	// the id to a client, the session is on screen, any failure explains itself,
+	// and the user's queued messages live in it. FailInterruptedProvisioning
+	// settles them; reaping or relaunching here would be the disappearing session
+	// that state exists to prevent.
+	if rec.ProvisionState.WithDefault() != domain.SessionProvisionReady {
+		return nil
+	}
 	projectKind := projectKindForSession(project, rec.ProjectID)
 	if rec.Metadata.WorkspacePath == "" || (rec.Metadata.Branch == "" && projectKind != domain.ProjectKindScratch) {
 		// The previous daemon died before Spawn committed a workspace (e.g. the
@@ -2966,6 +3010,12 @@ func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 	_, err := m.recoverInterruptedInterfaceTransitions(ctx)
 	if err != nil {
 		return fmt.Errorf("reconcile: interface transitions: %w", err)
+	}
+	// An asynchronous spawn lives in one daemon's memory. Anything still
+	// "starting" after a restart has no one left to finish it, so say so rather
+	// than leaving a session that spins forever.
+	if err := m.FailInterruptedProvisioning(ctx); err != nil {
+		return fmt.Errorf("reconcile: interrupted session starts: %w", err)
 	}
 	return nil
 }
@@ -4139,20 +4189,34 @@ const attachmentsDir = attachmentstore.WorkspaceDir
 // attachment-1<ext>, attachment-2<ext>, ... and returns the worktree-relative
 // paths in order. The projections are excluded from git via info/exclude.
 func (m *Manager) writeSpawnAttachments(ctx context.Context, id domain.SessionID, workspacePath string, attachments []ports.SpawnAttachment) ([]string, error) {
-	refs := make([]string, 0, len(attachments))
+	refs := spawnAttachmentRefs(attachments)
 	for i, a := range attachments {
-		ext := a.Ext
-		if ext == "" {
-			ext = ".bin"
-		}
-		name := fmt.Sprintf("attachment-%d%s", i+1, ext)
-		if err := m.attachments.Put(ctx, id, workspacePath, name, a.Data); err != nil {
+		if err := m.attachments.Put(ctx, id, workspacePath, spawnAttachmentName(i, a), a.Data); err != nil {
 			return nil, fmt.Errorf("write attachment %d: %w", i+1, err)
 		}
-		// Worktree-relative reference, always forward-slashed for the prompt.
-		refs = append(refs, attachmentsDir+"/"+name)
 	}
 	return refs, nil
+}
+
+func spawnAttachmentName(index int, attachment ports.SpawnAttachment) string {
+	ext := attachment.Ext
+	if ext == "" {
+		ext = ".bin"
+	}
+	return fmt.Sprintf("attachment-%d%s", index+1, ext)
+}
+
+// spawnAttachmentRefs names the attachments as the prompt will reference them.
+// The reference is worktree-relative and derived only from the attachment's
+// position and type, so an asynchronous spawn can put the opening prompt on
+// screen before the worktree those files land in exists.
+func spawnAttachmentRefs(attachments []ports.SpawnAttachment) []string {
+	refs := make([]string, 0, len(attachments))
+	for i, a := range attachments {
+		// Worktree-relative reference, always forward-slashed for the prompt.
+		refs = append(refs, attachmentsDir+"/"+spawnAttachmentName(i, a))
+	}
+	return refs
 }
 
 func (m *Manager) importAttachments(ctx context.Context, rec domain.SessionRecord) error {

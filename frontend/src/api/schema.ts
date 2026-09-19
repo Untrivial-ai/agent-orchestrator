@@ -2962,6 +2962,9 @@ export interface components {
             previewRevision?: number;
             previewUrl?: string;
             projectId?: string;
+            provisionError?: string;
+            /** @enum {string} */
+            provisionState?: "provisioning" | "ready" | "failed";
             prs: components["schemas"]["SessionPRFacts"][];
             reviewerConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */

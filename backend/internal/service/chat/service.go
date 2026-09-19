@@ -237,6 +237,27 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 	}
 }
 
+// queuedAheadOfFirstController reports whether this session's rows were written
+// before any provider existed. An asynchronous spawn records the opening prompt
+// — and anything the user typed while the agent was starting — as queued turns,
+// which advances the conversation sequence without a single provider event.
+//
+// That distinction is load-bearing at start: a non-zero sequence normally means
+// the conversation already owns provider history this process cannot resume, and
+// reserving a fresh provider boundary is the right answer. Queued turns are the
+// opposite case — nothing has reached a provider yet — and fencing them off would
+// open a brand-new session as if it were a resumed one.
+func queuedAheadOfFirstController(ctx context.Context, sessions SessionReader, id domain.SessionID) bool {
+	if sessions == nil {
+		return false
+	}
+	record, found, err := sessions.GetSession(ctx, id)
+	if err != nil || !found {
+		return false
+	}
+	return record.ProvisionState.IsProvisioning()
+}
+
 // Start launches or resumes the Chat controller for a session.
 //
 // A resume that fails is reported as a failure rather than quietly becoming a new
@@ -482,6 +503,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if !providerHandleOwnedByActiveBranch {
 		providerBoundaryID = providerScopeID
 	} else if cfg.ProviderConversationID == "" && cfg.ProviderScopeID == "" &&
+		!queuedAheadOfFirstController(ctx, s.sessions, cfg.SessionID) &&
 		(conversation.LatestSequence > 0 || activeBranch.ProviderConversationID != "") {
 		// This conversation already owns provider history, but the caller proved it
 		// cannot resume that provider thread. Reserve the next provider boundary
@@ -663,7 +685,13 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// behind a controller that no longer existed. Nothing would ever have corrected
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
-	if !liveReconnect && cfg.ProviderHandoff == nil {
+	//
+	// A session whose first controller this is has no previous controller and so
+	// no orphaned work — only the intake an asynchronous spawn queued ahead of
+	// it. Settling that would fail the user's opening prompt the moment the agent
+	// it was waiting for finally arrived.
+	if !liveReconnect && cfg.ProviderHandoff == nil &&
+		!queuedAheadOfFirstController(ctx, s.sessions, cfg.SessionID) {
 		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
 	}
 	// A fresh generation per launch, so events from the controller this one
@@ -933,10 +961,17 @@ func (s *Service) Send(
 	id domain.SessionID,
 	msg ports.ChatUserMessage,
 ) (domain.ConversationTurn, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
+	record, err := s.requireChatSession(ctx, id)
+	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
 	controller, err := s.Controller(id)
+	if errors.Is(err, ErrNoController) && record.ProvisionState.IsProvisioning() {
+		// The session is still starting. Queue the message rather than refusing
+		// it: the user is looking at their session and typing into it, and the
+		// controller that arrives next drains the queue in order.
+		return s.queueWithoutController(ctx, record, msg)
+	}
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
@@ -1201,6 +1236,17 @@ type ConversationRows struct {
 	HasMoreBefore                    bool
 }
 
+// idleControllerState is what a session with no live controller reports. A
+// session that is still starting is connecting, not stopped: nothing has
+// stopped, and a client that reads "stopped" hides the composer on a session
+// the user is meant to keep typing into.
+func idleControllerState(record domain.SessionRecord) ports.ChatControllerState {
+	if record.ProvisionState.IsProvisioning() {
+		return ports.ChatControllerConnecting
+	}
+	return ports.ChatControllerStopped
+}
+
 // Snapshot reads a session's conversation.
 //
 // It does not require a live controller: history must remain readable after the
@@ -1222,7 +1268,7 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 			SessionID:  id,
 			Harness:    record.Harness,
 			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: ports.ChatControllerStopped,
+			Controller: idleControllerState(record),
 		}, nil
 	}
 	if err != nil {
@@ -1234,7 +1280,7 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		return Snapshot{}, fmt.Errorf("load conversation %s: %w", conversation.ID, err)
 	}
 
-	state := ports.ChatControllerStopped
+	state := idleControllerState(record)
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
 		state = controller.State()
@@ -1274,7 +1320,7 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 			SessionID:  id,
 			Harness:    record.Harness,
 			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: ports.ChatControllerStopped,
+			Controller: idleControllerState(record),
 		}, nil
 	}
 	if err != nil {
@@ -1289,7 +1335,7 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation page %s: %w", conversation.ID, err)
 	}
-	state := ports.ChatControllerStopped
+	state := idleControllerState(record)
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
 		state = controller.State()
