@@ -19,6 +19,7 @@ const screenRoutes = [
 	"notifications.tsx",
 	"onboarding.tsx",
 	"pair.tsx",
+	"pr/[number].tsx",
 	"preview/[id].tsx",
 	"project/[id].tsx",
 	"session/[id].tsx",

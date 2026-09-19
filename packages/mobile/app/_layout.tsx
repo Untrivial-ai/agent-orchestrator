@@ -147,6 +147,7 @@ function Shell() {
 				/>
 				{/* Draws its own header, like notifications, so the title can be the project. */}
 				<Stack.Screen name="project/[id]" options={{ headerShown: false }} />
+				<Stack.Screen name="pr/[number]" options={{ headerShown: false }} />
 				<Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
 				<Stack.Screen name="pair" options={{ presentation: "modal", headerShown: false }} />
 
