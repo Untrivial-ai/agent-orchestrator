@@ -78,6 +78,10 @@ type commander interface {
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
 }
 
+type terminatedOrchestratorReleaser interface {
+	ReleaseTerminatedOrchestratorWorkspaces(ctx context.Context, projectID domain.ProjectID) error
+}
+
 // interfaceTransitionCommander is an optional command capability. Keeping it
 // separate avoids widening every focused session-service fake while production
 // can expose the feature through the concrete Session Manager.
@@ -292,6 +296,16 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 		if cfg.Harness == "" {
 			return domain.Session{}, 0, 0, apierr.Invalid("HARNESS_REQUIRED", "harness is required for a standalone session", nil)
+		}
+	}
+	if cfg.Kind == domain.KindOrchestrator {
+		if releaser, ok := s.manager.(terminatedOrchestratorReleaser); ok {
+			if err := releaser.ReleaseTerminatedOrchestratorWorkspaces(ctx, cfg.ProjectID); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("spawn orchestrator: terminated predecessor release failed", "projectID", cfg.ProjectID, "error", err)
+				}
+				return domain.Session{}, 0, 0, toSpawnAPIError(err)
+			}
 		}
 	}
 	if s.agentReadiness != nil && cfg.Harness != "" {
@@ -1312,6 +1326,9 @@ func toSpawnAPIError(err error) error {
 		return apierr.Conflict("WORKSPACE_CREATE_FAILED", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrWorkspaceProvision):
 		return apierr.Conflict("WORKSPACE_PROVISION_FAILED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrOrchestratorRecovery):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_BLOCKED",
+			"The previous orchestrator's workspace could not be preserved and released. Retry after resolving the workspace error.", nil)
 	case errors.Is(err, sessionmanager.ErrSpawnAttachments):
 		return apierr.Invalid("SPAWN_ATTACHMENTS_FAILED", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrSpawnBrowser):

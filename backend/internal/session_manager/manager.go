@@ -160,22 +160,23 @@ var (
 	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
 	// errors.Is can tell the service which stage failed. More specific wrapped
 	// sentinels (branch, agent binary, chat preflight) still match first.
-	ErrSpawnPrompt         = errors.New("prompt")
-	ErrSpawnCreate         = errors.New("create")
-	ErrSpawnSystemPrompt   = errors.New("system prompt file")
-	ErrWorkspaceCreate     = errors.New("workspace")
-	ErrWorkspaceProvision  = errors.New("provision")
-	ErrSpawnAttachments    = errors.New("attachments")
-	ErrSpawnBrowser        = errors.New("browser capability")
-	ErrSpawnPrepare        = errors.New("prepare")
-	ErrSpawnPromptDelivery = errors.New("prompt delivery")
-	ErrSpawnLaunchCommand  = errors.New("launch command")
-	ErrSpawnSupervisor     = errors.New("supervisor")
-	ErrSpawnPrepareLaunch  = errors.New("prepare launch")
-	ErrRuntimeCreate       = errors.New("runtime")
-	ErrSpawnCommit         = errors.New("completed")
-	ErrSpawnDeliverPrompt  = errors.New("deliver prompt")
-	ErrChatController      = errors.New("chat controller")
+	ErrSpawnPrompt          = errors.New("prompt")
+	ErrSpawnCreate          = errors.New("create")
+	ErrSpawnSystemPrompt    = errors.New("system prompt file")
+	ErrWorkspaceCreate      = errors.New("workspace")
+	ErrWorkspaceProvision   = errors.New("provision")
+	ErrOrchestratorRecovery = errors.New("orchestrator replacement recovery")
+	ErrSpawnAttachments     = errors.New("attachments")
+	ErrSpawnBrowser         = errors.New("browser capability")
+	ErrSpawnPrepare         = errors.New("prepare")
+	ErrSpawnPromptDelivery  = errors.New("prompt delivery")
+	ErrSpawnLaunchCommand   = errors.New("launch command")
+	ErrSpawnSupervisor      = errors.New("supervisor")
+	ErrSpawnPrepareLaunch   = errors.New("prepare launch")
+	ErrRuntimeCreate        = errors.New("runtime")
+	ErrSpawnCommit          = errors.New("completed")
+	ErrSpawnDeliverPrompt   = errors.New("deliver prompt")
+	ErrChatController       = errors.New("chat controller")
 )
 
 // wrapSpawnStage annotates a spawn failure with a stage sentinel. The original
@@ -2178,6 +2179,120 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
 		return fmt.Errorf("retire replacement %s: mark terminated: %w", id, err)
 	}
+	return nil
+}
+
+// ReleaseTerminatedOrchestratorWorkspaces frees the canonical orchestrator
+// branch from terminated predecessors before a replacement starts. Every
+// predecessor is re-read under its operation gate. Any inconclusive teardown
+// blocks the replacement and keeps its restore markers intact.
+func (m *Manager) ReleaseTerminatedOrchestratorWorkspaces(ctx context.Context, projectID domain.ProjectID) error {
+	recs, err := m.store.ListSessions(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("%w: list project sessions: %w", ErrOrchestratorRecovery, err)
+	}
+	for _, rec := range recs {
+		if rec.Kind != domain.KindOrchestrator || !rec.IsTerminated {
+			continue
+		}
+		if err := m.releaseTerminatedOrchestrator(ctx, rec.ID); err != nil {
+			return fmt.Errorf("%w: session %s: %w", ErrOrchestratorRecovery, rec.ID, err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) releaseTerminatedOrchestrator(ctx context.Context, id domain.SessionID) error {
+	if err := m.beginAgentOperation(ctx, id, agentOperationCleanup); err != nil {
+		return fmt.Errorf("acquire cleanup gate: %w", err)
+	}
+	defer m.endAgentOperation(id, agentOperationCleanup)
+
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return fmt.Errorf("reload: %w", err)
+	}
+	if !ok || rec.Kind != domain.KindOrchestrator || !rec.IsTerminated {
+		return nil
+	}
+
+	m.stopPreviewBestEffort(ctx, id)
+	m.destroyBrowserBestEffort(ctx, id)
+	release, err := m.beginShellTerminalTeardown(ctx, id)
+	if err != nil {
+		return fmt.Errorf("shell terminal: %w", err)
+	}
+	if release != nil {
+		defer release()
+	}
+	if err := m.importAttachments(ctx, rec); err != nil {
+		return fmt.Errorf("preserve attachments: %w", err)
+	}
+
+	rows, hasRows, err := m.workspaceProjectRows(ctx, rec)
+	if err != nil {
+		return fmt.Errorf("workspace rows: %w", err)
+	}
+	if hasRows {
+		if err := m.releaseTerminatedOrchestratorRows(ctx, rec, rows); err != nil {
+			return err
+		}
+	} else if rec.Metadata.WorkspacePath != "" && rec.Metadata.Branch != "" {
+		if err := m.releaseTerminatedOrchestratorWorkspace(ctx, rec, workspaceInfo(rec)); err != nil {
+			return err
+		}
+	} else if handle := runtimeHandle(rec.Metadata); handle.ID != "" {
+		if err := m.runtime.Destroy(ctx, handle); err != nil {
+			return fmt.Errorf("runtime: %w", err)
+		}
+	}
+
+	if err := m.store.DeleteSessionWorktrees(ctx, id); err != nil {
+		return fmt.Errorf("clear restore markers: %w", err)
+	}
+	m.cleanupSystemPromptDir(id)
+	disposition := domain.DispositionNotApplicable
+	if hasRows || (rec.Metadata.WorkspacePath != "" && rec.Metadata.Branch != "") {
+		disposition = domain.DispositionRemoved
+	}
+	m.recordCleanupFacts(ctx, rec, true, disposition, "")
+	return nil
+}
+
+func (m *Manager) releaseTerminatedOrchestratorRows(ctx context.Context, rec domain.SessionRecord, rows []ports.WorkspaceRepoInfo) error {
+	for _, row := range rows {
+		if _, err := m.workspace.StashUncommitted(ctx, workspaceInfoFromRepoInfo(row)); err != nil && !errors.Is(err, ports.ErrWorkspaceStale) {
+			return fmt.Errorf("repo %s preserve: %w", row.RepoName, err)
+		}
+	}
+	if handle := runtimeHandle(rec.Metadata); handle.ID != "" {
+		if err := m.runtime.Destroy(ctx, handle); err != nil {
+			return fmt.Errorf("runtime: %w", err)
+		}
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		info := workspaceInfoFromRepoInfo(rows[i])
+		if err := m.workspace.ForceDestroy(ctx, info); err != nil && !errors.Is(err, ports.ErrWorkspaceStale) {
+			return fmt.Errorf("repo %s force destroy: %w", rows[i].RepoName, err)
+		}
+	}
+	m.cleanupAgentWorkspace(ctx, rec, rec.Metadata.WorkspacePath)
+	return nil
+}
+
+func (m *Manager) releaseTerminatedOrchestratorWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo) error {
+	if _, err := m.workspace.StashUncommitted(ctx, ws); err != nil && !errors.Is(err, ports.ErrWorkspaceStale) {
+		return fmt.Errorf("preserve workspace: %w", err)
+	}
+	if handle := runtimeHandle(rec.Metadata); handle.ID != "" {
+		if err := m.runtime.Destroy(ctx, handle); err != nil {
+			return fmt.Errorf("runtime: %w", err)
+		}
+	}
+	if err := m.workspace.ForceDestroy(ctx, ws); err != nil && !errors.Is(err, ports.ErrWorkspaceStale) {
+		return fmt.Errorf("force destroy workspace: %w", err)
+	}
+	m.cleanupAgentWorkspace(ctx, rec, ws.Path)
 	return nil
 }
 

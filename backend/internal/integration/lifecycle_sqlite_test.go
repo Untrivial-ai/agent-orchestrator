@@ -109,9 +109,12 @@ type stubAgents struct{}
 func (stubAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return stubAgent{}, true }
 
 type stubWorkspace struct {
-	destroyed  int
-	destroyErr error
-	root       string
+	destroyed       int
+	destroyErr      error
+	stashErr        error
+	forceDestroyErr error
+	forceDestroyed  []string
+	root            string
 }
 
 func (s *stubWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
@@ -137,9 +140,18 @@ func (s *stubWorkspace) Destroy(_ context.Context, info ports.WorkspaceInfo) err
 func (s *stubWorkspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
 	return s.Create(ctx, cfg)
 }
-func (s *stubWorkspace) ForceDestroy(context.Context, ports.WorkspaceInfo) error { return nil }
+func (s *stubWorkspace) ForceDestroy(_ context.Context, info ports.WorkspaceInfo) error {
+	if s.forceDestroyErr != nil {
+		return s.forceDestroyErr
+	}
+	s.forceDestroyed = append(s.forceDestroyed, info.Path)
+	if s.root != "" {
+		return os.RemoveAll(info.Path)
+	}
+	return nil
+}
 func (s *stubWorkspace) StashUncommitted(_ context.Context, _ ports.WorkspaceInfo) (string, error) {
-	return "", nil
+	return "", s.stashErr
 }
 func (s *stubWorkspace) ApplyPreserved(_ context.Context, _ ports.WorkspaceInfo, _ string) error {
 	return nil
