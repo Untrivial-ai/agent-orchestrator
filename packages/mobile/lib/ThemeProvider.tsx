@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import * as SystemUI from "expo-system-ui";
 import { Appearance, useColorScheme } from "react-native";
 import { themeFor, type ColorScheme, type Theme } from "./theme";
 import { DEFAULT_PREFERENCE, nativeColorSchemeOverride, resolveScheme, type ThemePreference } from "./themePreference";
@@ -78,7 +77,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 	// around a screen as it moves.
 	const backgroundColor = themeFor(scheme).bgBase;
 	useEffect(() => {
-		void SystemUI.setBackgroundColorAsync(backgroundColor).catch(() => {});
+		// Required lazily, inside a guard: this is a native module, and a build made
+		// before it was added has no ExpoSystemUI to bind to. A static import would
+		// fail at startup — taking the whole app down — where the only thing actually
+		// at stake is whether the window is tinted.
+		try {
+			const systemUI = require("expo-system-ui") as typeof import("expo-system-ui");
+			void systemUI.setBackgroundColorAsync(backgroundColor).catch(() => {});
+		} catch {
+			// Older native build; the in-tree backdrop still covers the transition.
+		}
 	}, [backgroundColor]);
 
 	const value = useMemo<ThemeState>(
