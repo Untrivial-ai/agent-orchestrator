@@ -7318,7 +7318,9 @@ export interface operations {
     };
     removeProject: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Project identifier (registry key). */

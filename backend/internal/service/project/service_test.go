@@ -23,6 +23,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
@@ -168,9 +169,13 @@ func (s *captureSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
 
 func (*captureSink) Close(context.Context) error { return nil }
 
-func (f *fakeProjectTeardowner) TeardownProject(_ context.Context, project domain.ProjectID) error {
+func (f *fakeProjectTeardowner) TeardownProject(_ context.Context, project domain.ProjectID) (sessionsvc.ProjectTeardownOutcome, error) {
 	f.projects = append(f.projects, project)
-	return f.err
+	return sessionsvc.ProjectTeardownOutcome{}, f.err
+}
+
+func (f *fakeProjectTeardowner) ForceTeardownProject(_ context.Context, _ domain.ProjectID) error {
+	return nil
 }
 
 func TestManager_AddListGetRemove(t *testing.T) {
@@ -203,7 +208,7 @@ func TestManager_AddListGetRemove(t *testing.T) {
 		t.Fatalf("Get = %#v", res)
 	}
 
-	rm, err := m.Remove(ctx, "ao")
+	rm, err := m.Remove(ctx, "ao", false)
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
@@ -216,7 +221,7 @@ func TestManager_AddListGetRemove(t *testing.T) {
 	_, err = m.Get(ctx, "ao")
 	wantCode(t, err, "PROJECT_NOT_FOUND")
 
-	_, err = m.Remove(ctx, "ao")
+	_, err = m.Remove(ctx, "ao", false)
 	wantCode(t, err, "PROJECT_NOT_FOUND")
 }
 
@@ -596,7 +601,7 @@ func TestManager_RemoveTeardownsBeforeArchive(t *testing.T) {
 	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := m.Remove(ctx, "ao"); err != nil {
+	if _, err := m.Remove(ctx, "ao", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if len(teardown.projects) != 1 || teardown.projects[0] != "ao" {
@@ -619,7 +624,7 @@ func TestManager_RemoveDoesNotArchiveWhenTeardownFails(t *testing.T) {
 	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := m.Remove(ctx, "ao"); !errors.Is(err, boom) {
+	if _, err := m.Remove(ctx, "ao", false); !errors.Is(err, boom) {
 		t.Fatalf("Remove err = %v, want teardown failure", err)
 	}
 	if got, err := m.Get(ctx, "ao"); err != nil || got.Project == nil || got.Project.ID != "ao" {
@@ -867,7 +872,7 @@ func TestManager_ReaddAfterRemove(t *testing.T) {
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao")}); err != nil {
 		t.Fatalf("first Add: %v", err)
 	}
-	if _, err := m.Remove(ctx, "ao"); err != nil {
+	if _, err := m.Remove(ctx, "ao", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao2")}); err != nil {
@@ -875,7 +880,7 @@ func TestManager_ReaddAfterRemove(t *testing.T) {
 	}
 
 	otherRepo := gitRepo(t)
-	if _, err := m.Remove(ctx, "ao2"); err != nil {
+	if _, err := m.Remove(ctx, "ao2", false); err != nil {
 		t.Fatalf("Remove ao2: %v", err)
 	}
 	if _, err := m.Add(ctx, project.AddInput{Path: otherRepo, ProjectID: ptr("ao2")}); err != nil {
@@ -1357,7 +1362,7 @@ func TestManager_GetUpdateRemoveErrors(t *testing.T) {
 	_, err = m.Get(ctx, domain.ProjectID("bad/id"))
 	wantCode(t, err, "INVALID_PROJECT_ID")
 
-	_, err = m.Remove(ctx, "nope")
+	_, err = m.Remove(ctx, "nope", false)
 	wantCode(t, err, "PROJECT_NOT_FOUND")
 
 	repo := gitRepo(t)

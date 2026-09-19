@@ -742,6 +742,10 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 	if err := w.requireReachableRepo(repo); err != nil {
 		return err
 	}
+	// A user-confirmed project removal is allowed to discard this AO-managed
+	// workspace. Clear a Git worktree lock first: prune intentionally preserves
+	// locked registrations, which would otherwise strand the deleted path.
+	_, _ = w.run(ctx, w.binary, "-C", repo, "worktree", "unlock", path)
 	// Force teardown has no refusal to honour, so the move is unconditional:
 	// rename the directory out of the way, drop the registration, unlink in the
 	// background. This runs on daemon shutdown and orchestrator replacement,

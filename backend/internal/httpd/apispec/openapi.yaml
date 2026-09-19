@@ -2009,6 +2009,10 @@ paths:
         schema:
           description: Project identifier (registry key).
           type: string
+      - in: query
+        name: force
+        schema:
+          type: boolean
       responses:
         "200":
           content:
