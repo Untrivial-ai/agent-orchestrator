@@ -32,6 +32,11 @@ const (
 	kiroAgentDescription = "Agent Orchestrator session instructions"
 )
 
+// AgentName is the workspace-local custom agent AO installs for Kiro sessions.
+// TUI launches select it with `chat --agent`; Chat launches select the same
+// agent with `acp --agent`, so both surfaces share AO's standing instructions.
+const AgentName = kiroAgentName
+
 // kiroHookFile is the on-disk shape of .kiro/agents/ao.json. It is used by
 // tests to decode the written file. Kiro hooks are a map of camelCase event
 // name to a flat array of {matcher?, command} entries.

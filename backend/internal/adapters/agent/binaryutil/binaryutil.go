@@ -581,3 +581,20 @@ func normalizeNodeVersion(version string) string {
 	version = strings.TrimPrefix(version, "v")
 	return version
 }
+
+// SiblingBinary returns spec's executable if it sits next to reference.
+// Adapters shipped as a second executable (an ACP server beside its CLI) are
+// installed by the same package manager into the same directory, so the sibling
+// of an already-resolved binary is a better answer than a fresh PATH search: it
+// cannot pick up a different installation of the same tool. It returns "" when
+// no candidate is present, leaving the caller to fall back to ResolveBinary.
+func SiblingBinary(reference string, spec BinarySpec) string {
+	dir := filepath.Dir(reference)
+	for _, name := range namesForPlatform(spec) {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
