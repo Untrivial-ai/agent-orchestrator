@@ -2,7 +2,7 @@ import { isOrchestratorSession, type WorkspaceSession } from "../types/workspace
 
 export type AgentInfo = {
 	authentication: {
-		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		state: "authorized" | "unauthorized" | "unknown" | "configured" | "not_applicable";
 		freshness: "fresh" | "stale" | "checking";
 	};
 	effectiveReadiness: "ready" | "not_ready" | "unknown";
@@ -113,6 +113,9 @@ function agentStatus(agent: AgentInfo): Pick<RankedAgentOption, "status" | "stat
 	if (agent.installation.state === "unknown") {
 		return { status: "Install unknown", statusTone: "warning" };
 	}
+	if (agent.authentication.state === "configured") {
+		return { status: "Credentials found, unverified", statusTone: "warning" };
+	}
 	if (agent.authentication.state === "unknown") {
 		return { status: "Auth unknown", statusTone: "warning" };
 	}
@@ -136,7 +139,7 @@ export function buildRankedAgentOptions({
 		.filter((agent) => (filter ? filter(agent) : true))
 		.map((agent) => {
 			const isInstallationUnknown = agent.installation.state === "unknown";
-			const isAuthUnknown = agent.authentication.state === "unknown";
+			const isAuthUnknown = agent.authentication.state === "unknown" || agent.authentication.state === "configured";
 			const isAuthorized =
 				agent.authentication.state === "authorized" || agent.authentication.state === "not_applicable";
 			const isDefinitelyUnavailable =

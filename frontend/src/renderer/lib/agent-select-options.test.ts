@@ -42,6 +42,20 @@ const priorityRank = new Map([
 ]);
 
 describe("buildRankedAgentOptions", () => {
+	it("keeps configured credentials selectable with an unverified warning", () => {
+		const [option] = buildRankedAgentOptions({
+			agents: [agent("aider", "installed", "configured")],
+			priorityRank,
+			fallbackAgents: [],
+		});
+		expect(option).toMatchObject({
+			disabled: false,
+			status: "Credentials found, unverified",
+			statusTone: "warning",
+			rank: 1,
+		});
+	});
+
 	it("ranks selectable agents by frequency before the static cold-start priority", () => {
 		const agents = [
 			agent("claude-code", "installed", "authorized", 1),

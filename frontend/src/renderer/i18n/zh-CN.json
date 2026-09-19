@@ -1829,6 +1829,7 @@
 	"settings.harness.interrupted": "Interrupted",
 	"settings.harness.loggedIn": "Logged in",
 	"settings.harness.configured": "Configured",
+	"settings.harness.credentialsUnverified": "已找到凭据，但尚未验证",
 	"settings.harness.loginUnknown": "Login status unknown",
 	"settings.harness.configurationUnknown": "Configuration status unknown",
 	"settings.harness.loggingIn": "Opening…",

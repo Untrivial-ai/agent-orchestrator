@@ -11,305 +11,369 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestOpenCodeLocalAuthStatusAuthorizedWithEnv(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+func TestOpenCodeLocalEvidenceIsConfigured(t *testing.T) {
+	for _, source := range []string{"environment", "auth file", "auth list"} {
+		t.Run(source, func(t *testing.T) {
+			var got ports.AgentAuthStatus
+			var err error
+			if source == "auth list" {
+				got, err = opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{},
+					openCodeAuthListDependencies(t, "OpenAI api\n1 credential\n"))
+			} else {
+				plugin := openCodeAuthFixture(t, "0 credentials\n")
+				if source == "environment" {
+					t.Setenv("OPENAI_API_KEY", "secret")
+				} else {
+					writeOpenCodeAuthFile(t, "{\"openai\":{\"type\":\"api\",\"key\":\"secret\"}}")
+				}
+				got, err = plugin.AuthStatus(context.Background())
+			}
+			if err != nil || got != ports.AgentAuthStatusConfigured {
+				t.Fatalf("AuthStatus = %q, %v; want configured", got, err)
+			}
+		})
 	}
 }
 
-func TestOpenCodeLocalAuthStatusAuthorizedWithAuthFile(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	writeOpenCodeAuthFile(t, `{
-		"anthropic": {
-			"type": "api",
-			"key": "sk-ant-test"
+func TestOpenCodeScopedProviderEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, content string
+		env                  map[string]string
+		want                 ports.AgentAuthStatus
+	}{
+		{"matching key", "openai/gpt-5", "", map[string]string{"OPENAI_API_KEY": "key"}, ports.AgentAuthStatusConfigured},
+		{"unrelated key", "anthropic/claude", "", map[string]string{"OPENAI_API_KEY": "key"}, ports.AgentAuthStatusUnknown},
+		{"matching file", "anthropic/claude", "{\"anthropic\":{\"type\":\"api\",\"key\":\"secret\"}}", nil, ports.AgentAuthStatusConfigured},
+		{"unrelated file", "openai/gpt-5", "{\"anthropic\":{\"type\":\"api\",\"key\":\"secret\"}}", nil, ports.AgentAuthStatusUnknown},
+		{"empty key", "openai/gpt-5", "{\"openai\":{\"type\":\"api\",\"key\":\" \"}}", nil, ports.AgentAuthStatusUnknown},
+		{"arbitrary object", "openai/gpt-5", "{\"openai\":{\"token\":\"secret\"}}", nil, ports.AgentAuthStatusUnknown},
+		{"malformed entry with valid sibling", "openai/gpt-5", "{\"broken\":7,\"openai\":{\"type\":\"api\",\"key\":\"secret\"}}", nil, ports.AgentAuthStatusConfigured},
+		{"malformed", "openai/gpt-5", "{", nil, ports.AgentAuthStatusUnknown},
+		{"expired oauth", "openai/gpt-5", "{\"openai\":{\"type\":\"oauth\",\"access\":\"secret\",\"refresh\":\"\",\"expires\":1}}", nil, ports.AgentAuthStatusUnknown},
+		{"refreshable oauth", "openai/gpt-5", "{\"openai\":{\"type\":\"oauth\",\"access\":\"old\",\"refresh\":\"refresh\",\"expires\":1}}", nil, ports.AgentAuthStatusConfigured},
+		{"local", "ollama/llama3", "", map[string]string{"OPENAI_API_KEY": "unrelated"}, ports.AgentAuthStatusNotApplicable},
+		{"free", "opencode/big-pickle", "", nil, ports.AgentAuthStatusNotApplicable},
+		{"paid zen", "opencode/claude-opus-4-6", "", nil, ports.AgentAuthStatusUnknown},
+		{"free OpenRouter still needs auth", "openrouter/minimax/minimax-m2.5:free", "", nil, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := openCodeAuthFixture(t, "0 credentials\n")
+			if tc.content != "" {
+				writeOpenCodeAuthFile(t, tc.content)
+			}
+			checker, ok := any(p).(ports.AgentScopedAuthChecker)
+			if !ok {
+				t.Fatal("OpenCode does not implement scoped auth")
+			}
+			got, err := checker.AuthStatusFor(context.Background(), ports.AgentAuthCheck{Config: ports.AgentConfig{Model: tc.model}, Env: tc.env})
+			if err != nil || got != tc.want {
+				t.Fatalf("AuthStatusFor = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenCodeBedrockProfiles(t *testing.T) {
+	for _, profile := range []string{"default", "work"} {
+		t.Run(profile, func(t *testing.T) {
+			p := openCodeAuthFixture(t, "0 credentials\n")
+			dir := filepath.Join(os.Getenv("HOME"), ".aws")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "credentials"), []byte("["+profile+"]\naws_access_key_id = id\naws_secret_access_key = secret\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if profile != "default" {
+				t.Setenv("AWS_PROFILE", profile)
+			}
+			checker, ok := any(p).(ports.AgentScopedAuthChecker)
+			if !ok {
+				t.Fatal("OpenCode does not implement scoped auth")
+			}
+			got, err := checker.AuthStatusFor(context.Background(), ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "amazon-bedrock/claude"}})
+			if err != nil || got != ports.AgentAuthStatusConfigured {
+				t.Fatalf("status = %q, %v; want configured", got, err)
+			}
+			got, err = checker.AuthStatusFor(context.Background(), ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "openai/gpt-5"}})
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("unrelated AWS status = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestOpenCodeOfficialSourcesIgnoreGuessedDatabase(t *testing.T) {
+	p := openCodeAuthFixture(t, "0 credentials\n")
+	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE account_state (active_account_id text); INSERT INTO account_state VALUES ('dangling')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.AuthStatus(context.Background())
+	if err != nil || got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, %v; want unknown", got, err)
+	}
+	writeOpenCodeAuthFile(t, "{\"anthropic\":{\"type\":\"api\",\"key\":\"official\"}}")
+	got, err = p.AuthStatus(context.Background())
+	if err != nil || got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("official status = %q, %v; want configured", got, err)
+	}
+}
+
+func TestOpenCodeAuthListIsConservative(t *testing.T) {
+	for _, tc := range []struct {
+		output string
+		want   ports.AgentAuthStatus
+	}{
+		{"0 credentials\n", ports.AgentAuthStatusUnknown},
+		{"No credentials found\n", ports.AgentAuthStatusUnknown},
+		{"credential service unavailable\n", ports.AgentAuthStatusUnknown},
+		{"0 credentials\nOpenAI OPENAI_API_KEY\n1 environment variable\n", ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tc.output, func(t *testing.T) {
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{},
+				openCodeAuthListDependencies(t, tc.output))
+			if err != nil || got != tc.want {
+				t.Fatalf("status = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenCodeAuthListDiscardsOutputAfterDeadline(t *testing.T) {
+	deps := openCodeAuthListDependencies(t, "1 credential\n")
+	run := deps.Run
+	deps.Timeout = time.Nanosecond
+	deps.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		// Completion is ordered after cancellation, independent of scheduling
+		// speed. Late positive output must not establish configured status.
+		<-ctx.Done()
+		return run(ctx, name, args...)
+	}
+	got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+	if err != nil || got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("late auth-list output = %q, %v; want unknown", got, err)
+	}
+}
+
+func openCodeAuthListDependencies(t *testing.T, output string) authutil.Dependencies {
+	t.Helper()
+	return authutil.Dependencies{
+		Getenv: func(string) string { return "" },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "injected-opencode" || !reflect.DeepEqual(args, []string{"auth", "list"}) {
+				t.Fatalf("unexpected native probe: %q %q", name, args)
+			}
+			return []byte(output), nil
+		},
+	}
+}
+
+func TestOpenCodeNativeConfigSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, global, custom, project, directory, content, model string
+		args                                                     []string
+		want                                                     ports.AgentAuthStatus
+	}{
+		{name: "global rejects unrelated key", global: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "global selects local", global: `{"model":"ollama/llama3"}`, want: ports.AgentAuthStatusNotApplicable},
+		{name: "custom precedes project", custom: `{"model":"openai/gpt-5"}`, project: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "project selects local", project: `{"model":"ollama/llama3"}`, want: ports.AgentAuthStatusNotApplicable},
+		{name: "config directory overrides project", project: `{"model":"openai/gpt-5"}`, directory: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "inline selects provider", content: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "inline overrides project", project: `{"model":"anthropic/claude"}`, content: `{"model":"ollama/llama3"}`, want: ports.AgentAuthStatusNotApplicable},
+		{name: "AO model overrides native", global: `{"model":"anthropic/claude"}`, model: "openai/gpt-5", want: ports.AgentAuthStatusConfigured},
+		{name: "native argv overrides AO", global: `{"model":"anthropic/claude"}`, model: "openai/gpt-5", args: []string{"opencode", "--model", "ollama/llama3"}, want: ports.AgentAuthStatusNotApplicable},
+		{name: "native env prefix selects local", args: []string{"env", `OPENCODE_CONFIG_CONTENT={"model":"ollama/llama3"}`, "opencode"}, want: ports.AgentAuthStatusNotApplicable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, workspace := t.TempDir(), t.TempDir()
+			env := map[string]string{"HOME": home, "OPENAI_API_KEY": "unrelated-openai"}
+			write := func(path, body string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.global != "" {
+				write(filepath.Join(home, ".config", "opencode", "opencode.json"), tc.global)
+			}
+			if tc.custom != "" {
+				env["OPENCODE_CONFIG"] = filepath.Join(home, "custom.json")
+				write(env["OPENCODE_CONFIG"], tc.custom)
+			}
+			if tc.project != "" {
+				write(filepath.Join(workspace, "opencode.json"), tc.project)
+			}
+			if tc.directory != "" {
+				env["OPENCODE_CONFIG_DIR"] = filepath.Join(home, "custom-dir")
+				write(filepath.Join(env["OPENCODE_CONFIG_DIR"], "opencode.json"), tc.directory)
+			}
+			if tc.content != "" {
+				env["OPENCODE_CONFIG_CONTENT"] = tc.content
+			}
+			in := ports.AgentAuthCheck{Config: ports.AgentConfig{Model: tc.model}, Args: tc.args}
+			if tc.project != "" {
+				in.WorkingDir = workspace
+			}
+			deps := authutil.Dependencies{Getenv: func(name string) string { return env[name] }, Run: func(context.Context, string, ...string) ([]byte, error) { return []byte("2 credentials\n"), nil }}
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", in, deps)
+			if err != nil || got != tc.want {
+				t.Fatalf("native selection = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenCodeUnresolvedScopeDoesNotUseAggregateEvidence(t *testing.T) {
+	for _, source := range []string{"environment", "auth file", "native list"} {
+		t.Run(source, func(t *testing.T) {
+			home := t.TempDir()
+			env := map[string]string{"HOME": home}
+			if source == "environment" {
+				env["OPENAI_API_KEY"] = "unrelated"
+			}
+			if source == "auth file" {
+				path := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{"openai":{"type":"api","key":"unrelated"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deps := authutil.Dependencies{Getenv: func(name string) string { return env[name] }, Run: func(context.Context, string, ...string) ([]byte, error) { return []byte("1 credential\n"), nil }}
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{WorkingDir: t.TempDir()}, deps)
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("unresolved scope = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestOpenCodeWindowsProfilePaths(t *testing.T) {
+	for _, source := range []string{"auth", "config"} {
+		t.Run(source, func(t *testing.T) {
+			profile := t.TempDir()
+			path := filepath.Join(profile, ".local", "share", "opencode", "auth.json")
+			body := `{"openai":{"type":"api","key":"secret"}}`
+			want := ports.AgentAuthStatusConfigured
+			if source == "config" {
+				path = filepath.Join(profile, ".config", "opencode", "opencode.json")
+				body = `{"model":"ollama/llama3"}`
+				want = ports.AgentAuthStatusNotApplicable
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			deps := authutil.Dependencies{GOOS: "windows", Getenv: func(name string) string {
+				if name == "USERPROFILE" {
+					return profile
+				}
+				return ""
+			}, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+			if err != nil || got != want {
+				t.Fatalf("Windows %s = %q, %v; want %q", source, got, err, want)
+			}
+			deps.GOOS = "linux"
+			got, err = opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("non-Windows profile = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestOpenCodeJSONCSelectsProvider(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{\n// provider selection\n\"model\":\"anthropic/claude\", /* native JSONC */\n}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"HOME": home, "OPENAI_API_KEY": "unrelated"}
+	deps := authutil.Dependencies{Getenv: func(name string) string { return env[name] }, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+	got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+	if err != nil || got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("JSONC selection = %q, %v; want unknown", got, err)
+	}
+}
+
+func TestOpenCodeHomeConfigDirectorySelectsModel(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"model":"ollama/llama3"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := authutil.Dependencies{Getenv: func(name string) string {
+		if name == "HOME" {
+			return home
 		}
-	}`)
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+		return ""
+	}, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+	got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+	if err != nil || got != ports.AgentAuthStatusNotApplicable {
+		t.Fatalf("home config directory = %q, %v; want not_applicable", got, err)
 	}
 }
 
-func TestOpenCodeLocalAuthStatusUnknownWithEmptyAuthFile(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	writeOpenCodeAuthFile(t, `{}`)
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func TestOpenCodeLocalAuthStatusAuthorizedWithActiveDBAccount(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	dataDir := writeOpenCodeDB(t, func(db *sql.DB) {
-		if _, err := db.Exec(`
-			CREATE TABLE account (
-				id text PRIMARY KEY,
-				email text NOT NULL,
-				url text NOT NULL,
-				access_token text NOT NULL,
-				refresh_token text NOT NULL,
-				token_expiry integer,
-				time_created integer NOT NULL,
-				time_updated integer NOT NULL
-			);
-			CREATE TABLE account_state (
-				id integer PRIMARY KEY NOT NULL,
-				active_account_id text,
-				active_org_id text
-			);
-			INSERT INTO account (id, email, url, access_token, refresh_token, time_created, time_updated)
-			VALUES ('acct_1', 'user@example.com', 'https://opencode.ai', 'token', 'refresh', 1, 1);
-			INSERT INTO account_state (id, active_account_id) VALUES (1, 'acct_1');
-		`); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Setenv("OPENCODE_DATA_DIR", dataDir)
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestOpenCodeLocalAuthStatusDBAccountOverridesEmptyAuthFile(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	dataDir := writeOpenCodeDB(t, func(db *sql.DB) {
-		if _, err := db.Exec(`
-			CREATE TABLE account (
-				id text PRIMARY KEY,
-				email text NOT NULL,
-				url text NOT NULL,
-				access_token text NOT NULL,
-				refresh_token text NOT NULL,
-				token_expiry integer,
-				time_created integer NOT NULL,
-				time_updated integer NOT NULL
-			);
-			INSERT INTO account (id, email, url, access_token, refresh_token, time_created, time_updated)
-			VALUES ('acct_1', 'user@example.com', 'https://opencode.ai', 'token', 'refresh', 1, 1);
-		`); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Setenv("OPENCODE_DATA_DIR", dataDir)
-	if err := os.WriteFile(filepath.Join(dataDir, "auth.json"), []byte(`{}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestOpenCodeLocalAuthStatusAuthorizedWithControlDBAccount(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	dataHome := t.TempDir()
-	dataDir := filepath.Join(dataHome, "opencode")
-	writeOpenCodeDBAt(t, dataDir, func(db *sql.DB) {
-		if _, err := db.Exec(`
-			CREATE TABLE control_account (
-				email text NOT NULL,
-				url text NOT NULL,
-				access_token text NOT NULL,
-				refresh_token text NOT NULL,
-				token_expiry integer,
-				active integer NOT NULL,
-				time_created integer NOT NULL,
-				time_updated integer NOT NULL,
-				PRIMARY KEY(email, url)
-			);
-			INSERT INTO control_account (email, url, access_token, refresh_token, active, time_created, time_updated)
-			VALUES ('user@example.com', 'https://opencode.ai', 'token', 'refresh', 1, 1, 1);
-		`); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Setenv("XDG_DATA_HOME", dataHome)
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestOpenCodeLocalAuthStatusUnknownWithEmptyDBAccounts(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	dataDir := writeOpenCodeDB(t, func(db *sql.DB) {
-		if _, err := db.Exec(`
-			CREATE TABLE account (
-				id text PRIMARY KEY,
-				email text NOT NULL,
-				url text NOT NULL,
-				access_token text NOT NULL,
-				refresh_token text NOT NULL,
-				token_expiry integer,
-				time_created integer NOT NULL,
-				time_updated integer NOT NULL
-			);
-			CREATE TABLE account_state (
-				id integer PRIMARY KEY NOT NULL,
-				active_account_id text,
-				active_org_id text
-			);
-			CREATE TABLE control_account (
-				email text NOT NULL,
-				url text NOT NULL,
-				access_token text NOT NULL,
-				refresh_token text NOT NULL,
-				token_expiry integer,
-				active integer NOT NULL,
-				time_created integer NOT NULL,
-				time_updated integer NOT NULL,
-				PRIMARY KEY(email, url)
-			);
-		`); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Setenv("OPENCODE_DATA_DIR", dataDir)
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func TestOpenCodeAuthStatusUnknownWithZeroCredentials(t *testing.T) {
+func openCodeAuthFixture(t *testing.T, output string) *Plugin {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
 	}
-	clearOpenCodeAuthEnv(t)
+	for _, name := range append(append([]string{}, opencodeAPIKeyEnvVars...), "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "OPENCODE_DATA_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT") {
+		t.Setenv(name, "")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	binary := filepath.Join(t.TempDir(), "opencode")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '0 credentials\\n'\n"), 0o755); err != nil {
+	script := "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = list ]; then\nprintf '%s' '" + strings.ReplaceAll(output, "'", "'\\''") + "'\nelse\nexit 1\nfi\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-
-	status, err := (&Plugin{resolvedBinary: binary}).AuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("AuthStatus = %q, want %q", status, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func TestOpenCodeAuthStatusUnknownWithNoCredentials(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("OPENCODE_DATA_DIR", filepath.Join(dir, "missing-data"))
-	for _, name := range opencodeAPIKeyEnvVars {
-		t.Setenv(name, "")
-	}
-	binary := filepath.Join(dir, "opencode")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf 'No credentials found\\n'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	status, err := (&Plugin{resolvedBinary: binary}).AuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("AuthStatus = %q, want %q", status, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func TestOpenCodeLocalAuthStatusUnknownWhenMissing(t *testing.T) {
-	clearOpenCodeAuthEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-
-	status, ok, err := opencodeLocalAuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func writeOpenCodeDB(t *testing.T, setup func(*sql.DB)) string {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	dataDir := filepath.Join(home, ".local", "share", "opencode")
-	writeOpenCodeDBAt(t, dataDir, setup)
-	return dataDir
-}
-
-func writeOpenCodeDBAt(t *testing.T, dataDir string, setup func(*sql.DB)) {
-	t.Helper()
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dataDir, "opencode.db"))+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	setup(db)
+	return &Plugin{resolvedBinary: binary}
 }
 
 func writeOpenCodeAuthFile(t *testing.T, content string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	authDir := filepath.Join(home, ".local", "share", "opencode")
-	if err := os.MkdirAll(authDir, 0o700); err != nil {
+	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(authDir, "auth.json"), []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func clearOpenCodeAuthEnv(t *testing.T) {
-	t.Helper()
-	for _, name := range opencodeAPIKeyEnvVars {
-		t.Setenv(name, "")
-	}
-	t.Setenv("OPENCODE_DATA_DIR", "")
-	t.Setenv("XDG_DATA_HOME", "")
 }
 
 func TestResolveOpenCodeBinaryFallback(t *testing.T) {

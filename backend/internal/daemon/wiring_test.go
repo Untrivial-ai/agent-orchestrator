@@ -33,6 +33,56 @@ type wiringReadinessProvider struct {
 	purpose  domain.AgentReadinessPurpose
 }
 
+type wiringScopedAgent struct {
+	ports.Agent
+	checked bool
+}
+
+func (*wiringScopedAgent) GetConfigSpec(context.Context) (ports.ConfigSpec, error) {
+	return ports.ConfigSpec{}, nil
+}
+func (*wiringScopedAgent) GetPromptDeliveryStrategy(context.Context, ports.LaunchConfig) (ports.PromptDeliveryStrategy, error) {
+	return ports.PromptDeliveryInCommand, nil
+}
+func (*wiringScopedAgent) GetAgentHooks(context.Context, ports.WorkspaceHookConfig) error { return nil }
+func (*wiringScopedAgent) GetLaunchCommand(context.Context, ports.LaunchConfig) ([]string, error) {
+	return []string{"scoped-test-agent"}, nil
+}
+func (a *wiringScopedAgent) AuthStatusFor(context.Context, ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
+	a.checked = true
+	return ports.AgentAuthStatusUnauthorized, nil
+}
+
+type wiringScopedAgents struct{ agent *wiringScopedAgent }
+
+func (a wiringScopedAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return a.agent, true }
+
+func TestWiringScopedSpawnBypassesGlobalAuth(t *testing.T) {
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	binDir := t.TempDir()
+	for _, name := range []string{"scoped-test-agent", "scoped-test-agent.cmd", "tmux", "tmux.cmd"} {
+		writeFakeExecutable(t, filepath.Join(binDir, name))
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	lcm := lifecycle.New(store, nil)
+	runtime := &selectableRuntime{}
+	global := &wiringReadinessProvider{err: errors.New("global auth must not gate scoped spawn")}
+	agent := &wiringScopedAgent{}
+	svc, _, _, err := startSession(context.Background(), config.Config{DataDir: t.TempDir()}, runtime, store, lcm, newSessionMessenger(store, runtime, log), telemetryadapter.NoopSink{}, wiringScopedAgents{agent: agent}, global, nil, nil, nil, nil, nil, nil, nil, nil, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = svc.Spawn(context.Background(), ports.SpawnConfig{Harness: domain.HarnessOpenCode, Kind: domain.KindWorker})
+	if err == nil || !agent.checked || global.agentID != "" || runtime.lastCfg.SessionID != "" {
+		t.Fatalf("scoped spawn wiring: checked=%v global=%q runtime=%q err=%v", agent.checked, global.agentID, runtime.lastCfg.SessionID, err)
+	}
+}
+
 func (p *wiringReadinessProvider) EnsureAgentReadiness(_ context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
 	p.agentID = agentID
 	p.purpose = purpose

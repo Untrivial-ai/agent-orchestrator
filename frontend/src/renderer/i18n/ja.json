@@ -1817,6 +1817,7 @@
 	"settings.harness.interrupted": "Interrupted",
 	"settings.harness.loggedIn": "Logged in",
 	"settings.harness.configured": "Configured",
+	"settings.harness.credentialsUnverified": "認証情報が見つかりました（未確認）",
 	"settings.harness.loginUnknown": "Login status unknown",
 	"settings.harness.configurationUnknown": "Configuration status unknown",
 	"settings.harness.loggingIn": "Opening…",

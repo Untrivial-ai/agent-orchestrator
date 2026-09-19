@@ -22,7 +22,7 @@ var plans = []Plan{
 	plan("amp", ActionLogin, "Log in to Amp", []string{"amp", "login"}, "Native browser flow", "https://ampcode.com/manual"),
 	plan("auggie", ActionLogin, "Log in to Auggie", []string{"auggie", "login"}, "Native browser flow", "https://docs.augmentcode.com/cli/overview"),
 	terminalInputPlan("droid", ActionLogin, "Log in to Droid", []string{"droid"}, "/login\r", "Select Open login after Droid finishes starting", "https://docs.factory.ai/droid-cli/cli-reference"),
-	plan("crush", ActionLogin, "Log in to Crush", []string{"crush", "login"}, "Native Charm Hyper login flow; GitHub Copilot remains available as a platform option", "https://github.com/charmbracelet/crush"),
+	plan("crush", ActionLogin, "Log in to Crush", []string{"crush", "login"}, "Native Charm Hyper login flow; GitHub Copilot and OpenAI are also supported (crush login openai)", "https://github.com/charmbracelet/crush"),
 	plan("cline", ActionLogin, "Log in to Cline", []string{"cline", "auth"}, "Native authentication flow", "https://github.com/cline/cline"),
 	plan("goose", ActionSetup, "Set up Goose", []string{"goose", "configure"}, "Native provider configuration; AO forwards terminal input without persisting or logging the raw input, while Goose controls credential storage", "https://block.github.io/goose/index.html"),
 	terminalInputPlan("qwen", ActionSetup, "Set up Qwen", []string{"qwen"}, qwenAuthInput, "Select Open setup after Qwen finishes starting to configure a model provider", "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/"),

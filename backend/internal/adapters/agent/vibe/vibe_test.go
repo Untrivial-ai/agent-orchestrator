@@ -51,7 +51,7 @@ func TestGetConfigSpecReportsModelField(t *testing.T) {
 	}
 }
 
-func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
+func TestAuthStatusConfiguredFromEnv(t *testing.T) {
 	clearVibeAuthEnv(t, vibeDefaultAPIKeyEnvVar, "VIBE_CODE_API_KEY")
 	t.Setenv(vibeDefaultAPIKeyEnvVar, "test-key")
 	p := &Plugin{resolvedBinary: "vibe"}
@@ -60,8 +60,8 @@ func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 

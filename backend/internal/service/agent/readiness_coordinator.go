@@ -570,6 +570,12 @@ func (c *readinessCoordinator) checkAuthentication(item agentregistry.HarnessAge
 		return successfulAuthentication(attempted, domain.AgentAuthenticationAuthorized, domain.AgentReadinessReasonAuthorized, item.Manifest.Name+" appears signed in."), false
 	case ports.AgentAuthStatusUnauthorized:
 		return successfulAuthentication(attempted, domain.AgentAuthenticationUnauthorized, domain.AgentReadinessReasonUnauthorized, item.Manifest.Name+" needs authentication."), false
+	case ports.AgentAuthStatusConfigured:
+		return successfulAuthentication(attempted, domain.AgentAuthenticationConfigured, domain.AgentReadinessReasonConfigured, item.Manifest.Name+" has authentication configured."), false
+	case ports.AgentAuthStatusNotApplicable:
+		return successfulAuthentication(attempted, domain.AgentAuthenticationNotApplicable, domain.AgentReadinessReasonAuthNotApplicable, item.Manifest.Name+" does not require authentication."), false
+	case ports.AgentAuthStatusUnavailable:
+		return successfulAuthentication(attempted, domain.AgentAuthenticationUnknown, domain.AgentReadinessReasonAuthSkippedNotInstalled, item.Manifest.Name+" is not installed, so authentication was not checked."), false
 	default:
 		return failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckInconclusive, "Authentication check was inconclusive."), true
 	}

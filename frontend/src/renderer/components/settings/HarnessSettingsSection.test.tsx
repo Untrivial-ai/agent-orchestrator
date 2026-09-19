@@ -116,6 +116,46 @@ describe("HarnessSettingsSection", () => {
 		expect(openExternal).toHaveBeenCalledWith("https://example.test/login");
 	});
 
+	it("shows configured credentials as unverified and allows rechecking", async () => {
+		const user = userEvent.setup();
+		const configured = {
+			agents: [{
+				...catalog.agents[0],
+				id: "aider",
+				label: "Aider",
+				installation: { ...catalog.agents[0].installation, state: "installed" },
+				authentication: { ...catalog.agents[0].authentication, state: "configured" },
+			}],
+		};
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: configured } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			if (path === "/api/v1/agents/auth-plans") {
+				return { data: { plans: [{
+					agentId: "aider", action: "setup", launchMode: "documentation",
+					available: true, documentationUrl: "https://example.test/setup",
+				}] } } as never;
+			}
+			return { data: undefined } as never;
+		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness/ensure") return { data: configured } as never;
+			if (path === "/api/v1/agents/{agent}/probe") {
+				return { data: { agent: { id: "aider", authStatus: "configured" } } } as never;
+			}
+			return { data: undefined } as never;
+		});
+		renderSection();
+		const row = (await screen.findByText("Aider")).closest('[data-agent="aider"]') as HTMLElement;
+		expect(await within(row).findByText("Credentials found, unverified")).toBeInTheDocument();
+		await user.click(await within(row).findByRole("button", { name: "Check configuration" }));
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith(
+			"/api/v1/agents/{agent}/probe",
+			expect.objectContaining({ params: { path: { agent: "aider" } } }),
+		));
+	});
+
 	it("starts the fixed daemon install route and exposes retry after failure", async () => {
 		const user = userEvent.setup();
 		renderSection();

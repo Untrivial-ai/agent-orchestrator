@@ -296,6 +296,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Logger:            log,
 		BackgroundContext: ctx,
 		AgentReadiness:    agentReadiness,
+		Agents:            agents,
 		GithubIdentity:    githubIdentity,
 		// no_signal only makes sense for harnesses with complete lifecycle signal
 		// coverage; partial callbacks cannot prove that silence is abnormal.

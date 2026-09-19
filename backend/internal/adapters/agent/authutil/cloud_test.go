@@ -1,0 +1,501 @@
+package authutil
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+)
+
+func cloudDeps(t *testing.T, env map[string]string) Dependencies {
+	t.Helper()
+	if env == nil {
+		env = make(map[string]string)
+	}
+	if env["HOME"] == "" {
+		env["HOME"] = t.TempDir()
+	}
+	return Dependencies{
+		Getenv: func(key string) string { return env[key] },
+		Now:    func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) },
+		GOOS:   "linux",
+		Run:    func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("CLI unavailable") },
+	}
+}
+
+func assertCloud(t *testing.T, got Evidence, status ports.AgentAuthStatus, source string) {
+	t.Helper()
+	if got.Status != status || got.Source != source {
+		t.Fatalf("cloud evidence = %#v, want %s from %q", got, status, source)
+	}
+}
+
+func TestAWSEnvironmentEvidence(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		env    map[string]string
+		status ports.AgentAuthStatus
+		source string
+	}{
+		{"pair", map[string]string{"AWS_ACCESS_KEY_ID": "fixture-access", "AWS_SECRET_ACCESS_KEY": "fixture-secret"}, "configured", "aws-environment"},
+		{"bearer", map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "fixture-token"}, "configured", "aws-bearer-token"},
+		{"partial pair", map[string]string{"AWS_ACCESS_KEY_ID": "fixture-access"}, "unknown", ""},
+		{"empty", nil, "unknown", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assertCloud(t, AWSEvidence(context.Background(), cloudDeps(t, tt.env)), tt.status, tt.source)
+		})
+	}
+}
+
+func TestAWSSelectedSharedProfiles(t *testing.T) {
+	for _, tt := range []struct {
+		name, profile, credentials, config string
+		status                             ports.AgentAuthStatus
+	}{
+		{"default", "", "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n", "", "configured"},
+		{"named", "work", "[work]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n", "", "configured"},
+		{"config profile", "work", "", "[profile work]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n", "configured"},
+		{"role source", "role", "[source]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n", "[profile role]\nrole_arn=arn:aws:iam::123:role/test\nsource_profile=source\n", "configured"},
+		{"wrong profile", "work", "[other]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n", "", "unknown"},
+		{"partial", "", "[default]\naws_access_key_id=fixture-access\n", "", "unknown"},
+		{"role cycle", "a", "", "[profile a]\nrole_arn=role-a\nsource_profile=b\n[profile b]\nrole_arn=role-b\nsource_profile=a\n", "unknown"},
+		{"process configuration alone", "", "", "[default]\ncredential_process=never-execute-this\n", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := map[string]string{"HOME": t.TempDir(), "AWS_PROFILE": tt.profile}
+			writeFixture(t, filepath.Join(env["HOME"], ".aws", "credentials"), tt.credentials)
+			writeFixture(t, filepath.Join(env["HOME"], ".aws", "config"), tt.config)
+			got := AWSEvidence(context.Background(), cloudDeps(t, env))
+			source := ""
+			if tt.status == "configured" {
+				source = "aws-profile"
+			}
+			assertCloud(t, got, tt.status, source)
+		})
+	}
+}
+
+func TestAWSFileOverridesAndWebIdentity(t *testing.T) {
+	root := t.TempDir()
+	credentials := filepath.Join(root, "custom-credentials")
+	config := filepath.Join(root, "custom-config")
+	token := filepath.Join(root, "web-token")
+	writeFixture(t, credentials, "[work]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n")
+	writeFixture(t, config, "")
+	env := map[string]string{"AWS_DEFAULT_PROFILE": "work", "AWS_SHARED_CREDENTIALS_FILE": credentials, "AWS_CONFIG_FILE": config}
+	assertCloud(t, AWSEvidence(context.Background(), cloudDeps(t, env)), "configured", "aws-profile")
+	writeFixture(t, token, "fixture-web-token")
+	env = map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": token, "AWS_ROLE_ARN": "arn:aws:iam::123:role/test"}
+	assertCloud(t, AWSEvidence(context.Background(), cloudDeps(t, env)), "configured", "aws-web-identity")
+	delete(env, "AWS_ROLE_ARN")
+	assertCloud(t, AWSEvidence(context.Background(), cloudDeps(t, env)), "unknown", "")
+	writeFixture(t, config, "[default]\nrole_arn=arn:aws:iam::123:role/test\nweb_identity_token_file="+token+"\n")
+	assertCloud(t, AWSEvidence(context.Background(), cloudDeps(t, map[string]string{"AWS_CONFIG_FILE": config})), "configured", "aws-profile")
+}
+
+func TestAWSRelativeCredentialPathsDoNotUseDaemonWorkingDirectory(t *testing.T) {
+	daemonDir := t.TempDir()
+	t.Chdir(daemonDir)
+	writeFixture(t, filepath.Join(daemonDir, "credentials"), "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n")
+	writeFixture(t, filepath.Join(daemonDir, "config"), "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n")
+	writeFixture(t, filepath.Join(daemonDir, "token"), "fixture-token")
+
+	writeFixture(t, filepath.Join(daemonDir, "profile-config"), "[default]\nrole_arn=arn:aws:iam::123:role/test\nweb_identity_token_file=token\n")
+	for _, workingDir := range []string{"", "."} {
+		for _, env := range []map[string]string{
+			{"AWS_SHARED_CREDENTIALS_FILE": "credentials"},
+			{"AWS_CONFIG_FILE": "config"},
+			{"AWS_ROLE_ARN": "arn:aws:iam::123:role/test", "AWS_WEB_IDENTITY_TOKEN_FILE": "token"},
+			{"AWS_CONFIG_FILE": "profile-config"},
+		} {
+			deps := cloudDeps(t, env)
+			deps.WorkingDir = workingDir
+			assertCloud(t, AWSEvidence(context.Background(), deps), "unknown", "")
+		}
+	}
+}
+
+func TestAWSRelativeCredentialPathsUseAbsoluteWorkingDirectory(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		env   map[string]string
+		files map[string]string
+	}{
+		{
+			name: "shared credentials",
+			env:  map[string]string{"AWS_SHARED_CREDENTIALS_FILE": "credentials"},
+			files: map[string]string{
+				"credentials": "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n",
+			},
+		},
+		{
+			name: "config",
+			env:  map[string]string{"AWS_CONFIG_FILE": "config"},
+			files: map[string]string{
+				"config": "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n",
+			},
+		},
+		{
+			name: "environment web identity",
+			env:  map[string]string{"AWS_ROLE_ARN": "arn:aws:iam::123:role/test", "AWS_WEB_IDENTITY_TOKEN_FILE": "token"},
+			files: map[string]string{
+				"token": "fixture-token",
+			},
+		},
+		{
+			name: "profile web identity",
+			env:  map[string]string{"AWS_CONFIG_FILE": "config"},
+			files: map[string]string{
+				"config": "[default]\nrole_arn=arn:aws:iam::123:role/test\nweb_identity_token_file=token\n",
+				"token":  "fixture-token",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			for name, body := range tt.files {
+				writeFixture(t, filepath.Join(workspace, name), body)
+			}
+			deps := cloudDeps(t, tt.env)
+			deps.WorkingDir = workspace
+			wantSource := "aws-profile"
+			if tt.name == "environment web identity" {
+				wantSource = "aws-web-identity"
+			}
+			assertCloud(t, AWSEvidence(context.Background(), deps), "configured", wantSource)
+		})
+	}
+}
+
+func TestAWSSSOCache(t *testing.T) {
+	for _, tt := range []struct {
+		name, session, expiry, token string
+		status                       ports.AgentAuthStatus
+	}{
+		{"legacy valid", "", "2026-09-20T12:00:00Z", "fixture-token", "configured"},
+		{"session valid", "work", "2026-09-20T12:00:00Z", "fixture-token", "configured"},
+		{"legacy UTC expiry", "", "2026-09-20T12:00:00UTC", "fixture-token", "configured"},
+		{"expired", "", "2026-09-18T12:00:00Z", "fixture-token", "unknown"},
+		{"empty token", "", "2026-09-20T12:00:00Z", "", "unknown"},
+		{"invalid expiry", "", "not-time", "fixture-token", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			start := "https://example.awsapps.com/start"
+			config := "[default]\nsso_account_id=123456789012\nsso_role_name=Developer\nsso_start_url=" + start + "\nsso_region=us-east-1\n"
+			key := start
+			if tt.session != "" {
+				config = "[default]\nsso_account_id=123456789012\nsso_role_name=Developer\nsso_session=work\n[sso-session work]\nsso_start_url=" + start + "\nsso_region=us-east-1\n"
+				key = tt.session
+			}
+			writeFixture(t, filepath.Join(root, ".aws", "config"), config)
+			hash := sha1.Sum([]byte(key))
+			cache, err := json.Marshal(map[string]string{"startUrl": start, "region": "us-east-1", "accessToken": tt.token, "expiresAt": tt.expiry})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFixture(t, filepath.Join(root, ".aws", "sso", "cache", hex.EncodeToString(hash[:])+".json"), string(cache))
+			source := ""
+			if tt.status == "configured" {
+				source = "aws-profile"
+			}
+			assertCloud(t, AWSEvidence(context.Background(), cloudDeps(t, map[string]string{"HOME": root})), tt.status, source)
+		})
+	}
+}
+
+func TestGoogleADCCredentialSchemas(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	serviceAccount := map[string]any{"type": "service_" + "account", "private_key": keyPEM, "client_email": "fixture@example.iam.gserviceaccount.com", "token_uri": "https://oauth2.googleapis.com/token"}
+	validService, err := json.Marshal(serviceAccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, body string
+		status     ports.AgentAuthStatus
+	}{
+		{"service account", string(validService), "configured"},
+		{"authorized user", "{\"type\":\"authorized_user\",\"client_id\":\"fixture-client\",\"client_secret\":\"fixture-secret\",\"refresh_token\":\"fixture-refresh\"}", "configured"},
+		{"external account", "{\"type\":\"external_account\",\"audience\":\"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider\",\"subject_token_type\":\"urn:ietf:params:oauth:token-type:jwt\",\"token_url\":\"https://sts.googleapis.com/v1/token\",\"credential_source\":{\"url\":\"http://127.0.0.1/token\"}}", "configured"},
+		{"empty", "", "unknown"},
+		{"malformed", "{\"type\":", "unknown"},
+		{"incomplete service", "{\"type\":\"service_account\",\"client_email\":\"fixture@example.test\"}", "unknown"},
+		{"invalid key", "{\"type\":\"service_account\",\"private_key\":\"fixture-not-pem\",\"client_email\":\"fixture@example.test\",\"token_uri\":\"https://oauth2.googleapis.com/token\"}", "unknown"},
+		{"incomplete user", "{\"type\":\"authorized_user\",\"client_id\":\"fixture-client\",\"client_secret\":\"fixture-secret\"}", "unknown"},
+		{"incomplete external", "{\"type\":\"external_account\",\"audience\":\"audience\",\"subject_token_type\":\"jwt\",\"token_url\":\"https://sts.googleapis.com/v1/token\"}", "unknown"},
+		{"unrelated token", "{\"access_token\":\"fixture-token\"}", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "adc.json")
+			writeFixture(t, path, tt.body)
+			source := ""
+			if tt.status == "configured" {
+				source = "google-adc-file"
+			}
+			assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), tt.status, source)
+		})
+	}
+}
+
+func TestGoogleADCRelativeCredentialPathDoesNotUseDaemonWorkingDirectory(t *testing.T) {
+	daemonDir := t.TempDir()
+	t.Chdir(daemonDir)
+	writeFixture(t, filepath.Join(daemonDir, "adc.json"), `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`)
+	for _, workingDir := range []string{"", "."} {
+		deps := cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": "adc.json"})
+		deps.WorkingDir = workingDir
+		assertCloud(t, GoogleADCEvidence(context.Background(), deps), "unknown", "")
+	}
+}
+
+func TestGoogleADCRelativeCredentialPathUsesAbsoluteWorkingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	writeFixture(t, filepath.Join(workspace, "adc.json"), `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`)
+	deps := cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": "adc.json"})
+	deps.WorkingDir = workspace
+	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-file")
+}
+
+func TestGoogleADCRelativeWindowsAPPDATAUsesWorkspaceNotDaemonWorkingDirectory(t *testing.T) {
+	daemonDir := t.TempDir()
+	workspace := t.TempDir()
+	relativeADC := filepath.Join("appdata", "gcloud", "application_default_credentials.json")
+	credential := `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`
+	writeFixture(t, filepath.Join(daemonDir, relativeADC), credential)
+	t.Chdir(daemonDir)
+	deps := cloudDeps(t, map[string]string{"APPDATA": "appdata"})
+	deps.GOOS = "windows"
+	deps.WorkingDir = workspace
+
+	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "unknown", "")
+	writeFixture(t, filepath.Join(workspace, relativeADC), credential)
+	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-file")
+}
+
+func TestGoogleADCRelativeSubjectTokenUsesCredentialDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, filepath.Join(root, "subject-token"), "fixture-token")
+	credential := `{"type":"external_account","audience":"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/oidc","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://sts.googleapis.com/v1/token","credential_source":{"file":"subject-token"}}`
+	path := filepath.Join(root, "adc.json")
+	writeFixture(t, path, credential)
+	assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), "configured", "google-adc-file")
+}
+
+func TestGoogleADCDefaultPathsAndFallback(t *testing.T) {
+	for _, goos := range []string{"linux", "windows", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			root := t.TempDir()
+			env := map[string]string{"HOME": root, "APPDATA": filepath.Join(root, "appdata")}
+			path := filepath.Join(root, ".config", "gcloud", "application_default_credentials.json")
+			if goos == "windows" {
+				path = filepath.Join(env["APPDATA"], "gcloud", "application_default_credentials.json")
+			}
+			writeFixture(t, path, "{\"type\":\"authorized_user\",\"client_id\":\"fixture-client\",\"client_secret\":\"fixture-secret\",\"refresh_token\":\"fixture-refresh\"}")
+			deps := cloudDeps(t, env)
+			deps.GOOS = goos
+			assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-file")
+		})
+	}
+}
+
+func TestGoogleADCAWSExternalAccount(t *testing.T) {
+	for _, tt := range []struct {
+		name, verificationURL string
+		status                ports.AgentAuthStatus
+	}{
+		{"documented region template", "https://sts.{region}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15", "configured"},
+		{"default verification URL", "", "configured"},
+		{"concrete regional URL", "https://sts.us-east-1.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15", "configured"},
+		{"unknown template placeholder", "https://sts.{account}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15", "unknown"},
+		{"malformed URL", "://fixture-invalid", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := map[string]any{
+				"environment_id": "aws1",
+				"region_url":     "http://169.254.169.254/latest/meta-data/placement/availability-zone",
+				"url":            "http://169.254.169.254/latest/meta-data/iam/security-credentials",
+			}
+			if tt.verificationURL != "" {
+				source["regional_cred_verification_url"] = tt.verificationURL
+			}
+			credential := map[string]any{
+				"type":               "external_account",
+				"audience":           "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws",
+				"subject_token_type": "urn:ietf:params:aws:token-type:aws4_request",
+				"token_url":          "https://sts.googleapis.com/v1/token",
+				"credential_source":  source,
+			}
+			body, err := json.Marshal(credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "adc.json")
+			writeFixture(t, path, string(body))
+			label := ""
+			if tt.status == "configured" {
+				label = "google-adc-file"
+			}
+			assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), tt.status, label)
+		})
+	}
+}
+
+func TestGoogleADCSubjectTokenFileFormats(t *testing.T) {
+	for _, tt := range []struct {
+		name, format, tokenFile string
+		status                  ports.AgentAuthStatus
+	}{
+		{"default text", "", "fixture-token", "configured"},
+		{"explicit text", "{\"type\":\"text\"}", "fixture-token", "configured"},
+		{"named JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":\"fixture-token\"}", "configured"},
+		{"custom JSON field", "{\"type\":\"json\",\"subject_token_field_name\":\"id_token\"}", "{\"id_token\":\"fixture-token\"}", "configured"},
+		{"malformed JSON token file", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":", "unknown"},
+		{"missing JSON token field", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"other\":\"fixture-token\"}", "unknown"},
+		{"empty JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":\"\"}", "unknown"},
+		{"whitespace JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":\"   \"}", "unknown"},
+		{"non-string JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":42}", "unknown"},
+		{"nested JSON token is not the named field", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"other\":{\"token\":\"fixture-token\"}}", "unknown"},
+		{"JSON array is not token object", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "[\"fixture-token\"]", "unknown"},
+		{"JSON format requires field name", "{\"type\":\"json\"}", "{\"token\":\"fixture-token\"}", "unknown"},
+		{"JSON format rejects blank field name", "{\"type\":\"json\",\"subject_token_field_name\":\" \"}", "{\" \":\"fixture-token\"}", "unknown"},
+		{"unsupported format", "{\"type\":\"yaml\"}", "token: fixture-token", "unknown"},
+		{"format requires type", "{}", "fixture-token", "unknown"},
+		{"null format is incomplete", "null", "fixture-token", "unknown"},
+		{"malformed format object", "\"json\"", "fixture-token", "unknown"},
+		{"malformed format type", "{\"type\":7}", "fixture-token", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			tokenPath := filepath.Join(root, "subject-token")
+			writeFixture(t, tokenPath, tt.tokenFile)
+			source := map[string]any{"file": tokenPath}
+			if tt.format != "" {
+				source["format"] = json.RawMessage(tt.format)
+			}
+			credential := map[string]any{
+				"type":               "external_account",
+				"audience":           "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/oidc",
+				"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+				"token_url":          "https://sts.googleapis.com/v1/token",
+				"credential_source":  source,
+			}
+			body, err := json.Marshal(credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "adc.json")
+			writeFixture(t, path, string(body))
+			label := ""
+			if tt.status == "configured" {
+				label = "google-adc-file"
+			}
+			assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), tt.status, label)
+		})
+	}
+}
+
+func TestAzureEnvironmentAndIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		env    map[string]string
+		status ports.AgentAuthStatus
+		source string
+	}{
+		{"openai key", map[string]string{"AZURE_OPENAI_API_KEY": "fixture-key"}, "configured", "azure-api-key"},
+		{"azure key", map[string]string{"AZURE_API_KEY": "fixture-key"}, "configured", "azure-api-key"},
+		{"service principal", map[string]string{"AZURE_TENANT_ID": "tenant", "AZURE_CLIENT_ID": "client", "AZURE_CLIENT_SECRET": "fixture-secret"}, "configured", "azure-service-principal"},
+		{"partial principal", map[string]string{"AZURE_CLIENT_ID": "client"}, "unknown", ""},
+		{"managed identity", map[string]string{"IDENTITY_ENDPOINT": "http://127.0.0.1/token", "IDENTITY_HEADER": "fixture-header"}, "configured", "azure-managed-identity"},
+		{"legacy managed identity", map[string]string{"MSI_ENDPOINT": "http://127.0.0.1/token", "MSI_SECRET": "fixture-secret"}, "configured", "azure-managed-identity"},
+		{"partial identity", map[string]string{"IDENTITY_ENDPOINT": "http://127.0.0.1/token"}, "unknown", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assertCloud(t, AzureEvidence(context.Background(), cloudDeps(t, tt.env)), tt.status, tt.source)
+		})
+	}
+	path := filepath.Join(t.TempDir(), "identity-token")
+	writeFixture(t, path, "fixture-token")
+	assertCloud(t, AzureEvidence(context.Background(), cloudDeps(t, map[string]string{"AZURE_TENANT_ID": "tenant", "AZURE_CLIENT_ID": "client", "AZURE_FEDERATED_TOKEN_FILE": path})), "configured", "azure-workload-identity")
+}
+
+func TestAzureCLITokenAndLoader(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+		status     ports.AgentAuthStatus
+	}{
+		{"valid", "{\"accessToken\":\"fixture-token\",\"expires_on\":\"1789905600\",\"tokenType\":\"Bearer\",\"tenant\":\"tenant\",\"subscription\":\"subscription\"}", "configured"},
+		{"expired", "{\"accessToken\":\"fixture-token\",\"expires_on\":\"1\"}", "unknown"},
+		{"missing token", "{\"expires_on\":\"1789905600\"}", "unknown"},
+		{"malformed", "{\"accessToken\":", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := cloudDeps(t, nil)
+			deps.Run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name != "az" || !reflect.DeepEqual(args, []string{"account", "get-access-token", "--resource", "https://cognitiveservices.azure.com/", "--output", "json"}) {
+					t.Fatalf("Azure CLI = %q %q", name, args)
+				}
+				return []byte(tt.body), nil
+			}
+			source := ""
+			if tt.status == "configured" {
+				source = "azure-cli"
+			}
+			assertCloud(t, AzureEvidence(context.Background(), deps), tt.status, source)
+		})
+	}
+}
+
+func TestAzureDefaultDoesNotExecuteCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake executable fixture uses a Unix shebang")
+	}
+	root := t.TempDir()
+	marker := filepath.Join(root, "executed")
+	script := "#!/bin/sh\nprintf ran > '" + strings.ReplaceAll(marker, "'", "'\\''") + "'\nprintf '%s' '{\"accessToken\":\"fixture-token\",\"expires_on\":\"1789905600\"}'\n"
+	if err := os.WriteFile(filepath.Join(root, "az"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root)
+	deps := cloudDeps(t, nil)
+	deps.Run = nil
+	got := AzureEvidence(context.Background(), deps)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("default cloud discovery executed a CLI")
+	}
+	assertCloud(t, got, "unknown", "")
+}
+
+func TestGoogleADCExplicitOverrideDoesNotFallThrough(t *testing.T) {
+	for _, content := range []string{"", "{malformed"} {
+		t.Run(content, func(t *testing.T) {
+			home := t.TempDir()
+			explicit := filepath.Join(home, "explicit.json")
+			if content != "" {
+				writeFixture(t, explicit, content)
+			}
+			writeFixture(t, filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"), `{"type":"authorized_user","client_id":"fixture","client_secret":"fixture","refresh_token":"fixture"}`)
+			deps := cloudDeps(t, map[string]string{"HOME": home, "GOOGLE_APPLICATION_CREDENTIALS": explicit})
+			assertCloud(t, GoogleADCEvidence(context.Background(), deps), "unknown", "")
+		})
+	}
+}

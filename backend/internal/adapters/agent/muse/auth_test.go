@@ -6,19 +6,21 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestMuseLocalAuthStatusAuthorizedWithMetaAPIKey(t *testing.T) {
+func TestMuseLocalAuthStatusConfiguredWithMetaAPIKey(t *testing.T) {
 	clearMuseAuthEnv(t)
 	t.Setenv(museAPIKeyEnvVar, "test-api-key")
 	status, ok, err := museLocalAuthStatus(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	if !ok || status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -33,8 +35,8 @@ func TestMuseLocalAuthStatusUsesXDGMetaOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	if !ok || status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -46,8 +48,8 @@ func TestMuseLocalAuthStatusHonorsExplicitAuthPath(t *testing.T) {
 	writeMuseAuthFixture(t, path, `{"providers":{"meta":{"mechanism":"oauth","access_token":"fixture-access-token"}}}`)
 
 	status, ok, err := museLocalAuthStatus(context.Background())
-	if err != nil || !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v, %v), want (authorized, true, nil)", status, ok, err)
+	if err != nil || !ok || status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = (%q, %v, %v), want (configured, true, nil)", status, ok, err)
 	}
 }
 
@@ -67,8 +69,8 @@ func TestMuseAuthJSONStatusSupportsStoredMetaAPIKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	writeMuseAuthFixture(t, path, `{"providers":{"meta":{"mechanism":"api_key","api_key":"fixture-api-key"}}}`)
 	status, ok, err := museAuthJSONStatus(path)
-	if err != nil || !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v, %v), want (authorized, true, nil)", status, ok, err)
+	if err != nil || !ok || status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = (%q, %v, %v), want (configured, true, nil)", status, ok, err)
 	}
 }
 
@@ -112,8 +114,8 @@ func TestAuthStatusUsesLocalCredentialProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusAuthorized)
+	if status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -141,4 +143,143 @@ func clearMuseAuthEnv(t *testing.T) {
 	t.Setenv(museAPIKeyEnvVar, "")
 	t.Setenv("MUSE_AUTH_PATH", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+func TestMuseAuthStatusStorageMetadataIsNotCredential(t *testing.T) {
+	for _, body := range []string{
+		`{"providers":{"meta":{"storage":"keychain","mechanism":"oauth"}}}`,
+		`{"providers":{"meta":{"storage":"keychain","mechanism":"oauth","access_token":"stale-file-token"}}}`,
+		`{"storage":"keychain","providers":{"meta":{"mechanism":"api_key","api_key":"stale-file-key"}}}`,
+		`{"providers":{"meta":{"storage":"unsupported","mechanism":"oauth","access_token":"stale-file-token"}}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "muse", "auth.json")
+			writeMuseAuthFixture(t, path, body)
+			d := museAuthDependencies(t, map[string]string{"XDG_CONFIG_HOME": dir})
+			status, err := museAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
+			if err != nil || status != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = (%q, %v), want unknown", status, err)
+			}
+		})
+	}
+}
+
+func TestMuseAuthStatusScopedPathOverridesInheritedPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scoped.json")
+	writeMuseAuthFixture(t, path, `{"providers":{"meta":{"storage":"file","mechanism":"api_key","api_key":"fixture-key"}}}`)
+	d := museAuthDependencies(t, map[string]string{"MUSE_AUTH_PATH": filepath.Join(t.TempDir(), "missing.json")})
+	scope := ports.AgentAuthCheck{Env: map[string]string{"MUSE_AUTH_PATH": path}}
+	status, err := museAuthStatus(context.Background(), scope, d)
+	if err != nil || status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = (%q, %v), want configured", status, err)
+	}
+}
+
+func TestMuseAuthStatusScopedEmptyEnvOverridesInheritedKey(t *testing.T) {
+	d := museAuthDependencies(t, map[string]string{"META_API_KEY": "inherited-key"})
+	scope := ports.AgentAuthCheck{Env: map[string]string{"META_API_KEY": ""}}
+	status, err := museAuthStatus(context.Background(), scope, d)
+	if err != nil || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want unknown", status, err)
+	}
+}
+
+func TestMuseAuthStatusEnvPrecedesKeychainMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeMuseAuthFixture(t, filepath.Join(dir, "muse", "auth.json"), `{"providers":{"meta":{"storage":"keychain","mechanism":"oauth"}}}`)
+	d := museAuthDependencies(t, map[string]string{"META_API_KEY": "fixture-key", "XDG_CONFIG_HOME": dir})
+	d.ReadFile = func(string) ([]byte, error) {
+		t.Fatal("env key must precede file/keychain lookup")
+		return nil, os.ErrNotExist
+	}
+	status, err := museAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
+	if err != nil || status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = (%q, %v), want configured", status, err)
+	}
+}
+
+func TestMuseAuthStatusIgnoresSettingsAndMalformedFiles(t *testing.T) {
+	for _, body := range []string{"", `{bad-json`, `{"providers":{"other":{"mechanism":"oauth","access_token":"unrelated"}}}`} {
+		t.Run(body, func(t *testing.T) {
+			dir := t.TempDir()
+			writeMuseAuthFixture(t, filepath.Join(dir, "muse", "settings.json"), `{"providers":{"meta":{"mechanism":"api_key","api_key":"not-credentials"}}}`)
+			if body != "" {
+				writeMuseAuthFixture(t, filepath.Join(dir, "muse", "auth.json"), body)
+			}
+			status, err := museAuthStatus(context.Background(), ports.AgentAuthCheck{}, museAuthDependencies(t, map[string]string{"XDG_CONFIG_HOME": dir}))
+			if err != nil || status != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = (%q, %v), want unknown", status, err)
+			}
+		})
+	}
+}
+
+func TestMuseAuthStatusRejectsSymlinkAndOversizedCredentials(t *testing.T) {
+	for _, symlink := range []bool{true, false} {
+		t.Run(map[bool]string{true: "symlink", false: "oversized"}[symlink], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "auth.json")
+			if symlink {
+				target := filepath.Join(t.TempDir(), "target.json")
+				writeMuseAuthFixture(t, target, `{"providers":{"meta":{"mechanism":"api_key","api_key":"fixture-key"}}}`)
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.WriteFile(path, make([]byte, authutil.MaxFileSize+1), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			status, err := museAuthStatus(context.Background(), ports.AgentAuthCheck{}, museAuthDependencies(t, map[string]string{"MUSE_AUTH_PATH": path}))
+			if err != nil || status != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = (%q, %v), want unknown", status, err)
+			}
+		})
+	}
+}
+
+func museAuthDependencies(t *testing.T, env map[string]string) authutil.Dependencies {
+	t.Helper()
+	if _, ok := env["HOME"]; !ok {
+		env["HOME"] = t.TempDir()
+	}
+	return authutil.Dependencies{
+		Getenv: func(key string) string { return env[key] }, GOOS: "darwin",
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("unexpected command or unconfirmed keychain selector")
+			return nil, errors.New("unexpected command")
+		},
+	}
+}
+
+func TestMuseAuthStatusOAuthExpiry(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		want         ports.AgentAuthStatus
+	}{
+		{"unexpired", `"expires_at":2000000000`, ports.AgentAuthStatusConfigured},
+		{"expired", `"expires_at":1000000000`, ports.AgentAuthStatusUnauthorized},
+		{"expires now", `"expires_at":1500000000`, ports.AgentAuthStatusUnauthorized},
+		{"expired refreshable", `"expires_at":1000000000,"refresh_token":"fixture-refresh"`, ports.AgentAuthStatusConfigured},
+		{"expired empty refresh", `"expires_at":1000000000,"refresh_token":" "`, ports.AgentAuthStatusUnauthorized},
+		{"malformed expiry", `"expires_at":"not-a-time"`, ports.AgentAuthStatusUnknown},
+		{"negative expiry", `"expires_at":-1`, ports.AgentAuthStatusUnknown},
+		{"fractional expiry", `"expires_at":2000000000.5`, ports.AgentAuthStatusUnknown},
+		{"string expiry", `"expires_at":"2000000000"`, ports.AgentAuthStatusUnknown},
+		{"null expiry", `"expires_at":null`, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "auth.json")
+			writeMuseAuthFixture(t, path, `{"providers":{"meta":{"mechanism":"oauth","access_token":"fixture-access",`+tc.fields+`}}}`)
+			d := museAuthDependencies(t, map[string]string{"MUSE_AUTH_PATH": path})
+			d.Now = func() time.Time { return time.Unix(1500000000, 0) }
+			status, err := museAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
+			if err != nil || status != tc.want {
+				t.Fatalf("status=(%q, %v), want %q", status, err, tc.want)
+			}
+		})
+	}
 }

@@ -41,6 +41,44 @@ type fakeAgentReadiness struct {
 	rechecks                []string
 }
 
+type scopedServiceAgent struct{ ports.Agent }
+
+func (scopedServiceAgent) AuthStatusFor(context.Context, ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusNotApplicable, nil
+}
+
+type scopedServiceAgents struct{}
+
+func (scopedServiceAgents) Agent(domain.AgentHarness) (ports.Agent, bool) {
+	return scopedServiceAgent{}, true
+}
+
+func TestSpawnScopedAuthDefersToManagerWithoutChangingGlobalReadiness(t *testing.T) {
+	for _, launchErr := range []error{nil, ports.ErrAgentScopedAuthUnauthorized} {
+		st := newFakeStore()
+		st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+		fc := &fakeCommander{spawnErr: launchErr}
+		readiness := &fakeAgentReadiness{err: errors.New("global probe must not run")}
+		svc := NewWithDeps(Deps{Manager: fc, Store: st, AgentReadiness: readiness, Agents: scopedServiceAgents{}})
+		_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode})
+		if launchErr == nil && err != nil {
+			t.Fatal(err)
+		}
+		if launchErr != nil {
+			var apiError *apierr.Error
+			if !errors.As(err, &apiError) || apiError.Code != "CHAT_AUTH_REQUIRED" {
+				t.Fatalf("error = %v", err)
+			}
+		}
+		if launchErr == nil && fc.spawnCalls != 1 {
+			t.Fatal("scoped spawn did not reach manager")
+		}
+		if readiness.calls != 0 || len(readiness.authInvalidated) != 0 || len(readiness.rechecks) != 0 {
+			t.Fatal("scoped spawn consulted or invalidated global readiness")
+		}
+	}
+}
+
 func (f *fakeAgentReadiness) EnsureAgentReadiness(_ context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
 	f.calls++
 	f.agentID = agentID

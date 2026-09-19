@@ -20,12 +20,13 @@ package opencode
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -179,189 +181,271 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 	return info, ok, nil
 }
 
-// AuthStatus checks whether opencode has a configured provider credential.
-// Missing credentials remain unknown because opencode can still run its public
-// free models without a provider login.
+// AuthStatus delegates to the same provider-aware resolver as scoped launches.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
+	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
+}
+
+var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
+
+// AuthStatusFor checks credentials for the effective OpenCode invocation.
+func (p *Plugin) AuthStatusFor(ctx context.Context, in ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	binary, err := p.opencodeBinary(ctx)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if status, ok, err := opencodeLocalAuthStatus(ctx); err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	} else if ok {
-		return status, nil
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
+	return opencodeAuthStatusFor(ctx, binary, in, authutil.Dependencies{})
+}
 
-	out, err := aoprocess.CommandContext(probeCtx, binary, "auth", "list").CombinedOutput()
-	if probeCtx.Err() != nil {
-		if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			return ports.AgentAuthStatusUnknown, nil
+func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAuthCheck, deps authutil.Dependencies) (ports.AgentAuthStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.AgentAuthStatusUnknown, err
+	}
+	deps.WorkingDir = in.WorkingDir
+	baseGetenv := deps.Getenv
+	if baseGetenv == nil {
+		baseGetenv = os.Getenv
+	}
+	launchEnv := make(map[string]string, len(in.Env))
+	for name, value := range in.Env {
+		launchEnv[name] = value
+	}
+	// AO's generated config may be carried by the native command's env prefix.
+	if len(in.Args) > 0 && filepath.Base(in.Args[0]) == "env" {
+		for _, arg := range in.Args[1:] {
+			name, value, ok := strings.Cut(arg, "=")
+			if !ok || name == "" {
+				break
+			}
+			launchEnv[name] = value
 		}
-		return ports.AgentAuthStatusUnknown, probeCtx.Err()
 	}
-	text := strings.ToLower(string(out))
-	if strings.Contains(text, "0 credentials") || strings.Contains(text, "no credentials") || strings.Contains(text, "not authenticated") {
-		return ports.AgentAuthStatusUnknown, nil
+	deps.Getenv = func(name string) string {
+		if value, ok := launchEnv[name]; ok {
+			return value
+		}
+		return baseGetenv(name)
 	}
-	if strings.Contains(text, "credential") && err == nil {
-		return ports.AgentAuthStatusAuthorized, nil
+	if deps.Run == nil {
+		deps.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			cmd := aoprocess.CommandContext(ctx, name, args...)
+			cmd.Dir = in.WorkingDir
+			cmd.Env = os.Environ()
+			for key, value := range launchEnv {
+				cmd.Env = append(cmd.Env, key+"="+value)
+			}
+			out := &opencodeAuthOutput{}
+			cmd.Stdout, cmd.Stderr = out, io.Discard
+			cmd.WaitDelay = 100 * time.Millisecond
+			err := cmd.Run()
+			return out.data, err
+		}
 	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, nil
+	model := opencodeAuthModel(ctx, in, deps)
+	if in.Config.Model != "" {
+		model = in.Config.Model
 	}
-	return ports.AgentAuthStatusUnknown, nil
+	for i, arg := range in.Args {
+		if (arg == "--model" || arg == "-m") && i+1 < len(in.Args) {
+			model = in.Args[i+1]
+		}
+		if strings.HasPrefix(arg, "--model=") {
+			model = strings.TrimPrefix(arg, "--model=")
+		}
+	}
+	provider, modelID, _ := strings.Cut(strings.TrimSpace(model), "/")
+	if provider == "" && (in.WorkingDir != "" || in.DataDir != "" || !in.Config.IsZero() ||
+		len(in.Args) > 0 || len(in.Env) > 0 || in.Interactive) {
+		// A launch without a resolved provider cannot borrow device-wide
+		// credentials or aggregate auth-list counts.
+		return ports.AgentAuthStatusUnknown, ctx.Err()
+	}
+	if provider == "ollama" || provider == "lmstudio" ||
+		(provider == "opencode" && (modelID == "big-pickle" || strings.HasSuffix(modelID, "-free"))) {
+		return ports.AgentAuthStatusNotApplicable, nil
+	}
+	for id, names := range opencodeProviderEnv {
+		if provider != "" && provider != id {
+			continue
+		}
+		for _, name := range names {
+			if strings.TrimSpace(deps.Getenv(name)) != "" {
+				return ports.AgentAuthStatusConfigured, nil
+			}
+		}
+	}
+	if provider == "" || provider == "amazon-bedrock" {
+		if evidence := authutil.AWSEvidence(ctx, deps); evidence.Status == ports.AgentAuthStatusConfigured {
+			return evidence.Status, nil
+		}
+	}
+	dataDir := deps.Getenv("XDG_DATA_HOME")
+	if home := opencodeAuthHome(deps); dataDir == "" && home != "" {
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	if dataDir != "" {
+		data, err := authutil.ReadFile(ctx, deps, filepath.Join(dataDir, "opencode", "auth.json"))
+		now := time.Now()
+		if deps.Now != nil {
+			now = deps.Now()
+		}
+		if err == nil && opencodeAuthEntries(data, provider, now) {
+			return ports.AgentAuthStatusConfigured, nil
+		}
+	}
+	// No guessed opencode.db path participates in credential discovery. The
+	// documented auth-list command is the native fallback for global checks;
+	// aggregate counts cannot prove the selected provider has a credential.
+	if provider == "" {
+		if data, err := authutil.RunCommand(ctx, deps, binary, "auth", "list"); err == nil && opencodeAuthListCountRE.Match(data) {
+			return ports.AgentAuthStatusConfigured, nil
+		}
+	}
+	return ports.AgentAuthStatusUnknown, ctx.Err()
+}
+
+func opencodeAuthHome(deps authutil.Dependencies) string {
+	if home := deps.Getenv("HOME"); home != "" {
+		return home
+	}
+	platform := deps.GOOS
+	if platform == "" {
+		platform = runtime.GOOS
+	}
+	if platform == "windows" {
+		return deps.Getenv("USERPROFILE")
+	}
+	return ""
+}
+
+// Model selection follows native config precedence, before inspecting any
+// credentials: global, explicit file, project, config directories, inline.
+func opencodeAuthModel(ctx context.Context, in ports.AgentAuthCheck, deps authutil.Dependencies) string {
+	configHome := deps.Getenv("XDG_CONFIG_HOME")
+	if home := opencodeAuthHome(deps); configHome == "" && home != "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	var paths []string
+	if configHome != "" {
+		for _, name := range []string{"config.json", "opencode.json", "opencode.jsonc"} {
+			paths = append(paths, filepath.Join(configHome, "opencode", name))
+		}
+	}
+	if path := deps.Getenv("OPENCODE_CONFIG"); path != "" {
+		if !filepath.IsAbs(path) && in.WorkingDir != "" {
+			path = filepath.Join(in.WorkingDir, path)
+		}
+		paths = append(paths, path)
+	}
+	if in.WorkingDir != "" && deps.Getenv("OPENCODE_DISABLE_PROJECT_CONFIG") != "1" &&
+		!strings.EqualFold(deps.Getenv("OPENCODE_DISABLE_PROJECT_CONFIG"), "true") {
+		// Reverse nearest-first results, including filename order, so JSONC
+		// follows JSON and the nearest project has highest precedence.
+		found, _ := authutil.FindUpward(ctx, deps, in.WorkingDir, "opencode.jsonc", "opencode.json")
+		for i := len(found) - 1; i >= 0; i-- {
+			paths = append(paths, found[i])
+		}
+		found, _ = authutil.FindUpward(ctx, deps, in.WorkingDir, filepath.Join(".opencode", "opencode.jsonc"), filepath.Join(".opencode", "opencode.json"))
+		for i := len(found) - 1; i >= 0; i-- {
+			paths = append(paths, found[i])
+		}
+	}
+	if home := opencodeAuthHome(deps); home != "" {
+		paths = append(paths, filepath.Join(home, ".opencode", "opencode.json"), filepath.Join(home, ".opencode", "opencode.jsonc"))
+	}
+	if dir := deps.Getenv("OPENCODE_CONFIG_DIR"); dir != "" {
+		if !filepath.IsAbs(dir) && in.WorkingDir != "" {
+			dir = filepath.Join(in.WorkingDir, dir)
+		}
+		paths = append(paths, filepath.Join(dir, "opencode.json"), filepath.Join(dir, "opencode.jsonc"))
+	}
+	model := ""
+	merge := func(data []byte) {
+		var config struct {
+			Model *string `json:"model"`
+		}
+		if json.Unmarshal(authutil.JSONC(data), &config) == nil && config.Model != nil {
+			model = *config.Model
+		}
+	}
+	for _, path := range paths {
+		if data, err := authutil.ReadFile(ctx, deps, path); err == nil {
+			merge(data)
+		}
+	}
+	if content := deps.Getenv("OPENCODE_CONFIG_CONTENT"); content != "" {
+		merge([]byte(content))
+	}
+	return model
+}
+
+// OpenCode accepts JSONC. Strip only comments and trailing commas outside
+// strings, then let encoding/json validate the complete typed config.
+
+type opencodeAuthOutput struct{ data []byte }
+
+func (o *opencodeAuthOutput) Write(p []byte) (int, error) {
+	remaining := authutil.MaxFileSize + 1 - len(o.data)
+	if remaining > len(p) {
+		remaining = len(p)
+	}
+	if remaining > 0 {
+		o.data = append(o.data, p[:remaining]...)
+	}
+	return len(p), nil
+}
+
+var opencodeAuthListCountRE = regexp.MustCompile(`(?m)\b[1-9]\d*\s+(credentials?|environment variables?)\b`)
+
+var opencodeProviderEnv = map[string][]string{
+	"opencode": {"OPENCODE_API_KEY"},
+	"openai":   {"OPENAI_API_KEY"}, "anthropic": {"ANTHROPIC_API_KEY"},
+	"google": {"GEMINI_API_KEY", "GOOGLE_API_KEY"}, "openrouter": {"OPENROUTER_API_KEY"},
+	"deepseek": {"DEEPSEEK_API_KEY"}, "groq": {"GROQ_API_KEY"}, "xai": {"XAI_API_KEY"},
+	"mistral": {"MISTRAL_API_KEY"}, "cohere": {"COHERE_API_KEY"},
 }
 
 var opencodeAPIKeyEnvVars = []string{
-	"OPENCODE_API_KEY",
-	"OPENAI_API_KEY",
-	"ANTHROPIC_API_KEY",
-	"GEMINI_API_KEY",
-	"GOOGLE_API_KEY",
-	"OPENROUTER_API_KEY",
-	"DEEPSEEK_API_KEY",
-	"GROQ_API_KEY",
-	"XAI_API_KEY",
-	"MISTRAL_API_KEY",
-	"COHERE_API_KEY",
+	"OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+	"OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY", "COHERE_API_KEY",
 }
 
-func opencodeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	for _, name := range opencodeAPIKeyEnvVars {
-		if strings.TrimSpace(os.Getenv(name)) != "" {
-			return ports.AgentAuthStatusAuthorized, true, nil
-		}
-	}
-
-	dataDir, ok := opencodeDataDir()
-	if !ok {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	jsonStatus, jsonOK, err := opencodeAuthJSONStatus(filepath.Join(dataDir, "auth.json"))
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if jsonOK && jsonStatus == ports.AgentAuthStatusAuthorized {
-		return jsonStatus, true, nil
-	}
-	if status, ok, err := opencodeDBAuthStatus(ctx, filepath.Join(dataDir, "opencode.db")); err != nil || ok {
-		return status, ok, err
-	}
-	if jsonOK {
-		return jsonStatus, true, nil
-	}
-	return ports.AgentAuthStatusUnknown, false, nil
+type opencodeCredential struct {
+	Type    string  `json:"type"`
+	Key     string  `json:"key"`
+	Access  *string `json:"access"`
+	Refresh *string `json:"refresh"`
+	Expires *int64  `json:"expires"`
 }
 
-func opencodeDataDir() (string, bool) {
-	if dataDir := strings.TrimSpace(os.Getenv("OPENCODE_DATA_DIR")); dataDir != "" {
-		return dataDir, true
-	}
-	if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
-		return filepath.Join(dataHome, "opencode"), true
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", false
-	}
-	return filepath.Join(home, ".local", "share", "opencode"), true
-}
-
-func opencodeAuthJSONStatus(path string) (ports.AgentAuthStatus, bool, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if strings.TrimSpace(string(data)) == "" {
-		return ports.AgentAuthStatusUnknown, true, nil
-	}
-
+func opencodeAuthEntries(data []byte, provider string, now time.Time) bool {
 	var entries map[string]json.RawMessage
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+	if json.Unmarshal(data, &entries) != nil {
+		return false
 	}
-	if len(entries) == 0 {
-		return ports.AgentAuthStatusUnknown, true, nil
-	}
-	for key, value := range entries {
-		if strings.TrimSpace(key) == "" {
+	for id, raw := range entries {
+		if strings.TrimSpace(id) == "" || (provider != "" && strings.TrimRight(id, "/") != provider) {
 			continue
 		}
-		trimmed := strings.TrimSpace(string(value))
-		if trimmed != "" && trimmed != "null" && trimmed != "{}" {
-			return ports.AgentAuthStatusAuthorized, true, nil
+		var credential opencodeCredential
+		if json.Unmarshal(raw, &credential) != nil {
+			continue
 		}
-	}
-	return ports.AgentAuthStatusUnknown, true, nil
-}
-
-func opencodeDBAuthStatus(ctx context.Context, path string) (ports.AgentAuthStatus, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	} else if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro&_pragma=busy_timeout(1000)")
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	defer func() {
-		_ = db.Close()
-	}()
-
-	authorized, known, err := opencodeDBHasAuthorizedAccount(ctx, db)
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if !known {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if authorized {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	return ports.AgentAuthStatusUnknown, true, nil
-}
-
-func opencodeDBHasAuthorizedAccount(ctx context.Context, db *sql.DB) (authorized, known bool, err error) {
-	for _, query := range []string{
-		`SELECT COUNT(*) FROM account_state WHERE active_account_id IS NOT NULL AND trim(active_account_id) != ''`,
-		`SELECT COUNT(*) FROM account WHERE trim(access_token) != ''`,
-		`SELECT COUNT(*) FROM control_account WHERE active = 1 AND trim(access_token) != ''`,
-	} {
-		count, err := opencodeDBCount(ctx, db, query)
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+		switch credential.Type {
+		case "api":
+			if strings.TrimSpace(credential.Key) != "" {
+				return true
+			}
+		case "oauth":
+			if credential.Access == nil || credential.Refresh == nil || credential.Expires == nil || *credential.Expires < 0 {
 				continue
 			}
-			return false, false, err
-		}
-		known = true
-		if count > 0 {
-			return true, true, nil
+			if strings.TrimSpace(*credential.Refresh) != "" || (strings.TrimSpace(*credential.Access) != "" && time.UnixMilli(*credential.Expires).After(now)) {
+				return true
+			}
 		}
 	}
-	return false, known, nil
-}
-
-func opencodeDBCount(ctx context.Context, db *sql.DB, query string) (int, error) {
-	var count int
-	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
-		return 0, err
-	}
-	return count, nil
+	return false
 }
 
 // appendPermissionFlags maps AO's permission modes onto opencode's single

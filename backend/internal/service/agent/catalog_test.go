@@ -613,6 +613,31 @@ func TestRefreshReportsAuthorizedInstalledAgents(t *testing.T) {
 	}
 }
 
+func TestReadinessInfoPreservesAuthenticationNotApplicable(t *testing.T) {
+	status := ports.AgentAuthStatusNotApplicable
+	snapshot := domain.AgentReadinessSnapshot{
+		ID:    "opencode",
+		Label: "OpenCode",
+		Authentication: domain.AgentAuthenticationObservation{
+			State: domain.AgentAuthenticationNotApplicable,
+		},
+	}
+
+	if got := readinessInfo(snapshot).AuthStatus; got != status {
+		t.Fatalf("authStatus = %q, want not_applicable", got)
+	}
+}
+
+func TestInfoAuthStatusSchemaAdvertisesFiveAuthenticationStates(t *testing.T) {
+	field, ok := reflect.TypeOf(Info{}).FieldByName("AuthStatus")
+	if !ok {
+		t.Fatal("Info.AuthStatus field is missing")
+	}
+	if got, want := field.Tag.Get("enum"), "authorized,unauthorized,unknown,configured,not_applicable"; got != want {
+		t.Fatalf("Info.AuthStatus enum = %q, want %q", got, want)
+	}
+}
+
 func TestRefreshDoesNotWaitForSlowAgentProbe(t *testing.T) {
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
 		harnessAgent("codex", "Codex", nil),

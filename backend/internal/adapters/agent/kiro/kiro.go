@@ -26,6 +26,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -37,6 +38,7 @@ type Plugin struct {
 	agentbase.Base
 	binaryMu       sync.Mutex
 	resolvedBinary string
+	authRunner     authprobe.ScopedCmdRunner
 }
 
 // New returns a ready-to-register Kiro adapter.

@@ -177,6 +177,7 @@ type Service struct {
 	logger              *slog.Logger
 	backgroundContext   context.Context
 	agentReadiness      ports.AgentReadinessProvider
+	agents              ports.AgentResolver
 	runBackground       func(func())
 	orchestratorLocksMu sync.Mutex
 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
@@ -225,6 +226,9 @@ type Deps struct {
 	Logger    *slog.Logger
 	// AgentReadiness coordinates advisory native harness checks before launch.
 	AgentReadiness ports.AgentReadinessProvider
+	// Agents identifies adapters whose authentication is checked with the fully
+	// resolved invocation by the manager, instead of device-wide readiness.
+	Agents ports.AgentResolver
 	// BackgroundContext owns best-effort work that must survive an HTTP request
 	// returning but stop with the daemon. It defaults to context.Background for
 	// focused service tests and non-daemon callers.
@@ -245,6 +249,7 @@ func NewWithDeps(d Deps) *Service {
 		backgroundContext = context.Background()
 	}
 	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity}
+	s.agents = d.Agents
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -294,7 +299,13 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			return domain.Session{}, 0, 0, apierr.Invalid("HARNESS_REQUIRED", "harness is required for a standalone session", nil)
 		}
 	}
-	if s.agentReadiness != nil && cfg.Harness != "" {
+	var scopedAuth bool
+	if s.agents != nil {
+		if agent, ok := s.agents.Agent(cfg.Harness); ok {
+			_, scopedAuth = agent.(ports.AgentScopedAuthChecker)
+		}
+	}
+	if s.agentReadiness != nil && cfg.Harness != "" && !scopedAuth {
 		readiness, err := s.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch)
 		if err != nil {
 			return domain.Session{}, 0, 0, err
@@ -1264,7 +1275,7 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatDriverIncompatible):
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
-	case errors.Is(err, ports.ErrChatAuthRequired):
+	case errors.Is(err, ports.ErrChatAuthRequired), errors.Is(err, ports.ErrAgentScopedAuthUnauthorized):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
 	case errors.Is(err, ports.ErrUnsupportedEffort):
 		return apierr.Invalid("UNSUPPORTED_EFFORT", err.Error(), nil)

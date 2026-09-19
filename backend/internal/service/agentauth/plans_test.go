@@ -31,7 +31,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"amp", "Log in to Amp", "amp", "Native browser flow", "https://ampcode.com/manual", "", ActionLogin, []string{"amp", "login"}},
 		{"auggie", "Log in to Auggie", "auggie", "Native browser flow", "https://docs.augmentcode.com/cli/overview", "", ActionLogin, []string{"auggie", "login"}},
 		{"droid", "Log in to Droid", "droid", "Select Open login after Droid finishes starting", "https://docs.factory.ai/droid-cli/cli-reference", "/login\r", ActionLogin, []string{"droid"}},
-		{"crush", "Log in to Crush", "crush", "Native Charm Hyper login flow; GitHub Copilot remains available as a platform option", "https://github.com/charmbracelet/crush", "", ActionLogin, []string{"crush", "login"}},
+		{"crush", "Log in to Crush", "crush", "Native Charm Hyper login flow; GitHub Copilot and OpenAI are also supported (crush login openai)", "https://github.com/charmbracelet/crush", "", ActionLogin, []string{"crush", "login"}},
 		{"cline", "Log in to Cline", "cline", "Native authentication flow", "https://github.com/cline/cline", "", ActionLogin, []string{"cline", "auth"}},
 		{"goose", "Set up Goose", "goose", "Native provider configuration; AO forwards terminal input without persisting or logging the raw input, while Goose controls credential storage", "https://block.github.io/goose/index.html", "", ActionSetup, []string{"goose", "configure"}},
 		{"qwen", "Set up Qwen", "qwen", "Select Open setup after Qwen finishes starting to configure a model provider", "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/", "i\x7f/auth\r", ActionSetup, []string{"qwen"}},

@@ -42,6 +42,15 @@ const (
 	AgentAuthStatusUnauthorized AgentAuthStatus = "unauthorized"
 	// AgentAuthStatusUnknown means the daemon could not determine auth status.
 	AgentAuthStatusUnknown AgentAuthStatus = "unknown"
+	// AgentAuthStatusConfigured means local credentials are present, but the
+	// agent has not confirmed them with its provider.
+	AgentAuthStatusConfigured AgentAuthStatus = "configured"
+	// AgentAuthStatusNotApplicable means the selected provider explicitly
+	// requires no authentication.
+	AgentAuthStatusNotApplicable AgentAuthStatus = "not_applicable"
+	// AgentAuthStatusUnavailable is retained for installation-only compatibility.
+	// New authentication checks should report installation through AgentBinaryResolver.
+	AgentAuthStatusUnavailable AgentAuthStatus = "unavailable"
 )
 
 // Agent is the contract every CLI coding agent adapter (claude-code, codex, …)
@@ -76,6 +85,24 @@ type Agent interface {
 // a cheap local authentication status probe.
 type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
+}
+
+// AgentAuthCheck describes the effective native invocation. Env contains the
+// launch overrides; adapters may consult inherited environment for other keys.
+// Args is the native command, before AO's process-supervisor wrapper.
+type AgentAuthCheck struct {
+	WorkingDir  string
+	DataDir     string
+	Config      AgentConfig
+	Env         map[string]string
+	Args        []string
+	Interactive bool
+}
+
+// AgentScopedAuthChecker optionally checks the selected workspace/provider.
+// Its results are ephemeral and must never update device-wide readiness.
+type AgentScopedAuthChecker interface {
+	AuthStatusFor(context.Context, AgentAuthCheck) (AgentAuthStatus, error)
 }
 
 // AgentBinaryResolver is the optional capability adapters expose when their

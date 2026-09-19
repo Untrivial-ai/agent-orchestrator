@@ -17,9 +17,9 @@ func TestCLIStatus_Mocked(t *testing.T) {
 		wantError  bool
 	}{
 		{
-			name:       "authorized status check",
+			name:       "generic positive status remains unknown",
 			mockOutput: "User is logged in and authenticated",
-			wantStatus: ports.AgentAuthStatusAuthorized,
+			wantStatus: ports.AgentAuthStatusUnknown,
 		},
 		{
 			name:       "unauthorized status check",
@@ -98,8 +98,11 @@ func TestCLIStatusTimeoutDegradesToUnknown(t *testing.T) {
 	}
 }
 
-func TestStatusFromTextExplicitFalseKeys(t *testing.T) {
+func TestStatusFromTextExplicitNegativeEvidence(t *testing.T) {
 	tests := []string{
+		`You are not logged in`,
+		`User logged out`,
+		`No credentials found`,
 		`{ "authenticated": false }`,
 		`{ "authorized": false }`,
 		`authenticated=false`,
@@ -117,17 +120,26 @@ func TestStatusFromTextExplicitFalseKeys(t *testing.T) {
 	}
 }
 
-func TestStatusFromTextExplicitTrueKeys(t *testing.T) {
+func TestStatusFromTextDoesNotAuthorizeGenericEvidence(t *testing.T) {
 	tests := []string{
+		`credentials found`,
+		`logged in`,
+		`authenticated`,
+		`authorized`,
+		`token valid`,
+		`api key found`,
 		`{ "authenticated": true }`,
 		`{ "authorized": true }`,
 		`{ "loggedIn": true }`,
+		`{ "logged_in": true }`,
+		`unfamiliar status output`,
+		``,
 	}
 
 	for _, out := range tests {
 		t.Run(out, func(t *testing.T) {
-			if got := StatusFromText(out); got != ports.AgentAuthStatusAuthorized {
-				t.Fatalf("StatusFromText(%q) = %q, want %q", out, got, ports.AgentAuthStatusAuthorized)
+			if got := StatusFromText(out); got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("StatusFromText(%q) = %q, want %q", out, got, ports.AgentAuthStatusUnknown)
 			}
 		})
 	}

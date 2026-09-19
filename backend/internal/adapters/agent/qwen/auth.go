@@ -1,281 +1,509 @@
 package qwen
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
+var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
-// AuthStatus returns the plugin's local authentication status.
+// AuthStatus checks device-wide defaults using the scoped resolver.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
+	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
+}
+
+// AuthStatusFor checks credentials for the effective Qwen invocation.
+func (p *Plugin) AuthStatusFor(ctx context.Context, scope ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	if status, ok, err := qwenLocalAuthStatus(ctx); err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	} else if ok {
-		return status, nil
-	}
-	// Qwen documents /doctor as an in-session command. Do not invoke the CLI
-	// with a "doctor" positional argument: it would enter the interactive
-	// surface rather than provide a documented, non-interactive auth probe.
-	return ports.AgentAuthStatusUnknown, nil
+	// /doctor is an interactive command, not a safe native status probe.
+	return qwenAuthStatus(ctx, scope, authutil.Dependencies{})
 }
 
-var qwenAPIKeyEnvVars = []string{
-	"QWEN_API_KEY",
-	"BAILIAN_CODING_PLAN_API_KEY",
-	"OPENAI_API_KEY",
-	"ANTHROPIC_API_KEY",
-	"GEMINI_API_KEY",
-	"GOOGLE_API_KEY",
-	"OPENROUTER_API_KEY",
-	"REQUESTY_API_KEY",
-	"DASHSCOPE_API_KEY",
-	"ZAI_API_KEY",
+type qwenAuthModel struct {
+	ID      string `json:"id"`
+	BaseURL string `json:"baseUrl"`
+	EnvKey  string `json:"envKey"`
+	WireAPI string `json:"wireApi"`
 }
 
-func qwenLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
+type qwenAuthSettings struct {
+	Security struct {
+		Auth struct {
+			SelectedType string `json:"selectedType"`
+			APIKey       string `json:"apiKey"`
+			BaseURL      string `json:"baseUrl"`
+		} `json:"auth"`
+	} `json:"security"`
+	Model struct {
+		Name    string `json:"name"`
+		BaseURL string `json:"baseUrl"`
+	} `json:"model"`
+	ModelProviders   map[string][]qwenAuthModel `json:"modelProviders"`
+	ProviderProtocol map[string]string          `json:"providerProtocol"`
+	Env              map[string]string          `json:"env"`
+	providerOrder    []string
+}
+
+func qwenAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil.Dependencies) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+		return ports.AgentAuthStatusUnknown, err
 	}
-	for _, name := range qwenAPIKeyEnvVars {
-		if strings.TrimSpace(os.Getenv(name)) != "" {
-			return ports.AgentAuthStatusAuthorized, true, nil
+	d.WorkingDir = scope.WorkingDir
+	baseEnv := d.Getenv
+	if baseEnv == nil {
+		baseEnv = os.Getenv
+	}
+	env := func(key string) string {
+		if value, ok := scope.Env[key]; ok {
+			return value
+		}
+		return baseEnv(key)
+	}
+	d.Getenv = env
+	if d.GOOS == "" {
+		d.GOOS = runtime.GOOS
+	}
+	home := env("HOME")
+	if d.GOOS == "windows" {
+		home = env("USERPROFILE")
+	}
+	qwenHome := env("QWEN_HOME")
+	if qwenHome == "" {
+		if home != "" {
+			qwenHome = filepath.Join(home, ".qwen")
+		}
+	} else if qwenHome == "~" {
+		qwenHome = home
+	} else if strings.HasPrefix(qwenHome, "~/") {
+		qwenHome = filepath.Join(home, qwenHome[2:])
+	}
+	system, defaults := qwenSystemAuthPaths(d.GOOS, env)
+	paths := []string{defaults}
+	if qwenHome != "" {
+		paths = append(paths, filepath.Join(qwenHome, "settings.json"))
+	}
+	if filepath.IsAbs(scope.WorkingDir) {
+		found, _ := authutil.FindUpward(ctx, d, scope.WorkingDir, filepath.Join(".qwen", "settings.json"))
+		// Native discovery selects the closest project settings file.
+		if len(found) > 0 {
+			paths = append(paths, found[0])
 		}
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if home == "" {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	qwenHome := qwenHomeDir(home)
-	settingsPath := filepath.Join(qwenHome, "settings.json")
-	if status, ok, err := qwenAuthStatusFromSettings(settingsPath); err != nil || ok {
-		return status, ok, err
-	}
-	names, err := qwenConfiguredEnvNamesFromSettings(settingsPath)
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	return qwenGlobalEnvAuthStatus(qwenHome, home, names...)
-}
-
-// qwenHomeDir mirrors Qwen Code's QWEN_HOME override for global state. Project
-// settings and .env files deliberately are not considered here: the catalog's
-// auth probe has no session workspace, so the daemon's current directory is not
-// a valid substitute for a project directory.
-func qwenHomeDir(home string) string {
-	if path := strings.TrimSpace(os.Getenv("QWEN_HOME")); path != "" {
-		if path == "~" {
-			return home
-		}
-		if strings.HasPrefix(path, "~/") {
-			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
-		}
-		return path
-	}
-	return filepath.Join(home, ".qwen")
-}
-
-func qwenAuthStatusFromSettings(path string) (ports.AgentAuthStatus, bool, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if strings.TrimSpace(string(data)) == "" {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-
-	var root any
-	if err := json.Unmarshal(data, &root); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if containsQwenAPIKey(root) || qwenConfiguredEnvPresent(root) || qwenSettingsEnvPresent(root, qwenConfiguredEnvNames(root)...) {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	return ports.AgentAuthStatusUnknown, false, nil
-}
-
-// qwenSettingsEnvPresent recognizes the documented settings.json "env" map,
-// whose values are loaded as Qwen's lowest-priority credential source.
-func qwenSettingsEnvPresent(value any, extraNames ...string) bool {
-	root, ok := value.(map[string]any)
-	if !ok {
-		return false
-	}
-	env, ok := root["env"].(map[string]any)
-	if !ok {
-		return false
-	}
-	for name, value := range env {
-		if qwenKnownAPIKeyEnvVar(name, extraNames...) && stringSetting(value) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func qwenConfiguredEnvPresent(value any) bool {
-	switch v := value.(type) {
-	case map[string]any:
-		for key, child := range v {
-			if strings.EqualFold(key, "envKey") && strings.TrimSpace(stringSetting(child)) != "" &&
-				strings.TrimSpace(os.Getenv(stringSetting(child))) != "" {
-				return true
+	paths = append(paths, system)
+	cfg := qwenAuthSettings{Env: map[string]string{}}
+	for _, path := range paths {
+		data, err := authutil.ReadFile(ctx, d, path)
+		if err != nil {
+			stat := d.Lstat
+			if stat == nil {
+				stat = os.Lstat
 			}
-			if qwenConfiguredEnvPresent(child) {
-				return true
+			if _, statErr := stat(path); !os.IsNotExist(statErr) {
+				return ports.AgentAuthStatusUnknown, ctx.Err()
 			}
-		}
-	case []any:
-		for _, child := range v {
-			if qwenConfiguredEnvPresent(child) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func qwenConfiguredEnvNamesFromSettings(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var root any
-	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, err
-	}
-	return qwenConfiguredEnvNames(root), nil
-}
-
-func qwenConfiguredEnvNames(value any) []string {
-	var names []string
-	var visit func(any)
-	visit = func(value any) {
-		switch v := value.(type) {
-		case map[string]any:
-			for key, child := range v {
-				if strings.EqualFold(key, "envKey") {
-					if name := stringSetting(child); name != "" && !containsQwenEnvName(names, name) {
-						names = append(names, name)
-					}
-				}
-				visit(child)
-			}
-		case []any:
-			for _, child := range v {
-				visit(child)
-			}
-		}
-	}
-	visit(value)
-	return names
-}
-
-func qwenGlobalEnvAuthStatus(qwenHome, home string, extraNames ...string) (ports.AgentAuthStatus, bool, error) {
-	// Qwen falls back to these user-scoped .env files only after its
-	// workspace search. The workspace search cannot be performed safely by a
-	// global catalog probe, which has no workspace input.
-	for _, path := range []string{filepath.Join(qwenHome, ".env"), filepath.Join(home, ".env")} {
-		status, ok, err := qwenEnvFileAuthStatus(path, extraNames...)
-		if err != nil || ok {
-			return status, ok, err
-		}
-	}
-	return ports.AgentAuthStatusUnknown, false, nil
-}
-
-func qwenEnvFileAuthStatus(path string, extraNames ...string) (ports.AgentAuthStatus, bool, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
-		if !ok || !qwenKnownAPIKeyEnvVar(strings.TrimSpace(key), extraNames...) {
 			continue
 		}
-		if strings.Trim(strings.TrimSpace(value), `"'`) != "" {
-			return ports.AgentAuthStatusAuthorized, true, nil
+		if !cfg.readJSON(data) {
+			// An invalid settings layer leaves the effective provider and
+			// credentials ambiguous, even if a lower layer contains a key.
+			return ports.AgentAuthStatusUnknown, ctx.Err()
 		}
 	}
-	return ports.AgentAuthStatusUnknown, false, nil
+
+	var dotenvPaths []string
+	if filepath.IsAbs(scope.WorkingDir) {
+		found, _ := authutil.FindUpward(ctx, d, scope.WorkingDir, filepath.Join(".qwen", ".env"), ".env")
+		if len(found) > 0 {
+			dotenvPaths = append(dotenvPaths, found[0])
+		}
+	}
+	if qwenHome != "" {
+		dotenvPaths = append(dotenvPaths, filepath.Join(qwenHome, ".env"))
+	}
+	if home != "" {
+		dotenvPaths = append(dotenvPaths, filepath.Join(home, ".qwen", ".env"), filepath.Join(home, ".env"))
+	}
+	fileEnv := make(map[string]string)
+	for _, path := range dotenvPaths {
+		data, err := authutil.ReadFile(ctx, d, path)
+		if err != nil {
+			stat := d.Lstat
+			if stat == nil {
+				stat = os.Lstat
+			}
+			if _, statErr := stat(path); !os.IsNotExist(statErr) {
+				return ports.AgentAuthStatusUnknown, ctx.Err()
+			}
+			continue
+		}
+		values, err := authutil.ParseDotenv(data)
+		if err != nil {
+			return ports.AgentAuthStatusUnknown, ctx.Err()
+		}
+		for key, value := range values {
+			if fileEnv[key] == "" {
+				fileEnv[key] = value
+			}
+		}
+	}
+	// Process/launch env > closest project dotenv > home dotenv > settings.env.
+	d.Getenv = func(key string) string {
+		if value := env(key); value != "" {
+			return value
+		}
+		if value := fileEnv[key]; value != "" {
+			return value
+		}
+		return cfg.Env[key]
+	}
+	status := cfg.evidence(ctx, scope, d)
+	return status, ctx.Err()
 }
 
-func qwenKnownAPIKeyEnvVar(name string, extraNames ...string) bool {
-	for _, candidate := range qwenAPIKeyEnvVars {
-		if name == candidate {
-			return true
+func qwenSystemAuthPaths(goos string, env func(string) string) (string, string) {
+	system := env("QWEN_CODE_SYSTEM_SETTINGS_PATH")
+	if system == "" {
+		switch goos {
+		case "darwin":
+			system = "/Library/Application Support/QwenCode/settings.json"
+		case "windows":
+			system = `C:\ProgramData\qwen-code\settings.json`
+		default:
+			system = "/etc/qwen-code/settings.json"
 		}
 	}
-	for _, candidate := range extraNames {
-		if name == candidate {
-			return true
+	defaults := env("QWEN_CODE_SYSTEM_DEFAULTS_PATH")
+	if defaults == "" {
+		if goos == "windows" && strings.Contains(system, `\`) {
+			defaults = system[:strings.LastIndex(system, `\`)+1] + "system-defaults.json"
+		} else {
+			defaults = filepath.Join(filepath.Dir(system), "system-defaults.json")
 		}
 	}
-	return false
+	return system, defaults
 }
 
-func containsQwenEnvName(names []string, target string) bool {
-	for _, name := range names {
-		if name == target {
-			return true
-		}
+func (c *qwenAuthSettings) readJSON(data []byte) bool {
+	// Only schema-owned fields are decoded. Model-provider and protocol maps
+	// replace their whole lower-priority map, matching Qwen's merge strategy.
+	var layer struct {
+		Security         json.RawMessage
+		Model            json.RawMessage
+		ModelProviders   json.RawMessage `json:"modelProviders"`
+		ProviderProtocol json.RawMessage `json:"providerProtocol"`
+		Env              map[string]string
 	}
-	return false
-}
-
-func containsQwenAPIKey(value any) bool {
-	switch v := value.(type) {
-	case map[string]any:
-		for key, child := range v {
-			if strings.EqualFold(key, "apiKey") || strings.EqualFold(key, "apikey") {
-				if stringSetting(child) != "" {
-					return true
+	if !qwenAuthObject(data, "security", "model", "modelProviders", "providerProtocol", "env") || json.Unmarshal(data, &layer) != nil {
+		return false
+	}
+	if len(layer.Security) > 0 {
+		var security struct{ Auth json.RawMessage }
+		if !qwenAuthObject(layer.Security, "auth") || json.Unmarshal(layer.Security, &security) != nil {
+			return false
+		}
+		if len(security.Auth) > 0 && !qwenAuthObject(security.Auth, "selectedType", "apiKey", "baseUrl") {
+			return false
+		}
+		value := c.Security
+		if json.Unmarshal(layer.Security, &value) != nil {
+			return false
+		}
+		c.Security = value
+	}
+	if len(layer.Model) > 0 {
+		value := c.Model
+		if !qwenAuthObject(layer.Model, "name", "baseUrl") || json.Unmarshal(layer.Model, &value) != nil {
+			return false
+		}
+		c.Model = value
+	}
+	if len(layer.ModelProviders) > 0 {
+		var entries map[string]json.RawMessage
+		if json.Unmarshal(layer.ModelProviders, &entries) != nil {
+			return false
+		}
+		c.ModelProviders = make(map[string][]qwenAuthModel)
+		c.providerOrder = nil
+		// Preserve JSON declaration order: Qwen uses the first matching
+		// route when no persisted endpoint disambiguates duplicate IDs.
+		decoder := json.NewDecoder(bytes.NewReader(layer.ModelProviders))
+		if _, err := decoder.Token(); err != nil {
+			return false
+		}
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return false
+			}
+			id, ok := token.(string)
+			if !ok {
+				return false
+			}
+			var raw json.RawMessage
+			if decoder.Decode(&raw) != nil {
+				return false
+			}
+			var entries []json.RawMessage
+			if json.Unmarshal(raw, &entries) != nil || entries == nil {
+				return false
+			}
+			models := make([]qwenAuthModel, 0, len(entries))
+			for _, entry := range entries {
+				var model qwenAuthModel
+				if !qwenAuthObject(entry, "id", "baseUrl", "envKey", "wireApi") || json.Unmarshal(entry, &model) != nil {
+					return false
 				}
-				continue
+				models = append(models, model)
 			}
-			if containsQwenAPIKey(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range v {
-			if containsQwenAPIKey(child) {
-				return true
-			}
+			c.ModelProviders[id] = models
+			c.providerOrder = append(c.providerOrder, id)
 		}
 	}
-	return false
+	if len(layer.ProviderProtocol) > 0 {
+		var protocols map[string]string
+		if json.Unmarshal(layer.ProviderProtocol, &protocols) != nil {
+			return false
+		}
+		c.ProviderProtocol = protocols
+	}
+	for key, value := range layer.Env {
+		c.Env[key] = value
+	}
+	return true
 }
 
-func stringSetting(value any) string {
-	text, ok := value.(string)
-	if !ok {
+// A JSON null must not silently preserve a previous auth setting during merge.
+// Validate only the explicitly named fields of this schema object, never an
+// unrelated settings subtree or a recursive key/token search.
+func qwenAuthObject(data []byte, nonnullFields ...string) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || fields == nil {
+		return false
+	}
+	for key, value := range fields {
+		if !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			continue
+		}
+		for _, field := range nonnullFields {
+			if strings.EqualFold(key, field) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+type qwenProtocolEnv struct {
+	Key, BaseURL string
+	Models       []string
+}
+
+var qwenProtocolVars = map[string]qwenProtocolEnv{
+	"openai":           {Key: "OPENAI_API_KEY", BaseURL: "OPENAI_BASE_URL", Models: []string{"OPENAI_MODEL", "QWEN_MODEL"}},
+	"openai-responses": {Key: "OPENAI_API_KEY", BaseURL: "OPENAI_BASE_URL", Models: []string{"OPENAI_MODEL"}},
+	"anthropic":        {Key: "ANTHROPIC_API_KEY", BaseURL: "ANTHROPIC_BASE_URL", Models: []string{"ANTHROPIC_MODEL"}},
+	"gemini":           {Key: "GEMINI_API_KEY", Models: []string{"GEMINI_MODEL"}},
+	"vertex-ai":        {Key: "GOOGLE_API_KEY", Models: []string{"GOOGLE_MODEL"}},
+}
+
+func (c *qwenAuthSettings) evidence(ctx context.Context, scope ports.AgentAuthCheck, d authutil.Dependencies) ports.AgentAuthStatus {
+	authType, model, cliKey, cliURL := c.Security.Auth.SelectedType, scope.Config.Model, "", ""
+	for i := 0; i < len(scope.Args); i++ {
+		arg := scope.Args[i]
+		if arg == "--" {
+			break
+		}
+		name, value, inline := strings.Cut(arg, "=")
+		switch name {
+		case "--auth-type", "--model", "-m", "--openai-api-key", "--openai-base-url":
+		default:
+			continue
+		}
+		if !inline {
+			if i+1 >= len(scope.Args) {
+				return ports.AgentAuthStatusUnknown
+			}
+			i++
+			value = scope.Args[i]
+		}
+		switch name {
+		case "--auth-type":
+			authType = value
+		case "--model", "-m":
+			model = value
+		case "--openai-api-key":
+			cliKey = value
+		case "--openai-base-url":
+			cliURL = value
+		}
+	}
+	if authType == "" {
+		authType = qwenAuthTypeFromEnv(d.Getenv)
+	}
+	vars, known := qwenProtocolVars[authType]
+	if !known {
+		return ports.AgentAuthStatusUnknown
+	}
+	pairedURL := ""
+	if model == "" {
+		model = c.Model.Name
+		pairedURL = qwenAuthValue(c.Model.BaseURL, d.Getenv)
+	}
+	if model == "" {
+		for _, key := range vars.Models {
+			if model = strings.TrimSpace(d.Getenv(key)); model != "" {
+				break
+			}
+		}
+	}
+	model = qwenAuthValue(model, d.Getenv)
+	if model == "" {
+		return ports.AgentAuthStatusUnknown
+	}
+	entry, found := c.selectedModel(authType, model, pairedURL, d.Getenv)
+	baseURL := ""
+	if found {
+		baseURL = qwenAuthValue(entry.BaseURL, d.Getenv)
+	}
+	if baseURL == "" {
+		baseURL = qwenAuthValue(cliURL, d.Getenv)
+	}
+	if baseURL == "" && vars.BaseURL != "" {
+		baseURL = strings.TrimSpace(d.Getenv(vars.BaseURL))
+	}
+	if baseURL == "" {
+		baseURL = qwenAuthValue(c.Security.Auth.BaseURL, d.Getenv)
+	}
+	var endpoint *url.URL
+	if baseURL != "" {
+		var err error
+		endpoint, err = url.Parse(baseURL)
+		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" {
+			return ports.AgentAuthStatusUnknown
+		}
+	}
+	if (authType == "openai" || authType == "openai-responses") && endpoint == nil {
+		return ports.AgentAuthStatusUnknown
+	}
+	if found && entry.EnvKey != "" {
+		if strings.TrimSpace(d.Getenv(entry.EnvKey)) != "" {
+			return ports.AgentAuthStatusConfigured
+		}
+		// An explicit credential slot must not silently choose another principal.
+		if strings.TrimSpace(cliKey) != "" && (authType == "openai" || authType == "openai-responses") {
+			return ports.AgentAuthStatusConfigured
+		}
+		return ports.AgentAuthStatusUnknown
+	}
+	if strings.TrimSpace(cliKey) != "" && (authType == "openai" || authType == "openai-responses") {
+		return ports.AgentAuthStatusConfigured
+	}
+	if strings.TrimSpace(d.Getenv(vars.Key)) != "" || qwenAuthValue(c.Security.Auth.APIKey, d.Getenv) != "" {
+		return ports.AgentAuthStatusConfigured
+	}
+	if authType == "vertex-ai" && strings.TrimSpace(d.Getenv("GOOGLE_CLOUD_PROJECT")) != "" {
+		return authutil.GoogleADCEvidence(ctx, d).Status
+	}
+	if found && endpoint != nil && (authType == "openai" || authType == "openai-responses") {
+		host := endpoint.Hostname()
+		ip := net.ParseIP(host)
+		if host == "localhost" || (ip != nil && ip.IsLoopback()) {
+			return authutil.NoAuthEvidence(true).Status
+		}
+	}
+	return ports.AgentAuthStatusUnknown
+}
+
+func qwenAuthTypeFromEnv(env func(string) string) string {
+	if env("QWEN_OAUTH") != "" {
+		return "qwen-oauth"
+	}
+	if env("OPENAI_API_KEY") != "" && (env("OPENAI_MODEL") != "" || env("QWEN_MODEL") != "") && env("OPENAI_BASE_URL") != "" {
+		return "openai"
+	}
+	if env("GEMINI_API_KEY") != "" && env("GEMINI_MODEL") != "" {
+		return "gemini"
+	}
+	if (env("GOOGLE_API_KEY") != "" || env("GOOGLE_CLOUD_PROJECT") != "") && env("GOOGLE_MODEL") != "" {
+		return "vertex-ai"
+	}
+	if env("ANTHROPIC_API_KEY") != "" && env("ANTHROPIC_MODEL") != "" && env("ANTHROPIC_BASE_URL") != "" {
+		return "anthropic"
+	}
+	return ""
+}
+
+func (c *qwenAuthSettings) selectedModel(authType, model, baseURL string, env func(string) string) (qwenAuthModel, bool) {
+	// The selected endpoint disambiguates first, then the native first-ID
+	// fallback applies. OpenAI may use Responses only when no Chat route matches.
+	protocols := []string{authType}
+	if authType == "openai" {
+		protocols = append(protocols, "openai-responses")
+	}
+	for _, exactURL := range []bool{true, false} {
+		if exactURL && baseURL == "" {
+			continue
+		}
+		for _, requested := range protocols {
+			for _, id := range c.providerOrder {
+				protocol := id
+				if mapped, ok := c.ProviderProtocol[id]; ok {
+					protocol = mapped
+				}
+				for _, entry := range c.ModelProviders[id] {
+					effective := protocol
+					if protocol == "openai" || protocol == "openai-responses" {
+						if entry.WireAPI == "responses" {
+							effective = "openai-responses"
+						} else if entry.WireAPI == "chat-completions" {
+							effective = "openai"
+						} else if entry.WireAPI != "" {
+							continue
+						}
+					} else if entry.WireAPI != "" {
+						continue
+					}
+					if entry.ID != model || effective != requested {
+						continue
+					}
+					if !exactURL || qwenAuthValue(entry.BaseURL, env) == baseURL {
+						return entry, true
+					}
+				}
+			}
+		}
+	}
+	return qwenAuthModel{}, false
+}
+
+func qwenAuthValue(value string, env func(string) string) string {
+	// No command expansion; unresolved settings placeholders are not secrets.
+	if strings.Contains(value, "$(") || strings.ContainsAny(value, "`\n") {
 		return ""
 	}
-	text = strings.TrimSpace(text)
-	if text == "" || strings.EqualFold(text, "null") || strings.EqualFold(text, "none") {
+	unresolved := false
+	value = os.Expand(value, func(key string) string {
+		v := env(key)
+		if strings.TrimSpace(v) == "" {
+			unresolved = true
+		}
+		return v
+	})
+	if unresolved {
 		return ""
 	}
-	return text
+	return strings.TrimSpace(value)
 }
