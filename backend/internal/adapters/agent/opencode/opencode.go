@@ -23,7 +23,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -420,22 +419,6 @@ func opencodePermissionConfig(mode ports.PermissionMode) map[string]string {
 	}
 }
 
-// autoPermissionRules emulate --auto where no flag exists, as Chat's inline
-// overlay does. The carve-out repeats OpenCode's own default for `read`,
-// because a bare wildcard on the agent would outrank it and start reading the
-// .env files it denies — a default --auto itself keeps.
-func autoPermissionRules() map[string]any {
-	return map[string]any{
-		"*": "allow",
-		"read": map[string]any{
-			"*":             "allow",
-			"*.env":         "deny",
-			"*.env.*":       "deny",
-			"*.env.example": "allow",
-		},
-	}
-}
-
 func opencodeConfigEnvPrefix(permissions ports.PermissionMode, inlinePrompt, promptFile, sessionID string) ([]string, string, error) {
 	permission := opencodePermissionConfig(permissions)
 	// Bypass goes on the agent, not in the config body. OpenCode's native flag
@@ -508,189 +491,20 @@ var acpAgentPermissions = map[string]ports.PermissionMode{
 	ACPAgentBypass:      ports.PermissionModeBypassPermissions,
 }
 
-// acpAgentPermission composes one tier's ruleset for the inline overlay.
+// acpAgentPermission is the ruleset AO writes for one tier.
 //
-// Chat has no CLI flags, so auto is assembled to mean what --auto means: allow
-// everything, then restore every rule the user or repository explicitly denied.
-// Without that second step a blanket grant on the agent, which outranks the
-// merged config, would also pass denies — and only bypass may do that.
-func acpAgentPermission(mode ports.PermissionMode, policy any) any {
+// Only bypass gets one. Accept edits and auto are answered per request instead,
+// the way OpenCode's own --auto is: its Auto handler replies to each permission
+// request rather than rewriting config, so a rule the user or repository denied
+// never raises a request and stays denied without AO having to know about it.
+// Reconstructing that policy here would mean reading every source OpenCode
+// merges — global, project, .opencode, managed, remote — and being wrong in
+// AO's favour whenever a source was unreadable.
+func acpAgentPermission(mode ports.PermissionMode) any {
 	if ports.NormalizePermissionMode(mode) == ports.PermissionModeBypassPermissions {
 		return "allow"
 	}
-	out := map[string]any{}
-	if ports.NormalizePermissionMode(mode) == ports.PermissionModeAuto {
-		out = autoPermissionRules()
-	}
-	for key, action := range opencodePermissionConfig(mode) {
-		out[key] = action
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	switch rules := policy.(type) {
-	case string:
-		// A blanket policy, or one AO could not parse. Either way OpenCode's own
-		// resolution is stricter than the tier, so AO adds nothing.
-		if rules != "allow" {
-			return nil
-		}
-	case map[string]any:
-		mergePermissionRules(out, denyRules(rules))
-	}
-	return out
-}
-
-// denyRules keeps only what a policy forbids, including single patterns inside
-// a tool's rule map. Everything else is a default the tier is entitled to
-// change.
-func denyRules(rules map[string]any) map[string]any {
-	out := map[string]any{}
-	for key, value := range rules {
-		switch rule := value.(type) {
-		case string:
-			if rule == "deny" {
-				out[key] = rule
-			}
-		case map[string]any:
-			if nested := denyRules(rule); len(nested) > 0 {
-				out[key] = nested
-			}
-		}
-	}
-	return out
-}
-
-// projectPermissionRules collects the permission policy OpenCode will load for
-// this workspace. OpenCode reads the working directory and then walks up to the
-// nearest Git directory, and loads a `.opencode` directory in each alongside
-// the bare config file, so AO reads the same set rather than guessing at a
-// subset. Later sources override earlier ones, matching OpenCode's own order.
-//
-// A file AO cannot parse, and a blanket rule other than "allow", both answer
-// "deny": neither is a policy AO may grant against, and acpAgentPermission
-// contributes nothing when it sees one.
-func projectPermissionRules(workspacePath string) any {
-	merged := map[string]any{}
-	for _, path := range projectConfigPaths(workspacePath) {
-		rules, ok := readPermissionRules(path)
-		if !ok {
-			return "deny"
-		}
-		switch policy := rules.(type) {
-		case string:
-			if policy != "allow" {
-				return policy
-			}
-		case map[string]any:
-			mergePermissionRules(merged, policy)
-		}
-	}
-	if len(merged) == 0 {
-		return nil
-	}
-	return merged
-}
-
-// projectConfigPaths lists every config OpenCode may load for this workspace,
-// in the order it applies them: the global config, then the bare project files
-// from the furthest ancestor down, then every `.opencode` directory, then the
-// home one. Auto has to see a deny wherever it was written, not only in the
-// repository, because --auto honours all of them.
-func projectConfigPaths(workspacePath string) []string {
-	if strings.TrimSpace(workspacePath) == "" {
-		return nil
-	}
-	paths := globalConfigPaths()
-	dirs := []string{}
-	for dir := filepath.Clean(workspacePath); ; {
-		dirs = append(dirs, dir)
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	// Bare project files: OpenCode reverses the upward walk, so the furthest
-	// ancestor merges first and the nearest wins. It looks for .jsonc before
-	// .json, so within one directory .json merges last.
-	for i := len(dirs) - 1; i >= 0; i-- {
-		paths = append(paths,
-			filepath.Join(dirs[i], "opencode.jsonc"), filepath.Join(dirs[i], "opencode.json"))
-	}
-	// Every .opencode directory merges after every bare file, and in walk order
-	// rather than reversed — so the furthest wins, the opposite direction. See
-	// ConfigPaths.files and ConfigPaths.directories upstream.
-	for _, dir := range dirs {
-		paths = append(paths,
-			filepath.Join(dir, ".opencode", "opencode.json"),
-			filepath.Join(dir, ".opencode", "opencode.jsonc"))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths,
-			filepath.Join(home, ".opencode", "opencode.json"),
-			filepath.Join(home, ".opencode", "opencode.jsonc"))
-	}
-	return paths
-}
-
-// globalConfigPaths are the user-level configs OpenCode merges before anything
-// in the project: its global config directory, then an explicit OPENCODE_CONFIG.
-func globalConfigPaths() []string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if strings.TrimSpace(dir) == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	paths := []string{
-		filepath.Join(dir, "opencode", "opencode.json"),
-		filepath.Join(dir, "opencode", "opencode.jsonc"),
-	}
-	if custom := strings.TrimSpace(os.Getenv(opencodeConfigEnvVar)); custom != "" {
-		paths = append(paths, custom)
-	}
-	return paths
-}
-
-// mergePermissionRules merges one config's rules over another the way OpenCode
-// does, with remeda's mergeDeep: a nested rule map merges key by key, so a
-// pattern one config denies survives another config's rules for the same tool.
-func mergePermissionRules(dst, src map[string]any) {
-	for key, value := range src {
-		nested, isMap := value.(map[string]any)
-		current, wasMap := dst[key].(map[string]any)
-		if !isMap || !wasMap {
-			dst[key] = value
-			continue
-		}
-		merged := maps.Clone(current)
-		mergePermissionRules(merged, nested)
-		dst[key] = merged
-	}
-}
-
-// readPermissionRules reports a config's permission policy. The second result
-// is false only when the file exists and AO cannot parse it.
-func readPermissionRules(path string) (any, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, true
-	}
-	var config struct {
-		Permission any `json:"permission"`
-	}
-	if err := json.Unmarshal(data, &config); err != nil {
-		// Comments and trailing commas are valid for OpenCode and not for
-		// encoding/json. AO declines to grant rather than guess.
-		return nil, false
-	}
-	return config.Permission, true
+	return nil
 }
 
 // ACPAgentForPermissions is the agent a session starts on.
@@ -712,10 +526,9 @@ func ACPAgentForPermissions(permissions ports.PermissionMode) string {
 // remains untouched, preserving its normal global, custom, project, provider,
 // and credential configuration.
 func PrepareACPConfigContent(
-	existing, systemPrompt, workspacePath string,
+	existing, systemPrompt string,
 	permissions ports.PermissionMode,
 ) (string, error) {
-	project := projectPermissionRules(workspacePath)
 	config := map[string]any{}
 	if strings.TrimSpace(existing) != "" {
 		if err := json.Unmarshal([]byte(existing), &config); err != nil {
@@ -735,7 +548,7 @@ func PrepareACPConfigContent(
 	for name, mode := range acpAgentPermissions {
 		agents[name] = opencodeAgentSettings{
 			Mode: "primary", Prompt: systemPrompt,
-			Permission: acpAgentPermission(mode, project),
+			Permission: acpAgentPermission(mode),
 		}
 	}
 	config["agent"] = agents

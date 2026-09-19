@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	acpsdk "github.com/coder/acp-go-sdk"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -157,30 +157,21 @@ func TestConfigureInjectsThePermissionTiersOpenCodeEnforces(t *testing.T) {
 				if agent.Prompt != "Follow AO worker rules." {
 					t.Fatalf("tier %q prompt = %q", tier, agent.Prompt)
 				}
-				if rules, ok := agent.Permission.(map[string]any); ok {
-					read, named := rules["read"].(map[string]any)
-					if named && read["*.env"] != "deny" {
-						t.Fatalf("tier %q reads .env files; OpenCode denies them by default", tier)
-					}
-				}
 			}
 			if config.Agent["ao-default"].Permission != nil {
 				t.Fatalf("default tier = %#v, want the user's own rules", config.Agent["ao-default"].Permission)
 			}
-			// Accept edits adds the one grant OpenCode has no mode for; auto is
-			// --auto, so it allows whatever is not explicitly denied.
-			acceptEdits, _ := config.Agent["ao-accept-edits"].Permission.(map[string]any)
-			if acceptEdits["edit"] != "allow" || len(acceptEdits) != 1 {
-				t.Fatalf("accept-edits tier = %#v", acceptEdits)
+			// Accept edits and auto write no rules at all: AO answers their
+			// requests instead, so whatever the user or repository denied is
+			// never asked about and stays denied.
+			for _, tier := range []string{"ao-default", "ao-accept-edits", "ao-auto"} {
+				if got := config.Agent[tier].Permission; got != nil {
+					t.Fatalf("tier %q permission = %#v, want the provider's own policy", tier, got)
+				}
 			}
-			auto, _ := config.Agent["ao-auto"].Permission.(map[string]any)
-			if auto["*"] != "allow" {
-				t.Fatalf("auto tier = %#v", auto)
-			}
-			// Except OpenCode's own .env deny, which --auto keeps too.
-			read, _ := auto["read"].(map[string]any)
-			if read["*.env"] != "deny" {
-				t.Fatalf("auto read rules = %#v, want the .env deny kept", auto["read"])
+			// Bypass is the exception, and OpenCode enforces it.
+			if got := config.Agent["ao-bypass"].Permission; got != "allow" {
+				t.Fatalf("bypass tier = %#v, want scalar full access", got)
 			}
 			// OpenCode's scalar full-access form: a wildcard rule can still lose
 			// to a more specific deny contributed by another config layer.
@@ -214,68 +205,6 @@ func TestConfigureKeepsTheUsersOwnInlineConfig(t *testing.T) {
 	}
 }
 
-func TestConfigureNeverRelaxesAWorktreePolicy(t *testing.T) {
-	workspace := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: elsewhere\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
-		[]byte(`{"permission":{"bash":"deny","edit":{"*":"allow","infra/**":"deny"}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	agents := configuredAgents(t, acpdriver.LaunchConfig{
-		WorkspacePath: workspace, Permissions: ports.PermissionModeAuto,
-	})
-	// AO grants what the repository has not ruled on, and keeps its rules for
-	// what it has — including a nested pattern map, which survives whole.
-	// Both tiers keep every explicit deny, which is what --auto does; a rule the
-	// repository merely asks about is the tier's to change.
-	for _, tier := range []string{"ao-accept-edits", "ao-auto"} {
-		permission, ok := agents[tier]["permission"].(map[string]any)
-		if !ok {
-			t.Fatalf("tier %q permission = %#v", tier, agents[tier]["permission"])
-		}
-		if permission["bash"] != "deny" {
-			t.Fatalf("tier %q bash = %#v, want the worktree's deny", tier, permission["bash"])
-		}
-		edit, ok := permission["edit"].(map[string]any)
-		if !ok || edit["infra/**"] != "deny" {
-			t.Fatalf("tier %q edit = %#v, want the worktree's pattern deny", tier, permission["edit"])
-		}
-	}
-	if permission, _ := agents["ao-auto"]["permission"].(map[string]any); permission["*"] != "allow" {
-		t.Fatalf("auto tier = %#v, want everything else allowed", permission)
-	}
-	// Bypass is the documented exception and stays full access.
-	if got := agents["ao-bypass"]["permission"]; got != "allow" {
-		t.Fatalf("bypass permission = %#v, want OpenCode's scalar full access", got)
-	}
-}
-
-func TestConfigureDeclinesToGrantAgainstAnUnreadablePolicy(t *testing.T) {
-	workspace := t.TempDir()
-	// Comments are valid for OpenCode and not for encoding/json. A policy AO
-	// cannot read is one it must not override.
-	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: elsewhere\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
-		[]byte("{\n  // repo policy\n  \"permission\": {\"bash\": \"deny\"}\n}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	agents := configuredAgents(t, acpdriver.LaunchConfig{
-		WorkspacePath: workspace, Permissions: ports.PermissionModeAuto,
-	})
-	for _, tier := range []string{"ao-accept-edits", "ao-auto"} {
-		if got := agents[tier]["permission"]; got != nil {
-			t.Fatalf("tier %q permission = %#v, want no AO rules", tier, got)
-		}
-	}
-	if got := agents["ao-bypass"]["permission"]; got != "allow" {
-		t.Fatalf("bypass permission = %#v, want OpenCode's scalar full access", got)
-	}
-}
-
 func configuredAgents(t *testing.T, cfg acpdriver.LaunchConfig) map[string]map[string]any {
 	t.Helper()
 	_, env, err := configure(context.Background(), cfg)
@@ -289,4 +218,42 @@ func configuredAgents(t *testing.T, cfg acpdriver.LaunchConfig) map[string]map[s
 		t.Fatalf("decode config: %v", err)
 	}
 	return config.Agent
+}
+
+func TestPermissionPolicyAnswersRequestsTheWayAutoDoes(t *testing.T) {
+	edit, execute, fetch := acpsdk.ToolKindEdit, acpsdk.ToolKindExecute, acpsdk.ToolKindFetch
+	options := []acpsdk.PermissionOption{
+		{OptionId: "reject", Kind: acpsdk.PermissionOptionKindRejectOnce},
+		{OptionId: "once", Kind: acpsdk.PermissionOptionKindAllowOnce},
+		{OptionId: "always", Kind: acpsdk.PermissionOptionKindAllowAlways},
+	}
+	for _, test := range []struct {
+		name   string
+		mode   ports.PermissionMode
+		kind   *acpsdk.ToolKind
+		wantID acpsdk.PermissionOptionId
+	}{
+		{name: "default parks an edit", mode: ports.PermissionModeDefault, kind: &edit},
+		{name: "accept edits answers an edit", mode: ports.PermissionModeAcceptEdits, kind: &edit, wantID: "once"},
+		{name: "accept edits parks a command", mode: ports.PermissionModeAcceptEdits, kind: &execute},
+		{name: "auto answers a command", mode: ports.PermissionModeAuto, kind: &execute, wantID: "once"},
+		{name: "auto answers a fetch", mode: ports.PermissionModeAuto, kind: &fetch, wantID: "once"},
+		{name: "auto answers an unclassified request", mode: ports.PermissionModeAuto, wantID: "once"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id, handled := permissionPolicy(test.mode, acpsdk.RequestPermissionRequest{
+				ToolCall: acpsdk.ToolCallUpdate{Kind: test.kind}, Options: options,
+			})
+			if id != test.wantID || handled != (test.wantID != "") {
+				t.Fatalf("selection = (%q, %v), want (%q, %v)", id, handled, test.wantID, test.wantID != "")
+			}
+		})
+	}
+
+	// A denied tool never raises a request, so nothing here can override it —
+	// which is the whole reason AO stopped writing rules for these modes.
+	if _, handled := permissionPolicy(ports.PermissionModeAuto,
+		acpsdk.RequestPermissionRequest{Options: options[:1]}); handled {
+		t.Fatal("auto answered a request offering no allow-once option")
+	}
 }
