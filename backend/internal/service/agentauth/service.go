@@ -6,6 +6,9 @@ package agentauth
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
@@ -64,6 +67,11 @@ type Plan struct {
 	command          []string
 	title            string
 	terminalInput    string
+	// prepareWorkspace, when set, runs reviewed harness-specific setup against
+	// the plan's stable auth workspace before the terminal launches (for
+	// example pre-recording workspace trust so a first-run dialog cannot
+	// swallow the login flow).
+	prepareWorkspace func(context.Context, string) error
 }
 
 // TerminalOpener opens the daemon-trusted terminal used for a native
@@ -84,21 +92,24 @@ type StartResult struct {
 
 // Service resolves the fixed authentication registry through AO's registered
 // harness adapters, with direct PATH lookup only for callers without one.
+// dataDir roots the stable per-harness auth workspaces used by plans with a
+// prepareWorkspace hook.
 type Service struct {
 	executables ExecutableFinder
 	agents      AgentBinaryResolver
 	terminals   TerminalOpener
+	dataDir     string
 }
 
 // New creates an authentication-plan service.
 func New(executables ExecutableFinder, terminals TerminalOpener) *Service {
-	return NewWithAgentResolver(executables, nil, terminals)
+	return NewWithAgentResolver(executables, nil, terminals, "")
 }
 
 // NewWithAgentResolver creates a service that uses AO's adapter-aware binary
 // resolver as the authoritative validation and discovery boundary.
-func NewWithAgentResolver(executables ExecutableFinder, agents AgentBinaryResolver, terminals TerminalOpener) *Service {
-	return &Service{executables: executables, agents: agents, terminals: terminals}
+func NewWithAgentResolver(executables ExecutableFinder, agents AgentBinaryResolver, terminals TerminalOpener, dataDir string) *Service {
+	return &Service{executables: executables, agents: agents, terminals: terminals, dataDir: dataDir}
 }
 
 // Plans returns every known harness plan in stable Harness settings order.
@@ -141,10 +152,18 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 	if s.terminals == nil {
 		return StartResult{}, apierr.Internal("AGENT_AUTH_TERMINAL_UNAVAILABLE", "Authentication terminal service is unavailable.")
 	}
-	terminal, err := s.terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{
+	input := shellterm.OpenCommandTerminalInput{
 		Argv:  plan.command,
 		Title: plan.title,
-	})
+	}
+	if plan.prepareWorkspace != nil {
+		workingDir, err := s.prepareAuthWorkspace(ctx, plan)
+		if err != nil {
+			return StartResult{}, err
+		}
+		input.WorkingDir = workingDir
+	}
+	terminal, err := s.terminals.OpenCommandTerminal(ctx, input)
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -155,6 +174,27 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 		TerminalInput: plan.terminalInput,
 		Terminal:      terminal,
 	}, nil
+}
+
+// authWorkspaceRootName mirrors shellterm's auth-workspace root so all
+// daemon-owned authentication terminals live under one directory; plans with a
+// prepareWorkspace hook get a stable per-harness subdirectory instead of a
+// throwaway per-handle one, so harness state the hook seeds (for example
+// Kimi's workspace-trust record) persists across login attempts.
+const authWorkspaceRootName = "auth-workspace"
+
+func (s *Service) prepareAuthWorkspace(ctx context.Context, plan Plan) (string, error) {
+	if strings.TrimSpace(s.dataDir) == "" {
+		return "", apierr.Internal("AGENT_AUTH_WORKSPACE_UNAVAILABLE", "Authentication workspace is unavailable.")
+	}
+	dir := filepath.Join(s.dataDir, authWorkspaceRootName, plan.AgentID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create authentication workspace: %w", err)
+	}
+	if err := plan.prepareWorkspace(ctx, dir); err != nil {
+		return "", fmt.Errorf("prepare %s authentication workspace: %w", plan.AgentID, err)
+	}
+	return dir, nil
 }
 
 func (s *Service) resolve(ctx context.Context, plan Plan) Plan {

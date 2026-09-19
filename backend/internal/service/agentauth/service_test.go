@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -98,7 +100,7 @@ func TestStartFallsBackToAgentResolvedBinaryOutsidePATH(t *testing.T) {
 
 	opener := &recordingTerminalOpener{}
 	resolver := managedExecutableResolver{agentID: "claude-code", path: "/Users/test/.claude/local/claude"}
-	svc := NewWithAgentResolver(resolver, resolver, opener)
+	svc := NewWithAgentResolver(resolver, resolver, opener, "")
 
 	_, err := svc.Start(context.Background(), "claude-code")
 	if err != nil {
@@ -114,7 +116,7 @@ func TestStartPrefersAdapterResolvedBinaryOverGenericPATHMatch(t *testing.T) {
 
 	opener := &recordingTerminalOpener{}
 	resolver := managedExecutableResolver{agentID: "muse", path: "/validated/meta/muse"}
-	svc := NewWithAgentResolver(foundExecutable("muse"), resolver, opener)
+	svc := NewWithAgentResolver(foundExecutable("muse"), resolver, opener, "")
 
 	_, err := svc.Start(context.Background(), "muse")
 	if err != nil {
@@ -122,6 +124,40 @@ func TestStartPrefersAdapterResolvedBinaryOverGenericPATHMatch(t *testing.T) {
 	}
 	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/validated/meta/muse", "login"}) {
 		t.Fatalf("terminal argv = %#v, want adapter-validated Muse binary", got)
+	}
+}
+
+func TestStartPreparesKimiAuthWorkspaceWithSeededTrust(t *testing.T) {
+	// Not parallel: isolates HOME/KIMI_CODE_HOME so the kimi adapter's trust
+	// seed lands in a throwaway home instead of the developer's real one.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KIMI_CODE_HOME", "")
+
+	dataDir := t.TempDir()
+	opener := &recordingTerminalOpener{}
+	svc := NewWithAgentResolver(foundExecutable("kimi"), nil, opener, dataDir)
+
+	if _, err := svc.Start(context.Background(), "kimi"); err != nil {
+		t.Fatalf("Start(kimi): %v", err)
+	}
+	wantDir := filepath.Join(dataDir, "auth-workspace", "kimi")
+	if opener.input.WorkingDir != wantDir {
+		t.Fatalf("terminal working dir = %q, want %q", opener.input.WorkingDir, wantDir)
+	}
+	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/test/bin/kimi"}) {
+		t.Fatalf("terminal argv = %#v, want kimi TUI launch", got)
+	}
+	matches, err := filepath.Glob(filepath.Join(home, ".kimi-code", "workspace-trust", "wd_*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("seeded trust records = %v (err %v), want exactly one", matches, err)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read trust record: %v", err)
+	}
+	if !strings.Contains(string(data), `"root":"`+wantDir+`"`) {
+		t.Fatalf("trust record = %s, want root %q", data, wantDir)
 	}
 }
 
