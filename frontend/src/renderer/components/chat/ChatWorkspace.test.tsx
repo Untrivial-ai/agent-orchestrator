@@ -1592,6 +1592,129 @@ describe("ChatWorkspace timeline", () => {
 	});
 });
 
+describe("ChatWorkspace workflow stage bar", () => {
+	function sessionAt(overrides: Partial<WorkspaceSession> = {}): WorkspaceSession {
+		return { ...chatSession, ...overrides };
+	}
+
+	/** A live turn with no decision waiting, so the stage bar shows progress. */
+	function workingSnapshot(): ConversationSnapshot {
+		return {
+			...chatFixture,
+			items: chatFixture.items.filter(
+				(item) =>
+					!(
+						item.kind === "activity" &&
+						item.activityKind === "approval" &&
+						item.status === "pending"
+					),
+			),
+		};
+	}
+
+	it("offers building confirmation and commit review when a plan has finished", () => {
+		const onConfirmBuilding = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				session={sessionAt({ workflowMode: "planning" })}
+				onConfirmBuilding={onConfirmBuilding}
+			/>,
+		);
+
+		const bar = screen.getByTestId("workflow-stage-bar");
+		expect(within(bar).getByRole("button", { name: "Confirm building" })).toBeInTheDocument();
+		expect(within(bar).getByRole("button", { name: "Commit" })).toBeInTheDocument();
+
+		fireEvent.click(within(bar).getByRole("button", { name: "Confirm building" }));
+		expect(onConfirmBuilding).toHaveBeenCalledTimes(1);
+	});
+
+	it("drops the building confirmation once the session is building", () => {
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				session={sessionAt({ workflowMode: "building" })}
+			/>,
+		);
+
+		const bar = screen.getByTestId("workflow-stage-bar");
+		expect(within(bar).queryByRole("button", { name: "Confirm building" })).not.toBeInTheDocument();
+		expect(within(bar).getByRole("button", { name: "Commit" })).toBeInTheDocument();
+	});
+
+	it("shows an animated ring instead of actions while the agent is working", () => {
+		const snapshot = workingSnapshot();
+		render(
+			<ChatWorkspace
+				snapshot={snapshot}
+				session={sessionAt({ workflowMode: "building" })}
+			/>,
+		);
+
+		const bar = screen.getByTestId("workflow-stage-bar");
+		expect(bar).toHaveTextContent("Building…");
+		expect(bar.querySelector(".animate-spin")).toBeInTheDocument();
+		expect(within(bar).queryByRole("button")).not.toBeInTheDocument();
+	});
+
+	it("labels the working ring with the planning stage", () => {
+		render(<ChatWorkspace snapshot={workingSnapshot()} session={sessionAt({ workflowMode: "planning" })} />);
+
+		expect(screen.getByTestId("workflow-stage-bar")).toHaveTextContent("Planning…");
+	});
+
+	it("approves the pending edit when the user reviews to commit", async () => {
+		const onDecide = vi.fn();
+		const onSend = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={chatFixture}
+				session={sessionAt({ workflowMode: "building" })}
+				onDecide={onDecide}
+				onSend={onSend}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+
+		await waitFor(() => expect(onDecide).toHaveBeenCalledWith("0", "accept"));
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it("sends the commit instruction when no approval is waiting", async () => {
+		const onSend = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				session={sessionAt({ workflowMode: "building" })}
+				onSend={onSend}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+
+		await waitFor(() =>
+			expect(onSend).toHaveBeenCalledWith(
+				"Commit the changes and wait for PR approval.",
+				undefined,
+				undefined,
+			),
+		);
+	});
+
+	it("hides stage actions for a session whose pull request already exists", () => {
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				session={sessionAt({ kanbanColumn: "validating" })}
+			/>,
+		);
+
+		expect(screen.queryByTestId("workflow-stage-bar")).not.toBeInTheDocument();
+	});
+});
+
 describe("automation reports", () => {
 	it("renders browser annotation transport as a compact feedback card", () => {
 		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;

@@ -179,6 +179,7 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionIncarnation,
 	acceptedClientMessageIds,
 	workflowMode,
+	stageBar,
 }: {
 	onSend: (
 		text: string,
@@ -263,6 +264,12 @@ export const ChatComposer = memo(function ChatComposer({
 	acceptedClientMessageIds?: ReadonlySet<string>;
 	/** User-controlled delivery stage; tints the composer border. */
 	workflowMode?: WorkflowMode;
+	/**
+	 * Session workflow stage actions rendered above the composer frame (the
+	 * working ring, "Confirm building", "Commit"). Owned by the chat
+	 * surface so the composer stays a pure shell for message entry.
+	 */
+	stageBar?: ReactNode;
 }) {
 	const translateDraft = useChatDraftTranslation();
 	const draftScope = useMemo<ChatDraftScope | undefined>(
@@ -1373,6 +1380,7 @@ export const ChatComposer = memo(function ChatComposer({
 					{queuedDockWithSteer}
 				</div>
 				) : null}
+				{stageBar ? <div className="mb-2">{stageBar}</div> : null}
 				{form}
 			</div>
 		);

@@ -8,7 +8,7 @@
  */
 
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { memo, useEffect, useRef, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
 	useConversation,
 	useConversationCommands,
@@ -19,6 +19,7 @@ import {
 	useWorkspaceFilePaths,
 } from "../../hooks/useConversation";
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
+import { useSetWorkflowMode } from "../../hooks/useSetWorkflowMode";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
 import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
@@ -154,6 +155,23 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	// boundary that decides whether switching to Terminal needs user consent.
 	const snapshot = queriedSnapshot?.sessionId === session.id ? queriedSnapshot : undefined;
 	const commands = useConversationCommands(session.id);
+	// The delivery stage is user-controlled state persisted on the session. A
+	// plan or build command typed during the review stage moves the session back
+	// to the matching lane; the composer stage bar confirms it explicitly.
+	const setWorkflowMode = useSetWorkflowMode();
+	const routeWorkflowFromCommand = useCallback(
+		(text: string) => {
+			const first = text.trim().split(/\s+/)[0]?.toLowerCase();
+			if (!first) return;
+			const current = session.workflowMode ?? "building";
+			if (first.startsWith("plan") && current !== "planning") {
+				setWorkflowMode.mutate({ sessionId: session.id, workflowMode: "planning" });
+			} else if (first.startsWith("build") && current !== "building") {
+				setWorkflowMode.mutate({ sessionId: session.id, workflowMode: "building" });
+			}
+		},
+		[session.id, session.workflowMode, setWorkflowMode],
+	);
 	const projectPermissions = useRememberProjectPermissions(session.workspaceId, snapshot?.harness);
 	const {
 		acknowledgeAcceptedTurn,
@@ -363,10 +381,14 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				loadingOlder={isLoadingOlder}
 				onLoadOlder={loadOlder}
 				busy={commands.busy}
-				onSend={(text, attachments, clientMessageId) =>
-					commands.send({ text, attachments, clientMessageId })}
+				onSend={(text, attachments, clientMessageId) => {
+					routeWorkflowFromCommand(text);
+					return commands.send({ text, attachments, clientMessageId });
+				}}
 				commandError={commands.error}
 				onDecide={commands.resolve}
+				onConfirmBuilding={() =>
+					setWorkflowMode.mutate({ sessionId: session.id, workflowMode: "building" })}
 				onResolveInput={commands.resolveInput}
 				onInterrupt={commands.interrupt}
 				onResumeAgent={() => {

@@ -29,7 +29,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
+import { ArrowDown, Loader2, LoaderCircle, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
@@ -137,6 +137,7 @@ import {
 	type ConversationBranchPoint,
 	type ConversationItem,
 	type ConversationMessage,
+	type DecisionOption,
 	type TurnDiff,
 	type TurnSettings,
 } from "../../types/conversation";
@@ -175,6 +176,20 @@ type ChatAuxiliaryTab =
 	| { key: string; kind: "reviewer"; terminal: { handleId: string; harness: string } }
 	| { key: string; kind: "shell"; terminal: ShellTerminal }
 	| { key: string; kind: "workspace"; tab: WorkspaceTab };
+
+/**
+ * The provider decision "Commit" resolves the pending approval with.
+ * Prefers the semantic one-shot allow, then an id that names acceptance, then
+ * whatever the provider offered, mirroring the ApprovalCard heuristics.
+ */
+function allowOnceApprovalDecision(decisions: DecisionOption[] | undefined): DecisionOption | undefined {
+	const options = decisions ?? [];
+	return (
+		options.find((decision) => decision.kind === "allow_once") ??
+		options.find((decision) => /(allow|approve|accept)/i.test(decision.id)) ??
+		options[0]
+	);
+}
 
 function DraggableChatTab({ children, value }: { children: ReactNode; value: string }) {
 	const dragControls = useDragControls();
@@ -286,6 +301,11 @@ export interface ChatWorkspaceProps {
 		clientMessageId?: string,
 	) => void | Promise<unknown>;
 	onDecide?: (requestId: string, decisionId: string) => void;
+	/**
+	 * Confirm a finished planning stage by moving the session to building.
+	 * Owned by the surface that can persist it; absent hides the action.
+	 */
+	onConfirmBuilding?: () => void;
 	onResolveInput?: (
 		requestId: string,
 		action: "accept" | "decline" | "cancel",
@@ -530,6 +550,7 @@ function ChatWorkspaceContent({
 	onLoadOlder,
 	onSend,
 	onDecide,
+	onConfirmBuilding,
 	onResolveInput,
 	onInterrupt,
 	commandError,
@@ -589,6 +610,7 @@ function ChatWorkspaceContent({
 	draftScope,
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
+	const { t } = useTranslation();
 	const turn = activeTurn(snapshot);
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
@@ -1094,6 +1116,76 @@ function ChatWorkspaceContent({
 	const stableSettings = useStableValue(snapshot.settings);
 	const stableModelReroute = useStableValue(snapshot.modelReroute);
 	const stablePendingApproval = useStableValue(pendingApproval);
+	// Delivery-stage actions for the finished session. Replaces the daemon's
+	// "Awaiting PR" phrase in both places it shows: the composer stage bar here
+	// and the board card. `working` drives the animated ring; the idle buttons
+	// advance the workflow: confirm planning is done, or approve the pending
+	// edit so the agent commits and the session waits on PR approval.
+	const workflowTone = session?.workflowMode === "planning" ? "planning" : "building";
+	const working = Boolean(turn) || busy;
+	const prePR = !session?.kanbanColumn || session.kanbanColumn === "building";
+	const pendingApprovalRequest = Boolean(stablePendingApproval?.requestId);
+	const confirmBuilding = useCallback(
+		() => {
+			if (newWorkDisabled) return;
+			onConfirmBuilding?.();
+		},
+		[newWorkDisabled, onConfirmBuilding],
+	);
+	const reviewToCommit = useCallback(
+		async () => {
+			if (!session || newWorkDisabled) return;
+			const approval = stablePendingApproval;
+			const decision = approval ? allowOnceApprovalDecision(approval.decisions) : undefined;
+			if (approval?.requestId && decision) {
+				onDecide?.(approval.requestId, decision.id);
+				return;
+			}
+			await handleComposerSend("Commit the changes and wait for PR approval.");
+		},
+		[handleComposerSend, newWorkDisabled, onDecide, session, stablePendingApproval, t],
+	);
+	const stageBar = useMemo(() => {
+		if (!session || snapshot.controller.state === "stopped") return null;
+		// A running turn shows progress, unless the agent is blocked on a decision
+		// the user can settle right here.
+		if (working && !pendingApprovalRequest) {
+			return (
+				<div
+					className="flex items-center gap-2 px-1 text-2xs font-medium text-muted-foreground"
+					data-testid="workflow-stage-bar"
+				>
+					<LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-foreground" />
+					<span>{workflowTone === "planning" ? "Planning…" : "Building…"}</span>
+				</div>
+			);
+		}
+		if (newWorkDisabled || !prePR) return null;
+		return (
+			<div className="flex items-center gap-2 px-1" data-testid="workflow-stage-bar">
+				{workflowTone === "planning" && onConfirmBuilding && !pendingApprovalRequest ? (
+					<Button variant="outline" size="sm" onClick={confirmBuilding}>
+						Confirm building
+					</Button>
+				) : null}
+				<Button variant="outline" size="sm" onClick={() => void reviewToCommit()}>
+					Commit
+				</Button>
+			</div>
+		);
+	}, [
+		confirmBuilding,
+		newWorkDisabled,
+		onConfirmBuilding,
+		pendingApprovalRequest,
+		prePR,
+		reviewToCommit,
+		session,
+		snapshot.controller.state,
+		t,
+		workflowTone,
+		working,
+	]);
 	const composerSettings = useMemo(
 		() =>
 			onChooseSettings || onChooseConfigOption ? (
@@ -1455,6 +1547,7 @@ function ChatWorkspaceContent({
 									draftSessionIncarnation={draftScope.incarnation}
 									acceptedClientMessageIds={acceptedClientMessageIds}
 									workflowMode={session?.workflowMode}
+									stageBar={stageBar}
 								/>
 							</div>
 						</div>
