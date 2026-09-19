@@ -1901,8 +1901,6 @@
 	],
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
-	"newTask.tuningRequiresChat": "Die Modellabstimmung erfordert derzeit den Chat-Modus; TUI-Aufgaben verwenden Anbieterstandards.",
-	"newTask.tuiTuningDefaults": "Der TUI-Fallback verwendet Anbieterstandards; die Modellabstimmung erfordert den Chat-Modus.",
 	"settings.models.effort": "Aufwand",
 	"settings.models.providerDefault": "Anbieterstandard",
 	"settings.models.unsupportedTuning": "Die {{role}}Modellabstimmung wird vom ausgewählten Modell nicht mehr unterstützt. Wählen Sie vor dem Speichern einen unterstützten Wert.",

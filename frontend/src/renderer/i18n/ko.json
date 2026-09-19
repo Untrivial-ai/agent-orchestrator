@@ -1901,8 +1901,6 @@
 	],
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
-	"newTask.tuningRequiresChat": "현재 모델 조정에는 채팅 모드가 필요하며 TUI 작업은 제공자 기본값을 사용합니다.",
-	"newTask.tuiTuningDefaults": "TUI 대체 모드는 제공자 기본값을 사용하며 모델 조정에는 채팅 모드가 필요합니다.",
 	"settings.models.effort": "추론 수준",
 	"settings.models.providerDefault": "제공자 기본값",
 	"settings.models.unsupportedTuning": "선택한 모델에서 {{role}}모델 조정을 더 이상 지원하지 않습니다. 저장하기 전에 지원되는 값을 선택하세요.",

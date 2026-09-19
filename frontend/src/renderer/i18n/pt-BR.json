@@ -1929,8 +1929,6 @@
 	],
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
-	"newTask.tuningRequiresChat": "O ajuste de modelo atualmente requer o modo Chat; tarefas TUI usam os padrões do provedor.",
-	"newTask.tuiTuningDefaults": "O fallback TUI usa os padrões do provedor; o ajuste de modelo requer o modo Chat.",
 	"settings.models.effort": "Esforço",
 	"settings.models.providerDefault": "Padrão do provedor",
 	"settings.models.unsupportedTuning": "O ajuste de modelo de {{role}}não é mais compatível com o modelo selecionado. Escolha um valor compatível antes de salvar.",
