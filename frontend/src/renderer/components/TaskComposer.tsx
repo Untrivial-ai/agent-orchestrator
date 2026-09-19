@@ -389,6 +389,7 @@ export function TaskComposer({
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
 				model: requestedModel,
+				// Only explicit Codex picks set this; agent changes reset it, and TUI retries preserve it.
 				effort: effortTouched ? effort : undefined,
 				mode: interfaceMode,
 				approvalMode,
