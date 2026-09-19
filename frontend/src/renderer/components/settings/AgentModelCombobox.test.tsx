@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -176,6 +176,66 @@ describe("AgentModelCombobox", () => {
 		expect(screen.getByText("Configure the model in OpenCode, then refresh.")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Refresh models" }));
 		expect(onRefresh).toHaveBeenCalledOnce();
+	});
+
+	it("keeps refresh visible beside search and prevents duplicate scope refreshes", async () => {
+		let finish!: () => void;
+		const onRefresh = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+		renderCombobox(Array.from({ length: 10 }, (_, index) => ({ id: `model-${index}`, label: `Model ${index}` })), {
+			onRefresh,
+			lastSuccessAt: "2026-09-07T08:00:00Z",
+		});
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		const search = screen.getByRole("searchbox", { name: "Search worker model" });
+		const refresh = screen.getByRole("button", { name: "Refresh models" });
+		expect(search.parentElement?.parentElement).toContainElement(refresh);
+		expect(screen.getByText(/Last updated/)).toBeInTheDocument();
+		await userEvent.click(refresh);
+		const busy = screen.getByRole("button", { name: /Refreshing/ });
+		expect(busy).toBeDisabled();
+		await userEvent.click(busy);
+		expect(onRefresh).toHaveBeenCalledOnce();
+		finish();
+		await waitFor(() => expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled());
+	});
+
+	it("shows a compact retryable persisted refresh error", async () => {
+		const onRefresh = vi.fn();
+		renderCombobox([{ id: "cached", label: "Cached model" }], {
+			onRefresh,
+			refreshError: "Provider temporarily unavailable",
+			retryAt: "2026-09-07T09:30:00Z",
+		});
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		const retry = screen.getByRole("button", { name: /Retry refresh/ });
+		expect(retry).toHaveAttribute("title", "Provider temporarily unavailable");
+		await userEvent.click(retry);
+		expect(onRefresh).toHaveBeenCalledOnce();
+	});
+
+	it("does not display a retry time when no retry is scheduled", async () => {
+		renderCombobox([{ id: "cached", label: "Cached model" }], {
+			refreshError: "Retries exhausted",
+			retryAt: null,
+		});
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		expect(screen.getByRole("button", { name: /Retry refresh/ })).not.toHaveTextContent("·");
+	});
+
+	it("preserves a saved selection while a refreshed catalog no longer lists it", async () => {
+		const view = renderCombobox([{ id: "saved-model", label: "Saved model" }], { value: "saved-model" });
+		expect(screen.getByRole("button", { name: "Worker model" })).toHaveTextContent("Saved model");
+		view.rerender(
+			<AgentModelCombobox
+				aria-label="Worker model"
+				value="saved-model"
+				models={[{ id: "new-model", label: "New model" }]}
+				allowCustom
+				onChange={view.onChange}
+				onCustom={view.onCustom}
+			/>,
+		);
+		expect(screen.getByRole("button", { name: "Worker model" })).toHaveTextContent("saved-model");
 	});
 
 	it("does not expose free text for fixed model catalogs", async () => {

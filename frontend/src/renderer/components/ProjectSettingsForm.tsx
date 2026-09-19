@@ -777,7 +777,11 @@ function AgentModelField({
 						customModelEntry={customModelEntry}
 						agentLabel={agentId}
 						onRefresh={refreshCatalog}
-						disabled={query.isFetching || agentId === ""}
+						refreshing={catalog?.refreshState === "queued" || catalog?.refreshState === "refreshing"}
+						lastSuccessAt={catalog?.lastSuccessAt}
+						refreshError={catalog?.refreshError}
+						retryAt={catalog?.retryAt}
+						disabled={(query.isFetching && !catalog) || agentId === ""}
 						onChange={selectCatalogModel}
 						onCustom={selectCustomModel}
 						triggerClassName="justify-end"

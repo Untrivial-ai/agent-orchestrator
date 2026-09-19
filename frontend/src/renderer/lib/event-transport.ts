@@ -57,6 +57,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			const pendingConversationSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
 			const pendingEditorHandoffSessions = new Set<string>();
+			const pendingModelCatalogScopes = new Map<string, { agentId: string; projectId: string }>();
 			let workspaceInvalidationPending = false;
 			let allConversationsInvalidationPending = false;
 			let allEditorHandoffsInvalidationPending = false;
@@ -129,10 +130,15 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(["session-interface-transition", sessionId]);
 				}
 				pendingInterfaceTransitionSessions.clear();
+				for (const scope of pendingModelCatalogScopes.values()) {
+					invalidate(["agent-models", scope.agentId, scope.projectId]);
+				}
+				pendingModelCatalogScopes.clear();
 			};
 			const refreshWorkspaces = (event?: Event) => {
 				if (disposed) return;
 				let conversationOnly = false;
+				let modelCatalogOnly = false;
 				if (event === undefined) {
 					// A lifecycle refresh -- reconnect, daemon status change, base-URL change --
 					// carries no event, so we cannot know which conversations moved. Normally the
@@ -160,8 +166,18 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 								? (decoded.payload as {
 										conversationId?: unknown;
 										interfaceTransitionId?: unknown;
+										kind?: unknown;
+										agentId?: unknown;
+										projectId?: unknown;
 								  })
 								: undefined;
+						if (payload?.kind === "model_catalog" && typeof payload.agentId === "string" && typeof payload.projectId === "string") {
+							pendingModelCatalogScopes.set(`${payload.agentId}\0${payload.projectId}`, {
+								agentId: payload.agentId,
+								projectId: payload.projectId,
+							});
+							modelCatalogOnly = true;
+						}
 						if (
 							typeof decoded.sessionId === "string" &&
 							decoded.sessionId &&
@@ -193,7 +209,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						// cannot target a conversation cache precisely.
 					}
 				}
-				if (!conversationOnly) workspaceInvalidationPending = true;
+				if (!conversationOnly && !modelCatalogOnly) workspaceInvalidationPending = true;
 				// A busy stream must not postpone visible updates until traffic
 				// stops, and the first event after a quiet period must not wait out
 				// a full window either. Flush on the leading edge when the last
@@ -334,6 +350,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				if (refreshTimer !== undefined) clearTimeout(refreshTimer);
 				pendingConversationSessions.clear();
 				pendingInterfaceTransitionSessions.clear();
+				pendingModelCatalogScopes.clear();
 				refreshes.clear();
 				if (retryTimer) clearTimeout(retryTimer);
 				removeDaemonListener();
