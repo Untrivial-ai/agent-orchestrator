@@ -44,7 +44,7 @@ export const DRAWER_SPRING = { damping: 24, stiffness: 240, mass: 0.8 } as const
 export const KEYBOARD_FALLBACK_MS = 250;
 
 /** A row moving between sections, or a list re-laying out. */
-export const LAYOUT_MS = 220;
+export const LAYOUT_MS = 160;
 /** A banner entering or leaving above a list. */
 export const BANNER_MS = 180;
 /** Swapping content in place — filter changes, destination changes. */
@@ -60,13 +60,14 @@ export const TINT_MS = 200;
 /**
  * A board row moving between sections — pinned, or promoted by a delivery event.
  *
- * Longer than LAYOUT_MS because this one is meant to be *followed*: the point is
- * to see which row moved and where it went. Too fast and it is the teleport it
- * replaces.
+ * Still the longest of the three, because this one is meant to be *followed*:
+ * the point is to see which row moved and where it went. Kept tight all the same —
+ * folding a section moves a whole run of rows, and the eye reads the destination
+ * long before a longer curve would have finished.
  */
-export const ROW_MOVE_MS = 260;
+export const ROW_MOVE_MS = 170;
 /** A row arriving in or leaving a section. Shorter, so it never outlasts the move. */
-export const ROW_ENTER_MS = 180;
+export const ROW_ENTER_MS = 120;
 
 export type MotionDurations = {
 	breathe: number;
