@@ -4,25 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"strings"
 	"testing"
-
-	acpsdk "github.com/coder/acp-go-sdk"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestConfigureUsesNativeACPAndMergesSystemPromptConfig(t *testing.T) {
-	args, env, err := configure(context.Background(), acpdriver.LaunchConfig{
-		SessionID: "worker-1", SystemPrompt: "Follow AO worker rules.",
-		Permissions: ports.PermissionModeBypassPermissions,
-		Env: map[string]string{
-			"OPENCODE_CONFIG":         "/user/custom.json",
-			"OPENCODE_CONFIG_CONTENT": `{"provider":{"local":{"name":"Local"}},"agent":{"mine":{"mode":"primary"}}}`,
-		},
-	})
+func TestConfigureUsesNativeACPAndAlwaysCarriesTheTiers(t *testing.T) {
+	args, env, err := configure(context.Background(), acpdriver.LaunchConfig{})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -30,103 +20,18 @@ func TestConfigureUsesNativeACPAndMergesSystemPromptConfig(t *testing.T) {
 		t.Fatalf("args = %#v", args)
 	}
 	var config struct {
-		DefaultAgent string            `json:"default_agent"`
-		Provider     map[string]any    `json:"provider"`
-		Permission   map[string]string `json:"permission"`
-		Agent        map[string]struct {
-			Mode   string `json:"mode"`
-			Prompt string `json:"prompt"`
-		} `json:"agent"`
+		DefaultAgent string                    `json:"default_agent"`
+		Agent        map[string]map[string]any `json:"agent"`
 	}
 	if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
 		t.Fatalf("decode config: %v", err)
 	}
-	if config.DefaultAgent != "ao-worker-1" {
-		t.Fatalf("default agent = %q", config.DefaultAgent)
+	// A session without standing instructions still needs its permission tiers.
+	if config.DefaultAgent != "ao-default" || len(config.Agent) != 4 {
+		t.Fatalf("config = %#v", config)
 	}
-	if got := config.Agent[config.DefaultAgent]; got.Mode != "primary" || got.Prompt != "Follow AO worker rules." {
-		t.Fatalf("AO agent config = %#v", got)
-	}
-	if _, ok := config.Agent["mine"]; !ok || config.Provider["local"] == nil {
-		t.Fatalf("user inline config was not preserved: %#v", config)
-	}
-	if config.Permission["*"] != "allow" {
-		t.Fatalf("permission = %#v, want wildcard allow", config.Permission)
-	}
-}
-
-func TestConfigureMapsOpenCodePermissionModes(t *testing.T) {
-	for _, tt := range []struct {
-		mode ports.PermissionMode
-		want map[string]string
-	}{
-		{ports.PermissionModeDefault, nil},
-		{ports.PermissionModeAcceptEdits, map[string]string{"edit": "allow"}},
-		{ports.PermissionModeAuto, map[string]string{"edit": "allow", "bash": "allow"}},
-		{ports.PermissionModeBypassPermissions, map[string]string{"*": "allow"}},
-	} {
-		t.Run(string(tt.mode), func(t *testing.T) {
-			_, env, err := configure(context.Background(), acpdriver.LaunchConfig{Permissions: tt.mode})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tt.want == nil {
-				if env != nil {
-					t.Fatalf("env = %#v, want nil", env)
-				}
-				return
-			}
-			var config struct {
-				Permission map[string]string `json:"permission"`
-			}
-			if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
-				t.Fatal(err)
-			}
-			if !maps.Equal(config.Permission, tt.want) {
-				t.Fatalf("permission = %#v, want %#v", config.Permission, tt.want)
-			}
-		})
-	}
-}
-
-func TestPermissionPolicyImplementsOpenCodeApprovalModes(t *testing.T) {
-	edit := acpsdk.ToolKindEdit
-	execute := acpsdk.ToolKindExecute
-	options := []acpsdk.PermissionOption{
-		{OptionId: "allow-once", Kind: acpsdk.PermissionOptionKindAllowOnce},
-		{OptionId: "allow-always", Kind: acpsdk.PermissionOptionKindAllowAlways},
-	}
-	for _, tt := range []struct {
-		name    string
-		mode    ports.PermissionMode
-		kind    *acpsdk.ToolKind
-		want    acpsdk.PermissionOptionId
-		handled bool
-	}{
-		{name: "default parks", mode: ports.PermissionModeDefault, kind: &edit},
-		{name: "accept edits allows edit", mode: ports.PermissionModeAcceptEdits, kind: &edit, want: "allow-once", handled: true},
-		{name: "accept edits parks execute", mode: ports.PermissionModeAcceptEdits, kind: &execute},
-		{name: "auto allows execute", mode: ports.PermissionModeAuto, kind: &execute, want: "allow-once", handled: true},
-		{name: "bypass persists allow", mode: ports.PermissionModeBypassPermissions, kind: &execute, want: "allow-always", handled: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got, handled := permissionPolicy(tt.mode, acpsdk.RequestPermissionRequest{
-				ToolCall: acpsdk.ToolCallUpdate{Kind: tt.kind}, Options: options,
-			})
-			if got != tt.want || handled != tt.handled {
-				t.Fatalf("selection = (%q, %v), want (%q, %v)", got, handled, tt.want, tt.handled)
-			}
-		})
-	}
-}
-
-func TestConfigureWithoutSystemPromptWritesNoAOConfig(t *testing.T) {
-	args, env, err := configure(context.Background(), acpdriver.LaunchConfig{})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	if len(args) != 1 || args[0] != "acp" || env != nil {
-		t.Fatalf("args/env = %#v, %#v", args, env)
+	if prompt, ok := config.Agent["ao-default"]["prompt"]; ok {
+		t.Fatalf("prompt = %q, want none", prompt)
 	}
 }
 
@@ -207,5 +112,88 @@ func TestSessionOptionsForwardsEffortAfterModel(t *testing.T) {
 	got = sessionOptions(ports.ChatTurnSettings{Effort: "xhigh"})
 	if len(got) != 1 || got[0].ID != "effort" || got[0].Value != "xhigh" {
 		t.Fatalf("effort-only settings = %#v", got)
+	}
+}
+
+func TestConfigureInjectsThePermissionTiersOpenCodeEnforces(t *testing.T) {
+	for _, test := range []struct {
+		mode ports.PermissionMode
+		want string
+	}{
+		{mode: ports.PermissionModeDefault, want: "ao-default"},
+		{mode: ports.PermissionModeAcceptEdits, want: "ao-accept-edits"},
+		{mode: ports.PermissionModeAuto, want: "ao-auto"},
+		{mode: ports.PermissionModeBypassPermissions, want: "ao-bypass"},
+	} {
+		t.Run(string(test.mode), func(t *testing.T) {
+			_, env, err := configure(context.Background(), acpdriver.LaunchConfig{
+				SessionID: "worker-1", SystemPrompt: "Follow AO worker rules.", Permissions: test.mode,
+			})
+			if err != nil {
+				t.Fatalf("configure: %v", err)
+			}
+			var config struct {
+				DefaultAgent string `json:"default_agent"`
+				Agent        map[string]struct {
+					Prompt     string            `json:"prompt"`
+					Permission map[string]string `json:"permission"`
+				} `json:"agent"`
+			}
+			if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
+				t.Fatalf("decode config: %v", err)
+			}
+			if config.DefaultAgent != test.want {
+				t.Fatalf("default agent = %q, want %q", config.DefaultAgent, test.want)
+			}
+			// Every tier is advertised, so the picker can switch to any of them
+			// mid-session, and each carries AO's standing instructions.
+			for _, tier := range []string{"ao-default", "ao-accept-edits", "ao-auto", "ao-bypass"} {
+				agent, ok := config.Agent[tier]
+				if !ok {
+					t.Fatalf("tier %q missing from %#v", tier, config.Agent)
+				}
+				if agent.Prompt != "Follow AO worker rules." {
+					t.Fatalf("tier %q prompt = %q", tier, agent.Prompt)
+				}
+				if _, reads := agent.Permission["read"]; reads {
+					t.Fatalf("tier %q overrides read; OpenCode's own .env deny must survive", tier)
+				}
+			}
+			if config.Agent["ao-default"].Permission != nil {
+				t.Fatalf("default tier = %#v, want the user's own rules", config.Agent["ao-default"].Permission)
+			}
+			if got := config.Agent["ao-accept-edits"].Permission; got["edit"] != "allow" || got["bash"] != "ask" {
+				t.Fatalf("accept-edits tier = %#v", got)
+			}
+			if got := config.Agent["ao-auto"].Permission; got["bash"] != "allow" || got["external_directory"] != "allow" {
+				t.Fatalf("auto tier = %#v", got)
+			}
+			if got := config.Agent["ao-bypass"].Permission; got["*"] != "allow" {
+				t.Fatalf("bypass tier = %#v", got)
+			}
+		})
+	}
+}
+
+func TestConfigureKeepsTheUsersOwnInlineConfig(t *testing.T) {
+	_, env, err := configure(context.Background(), acpdriver.LaunchConfig{
+		SessionID: "worker-2", Permissions: ports.PermissionModeDefault,
+		Env: map[string]string{
+			"OPENCODE_CONFIG_CONTENT": `{"provider":{"local":{"name":"Local"}},"agent":{"mine":{"mode":"primary"}},"permission":{"bash":"deny"}}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	var config struct {
+		Provider   map[string]any            `json:"provider"`
+		Permission map[string]any            `json:"permission"`
+		Agent      map[string]map[string]any `json:"agent"`
+	}
+	if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if config.Provider["local"] == nil || config.Agent["mine"] == nil || config.Permission["bash"] != "deny" {
+		t.Fatalf("user config was not preserved: %#v", config)
 	}
 }

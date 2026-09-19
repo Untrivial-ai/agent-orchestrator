@@ -154,11 +154,6 @@ export function TurnSettingsBar({
 	const standaloneExecutionMode =
 		grouped.executionMode && !isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
 	const planning = isPlanMode(grouped.executionMode);
-	// OpenCode's Build/Plan selector is provider-owned and independent of its
-	// permission rules. Keep AO's approval picker available in Plan mode so a
-	// user can choose the policy that will apply when they return to Build.
-	const approvalAvailableWhilePlanning = harness === "opencode";
-	const inlineApprovalPicker = Boolean(approvalAvailableWhilePlanning && inlineExecutionMode && onChange);
 	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
 	const clubbedLeft =
 		grouped.model.length > 0 ||
@@ -169,7 +164,7 @@ export function TurnSettingsBar({
 	const rememberMode = modeOption
 		? modeOption.choices.find((choice) => choice.value === modeOption.currentValue)?.permissionMode
 		: settings.approvalMode ?? "default";
-	const rememberAction = onRememberPermissions && rememberMode && (!planning || approvalAvailableWhilePlanning) ? (
+	const rememberAction = onRememberPermissions && rememberMode && !planning ? (
 		<OptionMenuItem
 			disabled={optionDisabled}
 			onSelect={() => {
@@ -180,9 +175,7 @@ export function TurnSettingsBar({
 			Remember for this project
 		</OptionMenuItem>
 	) : null;
-	const showRightDropdown = Boolean(
-		children || ((!planning || approvalAvailableWhilePlanning) && ((onChange && !inlineApprovalPicker) || modeOption)),
-	);
+	const showRightDropdown = Boolean(children || (!planning && (onChange || modeOption)));
 
 	return (
 		<div role="group" aria-label="Turn settings" className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -205,16 +198,6 @@ export function TurnSettingsBar({
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
 							onChangeConfigOption={onChangeConfigOption ? applyOption : undefined}
-							approvalPicker={inlineApprovalPicker && onChange ? (
-								<ApprovalPolicySubmenu
-									label={approvalLabel}
-									settings={settings}
-									approvalCopy={approvalCopy}
-									approvalOrder={approvalOrder}
-									onChange={onChange}
-									footer={rememberAction}
-								/>
-							) : undefined}
 						/>
 					) : null}
 
@@ -227,16 +210,6 @@ export function TurnSettingsBar({
 							extraOptions={grouped.extra}
 							disabled={optionDisabled}
 							onChange={applyOption}
-							approvalPicker={inlineApprovalPicker && onChange ? (
-								<ApprovalPolicySubmenu
-									label={approvalLabel}
-									settings={settings}
-									approvalCopy={approvalCopy}
-									approvalOrder={approvalOrder}
-									onChange={onChange}
-									footer={rememberAction}
-								/>
-							) : undefined}
 						/>
 					) : null}
 
@@ -291,7 +264,7 @@ export function TurnSettingsBar({
 					</div>
 				) : null}
 			</div>
-			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && (!planning || approvalAvailableWhilePlanning) && !configPending) ? (
+			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
 				<p role="status" className="px-1 text-[11px] text-muted-foreground">
 					{rememberPermissionsPending ? "Saving project default…" : "Permission mode saved for new sessions in this project."}
 				</p>
@@ -324,7 +297,6 @@ function ModelEffortPicker({
 	toggles = [],
 	extraOptions = [],
 	onChangeConfigOption,
-	approvalPicker,
 }: {
 	models: ChatModel[];
 	settings: TurnSettings;
@@ -341,7 +313,6 @@ function ModelEffortPicker({
 	toggles?: ChatConfigOption[];
 	extraOptions?: ChatConfigOption[];
 	onChangeConfigOption?: (optionId: string, value: ChatConfigOptionValue) => void;
-	approvalPicker?: ReactNode;
 }) {
 	const catalog = useMemo(() => models.map((model) => ({ ...model, label: model.displayName })), [models]);
 
@@ -422,7 +393,6 @@ function ModelEffortPicker({
 				{executionMode && onChangeConfigOption ? (
 					<PlanModeToggle option={executionMode} onChange={onChangeConfigOption} />
 				) : null}
-				{approvalPicker}
 				{toggles.map((option) => (
 					<ConfigToggle key={option.id} option={option} onChange={onChangeConfigOption!} />
 				))}
@@ -442,7 +412,6 @@ function ClubbedConfigPicker({
 	extraOptions,
 	disabled,
 	onChange,
-	approvalPicker,
 }: {
 	modelOptions: ChatConfigOption[];
 	effortOptions: ChatConfigOption[];
@@ -451,7 +420,6 @@ function ClubbedConfigPicker({
 	extraOptions: ChatConfigOption[];
 	disabled?: boolean;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
-	approvalPicker?: ReactNode;
 }) {
 	const primaryModel = modelOptions[0];
 	const primaryEffort = effortOptions[0];
@@ -459,7 +427,7 @@ function ClubbedConfigPicker({
 	const effortLabel = primaryEffort ? optionCurrentLabel(primaryEffort) : undefined;
 	const groupLabel = [modelLabel, effortLabel].filter(Boolean).join(" ") || "More";
 	const leftCount =
-		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length + Number(Boolean(approvalPicker));
+		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length;
 	if (leftCount === 1) {
 		if (executionMode)
 			return <ExecutionModePicker option={executionMode} disabled={disabled} onChange={onChange} />;
@@ -493,7 +461,6 @@ function ClubbedConfigPicker({
 					<OptionSubmenu key={option.id} option={option} onChange={onChange} />
 				))}
 				{executionMode ? <PlanModeToggle option={executionMode} onChange={onChange} /> : null}
-				{approvalPicker}
 				{toggles.map((option) => (
 					<ConfigToggle key={option.id} option={option} onChange={onChange} />
 				))}
@@ -523,47 +490,6 @@ function PlanModeToggle({
 			checked={planning}
 			onCheckedChange={() => onChange(option.id, { value: next.value })}
 		/>
-	);
-}
-
-function ApprovalPolicySubmenu({
-	label,
-	settings,
-	approvalCopy,
-	approvalOrder,
-	onChange,
-	footer,
-}: {
-	label: string;
-	settings: TurnSettings;
-	approvalCopy: Record<ApprovalMode, { label: string }>;
-	approvalOrder: ApprovalMode[];
-	onChange: (next: TurnSettings) => void;
-	footer?: ReactNode;
-}) {
-	return (
-		<OptionMenuSub>
-			<OptionMenuSubTrigger label="Approval policy" value={label} />
-			<OptionMenuSubContent className={CHAT_MENU_CLASS}>
-				{approvalOrder.map((mode) => (
-					<OptionMenuItem
-						key={mode}
-						active={mode === (settings.approvalMode ?? "default")}
-						radio
-						onSelect={() => onChange({ ...settings, approvalMode: mode })}
-						className="text-xs"
-					>
-						<span className={cn(
-							"text-xs",
-							mode === (settings.approvalMode ?? "default") ? "text-foreground" : "text-muted-foreground",
-						)}>
-							{approvalCopy[mode].label}
-						</span>
-					</OptionMenuItem>
-				))}
-				{footer}
-			</OptionMenuSubContent>
-		</OptionMenuSub>
 	);
 }
 
@@ -906,6 +832,15 @@ function choiceIsEnabled(choice: ChatConfigOption["choices"][number] | undefined
 	return Boolean(choice && /(?:^|[\s_-])(on|enabled|true)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`));
 }
 
+/**
+ * Whether a provider catalog replaces AO's own approval control. A `mode` option
+ * that offers only execution modes (OpenCode's build/plan) is not one: taking it
+ * for an approval catalog leaves the session with no permission control at all.
+ */
+export function hasProviderPermissionMode(options: ChatConfigOption[]): boolean {
+	return Boolean(partitionConfigOptions(options).mode);
+}
+
 function partitionConfigOptions(options: ChatConfigOption[]): {
 	model: ChatConfigOption[];
 	effort: ChatConfigOption[];
@@ -997,7 +932,9 @@ function addAgentModeChoice(
 	executionChoices: ChatConfigOption["choices"],
 	permissionChoices: ChatConfigOption["choices"],
 ): ChatConfigOption["choices"] {
-	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent"))) {
+	// OpenCode names its ordinary agent mode "build", so its catalog already has
+	// one and must not gain a synthetic duplicate.
+	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent|build"))) {
 		return executionChoices;
 	}
 	const standard = permissionChoices.find((choice) => choiceMatches(choice, "manual"))

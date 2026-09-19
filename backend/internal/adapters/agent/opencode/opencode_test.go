@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -476,35 +477,79 @@ func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 	tests := []struct {
 		name       string
 		permission ports.PermissionMode
-		wantEnv    string
+		want       map[string]string
 		wantFlag   bool
 	}{
 		{name: "default", permission: ports.PermissionModeDefault},
-		{name: "accept-edits", permission: ports.PermissionModeAcceptEdits, wantEnv: `{"$schema":"https://opencode.ai/config.json","permission":{"edit":"allow"}}`},
-		{name: "auto", permission: ports.PermissionModeAuto, wantEnv: `{"$schema":"https://opencode.ai/config.json","permission":{"bash":"allow","edit":"allow"}}`},
-		{name: "bypass-permissions", permission: ports.PermissionModeBypassPermissions, wantFlag: true},
 		{name: "empty", permission: ""},
+		{
+			name:       "accept-edits",
+			permission: ports.PermissionModeAcceptEdits,
+			want: map[string]string{
+				"edit": "allow", "bash": "ask", "webfetch": "ask", "websearch": "ask", "task": "ask",
+			},
+		},
+		{
+			name:       "auto",
+			permission: ports.PermissionModeAuto,
+			want: map[string]string{
+				"edit": "allow", "bash": "allow", "webfetch": "allow", "websearch": "allow",
+				"task": "allow", "skill": "allow", "external_directory": "allow", "doom_loop": "allow",
+			},
+		},
+		{name: "bypass-permissions", permission: ports.PermissionModeBypassPermissions, wantFlag: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &Plugin{resolvedBinary: "opencode"}
-			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{Permissions: tt.permission})
+			promptFile := filepath.Join(t.TempDir(), "system.md")
+			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+				SessionID: "sess-1", SystemPromptFile: promptFile, Permissions: tt.permission,
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			has := contains(cmd, "--dangerously-skip-permissions")
-			if has != tt.wantFlag {
+			if has := contains(cmd, "--dangerously-skip-permissions"); has != tt.wantFlag {
 				t.Fatalf("command %#v has bypass flag=%v, want %v", cmd, has, tt.wantFlag)
 			}
-			if tt.wantEnv == "" {
-				if len(cmd) > 0 && cmd[0] == "env" {
-					t.Fatalf("command %#v should defer to OpenCode config", cmd)
-				}
-				return
+			var config opencodeInlineConfig
+			data, err := os.ReadFile(filepath.Join(filepath.Dir(promptFile), "opencode.json"))
+			if err != nil {
+				t.Fatal(err)
 			}
-			if len(cmd) < 3 || cmd[0] != "env" || cmd[1] != "OPENCODE_CONFIG_CONTENT="+tt.wantEnv || cmd[2] != "opencode" {
-				t.Fatalf("command %#v must contain permission overlay %s", cmd, tt.wantEnv)
+			if err := json.Unmarshal(data, &config); err != nil {
+				t.Fatal(err)
+			}
+			if !maps.Equal(config.Permission, tt.want) {
+				t.Fatalf("permission = %#v, want %#v", config.Permission, tt.want)
+			}
+		})
+	}
+}
+
+// OPENCODE_CONFIG_CONTENT is the highest-precedence config source and callers
+// own it: the reviewer harness passes its read-only policy there. A launch
+// prefix setting the same variable would replace that policy at exec time.
+func TestGetLaunchCommandNeverSetsInlineConfigContent(t *testing.T) {
+	for _, mode := range []ports.PermissionMode{
+		ports.PermissionModeDefault, ports.PermissionModeAcceptEdits,
+		ports.PermissionModeAuto, ports.PermissionModeBypassPermissions,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			plugin := &Plugin{resolvedBinary: "opencode"}
+			for _, promptFile := range []string{"", filepath.Join(t.TempDir(), "system.md")} {
+				cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+					SessionID: "sess-1", SystemPromptFile: promptFile, Permissions: mode,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, arg := range cmd {
+					if strings.HasPrefix(arg, "OPENCODE_CONFIG_CONTENT=") {
+						t.Fatalf("command %#v overrides a caller's own OpenCode config", cmd)
+					}
+				}
 			}
 		})
 	}

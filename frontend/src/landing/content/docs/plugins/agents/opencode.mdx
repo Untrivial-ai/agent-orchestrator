@@ -12,6 +12,10 @@ ao spawn --project my-app --name opencode-task --agent opencode --mode chat
 
 OpenCode can run as its native Terminal UI or through its native ACP interface in structured Chat. Chat history is persisted by AO as a durable, paged conversation projection while provider conversation identity is retained for continuity.
 
-AO applies the same approval choices in both surfaces: **Default approvals** preserves your OpenCode configuration, **Accept edits** allows file changes, **Auto-approve** also allows shell commands, and **Bypass permissions** grants OpenCode full access. Other OpenCode permission rules continue to apply unless the full-access mode is selected. An `opencode.json` in the session worktree is loaded after AO's per-session overlay, so its repository policy can override **Accept edits** and **Auto-approve**.
+AO offers the same approval choices in both surfaces. **Default approvals** leaves your OpenCode configuration untouched. **Accept edits** lets file changes run while shell commands, network access, and subagents ask. **Auto-approve** runs those too, including the out-of-worktree and repeat-loop guards OpenCode asks about by default. **Bypass permissions** allows every tool. `read` is never overridden, so OpenCode's default deny on `.env` files survives every mode except Bypass.
+
+Auto-approve and Bypass permissions grant tools outright, which overrides your own `deny` rules for those tools; Default approvals and Accept edits leave explicit rules intact.
+
+The two surfaces apply the choice differently. In the Terminal UI, AO writes the rules to a config file referenced by `OPENCODE_CONFIG`, so an `opencode.json` in the session worktree is loaded afterwards and its repository policy wins. Bypass there uses OpenCode's native all-access flag, which still honours explicit `deny` rules. In Chat, AO injects one agent per mode and the picker switches between them, so OpenCode enforces the selected mode and changing it applies immediately in either direction, including back to a stricter mode.
 
 OpenCode is also a shipped reviewer harness. Reviewer configuration is independent from the worker harness; inspect project settings and `ao review --help` for the current review workflow.
