@@ -193,15 +193,10 @@ func TestPiProviderScopedEvidence(t *testing.T) {
 			provider: "google", env: map[string]string{"GOOGLE_API_KEY": "wrong-key"}, want: ports.AgentAuthStatusUnknown,
 		},
 		"AWS default chain": {
-			provider: "amazon-bedrock", deps: authutil.Dependencies{LoadAWS: func(context.Context) (authutil.CloudCredential, error) {
-				return authutil.CloudCredential{AccessKeyID: "id", SecretAccessKey: "secret"}, nil
-			}}, want: ports.AgentAuthStatusConfigured,
+			provider: "amazon-bedrock", env: map[string]string{"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "secret"}, want: ports.AgentAuthStatusConfigured,
 		},
 		"Vertex ADC requires project and location": {
-			provider: "google-vertex", env: map[string]string{"GOOGLE_CLOUD_PROJECT": "project", "GOOGLE_CLOUD_LOCATION": "us-central1"},
-			deps: authutil.Dependencies{LoadGoogleADC: func(context.Context) (authutil.CloudCredential, error) {
-				return authutil.CloudCredential{Token: "adc-token"}, nil
-			}}, want: ports.AgentAuthStatusConfigured,
+			provider: "google-vertex", env: map[string]string{"GOOGLE_CLOUD_PROJECT": "project", "GOOGLE_CLOUD_LOCATION": "us-central1"}, want: ports.AgentAuthStatusConfigured,
 		},
 		"custom models provider key": {
 			provider: "custom", models: `{"providers":{"custom":{"baseUrl":"https://models.example/v1","api":"openai-completions","apiKey":"$CUSTOM_API_KEY","models":[{"id":"model"}]}}}`,
@@ -228,6 +223,11 @@ func TestPiProviderScopedEvidence(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			deps := tc.deps
+			if tc.provider == "google-vertex" {
+				path := filepath.Join(t.TempDir(), "adc.json")
+				writePiTestFile(t, path, `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`)
+				tc.env["GOOGLE_APPLICATION_CREDENTIALS"] = path
+			}
 			deps.Now = func() time.Time { return now }
 			got := piTestStatus(t, tc.provider, map[string]string{"auth.json": tc.auth, "models.json": tc.models}, tc.env, deps)
 			if got != tc.want {
@@ -460,6 +460,9 @@ func TestPiSelectedLoopbackProviderSkipsNativeAuthCheck(t *testing.T) {
 			if key == "PI_CODING_AGENT_DIR" {
 				return root
 			}
+			if strings.HasPrefix(key, "AWS_") {
+				t.Fatal("AWS fallback ran before native result")
+			}
 			return ""
 		},
 		Run: func(context.Context, string, ...string) ([]byte, error) {
@@ -479,7 +482,6 @@ func TestPiSelectedLoopbackProviderSkipsNativeAuthCheck(t *testing.T) {
 }
 
 func TestPiNativeCheckPrecedesCloudFallback(t *testing.T) {
-	cloudCalled := false
 	root := t.TempDir()
 	got, err := piAuthStatus(context.Background(), "/opt/pi", ports.AgentAuthCheck{
 		Config: ports.AgentConfig{Model: "amazon-bedrock/model"},
@@ -488,14 +490,13 @@ func TestPiNativeCheckPrecedesCloudFallback(t *testing.T) {
 			if key == "PI_CODING_AGENT_DIR" {
 				return root
 			}
+			if strings.HasPrefix(key, "AWS_") {
+				t.Fatal("AWS fallback ran before native result")
+			}
 			return ""
 		},
 		Run: func(context.Context, string, ...string) ([]byte, error) {
 			return []byte("ready\n"), nil
-		},
-		LoadAWS: func(context.Context) (authutil.CloudCredential, error) {
-			cloudCalled = true
-			return authutil.CloudCredential{}, nil
 		},
 	})
 	if err != nil {
@@ -503,9 +504,6 @@ func TestPiNativeCheckPrecedesCloudFallback(t *testing.T) {
 	}
 	if got != ports.AgentAuthStatusConfigured {
 		t.Fatalf("status = %q, want authorized", got)
-	}
-	if cloudCalled {
-		t.Fatal("AWS fallback ran before an authoritative native result")
 	}
 }
 

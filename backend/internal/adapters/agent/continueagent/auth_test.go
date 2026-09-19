@@ -364,3 +364,26 @@ func writeContinueAuthFixture(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestContinueUsesPersistedChatModel(t *testing.T) {
+	for _, tc := range []struct {
+		selected string
+		want     ports.AgentAuthStatus
+	}{
+		{"Second", ports.AgentAuthStatusConfigured}, {"First", ports.AgentAuthStatusUnknown}, {"missing", ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tc.selected, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("CONTINUE_GLOBAL_DIR", "")
+			t.Setenv("CONTINUE_API_KEY", "")
+			writeContinueAuthFixture(t, filepath.Join(home, ".continue", "config.yaml"), "models:\n  - name: First\n    provider: anthropic\n    model: claude\n  - name: Second\n    provider: openai\n    model: gpt\n    apiKey: fixture-key\n")
+			writeContinueAuthFixture(t, filepath.Join(home, ".continue", "index", "globalContext.json"), `{"cliSelectedModel":"`+tc.selected+`"}`)
+			got, err := (&Plugin{resolvedBinary: "cn"}).AuthStatus(context.Background())
+			if err != nil || got != tc.want {
+				t.Fatalf("status=%q err=%v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}

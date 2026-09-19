@@ -23,11 +23,6 @@ type Dependencies struct {
 	Now        func() time.Time
 	GOOS       string
 	Timeout    time.Duration
-	// Cloud loaders are optional and must honor context cancellation. With no
-	// loader installed, metadata/refresh-dependent chains remain unknown.
-	LoadAWS       func(context.Context) (CloudCredential, error)
-	LoadGoogleADC func(context.Context) (CloudCredential, error)
-	LoadAzure     func(context.Context) (CloudCredential, error)
 }
 
 func (d Dependencies) getenv(name string) string {

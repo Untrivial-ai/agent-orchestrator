@@ -118,14 +118,12 @@ func vibeAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil.
 		if !filepath.IsAbs(check.WorkingDir) {
 			return ports.AgentAuthStatusUnknown, nil
 		}
-		paths, err := authutil.FindUpward(ctx, d, check.WorkingDir, filepath.Join(".vibe", "config.toml"))
+		path, err := vibeProjectConfig(ctx, d, check.WorkingDir, home)
 		if err != nil {
 			return ports.AgentAuthStatusUnknown, err
 		}
-		if len(paths) > 0 && filepath.Clean(paths[0]) != filepath.Clean(filepath.Join(home, "config.toml")) {
-			if ok := applyVibeConfigFile(ctx, d, paths[0], &resolved); !ok {
-				return ports.AgentAuthStatusUnknown, ctx.Err()
-			}
+		if path != "" && !applyVibeConfigFile(ctx, d, path, &resolved) {
+			return ports.AgentAuthStatusUnknown, ctx.Err()
 		}
 	}
 	if activeModel := strings.TrimSpace(d.Getenv("VIBE_ACTIVE_MODEL")); activeModel != "" {
@@ -389,4 +387,66 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// Vibe discovers the closest project file before evaluating trust. An
+// untrusted closest file does not permit falling back to another project.
+func vibeProjectConfig(ctx context.Context, d authutil.Dependencies, start, home string) (string, error) {
+	lstat := d.Lstat
+	if lstat == nil {
+		lstat = os.Lstat
+	}
+	stop := filepath.Dir(filepath.Clean(home))
+	path := ""
+	for dir := filepath.Clean(start); dir != stop; dir = filepath.Dir(dir) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		candidate := filepath.Join(dir, ".vibe", "config.toml")
+		if info, err := lstat(candidate); err == nil && info.Mode().IsRegular() {
+			path = candidate
+			break
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	if path == "" {
+		return "", nil
+	}
+	var trust struct {
+		Trusted   []string `toml:"trusted"`
+		Untrusted []string `toml:"untrusted"`
+	}
+	if authutil.ReadTOML(ctx, d, filepath.Join(home, "trusted_folders.toml"), &trust) != nil {
+		return "", ctx.Err()
+	}
+	normalize := func(value string) string {
+		if resolved, err := filepath.EvalSymlinks(value); err == nil {
+			return resolved
+		}
+		return filepath.Clean(value)
+	}
+	decisions := make(map[string]bool)
+	for _, value := range trust.Untrusted {
+		if filepath.IsAbs(value) {
+			decisions[normalize(value)] = false
+		}
+	}
+	for _, value := range trust.Trusted {
+		if filepath.IsAbs(value) {
+			decisions[normalize(value)] = true
+		}
+	}
+	for dir := normalize(filepath.Dir(path)); ; dir = filepath.Dir(dir) {
+		if trusted, ok := decisions[dir]; ok {
+			if trusted {
+				return path, nil
+			}
+			return "", nil
+		}
+		if filepath.Dir(dir) == dir {
+			return "", nil
+		}
+	}
 }

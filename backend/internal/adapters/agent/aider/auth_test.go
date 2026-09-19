@@ -322,7 +322,10 @@ func TestAiderAuthStatusResolvesPinnedBuiltInModelAliases(t *testing.T) {
 }
 
 func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
-	configuredCloud := authutil.CloudCredential{Token: "fixture-token"}
+	adcPath := filepath.Join(t.TempDir(), "adc.json")
+	if err := os.WriteFile(adcPath, []byte(`{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name  string
 		model string
@@ -339,20 +342,14 @@ func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
 		{
 			name:  "Vertex project location and ADC",
 			model: "vertex_ai/gemini",
-			env:   map[string]string{"VERTEXAI_PROJECT": "fixture-project", "VERTEXAI_LOCATION": "us-east5"},
-			deps: authutil.Dependencies{LoadGoogleADC: func(context.Context) (authutil.CloudCredential, error) {
-				return configuredCloud, nil
-			}},
-			want: ports.AgentAuthStatusConfigured,
+			env:   map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": adcPath, "VERTEXAI_PROJECT": "fixture-project", "VERTEXAI_LOCATION": "us-east5"},
+			want:  ports.AgentAuthStatusConfigured,
 		},
 		{
 			name:  "Vertex missing location",
 			model: "vertex_ai/gemini",
-			env:   map[string]string{"VERTEXAI_PROJECT": "fixture-project"},
-			deps: authutil.Dependencies{LoadGoogleADC: func(context.Context) (authutil.CloudCredential, error) {
-				return configuredCloud, nil
-			}},
-			want: ports.AgentAuthStatusUnknown,
+			env:   map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": adcPath, "VERTEXAI_PROJECT": "fixture-project"},
+			want:  ports.AgentAuthStatusUnknown,
 		},
 		{
 			name:  "Azure API key and endpoint settings",
@@ -373,11 +370,8 @@ func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
 		{
 			name:  "Azure identity chain",
 			model: "azure/deployment",
-			env:   map[string]string{"AZURE_API_BASE": "https://fixture.openai.azure.com", "AZURE_API_VERSION": "2026-01-01"},
-			deps: authutil.Dependencies{LoadAzure: func(context.Context) (authutil.CloudCredential, error) {
-				return configuredCloud, nil
-			}},
-			want: ports.AgentAuthStatusConfigured,
+			env:   map[string]string{"IDENTITY_ENDPOINT": "http://127.0.0.1/identity", "IDENTITY_HEADER": "fixture-header", "AZURE_API_BASE": "https://fixture.openai.azure.com", "AZURE_API_VERSION": "2026-01-01"},
+			want:  ports.AgentAuthStatusConfigured,
 		},
 		{
 			name:  "Azure missing endpoint settings",
@@ -429,7 +423,6 @@ func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
 }
 
 func TestAiderAuthStatusSeparatesAzureProviders(t *testing.T) {
-	configuredCloud := authutil.CloudCredential{Token: "fixture-token"}
 	tests := []struct {
 		name  string
 		model string
@@ -456,11 +449,8 @@ func TestAiderAuthStatusSeparatesAzureProviders(t *testing.T) {
 		{
 			name:  "Azure AI identity chain",
 			model: "azure_ai/deployment",
-			env:   map[string]string{"AZURE_AI_API_BASE": "https://fixture.services.ai.azure.com"},
-			deps: authutil.Dependencies{LoadAzure: func(context.Context) (authutil.CloudCredential, error) {
-				return configuredCloud, nil
-			}},
-			want: ports.AgentAuthStatusConfigured,
+			env:   map[string]string{"IDENTITY_ENDPOINT": "http://127.0.0.1/identity", "IDENTITY_HEADER": "fixture-header", "AZURE_AI_API_BASE": "https://fixture.services.ai.azure.com"},
+			want:  ports.AgentAuthStatusConfigured,
 		},
 		{
 			name:  "Azure AI rejects Azure OpenAI key",

@@ -137,56 +137,6 @@ func TestOpenCodeOfficialSourcesIgnoreGuessedDatabase(t *testing.T) {
 	}
 }
 
-func TestOpenCodeExplicitDatabaseEvidence(t *testing.T) {
-	for _, tc := range []struct {
-		name, access, refresh string
-		expiry                int64
-		active                string
-		want                  ports.AgentAuthStatus
-	}{
-		{"valid", "token", "", 4102444800000, "acct", ports.AgentAuthStatusConfigured},
-		{"dangling", "token", "", 4102444800000, "other", ports.AgentAuthStatusUnknown},
-		{"empty", "", "", 4102444800000, "acct", ports.AgentAuthStatusUnknown},
-		{"expired", "token", "", 1, "acct", ports.AgentAuthStatusUnknown},
-		{"refreshable", "token", "refresh", 1, "acct", ports.AgentAuthStatusConfigured},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "auth.db")
-			db, err := sql.Open("sqlite", path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.Exec("CREATE TABLE account(id text, access_token text, refresh_token text, token_expiry integer); CREATE TABLE account_state(active_account_id text)"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.Exec("INSERT INTO account VALUES ('acct', ?, ?, ?)", tc.access, tc.refresh, tc.expiry); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.Exec("INSERT INTO account_state VALUES (?)", tc.active); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, _, err := opencodeDBAuthStatus(context.Background(), path)
-			if err != nil || got != tc.want {
-				t.Fatalf("status = %q, %v; want %q", got, err, tc.want)
-			}
-			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(before, after) {
-				t.Fatal("auth probe changed database")
-			}
-		})
-	}
-}
-
 func TestOpenCodeAuthListIsConservative(t *testing.T) {
 	for _, tc := range []struct {
 		output string

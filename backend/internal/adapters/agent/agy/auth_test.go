@@ -272,9 +272,11 @@ func TestAgyDoesNotResolveGoogleADC(t *testing.T) {
 			}
 			return ""
 		},
-		LoadGoogleADC: func(context.Context) (authutil.CloudCredential, error) {
-			t.Fatal("Agy must not resolve Google ADC")
-			return authutil.CloudCredential{}, nil
+		Lstat: func(path string) (os.FileInfo, error) {
+			if path == "/tmp/ignored-adc.json" {
+				t.Fatal("Agy must not resolve Google ADC")
+			}
+			return os.Lstat(path)
 		},
 	}
 	got, err := agyAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)

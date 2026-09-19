@@ -747,6 +747,11 @@ func TestResolveGooseBinaryUsesValidFallbackAfterPathCollision(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("native Windows candidate policy is tested without launching shims")
 	}
+	// This test checks candidate fallback, not the production probe deadline.
+	// Cold shell-fixture startup on macOS can exceed one second under load.
+	previousTimeout := gooseIdentityProbeTimeout
+	gooseIdentityProbeTimeout = 5 * time.Second
+	t.Cleanup(func() { gooseIdentityProbeTimeout = previousTimeout })
 	home := t.TempDir()
 	pathDir := t.TempDir()
 	t.Setenv("HOME", home)

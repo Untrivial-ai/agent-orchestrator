@@ -11,21 +11,9 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
-
-// CloudCredential is private credential material returned by an injected chain
-// loader. Consumers must never log this value or serialize it into a response.
-// Either a token or a complete access-key pair establishes configured evidence.
-type CloudCredential struct {
-	AccessKeyID     string
-	SecretAccessKey string
-	SessionToken    string
-	Token           string
-	ExpiresAt       time.Time
-}
 
 func configured(source string) Evidence {
 	return Evidence{Status: ports.AgentAuthStatus("configured"), Source: source}
@@ -40,25 +28,6 @@ func hasValues(values ...string) bool {
 		}
 	}
 	return true
-}
-
-func chainEvidence(ctx context.Context, d Dependencies, loader func(context.Context) (CloudCredential, error), source string) Evidence {
-	if loader == nil || ctx.Err() != nil {
-		return unknown()
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, d.timeout())
-	defer cancel()
-	credential, err := loader(probeCtx)
-	if err != nil || probeCtx.Err() != nil {
-		return unknown()
-	}
-	if !credential.ExpiresAt.IsZero() && !credential.ExpiresAt.After(d.now()) {
-		return unknown()
-	}
-	if hasValues(credential.Token) || hasValues(credential.AccessKeyID, credential.SecretAccessKey) {
-		return configured(source)
-	}
-	return unknown()
 }
 
 func (d Dependencies) home() string {
@@ -96,9 +65,8 @@ func resolvePathFrom(path, base string) (string, bool) {
 	return filepath.Join(filepath.Clean(base), path), true
 }
 
-// AWSEvidence inspects local default-chain inputs and, when supplied, a bounded
-// chain loader for role/metadata/refresh credentials. It never validates a
-// provider entitlement or contacts metadata by default.
+// AWSEvidence inspects local default-chain inputs. It never validates provider
+// entitlement, executes credential processes, or contacts metadata endpoints.
 func AWSEvidence(ctx context.Context, d Dependencies) Evidence {
 	if ctx.Err() != nil {
 		return unknown()
@@ -142,7 +110,7 @@ func AWSEvidence(ctx context.Context, d Dependencies) Evidence {
 	if awsProfile(ctx, d, profile, credentials, config, make(map[string]bool)) {
 		return configured("aws-profile")
 	}
-	return chainEvidence(ctx, d, d.LoadAWS, "aws-chain")
+	return unknown()
 }
 
 func awsProfile(ctx context.Context, d Dependencies, profile string, credentials, config map[string]map[string]string, seen map[string]bool) bool {
@@ -250,7 +218,7 @@ func nonemptyFile(ctx context.Context, d Dependencies, path string) bool {
 }
 
 // GoogleADCEvidence validates explicit ADC schemas in the configured and
-// well-known files, falling back to an optional bounded chain loader.
+// well-known files without refreshing tokens or contacting metadata endpoints.
 func GoogleADCEvidence(ctx context.Context, d Dependencies) Evidence {
 	if ctx.Err() != nil {
 		return unknown()
@@ -282,7 +250,7 @@ func GoogleADCEvidence(ctx context.Context, d Dependencies) Evidence {
 			return configured("google-adc-file")
 		}
 	}
-	return chainEvidence(ctx, d, d.LoadGoogleADC, "google-adc-chain")
+	return unknown()
 }
 
 func validADC(ctx context.Context, d Dependencies, path string) bool {
@@ -388,7 +356,7 @@ func validRSAPrivateKey(value string) bool {
 }
 
 // AzureEvidence reads explicit Azure credential/identity configuration, then an
-// optional chain loader or the official CLI token command through an explicitly
+// official CLI token command through an explicitly
 // supplied Run dependency. Defaults never execute a cloud CLI. A returned CLI
 // token is configured evidence only; it is not a provider entitlement check.
 func AzureEvidence(ctx context.Context, d Dependencies) Evidence {
@@ -408,9 +376,6 @@ func AzureEvidence(ctx context.Context, d Dependencies) Evidence {
 	}
 	if (validURL(d.getenv("IDENTITY_ENDPOINT")) && hasValues(d.getenv("IDENTITY_HEADER"))) || (validURL(d.getenv("MSI_ENDPOINT")) && hasValues(d.getenv("MSI_SECRET"))) {
 		return configured("azure-managed-identity")
-	}
-	if evidence := chainEvidence(ctx, d, d.LoadAzure, "azure-chain"); evidence.Status == ports.AgentAuthStatus("configured") {
-		return evidence
 	}
 	if d.Run == nil {
 		return unknown()

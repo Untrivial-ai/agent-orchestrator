@@ -458,3 +458,57 @@ func writeKiloAuthFile(t *testing.T, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestKiloProjectConfigSelectsCredentialSource(t *testing.T) {
+	for _, name := range []string{"kilo.jsonc", "opencode.jsonc", "config.json", "explicit precedence"} {
+		t.Run(name, func(t *testing.T) {
+			home, project := t.TempDir(), t.TempDir()
+			write := func(path, content string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(filepath.Join(home, ".config", "kilo", "kilo.json"), `{"model":"anthropic/claude"}`)
+			env := map[string]string{"HOME": home, "ANTHROPIC_API_KEY": "fixture-key"}
+			if name == "explicit precedence" {
+				env["KILO_CONFIG"] = "explicit.json"
+				write(filepath.Join(project, "explicit.json"), `{"model":"anthropic/claude"}`)
+				name = "kilo.json"
+			}
+			write(filepath.Join(project, name), "{/* native JSONC */\n\"model\":\"openai/gpt\",}")
+			got, err := kilocodeAuthStatusFor(context.Background(), "fixture-kilo", ports.AgentAuthCheck{WorkingDir: project, Env: map[string]string{"KILO_AUTH_CONTENT": "{}"}}, authutil.Dependencies{
+				Getenv: func(k string) string { return env[k] }, Run: func(context.Context, string, ...string) ([]byte, error) {
+					t.Fatal("unexpected native probe")
+					return nil, nil
+				},
+			})
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("project provider status=%q err=%v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestKiloNearestConfigDirectoryWinsAcrossAliases(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "child")
+	for path, model := range map[string]string{
+		filepath.Join(root, ".kilo", "kilo.json"):        "anthropic/claude",
+		filepath.Join(project, ".kilocode", "kilo.json"): "openai/gpt",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{"model":"`+model+`"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := kiloAuthConfigFor(context.Background(), ports.AgentAuthCheck{WorkingDir: project}, authutil.Dependencies{Getenv: func(string) string { return "" }})
+	if got.Model != "openai/gpt" {
+		t.Fatalf("model=%q, want nearest project's openai/gpt", got.Model)
+	}
+}

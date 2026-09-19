@@ -314,7 +314,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		setAuthWorkflow((current) => current?.terminal.handleId === workflow.terminal.handleId ? {
 			...current,
 			phase: result?.agent.authStatus === "unauthorized" ? "unauthorized" : "unverified",
-			reason: result?.agent.authStatus === "unauthorized" ? t("settings.harness.notLoggedIn") : t("settings.harness.loginUnknown"),
+			reason: result?.agent.authStatus === "unauthorized" ? t("settings.harness.notLoggedIn") : result?.agent.authStatus === "configured" ? t("settings.harness.credentialsUnverified") : t("settings.harness.loginUnknown"),
 		} : current);
 	}, [checkAuth, queryClient, t]);
 
@@ -457,6 +457,8 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 
 						const authSummary = authState?.error
 							? authState.error
+							: authStatus === "configured"
+								? t("settings.harness.credentialsUnverified")
 							: authStatus === "authorized"
 								? (isSetupAction ? t("settings.harness.configured") : t("settings.harness.loggedIn"))
 								: authPlan && !authPlan.available
@@ -490,7 +492,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 										{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
 									</Button>
 								)}
-								{authPlan.available && (authStatus === "unknown" || authStatus === "unauthorized") ? (
+								{authPlan.available && (authStatus === "unknown" || authStatus === "unauthorized" || authStatus === "configured") ? (
 									<Button disabled={authState?.checking} size="sm" variant="outline" onClick={() => void checkAuth(agentId)}>
 										{authState?.checking ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
 										{authState?.checking ? t("settings.harness.checkingLogin") : isSetupAction ? t("settings.harness.checkConfiguration") : t("settings.harness.checkLogin")}

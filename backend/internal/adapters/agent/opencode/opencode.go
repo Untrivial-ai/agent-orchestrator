@@ -20,11 +20,9 @@ package opencode
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -366,7 +364,7 @@ func opencodeAuthModel(ctx context.Context, in ports.AgentAuthCheck, deps authut
 		var config struct {
 			Model *string `json:"model"`
 		}
-		if json.Unmarshal(opencodeConfigJSON(data), &config) == nil && config.Model != nil {
+		if json.Unmarshal(authutil.JSONC(data), &config) == nil && config.Model != nil {
 			model = *config.Model
 		}
 	}
@@ -383,79 +381,6 @@ func opencodeAuthModel(ctx context.Context, in ports.AgentAuthCheck, deps authut
 
 // OpenCode accepts JSONC. Strip only comments and trailing commas outside
 // strings, then let encoding/json validate the complete typed config.
-func opencodeConfigJSON(data []byte) []byte {
-	if len(data) > authutil.MaxFileSize {
-		return nil
-	}
-	out := append([]byte(nil), data...)
-	quoted := false
-	for i := 0; i < len(out); i++ {
-		if quoted {
-			if out[i] == '\\' {
-				i++
-				continue
-			}
-			if out[i] == '"' {
-				quoted = false
-			}
-			continue
-		}
-		if out[i] == '"' {
-			quoted = true
-			continue
-		}
-		if out[i] != '/' || i+1 >= len(out) {
-			continue
-		}
-		switch out[i+1] {
-		case '/':
-			for i < len(out) && out[i] != '\n' && out[i] != '\r' {
-				out[i] = ' '
-				i++
-			}
-		case '*':
-			out[i], out[i+1] = ' ', ' '
-			i += 2
-			for i+1 < len(out) && (out[i] != '*' || out[i+1] != '/') {
-				out[i] = ' '
-				i++
-			}
-			if i+1 >= len(out) {
-				return nil
-			}
-			out[i], out[i+1] = ' ', ' '
-			i++
-		}
-	}
-	quoted = false
-	for i := 0; i < len(out); i++ {
-		if quoted {
-			if out[i] == '\\' {
-				i++
-				continue
-			}
-			if out[i] == '"' {
-				quoted = false
-			}
-			continue
-		}
-		if out[i] == '"' {
-			quoted = true
-			continue
-		}
-		if out[i] != ',' {
-			continue
-		}
-		j := i + 1
-		for j < len(out) && (out[j] == ' ' || out[j] == '\t' || out[j] == '\r' || out[j] == '\n') {
-			j++
-		}
-		if j < len(out) && (out[j] == '}' || out[j] == ']') {
-			out[i] = ' '
-		}
-	}
-	return out
-}
 
 type opencodeAuthOutput struct{ data []byte }
 
@@ -521,63 +446,6 @@ func opencodeAuthEntries(data []byte, provider string, now time.Time) bool {
 		}
 	}
 	return false
-}
-
-// opencodeDBAuthStatus inspects an explicitly supplied database only. It is not
-// a discovery source: native database paths are not part of OpenCode's auth contract.
-func opencodeDBAuthStatus(ctx context.Context, path string) (ports.AgentAuthStatus, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(1000)"}
-	db, err := sql.Open("sqlite", uri.String())
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	defer func() { _ = db.Close() }()
-	db.SetMaxOpenConns(1)
-	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	known := false
-	for _, query := range []string{
-		"SELECT a.access_token,a.refresh_token,a.token_expiry FROM account_state s JOIN account a ON a.id = s.active_account_id",
-		"SELECT access_token,refresh_token,token_expiry FROM control_account WHERE active = 1",
-	} {
-		queryKnown, configured := func() (bool, bool) {
-			rows, err := db.QueryContext(probeCtx, query)
-			if err != nil {
-				return false, false
-			}
-			defer func() { _ = rows.Close() }()
-			found := false
-			for rows.Next() {
-				var access, refresh string
-				var expiry sql.NullInt64
-				if rows.Scan(&access, &refresh, &expiry) != nil {
-					continue
-				}
-				if strings.TrimSpace(refresh) != "" || (strings.TrimSpace(access) != "" && (!expiry.Valid || time.UnixMilli(expiry.Int64).After(time.Now()))) {
-					found = true
-					break
-				}
-			}
-			if rows.Err() != nil {
-				return false, false
-			}
-			return true, found
-		}()
-		if queryKnown {
-			known = true
-		}
-		if configured {
-			return ports.AgentAuthStatusConfigured, true, nil
-		}
-	}
-	return ports.AgentAuthStatusUnknown, known, ctx.Err()
 }
 
 // appendPermissionFlags maps AO's permission modes onto opencode's single

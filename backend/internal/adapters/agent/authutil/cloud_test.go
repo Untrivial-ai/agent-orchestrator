@@ -219,52 +219,6 @@ func TestAWSSSOCache(t *testing.T) {
 	}
 }
 
-func TestAWSInjectedRoleAndMetadataLoader(t *testing.T) {
-	for _, name := range []string{"role", "metadata"} {
-		t.Run(name, func(t *testing.T) {
-			deps := cloudDeps(t, nil)
-			deps.LoadAWS = func(ctx context.Context) (CloudCredential, error) {
-				if _, ok := ctx.Deadline(); !ok {
-					t.Fatal("loader missing deadline")
-				}
-				return CloudCredential{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret", ExpiresAt: deps.Now().Add(time.Hour)}, nil
-			}
-			assertCloud(t, AWSEvidence(context.Background(), deps), "configured", "aws-chain")
-		})
-	}
-}
-
-func TestCloudLoaderFailuresAreUnknown(t *testing.T) {
-	for _, tt := range []struct {
-		name       string
-		credential CloudCredential
-		err        error
-		timeout    bool
-	}{
-		{"empty", CloudCredential{}, nil, false},
-		{"partial pair", CloudCredential{AccessKeyID: "fixture-access"}, nil, false},
-		{"expired", CloudCredential{Token: "fixture-token", ExpiresAt: time.Unix(1, 0)}, nil, false},
-		{"failure", CloudCredential{Token: "fixture-token"}, errors.New("fixture-secret"), false},
-		{"timeout", CloudCredential{}, nil, true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			deps := cloudDeps(t, nil)
-			deps.Timeout = time.Millisecond
-			loader := func(ctx context.Context) (CloudCredential, error) {
-				if tt.timeout {
-					<-ctx.Done()
-					return CloudCredential{}, ctx.Err()
-				}
-				return tt.credential, tt.err
-			}
-			deps.LoadAWS, deps.LoadGoogleADC, deps.LoadAzure = loader, loader, loader
-			assertCloud(t, AWSEvidence(context.Background(), deps), "unknown", "")
-			assertCloud(t, GoogleADCEvidence(context.Background(), deps), "unknown", "")
-			assertCloud(t, AzureEvidence(context.Background(), deps), "unknown", "")
-		})
-	}
-}
-
 func TestGoogleADCCredentialSchemas(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
@@ -362,9 +316,6 @@ func TestGoogleADCDefaultPathsAndFallback(t *testing.T) {
 			assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-file")
 		})
 	}
-	deps := cloudDeps(t, nil)
-	deps.LoadGoogleADC = func(context.Context) (CloudCredential, error) { return CloudCredential{Token: "fixture-token"}, nil }
-	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-chain")
 }
 
 func TestGoogleADCAWSExternalAccount(t *testing.T) {
@@ -512,9 +463,6 @@ func TestAzureCLITokenAndLoader(t *testing.T) {
 			assertCloud(t, AzureEvidence(context.Background(), deps), tt.status, source)
 		})
 	}
-	deps := cloudDeps(t, nil)
-	deps.LoadAzure = func(context.Context) (CloudCredential, error) { return CloudCredential{Token: "fixture-token"}, nil }
-	assertCloud(t, AzureEvidence(context.Background(), deps), "configured", "azure-chain")
 }
 
 func TestAzureDefaultDoesNotExecuteCLI(t *testing.T) {

@@ -50,6 +50,7 @@ func gooseDeps(t *testing.T, env map[string]string) authutil.Dependencies {
 func TestGooseProviderRootsAndMetadata(t *testing.T) {
 	for _, tc := range []struct{ name, provider, key string }{
 		{"Google metadata", "google", "GOOGLE_API_KEY"},
+		{"xAI metadata", "xai", "XAI_API_KEY"},
 		{"non API key name", "iflytek", "SPARK_API_PASSWORD"},
 		{"missing old catalog coverage", "cerebras", "CEREBRAS_API_KEY"},
 		{"Fireworks metadata", "fireworks-ai", "FIREWORKS_API_KEY"},
@@ -182,8 +183,8 @@ func TestGooseCloudProviderEvidence(t *testing.T) {
 	}{
 		{"AWS default chain", "bedrock", map[string]string{"AWS_ACCESS_KEY_ID": "fixture", "AWS_SECRET_ACCESS_KEY": "fixture"}, ports.AgentAuthStatusConfigured},
 		{"incomplete AWS", "bedrock", map[string]string{"AWS_ACCESS_KEY_ID": "fixture"}, ports.AgentAuthStatusUnknown},
-		{"Azure AD token", "azure", map[string]string{"AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com", "AZURE_OPENAI_DEPLOYMENT_NAME": "model", "AZURE_OPENAI_AD_TOKEN": "fixture"}, ports.AgentAuthStatusConfigured},
-		{"Azure identity", "azure", map[string]string{"AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com", "AZURE_OPENAI_DEPLOYMENT_NAME": "model", "AZURE_TENANT_ID": "tenant", "AZURE_CLIENT_ID": "client", "AZURE_CLIENT_SECRET": "fixture"}, ports.AgentAuthStatusConfigured},
+		{"Azure AD token", "azure_openai", map[string]string{"AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com", "AZURE_OPENAI_DEPLOYMENT_NAME": "model", "AZURE_OPENAI_AD_TOKEN": "fixture"}, ports.AgentAuthStatusConfigured},
+		{"Azure identity", "azure_openai", map[string]string{"AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com", "AZURE_OPENAI_DEPLOYMENT_NAME": "model", "AZURE_TENANT_ID": "tenant", "AZURE_CLIENT_ID": "client", "AZURE_CLIENT_SECRET": "fixture"}, ports.AgentAuthStatusConfigured},
 		{"unrelated cloud", "anthropic", map[string]string{"AWS_ACCESS_KEY_ID": "fixture", "AWS_SECRET_ACCESS_KEY": "fixture"}, ports.AgentAuthStatusUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,7 +207,7 @@ func TestGooseCloudProviderEvidence(t *testing.T) {
 		}
 	})
 	t.Run("Azure CLI", func(t *testing.T) {
-		d := gooseDeps(t, map[string]string{"GOOSE_PROVIDER": "azure", "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com", "AZURE_OPENAI_DEPLOYMENT_NAME": "model"})
+		d := gooseDeps(t, map[string]string{"GOOSE_PROVIDER": "azure_openai", "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com", "AZURE_OPENAI_DEPLOYMENT_NAME": "model"})
 		d.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if name != "az" || !reflect.DeepEqual(args, []string{"account", "get-access-token", "--resource", "https://cognitiveservices.azure.com/", "--output", "json"}) {
 				t.Fatalf("unexpected command %q %v", name, args)
@@ -342,6 +343,58 @@ func TestGooseSelectedProviderLocalEvidence(t *testing.T) {
 			got, _, err := gooseLocalAuthStatus(context.Background())
 			if err != nil || got != tc.want {
 				t.Fatalf("status = %q, error = %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGooseBedrockUsesConfiguredProfileAndSecrets(t *testing.T) {
+	for _, tc := range []struct {
+		name, credentials, secrets string
+		want                       ports.AgentAuthStatus
+	}{
+		{"selected profile", "[work]\naws_access_key_id=fixture\naws_secret_access_key=fixture\n", "", ports.AgentAuthStatusConfigured},
+		{"unrelated default", "[default]\naws_access_key_id=fixture\naws_secret_access_key=fixture\n", "", ports.AgentAuthStatusUnknown},
+		{"stored keys", "", "AWS_ACCESS_KEY_ID: fixture\nAWS_SECRET_ACCESS_KEY: fixture\n", ports.AgentAuthStatusConfigured},
+		{"stored bearer", "", "AWS_BEARER_TOKEN_BEDROCK: fixture\n", ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			d := gooseDeps(t, map[string]string{"HOME": home, "GOOSE_PATH_ROOT": home, "GOOSE_DISABLE_KEYRING": "1"})
+			gooseWrite(t, filepath.Join(home, "config", "config.yaml"), "GOOSE_PROVIDER: bedrock\nAWS_PROFILE: work\n")
+			gooseWrite(t, filepath.Join(home, "config", "secrets.yaml"), tc.secrets)
+			gooseWrite(t, filepath.Join(home, ".aws", "credentials"), tc.credentials)
+			got, err := gooseAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
+			if err != nil || got != tc.want {
+				t.Fatalf("status=%q err=%v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGooseBedrockStoredAWSOverridesEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, secrets string
+		env                   map[string]string
+		want                  ports.AgentAuthStatus
+	}{
+		{"config profile overrides environment", "AWS_PROFILE: missing\n", "", map[string]string{"AWS_PROFILE": "usable"}, ports.AgentAuthStatusUnknown},
+		{"secret profile overrides config", "AWS_PROFILE: usable\n", "AWS_PROFILE: missing\n", nil, ports.AgentAuthStatusUnknown},
+		{"empty secret overrides environment", "", "AWS_ACCESS_KEY_ID: \"\"\n", map[string]string{"AWS_ACCESS_KEY_ID": "fixture", "AWS_SECRET_ACCESS_KEY": "fixture"}, ports.AgentAuthStatusUnknown},
+		{"bearer environment precedes stored secret", "", "AWS_BEARER_TOKEN_BEDROCK: \"\"\n", map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "fixture"}, ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			env := map[string]string{"HOME": home, "GOOSE_PATH_ROOT": home, "GOOSE_DISABLE_KEYRING": "1"}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			gooseWrite(t, filepath.Join(home, "config", "config.yaml"), "GOOSE_PROVIDER: bedrock\n"+tc.config)
+			gooseWrite(t, filepath.Join(home, "config", "secrets.yaml"), tc.secrets)
+			gooseWrite(t, filepath.Join(home, ".aws", "credentials"), "[usable]\naws_access_key_id=fixture\naws_secret_access_key=fixture\n")
+			got, err := gooseAuthStatus(context.Background(), ports.AgentAuthCheck{}, gooseDeps(t, env))
+			if err != nil || got != tc.want {
+				t.Fatalf("status=%q err=%v; want %q", got, err, tc.want)
 			}
 		})
 	}

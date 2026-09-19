@@ -58,131 +58,7 @@ var gooseProviderKeys = map[string]string{
 	"pleumrouter": "PLEUMROUTER_API_KEY", "routstr": "ROUTSTR_API_KEY", "sakana": "SAKANA_API_KEY", "saladcloud": "SALAD_CLOUD_API_KEY",
 	"saygm": "SAYGM_API_KEY", "scaleway": "SCW_SECRET_KEY", "tanzu_ai": "TANZU_AI_API_KEY", "custom_tensorix": "TENSORIX_API_KEY",
 	"together": "TOGETHER_API_KEY", "trustedrouter": "TRUSTEDROUTER_API_KEY", "venice": "VENICE_API_KEY", "vercel_ai_gateway": "AI_GATEWAY_API_KEY",
-	"zai": "ZHIPU_API_KEY", "zhipu": "ZHIPU_API_KEY",
-}
-
-type gooseThinkingPreservationFormat string
-
-func (f *gooseThinkingPreservationFormat) UnmarshalJSON(data []byte) error {
-	value, err := gooseEnumValue(data, "content_prepend", "content_xml", "reasoning_content")
-	if err != nil {
-		return err
-	}
-	*f = gooseThinkingPreservationFormat(value)
-	return nil
-}
-
-type gooseProviderSetupCategory string
-
-func (c *gooseProviderSetupCategory) UnmarshalJSON(data []byte) error {
-	value, err := gooseEnumValue(data, "agent", "model")
-	if err != nil {
-		return err
-	}
-	*c = gooseProviderSetupCategory(value)
-	return nil
-}
-
-type gooseProviderSetupMethod string
-
-func (m *gooseProviderSetupMethod) UnmarshalJSON(data []byte) error {
-	value, err := gooseEnumValue(data, "none", "single_api_key", "config_fields", "host_with_oauth_fallback", "oauth_browser", "oauth_device_code", "cloud_credentials", "local", "cli_auth")
-	if err != nil {
-		return err
-	}
-	*m = gooseProviderSetupMethod(value)
-	return nil
-}
-
-type gooseProviderSetupGroup string
-
-func (g *gooseProviderSetupGroup) UnmarshalJSON(data []byte) error {
-	value, err := gooseEnumValue(data, "default", "additional")
-	if err != nil {
-		return err
-	}
-	*g = gooseProviderSetupGroup(value)
-	return nil
-}
-
-func gooseEnumValue(data []byte, allowed ...string) (string, error) {
-	var value string
-	if json.Unmarshal(data, &value) != nil {
-		return "", errors.New("invalid provider enum")
-	}
-	for _, candidate := range allowed {
-		if value == candidate {
-			return value, nil
-		}
-	}
-	return "", errors.New("invalid provider enum")
-}
-
-type gooseProviderSetupMetadata struct {
-	Category           gooseProviderSetupCategory `json:"category"`
-	ACP                bool                       `json:"acp"`
-	SetupMethod        gooseProviderSetupMethod   `json:"setup_method"`
-	Group              gooseProviderSetupGroup    `json:"group"`
-	DocsURL            *string                    `json:"docs_url"`
-	Aliases            []*string                  `json:"aliases"`
-	NativeConnectQuery *string                    `json:"native_connect_query"`
-	BinaryName         *string                    `json:"binary_name"`
-	SetupCapabilities  *struct {
-		Install    *bool `json:"install"`
-		Auth       *bool `json:"auth"`
-		AuthStatus *bool `json:"auth_status"`
-	} `json:"setup_capabilities"`
-	ShowOnlyWhenInstalled bool `json:"show_only_when_installed"`
-	FieldOverrides        []*struct {
-		Key          *string `json:"key"`
-		Label        *string `json:"label"`
-		Placeholder  *string `json:"placeholder"`
-		DefaultValue *string `json:"default_value"`
-	} `json:"field_overrides"`
-}
-
-func (m *gooseProviderSetupMetadata) UnmarshalJSON(data []byte) error {
-	type wire gooseProviderSetupMetadata
-	var value wire
-	if err := json.Unmarshal(data, &value); err != nil {
-		return errors.New("invalid provider setup metadata")
-	}
-	if value.Category == "" || value.SetupMethod == "" || value.Group == "" {
-		return errors.New("missing provider setup metadata")
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return errors.New("invalid provider setup metadata")
-	}
-	allowed := map[string]bool{
-		"category": true, "acp": true, "setup_method": true, "group": true,
-		"docs_url": true, "aliases": true, "native_connect_query": true,
-		"binary_name": true, "setup_capabilities": true,
-		"show_only_when_installed": true, "field_overrides": true,
-	}
-	for name := range fields {
-		if !allowed[name] {
-			return errors.New("unknown provider setup field")
-		}
-	}
-	if gooseHasNullField(fields, "acp", "aliases", "setup_capabilities", "show_only_when_installed", "field_overrides") {
-		return errors.New("invalid null provider setup field")
-	}
-	for _, alias := range value.Aliases {
-		if alias == nil {
-			return errors.New("invalid provider setup alias")
-		}
-	}
-	if value.SetupCapabilities != nil && (value.SetupCapabilities.Install == nil || value.SetupCapabilities.Auth == nil || value.SetupCapabilities.AuthStatus == nil) {
-		return errors.New("invalid provider setup capabilities")
-	}
-	for _, field := range value.FieldOverrides {
-		if field == nil || field.Key == nil || field.Label == nil {
-			return errors.New("invalid provider setup field override")
-		}
-	}
-	*m = gooseProviderSetupMetadata(value)
-	return nil
+	"zai": "ZHIPU_API_KEY", "zhipu": "ZHIPU_API_KEY", "xai": "XAI_API_KEY",
 }
 
 type gooseProviderMetadata struct {
@@ -190,36 +66,15 @@ type gooseProviderMetadata struct {
 	DisplayName  *string `json:"display_name"`
 	Engine       string  `json:"engine"`
 	BaseURL      string  `json:"base_url"`
-	Description  *string `json:"description"`
 	APIKeyEnv    string  `json:"api_key_env"`
 	RequiresAuth *bool   `json:"requires_auth"`
 	Models       *[]struct {
-		Name                       *string                          `json:"name"`
-		ResolvedModel              *string                          `json:"resolved_model"`
-		ContextLimit               *uint64                          `json:"context_limit"`
-		InputTokenCost             *float64                         `json:"input_token_cost"`
-		OutputTokenCost            *float64                         `json:"output_token_cost"`
-		Currency                   *string                          `json:"currency"`
-		SupportsCacheControl       *bool                            `json:"supports_cache_control"`
-		Reasoning                  bool                             `json:"reasoning"`
-		ThinkingPreservationFormat *gooseThinkingPreservationFormat `json:"thinking_preservation_format"`
-		RequestParams              map[string]json.RawMessage       `json:"request_params"`
+		Name         *string `json:"name"`
+		ContextLimit *uint64 `json:"context_limit"`
 	} `json:"models"`
-	Headers                 map[string]*string          `json:"headers"`
-	TimeoutSeconds          *uint64                     `json:"timeout_seconds"`
-	SupportsStreaming       *bool                       `json:"supports_streaming"`
-	DynamicModels           *bool                       `json:"dynamic_models"`
-	SessionIDHeaderOverride *string                     `json:"session_id_header_override"`
-	CatalogProviderID       *string                     `json:"catalog_provider_id"`
-	BasePath                *string                     `json:"base_path"`
-	ModelDocLink            *string                     `json:"model_doc_link"`
-	SetupSteps              []*string                   `json:"setup_steps"`
-	SkipCanonicalFiltering  bool                        `json:"skip_canonical_filtering"`
-	ToolShim                bool                        `json:"toolshim"`
-	PreservesThinking       bool                        `json:"preserves_thinking"`
-	EmitClearThinking       bool                        `json:"emit_clear_thinking"`
-	Setup                   *gooseProviderSetupMetadata `json:"setup"`
-	Auth                    *struct {
+	Headers        map[string]*string `json:"headers"`
+	TimeoutSeconds *uint64            `json:"timeout_seconds"`
+	Auth           *struct {
 		Command         string    `json:"command"`
 		Args            []*string `json:"args"`
 		RefreshInterval *uint64   `json:"refresh_interval"`
@@ -227,16 +82,15 @@ type gooseProviderMetadata struct {
 		Cwd             *string   `json:"cwd"`
 	} `json:"auth"`
 	EnvVars []struct {
-		Name        *string `json:"name"`
-		Required    bool    `json:"required"`
-		Secret      bool    `json:"secret"`
-		Default     *string `json:"default"`
-		Primary     *bool   `json:"primary"`
-		Description *string `json:"description"`
+		Name     *string `json:"name"`
+		Required bool    `json:"required"`
+		Secret   bool    `json:"secret"`
+		Default  *string `json:"default"`
 	} `json:"env_vars"`
 }
 
-// Match serde's required fields and scalar types. Go's decoder otherwise
+// Validate the provider envelope and authentication fields, not unrelated
+// pricing, reasoning, or setup UI metadata. Go's decoder otherwise
 // accepts null for strings/numbers and cannot distinguish an absent slice
 // from an explicitly null array. Only these declared schema fields are read.
 func (m *gooseProviderMetadata) UnmarshalJSON(data []byte) error {
@@ -258,11 +112,6 @@ func (m *gooseProviderMetadata) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid provider header")
 		}
 	}
-	for _, step := range value.SetupSteps {
-		if step == nil {
-			return errors.New("invalid provider setup step")
-		}
-	}
 	for _, field := range value.EnvVars {
 		if field.Name == nil {
 			return errors.New("missing provider environment name")
@@ -272,25 +121,16 @@ func (m *gooseProviderMetadata) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return errors.New("invalid provider metadata")
 	}
-	if gooseHasNullField(fields, "api_key_env", "requires_auth", "setup_steps", "skip_canonical_filtering", "toolshim", "preserves_thinking", "emit_clear_thinking") {
+	if gooseHasNullField(fields, "api_key_env", "requires_auth") {
 		return errors.New("invalid null provider field")
 	}
-	for _, group := range []struct {
-		name     string
-		booleans []string
-	}{
-		{"models", []string{"reasoning"}},
-		{"env_vars", []string{"required", "secret"}},
-	} {
-		if len(fields[group.name]) == 0 {
-			continue
-		}
+	if len(fields["env_vars"]) != 0 {
 		var entries []map[string]json.RawMessage
-		if json.Unmarshal(fields[group.name], &entries) != nil {
-			return errors.New("invalid provider metadata list")
+		if json.Unmarshal(fields["env_vars"], &entries) != nil {
+			return errors.New("invalid provider environment metadata")
 		}
 		for _, entry := range entries {
-			if gooseHasNullField(entry, group.booleans...) {
+			if gooseHasNullField(entry, "required", "secret") {
 				return errors.New("invalid null provider boolean")
 			}
 		}
@@ -392,16 +232,7 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 	// Read secrets lazily and at most once. config.yaml is deliberately excluded.
 	loaded := false
 	stored := map[string]yaml.Node{}
-	secret := func(key string) string {
-		if key == "" {
-			return ""
-		}
-		if value, ok := check.Env[key]; ok {
-			return strings.TrimSpace(value)
-		}
-		if value := d.Getenv(key); value != "" {
-			return value
-		}
+	loadSecrets := func() {
 		if !loaded {
 			loaded = true
 			disabled := d.Getenv("GOOSE_DISABLE_KEYRING") != ""
@@ -428,6 +259,18 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 				_ = authutil.ReadYAML(ctx, d, filepath.Join(dir, "secrets.yaml"), &stored)
 			}
 		}
+	}
+	secret := func(key string) string {
+		if key == "" {
+			return ""
+		}
+		if value, ok := check.Env[key]; ok {
+			return strings.TrimSpace(value)
+		}
+		if value := d.Getenv(key); value != "" {
+			return value
+		}
+		loadSecrets()
 		node := stored[key]
 		if node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
 			return strings.TrimSpace(node.Value)
@@ -490,13 +333,37 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 	case "ollama", "lmstudio", "atomic_chat", "llama_swap", "lynkr", "omlx":
 		return ports.AgentAuthStatusNotApplicable, nil
 	case "bedrock":
-		return authutil.AWSEvidence(ctx, d).Status, ctx.Err()
+		// Goose exposes its AWS config and secret store to the native SDK.
+		// Preserve that scope when inspecting the SDK's local inputs.
+		cloud := d
+		cloud.WorkingDir = check.WorkingDir
+		loadSecrets()
+		cloud.Getenv = func(key string) string {
+			if strings.HasPrefix(key, "AWS_") {
+				// Bedrock exports config, then secrets, over the environment.
+				// Its bearer token instead uses the regular secret lookup after
+				// exporting config, so stored bearer secrets do not override env.
+				if key != "AWS_BEARER_TOKEN_BEDROCK" {
+					if node := stored[key]; node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
+						return strings.TrimSpace(node.Value)
+					}
+				}
+				if node := config[key]; node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
+					return strings.TrimSpace(node.Value)
+				}
+				if key == "AWS_BEARER_TOKEN_BEDROCK" {
+					return secret(key)
+				}
+			}
+			return d.Getenv(key)
+		}
+		return authutil.AWSEvidence(ctx, cloud).Status, ctx.Err()
 	case "gcpvertexai":
 		if param("GCP_PROJECT_ID") != "" {
 			return authutil.GoogleADCEvidence(ctx, d).Status, ctx.Err()
 		}
 		return ports.AgentAuthStatusUnknown, nil
-	case "azure":
+	case "azure_openai":
 		if param("AZURE_OPENAI_ENDPOINT") == "" || param("AZURE_OPENAI_DEPLOYMENT_NAME") == "" {
 			return ports.AgentAuthStatusUnknown, nil
 		}

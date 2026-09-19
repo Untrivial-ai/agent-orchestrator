@@ -108,8 +108,23 @@ func continueAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authu
 	if authutil.ReadYAML(ctx, d, configPath, &config) != nil {
 		return ports.AgentAuthStatusUnknown, ctx.Err()
 	}
-	for _, model := range config.Models {
-		if !continueChatModel(model.Roles) {
+	var persisted struct {
+		Model string `json:"cliSelectedModel"`
+	}
+	_ = authutil.ReadJSON(ctx, d, filepath.Join(continueHome, "index", "globalContext.json"), &persisted)
+	selected := -1
+	for i, model := range config.Models {
+		name := model.Name
+		if name == "" {
+			name = model.Model
+		}
+		if continueChatModel(model.Roles) && name == persisted.Model {
+			selected = i
+			break
+		}
+	}
+	for i, model := range config.Models {
+		if !continueChatModel(model.Roles) || (selected >= 0 && selected != i) {
 			continue
 		}
 		provider, selectedModel := strings.TrimSpace(model.Provider), strings.TrimSpace(model.Model)

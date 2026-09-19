@@ -3,6 +3,7 @@ package vibe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,8 +78,9 @@ provider = "project-provider"
 
 	env := map[string]string{
 		"HOME": root, "VIBE_HOME": vibeHome,
-		"GLOBAL_KEY": "unrelated", "OLD_PROJECT_KEY": "stale", "PROJECT_KEY": "selected",
+		"PROJECT_KEY": "selected",
 	}
+	writeVibeFixture(t, filepath.Join(vibeHome, "trusted_folders.toml"), fmt.Sprintf("trusted = [%q]\n", filepath.Join(root, "workspace")))
 	got := runVibeAuth(t, ports.AgentAuthCheck{WorkingDir: project}, env)
 	if got != ports.AgentAuthStatusConfigured {
 		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
@@ -365,4 +367,48 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func TestVibeProjectConfigRequiresClosestTrustDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		trusted, untrusted bool
+		want               ports.AgentAuthStatus
+	}{
+		{"undecided", false, false, ports.AgentAuthStatusConfigured},
+		{"trusted parent", true, false, ports.AgentAuthStatusNotApplicable},
+		{"untrusted child", true, true, ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			vibeHome := filepath.Join(home, ".vibe")
+			project := filepath.Join(home, "project")
+			writeVibeFixture(t, filepath.Join(project, ".vibe", "config.toml"), `active_model = "local"`)
+			trust := ""
+			if tc.trusted {
+				trust += fmt.Sprintf("trusted = [%q]\n", project)
+			}
+			if tc.untrusted {
+				trust += fmt.Sprintf("untrusted = [%q]\n", filepath.Join(project, ".vibe"))
+			}
+			writeVibeFixture(t, filepath.Join(vibeHome, "trusted_folders.toml"), trust)
+			got := runVibeAuth(t, ports.AgentAuthCheck{WorkingDir: project}, map[string]string{"HOME": home, "VIBE_HOME": vibeHome, "MISTRAL_API_KEY": "fixture-key"})
+			if got != tc.want {
+				t.Fatalf("status=%q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVibeProjectSearchStopsBeforeHomeParent(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	project := filepath.Join(home, "project")
+	vibeHome := filepath.Join(home, ".vibe")
+	writeVibeFixture(t, filepath.Join(root, ".vibe", "config.toml"), `active_model = "local"`)
+	writeVibeFixture(t, filepath.Join(vibeHome, "trusted_folders.toml"), fmt.Sprintf("trusted = [%q]\n", root))
+	got := runVibeAuth(t, ports.AgentAuthCheck{WorkingDir: project}, map[string]string{"HOME": home, "VIBE_HOME": vibeHome, "MISTRAL_API_KEY": "fixture"})
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status=%q; want global configured", got)
+	}
 }

@@ -315,6 +315,8 @@ func TestAutohandAuthStatusBareModeUsesKeyOrHelperWithoutExecutingHelper(t *test
 }
 
 func TestAutohandAuthStatusCloudCredentialChains(t *testing.T) {
+	adcPath := filepath.Join(t.TempDir(), "adc.json")
+	writeAutohandPath(t, adcPath, `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`)
 	tests := []struct {
 		name   string
 		config string
@@ -328,17 +330,13 @@ func TestAutohandAuthStatusCloudCredentialChains(t *testing.T) {
 		},
 		{
 			name:   "Google ADC",
+			env:    map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": adcPath},
 			config: `{"provider":"vertexai","vertexai":{"projectId":"fixture-project","model":"fixture"}}`,
-			deps: authutil.Dependencies{LoadGoogleADC: func(context.Context) (authutil.CloudCredential, error) {
-				return authutil.CloudCredential{Token: "fixture-token"}, nil
-			}},
 		},
 		{
 			name:   "Azure identity",
+			env:    map[string]string{"IDENTITY_ENDPOINT": "http://127.0.0.1/identity", "IDENTITY_HEADER": "fixture-header"},
 			config: `{"provider":"azure","azure":{"authMethod":"managed-identity","baseUrl":"https://fixture.openai.azure.com","deploymentName":"fixture-deployment","model":"fixture"}}`,
-			deps: authutil.Dependencies{LoadAzure: func(context.Context) (authutil.CloudCredential, error) {
-				return authutil.CloudCredential{Token: "fixture-token"}, nil
-			}},
 		},
 	}
 	for _, test := range tests {
@@ -509,14 +507,11 @@ func TestAutohandAuthStatusRejectsIncompatibleBedrockModes(t *testing.T) {
 }
 
 func TestAutohandAuthStatusAzureShapesAndAuthIsolation(t *testing.T) {
-	azureEvidence := authutil.Dependencies{LoadAzure: func(context.Context) (authutil.CloudCredential, error) {
-		return authutil.CloudCredential{Token: "fixture-token"}, nil
-	}}
 	tests := []struct {
-		name   string
-		config string
-		deps   *authutil.Dependencies
-		want   ports.AgentAuthStatus
+		name     string
+		config   string
+		identity bool
+		want     ports.AgentAuthStatus
 	}{
 		{
 			name:   "base URL with API key",
@@ -529,16 +524,16 @@ func TestAutohandAuthStatusAzureShapesAndAuthIsolation(t *testing.T) {
 			want:   ports.AgentAuthStatusConfigured,
 		},
 		{
-			name:   "managed identity uses Azure evidence",
-			config: `{"provider":"azure","azure":{"authMethod":"managed-identity","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","model":"fixture"}}`,
-			deps:   &azureEvidence,
-			want:   ports.AgentAuthStatusConfigured,
+			name:     "managed identity uses Azure evidence",
+			config:   `{"provider":"azure","azure":{"authMethod":"managed-identity","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","model":"fixture"}}`,
+			identity: true,
+			want:     ports.AgentAuthStatusConfigured,
 		},
 		{
-			name:   "API key mode ignores identity evidence",
-			config: `{"provider":"azure","azure":{"authMethod":"api-key","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","model":"fixture"}}`,
-			deps:   &azureEvidence,
-			want:   ports.AgentAuthStatusUnknown,
+			name:     "API key mode ignores identity evidence",
+			config:   `{"provider":"azure","azure":{"authMethod":"api-key","baseUrl":"https://fixture.openai.azure.com/openai/deployments/test","model":"fixture"}}`,
+			identity: true,
+			want:     ports.AgentAuthStatusUnknown,
 		},
 		{
 			name:   "managed identity ignores API key",
@@ -549,7 +544,12 @@ func TestAutohandAuthStatusAzureShapesAndAuthIsolation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeAutohandFixture(t, "json", test.config)
-			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path}}, map[string]string{"HOME": t.TempDir()}, test.deps)
+			env := map[string]string{"HOME": t.TempDir()}
+			if test.identity {
+				env["IDENTITY_ENDPOINT"] = "http://127.0.0.1/identity"
+				env["IDENTITY_HEADER"] = "fixture-header"
+			}
+			got := runAutohandAuth(t, ports.AgentAuthCheck{Args: []string{"--config", path}}, env, nil)
 			if got != test.want {
 				t.Fatalf("status = %q, want %q", got, test.want)
 			}

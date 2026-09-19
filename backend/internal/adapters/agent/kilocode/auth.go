@@ -250,22 +250,41 @@ func kiloAuthConfigFor(ctx context.Context, in ports.AgentAuthCheck, deps authut
 	if home := kiloAuthHome(deps); configHome == "" && home != "" {
 		configHome = filepath.Join(home, ".config")
 	}
+	// Native location precedence: global, explicit file, project, then
+	// project config directories. JSONC follows JSON within each location.
+	names := []string{"config.json", "kilo.json", "kilo.jsonc", "opencode.json", "opencode.jsonc"}
 	var paths []string
 	if configHome != "" {
-		paths = append(paths, filepath.Join(configHome, "kilo", "kilo.json"))
-	}
-	if in.WorkingDir != "" {
-		found, _ := authutil.FindUpward(ctx, deps, in.WorkingDir, "kilo.json")
-		for i := len(found) - 1; i >= 0; i-- {
-			paths = append(paths, found[i])
+		for _, name := range names {
+			paths = append(paths, filepath.Join(configHome, "kilo", name))
 		}
 	}
 	if path := deps.Getenv("KILO_CONFIG"); path != "" {
-		paths = append(paths, path)
+		if !filepath.IsAbs(path) && filepath.IsAbs(in.WorkingDir) {
+			path = filepath.Join(in.WorkingDir, path)
+		}
+		if filepath.IsAbs(path) {
+			paths = append(paths, path)
+		}
+	}
+	if filepath.IsAbs(in.WorkingDir) && deps.Getenv("KILO_DISABLE_PROJECT_CONFIG") != "1" &&
+		!strings.EqualFold(deps.Getenv("KILO_DISABLE_PROJECT_CONFIG"), "true") {
+		for _, dirs := range [][]string{{""}, {".kilo", ".kilocode"}} {
+			var search []string
+			for _, dir := range dirs {
+				for i := len(names) - 1; i >= 0; i-- {
+					search = append(search, filepath.Join(dir, names[i]))
+				}
+			}
+			found, _ := authutil.FindUpward(ctx, deps, in.WorkingDir, search...)
+			for i := len(found) - 1; i >= 0; i-- {
+				paths = append(paths, found[i])
+			}
+		}
 	}
 	merge := func(data []byte) {
 		var next kiloAuthConfig
-		if json.Unmarshal(data, &next) != nil {
+		if json.Unmarshal(authutil.JSONC(data), &next) != nil {
 			return
 		}
 		if next.Model != "" {
