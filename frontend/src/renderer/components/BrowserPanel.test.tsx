@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserPanel, BrowserPanelView, BrowserTopTabDragOverlay, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { reorderBrowserTabs } from "../lib/browser-tab-order";
 import { useBrowserView, type BrowserNavState } from "../hooks/useBrowserView";
+import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
 import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSession } from "../types/workspace";
 import { TooltipProvider } from "./ui/tooltip";
@@ -12,6 +13,7 @@ import type {
 	BrowserAnnotationCancelPayload,
 	BrowserAnnotationSubmitPayload,
 } from "../../shared/browser-annotations";
+import type { BrowserSitePermissionRequest, BrowserSiteSettings } from "../../shared/browser-site-settings";
 
 function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
@@ -197,6 +199,7 @@ describe("BrowserPanel", () => {
 	const annotationCancelListeners = new Set<(payload: BrowserAnnotationCancelPayload) => void>();
 	let focusLocationListener: ((viewId: string) => void) | undefined;
 	let reopenClosedTabListener: ((viewId: string) => void) | undefined;
+	let permissionRequestListener: ((request: BrowserSitePermissionRequest) => void) | undefined;
 	const pageFocusListeners = new Set<(viewId: string) => void>();
 
 	async function openBrowserControls() {
@@ -206,6 +209,11 @@ describe("BrowserPanel", () => {
 	async function openDevicePresets() {
 		await openBrowserControls();
 		await userEvent.click(screen.getByRole("menuitem", { name: "Device preset" }));
+	}
+
+	async function openSitePermissions() {
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		await userEvent.click(screen.getByRole("button", { name: "Site permissions" }));
 	}
 
 	beforeEach(() => {
@@ -259,6 +267,20 @@ describe("BrowserPanel", () => {
 		});
 		window.ao!.browser.historySuggestions = vi.fn(async () => []);
 		window.ao!.browser.historyFavicon = vi.fn(async () => undefined);
+		window.ao!.browser.respondToPermissionRequest = vi.fn();
+		window.ao!.browser.onPermissionRequest = vi.fn((listener: (request: BrowserSitePermissionRequest) => void) => {
+			permissionRequestListener = listener;
+			return () => {
+				if (permissionRequestListener === listener) permissionRequestListener = undefined;
+			};
+		});
+		window.ao!.browser.getSiteSettings = vi.fn(async ({ viewId }: { viewId: string }): Promise<BrowserSiteSettings> => ({
+			viewId,
+			tabId: "t1",
+			profileId: null,
+			origin: "https://example.com",
+			permissions: { camera: "block", microphone: "block", location: "block", notifications: "block" },
+		}));
 		window.ao!.browser.captureScreenshot = vi.fn(async () => undefined);
 		window.ao!.browser.downloads.list = vi.fn(async () => ({ downloads: [] }));
 		window.ao!.browser.selectProfile = vi.fn(async () => undefined);
@@ -412,6 +434,131 @@ describe("BrowserPanel", () => {
 		await act(async () => resolveSuggestions([{ url: "https://github.com/openai", title: "OpenAI" }]));
 
 		expect(screen.queryByRole("listbox", { name: "Address suggestions" })).not.toBeInTheDocument();
+	});
+
+	it("shows read-only site information for the current page, not the edited address", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("textbox", { name: /browser url/i });
+		await userEvent.clear(input);
+		await userEvent.type(input, "http://other.example");
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		const info = screen.getByRole("dialog", { name: "View site information" });
+		expect(info.matches(OPEN_BROWSER_OVERLAY_SELECTOR)).toBe(true);
+		expect(info).toHaveTextContent("example.com");
+		expect(info).toHaveTextContent("Connection is secure");
+		await userEvent.click(within(info).getByRole("button", { name: "Site permissions" }));
+		await waitFor(() => expect(within(info).getAllByRole("combobox")).toHaveLength(4));
+		expect(within(info).getByRole("combobox", { name: "Camera" })).toHaveTextContent("Block");
+		expect(info).not.toHaveTextContent("other.example");
+		expect(hookState.navigate).not.toHaveBeenCalled();
+		await userEvent.keyboard("{Escape}");
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+	});
+
+	it("refreshes permission decisions when site information opens", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const initial = await window.ao!.browser.getSiteSettings({ viewId: "42:sess-1" });
+		window.ao!.browser.getSiteSettings = vi.fn(async () => ({
+			...initial, permissions: { ...initial.permissions, microphone: "allow" as const },
+		}));
+		await openSitePermissions();
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveTextContent("Allow"));
+	});
+
+	it("prefetches site settings and keeps permission rows stable while they load", async () => {
+		hookState.navState.url = "https://example.com/page";
+		let resolveSettings!: (value: BrowserSiteSettings) => void;
+		window.ao!.browser.getSiteSettings = vi.fn(() => new Promise<BrowserSiteSettings>((resolve) => { resolveSettings = resolve; }));
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await waitFor(() => expect(window.ao!.browser.getSiteSettings).toHaveBeenCalledWith({ viewId: "42:sess-1" }));
+
+		await userEvent.click(screen.getByRole("button", { name: "View site information" }));
+		const info = screen.getByRole("dialog", { name: "View site information" });
+		await userEvent.click(within(info).getByRole("button", { name: "Site permissions" }));
+		const permissions = within(info).getByRole("region", { name: "Site permissions" });
+		expect(permissions).toHaveAttribute("aria-busy", "true");
+		for (const label of ["Camera", "Microphone", "Location", "Notifications"]) {
+			expect(within(permissions).getByText(label)).toBeInTheDocument();
+		}
+
+		resolveSettings({
+			viewId: "42:sess-1",
+			tabId: "t1",
+			profileId: null,
+			origin: "https://example.com",
+			permissions: { camera: "block", microphone: "block", location: "block", notifications: "block" },
+		});
+		await waitFor(() => expect(within(permissions).getAllByRole("combobox")).toHaveLength(4));
+		expect(permissions).toHaveAttribute("aria-busy", "false");
+	});
+
+	it("shows an AO permission prompt for the active browser tab and returns the decision", async () => {
+		hookState.navState.url = "https://example.com/page";
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		act(() => permissionRequestListener?.({
+			requestId: "permission-1",
+			viewId: "42:sess-1",
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["microphone"],
+		}));
+		const prompt = screen.getByRole("alertdialog", { name: "Site permissions" });
+		expect(prompt.matches(OPEN_BROWSER_OVERLAY_SELECTOR)).toBe(true);
+		expect(prompt).toHaveTextContent("example.com wants to use: Microphone.");
+		expect(within(prompt).getByRole("button", { name: "Block" })).toBeInTheDocument();
+		expect(within(prompt).getByRole("button", { name: "Always allow" })).toBeInTheDocument();
+		await userEvent.click(within(prompt).getByRole("button", { name: "Allow once" }));
+		expect(window.ao!.browser.respondToPermissionRequest).toHaveBeenCalledWith({
+			requestId: "permission-1",
+			viewId: "42:sess-1",
+			decision: "allow-once",
+		});
+		expect(screen.queryByRole("alertdialog", { name: "Site permissions" })).not.toBeInTheDocument();
+
+		act(() => permissionRequestListener?.({
+			requestId: "permission-2",
+			viewId: "42:sess-1",
+			tabId: "t1",
+			origin: "https://example.com",
+			permissions: ["camera"],
+		}));
+		await userEvent.click(within(screen.getByRole("alertdialog", { name: "Site permissions" }))
+			.getByRole("button", { name: "Always allow" }));
+		expect(window.ao!.browser.respondToPermissionRequest).toHaveBeenLastCalledWith({
+			requestId: "permission-2",
+			viewId: "42:sess-1",
+			decision: "allow-always",
+		});
+	});
+
+	it("updates site permissions and requires confirmation before clearing site data", async () => {
+		hookState.navState.url = "https://example.com/page";
+		const target = await window.ao!.browser.getSiteSettings({ viewId: "42:sess-1" });
+		window.ao!.browser.setSitePermission = vi.fn(async (input) => ({ ...target, permissions: { ...target.permissions, [input.permission]: input.setting } }));
+		window.ao!.browser.clearSiteData = vi.fn(async () => undefined);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await openSitePermissions();
+		const camera = await screen.findByRole("combobox", { name: "Camera" });
+		await userEvent.click(camera);
+		await userEvent.click(screen.getByRole("option", { name: "Allow" }));
+		expect(window.ao!.browser.setSitePermission).toHaveBeenCalledWith(expect.objectContaining({ origin: "https://example.com", permission: "camera", setting: "allow" }));
+		await waitFor(() => expect(camera).toHaveTextContent("Allow"));
+		await userEvent.click(screen.getByRole("button", { name: "Site settings" }));
+		await userEvent.click(screen.getByRole("button", { name: "Cookies and site data" }));
+		expect(window.ao!.browser.clearSiteData).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(window.ao!.browser.clearSiteData).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("button", { name: "Cookies and site data" }));
+		await userEvent.click(screen.getByRole("button", { name: "Clear data" }));
+		expect(window.ao!.browser.clearSiteData).toHaveBeenCalledWith(expect.objectContaining({ origin: "https://example.com", profileId: null, tabId: "t1" }));
+	});
+
+	it("does not offer site information on an empty tab", () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		expect(screen.queryByRole("button", { name: "View site information" })).not.toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: /browser url/i })).not.toHaveClass("px-8");
 	});
 
 	it("does not search imported history until the address is edited", async () => {

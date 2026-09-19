@@ -134,6 +134,12 @@ function setupBridge() {
 		showProfileMenu: vi.fn(),
 		selectProfile: vi.fn(),
 		historySuggestions: vi.fn(async () => []),
+		getSiteSettings: vi.fn(async () => { throw new Error("Not used"); }),
+		setSitePermission: vi.fn(async () => { throw new Error("Not used"); }),
+		resetSitePermissions: vi.fn(async () => { throw new Error("Not used"); }),
+		clearSiteData: vi.fn(async () => undefined),
+		respondToPermissionRequest: vi.fn(),
+		onPermissionRequest: vi.fn(() => () => undefined),
 		historyFavicon: vi.fn(async () => undefined),
 		captureScreenshot: vi.fn(async () => undefined),
 		downloads: {

@@ -76,6 +76,13 @@ import type {
 	BrowserImportResult,
 } from "./shared/browser-profile-import";
 import type {
+	BrowserSiteTarget,
+	BrowserSiteSettings,
+	BrowserSitePermissionInput,
+	BrowserSitePermissionRequest,
+	BrowserSitePermissionDecision,
+} from "./shared/browser-site-settings";
+import type {
 	BrowserDownloadActionInput,
 	BrowserDownloadsState,
 } from "./shared/browser-downloads";
@@ -386,6 +393,16 @@ const api = {
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
 		historySuggestions: (input: { viewId: string; query: string }) =>
 			ipcRenderer.invoke("browser:history:suggest", input) as Promise<BrowserHistorySuggestion[]>,
+		getSiteSettings: (input: { viewId: string }) => ipcRenderer.invoke("browser:site:get", input) as Promise<BrowserSiteSettings>,
+		setSitePermission: (input: BrowserSitePermissionInput) => ipcRenderer.invoke("browser:site:setPermission", input) as Promise<BrowserSiteSettings>,
+		resetSitePermissions: (input: BrowserSiteTarget) => ipcRenderer.invoke("browser:site:reset", input) as Promise<BrowserSiteSettings>,
+		clearSiteData: (input: BrowserSiteTarget) => ipcRenderer.invoke("browser:site:clearData", input) as Promise<void>,
+		respondToPermissionRequest: (input: BrowserSitePermissionDecision) => ipcRenderer.send("browser:site:permissionDecision", input),
+			onPermissionRequest: (listener: (request: BrowserSitePermissionRequest) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, request: BrowserSitePermissionRequest) => listener(request);
+			ipcRenderer.on("browser:site:permissionRequest", wrapped);
+			return () => { ipcRenderer.off("browser:site:permissionRequest", wrapped); };
+		},
 		historyFavicon: (input: { viewId: string; url: string }) =>
 			ipcRenderer.invoke("browser:history:favicon", input) as Promise<string | undefined>,
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
