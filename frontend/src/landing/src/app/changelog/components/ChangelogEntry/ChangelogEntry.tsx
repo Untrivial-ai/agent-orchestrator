@@ -48,6 +48,12 @@ export async function ChangelogEntry({ entry }: ChangelogEntryProps) {
 				</h2>
 			</Link>
 
+			{entry.kind === "weekly" && (
+				<p className="text-xs font-mono uppercase tracking-[0.5px] text-muted-foreground -mt-2 mb-4">
+					Weekly update
+				</p>
+			)}
+
 			{/* Featured image */}
 			{entry.image && (
 				<div className="relative mb-6 overflow-hidden border border-border">

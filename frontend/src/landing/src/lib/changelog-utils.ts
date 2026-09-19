@@ -21,6 +21,8 @@ export interface ChangelogEntry {
 	source?: "mdx" | "release";
 	/** Draft entries (frontmatter `draft: true`) never render on the site. */
 	draft?: boolean;
+	/** Weekly narrative entries vs versioned release notes. */
+	kind?: "weekly" | "release";
 }
 
 export { slugify } from "./content-utils";

@@ -47,6 +47,7 @@ function parseFrontmatter(filePath: string): ChangelogEntry | null {
 			content,
 			source: "mdx",
 			draft: data.draft === true,
+			kind: data.kind === "weekly" ? "weekly" : undefined,
 		};
 	} catch {
 		return null;

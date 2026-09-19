@@ -27,6 +27,7 @@ in CI. Fix the prose.
 | [docs/backend-code-structure.md](backend-code-structure.md) | Package ownership rules for the Go backend.                                  |
 | [docs/development.md](development.md)                       | Prerequisites, build, test, and troubleshooting for local development.       |
 | [docs/STATUS.md](STATUS.md)                                 | What ships on `main` today and what is in flight.                            |
+| [docs/weekly-changelog.md](weekly-changelog.md)             | Weekly landing changelog ritual: draft script, curation, media, publish.   |
 | [docs/adr/](adr/)                                           | Architecture decision records: why a boundary exists, not just what it is.   |
 | https://orchestrator.inc/docs                                      | Published product documentation for end users.                               |
 | https://orchestrator.inc/llms.txt                                  | Index of the published docs for LLM consumption. Navigation, not a contract. |
