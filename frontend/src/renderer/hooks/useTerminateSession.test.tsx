@@ -20,8 +20,6 @@ vi.mock("./useCloudCp", () => ({
 	createRendererCloudCpClient: createCloudClientMock,
 }));
 
-vi.mock("../lib/telemetry", () => ({ captureRendererEvent: vi.fn() }));
-
 import { useTerminateSession } from "./useTerminateSession";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
@@ -30,7 +28,7 @@ const localSession: WorkspaceSession = {
 	workspaceId: "project-1",
 	workspaceName: "Project",
 	title: "Local worker",
-	provider: "claude-code",
+	provider: "opencode",
 	status: "working",
 	updatedAt: "2026-09-01T00:00:00Z",
 	prs: [],
@@ -42,7 +40,7 @@ const session = {
 	id: "sess-1",
 	kanbanColumn: "building",
 	kind: "worker",
-	provider: "codex",
+	provider: "opencode",
 	prs: [],
 	status: "working",
 	terminalHandleId: "sess-1-terminal",

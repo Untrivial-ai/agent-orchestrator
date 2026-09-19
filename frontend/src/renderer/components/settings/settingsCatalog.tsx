@@ -1,4 +1,4 @@
-import { BadgeCheck, Bot, CircleHelp, Cloud, Globe2, Keyboard, RefreshCw, Settings2, Smartphone, type LucideIcon } from "lucide-react";
+import { Bot, CircleHelp, Cloud, Globe2, Keyboard, RefreshCw, Settings2, Smartphone, type LucideIcon } from "lucide-react";
 import { lazy, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import type { GlobalSettingsSection } from "../../stores/ui-store";
@@ -6,7 +6,6 @@ import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { CloudCredentialsSection } from "./CloudCredentialsSection";
 import { CloudProviderSection } from "./CloudProviderSection";
-import { CodexAccountsSection } from "./CodexAccountsSection";
 import { ConnectMobileContent } from "./ConnectMobileContent";
 import { GeneralSettingsSection } from "./GeneralSettingsSection";
 import { HarnessSettingsSection } from "./HarnessSettingsSection";
@@ -29,6 +28,8 @@ export type SettingsCatalogItem = {
 	icon: LucideIcon;
 	label: (t: TFunction) => string;
 	visible?: (context: CatalogContext) => boolean;
+	/** Rendered in the settings nav but greyed out and non-interactive. */
+	disabled?: boolean;
 	render: (t: TFunction, titleHidden: boolean) => ReactNode;
 };
 
@@ -48,12 +49,6 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		icon: Bot,
 		label: (t) => t("settings.harness"),
 		render: (_t, titleHidden) => <HarnessSettingsSection titleHidden={titleHidden} />,
-	},
-	{
-		id: "agents",
-		icon: BadgeCheck,
-		label: (t) => t("settings.agents"),
-		render: (_t, titleHidden) => <CodexAccountsSection titleHidden={titleHidden} />,
 	},
 	{
 		id: "browserProfiles",
@@ -84,6 +79,7 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		id: "mobile",
 		icon: Smartphone,
 		label: (t) => t("settings.mobile"),
+		disabled: true,
 		render: (t, titleHidden) => (
 			<SettingsSection titleHidden={titleHidden} title={t("settings.mobile")}>
 				<div className="rounded-md bg-[var(--color-bg-settings-row)] pb-4 pt-0">

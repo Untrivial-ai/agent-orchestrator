@@ -16,7 +16,7 @@ function renderSheet(
 	queryClient ??= new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	if (queryClient.getQueryData(agentReadinessQueryKey) === undefined) {
 		queryClient.setQueryData(agentReadinessQueryKey, {
-			agents: [agentReadiness("claude-code"), agentReadiness("codex")],
+			agents: [agentReadiness("opencode", "OpenCode")],
 		});
 	}
 	if (queryClient.getQueryData(workspaceQueryKey) === undefined) {
@@ -64,7 +64,7 @@ describe("CreateProjectAgentSheet", () => {
 				label="Agent"
 				onChange={() => undefined}
 				placeholder="Project default"
-				value="claude-code"
+				value="opencode"
 			/>,
 		);
 
@@ -91,8 +91,8 @@ describe("CreateProjectAgentSheet", () => {
 
 		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
 		expect(onSubmit).toHaveBeenCalledWith({
-			workerAgent: "claude-code",
-			orchestratorAgent: "claude-code",
+			workerAgent: "opencode",
+			orchestratorAgent: "opencode",
 			trackerIntake: undefined,
 		});
 	});
@@ -102,9 +102,9 @@ describe("CreateProjectAgentSheet", () => {
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
 				sessions: [
-					{ id: "w1", kind: "worker", provider: "codex", createdAt: hoursAgo(5) },
-					{ id: "w2", kind: "worker", provider: "codex", createdAt: hoursAgo(4) },
-					{ id: "o1", kind: "orchestrator", provider: "claude-code", createdAt: hoursAgo(3) },
+					{ id: "w1", kind: "worker", provider: "opencode", createdAt: hoursAgo(5) },
+					{ id: "w2", kind: "worker", provider: "opencode", createdAt: hoursAgo(4) },
+					{ id: "o1", kind: "orchestrator", provider: "opencode", createdAt: hoursAgo(3) },
 				],
 			},
 		]);
@@ -114,8 +114,8 @@ describe("CreateProjectAgentSheet", () => {
 
 		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
 		expect(onSubmit).toHaveBeenCalledWith({
-			workerAgent: "codex",
-			orchestratorAgent: "claude-code",
+			workerAgent: "opencode",
+			orchestratorAgent: "opencode",
 			trackerIntake: undefined,
 		});
 	});
@@ -124,24 +124,24 @@ describe("CreateProjectAgentSheet", () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
-				sessions: [{ id: "w1", kind: "worker", provider: "claude-code", createdAt: hoursAgo(3) }],
+				sessions: [{ id: "w1", kind: "worker", provider: "opencode", createdAt: hoursAgo(3) }],
 			},
 		]);
 		const onSubmit = renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
-		await chooseOption(screen.getByLabelText("Worker agent"), "codex");
+		await chooseOption(screen.getByLabelText("Worker agent"), "opencode");
 
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
 				sessions: [
-					{ id: "w2", kind: "worker", provider: "claude-code", createdAt: hoursAgo(2) },
-					{ id: "w3", kind: "worker", provider: "claude-code", createdAt: hoursAgo(1) },
+					{ id: "w2", kind: "worker", provider: "opencode", createdAt: hoursAgo(2) },
+					{ id: "w3", kind: "worker", provider: "opencode", createdAt: hoursAgo(1) },
 				],
 			},
 		]);
 		await userEvent.click(screen.getByRole("button", { name: "Create and start" }));
 
 		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-		expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ workerAgent: "codex" }));
+		expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ workerAgent: "opencode" }));
 	});
 
 	it("does not show a manual agent catalog refresh action", () => {
@@ -152,8 +152,8 @@ describe("CreateProjectAgentSheet", () => {
 
 	it("blocks submit when intake is enabled with no assignee, then passes the intake payload once one is set", async () => {
 		const onSubmit = renderSheet();
-		await chooseOption(screen.getByLabelText("Worker agent"), "claude-code");
-		await chooseOption(screen.getByLabelText("Orchestrator agent"), "codex");
+		await chooseOption(screen.getByLabelText("Worker agent"), "opencode");
+		await chooseOption(screen.getByLabelText("Orchestrator agent"), "opencode");
 
 		await userEvent.click(screen.getByLabelText("Automatically work on assigned issues"));
 		// Enabled with no eligibility rule → submit stays disabled (compact sheet
@@ -165,8 +165,8 @@ describe("CreateProjectAgentSheet", () => {
 
 		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
 		expect(onSubmit).toHaveBeenCalledWith({
-			workerAgent: "claude-code",
-			orchestratorAgent: "codex",
+			workerAgent: "opencode",
+			orchestratorAgent: "opencode",
 			trackerIntake: { enabled: true, assignee: "octocat" },
 		});
 	});

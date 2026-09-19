@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,19 +10,11 @@ import (
 	"time"
 )
 
-const (
-	defaultAnthropicAPIURL = "https://api.anthropic.com"
-	defaultOpenAIAPIURL    = "https://api.openai.com/v1"
-	defaultCursorAPIURL    = "https://api.cursor.com"
-	defaultGitHubAPIURL    = "https://api.github.com"
-)
+const defaultGitHubAPIURL = "https://api.github.com"
 
 type agentCredentialValidator struct {
-	client           *http.Client
-	anthropicBaseURL string
-	openAIBaseURL    string
-	cursorBaseURL    string
-	githubBaseURL    string
+	client        *http.Client
+	githubBaseURL string
 }
 
 func newAgentCredentialValidator(client *http.Client) *agentCredentialValidator {
@@ -32,11 +22,8 @@ func newAgentCredentialValidator(client *http.Client) *agentCredentialValidator 
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &agentCredentialValidator{
-		client:           client,
-		anthropicBaseURL: defaultAnthropicAPIURL,
-		openAIBaseURL:    defaultOpenAIAPIURL,
-		cursorBaseURL:    defaultCursorAPIURL,
-		githubBaseURL:    defaultGitHubAPIURL,
+		client:        client,
+		githubBaseURL: defaultGitHubAPIURL,
 	}
 }
 
@@ -44,44 +31,22 @@ func normalizeAgentCredentialSecret(value string) []byte {
 	return []byte(strings.Join(strings.Fields(value), ""))
 }
 
+// Validate checks a credential before it is persisted. OpenCode credentials
+// (the only coding-agent provider) are deliberately not probed at connect time:
+// the sandbox worker resolves the key when a session runs, and a control-plane
+// reachability probe would either reject throwaway dev keys or leak which
+// provider a customer uses. The credential is stored and surfaced as "valid" so
+// session creation proceeds; a bad key fails loudly in the worker instead.
+//
+// GitHub personal access tokens are the one exception: they back repository
+// checkout rather than the coding agent, and a bad token is caught here so it
+// never surfaces later as an opaque checkout failure inside a sandbox.
 func (v *agentCredentialValidator) Validate(
 	ctx context.Context,
 	agent, credentialType string,
 	secret []byte,
 ) error {
 	switch agent {
-	case "claude-code":
-		return v.validateClaude(ctx, credentialType, secret)
-	case "codex":
-		if credentialType == "auth_json" {
-			// Codex owns this refreshable credential document. AO intentionally
-			// does not inspect its fields; a non-empty JSON object is the only
-			// safe local validation before the worker hands it back to Codex.
-			var document map[string]json.RawMessage
-			if json.Unmarshal(secret, &document) != nil || document == nil {
-				return errInvalidAgentCredential
-			}
-			return nil
-		}
-		if credentialType != "api_key" && credentialType != "access_token" {
-			return errInvalidAgentCredential
-		}
-		return v.validateBearerEndpoint(
-			ctx,
-			"OpenAI",
-			strings.TrimRight(v.openAIBaseURL, "/")+"/models",
-			secret,
-		)
-	case "cursor":
-		if credentialType != "api_key" {
-			return errInvalidAgentCredential
-		}
-		return v.validateBearerEndpoint(
-			ctx,
-			"Cursor",
-			strings.TrimRight(v.cursorBaseURL, "/")+"/v1/me",
-			secret,
-		)
 	case "github":
 		if credentialType != "personal_access_token" {
 			return errInvalidAgentCredential
@@ -93,58 +58,13 @@ func (v *agentCredentialValidator) Validate(
 			secret,
 		)
 	default:
-		return errInvalidAgentCredential
-	}
-}
-
-func (v *agentCredentialValidator) validateClaude(
-	ctx context.Context,
-	credentialType string,
-	secret []byte,
-) error {
-	// #nosec G101 -- this checks a public credential-format prefix.
-	if credentialType == "oauth_token" &&
-		(!strings.HasPrefix(string(secret), "sk-ant-oat01-") || len(secret) < 80) {
-		return errInvalidAgentCredential
-	}
-	request, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		strings.TrimRight(v.anthropicBaseURL, "/")+"/v1/messages",
-		bytes.NewReader([]byte(`{}`)),
-	)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("anthropic-version", "2023-06-01")
-	request.Header.Set("User-Agent", "claude-code/2.1.220")
-	switch credentialType {
-	case "api_key":
-		request.Header.Set("x-api-key", string(secret))
-	case "oauth_token":
-		request.Header.Set("Authorization", "Bearer "+string(secret))
-		request.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
-		request.Header.Set("x-app", "cli")
-	default:
-		return errInvalidAgentCredential
-	}
-	response, err := v.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("validate Claude credential: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-	switch response.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return errInvalidAgentCredential
-	case http.StatusOK, http.StatusBadRequest, http.StatusTooManyRequests:
+		if agent != "opencode" {
+			return errInvalidAgentCredential
+		}
+		if credentialType != "api_key" {
+			return errInvalidAgentCredential
+		}
 		return nil
-	default:
-		return fmt.Errorf(
-			"validate Claude credential: provider returned HTTP %d",
-			response.StatusCode,
-		)
 	}
 }
 

@@ -39,13 +39,13 @@ surface (`npm run sqlc`, `npm run api`).
   tmux/conpty agent runtime; Chat sessions use runtime-less native controllers,
   persist provider conversation identity, and dispatch lifecycle reactions
   through the same mode-aware session manager. A durable, capability-gated
-  drain/interrupt handoff can move the same Claude Code or Codex native
+  drain/interrupt handoff can move the same opencode native
   conversation between TUI and Chat without changing the AO session/worktree;
   rollback, restart recovery, controller-generation fencing, and a transition
   message outbox preserve the one-controller invariant.
-- Codex and all eight registered ACP Chat providers are
-  owned by authenticated, detached
-  per-session hosts. Desktop close, full quit, and updater daemon replacement
+- The opencode Chat controller is owned by an
+  authenticated, detached
+  per-session host. Desktop close, full quit, and updater daemon replacement
   detach and reconnect without relaunching the provider or interrupting an
   in-flight turn; explicit session termination destroys the host. ACP reconnect
   restores the initialized session snapshot, JSON-RPC correlation, pending
@@ -56,40 +56,22 @@ surface (`npm run sqlc`, `npm run api`).
   load/resume remains the repair path after actual host failure; it is not needed
   for live adoption. Installation changes and launch-only credentials do not
   block adoption. Updater warnings use actual controller ownership rather than
-  a provider allowlist. Shared process tests cover all eight ACP identities;
-  authenticated vendor and platform coverage is tracked separately in
-  [the research/evidence note](research/persistent-acp-chat-hosts.md).
+  a provider allowlist. Shared process tests cover the opencode ACP identity.
 - Durable Chat conversations with project-scoped orchestrator continuity,
   session-scoped worker history, bounded history pages, transactional raw-event
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
-- Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, and OMP. OMP Chat uses
-  native `omp acp` and requires OMP 15.0.0 or newer. Pi's independently
-  installed pi-acp adapter does not enforce approval modes, so AO admits Pi Chat
-  only after the user explicitly chooses the per-session bypass-permissions
-  fallback. The binding reuses the existing Pi config environment and auth
-  probe and is never downloaded by AO. AO reuses each harness's existing
-  binary/auth/environment resolution and does not bundle provider CLIs. Cursor
-  is Chat-only until its ACP and TUI conversation ids are proven to share identity.
+- Chat driver for the user's installed OpenCode over the kept ACP transport
+  (`opencodeacp`). AO reuses the harness's existing binary/auth/environment
+  resolution and does not bundle provider CLIs.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.
 - Review routes registered: `GET /reviews`, `POST /reviews/execute`,
   `POST /reviews/{id}/send`.
-- Interactive reviewer panes for Aider, Agy, Amp, Auggie, Autohand,
-  Claude Code, Cline, Codex, Continue, GitHub Copilot, Crush, Cursor, Devin,
-  Droid, Goose, Grok, Kilo Code, Kimchi, Kiro, Kimi, OpenCode, Pi, Qwen, and Vibe. Pi uses an AO-data-owned extension with built-in/project
-  resources disabled, structured read-only inspection/reporting tools, and
-  Escape-based turn cancellation. Kiro also uses its native Escape
-  cancellation. Continue, Qwen, and Vibe also use Escape cancellation. Agy,
-  Continue, Devin, Droid, Goose, Kimchi, Kimi, Qwen, and Vibe are explicitly experimental and host-trusted. Grok, Crush, Auggie, Cline, and Autohand are experimental user-approved reviewers that retain their native approval prompts instead of receiving broad unattended flags:
-  native modes, autonomous settings, and prompts are not OS or network containment.
+- Interactive reviewer pane for OpenCode.
 - The provider-neutral interactive-reviewer capability gateway and neutral
-  AO-owned working-directory contract are available. The experimental
-  host-trusted adapters remain candidates for future contained execution once
-  their documented sandbox, environment-replacement, broker, and gateway
-  prerequisites are implemented.
+  AO-owned working-directory contract are available.
 - Durable dashboard notifications for `needs_input`, `ready_to_merge`,
   `pr_merged`, and `pr_closed_unmerged`: backend enrichment/persistence,
   cursor-paginated read/unread history, live notification stream, and read
@@ -109,22 +91,12 @@ surface (`npm run sqlc`, `npm run api`).
   sessions, per-client `tmux attach` for Linux and persisted legacy macOS
   handles, and a ConPTY loopback host on Windows.
 - Lifecycle reducer plus reaper (`internal/observe/reaper`).
-- Agent adapter platform under `internal/adapters/agent/` (25 adapters) with a
+- Agent adapter platform under `internal/adapters/agent/` (opencode only) with a
   registry and `ao hooks` activity dispatch.
 - Daemon-owned in-memory agent readiness coordination with normalized
   installation/authentication observations, purpose-specific freshness,
   single-flight checks, bounded warm-up/retries, launch-time validation, and
   compatibility projections for older agent inventory/probe clients.
-- Codex account management under Settings → Agents. AO reconciles the current
-  device-global Codex identity, adds file-backed accounts through an inline
-  native login terminal, and shows structured authentication, capacity, usage,
-  and confirmed reset-credit facts without parsing credentials. A manual global
-  switch atomically changes the device credential while briefly fencing new
-  Codex mutations. Running AO Codex controllers and reviewers are never
-  interrupted or restarted by account switching; new controllers use the
-  selected account, and an existing session can be resumed manually when the
-  user wants it relaunched. Native history remains in the normal Codex home.
-  Users can sign accounts out and delete inactive signed-out accounts.
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 
@@ -170,7 +142,7 @@ surface (`npm run sqlc`, `npm run api`).
 - SessionView renders from the session's persisted mode: the existing terminal
   surface for TUI, or the durable Chat timeline/composer for Chat. Chat retains
   access to session-scoped worktree shells without creating an agent tmux pane.
-- Compatible Claude Code and Codex sessions expose an in-session “Open Chat” /
+- Compatible OpenCode sessions expose an in-session “Open Chat” /
   “Open Terminal UI” action. Chat→TUI is the recovery path and always fences
   queued work before interrupting the active turn; a busy TUI→Chat switch offers
   the explicit finish-and-drain or stop-and-interrupt choice. Both directions
@@ -226,8 +198,9 @@ surface (`npm run sqlc`, `npm run api`).
   plumbing. Focused checks and a fresh Windows x64 package pass; macOS/Linux
   packaging and manual lifecycle acceptance remain release verification work.
 - **Cross-interface raw terminal history import**: compatible providers now
-  replay settled native history with stable identities (`thread/read` for Codex,
-  ACP `session/load` where advertised), and AO imports it idempotently before
+  replay settled native history with stable identities (`thread/read` for the
+  native TUI runtime, ACP `session/load` where advertised), and AO imports it
+  idempotently before
   activating Chat. ACP `session/resume` preserves model context but does not
   replay history, so a TUI→Chat handoff fails closed for resume-only agents.
   AO deliberately does not reconstruct PTY scrollback as messages/tool cards;

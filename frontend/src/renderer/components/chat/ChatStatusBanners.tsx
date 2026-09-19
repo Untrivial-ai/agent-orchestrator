@@ -86,11 +86,8 @@ export const ReauthBanner = memo(function ReauthBanner({
  */
 function signInCommand(harness: string): string | undefined {
 	switch (harness) {
-		case "codex":
-			return "codex login";
-		case "claude-code":
-		case "claude":
-			return "claude auth login";
+		case "opencode":
+			return "opencode auth login";
 		default:
 			return undefined;
 	}

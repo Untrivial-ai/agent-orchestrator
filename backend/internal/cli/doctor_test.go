@@ -147,85 +147,30 @@ func TestDoctorWarnsWhenTmuxMissing(t *testing.T) {
 	}
 }
 
-func TestDoctorChecksHarnessVersions(t *testing.T) {
-	setConfigEnv(t)
-	cmdPath := map[string]string{
-		"git":    "/bin/git",
-		"claude": "/bin/claude",
-		"codex":  "/bin/codex",
-		"muse":   "/bin/muse",
-	}
-	c := doctorContext(t, cmdPath, func(_ context.Context, name string, args ...string) ([]byte, error) {
-		switch name {
-		case "/bin/git":
-			return []byte("git version 2.43.0\n"), nil
-		case "/bin/claude", "/bin/codex", "/bin/muse":
-			if len(args) == 1 && args[0] == "--version" {
-				if name == "/bin/muse" {
-					return []byte("Muse Code 0.1.0 (0.1.0-R708.1)\n"), nil
-				}
-				return []byte(strings.TrimPrefix(name, "/bin/") + " 1.2.3\n"), nil
-			}
-			// The codex launch-flag canary probes the same binary.
-			if name == "/bin/codex" && len(args) > 0 && (args[0] == "--dangerously-bypass-hook-trust" || args[0] == "features") {
-				return []byte("ok\n"), nil
-			}
-			t.Fatalf("unexpected harness command: %s %v", name, args)
-			return nil, nil
-		default:
-			t.Fatalf("unexpected command: %s %v", name, args)
-			return nil, nil
-		}
-	})
-
-	checks := c.runDoctor(context.Background())
-	for _, name := range []string{"claude-code", "codex", "muse"} {
-		check := findDoctorCheck(t, checks, name)
-		if check.Level != doctorPass || !strings.Contains(check.Message, "resolves to") {
-			t.Fatalf("%s check = %+v, want PASS with path/version", name, check)
-		}
-	}
-}
-
-func TestDoctorRejectsUnrelatedMuseBinary(t *testing.T) {
-	setConfigEnv(t)
-	c := doctorContext(t, map[string]string{"git": "/bin/git", "muse": "/bin/muse"}, func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		if name == "/bin/git" {
-			return []byte("git version 2.43.0\n"), nil
-		}
-		return []byte("unrelated muse 1.0\n"), nil
-	})
-
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "muse")
-	if check.Level != doctorWarn || !strings.Contains(check.Message, "does not identify the expected CLI") {
-		t.Fatalf("muse check = %+v, want WARN for unrelated binary", check)
-	}
-}
-
 func TestDoctorWarnsWhenHarnessMissing(t *testing.T) {
 	setConfigEnv(t)
 	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
 		return []byte("git version 2.43.0\n"), nil
 	})
 
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "codex")
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "opencode")
 	if check.Level != doctorWarn || !strings.Contains(check.Message, "not found in PATH") {
-		t.Fatalf("codex check = %+v, want WARN missing binary", check)
+		t.Fatalf("opencode check = %+v, want WARN missing binary", check)
 	}
 }
 
 func TestDoctorWarnsWhenHarnessVersionFails(t *testing.T) {
 	setConfigEnv(t)
-	c := doctorContext(t, map[string]string{"git": "/bin/git", "codex": "/bin/codex"}, func(_ context.Context, name string, _ ...string) ([]byte, error) {
+	c := doctorContext(t, map[string]string{"git": "/bin/git", "opencode": "/bin/opencode"}, func(_ context.Context, name string, _ ...string) ([]byte, error) {
 		if name == "/bin/git" {
 			return []byte("git version 2.43.0\n"), nil
 		}
 		return nil, errors.New("boom")
 	})
 
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "codex")
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "opencode")
 	if check.Level != doctorWarn || !strings.Contains(check.Message, "failed") {
-		t.Fatalf("codex check = %+v, want WARN version failure", check)
+		t.Fatalf("opencode check = %+v, want WARN version failure", check)
 	}
 }
 
@@ -455,17 +400,7 @@ func TestDoctorTextOutputIsGrouped(t *testing.T) {
 	for _, want := range []string{
 		"Core:\nPASS config:",
 		"Tools:\nPASS git:",
-		// Agent harnesses section — spot-check original three plus new additions.
-		"Agent harnesses:\nWARN claude-code:",
-		"WARN codex:",
-		"WARN opencode:",
-		"WARN muse:",
-		"WARN aider:",
-		"WARN goose:",
-		"WARN cursor:",
-		"WARN agy:",
-		"WARN continue:",
-		"WARN prime-agent:",
+		"Agent harnesses:\nWARN opencode:",
 		"GitHub:\nWARN github-token:",
 		"GitLab:\nWARN gitlab-token:",
 	} {
@@ -497,33 +432,6 @@ func TestDoctorAllHarnessesPresent(t *testing.T) {
 		if check.Level != doctorWarn || !strings.Contains(check.Message, "not found in PATH") {
 			t.Fatalf("harness %q check = %+v, want WARN not found in PATH", id, check)
 		}
-	}
-}
-
-// TestDoctorPathOnlyHarnessPassesOnFind covers the PATH-existence-only code
-// path (VersionArg == "") used by adapters such as cursor-agent that have no
-// stable --version flag. When the binary is found on PATH the check must pass
-// without invoking CommandOutput.
-func TestDoctorPathOnlyHarnessPassesOnFind(t *testing.T) {
-	setConfigEnv(t)
-	c := doctorContext(t,
-		map[string]string{
-			"git":          "/bin/git",
-			"cursor-agent": "/usr/local/bin/cursor-agent",
-		},
-		func(_ context.Context, name string, _ ...string) ([]byte, error) {
-			// Only git version calls are expected; cursor-agent has no VersionArg.
-			if name == "/bin/git" {
-				return []byte("git version 2.43.0\n"), nil
-			}
-			t.Fatalf("unexpected CommandOutput call for PATH-only harness: %s", name)
-			return nil, nil
-		},
-	)
-
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "cursor")
-	if check.Level != doctorPass || !strings.Contains(check.Message, "resolves to") {
-		t.Fatalf("cursor check = %+v, want PASS with path", check)
 	}
 }
 
@@ -694,67 +602,6 @@ func findDoctorCheck(t *testing.T, checks []doctorCheck, name string) doctorChec
 	return doctorCheck{}
 }
 
-func codexCanaryFake(t *testing.T, probeOutput string, probeErr error) func(context.Context, string, ...string) ([]byte, error) {
-	t.Helper()
-	return func(_ context.Context, name string, args ...string) ([]byte, error) {
-		switch {
-		case name == "/bin/git":
-			return []byte("git version 2.43.0\n"), nil
-		case name == "/bin/codex" && len(args) == 1 && args[0] == "--version":
-			return []byte("codex-cli 0.136.0\n"), nil
-		case name == "/bin/codex":
-			return []byte(probeOutput), probeErr
-		default:
-			t.Fatalf("unexpected command: %s %v", name, args)
-			return nil, nil
-		}
-	}
-}
-
-func TestDoctorCodexLaunchFlagsPass(t *testing.T) {
-	setConfigEnv(t)
-	c := doctorContext(t, map[string]string{"git": "/bin/git", "codex": "/bin/codex"}, codexCanaryFake(t, "ok\n", nil))
-
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "codex-launch-flags")
-	if check.Level != doctorPass || !strings.Contains(check.Message, "accepts") {
-		t.Fatalf("canary = %+v, want PASS accepts", check)
-	}
-}
-
-func TestDoctorCodexLaunchFlagsWarnOnRejectedFlag(t *testing.T) {
-	setConfigEnv(t)
-	c := doctorContext(t, map[string]string{"git": "/bin/git", "codex": "/bin/codex"},
-		codexCanaryFake(t, "error: unexpected argument '--dangerously-bypass-hook-trust' found\n", errors.New("exit status 2")))
-
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "codex-launch-flags")
-	if check.Level != doctorWarn || !strings.Contains(check.Message, "rejected AO's launch flags") {
-		t.Fatalf("canary = %+v, want WARN rejected flags", check)
-	}
-}
-
-func TestDoctorCodexLaunchFlagsWarnOnUnknownConfigField(t *testing.T) {
-	setConfigEnv(t)
-	c := doctorContext(t, map[string]string{"git": "/bin/git", "codex": "/bin/codex"},
-		codexCanaryFake(t, "unknown configuration field `hooks` in -c/--config override\n", nil))
-
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "codex-launch-flags")
-	if check.Level != doctorWarn || !strings.Contains(check.Message, "no longer recognizes") {
-		t.Fatalf("canary = %+v, want WARN unknown config field", check)
-	}
-}
-
-func TestDoctorCodexLaunchFlagsSkippedWithoutCodex(t *testing.T) {
-	setConfigEnv(t)
-	c := doctorContext(t, map[string]string{"git": "/bin/git"}, func(context.Context, string, ...string) ([]byte, error) {
-		return []byte("git version 2.43.0\n"), nil
-	})
-
-	check := findDoctorCheck(t, c.runDoctor(context.Background()), "codex-launch-flags")
-	if check.Level != doctorPass || !strings.Contains(check.Message, "skipped") {
-		t.Fatalf("canary = %+v, want skipped PASS", check)
-	}
-}
-
 func TestDoctorHooksLogStates(t *testing.T) {
 	gitOnly := func(context.Context, string, ...string) ([]byte, error) {
 		return []byte("git version 2.43.0\n"), nil
@@ -772,8 +619,8 @@ func TestDoctorHooksLogStates(t *testing.T) {
 	t.Run("recent failures warn", func(t *testing.T) {
 		cfg := setConfigEnv(t)
 		writeHooksLogLines(t, cfg.dataDir,
-			time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339)+" session=old ao hooks codex stop: stale",
-			time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+" session=mer-1 ao hooks codex stop: connection refused",
+			time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339)+" session=old ao hooks opencode stop: stale",
+			time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+" session=mer-1 ao hooks opencode stop: connection refused",
 		)
 		c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitOnly)
 		check := findDoctorCheck(t, c.runDoctor(context.Background()), "hooks-log")
@@ -785,7 +632,7 @@ func TestDoctorHooksLogStates(t *testing.T) {
 	t.Run("only stale failures pass", func(t *testing.T) {
 		cfg := setConfigEnv(t)
 		writeHooksLogLines(t, cfg.dataDir,
-			time.Now().Add(-72*time.Hour).UTC().Format(time.RFC3339)+" session=old ao hooks codex stop: stale",
+			time.Now().Add(-72*time.Hour).UTC().Format(time.RFC3339)+" session=old ao hooks opencode stop: stale",
 		)
 		c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitOnly)
 		check := findDoctorCheck(t, c.runDoctor(context.Background()), "hooks-log")

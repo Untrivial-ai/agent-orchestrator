@@ -33,7 +33,7 @@ const t = (minute: number, second = 0): string =>
 export const chatFixture: ConversationSnapshot = {
 	conversationId: "conv-ao-14",
 	sessionId: "ao-14",
-	harness: "codex",
+	harness: "opencode",
 	mode: "chat",
 	controller: { state: "busy" },
 	latestSequence: 14,
@@ -50,7 +50,7 @@ export const chatFixture: ConversationSnapshot = {
 	],
 	account: { authMode: "chatgpt", planLabel: "Pro" },
 	threadState: { status: "active" },
-	// What a live codex controller advertises. Controls gate on this rather than on
+	// What a live opencode controller advertises. Controls gate on this rather than on
 	// the harness name, so a fixture without it draws no steer or reload control —
 	// which is exactly what a session whose controller has not reported yet does.
 	capabilities: [
@@ -593,7 +593,7 @@ export function chatFixtureLongHistory(turns: number): ConversationSnapshot {
 	return {
 		conversationId: "conv-ao-long",
 		sessionId: "ao-long",
-		harness: "codex",
+		harness: "opencode",
 		mode: "chat",
 		controller: { state: "ready" },
 		latestSequence: sequence,
@@ -770,7 +770,7 @@ export const chatFixtureThreadError: ConversationSnapshot = {
 export const chatFixtureEmpty: ConversationSnapshot = {
 	conversationId: "conv-ao-15",
 	sessionId: "ao-15",
-	harness: "codex",
+	harness: "opencode",
 	mode: "chat",
 	controller: { state: "ready" },
 	latestSequence: 0,

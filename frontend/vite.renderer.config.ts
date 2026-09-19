@@ -7,40 +7,6 @@ import { fileURLToPath, URL } from "node:url";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { DEFAULT_POSTHOG_HOST } from "./src/shared/posthog-config";
-
-const POSTHOG_ORIGINS = (() => {
-	const configured = process.env.VITE_AO_POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST;
-	if (!configured) return [];
-	let url: URL;
-	try {
-		url = new URL(configured);
-	} catch {
-		return [];
-	}
-	// posthog-js serves capture from api_host but fetches remote config from a
-	// sibling "-assets" host it derives from the same name, so a CSP built only
-	// from api_host blocks that request and logs a console error on every launch
-	// of a packaged build. Capture is unaffected (it uses api_host), and AO
-	// ignores what remote config offers, since replay, flags, and surveys are all
-	// disabled in the client. Allowing the origin only silences the error; the
-	// client settings still win over anything the server would say.
-	//
-	// The asset_host option deliberately does not cover this: per its own docs it
-	// "only applies to /static/* asset paths; dynamic assets like remote config
-	// continue to use the regular asset host derived from api_host".
-	// Scoped to PostHog Cloud, matching what posthog-js itself does: it only
-	// rewrites to an "-assets" sibling for *.posthog.com. A self-hosted instance
-	// or a loopback capture endpoint serves everything from one origin, and
-	// deriving there would emit a nonsense entry (127.0.0.1 would become
-	// "127-assets.0.0.1").
-	const origins = [url.origin];
-	if (/\.posthog\.com$/i.test(url.hostname)) {
-		const assetsHost = url.hostname.replace(/^([^.]+)\./, "$1-assets.");
-		if (assetsHost !== url.hostname) origins.push(`${url.protocol}//${assetsHost}`);
-	}
-	return origins;
-})();
 
 // Cloud terminals attach over a ticketed wss:// dialed directly from the
 // renderer (the WorkOS token stays in the main process; the single-use ticket
@@ -93,7 +59,6 @@ function contentSecurityPolicy(mode: "build" | "serve"): string {
 			// Vite serves on localhost, which 'self' does not cover for the ws://
 			// HMR socket.
 			mode === "serve" ? "ws://localhost:*" : "",
-			...POSTHOG_ORIGINS,
 			...CLOUD_CP_WS_ORIGINS,
 		]
 			.filter(Boolean)

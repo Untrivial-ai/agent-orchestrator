@@ -17,7 +17,7 @@ function sessionWith(overrides: Partial<WorkspaceSession>): WorkspaceSession {
 		workspaceId: "ws-1",
 		workspaceName: "my-app",
 		title: "fix-bug",
-		provider: "claude-code",
+		provider: "opencode",
 		branch: "feat/x",
 		status: "working",
 		updatedAt: "2026-01-01T00:00:00Z",

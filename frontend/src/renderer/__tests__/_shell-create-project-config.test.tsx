@@ -5,12 +5,12 @@ describe("createProjectConfig", () => {
 	it("persists selected worker and orchestrator agents without tracker intake by default", () => {
 		expect(
 			createProjectConfig({
-				workerAgent: "codex",
-				orchestratorAgent: "claude-code",
+				workerAgent: "opencode",
+				orchestratorAgent: "opencode",
 			}),
 		).toEqual({
-			worker: { agent: "codex" },
-			orchestrator: { agent: "claude-code" },
+			worker: { agent: "opencode" },
+			orchestrator: { agent: "opencode" },
 		});
 	});
 

@@ -108,7 +108,7 @@ func newChildServer(store Store, provisioning sandbox.ProvisioningDefaults, defa
 
 func childRequest(t *testing.T, scopes []string) *http.Request {
 	t.Helper()
-	body := `{"harness":"claude-code","displayName":"add-logger","prompt":"do the work","mode":"trusted"}`
+	body := `{"harness":"opencode","displayName":"add-logger","prompt":"do the work","mode":"trusted"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/cloud/v1/worker/children", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "11111111-1111-1111-1111-111111111111")
@@ -343,7 +343,7 @@ func TestListWorkerChildrenPlumbsIncludeTerminatedAndPRs(t *testing.T) {
 			}
 			gotIncludeTerminated = includeTerminated
 			return []domain.Session{{
-				ID: testChildID, OrgID: orgID, Kind: "worker", Harness: "claude-code",
+				ID: testChildID, OrgID: orgID, Kind: "worker", Harness: "opencode",
 				DisplayName: "Fix CI", Branch: "ao/cccccccc", Mode: "trusted",
 				ActivityState: "idle", UpdatedAt: now, CreatedAt: now,
 			}}, false, nil

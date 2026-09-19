@@ -195,7 +195,7 @@ func TestReviewRunCDC_EmitsOnInsertAndLifecycleUpdates(t *testing.T) {
 		ID:        "review-1",
 		SessionID: rec.ID,
 		ProjectID: rec.ProjectID,
-		Harness:   domain.ReviewerClaudeCode,
+		Harness:   domain.ReviewerOpenCode,
 		PRURL:     "https://example/pr/1",
 		CreatedAt: now,
 		UpdatedAt: now,

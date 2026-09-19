@@ -239,6 +239,22 @@ func (s *Store) SetSessionTerminateOnPRMerge(ctx context.Context, id domain.Sess
 	return rows > 0, nil
 }
 
+// SetSessionWorkflowMode moves a session between delivery stages. It returns
+// ok=false when the session id does not exist.
+func (s *Store) SetSessionWorkflowMode(ctx context.Context, id domain.SessionID, mode domain.WorkflowMode, updatedAt time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionWorkflowMode(ctx, gen.SetSessionWorkflowModeParams{
+		ID:           id,
+		WorkflowMode: string(mode),
+		UpdatedAt:    updatedAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set workflow mode for session %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // SetSessionAutoInjectReview persists a session's automatic review-injection policy.
 func (s *Store) SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
@@ -475,6 +491,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		IsPinned:           row.IsPinned,
 		PinnedAt:           nullTimeToTimePtr(row.PinnedAt),
 		TerminateOnPRMerge: row.TerminateOnPRMerge,
+		WorkflowMode:       domain.NormalizeWorkflowMode(domain.WorkflowMode(row.WorkflowMode)),
 		AutoInjectReview:   row.AutoInjectReview,
 		AutoInjectCI:       row.AutoInjectCI,
 		Metadata: domain.SessionMetadata{
@@ -570,6 +587,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		PreviewURL:                       rec.Metadata.PreviewURL,
 		PreviewRevision:                  rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:               rec.TerminateOnPRMerge,
+		WorkflowMode:                     string(domain.NormalizeWorkflowMode(rec.WorkflowMode)),
 		AutoInjectReview:                 rec.AutoInjectReview,
 		AutoInjectCI:                     rec.AutoInjectCI,
 		CleanupGeneration:                rec.CleanupGeneration,
@@ -628,6 +646,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		PreviewURL:                       rec.Metadata.PreviewURL,
 		PreviewRevision:                  rec.Metadata.PreviewRevision,
 		TerminateOnPRMerge:               rec.TerminateOnPRMerge,
+		WorkflowMode:                     string(domain.NormalizeWorkflowMode(rec.WorkflowMode)),
 		AutoInjectReview:                 rec.AutoInjectReview,
 		AutoInjectCI:                     rec.AutoInjectCI,
 		CleanupGeneration:                rec.CleanupGeneration,

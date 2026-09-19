@@ -25,23 +25,14 @@ import {
 	OptionMenuTrigger,
 } from "./ui/option-menu";
 
-const REVIEWER_AGENT_PRIORITY = ["claude-code", "codex", "cursor", "opencode", "muse", "aider"] as const;
+const REVIEWER_AGENT_PRIORITY = ["opencode"] as const;
 const REVIEWER_AGENT_PRIORITY_RANK = new Map<string, number>(
 	REVIEWER_AGENT_PRIORITY.map((agent, index) => [agent, index]),
 );
 
-const HOST_TRUSTED_REVIEWERS = new Set(["agy", "devin", "droid", "kimchi", "kimi"]);
-const USER_APPROVED_REVIEWERS = new Set(["auggie", "autohand", "cline", "crush", "grok"]);
-
 type ReviewerAgentConfig = components["schemas"]["AgentConfig"];
 
-export function reviewerTrustWarning(harness: string): string | null {
-	if (HOST_TRUSTED_REVIEWERS.has(harness)) {
-		return "Experimental host-trusted reviewer: this agent is not OS-isolated and may retain shell, plugin, editor, and network access.";
-	}
-	if (USER_APPROVED_REVIEWERS.has(harness)) {
-		return "Experimental user-approved reviewer: AO keeps the agent's native permission prompts enabled; review execution may pause for your approval.";
-	}
+export function reviewerTrustWarning(_harness: string): string | null {
 	return null;
 }
 
@@ -85,7 +76,7 @@ export function ReviewerSelect({
 	const [menuOpen, setMenuOpen] = useState(false);
 	// Until the daemon's catalog arrives these entries carry the whole menu, so
 	// label them the way the catalog would rather than printing bare ids: without
-	// this the same row reads "claude-code" now and "Claude Code" a moment later.
+	// this the same row reads "opencode" now and "OpenCode" a moment later.
 	const fallbackAgents: AgentInfo[] = [...KNOWN_REVIEWER_HARNESS_IDS].map(
 		(id) => unknownAgentReadiness(id, agentLabel(id)),
 	);

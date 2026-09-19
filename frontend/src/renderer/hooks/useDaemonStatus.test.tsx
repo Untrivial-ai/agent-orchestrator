@@ -129,11 +129,9 @@ describe("useDaemonStatus", () => {
 			queryKey: ["agent-readiness"],
 			exact: true,
 		});
-		expect(queryClient.removeQueries).toHaveBeenCalledWith({
-			queryKey: ["codex-accounts"],
-			exact: true,
-		});
-		expect(queryClient.removeQueries).toHaveBeenCalledTimes(6);
+		// One readiness invalidation per daemon transition (stop -> ready,
+		// ready -> different pid, ready -> stopped).
+		expect(queryClient.removeQueries).toHaveBeenCalledTimes(3);
 	});
 
 	it("ensures display readiness when the window regains focus", async () => {

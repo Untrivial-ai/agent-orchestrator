@@ -22,33 +22,19 @@ func TestSettingsFromConfigOptionsKeepsClaudeModelAndEffortAcrossRestart(t *test
 	}
 }
 
-func TestPermissionConfigOptions(t *testing.T) {
-	for _, tc := range []struct {
-		value string
-		want  domain.PermissionMode
-	}{{"manual", domain.PermissionModeDefault}, {"default", domain.PermissionModeDefault}, {"acceptEdits", domain.PermissionModeAcceptEdits}, {"auto", domain.PermissionModeAuto}, {"bypassPermissions", domain.PermissionModeBypassPermissions}, {"dontAsk", ""}, {"plan", ""}, {"custom", ""}} {
-		input := []ports.ChatConfigOption{{ID: "mode", Current: ports.ChatConfigOptionValue{Select: tc.value}, Choices: []ports.ChatConfigOptionChoice{{Value: tc.value}}}}
-		got := permissionConfigOptions(domain.HarnessClaudeCode, input)
-		if got[0].Choices[0].PermissionMode != tc.want {
-			t.Fatalf("%s mapping = %q", tc.value, got[0].Choices[0].PermissionMode)
-		}
-		settings, _ := settingsFromConfigOptions(domain.ConversationSettings{ApprovalMode: domain.PermissionModeAuto}, got)
-		want := tc.want
-		if want == "" {
-			want = domain.PermissionModeAuto
-		}
-		if settings.ApprovalMode != want {
-			t.Fatalf("%s settings=%q", tc.value, settings.ApprovalMode)
-		}
-		if input[0].Choices[0].PermissionMode != "" {
-			t.Fatal("mutated provider catalog")
-		}
-		if other := permissionConfigOptions(domain.HarnessOpenCode, input); other[0].Choices[0].PermissionMode != "" {
-			t.Fatal("mapped unknown provider")
-		}
-		input[0].ID = "model"
-		if model := permissionConfigOptions(domain.HarnessClaudeCode, input); model[0].Choices[0].PermissionMode != "" {
-			t.Fatal("mapped model choice")
+func TestPermissionConfigOptionsLeaveProviderCatalogUntouched(t *testing.T) {
+	input := []ports.ChatConfigOption{{
+		ID:      "mode",
+		Current: ports.ChatConfigOptionValue{Select: "manual"},
+		Choices: []ports.ChatConfigOptionChoice{{Value: "manual"}, {Value: "acceptEdits"}, {Value: "bypassPermissions"}},
+	}}
+	got := permissionConfigOptions(input)
+	if len(got) != 1 || len(got[0].Choices) != 3 {
+		t.Fatalf("options = %+v, want provider catalog passed through", got)
+	}
+	for _, choice := range got[0].Choices {
+		if choice.PermissionMode != "" {
+			t.Fatalf("opencode choice %q was mapped to AO permission mode %q", choice.Value, choice.PermissionMode)
 		}
 	}
 }

@@ -2,7 +2,6 @@
 
 import { IOS_APP_STORE_URL } from "@ao/shared/constants";
 import { useState } from "react";
-import { track } from "../../lib/analytics";
 import { usePlatform } from "../hooks/useOS";
 import { StoreBadgeButton, StoreBadgeLink } from "./StoreBadge";
 import { StoreQRDialog } from "./StoreQRDialog";
@@ -16,23 +15,13 @@ export function MobileAppCTA() {
 
   if (mobileOS === "ios") {
     return (
-      <StoreBadgeLink
-        store="ios"
-        href={IOS_APP_STORE_URL}
-        onClick={() => track("app_store_clicked", { surface: "badge" })}
-      />
+      <StoreBadgeLink store="ios" href={IOS_APP_STORE_URL} />
     );
   }
 
   return (
     <>
-      <StoreBadgeButton
-        store="ios"
-        onClick={() => {
-          track("store_qr_opened", { platform: "ios" });
-          setOpen(true);
-        }}
-      />
+      <StoreBadgeButton store="ios" onClick={() => setOpen(true)} />
       <StoreQRDialog
         platform="ios"
         url={IOS_APP_STORE_URL}

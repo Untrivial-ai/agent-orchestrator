@@ -6,14 +6,10 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -224,207 +220,6 @@ func (f *fakeStore) UpdatePRLastNudgeSignature(_ context.Context, prURL, payload
 	return nil
 }
 
-type targetAcknowledgementCall struct {
-	switchID   domain.AgentSwitchID
-	sessionID  domain.SessionID
-	generation domain.AgentGenerationID
-	at         time.Time
-}
-
-// fakeAgentSwitchLifecycleStore embeds the full port only to inherit methods
-// these focused lifecycle tests never call. The methods lifecycle does consume
-// are implemented below, with one mutex covering both session ownership and
-// switch state so ActivateAgentSwitchTarget models the production transaction.
-type fakeAgentSwitchLifecycleStore struct {
-	*fakeStore
-	ports.AgentSwitchStore
-
-	mu                   sync.Mutex
-	activeSwitch         domain.AgentSwitch
-	hasActiveSwitch      bool
-	native               map[domain.AgentNativeSessionID]domain.AgentNativeSession
-	acknowledgementCalls []targetAcknowledgementCall
-	ackForceNoChange     bool
-	ackErr               error
-	getSwitchErr         error
-}
-
-func (f *fakeAgentSwitchLifecycleStore) GetAgentSwitch(_ context.Context, id domain.AgentSwitchID) (domain.AgentSwitch, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.getSwitchErr != nil {
-		return domain.AgentSwitch{}, false, f.getSwitchErr
-	}
-	if !f.hasActiveSwitch || f.activeSwitch.ID != id {
-		return domain.AgentSwitch{}, false, nil
-	}
-	return f.activeSwitch, true, nil
-}
-
-func newFakeAgentSwitchLifecycleStore() *fakeAgentSwitchLifecycleStore {
-	return &fakeAgentSwitchLifecycleStore{fakeStore: newFakeStore(), native: map[domain.AgentNativeSessionID]domain.AgentNativeSession{}}
-}
-
-func (f *fakeAgentSwitchLifecycleStore) GetAgentNativeSession(_ context.Context, id domain.AgentNativeSessionID) (domain.AgentNativeSession, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	rec, ok := f.native[id]
-	return rec, ok, nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) UpdateAgentNativeSession(_ context.Context, rec domain.AgentNativeSession, expected domain.AgentGenerationID) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	current, ok := f.native[rec.ID]
-	if !ok || current.LastGenerationID != expected {
-		return false, nil
-	}
-	f.native[rec.ID] = rec
-	return true, nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	rec, ok := f.sessions[id]
-	return rec, ok, nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	rec.Revision = f.sessions[rec.ID].Revision + 1
-	f.sessions[rec.ID] = rec
-	return nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) UpdateSessionFromActivitySignal(
-	_ context.Context,
-	rec domain.SessionRecord,
-	expectedRevision int64,
-) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	current, ok := f.sessions[rec.ID]
-	if !ok || current.Revision != expectedRevision || current.IsTerminated || current.Harness != rec.Harness ||
-		current.Metadata.RuntimeLaunchID != rec.Metadata.RuntimeLaunchID {
-		return false, nil
-	}
-	if f.hasActiveSwitch && f.activeSwitch.SessionID == rec.ID &&
-		f.activeSwitch.FromHarness == current.Harness &&
-		(f.activeSwitch.State == domain.AgentSwitchStoppingSource ||
-			f.activeSwitch.State == domain.AgentSwitchSourceStopped ||
-			f.activeSwitch.State == domain.AgentSwitchStartingTarget) {
-		return false, nil
-	}
-	current.Activity = rec.Activity
-	current.FirstSignalAt = rec.FirstSignalAt
-	current.Metadata.AgentSessionID = rec.Metadata.AgentSessionID
-	current.Metadata.AgentSessionIDLaunchID = rec.Metadata.AgentSessionIDLaunchID
-	current.Metadata.LatestUserPrompt = rec.Metadata.LatestUserPrompt
-	current.Metadata.LatestUserPromptAt = rec.Metadata.LatestUserPromptAt
-	current.Metadata.LatestAssistantUpdate = rec.Metadata.LatestAssistantUpdate
-	current.Metadata.ConversationCheckpointState = rec.Metadata.ConversationCheckpointState
-	current.Metadata.ConversationCheckpointGeneration = rec.Metadata.ConversationCheckpointGeneration
-	current.Metadata.ConversationCheckpointNativeID = rec.Metadata.ConversationCheckpointNativeID
-	current.Metadata.ConversationCheckpointTurnID = rec.Metadata.ConversationCheckpointTurnID
-	current.Metadata.NativeTranscriptPath = rec.Metadata.NativeTranscriptPath
-	current.UpdatedAt = rec.UpdatedAt
-	current.Revision++
-	f.sessions[rec.ID] = current
-	return true, nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) GetActiveAgentSwitch(_ context.Context, id domain.SessionID) (domain.AgentSwitch, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.hasActiveSwitch || f.activeSwitch.SessionID != id || f.activeSwitch.State.Terminal() {
-		return domain.AgentSwitch{}, false, nil
-	}
-	return f.activeSwitch, true, nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) AcknowledgeAgentSwitchTarget(_ context.Context, switchID domain.AgentSwitchID, sessionID domain.SessionID, generation domain.AgentGenerationID, at time.Time) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.acknowledgementCalls = append(f.acknowledgementCalls, targetAcknowledgementCall{
-		switchID: switchID, sessionID: sessionID, generation: generation, at: at,
-	})
-	if f.ackErr != nil {
-		return false, f.ackErr
-	}
-	if f.ackForceNoChange {
-		return false, nil
-	}
-	if !f.hasActiveSwitch || f.activeSwitch.ID != switchID || f.activeSwitch.SessionID != sessionID ||
-		f.activeSwitch.State != domain.AgentSwitchDelivering || f.activeSwitch.TargetGenerationID != generation ||
-		f.activeSwitch.TargetAcknowledgedAt != nil {
-		return false, nil
-	}
-	acknowledgedAt := at
-	f.activeSwitch.TargetAcknowledgedAt = &acknowledgedAt
-	f.activeSwitch.UpdatedAt = at
-	return true, nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) ActivateAgentSwitchTarget(_ context.Context, activation domain.AgentSwitchTargetActivation) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.hasActiveSwitch || f.activeSwitch.ID != activation.SwitchID || f.activeSwitch.SessionID != activation.SessionID ||
-		f.activeSwitch.State != domain.AgentSwitchStartingTarget || f.activeSwitch.FromHarness != activation.SourceHarness ||
-		f.activeSwitch.TargetHarness != activation.TargetHarness || f.activeSwitch.SourceGenerationID != activation.SourceGenerationID ||
-		f.activeSwitch.TargetGenerationID != activation.TargetGenerationID {
-		return false, nil
-	}
-	rec, ok := f.sessions[activation.SessionID]
-	if !ok || rec.IsTerminated || rec.Activity.State != domain.ActivityExited || rec.Harness != activation.SourceHarness ||
-		rec.Metadata.RuntimeLaunchID != activation.ExpectedSourceRuntimeLaunchID {
-		return false, nil
-	}
-	rec.Harness = activation.TargetHarness
-	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: activation.ActivatedAt}
-	rec.FirstSignalAt = time.Time{}
-	rec.Metadata.RuntimeHandleID = activation.RuntimeHandleID
-	rec.Metadata.RuntimeLaunchID = string(activation.TargetGenerationID)
-	rec.Metadata.AgentSessionIDLaunchID = string(activation.TargetGenerationID)
-	rec.UpdatedAt = activation.ActivatedAt
-	f.sessions[activation.SessionID] = rec
-	f.activeSwitch.State = domain.AgentSwitchTargetReady
-	f.activeSwitch.UpdatedAt = activation.ActivatedAt
-	return true, nil
-}
-
-func (f *fakeAgentSwitchLifecycleStore) setActiveSwitch(sw domain.AgentSwitch) {
-	f.mu.Lock()
-	f.activeSwitch = sw
-	f.hasActiveSwitch = true
-	f.mu.Unlock()
-}
-
-func (f *fakeAgentSwitchLifecycleStore) setSession(rec domain.SessionRecord) {
-	f.mu.Lock()
-	f.sessions[rec.ID] = rec
-	f.mu.Unlock()
-}
-
-func (f *fakeAgentSwitchLifecycleStore) session(id domain.SessionID) domain.SessionRecord {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.sessions[id]
-}
-
-func (f *fakeAgentSwitchLifecycleStore) acknowledgements() []targetAcknowledgementCall {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]targetAcknowledgementCall(nil), f.acknowledgementCalls...)
-}
-
-func (f *fakeAgentSwitchLifecycleStore) active() domain.AgentSwitch {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.activeSwitch
-}
-
 type fakeMessenger struct {
 	msgs []string
 	ids  []domain.SessionID
@@ -455,16 +250,6 @@ func (l fixedLifecycleInputLease) AcquireSessionInput(domain.SessionID) (func(),
 	}
 	return func() {}, true
 }
-
-type telemetrySink struct {
-	events []ports.TelemetryEvent
-}
-
-func (s *telemetrySink) Emit(_ context.Context, ev ports.TelemetryEvent) {
-	s.events = append(s.events, ev)
-}
-
-func (*telemetrySink) Close(context.Context) error { return nil }
 
 func (f *fakeMessenger) Send(_ context.Context, id domain.SessionID, msg string) error {
 	if f.err != nil {
@@ -1311,155 +1096,6 @@ func TestPrepareLaunchRejectsOverlappingGeneration(t *testing.T) {
 	m.CancelLaunch("mer-1", "launch-1")
 }
 
-func TestActivity_TargetPromptSubmitAcknowledgesDeliveringAgentSwitch(t *testing.T) {
-	now := time.Unix(1_700_000_100, 0).UTC()
-	store := newFakeAgentSwitchLifecycleStore()
-	rec := working("mer-1")
-	rec.Harness = domain.HarnessCodex
-	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Second)}
-	rec.Metadata.RuntimeLaunchID = "target-generation"
-	store.setSession(rec)
-	store.setActiveSwitch(domain.AgentSwitch{
-		ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchDelivering,
-		SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-	})
-	m := New(store, &fakeMessenger{})
-	m.clock = func() time.Time { return now }
-
-	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation",
-	}); err != nil {
-		t.Fatalf("ApplyActivitySignal: %v", err)
-	}
-	calls := store.acknowledgements()
-	if len(calls) != 1 {
-		t.Fatalf("acknowledgement calls = %d, want 1", len(calls))
-	}
-	if call := calls[0]; call.switchID != "switch-1" || call.sessionID != rec.ID || call.generation != "target-generation" || !call.at.Equal(now) {
-		t.Fatalf("acknowledgement = %+v, want exact target generation at %v", call, now)
-	}
-	acknowledged := store.active().TargetAcknowledgedAt
-	if acknowledged == nil || !acknowledged.Equal(now) {
-		t.Fatalf("target acknowledgement timestamp = %v, want %v", acknowledged, now)
-	}
-}
-
-func TestAcknowledgeAgentSwitchTargetReadsBackChangedFalseOutcomes(t *testing.T) {
-	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
-	base := domain.AgentSwitch{
-		ID: "switch-ack-readback", SessionID: "session-ack-readback",
-		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
-		State: domain.AgentSwitchDelivering, SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-	}
-	signal := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation"}
-
-	t.Run("duplicate acknowledgement is suppressed", func(t *testing.T) {
-		store := &fakeAgentSwitchLifecycleStore{fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base}
-		acknowledgedAt := now.Add(-time.Second)
-		store.activeSwitch.TargetAcknowledgedAt = &acknowledgedAt
-		manager := New(store, nil)
-		if err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now); err != nil {
-			t.Fatalf("duplicate acknowledgement: %v", err)
-		}
-	})
-
-	t.Run("impossible unchanged current predicate is surfaced", func(t *testing.T) {
-		store := &fakeAgentSwitchLifecycleStore{fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base, ackForceNoChange: true}
-		manager := New(store, nil)
-		if err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now); err == nil {
-			t.Fatal("unchanged exact acknowledgement predicate returned nil")
-		}
-	})
-}
-
-func TestAcknowledgeAgentSwitchTargetOwnsPostAdmissionErrors(t *testing.T) {
-	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
-	base := domain.AgentSwitch{
-		ID: "switch-ack-owner", SessionID: "session-ack-owner",
-		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
-		State: domain.AgentSwitchDelivering, SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-	}
-	signal := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation"}
-
-	tests := []struct {
-		name  string
-		store *fakeAgentSwitchLifecycleStore
-	}{
-		{
-			name: "acknowledgement failure",
-			store: &fakeAgentSwitchLifecycleStore{
-				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
-				ackErr: errors.New("ack write failed"),
-			},
-		},
-		{
-			name: "read-back failure",
-			store: &fakeAgentSwitchLifecycleStore{
-				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
-				ackForceNoChange: true, getSwitchErr: errors.New("read-back failed"),
-			},
-		},
-		{
-			name: "unchanged exact predicate",
-			store: &fakeAgentSwitchLifecycleStore{
-				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
-				ackForceNoChange: true,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			manager := New(tt.store, nil)
-			err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now)
-			if err == nil {
-				t.Fatal("acknowledgement error = nil")
-			}
-			if got := ownership.OwnerOf(err); got != ownership.OwnerAgentSwitchSaga {
-				t.Fatalf("acknowledgement owner = %q, want %q (error: %v)", got, ownership.OwnerAgentSwitchSaga, err)
-			}
-		})
-	}
-}
-
-func TestActivity_InternalSourceHandoffUpdateNeverReplacesUserFacingAssistant(t *testing.T) {
-	tests := []struct {
-		name          string
-		state         domain.AgentSwitchState
-		handoffStatus domain.AgentHandoffStatus
-	}{
-		{name: "collecting", state: domain.AgentSwitchPreparingHandoff, handoffStatus: domain.AgentHandoffRequested},
-		{name: "already received", state: domain.AgentSwitchPreparingHandoff, handoffStatus: domain.AgentHandoffReceived},
-		{name: "source stop hook", state: domain.AgentSwitchStoppingSource, handoffStatus: domain.AgentHandoffReceived},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			store := newFakeAgentSwitchLifecycleStore()
-			rec := working("mer-1")
-			rec.Harness = domain.HarnessClaudeCode
-			rec.Metadata.RuntimeLaunchID = "source-generation"
-			rec.Metadata.LatestAssistantUpdate = "last real user-facing source update"
-			store.setSession(rec)
-			store.setActiveSwitch(domain.AgentSwitch{
-				ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-				TargetHarness: domain.HarnessCodex, State: tt.state,
-				AgentHandoffStatus: tt.handoffStatus, SourceGenerationID: "source-generation",
-			})
-			m := New(store, &fakeMessenger{})
-
-			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-				Event: "stop", LaunchID: "source-generation", LatestAssistantUpdate: "internal handoff submitted",
-			}); err != nil {
-				t.Fatalf("ApplyActivitySignal: %v", err)
-			}
-			if got := store.session(rec.ID).Metadata.LatestAssistantUpdate; got != rec.Metadata.LatestAssistantUpdate {
-				t.Fatalf("latest assistant update = %q, want preserved %q", got, rec.Metadata.LatestAssistantUpdate)
-			}
-		})
-	}
-}
-
 func TestActivity_MainPromptStartsNewConversationCheckpoint(t *testing.T) {
 	m, store, _ := newManager()
 	rec := working("mer-1")
@@ -1507,41 +1143,6 @@ func TestActivity_MainPromptStartsNewConversationCheckpoint(t *testing.T) {
 	}
 	if got.ConversationCheckpointState != domain.ConversationCheckpointComplete {
 		t.Fatalf("completed checkpoint state = %q, want complete", got.ConversationCheckpointState)
-	}
-}
-
-func TestActivity_CodexCheckpointRequiresSameTurnStop(t *testing.T) {
-	for _, stopTurn := range []string{"native-turn", "older-turn", ""} {
-		t.Run("stop="+stopTurn, func(t *testing.T) {
-			m, store, _ := newManager()
-			rec := working("mer-1")
-			rec.Harness = domain.HarnessCodex
-			rec.Metadata.RuntimeLaunchID = "launch-current"
-			rec.Metadata.AgentSessionID = "native-current"
-			rec.Metadata.AgentSessionIDLaunchID = "launch-current"
-			store.sessions[rec.ID] = rec
-			prompt := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
-				LaunchID: "launch-current", AgentSessionID: "native-current", ProviderTurnID: "native-turn", LatestUserPrompt: "continue"}
-			if err := m.ApplyActivitySignal(ctx, rec.ID, prompt); err != nil {
-				t.Fatal(err)
-			}
-			got := store.sessions[rec.ID].Metadata
-			if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt || got.ConversationCheckpointTurnID != "native-turn" {
-				t.Fatalf("prompt checkpoint: %+v", got)
-			}
-			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop",
-				LaunchID: "launch-current", AgentSessionID: "native-current", ProviderTurnID: stopTurn}); err != nil {
-				t.Fatal(err)
-			}
-			got = store.sessions[rec.ID].Metadata
-			if stopTurn == "native-turn" {
-				if got.ConversationCheckpointState != domain.ConversationCheckpointComplete || got.ConversationCheckpointUnsettled {
-					t.Fatalf("matching Stop checkpoint: %+v", got)
-				}
-			} else if got.ConversationCheckpointState != domain.ConversationCheckpointPrompt || !got.ConversationCheckpointUnsettled {
-				t.Fatalf("unmatched Stop must fail closed: %+v", got)
-			}
-		})
 	}
 }
 
@@ -1933,236 +1534,6 @@ func TestActivity_UntaggedTUIStopAfterChatEpochCannotMutateSession(t *testing.T)
 	}
 }
 
-func TestActivity_SourceUpdateBeforeInternalHandoffRequestRemainsUserFacing(t *testing.T) {
-	for _, status := range []domain.AgentHandoffStatus{domain.AgentHandoffNotAttempted, domain.AgentHandoffUnavailable} {
-		t.Run(string(status), func(t *testing.T) {
-			store := newFakeAgentSwitchLifecycleStore()
-			rec := working("mer-1")
-			rec.Harness = domain.HarnessClaudeCode
-			rec.Metadata.RuntimeLaunchID = "source-generation"
-			rec.Metadata.LatestAssistantUpdate = "earlier source update"
-			store.setSession(rec)
-			store.setActiveSwitch(domain.AgentSwitch{
-				ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-				TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchPreparingHandoff,
-				AgentHandoffStatus: status, SourceGenerationID: "source-generation",
-			})
-			m := New(store, &fakeMessenger{})
-
-			if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-				Event: "stop", LaunchID: "source-generation", LatestAssistantUpdate: "real turn completed before AO requested a handoff",
-			}); err != nil {
-				t.Fatalf("ApplyActivitySignal: %v", err)
-			}
-			if got := store.session(rec.ID).Metadata.LatestAssistantUpdate; got != "real turn completed before AO requested a handoff" {
-				t.Fatalf("latest assistant update = %q, want legitimate pre-request update", got)
-			}
-			if got := store.session(rec.ID).Metadata.ConversationCheckpointState; got != domain.ConversationCheckpointLegacy {
-				t.Fatalf("checkpoint state = %q, want legacy standalone assistant", got)
-			}
-		})
-	}
-}
-
-func TestActivity_LateSourceSignalAfterStopConfirmationIsFenced(t *testing.T) {
-	stoppedAt := time.Unix(1_700_000_150, 0).UTC()
-	store := newFakeAgentSwitchLifecycleStore()
-	rec := working("mer-1")
-	rec.Harness = domain.HarnessClaudeCode
-	rec.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: stoppedAt}
-	rec.Metadata.RuntimeLaunchID = "source-generation"
-	rec.Metadata.AgentSessionID = "source-native"
-	rec.Metadata.LatestAssistantUpdate = "last real source update"
-	rec.UpdatedAt = stoppedAt
-	store.setSession(rec)
-	store.setActiveSwitch(domain.AgentSwitch{
-		ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchSourceStopped,
-		SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-	})
-	m := New(store, &fakeMessenger{})
-	m.clock = func() time.Time { return stoppedAt.Add(time.Minute) }
-
-	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
-		LaunchID: "source-generation", AgentSessionID: "late-source-native",
-		LatestAssistantUpdate: "late source callback",
-	}); err != nil {
-		t.Fatalf("ApplyActivitySignal: %v", err)
-	}
-	if got := store.session(rec.ID); got != rec {
-		t.Fatalf("late source signal mutated stopped session: got %+v, want %+v", got, rec)
-	}
-	if calls := store.acknowledgements(); len(calls) != 0 {
-		t.Fatalf("late source signal produced target acknowledgements: %+v", calls)
-	}
-}
-
-func TestActivity_LateSourceSignalAfterTargetActivationIsFenced(t *testing.T) {
-	activatedAt := time.Unix(1_700_000_175, 0).UTC()
-	store := newFakeAgentSwitchLifecycleStore()
-	rec := working("mer-1")
-	rec.Harness = domain.HarnessCodex
-	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: activatedAt}
-	rec.Metadata.RuntimeLaunchID = "target-generation"
-	rec.Metadata.AgentSessionID = "target-native"
-	rec.UpdatedAt = activatedAt
-	store.setSession(rec)
-	store.setActiveSwitch(domain.AgentSwitch{
-		ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchTargetReady,
-		SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-	})
-	m := New(store, &fakeMessenger{})
-	m.clock = func() time.Time { return activatedAt.Add(time.Minute) }
-
-	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
-		LaunchID: "source-generation", AgentSessionID: "late-source-native",
-	}); err != nil {
-		t.Fatalf("ApplyActivitySignal: %v", err)
-	}
-	if got := store.session(rec.ID); got != rec {
-		t.Fatalf("late source signal mutated target owner: got %+v, want %+v", got, rec)
-	}
-	if calls := store.acknowledgements(); len(calls) != 0 {
-		t.Fatalf("late source signal produced target acknowledgements: %+v", calls)
-	}
-}
-
-func TestActivity_StaleGenerationPromptSubmitDoesNotAcknowledgeAgentSwitch(t *testing.T) {
-	now := time.Unix(1_700_000_200, 0).UTC()
-	store := newFakeAgentSwitchLifecycleStore()
-	rec := working("mer-1")
-	rec.Harness = domain.HarnessCodex
-	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Second)}
-	rec.Metadata.RuntimeLaunchID = "target-generation"
-	store.setSession(rec)
-	store.setActiveSwitch(domain.AgentSwitch{
-		ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchDelivering,
-		SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-	})
-	m := New(store, &fakeMessenger{})
-	m.clock = func() time.Time { return now }
-
-	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "abandoned-generation",
-	}); err != nil {
-		t.Fatalf("ApplyActivitySignal: %v", err)
-	}
-	if calls := store.acknowledgements(); len(calls) != 0 {
-		t.Fatalf("stale generation produced acknowledgement calls: %+v", calls)
-	}
-	if got := store.session(rec.ID); got != rec {
-		t.Fatalf("stale generation mutated session: got %+v, want %+v", got, rec)
-	}
-}
-
-func TestActivity_TargetPromptSubmitOutsideDeliveryDoesNotAcknowledgeAgentSwitch(t *testing.T) {
-	now := time.Unix(1_700_000_300, 0).UTC()
-	store := newFakeAgentSwitchLifecycleStore()
-	rec := working("mer-1")
-	rec.Harness = domain.HarnessCodex
-	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Second)}
-	rec.Metadata.RuntimeLaunchID = "target-generation"
-	store.setSession(rec)
-	store.setActiveSwitch(domain.AgentSwitch{
-		ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchTargetReady,
-		SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-	})
-	m := New(store, &fakeMessenger{})
-	m.clock = func() time.Time { return now }
-
-	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation",
-	}); err != nil {
-		t.Fatalf("ApplyActivitySignal: %v", err)
-	}
-	if calls := store.acknowledgements(); len(calls) != 0 {
-		t.Fatalf("non-delivery state produced acknowledgement calls: %+v", calls)
-	}
-	if got := store.session(rec.ID); got.Activity.State != domain.ActivityActive {
-		t.Fatalf("valid target activity was not applied: %+v", got)
-	}
-}
-
-func TestActivity_ReleaseLaunchUnblocksTargetHookAfterAtomicOwnershipTransfer(t *testing.T) {
-	activatedAt := time.Unix(1_700_000_400, 0).UTC()
-	store := newFakeAgentSwitchLifecycleStore()
-	targetNativeRef := domain.AgentNativeSessionID("native-target")
-	store.native[targetNativeRef] = domain.AgentNativeSession{
-		ID: targetNativeRef, AOSessionID: "mer-1", Harness: domain.HarnessCodex,
-		LastGenerationID: "target-generation",
-		CreatedAt:        activatedAt.Add(-time.Second), LastUsedAt: activatedAt.Add(-time.Second),
-	}
-	rec := working("mer-1")
-	rec.Harness = domain.HarnessClaudeCode
-	rec.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: activatedAt.Add(-time.Second)}
-	rec.Metadata.RuntimeHandleID = "runtime-1"
-	rec.Metadata.RuntimeLaunchID = "source-generation"
-	store.setSession(rec)
-	store.setActiveSwitch(domain.AgentSwitch{
-		ID: "switch-1", SessionID: rec.ID, FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchStartingTarget,
-		SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
-		TargetNativeSessionRef: &targetNativeRef,
-	})
-	m := New(store, &fakeMessenger{})
-	m.clock = func() time.Time { return activatedAt.Add(time.Second) }
-	if err := m.PrepareLaunch(rec.ID, "target-generation"); err != nil {
-		t.Fatalf("PrepareLaunch: %v", err)
-	}
-
-	signalDone := make(chan error, 1)
-	go func() {
-		signalDone <- m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{
-			Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation",
-			AgentSessionID: "codex-native", TranscriptPath: "/provider/codex-native.jsonl",
-		})
-	}()
-	select {
-	case err := <-signalDone:
-		t.Fatalf("target hook completed before ownership transfer and ReleaseLaunch: %v", err)
-	case <-time.After(25 * time.Millisecond):
-	}
-	store.mu.Lock()
-	stagedNative := store.native[targetNativeRef]
-	stagedSource := store.sessions[rec.ID]
-	store.mu.Unlock()
-	if stagedNative.NativeSessionID != "codex-native" || stagedNative.TranscriptPath != "/provider/codex-native.jsonl" {
-		t.Fatalf("pending target metadata was not staged durably: %+v", stagedNative)
-	}
-	if stagedSource.Harness != domain.HarnessClaudeCode || stagedSource.Metadata.AgentSessionID == "codex-native" {
-		t.Fatalf("pending target hook mutated source-owned session: %+v", stagedSource)
-	}
-
-	activated, err := m.ActivateAgentSwitchTarget(ctx, domain.AgentSwitchTargetActivation{
-		SwitchID: "switch-1", SessionID: rec.ID, SourceHarness: domain.HarnessClaudeCode,
-		SourceGenerationID: "source-generation", ExpectedSourceRuntimeLaunchID: "source-generation",
-		TargetHarness: domain.HarnessCodex, TargetGenerationID: "target-generation",
-		RuntimeHandleID: "runtime-1", ActivatedAt: activatedAt,
-	})
-	if err != nil || !activated {
-		t.Fatalf("ActivateAgentSwitchTarget = (%v, %v), want (true, nil)", activated, err)
-	}
-	m.ReleaseLaunch(rec.ID, "target-generation")
-	select {
-	case err := <-signalDone:
-		if err != nil {
-			t.Fatalf("released target hook: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("ReleaseLaunch did not unblock target hook")
-	}
-
-	got := store.session(rec.ID)
-	if got.Harness != domain.HarnessCodex || got.Metadata.RuntimeLaunchID != "target-generation" || got.Metadata.AgentSessionID != "codex-native" || got.Activity.State != domain.ActivityActive {
-		t.Fatalf("released hook did not apply to atomically transferred target owner: %+v", got)
-	}
-}
-
 func TestMarkTerminated(t *testing.T) {
 	m, st, _ := newManager()
 	st.sessions["mer-1"] = working("mer-1")
@@ -2497,37 +1868,6 @@ func TestMarkSpawned_StampsUTCActivity(t *testing.T) {
 	}
 	if loc := st.sessions["mer-1"].Activity.LastActivityAt.Location(); loc != time.UTC {
 		t.Fatalf("LastActivityAt location = %v, want UTC", loc)
-	}
-}
-
-func TestActivity_WaitingInputEntryAndExitEmitTelemetry(t *testing.T) {
-	st := newFakeStore()
-	sink := &telemetrySink{}
-	m := New(st, nil, WithTelemetry(sink))
-	now := time.Unix(100, 0).UTC()
-	m.clock = func() time.Time { return now }
-	st.sessions["mer-1"] = domain.SessionRecord{
-		ID:        "mer-1",
-		ProjectID: "mer",
-		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)},
-	}
-
-	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{Valid: true, State: domain.ActivityWaitingInput, Timestamp: now}); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(3 * time.Second)
-	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Timestamp: now}); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(sink.events) != 2 {
-		t.Fatalf("events = %#v, want waiting_input entered/exited", sink.events)
-	}
-	if sink.events[0].Name != "ao.session.waiting_input_entered" || sink.events[1].Name != "ao.session.waiting_input_exited" {
-		t.Fatalf("event names = %#v", []string{sink.events[0].Name, sink.events[1].Name})
-	}
-	if got := sink.events[1].Payload["dwell_ms"]; got != int64(3000) {
-		t.Fatalf("dwell_ms = %#v, want 3000", got)
 	}
 }
 
@@ -3876,8 +3216,8 @@ func TestLifecycleNudgeStartupGateUsesAdapterCapability(t *testing.T) {
 		gate     bool
 		wantSent bool
 	}{
-		{name: "startup-signaling adapter is gated", harness: domain.HarnessCursor, gate: true, wantSent: false},
-		{name: "hookless adapter remains deliverable", harness: domain.HarnessAider, gate: false, wantSent: true},
+		{name: "startup-signaling adapter is gated", harness: domain.HarnessOpenCode, gate: true, wantSent: false},
+		{name: "hookless adapter remains deliverable", harness: domain.HarnessOpenCode, gate: false, wantSent: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4273,12 +3613,10 @@ func TestActivity_BlockedTransitionEmitsNotification(t *testing.T) {
 
 func TestActivity_WaitingInputToBlockedDoesNotReNotify(t *testing.T) {
 	// waiting_input -> blocked is an in-family escalation: the user was already
-	// pinged once for this pause, so no second notification and no telemetry
-	// entry/exit pair.
+	// pinged once for this pause, so no second notification should fire.
 	st := newFakeStore()
 	sink := &fakeNotificationSink{}
-	tele := &telemetrySink{}
-	m := New(st, nil, WithNotificationSink(sink), WithTelemetry(tele))
+	m := New(st, nil, WithNotificationSink(sink))
 	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
 	m.clock = func() time.Time { return now }
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Activity: domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now.Add(-time.Minute)}, FirstSignalAt: now.Add(-time.Minute)}
@@ -4288,40 +3626,6 @@ func TestActivity_WaitingInputToBlockedDoesNotReNotify(t *testing.T) {
 	}
 	if len(sink.intents) != 0 {
 		t.Fatalf("in-family escalation emitted notification: %+v", sink.intents)
-	}
-	if len(tele.events) != 0 {
-		t.Fatalf("in-family escalation emitted telemetry: %+v", tele.events)
-	}
-}
-
-func TestActivity_BlockedEntryAndExitEmitTelemetry(t *testing.T) {
-	st := newFakeStore()
-	sink := &telemetrySink{}
-	m := New(st, nil, WithTelemetry(sink))
-	now := time.Unix(100, 0).UTC()
-	m.clock = func() time.Time { return now }
-	st.sessions["mer-1"] = domain.SessionRecord{
-		ID:        "mer-1",
-		ProjectID: "mer",
-		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)},
-	}
-
-	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{Valid: true, State: domain.ActivityBlocked, Timestamp: now}); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(2 * time.Second)
-	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Timestamp: now}); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(sink.events) != 2 {
-		t.Fatalf("events = %#v, want entered/exited", sink.events)
-	}
-	if sink.events[0].Name != "ao.session.waiting_input_entered" || sink.events[1].Name != "ao.session.waiting_input_exited" {
-		t.Fatalf("event names = %#v (family events keep the waiting_input_* names)", []string{sink.events[0].Name, sink.events[1].Name})
-	}
-	if got := sink.events[0].Payload["state"]; got != "blocked" {
-		t.Fatalf("entered payload state = %#v, want blocked", got)
 	}
 }
 
@@ -5140,52 +4444,5 @@ func TestActivitySignalRetryPreservesCursorPermissionCorrelation(t *testing.T) {
 	}
 	if got := stateOf(st.fakeStore, "mer-1"); got != domain.ActivityActive {
 		t.Fatalf("state after approved tool and revision retry = %q, want active", got)
-	}
-}
-
-// TestEmitTelemetryStampsRequestID covers the shared lifecycle emit path: an
-// HTTP-driven activity signal must tag its events with the request id so the
-// lifecycle rows join to the request, while reaper/poller ticks (a plain
-// background context) must keep an empty request id.
-func TestEmitTelemetryStampsRequestID(t *testing.T) {
-	cases := []struct {
-		name string
-		ctx  context.Context
-		want string
-	}{
-		{
-			name: "request scoped",
-			ctx:  context.WithValue(context.Background(), middleware.RequestIDKey, "req-1"),
-			want: "req-1",
-		},
-		{name: "background context", ctx: context.Background(), want: ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			st := newFakeStore()
-			sink := &telemetrySink{}
-			m := New(st, nil, WithTelemetry(sink))
-			now := time.Unix(100, 0).UTC()
-			m.clock = func() time.Time { return now }
-			st.sessions["mer-1"] = domain.SessionRecord{
-				ID:        "mer-1",
-				ProjectID: "mer",
-				Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)},
-			}
-
-			signal := ports.ActivitySignal{Valid: true, State: domain.ActivityWaitingInput, Timestamp: now}
-			if err := m.ApplyActivitySignal(tc.ctx, "mer-1", signal); err != nil {
-				t.Fatal(err)
-			}
-			if len(sink.events) == 0 {
-				t.Fatal("no telemetry events emitted")
-			}
-			for _, ev := range sink.events {
-				if ev.RequestID != tc.want {
-					t.Fatalf("%s RequestID = %q, want %q", ev.Name, ev.RequestID, tc.want)
-				}
-			}
-		})
 	}
 }

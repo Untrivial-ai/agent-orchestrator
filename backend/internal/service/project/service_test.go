@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
@@ -157,16 +155,6 @@ type fakeProjectTeardowner struct {
 	projects []domain.ProjectID
 	err      error
 }
-
-type captureSink struct {
-	events []ports.TelemetryEvent
-}
-
-func (s *captureSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
-	s.events = append(s.events, ev)
-}
-
-func (*captureSink) Close(context.Context) error { return nil }
 
 func (f *fakeProjectTeardowner) TeardownProject(_ context.Context, project domain.ProjectID) error {
 	f.projects = append(f.projects, project)
@@ -483,62 +471,6 @@ func TestManager_CloneCleansUpFailedAndEmptyCheckouts(t *testing.T) {
 	}
 }
 
-func TestManager_AddEmitsProjectAndFirstProjectTelemetry(t *testing.T) {
-	ctx := context.WithValue(context.Background(), middleware.RequestIDKey, "req-1")
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	sink := &captureSink{}
-	m := project.NewWithDeps(project.Deps{Store: store, Telemetry: sink})
-
-	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if len(sink.events) != 2 {
-		t.Fatalf("events = %#v, want projects.created + first_project_added", sink.events)
-	}
-	if sink.events[0].Name != "ao.projects.created" || sink.events[1].Name != "ao.onboarding.first_project_added" {
-		t.Fatalf("event names = %#v", []string{sink.events[0].Name, sink.events[1].Name})
-	}
-	// The emit path detaches from the request context on purpose; the request id
-	// must still be carried so the rows join to the HTTP request that added the
-	// project.
-	for _, ev := range sink.events {
-		if ev.RequestID != "req-1" {
-			t.Fatalf("%s RequestID = %q, want req-1", ev.Name, ev.RequestID)
-		}
-	}
-}
-
-func TestManager_AddDoesNotRepeatFirstProjectTelemetry(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	sink := &captureSink{}
-	m := project.NewWithDeps(project.Deps{Store: store, Telemetry: sink})
-
-	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
-		t.Fatalf("Add first: %v", err)
-	}
-	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao2")}); err != nil {
-		t.Fatalf("Add second: %v", err)
-	}
-	var firstProjectCount int
-	for _, ev := range sink.events {
-		if ev.Name == "ao.onboarding.first_project_added" {
-			firstProjectCount++
-		}
-	}
-	if firstProjectCount != 1 {
-		t.Fatalf("first project telemetry count = %d, want 1", firstProjectCount)
-	}
-}
-
 func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlitetest.Open(t.TempDir())
@@ -567,13 +499,13 @@ func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	wantCode(t, err, "INVALID_PROJECT_CONFIG")
 
 	_, err = m.SetConfig(ctx, "scratch", project.SetConfigInput{Config: domain.ProjectConfig{
-		Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}},
+		Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerOpenCode}},
 	}})
 	wantCode(t, err, "INVALID_PROJECT_CONFIG")
 
 	proj, err := m.SetConfig(ctx, "scratch", project.SetConfigInput{Config: domain.ProjectConfig{
 		AgentConfig: domain.AgentConfig{Model: "gpt-5"},
-		Worker:      domain.RoleOverride{Harness: domain.HarnessCodex},
+		Worker:      domain.RoleOverride{Harness: domain.HarnessOpenCode},
 	}})
 	if err != nil {
 		t.Fatalf("allowed SetConfig: %v", err)
@@ -648,8 +580,8 @@ func TestManager_DefaultsWhenUnconfigured(t *testing.T) {
 	if got.Project.DefaultBranch != domain.DefaultBranchAuto {
 		t.Fatalf("default branch = %q, want %q", got.Project.DefaultBranch, domain.DefaultBranchAuto)
 	}
-	if got.Project.Agent != "claude-code" {
-		t.Fatalf("default agent = %q, want claude-code", got.Project.Agent)
+	if got.Project.Agent != "opencode" {
+		t.Fatalf("default agent = %q, want opencode", got.Project.Agent)
 	}
 	if got.Project.Config != nil {
 		t.Fatalf("unconfigured project should omit config, got %#v", got.Project.Config)
@@ -671,7 +603,7 @@ func TestManager_GetUsesConfiguredDefaultHarness(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	m := project.NewWithDeps(project.Deps{Store: store, DefaultHarness: domain.HarnessCodex})
+	m := project.NewWithDeps(project.Deps{Store: store, DefaultHarness: domain.HarnessOpenCode})
 	repo := gitRepo(t)
 
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao")}); err != nil {
@@ -685,8 +617,8 @@ func TestManager_GetUsesConfiguredDefaultHarness(t *testing.T) {
 	if got.Project == nil {
 		t.Fatalf("Get returned no project: %#v", got)
 	}
-	if got.Project.Agent != "codex" {
-		t.Fatalf("default agent = %q, want codex", got.Project.Agent)
+	if got.Project.Agent != "opencode" {
+		t.Fatalf("default agent = %q, want opencode", got.Project.Agent)
 	}
 }
 
@@ -841,7 +773,7 @@ func TestManager_ListIncludesOnlySummarySafeProjectConfig(t *testing.T) {
 	cfg := domain.ProjectConfig{
 		DefaultBranch: "develop",
 		Env:           map[string]string{"GITHUB_TOKEN": "secret"},
-		Orchestrator:  domain.RoleOverride{Harness: domain.HarnessCodex},
+		Orchestrator:  domain.RoleOverride{Harness: domain.HarnessOpenCode},
 	}
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao"), Config: &cfg}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -854,7 +786,7 @@ func TestManager_ListIncludesOnlySummarySafeProjectConfig(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("List len = %d, want 1", len(list))
 	}
-	if list[0].OrchestratorAgent != domain.HarnessCodex {
+	if list[0].OrchestratorAgent != domain.HarnessOpenCode {
 		t.Fatalf("summary orchestrator agent = %q, want codex", list[0].OrchestratorAgent)
 	}
 }
@@ -2075,9 +2007,14 @@ func TestManager_RememberPortablePermissions(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		source domain.AgentHarness
+		in     domain.PermissionMode
 		want   domain.PermissionMode
-	}{{domain.HarnessCodex, domain.PermissionModeBypassPermissions}, {domain.HarnessClaudeCode, domain.PermissionModeDefault}, {"", domain.PermissionModeDefault}} {
-		got, err := m.SetPermissions(ctx, "portable", project.SetPermissionsInput{SourceHarness: tc.source, Permissions: domain.PermissionModeDefault})
+	}{
+		{domain.HarnessOpenCode, domain.PermissionModeDefault, domain.PermissionModeDefault},
+		{domain.HarnessOpenCode, domain.PermissionModeBypassPermissions, domain.PermissionModeBypassPermissions},
+		{"", domain.PermissionModeDefault, domain.PermissionModeDefault},
+	} {
+		got, err := m.SetPermissions(ctx, "portable", project.SetPermissionsInput{SourceHarness: tc.source, Permissions: tc.in})
 		if err != nil {
 			t.Fatal(err)
 		}

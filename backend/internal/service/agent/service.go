@@ -50,36 +50,25 @@ type modelCatalogCall struct {
 // Service owns normalized harness readiness and the unchanged model catalog.
 // Consumers share coordinator checks instead of probing adapters directly.
 type Service struct {
-	agents        []agentregistry.HarnessAgent
-	readiness     *readinessCoordinator
-	cache         ports.AgentModelCatalogCache
-	discoverer    ports.AgentModelDiscoverer
-	projects      ProjectLookup
-	sessions      SessionUsageLookup
-	resolverMu    map[string]*sync.Mutex
-	modelCallMu   sync.Mutex
-	modelCalls    map[string]*modelCatalogCall
-	codexAccounts *codexAccountManager
-	codexSwitches *codexAccountSwitchCoordinator
+	agents      []agentregistry.HarnessAgent
+	readiness   *readinessCoordinator
+	cache       ports.AgentModelCatalogCache
+	discoverer  ports.AgentModelDiscoverer
+	projects    ProjectLookup
+	sessions    SessionUsageLookup
+	resolverMu  map[string]*sync.Mutex
+	modelCallMu sync.Mutex
+	modelCalls  map[string]*modelCatalogCall
 }
 
 // Deps contains optional durable dependencies for the agent catalog service.
 type Deps struct {
-	Cache                  ports.AgentModelCatalogCache
-	Discoverer             ports.AgentModelDiscoverer
-	Projects               ProjectLookup
-	Sessions               SessionUsageLookup
-	Context                context.Context
-	Logger                 *slog.Logger
-	CodexAccountRoot       string
-	CodexPendingRoot       string
-	CodexSwitchStagingRoot string
-	CodexGlobalHome        string
-	CodexAccounts          ports.CodexAccountClientFactory
-	CodexAccountSwitches   ports.CodexAccountSwitchStore
-	CodexOperationGate     ports.CodexOperationGate
-	// Clock overrides time.Now for deterministic account-bootstrap retry tests.
-	Clock func() time.Time
+	Cache      ports.AgentModelCatalogCache
+	Discoverer ports.AgentModelDiscoverer
+	Projects   ProjectLookup
+	Sessions   SessionUsageLookup
+	Context    context.Context
+	Logger     *slog.Logger
 }
 
 // ProjectLookup resolves the registered working directory used for model
@@ -104,27 +93,9 @@ func New() *Service {
 func NewWithDeps(deps Deps) *Service {
 	agents := agentregistry.Harnessed()
 	svc := newService(agents, deps.Cache, deps.Projects, deps.Discoverer)
-	if deps.CodexAccountRoot != "" && deps.CodexGlobalHome != "" {
-		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.Logger, deps.CodexOperationGate)
-		if deps.Clock != nil {
-			svc.codexAccounts.now = deps.Clock
-		}
-	}
 	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{
 		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,
-		AuthenticationCheck: svc.structuredCodexAuthentication,
 	})
-	if svc.codexAccounts != nil {
-		svc.codexAccounts.onAuthenticationChanged = func() {
-			svc.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
-		}
-	}
-	if svc.codexAccounts != nil && deps.CodexAccountSwitches != nil && deps.CodexOperationGate != nil {
-		svc.codexSwitches = newCodexAccountSwitchCoordinator(
-			deps.Context, svc, deps.CodexAccountSwitches, deps.CodexOperationGate,
-			deps.Clock, svc.PublishCodexAccounts,
-		)
-	}
 	svc.sessions = deps.Sessions
 	return svc
 }
@@ -145,9 +116,9 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}}
 }
 
-// WarmModelCatalogs starts a non-blocking, sequential refresh of the Claude
-// Code and Muse scopes that already have durable cache records. Unseen scopes
-// remain lazy and are discovered only when their picker is first opened.
+// WarmModelCatalogs starts a non-blocking, sequential refresh of the opencode
+// scope when it already has durable cache records. Unseen scopes remain lazy
+// and are discovered only when the picker is first opened.
 func (s *Service) WarmModelCatalogs(ctx context.Context) {
 	if s.cache == nil || s.discoverer == nil {
 		return
@@ -156,7 +127,7 @@ func (s *Service) WarmModelCatalogs(ctx context.Context) {
 }
 
 func (s *Service) warmModelCatalogs(ctx context.Context) {
-	for _, agentID := range []string{"claude-code", "muse"} {
+	for _, agentID := range []string{"opencode"} {
 		records, err := s.cache.ListAgentModelCatalogsByAgent(ctx, agentID)
 		if err != nil {
 			continue

@@ -130,7 +130,7 @@ const project: Project = {
 	id: "proj-1",
 	name: "my-app",
 	path: "/repo/my-app",
-	orchestratorAgent: "claude-code",
+	orchestratorAgent: "opencode",
 };
 
 const workerSession: Session = {
@@ -665,7 +665,7 @@ describe.each([false, true])("shared project board actions, in-panel header=%s",
 
 		const worker: WorkspaceSummary["sessions"][number] = {
 			id: "worker-1", workspaceId: "proj-1", workspaceName: "my-app", title: "First task",
-			provider: "claude-code", kind: "worker", status: "working", updatedAt: "2026-07-04T10:00:00Z", prs: [],
+			provider: "opencode", kind: "worker", status: "working", updatedAt: "2026-07-04T10:00:00Z", prs: [],
 		};
 		for (const session of [worker, { ...worker, status: "terminated" as const, isTerminated: true }]) {
 			updateWorkers([session]);

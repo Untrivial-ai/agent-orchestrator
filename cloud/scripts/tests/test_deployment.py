@@ -263,7 +263,7 @@ class TaskDefinitionTests(unittest.TestCase):
         container["environment"].append(
             {
                 "name": "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS",
-                "value": '{"claude-code":"template"}',
+                "value": '{"opencode":"template"}',
             }
         )
         container["secrets"].extend(

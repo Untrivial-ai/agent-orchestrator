@@ -130,9 +130,9 @@ func TestPersistentACPDriverSurvivesRealProcessDetach(t *testing.T) {
 	// These are protocol contract tests, not claims of authenticated E2E for
 	// every vendor. Each runs the real detached host with a fake ACP process.
 	for _, harness := range []domain.AgentHarness{
-		domain.HarnessClaudeCode, domain.HarnessCursor, domain.HarnessOpenCode,
-		domain.HarnessDroid, domain.HarnessKimi, domain.HarnessKimchi,
-		domain.HarnessPi, domain.HarnessOMP,
+		domain.HarnessOpenCode, domain.HarnessOpenCode, domain.HarnessOpenCode,
+		domain.HarnessOpenCode, domain.HarnessOpenCode, domain.HarnessOpenCode,
+		domain.HarnessOpenCode, domain.HarnessOpenCode,
 	} {
 		t.Run(string(harness), func(t *testing.T) { testACPProcessDetach(t, harness) })
 	}
@@ -273,7 +273,7 @@ func TestPersistentACPDriverReplaysOnePermissionAndOriginalResponder(t *testing.
 	workdir := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
 	cfg := Config{
-		Harness: domain.HarnessClaudeCode,
+		Harness: domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming: true, ports.ChatCapabilityApprovals: true,
 			ports.ChatCapabilityResume: true,
@@ -404,7 +404,7 @@ func TestPersistentACPResumeAdoptsLivePromptWithoutSecondSetup(t *testing.T) {
 	daemon, host := net.Pipe()
 	t.Cleanup(func() { _ = host.Close() })
 	driver := New(Config{
-		Harness: domain.HarnessClaudeCode,
+		Harness: domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming: true, ports.ChatCapabilityResume: true,
 		},
@@ -501,7 +501,7 @@ func TestPersistentACPReplayAppliesAcceptedPermissionCommand(t *testing.T) {
 	daemon, host := net.Pipe()
 	t.Cleanup(func() { _ = host.Close() })
 	driver := New(Config{
-		Harness: domain.HarnessClaudeCode,
+		Harness: domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming: true, ports.ChatCapabilityApprovals: true,
 			ports.ChatCapabilityResume: true,
@@ -579,7 +579,7 @@ func TestPersistentACPReconnectAcknowledgesAlreadyCommittedPrompt(t *testing.T) 
 	daemon, host := net.Pipe()
 	t.Cleanup(func() { _ = host.Close() })
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityResume: true},
 		Launch: func(context.Context, LaunchConfig) (Launch, error) {
 			return Launch{Command: "fake"}, nil
@@ -1045,7 +1045,7 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 func TestACPDriverDefersPromptUntilDurableTurnBinding(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness: domain.HarnessClaudeCode,
+		Harness: domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming: true, ports.ChatCapabilityApprovals: true,
 			ports.ChatCapabilityInterrupt: true, ports.ChatCapabilityResume: true,
@@ -1160,7 +1160,7 @@ func TestACPDriverValidatesHandshakeIdentityBeforeOpeningSession(t *testing.T) {
 	agent := &fakeAgent{}
 	validated := false
 	driver := New(Config{
-		Harness: domain.HarnessPi,
+		Harness: domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming: true,
 			ports.ChatCapabilityApprovals: true,
@@ -1357,7 +1357,7 @@ func TestACPDriverNegotiatesRichClientCapabilitiesAndNativePromptContent(t *test
 		},
 	}
 	driver := New(Config{
-		Harness: domain.HarnessClaudeCode,
+		Harness: domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming: true,
 			ports.ChatCapabilityImages:    true,
@@ -1552,7 +1552,7 @@ func TestACPDriverRefreshesHistoryWithAnotherSessionLoad(t *testing.T) {
 		},
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -1699,7 +1699,7 @@ func TestACPDriverHistoryRefreshHonorsCancellation(t *testing.T) {
 		loadStarted:   refreshStarted,
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -1758,7 +1758,7 @@ func TestACPDriverClosesTrailingUserOnlyHistoryAsRecovered(t *testing.T) {
 		loadUpdates: []acpsdk.SessionUpdate{user},
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -1797,7 +1797,7 @@ func TestConversationCapabilitiesTreatLoadSessionAsResume(t *testing.T) {
 func TestACPDriverUsesProviderPermissionPolicyBeforeParking(t *testing.T) {
 	agent := &fakeAgent{promptNoPermission: true}
 	driver := New(Config{
-		Harness:      domain.HarnessCursor,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityApprovals: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -1855,7 +1855,7 @@ func TestACPDriverUsesProviderPermissionPolicyBeforeParking(t *testing.T) {
 func TestACPDriverKeepsPermissionPolicyWhenLaterTurnSettingFails(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness: domain.HarnessCursor,
+		Harness: domain.HarnessOpenCode,
 		Probe:   func(context.Context) error { return nil },
 		Launch:  func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
 		SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
@@ -1902,7 +1902,7 @@ func TestACPDriverParksAndResolvesStructuredElicitation(t *testing.T) {
 	request.Form.Message = "Which approach?"
 	agent := &fakeAgent{elicitation: &request}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -1977,7 +1977,7 @@ func TestValidateInputResponseRejectsValuesOutsideTheProviderSchema(t *testing.T
 func TestACPDriverPreservesNestedToolAndTerminalMetadata(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2049,7 +2049,7 @@ func TestACPDriverNamespacesOpaqueItemIDsByProviderScope(t *testing.T) {
 		t.Helper()
 		agent := &fakeAgent{}
 		driver := New(Config{
-			Harness:      domain.HarnessClaudeCode,
+			Harness:      domain.HarnessOpenCode,
 			Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 			Probe:        func(context.Context) error { return nil },
 			Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2183,7 +2183,7 @@ func TestACPHistoryEventIdentityIsUnambiguousWithNULInOpaqueIDs(t *testing.T) {
 func TestACPDriverExtractsCommandFromExecuteToolInput(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2306,7 +2306,7 @@ func TestToolOutputTextNormalizesProviderDefinedRawOutput(t *testing.T) {
 func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	agent := &fakeAgent{promptNoPermission: true}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2374,7 +2374,7 @@ func TestACPDriverNormalizesClaudeRetryStatus(t *testing.T) {
 		promptStarted: make(chan struct{}, 1),
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2526,7 +2526,7 @@ func TestACPDriverExposesAndMutatesAdvertisedConfigOptions(t *testing.T) {
 		},
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch: func(context.Context, LaunchConfig) (Launch, error) {
@@ -2577,7 +2577,7 @@ func TestACPDriverExposesAndMutatesAdvertisedConfigOptions(t *testing.T) {
 func TestACPDriverConsumesLegacyKimiSelectorsOnSDK0135(t *testing.T) {
 	agent := &legacyKimiAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessKimi,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2641,7 +2641,7 @@ func TestACPDriverResolvesCLIModelToAdvertisedParameterizedLegacyChoice(t *testi
 		rejectUnknownModel: true,
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessCursor,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2680,7 +2680,7 @@ func TestACPDriverRejectsNonFastAliasWhenOnlyFastParameterizedChoiceIsAdvertised
 		rejectUnknownModel: true,
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessCursor,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2850,7 +2850,7 @@ func TestACPDriverRejectsLegacyModelAliasWithoutAdvertisedModelCatalog(t *testin
 		rejectUnknownModel: true,
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessCursor,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2888,7 +2888,7 @@ func TestACPDriverRejectsAmbiguousLegacyModelAlias(t *testing.T) {
 		rejectUnknownModel: true,
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessCursor,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -2912,7 +2912,7 @@ func TestACPDriverRejectsAmbiguousLegacyModelAlias(t *testing.T) {
 func TestACPDriverExposesDynamicAvailableCommandsAsSkills(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch: func(context.Context, LaunchConfig) (Launch, error) {
@@ -2998,7 +2998,7 @@ func TestACPDriverMapsAdvertisedSteeringOntoAO(t *testing.T) {
 		},
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch: func(context.Context, LaunchConfig) (Launch, error) {
@@ -3078,7 +3078,7 @@ func TestDiscoverConfigOptionsReadsSessionCatalogWithoutPrompt(t *testing.T) {
 		selectConfigOption("model", "Model", "model", "sonnet", "sonnet", "opus"),
 	}}
 	driver := New(Config{
-		Harness: domain.HarnessCline,
+		Harness: domain.HarnessOpenCode,
 		Launch: func(context.Context, LaunchConfig) (Launch, error) {
 			return Launch{Command: "cline", Args: []string{"--acp"}}, nil
 		},
@@ -3148,7 +3148,7 @@ func TestACPDriverStartToleratesMethodNotFound(t *testing.T) {
 		configNotFound: true,
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3182,7 +3182,7 @@ func TestACPDriverSendTurnPropagatesMethodNotFound(t *testing.T) {
 		configNotFound: true,
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3218,7 +3218,7 @@ func TestACPDriverSendTurnPropagatesMethodNotFound(t *testing.T) {
 func TestACPDriverRejectsUnsupportedTurnSettingsAtStartAndSend(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessKimi,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3306,7 +3306,7 @@ func TestACPDriverPreservesEarlyConfigOptionUpdates(t *testing.T) {
 		},
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3355,7 +3355,7 @@ func (d *Driver) useTestProcess(spawn spawnFunc) {
 func TestACPConversationImplementsCompactor(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3393,7 +3393,7 @@ func TestACPConversationImplementsCompactor(t *testing.T) {
 func TestACPCompactionExecutesPromptAndEmitsCompactedEvent(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3515,7 +3515,7 @@ func TestACPCompactionExecutesPromptAndEmitsCompactedEvent(t *testing.T) {
 func TestACPDriverClientCapabilitiesOmitsPrematureSessionCompaction(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3537,7 +3537,7 @@ func TestACPDriverClientCapabilitiesOmitsPrematureSessionCompaction(t *testing.T
 func TestACPDriverExposesCompactionWhenCommandAdvertised(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3611,7 +3611,7 @@ func TestACPEarlyCommandDuringSessionNewPreservedInStart(t *testing.T) {
 		},
 	}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3632,7 +3632,7 @@ func TestACPEarlyCommandDuringSessionNewPreservedInStart(t *testing.T) {
 func TestACPCompactionEmitsBusyBeforeCompactReturns(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3677,7 +3677,7 @@ func TestACPCompactionEmitsBusyBeforeCompactReturns(t *testing.T) {
 func TestACPCompactionCancelledDoesNotSettle(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
@@ -3728,7 +3728,7 @@ func TestACPCompactionCancelledDoesNotSettle(t *testing.T) {
 func TestACPCompactionRestoredOnLiveReconnect(t *testing.T) {
 	agent := &fakeAgent{}
 	driver := New(Config{
-		Harness:      domain.HarnessClaudeCode,
+		Harness:      domain.HarnessOpenCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityCompaction: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },

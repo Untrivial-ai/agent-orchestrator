@@ -1129,12 +1129,11 @@ type providerProfile struct {
 }
 
 type workerWorkspaceLayout struct {
-	root         string
-	repository   string
-	workerData   string
-	home         string
-	claudeConfig string
-	codexHome    string
+	root          string
+	repository    string
+	workerData    string
+	home          string
+	openCodeData  string
 }
 
 func workspaceLayout(record domain.Sandbox, profile providerProfile) (workerWorkspaceLayout, error) {
@@ -1143,8 +1142,7 @@ func workspaceLayout(record domain.Sandbox, profile providerProfile) (workerWork
 			repository:   "/workspace/repository",
 			workerData:   "/workspace/.ao/worker",
 			home:         "/workspace/.ao/home",
-			claudeConfig: "/workspace/.ao/home/.claude",
-			codexHome:    "/workspace/.ao/home/.codex",
+			openCodeData: "/workspace/.ao/home/.opencode",
 		}, nil
 	}
 	coderProfile, err := sandbox.DecodeCoderSessionProfile(record.ResourceProfile)
@@ -1160,8 +1158,7 @@ func workspaceLayout(record domain.Sandbox, profile providerProfile) (workerWork
 		repository:   coderLayout.Repository,
 		workerData:   coderLayout.WorkerData,
 		home:         coderLayout.Home,
-		claudeConfig: coderLayout.ClaudeConfig,
-		codexHome:    coderLayout.CodexHome,
+		openCodeData: coderLayout.OpenCodeData,
 	}, nil
 }
 
@@ -1204,8 +1201,7 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 		"AO_WORKSPACE_DIR":          layout.repository,
 		"AO_DATA_DIR":               layout.workerData,
 		"HOME":                      layout.home,
-		"CLAUDE_CONFIG_DIR":         layout.claudeConfig,
-		"CODEX_HOME":                layout.codexHome,
+		"OPENCODE_CONFIG_DIR":       layout.openCodeData,
 		"DISABLE_AUTOUPDATER":       "1",
 	}
 	if record.Provider == sandbox.ProviderDocker || r.options.AllowAnonymousCheckout {

@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
-
-	"github.com/google/uuid"
 )
 
 func TestBuildLaunchCommands(t *testing.T) {
@@ -21,69 +19,36 @@ func TestBuildLaunchCommands(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "claude",
+			name: "opencode default permissions",
 			cfg: LaunchConfig{
-				Harness:          HarnessClaudeCode,
-				Binary:           "/usr/bin/claude",
-				SessionID:        "session-1",
-				Permission:       PermissionAcceptEdits,
-				AllowedTools:     []string{"Read", "Bash(git diff:*)"},
-				DisallowedTools:  []string{"Write"},
-				Model:            " claude-sonnet ",
-				SystemPromptFile: systemPrompt,
-				Prompt:           "-fix auth",
+				Harness:   HarnessOpenCode,
+				Binary:    "/usr/bin/opencode",
+				SessionID: "session-1",
+				Model:     " claude-sonnet ",
+				Prompt:    "-fix auth",
 			},
 			want: []string{
-				"/usr/bin/claude",
-				"--session-id", ClaudeSessionID("session-1"),
-				"--permission-mode", "acceptEdits",
-				"--allowedTools", "Read,Bash(git diff:*)",
-				"--disallowedTools", "Write",
+				"/usr/bin/opencode",
 				"--model", "claude-sonnet",
-				"--append-system-prompt-file", systemPrompt,
-				"--", "-fix auth",
+				"--prompt", "-fix auth",
 			},
 		},
 		{
-			name: "codex",
+			name: "opencode bypass permissions with system prompt",
 			cfg: LaunchConfig{
-				Harness:       HarnessCodex,
-				Binary:        "/usr/bin/codex",
-				WorkspacePath: "/workspace",
-				Permission:    PermissionAuto,
-				ProviderArgs:  []string{"-c", "hooks.SessionStart=[]"},
-				Model:         " gpt-5 ",
-				SystemPrompt:  "act as worker",
-				Prompt:        "fix auth",
+				Harness:          HarnessOpenCode,
+				Binary:           "/usr/bin/opencode",
+				SessionID:        "session-1",
+				Permission:       PermissionBypassPermissions,
+				SystemPrompt:     "act as worker",
+				SystemPromptFile: systemPrompt,
+				Prompt:           "fix auth",
 			},
 			want: []string{
-				"/usr/bin/codex",
-				"-c", "check_for_update_on_startup=false",
-				"-c", "notice.hide_rate_limit_model_nudge=true",
-				"--dangerously-bypass-hook-trust",
-				"--ask-for-approval", "on-request",
-				"-c", `approvals_reviewer="auto_review"`,
-				"-c", "hooks.SessionStart=[]",
-				"-c", "projects={'/workspace'={trust_level=\"trusted\"}}",
-				"--model", "gpt-5",
-				"-c", "developer_instructions='act as worker'",
-				"--", "fix auth",
-			},
-		},
-		{
-			name: "cursor",
-			cfg: LaunchConfig{
-				Harness:    HarnessCursor,
-				Binary:     "/usr/bin/cursor-agent",
-				Permission: PermissionBypassPermissions,
-				Model:      " claude-4 ",
-				Prompt:     "-fix auth",
-			},
-			want: []string{
-				"/usr/bin/cursor-agent",
-				"--yolo",
-				"--model", "claude-4",
-				"--", "-fix auth",
+				"/usr/bin/opencode",
+				"--dangerously-skip-permissions",
+				"--agent", OpenCodeAgentName("session-1"),
+				"--prompt", "fix auth",
 			},
 		},
 	}
@@ -108,63 +73,38 @@ func TestBuildRestoreCommands(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "claude fallback identity",
+			name: "opencode metadata identity",
 			cfg: RestoreConfig{
-				Harness:    HarnessClaudeCode,
-				Binary:     "claude",
+				Harness:    HarnessOpenCode,
+				Binary:     "opencode",
 				SessionID:  "session-1",
+				Metadata:   map[string]string{MetadataKeyAgentSessionID: "thread-1"},
 				Permission: PermissionBypassPermissions,
 				Prompt:     "continue",
 			},
 			want: []string{
-				"claude",
-				"--permission-mode", "bypassPermissions",
-				"--resume", ClaudeSessionID("session-1"),
-				"--", "continue",
+				"opencode",
+				"--dangerously-skip-permissions",
+				"--session", "thread-1",
+				"--prompt", "continue",
 			},
 		},
 		{
-			name: "claude forwards configured model",
+			name: "opencode restore re-applies agent selection",
 			cfg: RestoreConfig{
-				Harness:    HarnessClaudeCode,
-				Binary:     "claude",
-				SessionID:  "session-1",
-				Model:      "  claude-opus-4-5  ",
-				Permission: PermissionBypassPermissions,
+				Harness:      HarnessOpenCode,
+				Binary:       "opencode",
+				SessionID:    "session-1",
+				Metadata:     map[string]string{MetadataKeyAgentSessionID: "thread-1"},
+				Model:        "  claude-opus-4-5  ",
+				SystemPrompt: "act as worker",
 			},
 			want: []string{
-				"claude",
-				"--permission-mode", "bypassPermissions",
+				"opencode",
 				"--model", "claude-opus-4-5",
-				"--resume", ClaudeSessionID("session-1"),
+				"--agent", OpenCodeAgentName("session-1"),
+				"--session", "thread-1",
 			},
-		},
-		{
-			name: "codex metadata identity",
-			cfg: RestoreConfig{
-				Harness:    HarnessCodex,
-				Binary:     "codex",
-				Metadata:   map[string]string{MetadataKeyAgentSessionID: "thread-1"},
-				Permission: PermissionAcceptEdits,
-			},
-			want: []string{
-				"codex", "resume",
-				"-c", "check_for_update_on_startup=false",
-				"-c", "notice.hide_rate_limit_model_nudge=true",
-				"--dangerously-bypass-hook-trust",
-				"--ask-for-approval", "on-request",
-				"thread-1",
-			},
-		},
-		{
-			name: "cursor metadata identity",
-			cfg: RestoreConfig{
-				Harness:    HarnessCursor,
-				Binary:     "cursor-agent",
-				Metadata:   map[string]string{MetadataKeyAgentSessionID: "chat-1"},
-				Permission: PermissionAuto,
-			},
-			want: []string{"cursor-agent", "--force", "--resume", "chat-1"},
 		},
 	}
 
@@ -181,16 +121,14 @@ func TestBuildRestoreCommands(t *testing.T) {
 	}
 }
 
-func TestRestoreIdentityRequiresCapturedIDOutsideClaude(t *testing.T) {
-	for _, harness := range []Harness{HarnessCodex, HarnessCursor} {
-		cmd, ok, err := BuildRestoreCommand(RestoreConfig{
-			Harness:   harness,
-			Binary:    "agent",
-			SessionID: "session-1",
-		})
-		if err != nil || ok || cmd != nil {
-			t.Fatalf("%s restore = (%#v, %v, %v), want unavailable", harness, cmd, ok, err)
-		}
+func TestRestoreIdentityRequiresCapturedID(t *testing.T) {
+	cmd, ok, err := BuildRestoreCommand(RestoreConfig{
+		Harness:   HarnessOpenCode,
+		Binary:    "opencode",
+		SessionID: "session-1",
+	})
+	if err != nil || ok || cmd != nil {
+		t.Fatalf("opencode restore = (%#v, %v, %v), want unavailable", cmd, ok, err)
 	}
 }
 
@@ -208,27 +146,30 @@ func TestPermissionPolicyForMode(t *testing.T) {
 	}
 }
 
-func TestClaudeNativeSessionIDValidation(t *testing.T) {
-	id := uuid.NewString()
-	cmd, err := BuildLaunchCommand(LaunchConfig{
-		Harness:         HarnessClaudeCode,
-		Binary:          "claude",
-		SessionID:       "ignored",
-		NativeSessionID: id,
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestOpenCodePermissionArgs(t *testing.T) {
+	tests := map[PermissionPolicy][]string{
+		PermissionDefault:           nil,
+		PermissionAcceptEdits:       nil,
+		PermissionAuto:              nil,
+		PermissionBypassPermissions: {"--dangerously-skip-permissions"},
+		"unknown":                   nil,
 	}
-	if !reflect.DeepEqual(cmd, []string{"claude", "--session-id", id}) {
-		t.Fatalf("command = %#v", cmd)
+	for policy, want := range tests {
+		if got := OpenCodePermissionArgs(policy); !reflect.DeepEqual(got, want) {
+			t.Errorf("OpenCodePermissionArgs(%q) = %#v, want %#v", policy, got, want)
+		}
 	}
+}
 
-	if _, err := BuildLaunchCommand(LaunchConfig{
-		Harness:         HarnessClaudeCode,
-		Binary:          "claude",
-		NativeSessionID: "not-a-uuid",
-	}); err == nil {
-		t.Fatal("invalid native identity was accepted")
+func TestOpenCodeAgentName(t *testing.T) {
+	if name := OpenCodeAgentName("session-1"); name != "ao-session-1" {
+		t.Fatalf("OpenCodeAgentName(session-1) = %q", name)
+	}
+	if name := OpenCodeAgentName("id with spaces"); name != "ao-id-with-spaces" {
+		t.Fatalf("OpenCodeAgentName(id with spaces) = %q", name)
+	}
+	if name := OpenCodeAgentName(""); name != "ao-system-prompt" {
+		t.Fatalf("OpenCodeAgentName() = %q", name)
 	}
 }
 

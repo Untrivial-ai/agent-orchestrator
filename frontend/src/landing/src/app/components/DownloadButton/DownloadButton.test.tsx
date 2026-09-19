@@ -1,8 +1,6 @@
 import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("../../../lib/analytics", () => ({ track: vi.fn() }));
+import { describe, expect, it } from "vitest";
 
 import { Platform } from "../../hooks/useOS";
 import { DownloadButton, getDownloadIconKind } from "./DownloadButton";

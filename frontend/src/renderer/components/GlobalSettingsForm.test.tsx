@@ -8,7 +8,6 @@ import { useLocaleStore } from "../stores/locale-store";
 import { useSoundNotificationsStore } from "../stores/sound-notifications-store";
 import { useTerminalShellStore } from "../stores/terminal-shell-store";
 import { useUiStore } from "../stores/ui-store";
-import { useTelemetryPolicyStore } from "../stores/telemetry-policy-store";
 import { TooltipProvider } from "./ui/tooltip";
 
 const {
@@ -32,11 +31,6 @@ const {
 	getKeybindings,
 	setKeybindings,
 	setKeybindingRecording,
-	setMacDifferentialUpdates,
-	getTelemetryPolicy,
-	setTelemetryEvents,
-	onTelemetryPolicy,
-	isWindowsPlatform,
 } = vi.hoisted(() => ({
 	getUpdate: vi.fn(),
 	setUpdate: vi.fn(),
@@ -58,14 +52,6 @@ const {
 	getKeybindings: vi.fn(),
 	setKeybindings: vi.fn(),
 	setKeybindingRecording: vi.fn(),
-	setMacDifferentialUpdates: vi.fn().mockResolvedValue(undefined),
-	// agent-switch visibility initializes at module load, before beforeEach can
-	// install the per-test policy response. Preserve the bridge's Promise
-	// contract for that initial read as well.
-	getTelemetryPolicy: vi.fn().mockResolvedValue(undefined),
-	setTelemetryEvents: vi.fn(),
-	onTelemetryPolicy: vi.fn(),
-	isWindowsPlatform: vi.fn(() => true),
 }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -78,7 +64,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 vi.mock("../lib/platform", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/platform")>();
-	return { ...actual, isWindowsPlatform };
+	return { ...actual, isWindowsPlatform: () => true };
 });
 
 vi.mock("../lib/bridge", () => ({
@@ -86,11 +72,7 @@ vi.mock("../lib/bridge", () => ({
 		app: { getVersion, openExternal },
 		clipboard: { writeText },
 		daemon: { getStatus: getDaemonStatus },
-		updateSettings: {
-			get: getUpdate,
-			set: setUpdate,
-			setMacDifferentialUpdates,
-		},
+		updateSettings: { get: getUpdate, set: setUpdate },
 		uiSettings: { get: getUiSettings, set: setUiSettings },
 		keybindings: {
 			get: getKeybindings,
@@ -106,7 +88,6 @@ vi.mock("../lib/bridge", () => ({
 			onStatus: updOnStatus,
 		},
 		featureBuilds: { list: featListBuilds, getActive: featGetActive },
-		telemetry: { getPolicy: getTelemetryPolicy, setEventsEnabled: setTelemetryEvents, onPolicy: onTelemetryPolicy, getBootstrap: vi.fn(), capture: vi.fn() },
 	},
 }));
 
@@ -144,15 +125,9 @@ beforeEach(async () => {
 		getKeybindings,
 		setKeybindings,
 		setKeybindingRecording,
-		setMacDifferentialUpdates,
-		getTelemetryPolicy,
-		setTelemetryEvents,
-		onTelemetryPolicy,
-		isWindowsPlatform,
 	]) {
 		m.mockReset();
 	}
-	isWindowsPlatform.mockReturnValue(true);
 	getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 	setUpdate.mockResolvedValue(undefined);
 	getUiSettings.mockResolvedValue({ locale: "en", soundNotificationsEnabled: true, terminalShell: { kind: "auto" } });
@@ -177,10 +152,6 @@ beforeEach(async () => {
 	getKeybindings.mockResolvedValue({});
 	setKeybindings.mockImplementation(async (overrides) => overrides);
 	setKeybindingRecording.mockResolvedValue(undefined);
-	setMacDifferentialUpdates.mockResolvedValue(undefined);
-	getTelemetryPolicy.mockResolvedValue({ eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true });
-	setTelemetryEvents.mockResolvedValue({ eventsEnabled: true, consentGeneration: "generation-on", updatedAt: "2026-08-28T10:15:31.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true });
-	onTelemetryPolicy.mockReturnValue(() => undefined);
 	// Locale defaults to English so existing copy assertions stay green.
 	await appI18n.changeLanguage("en");
 	useLocaleStore.setState({ locale: "en", loaded: false, saving: false, saveError: false });
@@ -192,7 +163,6 @@ beforeEach(async () => {
 		saveError: false,
 	});
 	useUiStore.setState({ developerMode: false });
-	useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true }, loaded: true, saving: false, saveError: false });
 	document.documentElement.lang = "en";
 });
 
@@ -230,7 +200,6 @@ describe("GlobalSettingsForm", () => {
 
 		await user.click(toggle);
 		expect(window.localStorage.getItem("ao.developerMode")).toBe("true");
-		expect(setMacDifferentialUpdates).toHaveBeenCalledWith(true);
 		await user.click(screen.getByLabelText("Updates channel"));
 		expect(await screen.findByRole("menuitem", { name: "Feature Releases" })).toBeInTheDocument();
 	});
@@ -273,35 +242,6 @@ describe("GlobalSettingsForm", () => {
 
 		await waitFor(() => expect(setUiSettings).toHaveBeenCalledWith({ soundNotificationsEnabled: false }));
 		expect(toggle).not.toBeChecked();
-	});
-
-	it("shows pending daemon cleanup without claiming opt-out completed", async () => {
-		setTelemetryEvents.mockResolvedValue({ eventsEnabled: false, consentGeneration: "generation-off-2", updatedAt: "2026-08-28T10:15:31.000Z", acknowledged: false, consentRenewalRequired: false, state: "cleanup_pending", environmentVeto: false, durabilitySupported: true, reason: "daemon_cleanup_pending" });
-		useTelemetryPolicyStore.setState({ view: { eventsEnabled: true, consentGeneration: "generation-on", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true }, loaded: true });
-		const user = userEvent.setup(); renderForm();
-		await user.click(await screen.findByRole("switch", { name: "Share error events" }));
-		expect(await screen.findByText("Telemetry is off locally. Daemon cleanup is still pending.")).toBeInTheDocument();
-	});
-
-	it("names the platform restriction instead of claiming cleanup keeps retrying", async () => {
-		useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: false, durabilitySupported: false, reason: "durability_unsupported" }, loaded: true });
-		renderForm();
-		expect(await screen.findByText("Enabling is unavailable on this platform because durable consent writes are not supported.")).toBeInTheDocument();
-		expect(screen.queryByText("Telemetry cleanup failed. Reporting remains disabled while cleanup retries.")).not.toBeInTheDocument();
-	});
-
-	it("does not promise retries for the fail-closed view when the controller is unavailable", async () => {
-		useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" }, loaded: true });
-		renderForm();
-		expect(await screen.findByText("Enabling is unavailable on this platform because durable consent writes are not supported.")).toBeInTheDocument();
-		expect(screen.queryByText("Telemetry cleanup failed. Reporting remains disabled while cleanup retries.")).not.toBeInTheDocument();
-	});
-
-	it("names the release gate when a saved opt-in cannot be honoured", async () => {
-		useTelemetryPolicyStore.setState({ view: { eventsEnabled: true, consentGeneration: "generation-on", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true, reason: "release_blocked" }, loaded: true });
-		renderForm();
-		expect(await screen.findByText("Error reporting is disabled by this release's safety gate.")).toBeInTheDocument();
-		expect(screen.queryByText("Telemetry is off locally. Daemon cleanup is still pending.")).not.toBeInTheDocument();
 	});
 
 	it("selects Git Bash as the default Windows terminal", async () => {
@@ -699,7 +639,7 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.getByLabelText("What happened?")).toHaveValue("");
 	});
 
-	it("opens Discord support and lets Windows users choose an email provider", async () => {
+	it("opens Discord with an official invite and email with the support mailbox", async () => {
 		const user = userEvent.setup();
 		const open = vi.spyOn(window, "open").mockReturnValue(null);
 		getVersion.mockRejectedValue(new Error("version unavailable"));
@@ -723,29 +663,18 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.queryByText("Discord draft copied.")).not.toBeInTheDocument();
 		await user.type(screen.getByLabelText("What happened?"), "The setup flow stalls after the first prompt.");
 		await user.click(screen.getByRole("button", { name: /copy & open email/i }));
-		await user.click(await screen.findByRole("menuitem", { name: "Gmail" }));
+		// The merged component hands Windows users an email-provider dropdown
+		// (upstream #5564); this suite runs with isWindowsPlatform() mocked true,
+		// so select the default provider to trigger the copy.
+		await user.click(await screen.findByRole("menuitem", { name: "Default email app" }));
 
 		await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
 		expect(writeText.mock.calls[0][0]).toContain("Daemon: unknown");
 		expect(writeText.mock.calls[1][0]).toContain("To: prasad@untrivial.ai");
 		expect(writeText.mock.calls[1][0]).toContain("AO feedback");
 		expect(openExternal).toHaveBeenCalledWith("https://discord.gg/WjKNa7EbB8");
-		expect(openExternal).toHaveBeenCalledWith(expect.stringContaining("https://mail.google.com/mail/"));
-		expect(open).not.toHaveBeenCalled();
-	});
-
-	it("keeps the direct system email handoff outside Windows", async () => {
-		const user = userEvent.setup();
-		isWindowsPlatform.mockReturnValue(false);
-		renderForm();
-
-		await user.type(await screen.findByLabelText("Title"), "Need help with setup");
-		await user.type(screen.getByLabelText("What happened?"), "The setup flow stalls after the first prompt.");
-		await user.click(screen.getByRole("button", { name: /copy & open email/i }));
-
-		await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
 		expect(openExternal).toHaveBeenCalledWith(expect.stringContaining("mailto:prasad@untrivial.ai"));
-		expect(screen.queryByRole("menuitem", { name: "Gmail" })).not.toBeInTheDocument();
+		expect(open).not.toHaveBeenCalled();
 	});
 
 	it("keeps the report form to title and details while tailoring placeholder guidance", async () => {

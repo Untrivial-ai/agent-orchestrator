@@ -1,10 +1,4 @@
-import {
-	ArrowRight,
-	CheckCircle2,
-	Pencil,
-	TriangleAlert,
-	X,
-} from "lucide-react";
+import { Pencil } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import {
 	useCallback,
@@ -18,26 +12,13 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import {
-	findActiveAgentSwitch,
-	selectDurableAgentSwitch,
-	useAgentSwitches,
-} from "../hooks/useAgentSwitches";
-import { useObservedAgentSwitchLifecycle } from "../hooks/useObservedAgentSwitchLifecycle";
-import { useAgentSwitchPresentationVisibility, useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useTabScrollEdges } from "../hooks/useTabScrollEdges";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSessionRename";
-import { useSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useTruncatedText } from "../hooks/useTruncatedText";
 import type { ShellTerminal } from "../hooks/useShellTerminals";
 import { TERMINAL_FONT_SIZE_DEFAULT, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from "../lib/design-tokens";
 import { getAgentActivityView } from "../lib/session-presentation";
-import {
-	deriveAgentSwitchPresentation,
-	agentSwitchVisibilityPresentationKind,
-	type AgentSwitchPresentation,
-} from "../lib/agent-switch-presentation";
 import { agentLabel } from "../lib/agent-options";
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
 import { aoBridge } from "../lib/bridge";
@@ -47,11 +28,9 @@ import { sidebarOccupiesLayout, useUiStore, type Theme } from "../stores/ui-stor
 import type { TerminalTarget } from "../types/terminal";
 import {
 	isOrchestratorSession,
-	type AgentSwitchSummary,
 	type WorkspaceSession,
 } from "../types/workspace";
 import { AgentAvatar } from "./AgentAvatar";
-import { AgentSwitchProgressTrack } from "./AgentSwitchProgressTrack";
 import { ShellTerminalTab } from "./ShellTerminalTab";
 import { TerminalTabFrame } from "./TerminalTabFrame";
 import { TerminalPane } from "./TerminalPane";
@@ -165,7 +144,6 @@ export function CenterPane({
 	workspaceTabs,
 	workspaceTabActions,
 	workspaceActiveTabKey,
-	workspaceFileActive = false,
 	auxiliaryTabOrder,
 	onAuxiliaryTabOrderChange,
 	agentInputDisabled = false,
@@ -221,115 +199,12 @@ export function CenterPane({
 		showRightFade,
 	} = useTabScrollEdges([tabOverflowWatch]);
 	const previousTabCountRef = useRef(availableAuxiliaryKeys.length);
-	const agentSwitchesQuery = useAgentSwitches(session?.id ?? "");
-	const agentSwitches = agentSwitchesQuery.data ?? [];
-	const switchMutation = useSwitchAgentState(session?.id ?? "");
-	const mountedSessionIdRef = useRef(session?.id);
-	const sourceFocusSwitchIdRef = useRef<string | undefined>(undefined);
-	const announcedAlertKeysRef = useRef(new Set<string>());
-	const [alertAnnouncement, setAlertAnnouncement] = useState<{ key: string; text: string }>();
-	if (mountedSessionIdRef.current !== session?.id) {
-		mountedSessionIdRef.current = session?.id;
-		sourceFocusSwitchIdRef.current = undefined;
-		announcedAlertKeysRef.current = new Set();
-	}
-	const sessionAgentSwitch = session?.activeAgentSwitch;
-	const activeHistorySwitch = findActiveAgentSwitch(agentSwitches);
-	const selectedCurrentAgentSwitch = selectDurableAgentSwitch(
-		sessionAgentSwitch,
-		agentSwitches,
-	);
-	const {
-		dismissFailure: dismissAgentSwitchFailure,
-		dismissedFailureSwitchId,
-		isObserved: isAgentSwitchObserved,
-		isRetired: isAgentSwitchRetired,
-		markObserved: markAgentSwitchObserved,
-		observedTerminalSwitch,
-		settle: settleAgentSwitch,
-		transientSuccessNotice,
-		transientSuccessSwitchId,
-	} = useObservedAgentSwitchLifecycle({
-		sessionId: session?.id,
-		agentSwitches,
-		nonterminalCandidates: [
-			sessionAgentSwitch,
-			activeHistorySwitch,
-			selectedCurrentAgentSwitch,
-		],
-	});
-	const currentAgentSwitch =
-		selectedCurrentAgentSwitch && !isAgentSwitchRetired(selectedCurrentAgentSwitch.id)
-			? selectedCurrentAgentSwitch
-			: undefined;
-	const admissionAgentSwitch: AgentSwitchSummary | undefined =
-		!currentAgentSwitch && switchMutation.isPending && switchMutation.input
-			? {
-				agentHandoffStatus: "not_attempted",
-				fromHarness: switchMutation.input.session.provider,
-				id: `admission:${switchMutation.input.idempotencyKey}`,
-				state: "preparing_handoff",
-				targetHarness: switchMutation.input.targetHarness,
-			}
-			: undefined;
-	const latestCompletedSwitch =
-		agentSwitches[0]?.state === "completed" && !isAgentSwitchRetired(agentSwitches[0].id)
-			? agentSwitches[0]
-			: undefined;
-	const agentSwitch =
-		currentAgentSwitch ??
-		admissionAgentSwitch ??
-		latestCompletedSwitch ??
-		observedTerminalSwitch;
-	useAgentSwitchRouteVisibility(`session/${session?.id ?? "unavailable"}`, agentSwitch && agentSwitch.state !== "completed" && agentSwitch.state !== "failed" ? "active" : "history", undefined, false);
-	const presentation =
-		agentSwitch && session
-			? deriveAgentSwitchPresentation({
-				agentSwitch,
-				activityState: session.activity?.state,
-				currentHarness: session.provider,
-				isTerminated: Boolean(session.isTerminated),
-				terminalHandleId: session.terminalHandleId,
-			})
-			: undefined;
-	if (
-		agentSwitch?.state === "completed" &&
-		presentation?.outcome === "in_progress" &&
-		presentation.stage === "confirming_takeover"
-	) {
-		markAgentSwitchObserved(agentSwitch.id);
-	}
-	const observedSettledSwitch = Boolean(
-		agentSwitch &&
-			presentation?.outcome === "success" &&
-			isAgentSwitchObserved(agentSwitch.id),
-	);
-	const displayedSuccessNotice = presentation ? undefined : transientSuccessNotice;
 	const target = terminalTarget ?? { kind: "worker" };
 	const activeWorkspaceTab = workspaceActiveTabKey
 		? workspaceTabs?.find((tab) => tab.key === workspaceActiveTabKey)
 		: undefined;
-	const switchLocksWorkerInput = Boolean(
-		presentation?.lockAgentTerminal && !presentation.allowSourceInput,
-	);
 	const workerInputDisabled =
-		target.kind === "worker" && (agentInputDisabled || switchLocksWorkerInput || handoffDialogOpen);
-	const shownPresentation =
-		presentation?.outcome === "failure" && dismissedFailureSwitchId === agentSwitch?.id
-			? undefined
-			: presentation?.outcome === "success"
-			? transientSuccessSwitchId === agentSwitch?.id
-				? transientSuccessNotice?.presentation
-				: undefined
-			: presentation ?? displayedSuccessNotice?.presentation;
-	const shownAgentSwitch = agentSwitch ?? displayedSuccessNotice?.agentSwitch;
-	const visibilityPresentationKind = agentSwitchVisibilityPresentationKind(shownPresentation);
-	useAgentSwitchPresentationVisibility({
-		localRouteKey: `session/${session?.id ?? "unavailable"}`,
-		agentSwitch: shownAgentSwitch,
-		presentationKind: visibilityPresentationKind,
-		visible: Boolean(shownPresentation && shownAgentSwitch && !workspaceFileActive && !handoffDialogOpen),
-	});
+		target.kind === "worker" && (agentInputDisabled || handoffDialogOpen);
 	const sessionTabLabel = session
 		? isOrchestratorSession(session)
 			? t("shell.orchestrator")
@@ -412,51 +287,6 @@ export function CenterPane({
 			return { ...current, [sessionId]: keys };
 		});
 	}, [auxiliaryTabOrder, availableAuxiliaryKeys, onAuxiliaryTabOrderChange, sessionId]);
-
-	useEffect(() => {
-		if (!switchMutation.isPending || currentAgentSwitch) return;
-		void agentSwitchesQuery.refetch();
-		const timer = window.setInterval(() => void agentSwitchesQuery.refetch(), 500);
-		return () => window.clearInterval(timer);
-	}, [agentSwitchesQuery.refetch, currentAgentSwitch, switchMutation.isPending]);
-
-	useEffect(() => {
-		setAlertAnnouncement(undefined);
-	}, [session?.id]);
-
-	useEffect(() => {
-		if (!observedSettledSwitch || !agentSwitch || !presentation) return;
-		settleAgentSwitch(agentSwitch, presentation);
-	}, [agentSwitch, observedSettledSwitch, presentation, settleAgentSwitch]);
-
-	useEffect(() => {
-		if (!agentSwitch || !presentation?.allowSourceInput) return;
-		if (sourceFocusSwitchIdRef.current === agentSwitch.id) return;
-		sourceFocusSwitchIdRef.current = agentSwitch.id;
-		if (target.kind !== "worker") onSelectSessionTerminal?.();
-	}, [agentSwitch, onSelectSessionTerminal, presentation?.allowSourceInput, target.kind]);
-
-	const alertKey =
-		agentSwitch && presentation?.allowSourceInput
-			? `${agentSwitch.id}:source-input`
-			: agentSwitch && (presentation?.outcome === "failure" || presentation?.outcome === "recovery")
-				? `${agentSwitch.id}:${presentation.outcome}`
-				: undefined;
-	const alertText = presentation
-		? t(
-				presentation.allowSourceInput ? presentation.descriptionKey : presentation.titleKey,
-				presentation.values,
-			)
-		: undefined;
-	useEffect(() => {
-		if (!alertKey || !alertText) {
-			setAlertAnnouncement(undefined);
-			return;
-		}
-		if (announcedAlertKeysRef.current.has(alertKey)) return;
-		announcedAlertKeysRef.current.add(alertKey);
-		setAlertAnnouncement({ key: alertKey, text: alertText });
-	}, [alertKey, alertText]);
 
 	useEffect(() => {
 		const handleFullscreenChange = () => setIsFullscreen(document.fullscreenElement === paneRef.current);
@@ -728,10 +558,8 @@ export function CenterPane({
 						fontSize={fontSize}
 						// A terminal you can type into should already hold the caret when you
 						// open or switch to the session, the same way the chat composer does.
-						// Worker input is off during an interface transition or a locked agent
-						// switch; every other target is interactive as soon as it is on screen.
-						// Without this a worker terminal was only focused mid agent-switch, so
-						// switching sessions left keystrokes going nowhere until you clicked it.
+						// Worker input is off during an interface transition; every other
+						// target is interactive as soon as it is on screen.
 						focusRequested={target.kind !== "worker" || !workerInputDisabled}
 						isFullscreen={isFullscreen}
 						inputDisabled={workerInputDisabled}
@@ -742,184 +570,7 @@ export function CenterPane({
 						theme={theme}
 					/>
 				</div>
-				{handoffDialogOpen ? null : shownPresentation && shownAgentSwitch && target.kind === "worker" ? (
-					<AgentSwitchTerminalOverlay
-						agentSwitch={shownAgentSwitch}
-						onDismiss={
-							shownPresentation.outcome === "failure"
-								? () => dismissAgentSwitchFailure(shownAgentSwitch.id)
-								: undefined
-						}
-						presentation={shownPresentation}
-					/>
-				) : shownPresentation && shownAgentSwitch ? (
-					<AgentSwitchTerminalStrip
-						onSelectSessionTerminal={onSelectSessionTerminal}
-						presentation={shownPresentation}
-					/>
-				) : null}
-				{alertAnnouncement ? (
-					<p key={alertAnnouncement.key} className="sr-only" role="alert">
-						{alertAnnouncement.text}
-					</p>
-				) : null}
 			</div>
-		</div>
-	);
-}
-
-type AgentSwitchTerminalOverlayProps = {
-	agentSwitch: AgentSwitchSummary;
-	onDismiss?: () => void;
-	presentation: AgentSwitchPresentation;
-};
-
-function AgentSwitchTerminalOverlay({
-	agentSwitch,
-	onDismiss,
-	presentation,
-}: AgentSwitchTerminalOverlayProps) {
-	const { t } = useTranslation();
-	const overlayRef = useRef<HTMLDivElement | null>(null);
-	const title = t(presentation.titleKey, presentation.values);
-	const description = t(presentation.descriptionKey, presentation.values);
-	const sourceInput = presentation.allowSourceInput;
-	const staticWarning = presentation.outcome === "failure" || presentation.outcome === "recovery";
-	const success = presentation.outcome === "success";
-	const focusLockedStatus = presentation.lockAgentTerminal && !sourceInput && !success;
-	useEffect(() => {
-		if (focusLockedStatus) overlayRef.current?.focus({ preventScroll: true });
-	}, [focusLockedStatus]);
-
-	return (
-		<div
-			ref={overlayRef}
-			aria-label={title}
-			aria-atomic="true"
-			aria-busy={!sourceInput && !staticWarning && !success && presentation.animate ? true : undefined}
-			aria-live="polite"
-			className={cn(
-				"z-20 flex",
-				sourceInput
-					? "agent-switch-source-input-strip pointer-events-none absolute inset-x-3 top-3 justify-center"
-					: "agent-switch-terminal-scrim absolute inset-0 items-center justify-center animate-overlay-in motion-reduce:animate-none",
-				!presentation.lockAgentTerminal && "pointer-events-none",
-				presentation.animate && !staticWarning && !sourceInput && "cursor-wait",
-			)}
-			data-testid="agent-switch-terminal-overlay"
-			role="status"
-			tabIndex={-1}
-		>
-			{sourceInput || staticWarning || success ? (
-				<div className={cn(
-					"agent-switch-attention-card pointer-events-auto relative flex max-w-md items-start gap-3 rounded-lg border bg-surface/95 px-4 py-3 text-left shadow-lg",
-					onDismiss && "pr-11",
-					success
-						? "border-success/40"
-						: presentation.tone === "danger"
-							? "border-danger/40"
-							: "border-warning/40",
-				)}>
-					{success ? (
-						<CheckCircle2 aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-success" />
-					) : (
-						<TriangleAlert
-							aria-hidden="true"
-							className={cn(
-								"mt-0.5 size-5 shrink-0",
-								presentation.tone === "danger" ? "text-danger" : "text-warning",
-							)}
-						/>
-					)}
-					<div className="min-w-0">
-						<p className="font-mono text-control font-medium text-foreground">{title}</p>
-						<p className="mt-1 text-caption leading-4 text-muted-foreground">{description}</p>
-					</div>
-					{onDismiss ? (
-						<button
-							aria-label={t("common.close")}
-							className="absolute right-2 top-2 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
-							onClick={onDismiss}
-							type="button"
-						>
-							<X aria-hidden="true" className="size-icon-sm" />
-						</button>
-					) : null}
-				</div>
-			) : (
-				<div
-					className="flex max-w-lg animate-modal-in flex-col items-center gap-5 rounded-xl border border-border-strong bg-surface/95 px-8 py-6 text-center shadow-xl shadow-black/20 motion-reduce:animate-none"
-					data-testid="agent-switch-transition-card"
-				>
-					<div className="flex items-center gap-5 sm:gap-7">
-						<SwitchingAgentMark harness={agentSwitch.fromHarness} />
-						<div
-							aria-hidden="true"
-							className="relative h-4 w-20 shrink-0 text-accent sm:w-28"
-							data-testid="agent-switch-transfer-arrow"
-						>
-							<ArrowRight
-								className="absolute inset-0 size-full text-foreground/55"
-								data-testid="agent-switch-transfer-arrow-icon"
-								strokeWidth={1.5}
-							/>
-							<span
-								className="absolute inset-y-[7px] left-0 right-3 overflow-hidden"
-								data-testid="agent-switch-transfer-shaft"
-							>
-								<span className="agent-switch-transfer-pulse absolute inset-y-0 w-10 bg-gradient-to-r from-transparent via-accent to-transparent" />
-							</span>
-						</div>
-						<SwitchingAgentMark harness={agentSwitch.targetHarness} />
-					</div>
-					<div className="flex w-full flex-col items-center" data-testid="agent-switch-status-group">
-						<p className="font-mono text-control font-medium text-foreground">{title}</p>
-						<p className="mt-2 text-caption leading-4 text-muted-foreground">{description}</p>
-						<AgentSwitchProgressTrack stage={presentation.stage} />
-					</div>
-				</div>
-			)}
-		</div>
-	);
-}
-
-function AgentSwitchTerminalStrip({
-	onSelectSessionTerminal,
-	presentation,
-}: {
-	onSelectSessionTerminal?: () => void;
-	presentation: AgentSwitchPresentation;
-}) {
-	const { t } = useTranslation();
-	return (
-		<div
-			aria-label={t(presentation.titleKey, presentation.values)}
-			aria-atomic="true"
-			aria-live="polite"
-			className="agent-switch-shell-strip absolute inset-x-3 top-3 z-20 flex items-center justify-between gap-3 rounded-lg border border-border-strong bg-surface/95 px-3 py-2 shadow-lg"
-			role="status"
-		>
-			<span className="min-w-0 truncate text-caption text-muted-foreground">
-				{t(presentation.descriptionKey, presentation.values)}
-			</span>
-			<button
-				className="shrink-0 rounded-md border border-border-strong bg-background px-2.5 py-1 text-caption font-medium text-foreground transition-colors hover:bg-interactive-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50"
-				onClick={onSelectSessionTerminal}
-				type="button"
-			>
-				{t("terminal.backToAgent")}
-			</button>
-		</div>
-	);
-}
-
-function SwitchingAgentMark({ harness }: { harness: string }) {
-	return (
-		<div className="flex min-w-20 flex-col items-center gap-2">
-			<span className="grid size-14 place-items-center rounded-xl border border-border-strong bg-surface/90 shadow-lg shadow-black/20">
-				<AgentAvatar className="size-8" decorative provider={harness} />
-			</span>
-			<span className="text-caption font-medium text-muted-foreground">{agentLabel(harness)}</span>
 		</div>
 	);
 }

@@ -71,7 +71,7 @@ func (f *fakeAgentCatalog) EnsureReadiness(context.Context, []string, domain.Age
 
 func (f *fakeAgentCatalog) readiness() agentsvc.Readiness {
 	return agentsvc.Readiness{Agents: []domain.AgentReadinessSnapshot{{
-		ID: "codex", Label: "Codex",
+		ID: "opencode", Label: "OpenCode",
 		Installation:       domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled, Freshness: domain.AgentReadinessFresh},
 		Authentication:     domain.AgentAuthenticationObservation{State: domain.AgentAuthenticationAuthorized, Freshness: domain.AgentReadinessFresh},
 		EffectiveReadiness: domain.AgentReadinessReady,
@@ -79,11 +79,11 @@ func (f *fakeAgentCatalog) readiness() agentsvc.Readiness {
 }
 
 func (f *fakeAgentCatalog) List(context.Context) (agentsvc.Inventory, error) {
-	return authorizedCodexInventory(), nil
+	return authorizedInventory(), nil
 }
 
 func (f *fakeAgentCatalog) Refresh(context.Context) (agentsvc.Inventory, error) {
-	return authorizedCodexInventory(), nil
+	return authorizedInventory(), nil
 }
 
 func (f *fakeAgentCatalog) Probe(_ context.Context, agentID string) (agentsvc.ProbeResult, error) {
@@ -106,8 +106,8 @@ func (f *fakeAgentCatalog) RevalidateModels(ctx context.Context, agentID, projec
 	return f.Models(ctx, agentID, projectID, false)
 }
 
-func authorizedCodexInventory() agentsvc.Inventory {
-	info := agentsvc.Info{ID: "codex", Label: "Codex", AuthStatus: "authorized"}
+func authorizedInventory() agentsvc.Inventory {
+	info := agentsvc.Info{ID: "opencode", Label: "OpenCode", AuthStatus: "authorized"}
 	return agentsvc.Inventory{
 		Supported:  []agentsvc.Info{info},
 		Installed:  []agentsvc.Info{info},
@@ -212,7 +212,7 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		root.SetArgs([]string{
 			"spawn",
 			"--project", "mer",
-			"--harness", "codex",
+			"--harness", "opencode",
 			"--branch", "feat/x",
 			"--prompt", "hi",
 			"--issue", "ISS-1",
@@ -227,8 +227,8 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		if got.ProjectID != "mer" {
 			t.Errorf("ProjectID = %q, want %q (CLI json:\"projectId\" vs SpawnSessionRequest)", got.ProjectID, "mer")
 		}
-		if got.Harness != "codex" {
-			t.Errorf("Harness = %q, want %q", got.Harness, "codex")
+		if got.Harness != "opencode" {
+			t.Errorf("Harness = %q, want %q", got.Harness, "opencode")
 		}
 		if got.Branch != "feat/x" {
 			t.Errorf("Branch = %q, want %q", got.Branch, "feat/x")
@@ -266,8 +266,8 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 			"--path", "/repo/mer",
 			"--id", "demo",
 			"--name", "Demo",
-			"--worker-agent", "codex",
-			"--orchestrator-agent", "claude-code",
+			"--worker-agent", "opencode",
+			"--orchestrator-agent", "opencode",
 			"--as-workspace",
 		})
 		if err := root.Execute(); err != nil {
@@ -287,11 +287,11 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		if got.Config == nil {
 			t.Fatal("Config = nil, want role agent config")
 		}
-		if got.Config.Worker.Harness != domain.HarnessCodex {
-			t.Errorf("Config.Worker.Harness = %q, want codex", got.Config.Worker.Harness)
+		if got.Config.Worker.Harness != domain.HarnessOpenCode {
+			t.Errorf("Config.Worker.Harness = %q, want opencode", got.Config.Worker.Harness)
 		}
-		if got.Config.Orchestrator.Harness != domain.HarnessClaudeCode {
-			t.Errorf("Config.Orchestrator.Harness = %q, want claude-code", got.Config.Orchestrator.Harness)
+		if got.Config.Orchestrator.Harness != domain.HarnessOpenCode {
+			t.Errorf("Config.Orchestrator.Harness = %q, want opencode", got.Config.Orchestrator.Harness)
 		}
 		if !got.AsWorkspace {
 			t.Errorf("AsWorkspace = false, want true (CLI json:\"asWorkspace\" vs AddInput)")

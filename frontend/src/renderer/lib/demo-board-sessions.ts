@@ -8,7 +8,7 @@ export function demoBoardSessions(workspaceId: string): WorkspaceSession[] {
 		activity: { state: "idle" as const, lastActivityAt: demoUpdatedAt },
 		createdAt: "2026-08-25T08:00:00Z",
 		isTerminated: false,
-		provider: "claude-code" as const,
+		provider: "opencode" as const,
 		prs: [],
 		updatedAt: demoUpdatedAt,
 		workspaceId,

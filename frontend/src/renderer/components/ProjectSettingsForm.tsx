@@ -23,9 +23,7 @@ import {
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
-import { captureRendererEvent } from "../lib/telemetry";
 import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
 import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
@@ -190,7 +188,6 @@ function SettingsBody({
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
 	const mutation = useMutation({
 		mutationFn: async () => {
-			void captureRendererEvent("ao.renderer.settings_save_requested", { project_id: projectId });
 			const displayName = form.displayName.trim();
 			const {
 				model: _legacyModel,
@@ -303,7 +300,6 @@ function SettingsBody({
 			} satisfies SettingsSaveResult;
 		},
 		onSuccess: async (result) => {
-			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
 			setSavedAt(Date.now());
 			setReplacementError(result.replacementError);
 			setValidationError(null);
@@ -323,13 +319,7 @@ function SettingsBody({
 			if (result.replacementFailure) {
 				closeSettings();
 				setOrchestratorReplacementError(projectId, result.replacementFailure);
-				if (result.spawnError) {
-					captureOrchestratorReplacementFailure(result.spawnError, projectId);
-				}
 			}
-		},
-		onError: () => {
-			void captureRendererEvent("ao.renderer.settings_save_failed", { project_id: projectId });
 		},
 	});
 

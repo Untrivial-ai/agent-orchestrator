@@ -16,16 +16,14 @@ func TestNewCoderWorkspaceLayout(t *testing.T) {
 		"repository":       "/home/coder/repository",
 		"worker data":      "/home/coder/.ao/worker",
 		"home":             "/home/coder/.ao/home",
-		"Claude config":    "/home/coder/.ao/home/.claude",
-		"Codex home":       "/home/coder/.ao/home/.codex",
+		"opencode data":    "/home/coder/.ao/home/.opencode",
 		"durable identity": "/home/coder/.ao/durable-session-id",
 	}
 	got := map[string]string{
 		"repository":       layout.Repository,
 		"worker data":      layout.WorkerData,
 		"home":             layout.Home,
-		"Claude config":    layout.ClaudeConfig,
-		"Codex home":       layout.CodexHome,
+		"opencode data":    layout.OpenCodeData,
 		"durable identity": layout.DurableIdentity,
 	}
 	for name, expected := range want {
@@ -62,7 +60,7 @@ func TestCoderSessionPlanPersistsDurableRoot(t *testing.T) {
 			AgentName: "dev", Parameters: map[string]string{" region ": "us-west-2"},
 			DurableRoot: "/persistent/ao", WorkerTokenTTL: time.Minute,
 		},
-	}).SessionPlan("codex")
+	}).SessionPlan("opencode")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +116,7 @@ func TestSessionPlanForProviderOverridesDefault(t *testing.T) {
 		},
 	}
 	// An explicit override selects Coder even though the default is Docker.
-	coderPlan, err := defaults.SessionPlanForProvider("codex", ProviderCoder)
+	coderPlan, err := defaults.SessionPlanForProvider("opencode", ProviderCoder)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +124,7 @@ func TestSessionPlanForProviderOverridesDefault(t *testing.T) {
 		t.Fatalf("override provider = %q, want %q", coderPlan.Provider, ProviderCoder)
 	}
 	// An empty override falls back to the deployment default.
-	defaultPlan, err := defaults.SessionPlanForProvider("codex", "")
+	defaultPlan, err := defaults.SessionPlanForProvider("opencode", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +132,7 @@ func TestSessionPlanForProviderOverridesDefault(t *testing.T) {
 		t.Fatalf("fallback provider = %q, want %q", defaultPlan.Provider, ProviderDocker)
 	}
 	// SessionPlan stays equivalent to an empty override (the default).
-	plainPlan, err := defaults.SessionPlan("codex")
+	plainPlan, err := defaults.SessionPlan("opencode")
 	if err != nil {
 		t.Fatal(err)
 	}

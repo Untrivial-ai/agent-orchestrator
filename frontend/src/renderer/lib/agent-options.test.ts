@@ -1,9 +1,18 @@
-import { AGENT_OPTIONS } from "./agent-options";
+import { AGENT_OPTIONS, agentLabel } from "./agent-options";
 
 describe("AGENT_OPTIONS", () => {
-	it("contains Prime Agent and OMP exactly once and has no duplicate harness ids", () => {
-		expect(AGENT_OPTIONS.filter((agent) => agent === "prime-agent")).toHaveLength(1);
-		expect(AGENT_OPTIONS.filter((agent) => agent === "omp")).toHaveLength(1);
+	it("contains only the opencode harness with no duplicates", () => {
+		expect(AGENT_OPTIONS).toEqual(["opencode"]);
 		expect(new Set(AGENT_OPTIONS).size).toBe(AGENT_OPTIONS.length);
+	});
+});
+
+describe("agentLabel", () => {
+	it("resolves the opencode display label", () => {
+		expect(agentLabel("opencode")).toBe("OpenCode");
+	});
+
+	it("falls back to the raw provider for unknown harnesses", () => {
+		expect(agentLabel("custom-agent")).toBe("custom-agent");
 	});
 });

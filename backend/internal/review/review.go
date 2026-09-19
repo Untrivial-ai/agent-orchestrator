@@ -704,7 +704,7 @@ func (e *Engine) restoreReviewerLocked(
 		AgentConfig:          config,
 		WorkspacePath:        worker.Metadata.WorkspacePath,
 		AgentSessionID:       agentSessionID,
-		RequireNativeHistory: harness == domain.ReviewerCodex,
+		RequireNativeHistory: false,
 		PreviousRuns:         previousRuns,
 	})
 	if err != nil {

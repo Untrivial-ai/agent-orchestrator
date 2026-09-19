@@ -1,5 +1,9 @@
 # Development Guide
 
+```sh
+(cd backend && go run .) & (cd frontend && npm i; npm run dev)
+```
+
 How to set up, build, run, and test Agent Orchestrator locally.
 
 ## Prerequisites
@@ -14,7 +18,7 @@ How to set up, build, run, and test Agent Orchestrator locally.
 Additional runtime dependencies for the daemon:
 
 - **git** (for worktree creation and agent integration)
-- **A running agent CLI** (Claude Code, Codex, Aider, etc.) - see
+- **A running agent CLI** (`opencode`) - see
   [the installation guide](https://orchestrator.inc/docs/installation)
 
 ## Project Layout

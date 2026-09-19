@@ -5,14 +5,15 @@ import (
 	"testing"
 )
 
-func TestCodexAuthJSONValidationIsOpaqueButRequiresDocument(t *testing.T) {
+func TestOpenCodeCredentialValidation(t *testing.T) {
 	validator := newAgentCredentialValidator(nil)
-	if err := validator.Validate(context.Background(), "codex", "auth_json", []byte(`{"tokens":{"access_token":"opaque"}}`)); err != nil {
-		t.Fatalf("validate native Codex auth document: %v", err)
+	if err := validator.Validate(context.Background(), "opencode", "api_key", []byte("sk-abc")); err != nil {
+		t.Fatalf("validate opencode api_key: %v", err)
 	}
-	for _, secret := range []string{"", "not-json", "null", "[]"} {
-		if err := validator.Validate(context.Background(), "codex", "auth_json", []byte(secret)); err != errInvalidAgentCredential {
-			t.Errorf("Validate(%q) error = %v, want invalid credential", secret, err)
-		}
+	if err := validator.Validate(context.Background(), "opencode", "oauth_token", []byte("token")); err != errInvalidAgentCredential {
+		t.Errorf("opencode non-api_key error = %v, want invalid credential", err)
+	}
+	if err := validator.Validate(context.Background(), "claude-code", "api_key", []byte("sk-abc")); err != errInvalidAgentCredential {
+		t.Errorf("stripped harness error = %v, want invalid credential", err)
 	}
 }

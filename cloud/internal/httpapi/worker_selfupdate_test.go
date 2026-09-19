@@ -89,7 +89,7 @@ func (s *reconnectStore) WorkerLaunchSpec(context.Context, string, string) (doma
 func TestWorkerReconnectReturnsLaunchContext(t *testing.T) {
 	store := &reconnectStore{launch: domain.WorkerLaunch{
 		SessionID:     testOrchestratorID,
-		Harness:       "claude-code",
+		Harness:       "opencode",
 		Branch:        "ao/abc",
 		RepositoryURL: "https://github.com/octo/widgets.git",
 		DefaultBranch: "main",
@@ -107,7 +107,7 @@ func TestWorkerReconnectReturnsLaunchContext(t *testing.T) {
 	if resp.SessionID != testOrchestratorID || resp.WorkerID != "w1" || resp.Epoch != 1 {
 		t.Fatalf("identity not carried from claims: %+v", resp)
 	}
-	if resp.Launch.Harness != "claude-code" || resp.Launch.Branch != "ao/abc" ||
+	if resp.Launch.Harness != "opencode" || resp.Launch.Branch != "ao/abc" ||
 		resp.Launch.RepositoryURL != "https://github.com/octo/widgets.git" {
 		t.Fatalf("launch context not projected: %+v", resp.Launch)
 	}

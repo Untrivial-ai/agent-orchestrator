@@ -41,9 +41,7 @@ import {
 	interfaceTransitionOffersHistoryRecovery,
 } from "./SessionInterfaceSwitch";
 import { ShellTopbar } from "./ShellTopbar";
-import { SwitchAgentDialog } from "./SwitchAgentDialog";
 import { SessionTopbarHost } from "./SessionTopbarPortal";
-import { TerminalSwitchAgentButton } from "./TerminalSwitchAgentButton";
 import { TopbarButton } from "./TopbarButton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { useBrowserView } from "../hooks/useBrowserView";
@@ -61,12 +59,9 @@ import {
 	interfaceTransitionNeedsRestart,
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
-import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { cloudLifecycleStage, type CloudLifecycleStage } from "../lib/cloud-lifecycle";
 import { useCloudCp } from "../hooks/useCloudCp";
-import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
-import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { sessionWorkspaceFilesQueryOptions } from "../hooks/useSessionWorkspaceFiles";
@@ -274,7 +269,7 @@ function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTa
 	const handleId = data?.reviewerHandleId?.trim();
 	if (!handleId) return undefined;
 	const latest = data?.reviews?.find((review) => review.latestRun)?.latestRun;
-	return { handleId, harness: data?.reviewerHarness || latest?.harness || "codex" };
+	return { handleId, harness: data?.reviewerHarness || latest?.harness || "opencode" };
 }
 
 type SessionViewProps = {
@@ -634,13 +629,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		// and the address/tabs never spend a frame underneath the native view.
 		setBrowserPopOutState({ sessionId, phase: "open" });
 	}, [browserPopOutPhase, browserPopoutTopbarHost, sessionId]);
-	const [handoffDialogOpen, setHandoffDialogOpen] = useState(false);
-	const handoffDialogContainerRef = useRef<HTMLDivElement | null>(null);
-	const [handoffDialogContainer, setHandoffDialogContainer] = useState<HTMLDivElement | null>(null);
-	const bindHandoffDialogContainer = useCallback((node: HTMLDivElement | null) => {
-		handoffDialogContainerRef.current = node;
-		setHandoffDialogContainer(node);
-	}, []);
 	const [interfaceSwitchDialogScope, setInterfaceSwitchDialogScope] =
 		useState<InterfaceSwitchDialogScope>();
 	const [chatConversationWork, setChatConversationWork] = useState<
@@ -714,13 +702,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			// open, or route visit can issue a fresh explicit resume intent.
 		});
 	}, [requestCloudResume, session]);
-	const routeVisibilityOperation =
-		session?.activeAgentSwitch &&
-		session.activeAgentSwitch.state !== "completed" &&
-		session.activeAgentSwitch.state !== "failed"
-			? "active"
-			: "history";
-	useAgentSwitchRouteVisibility(`session/${sessionId}`, routeVisibilityOperation);
 	const interfaceSwitch = useSessionInterfaceTransition(session?.id);
 	useEffect(() => {
 		setConfirmedDraftDiscard(undefined);
@@ -1504,23 +1485,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		session !== undefined &&
 		renderedSessionMode === "chat" &&
 		(chatTargetKind === "worker" || chatTargetKind === "reviewer" || chatTargetKind === "shell");
-	const {
-		agentSwitch: handoffAgentSwitch,
-		switchControlPresentation: handoffControlPresentation,
-		switchError: handoffSwitchError,
-	} = useSessionHandoffMenu(session);
-	const handleHandoffDialogOpenChange = useCallback(
-		(nextOpen: boolean) => {
-			setHandoffDialogOpen(nextOpen);
-			if (!nextOpen && handoffSwitchError && session) {
-				clearSwitchAgentState(queryClient, session.id);
-			}
-		},
-		[handoffSwitchError, queryClient, session],
-	);
-	useEffect(() => {
-		if (handoffSwitchError) setHandoffDialogOpen(true);
-	}, [handoffSwitchError]);
 	const interfaceSwitchInlineStatus = useMemo(() =>
 		session && showInterfaceSwitchAction && activeInterfaceTransition ? (
 			<SessionInterfaceSwitchButton
@@ -1582,31 +1546,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			showInterfaceSwitchAction,
 		],
 	);
-	const handoffMenuItem = useMemo(() => session ? (
-		<TerminalSwitchAgentButton
-			key={session.id}
-			variant="menu-item"
-			agentSwitch={handoffAgentSwitch}
-			onOpenChange={handleHandoffDialogOpenChange}
-			open={handoffDialogOpen}
-			presentation={handoffControlPresentation}
-			session={session}
-			switchError={handoffSwitchError}
-		/>
-	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
 	const sessionTabActions = useMemo(() => (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
-			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
+	), [interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;
-
-	useEffect(() => {
-		setHandoffDialogOpen(false);
-	}, [sessionId]);
 
 	// The pane shows one terminal at a time, so selecting a shell or the reviewer
 	// takes the agent's terminal off screen while the route still points here.
@@ -1887,17 +1834,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							className="relative z-chrome flex h-inspector-tabs w-full shrink-0 overflow-hidden"
 							data-testid="session-topbar-host"
 						/>
-						<div className="relative min-h-0 flex-1" ref={bindHandoffDialogContainer}>
+						<div className="relative min-h-0 flex-1">
 							{cloudStage ? <CloudLifecycleStatus stage={cloudStage} /> : null}
-							{session && handoffDialogContainer ? (
-								<SwitchAgentDialog
-									agentSwitch={handoffAgentSwitch}
-									container={handoffDialogContainer}
-									onOpenChange={handleHandoffDialogOpenChange}
-									open={handoffDialogOpen}
-									session={session}
-								/>
-							) : null}
 							{/* The committed mode owns the agent surface. Auxiliary shell and
 							    reviewer targets remain terminal surfaces in either mode. */}
 							<div
@@ -1928,10 +1866,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									sessionTabAction={sessionTabActions}
 									sessionTabActionWide={sessionTabActionWide}
 									tabStripAction={newShellTerminalAction}
-									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
 									workspaceActiveTabKey={activeWorkspaceTabKey}
-									workspaceFileActive={Boolean(fileTabs.activePath)}
 									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
 									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 									controllerTransitioning={chatControllerTransitioning}
@@ -1966,10 +1902,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									sessionTabAction={sessionTabActions}
 									sessionTabActionWide={sessionTabActionWide}
 									tabStripAction={newShellTerminalAction}
-									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
 									workspaceActiveTabKey={activeWorkspaceTabKey}
-									workspaceFileActive={Boolean(fileTabs.activePath)}
 									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
 									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 								/>

@@ -224,7 +224,7 @@ func TestGuard_TUIWithoutStartupCapabilityAllowsDelivery(t *testing.T) {
 	msgr := &fakeMessenger{}
 	rec := domain.SessionRecord{
 		ID:       "s1",
-		Harness:  domain.HarnessAider,
+		Harness:  domain.HarnessOpenCode,
 		Mode:     domain.SessionModeTUI,
 		Activity: domain.Activity{State: domain.ActivityIdle},
 	}
@@ -373,8 +373,14 @@ func TestGuard_DeliverUnderMutationBypassesInputGateButKeepsSafetyChecks(t *test
 }
 
 func TestGuard_CoordinationUnderMutationRechecksActivityAndBypassesInputGate(t *testing.T) {
-	steersCodex := func(h domain.AgentHarness) bool { return h == domain.HarnessCodex }
-	acceptsClaudeWaiting := func(h domain.AgentHarness) bool { return h == domain.HarnessClaudeCode }
+	// opencode is the only shipped harness and declares neither mid-turn
+	// steering nor a waiting-input handshake. This test pins the guard's generic
+	// contract, so the capable and incapable sides of each predicate are
+	// expressed with placeholder harness ids rather than two shipped agents.
+	waitingHarness := domain.AgentHarness("waiting-harness")
+	steeringHarness := domain.AgentHarness("steering-harness")
+	steersSteering := func(h domain.AgentHarness) bool { return h == steeringHarness }
+	acceptsWaiting := func(h domain.AgentHarness) bool { return h == waitingHarness }
 	cases := []struct {
 		name           string
 		state          domain.ActivityState
@@ -383,14 +389,14 @@ func TestGuard_CoordinationUnderMutationRechecksActivityAndBypassesInputGate(t *
 		steers         func(domain.AgentHarness) bool
 		want           Outcome
 	}{
-		{"idle delivers", domain.ActivityIdle, domain.HarnessClaudeCode, nil, steersCodex, Sent},
-		{"capability-safe waiting_input delivers", domain.ActivityWaitingInput, domain.HarnessClaudeCode, acceptsClaudeWaiting, steersCodex, Sent},
-		{"ambiguous waiting_input suppressed", domain.ActivityWaitingInput, domain.HarnessCodex, acceptsClaudeWaiting, steersCodex, SuppressedAwaitingUser},
-		{"waiting_input nil predicate suppressed", domain.ActivityWaitingInput, domain.HarnessClaudeCode, nil, steersCodex, SuppressedAwaitingUser},
-		{"blocked suppressed", domain.ActivityBlocked, domain.HarnessCodex, acceptsClaudeWaiting, steersCodex, SuppressedAwaitingUser},
-		{"active non-steering suppressed", domain.ActivityActive, domain.HarnessClaudeCode, acceptsClaudeWaiting, steersCodex, SuppressedBusy},
-		{"active steering delivers", domain.ActivityActive, domain.HarnessCodex, acceptsClaudeWaiting, steersCodex, Sent},
-		{"active nil predicate suppressed", domain.ActivityActive, domain.HarnessCodex, acceptsClaudeWaiting, nil, SuppressedBusy},
+		{"idle delivers", domain.ActivityIdle, waitingHarness, nil, steersSteering, Sent},
+		{"capability-safe waiting_input delivers", domain.ActivityWaitingInput, waitingHarness, acceptsWaiting, steersSteering, Sent},
+		{"ambiguous waiting_input suppressed", domain.ActivityWaitingInput, steeringHarness, acceptsWaiting, steersSteering, SuppressedAwaitingUser},
+		{"waiting_input nil predicate suppressed", domain.ActivityWaitingInput, waitingHarness, nil, steersSteering, SuppressedAwaitingUser},
+		{"blocked suppressed", domain.ActivityBlocked, steeringHarness, acceptsWaiting, steersSteering, SuppressedAwaitingUser},
+		{"active non-steering suppressed", domain.ActivityActive, waitingHarness, acceptsWaiting, steersSteering, SuppressedBusy},
+		{"active steering delivers", domain.ActivityActive, steeringHarness, acceptsWaiting, steersSteering, Sent},
+		{"active nil predicate suppressed", domain.ActivityActive, steeringHarness, acceptsWaiting, nil, SuppressedBusy},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -420,7 +426,7 @@ func TestGuard_CoordinationUnderMutationRechecksActivityAndBypassesInputGate(t *
 
 func TestGuard_CoordinationUnderMutationCheckedRejectsBeforeRuntimeWrite(t *testing.T) {
 	rec := record(domain.ActivityIdle, false)
-	rec.Harness = domain.HarnessKimi
+	rec.Harness = domain.HarnessOpenCode
 	messenger := &fakeMessenger{}
 	g := New(&fakeStore{rec: rec, ok: true}, messenger, nil)
 	g.SetInputLease(fixedInputLease(false))
@@ -460,7 +466,9 @@ func TestGuard_CoordinationUnderMutationCheckedRejectsBeforeRuntimeWrite(t *test
 // refused unless its harness declares it can be steered mid-turn, no matter what
 // the caller believed when it decided to dispatch.
 func TestGuard_NudgeCoordinationEnforcesSteeringAtWriteBoundary(t *testing.T) {
-	steersCodex := func(h domain.AgentHarness) bool { return h == domain.HarnessCodex }
+	waitingHarness := domain.AgentHarness("waiting-harness")
+	steeringHarness := domain.AgentHarness("steering-harness")
+	steersSteering := func(h domain.AgentHarness) bool { return h == steeringHarness }
 	cases := []struct {
 		name    string
 		state   domain.ActivityState
@@ -468,12 +476,12 @@ func TestGuard_NudgeCoordinationEnforcesSteeringAtWriteBoundary(t *testing.T) {
 		steers  func(domain.AgentHarness) bool
 		want    Outcome
 	}{
-		{"idle delivers", domain.ActivityIdle, domain.HarnessClaudeCode, steersCodex, Sent},
-		{"active non-steering suppressed", domain.ActivityActive, domain.HarnessClaudeCode, steersCodex, SuppressedBusy},
-		{"active steering delivers", domain.ActivityActive, domain.HarnessCodex, steersCodex, Sent},
-		{"active nil predicate suppressed", domain.ActivityActive, domain.HarnessCodex, nil, SuppressedBusy},
-		{"waiting_input suppressed", domain.ActivityWaitingInput, domain.HarnessCodex, steersCodex, SuppressedAwaitingUser},
-		{"blocked suppressed", domain.ActivityBlocked, domain.HarnessCodex, steersCodex, SuppressedAwaitingUser},
+		{"idle delivers", domain.ActivityIdle, waitingHarness, steersSteering, Sent},
+		{"active non-steering suppressed", domain.ActivityActive, waitingHarness, steersSteering, SuppressedBusy},
+		{"active steering delivers", domain.ActivityActive, steeringHarness, steersSteering, Sent},
+		{"active nil predicate suppressed", domain.ActivityActive, steeringHarness, nil, SuppressedBusy},
+		{"waiting_input suppressed", domain.ActivityWaitingInput, steeringHarness, steersSteering, SuppressedAwaitingUser},
+		{"blocked suppressed", domain.ActivityBlocked, steeringHarness, steersSteering, SuppressedAwaitingUser},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

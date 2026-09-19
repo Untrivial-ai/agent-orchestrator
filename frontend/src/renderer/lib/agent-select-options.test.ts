@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { components } from "../../api/schema";
-import { buildRankedAgentOptions, defaultAuthorizedAgentForRole, type RoleSession } from "./agent-select-options";
+import { buildRankedAgentOptions, defaultAuthorizedAgentForRole, DEFAULT_AGENT_PRIORITY_RANK, type RoleSession } from "./agent-select-options";
 
 type Agent = components["schemas"]["AgentReadinessSnapshot"];
 
@@ -13,7 +13,7 @@ function agent(
 ): Agent {
 	return {
 		id,
-		label: id === "claude-code" ? "Claude Code" : "Codex",
+		label: id === "opencode" ? "OpenCode" : id,
 		installation: {
 			state: installation,
 			freshness: "fresh",
@@ -36,88 +36,58 @@ function agent(
 	};
 }
 
-const priorityRank = new Map([
-	["claude-code", 0],
-	["codex", 1],
-]);
+const openCode = agent("opencode");
 
 describe("buildRankedAgentOptions", () => {
-	it("ranks selectable agents by frequency before the static cold-start priority", () => {
-		const agents = [
-			agent("claude-code", "installed", "authorized", 1),
-			agent("codex", "installed", "authorized", 4),
-		];
-
+	it("keeps the ready opencode agent selectable at the top of the ranking", () => {
 		const options = buildRankedAgentOptions({
-			agents,
-			priorityRank,
+			agents: [openCode],
+			priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
 			fallbackAgents: [],
 		});
 
-		expect(options.map((agent) => agent.id)).toEqual(["codex", "claude-code"]);
-	});
-
-	it("uses most recent usage to break frequency ties", () => {
-		const agents = [
-			agent("claude-code", "installed", "authorized", 2, "2026-08-18T10:00:00Z"),
-			agent("codex", "installed", "authorized", 2, "2026-08-19T10:00:00Z"),
-		];
-
-		const options = buildRankedAgentOptions({
-			agents,
-			priorityRank,
-			fallbackAgents: [],
-		});
-
-		expect(options.map((agent) => agent.id)).toEqual(["codex", "claude-code"]);
-	});
-
-	it("keeps unavailable agents below selectable agents regardless of usage", () => {
-		const agents = [
-			agent("claude-code", "installed", "authorized", 1),
-			agent("codex", "not_installed", "unknown", 10),
-		];
-
-		const options = buildRankedAgentOptions({
-			agents,
-			priorityRank,
-			fallbackAgents: [],
-		});
-
-		expect(options.map((agent) => agent.id)).toEqual(["claude-code", "codex"]);
+		expect(options).toHaveLength(1);
+		expect(options[0]).toMatchObject({ id: "opencode", disabled: false, rank: 0, priorityRank: 0, status: "" });
 	});
 
 	it("allows unknown observations with warnings and blocks definite failures", () => {
 		const options = buildRankedAgentOptions({
-			agents: [
-				agent("claude-code", "unknown", "unknown"),
-				agent("codex", "installed", "unauthorized"),
-			],
-			priorityRank,
+			agents: [agent("opencode", "unknown", "unknown"), agent("opencode", "installed", "unauthorized")],
+			priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
 			fallbackAgents: [],
 		});
 
-		expect(options[0]).toMatchObject({ id: "claude-code", disabled: false, status: "Install unknown" });
-		expect(options[1]).toMatchObject({ id: "codex", disabled: true, status: "Needs auth" });
+		expect(options[0]).toMatchObject({ id: "opencode", disabled: false, status: "Install unknown" });
+		expect(options[1]).toMatchObject({ id: "opencode", disabled: true, status: "Needs auth" });
 	});
 
 	it("keeps stale known-good agents selectable while checking", () => {
-		const knownGood = agent("codex");
+		const knownGood = agent("opencode");
 		knownGood.installation.freshness = "checking";
 		knownGood.authentication.freshness = "stale";
 
 		const [option] = buildRankedAgentOptions({
 			agents: [knownGood],
-			priorityRank,
+			priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
 			fallbackAgents: [],
 		});
 
 		expect(option).toMatchObject({ disabled: false, status: "" });
 	});
+
+	it("falls back to the fallback catalog when no observed agents exist", () => {
+		const options = buildRankedAgentOptions({
+			agents: undefined,
+			priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
+			fallbackAgents: [openCode],
+		});
+
+		expect(options.map((option) => option.id)).toEqual(["opencode"]);
+	});
 });
 
 describe("defaultAuthorizedAgentForRole", () => {
-	const agents = [agent("claude-code"), agent("codex")];
+	const agents = [openCode];
 
 	function hoursAgo(hours: number): string {
 		return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
@@ -132,74 +102,24 @@ describe("defaultAuthorizedAgentForRole", () => {
 		return { id, provider, kind, createdAt };
 	}
 
-	it("infers each role from its own history", () => {
-		const sessions = [
-			session("codex", "worker", hoursAgo(5)),
-			session("codex", "worker", hoursAgo(4)),
-			session("claude-code", "worker", hoursAgo(3)),
-			session("claude-code", "orchestrator", hoursAgo(2)),
-		];
+	it("counts worker history for the worker role and returns opencode", () => {
+		const sessions = [session("opencode", "worker", hoursAgo(5)), session("opencode", "worker", hoursAgo(4))];
 
-		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
-		expect(defaultAuthorizedAgentForRole(agents, sessions, "orchestrator")).toBe("claude-code");
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("opencode");
 	});
 
-	it("breaks equal counts by the newest session", () => {
-		const sessions = [session("claude-code", "worker", hoursAgo(2)), session("codex", "worker", hoursAgo(1))];
-
-		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+	it("returns opencode from an empty history when it is the only authorized agent", () => {
+		expect(defaultAuthorizedAgentForRole(agents, [], "worker")).toBe("opencode");
+		expect(defaultAuthorizedAgentForRole(agents, [], "orchestrator")).toBe("opencode");
 	});
 
-	it("ignores sessions older than 48 hours", () => {
-		const sessions = [
-			session("codex", "worker", hoursAgo(72)),
-			session("codex", "worker", hoursAgo(100)),
-			session("codex", "worker", hoursAgo(200)),
-			session("claude-code", "worker", hoursAgo(1)),
-		];
+	it("ignores sessions older than 48 hours without losing the default", () => {
+		const sessions = [session("opencode", "worker", hoursAgo(72)), session("opencode", "worker", hoursAgo(100))];
 
-		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("claude-code");
-		expect(defaultAuthorizedAgentForRole(agents, [session("codex", "worker", hoursAgo(72))], "worker")).toBe(
-			"claude-code",
-		);
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("opencode");
 	});
 
-	it("ignores sessions without timestamps", () => {
-		expect(
-			defaultAuthorizedAgentForRole(agents, [{ id: "w1", provider: "codex", kind: "worker" }], "worker"),
-		).toBe("claude-code");
-	});
-
-	it("counts legacy orchestrator ids and kind-less sessions like the board does", () => {
-		expect(
-			defaultAuthorizedAgentForRole(
-				agents,
-				[{ id: "abc-orchestrator", provider: "codex", createdAt: hoursAgo(2) }],
-				"orchestrator",
-			),
-		).toBe("codex");
-		expect(
-			defaultAuthorizedAgentForRole(
-				agents,
-				[session("codex", undefined, hoursAgo(2)), session("codex", undefined, hoursAgo(1))],
-				"worker",
-			),
-		).toBe("codex");
-	});
-
-	it("skips unavailable historical winners and falls back to Claude Code", () => {
-		const sessions = [
-			session("goose", "worker", hoursAgo(3)),
-			session("goose", "worker", hoursAgo(2)),
-			session("codex", "worker", hoursAgo(1)),
-		];
-
-		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
-		expect(defaultAuthorizedAgentForRole(agents, [], "worker")).toBe("claude-code");
-	});
-
-	it("stays usable when Claude Code is unavailable", () => {
-		expect(defaultAuthorizedAgentForRole([agent("codex")], [], "worker")).toBe("codex");
+	it("returns an empty default when no agent is authorized", () => {
 		expect(defaultAuthorizedAgentForRole([], [], "worker")).toBe("");
 	});
 });

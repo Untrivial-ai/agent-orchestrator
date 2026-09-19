@@ -83,15 +83,6 @@ export const aoBridge: AoBridge =
 				throw new Error("Desktop app is required to open a workspace.");
 			},
 		},
-		telemetry: {
-			getBootstrap: async () => null,
-			getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "preview", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-			setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "preview", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-			onPolicy: () => () => false,
-			onClearQueues: () => () => false,
-			capture: async () => false,
-			signalAgentSwitchVisibility: () => false,
-		},
 		browser: {
 			nativeCompositionEnabled: false,
 			ensure: async (sessionId: string) => ({
@@ -248,7 +239,6 @@ export const aoBridge: AoBridge =
 			isPostUpdateRelaunch: async () => false,
 			relaunch: async () => undefined,
 			onStatus: () => () => undefined,
-			onTelemetry: () => () => undefined,
 		},
 		featureBuilds: {
 			list: async () => [],

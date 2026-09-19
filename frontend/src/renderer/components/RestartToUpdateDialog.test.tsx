@@ -26,7 +26,7 @@ function session(overrides: Record<string, unknown> = {}) {
 		id: "s1",
 		title: "Fix the updater",
 		workspaceName: "agent-orchestrator",
-		provider: "claude-code",
+		provider: "opencode",
 		mode: "chat",
 		status: "working",
 		...overrides,
@@ -109,8 +109,8 @@ it("stays quiet when nothing is at risk", async () => {
 		{
 			sessions: [
 				session({ mode: "tui" }),
-				session({ id: "s2", provider: "codex", chatProviderPreserved: true }),
-				session({ id: "s3", provider: "claude-code", chatProviderPreserved: true }),
+				session({ id: "s2", provider: "opencode", chatProviderPreserved: true }),
+				session({ id: "s3", provider: "opencode", chatProviderPreserved: true }),
 				session({ id: "s4", provider: "cursor", chatProviderPreserved: true }),
 			],
 		},
@@ -124,7 +124,7 @@ it("stays quiet when nothing is at risk", async () => {
 it.each([false, undefined])(
 	"warns about Codex when persistent ownership is %s",
 	async (chatProviderPreserved) => {
-		workspaceData.current = [{ sessions: [session({ provider: "codex", chatProviderPreserved })] }];
+		workspaceData.current = [{ sessions: [session({ provider: "opencode", chatProviderPreserved })] }];
 		useUiStore.setState({ updateInstallPromptOpen: true });
 		renderDialog({ state: "downloaded", version: "1.2.3" });
 

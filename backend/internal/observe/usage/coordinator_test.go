@@ -168,7 +168,6 @@ func TestCoordinatorRunsDiscoveryOnlyForDiscoveryEvents(t *testing.T) {
 	var initializations atomic.Int64
 	var reconciles atomic.Int64
 	reconciled := make(chan struct{}, 2)
-	pathReconciled := make(chan string, 1)
 	cfg := CoordinatorConfig{
 		Workers: 1,
 		Initialize: func(context.Context) error {
@@ -178,10 +177,6 @@ func TestCoordinatorRunsDiscoveryOnlyForDiscoveryEvents(t *testing.T) {
 		Reconcile: func(context.Context) error {
 			reconciles.Add(1)
 			reconciled <- struct{}{}
-			return nil
-		},
-		ReconcilePath: func(_ context.Context, path string) error {
-			pathReconciled <- path
 			return nil
 		},
 	}
@@ -200,18 +195,14 @@ func TestCoordinatorRunsDiscoveryOnlyForDiscoveryEvents(t *testing.T) {
 
 	unknownPath := filepath.Join(t.TempDir(), "unknown.jsonl")
 	watcher.events <- TranscriptEvent{Path: unknownPath}
-	select {
-	case got := <-pathReconciled:
-		if got != canonicalTranscriptPath(unknownPath) {
-			t.Fatalf("reconciled path = %q, want %q", got, canonicalTranscriptPath(unknownPath))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("ordinary write for dormant source did not trigger exact-path reconciliation")
+	time.Sleep(100 * time.Millisecond)
+	if got := reconciles.Load(); got != 1 {
+		t.Fatalf("ordinary writes for dormant sources ran discovery %d times, want startup only", got)
 	}
 	coordinator.NotifyInventoryChanged()
 	time.Sleep(100 * time.Millisecond)
 	if got := reconciles.Load(); got != 1 {
-		t.Fatalf("ordinary writes/inventory refreshes ran discovery %d times, want startup only", got)
+		t.Fatalf("inventory refreshes ran discovery %d times, want startup only", got)
 	}
 
 	watcher.events <- TranscriptEvent{
@@ -219,11 +210,6 @@ func TestCoordinatorRunsDiscoveryOnlyForDiscoveryEvents(t *testing.T) {
 		Discovery: true,
 	}
 	waitForCoordinatorCalls(t, reconciled, 1)
-	select {
-	case <-pathReconciled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("discovery event did not attempt exact-path reconciliation")
-	}
 	cancel()
 	waitForCoordinatorSignal(t, done, "coordinator did not stop")
 	if got := reconciles.Load(); got != 2 {

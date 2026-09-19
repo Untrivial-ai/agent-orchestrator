@@ -4,7 +4,6 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ExternalLink, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect } from "react";
-import { track } from "../../lib/analytics";
 
 export type StorePlatform = "ios" | "android";
 
@@ -16,19 +15,17 @@ export type StorePlatform = "ios" | "android";
 // QR is for, and it is the whole dialog.
 const COPY: Record<
   StorePlatform,
-  { title: string; body: string; action: string; event: string }
+  { title: string; body: string; action: string }
 > = {
   ios: {
     title: "Get AO Mobile on iPhone",
     body: "Scan with your phone's camera to open the App Store.",
     action: "Open the App Store",
-    event: "app_store_clicked",
   },
   android: {
     title: "Get AO Mobile on Android",
     body: "Scan with your phone's camera to open Google Play.",
     action: "Open Google Play",
-    event: "play_store_clicked",
   },
 };
 
@@ -128,7 +125,6 @@ export function StoreQRDialog({
               href={url}
               target="_blank"
               rel="noreferrer"
-              onClick={() => track(copy.event, { surface: "qr_dialog" })}
               className="mt-5 flex w-full items-center justify-center gap-2 rounded-3xl border border-border px-4 py-3 text-sm font-semibold text-foreground transition-colors hover:bg-foreground/5"
             >
               {copy.action}

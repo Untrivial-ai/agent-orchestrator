@@ -144,15 +144,6 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					}),
 					open: async () => ({ id: "cursor" as const, name: "Cursor", kind: "editor" as const }),
 				},
-				telemetry: {
-					getBootstrap: async () => null,
-					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-					onPolicy: () => () => false,
-					onClearQueues: () => () => false,
-					capture: async () => false,
-					signalAgentSwitchVisibility: () => false,
-				},
 				browser: {
 					nativeCompositionEnabled: true,
 					ensure: async (sessionId: string) => navState(`preview:${sessionId}`),
@@ -282,7 +273,6 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 							updateListeners.delete(listener);
 						};
 					},
-					onTelemetry: unsubscribe,
 				},
 				// UpdatesSection calls featureBuilds.getActive() immediately on mount; an
 				// omitted namespace would surface as a swallowed React Query error.
@@ -706,15 +696,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					}),
 					open: async () => ({ id: "cursor" as const, name: "Cursor", kind: "editor" as const }),
 				},
-				telemetry: {
-					getBootstrap: async () => null,
-					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
-					onPolicy: () => () => false,
-					onClearQueues: () => () => false,
-					capture: async () => false,
-					signalAgentSwitchVisibility: () => false,
-				},
 				browser: {
 					nativeCompositionEnabled: true,
 					ensure: async (sessionId: string) => navState(`preview:${sessionId}`),
@@ -836,7 +817,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					isPostUpdateRelaunch: async () => false,
 					relaunch: async () => undefined,
 					onStatus: unsubscribe,
-					onTelemetry: unsubscribe,
 				},
 				// UpdatesSection calls featureBuilds.getActive() immediately on mount; an
 				// omitted namespace would surface as a swallowed React Query error.

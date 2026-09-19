@@ -55,7 +55,7 @@ token with read access to `ao-cloud`.
 
 - Stable Go facts and pure rules for agents, sessions, status, PRs, reviews, and
   stack position.
-- Shared Claude Code, Codex, and Cursor launch/restore policy plus Linux worker
+- Shared opencode launch/restore policy plus Linux worker
   process lifecycle primitives.
 - Organization-scoped account, project, session-policy, event, and GitHub
   OpenAPI contracts with generated TypeScript schema types, including the

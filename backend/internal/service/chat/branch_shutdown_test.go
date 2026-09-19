@@ -80,7 +80,7 @@ func TestFailedBranchShutdownPreservesSurvivingHostCredentials(t *testing.T) {
 	}
 	ctrl, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ExpectedControllerOwner: rec.ControllerOwner(), PrepareControllerEnv: prepare,
 	})
 	if err != nil {

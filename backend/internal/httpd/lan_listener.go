@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // LANManager owns the daemon's second, network-facing HTTP listener. It binds
@@ -35,10 +33,10 @@ type LANManager struct {
 // NewLANManager wraps handler in the LAN control-block and authMiddleware
 // (backed by the shared state) and returns a manager that can start/stop the
 // network-facing listener. Most callers want NewMobileLAN, which owns the state.
-func NewLANManager(handler http.Handler, state *authState, defaultPort int, log *slog.Logger, sink ports.EventSink) *LANManager {
+func NewLANManager(handler http.Handler, state *authState, defaultPort int, log *slog.Logger) *LANManager {
 	lock := newLockout(5, time.Minute, time.Now)
 	return &LANManager{
-		handler:     lanControlBlock(authMiddleware(state, lock, newMobileConnectReporter(sink, time.Now))(handler)),
+		handler:     lanControlBlock(authMiddleware(state, lock)(handler)),
 		defaultPort: defaultPort,
 		log:         loggerOrDefault(log),
 		state:       state,
@@ -49,10 +47,7 @@ func NewLANManager(handler http.Handler, state *authState, defaultPort int, log 
 // prefixes that must never be reachable through the LAN listener: /shutdown,
 // the telemetry routes under /internal/, and the Connect Mobile control
 // surface under /api/v1/mobile, developer maintenance routes under /api/v1/dev,
-// host-mutating installer routes under /api/v1/system/install, and personal
-// Codex account-management routes under /api/v1/agents/codex/accounts and
-// /api/v1/agents/codex/account-switches (the harmless read-only Codex model
-// routes stay reachable so mobile can pick a model). Some routes
+// and host-mutating installer routes under /api/v1/system/install. Some routes
 // are gated in the shared router by localControlRequest, which trusts the
 // client-supplied Host header. That header is spoofable by any LAN client. The
 // LAN listener is the one thing a caller cannot spoof: it is the physical socket
@@ -66,8 +61,6 @@ var lanControlBlockedPrefixes = []string{
 	"/api/v1/browser",
 	"/api/v1/desktop",
 	"/api/v1/system/install",
-	"/api/v1/agents/codex/accounts",
-	"/api/v1/agents/codex/account-switches",
 }
 
 // lanControlBlock returns 404 for any request whose path is, or is nested
@@ -119,8 +112,8 @@ func IsLANControlBlockedPathForTest(path string) bool { return isLANControlBlock
 // outside this package (the daemon) cannot construct an authState directly
 // since it is unexported; this gives them a LANManager that owns one, and the
 // daemon rotates the connection password exclusively via SetPasswordHash.
-func NewMobileLAN(handler http.Handler, defaultPort int, log *slog.Logger, sink ports.EventSink) *LANManager {
-	return NewLANManager(handler, &authState{}, defaultPort, log, sink)
+func NewMobileLAN(handler http.Handler, defaultPort int, log *slog.Logger) *LANManager {
+	return NewLANManager(handler, &authState{}, defaultPort, log)
 }
 
 // SetPasswordHash stores the current connection password hash on the shared

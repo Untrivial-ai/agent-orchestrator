@@ -10,29 +10,7 @@ import type { components } from "../../api/schema";
 // to prevent hiding newly-added reviewers.
 export type ReviewerHarnessId = NonNullable<components["schemas"]["TriggerReviewRequest"]["harness"]>;
 
-const REVIEWER_HARNESS_IDS = [
-	"agy",
-	"aider",
-	"amp",
-	"auggie",
-	"autohand",
-	"claude-code",
-	"codex",
-	"cline",
-	"copilot",
-	"crush",
-	"cursor",
-	"devin",
-	"droid",
-	"grok",
-	"kilocode",
-	"kiro",
-	"kimi",
-	"kimchi",
-	"muse",
-	"opencode",
-	"pi",
-] as const satisfies readonly ReviewerHarnessId[];
+const REVIEWER_HARNESS_IDS = ["opencode"] as const satisfies readonly ReviewerHarnessId[];
 
 type UnlistedReviewerHarness = Exclude<ReviewerHarnessId, (typeof REVIEWER_HARNESS_IDS)[number]>;
 const _everyReviewerHarnessIsListed: UnlistedReviewerHarness extends never ? true : never = true;

@@ -257,11 +257,10 @@ func TestWorkerSpecUsesPersistedCoderWorkspaceLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"AO_WORKSPACE_DIR":  "/customer/persistent/repository",
-		"AO_DATA_DIR":       "/customer/persistent/.ao/worker",
-		"HOME":              "/customer/persistent/.ao/home",
-		"CLAUDE_CONFIG_DIR": "/customer/persistent/.ao/home/.claude",
-		"CODEX_HOME":        "/customer/persistent/.ao/home/.codex",
+		"AO_WORKSPACE_DIR":    "/customer/persistent/repository",
+		"AO_DATA_DIR":         "/customer/persistent/.ao/worker",
+		"HOME":                "/customer/persistent/.ao/home",
+		"OPENCODE_CONFIG_DIR": "/customer/persistent/.ao/home/.opencode",
 	}
 	for key, expected := range want {
 		if spec.Environment[key] != expected {

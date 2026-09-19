@@ -13,11 +13,7 @@ import (
 // adapter is a known reviewer harness, and every known harness has an adapter.
 func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 	registered := map[domain.ReviewerHarness]bool{}
-	oneShotReviewers := map[domain.ReviewerHarness]bool{
-		domain.ReviewerAider:  true,
-		domain.ReviewerAuggie: true,
-		domain.ReviewerDroid:  true,
-	}
+	oneShotReviewers := map[domain.ReviewerHarness]bool{}
 	for _, a := range Constructors() {
 		h := a.Harness()
 		if !h.IsKnown() {
@@ -36,34 +32,15 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 			t.Errorf("reviewer harness %q cancel spec: %v", h, err)
 		} else {
 			switch h {
-			case domain.ReviewerCodex, domain.ReviewerKiro, domain.ReviewerPi, domain.ReviewerMuse:
-				if spec.Mode != ports.ReviewCancelInput {
-					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInput)
-				}
-				if spec.Input != "\x1b" || len(spec.Inputs) != 0 {
-					t.Errorf("reviewer harness %q cancel input = %q inputs=%#v, want single escape", h, spec.Input, spec.Inputs)
-				}
-			case domain.ReviewerClaudeCode, domain.ReviewerOpenCode:
+			case domain.ReviewerOpenCode:
 				if spec.Mode != ports.ReviewCancelInput {
 					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInput)
 				}
 				if len(spec.Inputs) != 2 || spec.Inputs[0] != "\x1b" || spec.Inputs[1] != "\x1b" {
 					t.Errorf("reviewer harness %q cancel inputs = %#v, want double escape", h, spec.Inputs)
 				}
-			case domain.ReviewerAgy, domain.ReviewerDevin, domain.ReviewerDroid:
-				if spec.Mode != ports.ReviewCancelInterrupt {
-					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInterrupt)
-				}
-				if spec.Interrupts != 1 {
-					t.Errorf("reviewer harness %q cancel interrupts = %d, want 1", h, spec.Interrupts)
-				}
 			default:
-				if spec.Mode != ports.ReviewCancelInterrupt {
-					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInterrupt)
-				}
-				if spec.Interrupts != 2 {
-					t.Errorf("reviewer harness %q cancel interrupts = %d, want 2", h, spec.Interrupts)
-				}
+				t.Errorf("reviewer harness %q has no cancel expectation", h)
 			}
 		}
 		policy, hasPolicy := a.(ports.ReviewerReusePolicy)

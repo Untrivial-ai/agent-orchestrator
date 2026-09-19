@@ -71,7 +71,7 @@ const standaloneSession = (overrides: Partial<WorkspaceSession>): WorkspaceSessi
 	workspaceId: STANDALONE_WORKSPACE_ID,
 	workspaceName: "Ad hoc agents",
 	title: "Ad hoc task",
-	provider: "codex",
+	provider: "opencode",
 	kind: "worker",
 	status: "idle",
 	updatedAt: "2026-06-15T00:00:00Z",

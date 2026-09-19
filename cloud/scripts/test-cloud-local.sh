@@ -209,7 +209,7 @@ if mode == "create":
     org_id = auth["organizations"][0]["id"]
     request(
         "PUT",
-        f"/api/cloud/v1/orgs/{org_id}/provider-connections/agents/claude-code",
+        f"/api/cloud/v1/orgs/{org_id}/provider-connections/agents/opencode",
         body={
             "credentialType": "api_key",
             "secret": "ao-cloud-smoke-development-only",
@@ -235,7 +235,7 @@ if mode == "create":
         body={
             "projectId": project["id"],
             "kind": "orchestrator",
-            "harness": "claude-code",
+            "harness": "opencode",
             "displayName": "Persistence Test",
             "prompt": "",
             "mode": "trusted",
@@ -535,7 +535,7 @@ exercise_browser_proxy "$first_worker"
 spawn_output="$(
 	docker exec "$first_worker" ao spawn \
 		--name "Delegated smoke" \
-		--agent claude-code \
+		--agent opencode \
 		--prompt "Wait for a control-plane message"
 )"
 child_session="$(printf '%s\n' "$spawn_output" | awk '/^spawned / { print $2 }')"

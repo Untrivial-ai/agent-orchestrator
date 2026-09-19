@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,21 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
-	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
-
-type fakeTelemetrySink struct{ events []ports.TelemetryEvent }
-
-func (f *fakeTelemetrySink) Emit(_ context.Context, ev ports.TelemetryEvent) {
-	f.events = append(f.events, ev)
-}
-func (f *fakeTelemetrySink) Close(context.Context) error { return nil }
 
 type fakeAgentReadiness struct {
 	snapshot                domain.AgentReadinessSnapshot
@@ -63,9 +52,6 @@ func (f *fakeAgentReadiness) RecheckAgent(agentID string) {
 type fakeStore struct {
 	sessions            map[domain.SessionID]domain.SessionRecord
 	getSessionErr       error
-	activeSwitches      map[domain.SessionID]domain.AgentSwitch
-	activeSwitchGetErr  error
-	activeSwitchListErr error
 	pr                  map[domain.SessionID]domain.PRFacts
 	prFacts             map[domain.SessionID][]domain.PRFacts
 	prs                 map[domain.SessionID][]domain.PullRequest
@@ -85,18 +71,17 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		sessions:       map[domain.SessionID]domain.SessionRecord{},
-		activeSwitches: map[domain.SessionID]domain.AgentSwitch{},
-		pr:             map[domain.SessionID]domain.PRFacts{},
-		prFacts:        map[domain.SessionID][]domain.PRFacts{},
-		prs:            map[domain.SessionID][]domain.PullRequest{},
-		projects:       map[string]domain.ProjectRecord{},
-		worktrees:      map[domain.SessionID][]domain.SessionWorktreeRecord{},
-		checks:         map[string][]domain.PullRequestCheck{},
-		reviews:        map[string][]domain.PullRequestReview{},
-		threads:        map[string][]domain.PullRequestReviewThread{},
-		comments:       map[string][]domain.PullRequestComment{},
-		reviewRuns:     map[domain.SessionID][]domain.CurrentHeadReviewRun{},
+		sessions:   map[domain.SessionID]domain.SessionRecord{},
+		pr:         map[domain.SessionID]domain.PRFacts{},
+		prFacts:    map[domain.SessionID][]domain.PRFacts{},
+		prs:        map[domain.SessionID][]domain.PullRequest{},
+		projects:   map[string]domain.ProjectRecord{},
+		worktrees:  map[domain.SessionID][]domain.SessionWorktreeRecord{},
+		checks:     map[string][]domain.PullRequestCheck{},
+		reviews:    map[string][]domain.PullRequestReview{},
+		threads:    map[string][]domain.PullRequestReviewThread{},
+		comments:   map[string][]domain.PullRequestComment{},
+		reviewRuns: map[domain.SessionID][]domain.CurrentHeadReviewRun{},
 	}
 }
 
@@ -126,25 +111,6 @@ func TestListBatchesKanbanReads(t *testing.T) {
 	if st.listReviewRunsCalls != 1 {
 		t.Fatalf("ListCurrentHeadReviewRuns calls = %d, want 1 batched call", st.listReviewRunsCalls)
 	}
-}
-
-func (f *fakeStore) GetActiveAgentSwitch(_ context.Context, id domain.SessionID) (domain.AgentSwitch, bool, error) {
-	if f.activeSwitchGetErr != nil {
-		return domain.AgentSwitch{}, false, f.activeSwitchGetErr
-	}
-	sw, ok := f.activeSwitches[id]
-	return sw, ok, nil
-}
-
-func (f *fakeStore) ListActiveAgentSwitches(context.Context) ([]domain.AgentSwitch, error) {
-	if f.activeSwitchListErr != nil {
-		return nil, f.activeSwitchListErr
-	}
-	out := make([]domain.AgentSwitch, 0, len(f.activeSwitches))
-	for _, sw := range f.activeSwitches {
-		out = append(out, sw)
-	}
-	return out, nil
 }
 
 func newWorkspaceRepo(t *testing.T) string {
@@ -269,6 +235,17 @@ func (f *fakeStore) SetSessionTerminateOnPRMerge(_ context.Context, id domain.Se
 		return false, nil
 	}
 	r.TerminateOnPRMerge = terminate
+	r.UpdatedAt = updatedAt
+	f.sessions[id] = r
+	return true, nil
+}
+
+func (f *fakeStore) SetSessionWorkflowMode(_ context.Context, id domain.SessionID, mode domain.WorkflowMode, updatedAt time.Time) (bool, error) {
+	r, ok := f.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	r.WorkflowMode = mode
 	r.UpdatedAt = updatedAt
 	f.sessions[id] = r
 	return true, nil
@@ -435,43 +412,6 @@ func TestSessionListAppliesActivityBeforePRFacts(t *testing.T) {
 	}
 }
 
-func TestSessionListProjectsActiveAgentSwitch(t *testing.T) {
-	st := newFakeStore()
-	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Activity: domain.Activity{State: domain.ActivityExited}}
-	st.sessions["other-1"] = domain.SessionRecord{ID: "other-1", ProjectID: "other", Activity: domain.Activity{State: domain.ActivityIdle}}
-	st.activeSwitches["mer-1"] = domain.AgentSwitch{
-		ID: "switch-1", SessionID: "mer-1", FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, State: domain.AgentSwitchPreparingHandoff,
-	}
-	st.activeSwitches["other-1"] = domain.AgentSwitch{ID: "switch-other", SessionID: "other-1", State: domain.AgentSwitchPreparingHandoff}
-
-	list, err := (&Service{store: st}).List(context.Background(), ListFilter{ProjectID: "mer"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 1 || list[0].ActiveAgentSwitch == nil || list[0].ActiveAgentSwitch.ID != "switch-1" {
-		t.Fatalf("list active switch projection = %+v", list)
-	}
-	if list[0].Status != domain.StatusExited {
-		t.Fatalf("session status = %q, want durable activity-derived exited", list[0].Status)
-	}
-	got, err := (&Service{store: st}).Get(context.Background(), "mer-1")
-	if err != nil || got.ActiveAgentSwitch == nil || got.ActiveAgentSwitch.ID != "switch-1" {
-		t.Fatalf("get active switch projection = %+v, err=%v", got.ActiveAgentSwitch, err)
-	}
-
-	st.activeSwitchListErr = errors.New("active switch read failed")
-	if _, err := (&Service{store: st}).List(context.Background(), ListFilter{ProjectID: "mer"}); err == nil || !strings.Contains(err.Error(), "active switch") {
-		t.Fatalf("active switch list error = %v", err)
-	}
-
-	st.activeSwitchListErr = nil
-	st.activeSwitchGetErr = errors.New("active switch read failed")
-	if _, err := (&Service{store: st}).Get(context.Background(), "mer-1"); err == nil || !strings.Contains(err.Error(), "active switch") {
-		t.Fatalf("active switch get error = %v", err)
-	}
-}
-
 func TestSessionRenameUpdatesDisplayName(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
@@ -563,6 +503,37 @@ func TestSessionSetTerminateOnPRMergePersistsPolicy(t *testing.T) {
 func TestSessionSetTerminateOnPRMergeUnknownSession(t *testing.T) {
 	if _, err := (&Service{store: newFakeStore()}).SetTerminateOnPRMerge(context.Background(), "ghost-1", true); err == nil {
 		t.Fatal("expected missing session error")
+	}
+}
+
+func TestSessionSetWorkflowModePersistsMode(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, WorkflowMode: domain.WorkflowModePlanning}
+
+	sess, err := (&Service{store: st}).SetWorkflowMode(context.Background(), "mer-1", domain.WorkflowModeBuilding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.WorkflowMode != domain.WorkflowModeBuilding || st.sessions["mer-1"].WorkflowMode != domain.WorkflowModeBuilding {
+		t.Fatalf("workflow mode was not persisted: session=%+v stored=%+v", sess, st.sessions["mer-1"])
+	}
+}
+
+func TestSessionSetWorkflowModeUnknownSession(t *testing.T) {
+	if _, err := (&Service{store: newFakeStore()}).SetWorkflowMode(context.Background(), "ghost-1", domain.WorkflowModeBuilding); err == nil {
+		t.Fatal("expected missing session error")
+	}
+}
+
+func TestSessionSetWorkflowModeRejectsUnknownMode(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+
+	if _, err := (&Service{store: st}).SetWorkflowMode(context.Background(), "mer-1", domain.WorkflowMode("review")); err == nil {
+		t.Fatal("expected invalid workflow mode error")
+	}
+	if st.sessions["mer-1"].WorkflowMode == domain.WorkflowMode("review") {
+		t.Fatal("invalid workflow mode reached the store")
 	}
 }
 
@@ -2383,19 +2354,7 @@ func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.
 	}
 	return domain.SessionRecord{ID: "mer-9", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}, len(cfg.Prompt), 0, nil
 }
-func (*fakeCommander) SwitchAgent(context.Context, domain.SessionID, sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error) {
-	return domain.AgentSwitch{}, nil
-}
 
-func (*fakeCommander) RecoverAgentSwitch(context.Context, domain.SessionID, domain.AgentSwitchID) (domain.AgentSwitch, error) {
-	return domain.AgentSwitch{}, nil
-}
-func (*fakeCommander) ListAgentSwitches(context.Context, domain.SessionID) ([]domain.AgentSwitch, error) {
-	return nil, nil
-}
-func (*fakeCommander) SubmitAgentHandoff(context.Context, domain.SessionID, domain.AgentSwitchID, domain.AgentGenerationID, json.RawMessage) (domain.AgentSwitch, error) {
-	return domain.AgentSwitch{}, nil
-}
 func (f *fakeCommander) RestoreWithMode(context.Context, domain.SessionID) (sessionmanager.RestoreResult, error) {
 	if f.restoreErr != nil {
 		return sessionmanager.RestoreResult{}, f.restoreErr
@@ -2723,13 +2682,13 @@ func TestSpawnUnknownProjectReturns404(t *testing.T) {
 func TestSpawnStandaloneWorkerDoesNotRequireProject(t *testing.T) {
 	st := newFakeStore()
 	fc := &fakeCommander{spawnRecord: domain.SessionRecord{
-		ID: "standalone-1", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		ID: "standalone-1", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode,
 	}}
 	svc := &Service{manager: fc, store: st}
 
 	session, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
 		Kind:    domain.KindWorker,
-		Harness: domain.HarnessCodex,
+		Harness: domain.HarnessOpenCode,
 		Prompt:  "Research release options",
 	})
 	if err != nil {
@@ -2745,9 +2704,9 @@ func TestSpawnStandaloneWorkerDoesNotRequireProject(t *testing.T) {
 
 func TestSpawnStandaloneRejectsProjectFeatures(t *testing.T) {
 	for _, cfg := range []ports.SpawnConfig{
-		{Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex},
-		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, Branch: "feature/x"},
-		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, IssueID: "42"},
+		{Kind: domain.KindOrchestrator, Harness: domain.HarnessOpenCode},
+		{Kind: domain.KindWorker, Harness: domain.HarnessOpenCode, Branch: "feature/x"},
+		{Kind: domain.KindWorker, Harness: domain.HarnessOpenCode, IssueID: "42"},
 		{Kind: domain.KindWorker},
 	} {
 		fc := &fakeCommander{}
@@ -2834,35 +2793,6 @@ func TestSpawnInvalidatesReadinessAfterTypedLaunchFailure(t *testing.T) {
 				t.Fatalf("rechecks = %#v, want codex", readiness.rechecks)
 			}
 		})
-	}
-}
-
-func TestSpawnEmitsFirstSessionOnboardingAndDuration(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer", RegisteredAt: time.Unix(100, 0).UTC()}
-	sink := &fakeTelemetrySink{}
-	fc := &fakeCommander{}
-	svc := NewWithDeps(Deps{
-		Manager:   fc,
-		Store:     st,
-		Telemetry: sink,
-		Clock:     func() time.Time { return time.Unix(102, 0).UTC() },
-	})
-
-	if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer"}); err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	if len(sink.events) != 2 {
-		t.Fatalf("events = %#v, want spawned + first_session", sink.events)
-	}
-	if sink.events[0].Name != "ao.session.spawned" || sink.events[1].Name != "ao.onboarding.first_session_spawned" {
-		t.Fatalf("event names = %#v", []string{sink.events[0].Name, sink.events[1].Name})
-	}
-	if got := sink.events[0].Payload["duration_ms"]; got != int64(0) {
-		t.Fatalf("spawn duration_ms = %#v, want 0 with fixed clock", got)
-	}
-	if got := sink.events[1].Payload["since_first_project_ms"]; got != int64(2000) {
-		t.Fatalf("since_first_project_ms = %#v, want 2000", got)
 	}
 }
 
@@ -3116,151 +3046,6 @@ func TestSpawnIssueContextFromSelfManagedGitLabTracker(t *testing.T) {
 	}
 }
 
-func TestSpawnFailedEmitsDuration(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
-	sink := &fakeTelemetrySink{}
-	fc := &fakeCommander{spawnErr: errors.New("boom")}
-	now := time.Unix(200, 0).UTC()
-	svc := NewWithDeps(Deps{
-		Manager:   fc,
-		Store:     st,
-		Telemetry: sink,
-		Clock: func() time.Time {
-			v := now
-			now = now.Add(1500 * time.Millisecond)
-			return v
-		},
-	})
-
-	if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer"}); err == nil {
-		t.Fatal("Spawn should fail")
-	}
-	if len(sink.events) != 1 || sink.events[0].Name != "ao.session.spawn_failed" {
-		t.Fatalf("events = %#v, want one spawn_failed", sink.events)
-	}
-	if got := sink.events[0].Payload["duration_ms"]; got != int64(1500) {
-		t.Fatalf("spawn_failed duration_ms = %#v, want 1500", got)
-	}
-	if got := sink.events[0].Payload["error_kind"]; got != "internal" {
-		t.Fatalf("spawn_failed error_kind = %#v, want internal", got)
-	}
-	if got := sink.events[0].Payload["error_code"]; got != "SPAWN_INTERNAL" {
-		t.Fatalf("spawn_failed error_code = %#v, want SPAWN_INTERNAL", got)
-	}
-	if got := sink.events[0].Payload["component"]; got != "session_service" {
-		t.Fatalf("spawn_failed component = %#v, want session_service", got)
-	}
-	if got := sink.events[0].Payload["operation"]; got != "spawn_session" {
-		t.Fatalf("spawn_failed operation = %#v, want spawn_session", got)
-	}
-	if got := sink.events[0].Payload["fingerprint"]; got == "" {
-		t.Fatalf("spawn_failed fingerprint = %#v, want non-empty", got)
-	}
-}
-
-func TestSpawnEmitsTelemetryOnSuccess(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
-	st.sessions["old-1"] = domain.SessionRecord{ID: "old-1", ProjectID: "other"}
-	fc := &fakeCommander{}
-	ts := &fakeTelemetrySink{}
-	svc := NewWithDeps(Deps{Manager: fc, Store: st, Telemetry: ts, Clock: func() time.Time { return time.Unix(1700000000, 0).UTC() }})
-
-	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
-		ProjectID: "mer",
-		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
-	})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	if len(ts.events) != 1 {
-		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
-	}
-	ev := ts.events[0]
-	if ev.Name != "ao.session.spawned" || ev.Source != "session_service" {
-		t.Fatalf("event = %+v", ev)
-	}
-	if ev.ProjectID == nil || *ev.ProjectID != "mer" || ev.SessionID == nil || *ev.SessionID != "mer-9" {
-		t.Fatalf("event ids = %+v", ev)
-	}
-}
-
-func TestSpawnEmitsTelemetryOnFailure(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
-	fc := &fakeCommander{spawnErr: errors.New("boom")}
-	ts := &fakeTelemetrySink{}
-	svc := NewWithDeps(Deps{Manager: fc, Store: st, Telemetry: ts, Clock: func() time.Time { return time.Unix(1700000000, 0).UTC() }})
-
-	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
-		ProjectID: "mer",
-		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
-	})
-	if err == nil {
-		t.Fatal("Spawn error = nil, want failure")
-	}
-	if len(ts.events) != 1 {
-		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
-	}
-	ev := ts.events[0]
-	if ev.Name != "ao.session.spawn_failed" || ev.Source != "session_service" || ev.Level != ports.TelemetryLevelError {
-		t.Fatalf("event = %+v", ev)
-	}
-	if ev.ProjectID == nil || *ev.ProjectID != "mer" || ev.SessionID != nil {
-		t.Fatalf("event ids = %+v", ev)
-	}
-	if got := ev.Payload["error_kind"]; got != "internal" {
-		t.Fatalf("event payload error_kind = %#v, want internal", got)
-	}
-	if got := ev.Payload["error_code"]; got != "SPAWN_INTERNAL" {
-		t.Fatalf("event payload error_code = %#v, want SPAWN_INTERNAL", got)
-	}
-	if got := ev.Payload["component"]; got != "session_service" {
-		t.Fatalf("event payload component = %#v, want session_service", got)
-	}
-	if got := ev.Payload["operation"]; got != "spawn_session" {
-		t.Fatalf("event payload operation = %#v, want spawn_session", got)
-	}
-	if got := ev.Payload["fingerprint"]; got == "" {
-		t.Fatalf("event payload fingerprint = %#v, want non-empty", got)
-	}
-	if _, ok := ev.Payload["error"]; ok {
-		t.Fatalf("event payload leaked raw error: %+v", ev.Payload)
-	}
-}
-
-func TestSpawnEmitsTypedErrorCodeOnFailure(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
-	fc := &fakeCommander{spawnErr: fmt.Errorf("spawn: %w: %q", sessionmanager.ErrUnknownHarness, "bogus")}
-	ts := &fakeTelemetrySink{}
-	svc := NewWithDeps(Deps{Manager: fc, Store: st, Telemetry: ts, Clock: func() time.Time { return time.Unix(1700000000, 0).UTC() }})
-
-	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
-		ProjectID: "mer",
-		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
-	})
-	if err == nil {
-		t.Fatal("Spawn error = nil, want failure")
-	}
-	if len(ts.events) != 1 {
-		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
-	}
-	ev := ts.events[0]
-	if got := ev.Payload["error_kind"]; got != "invalid" {
-		t.Fatalf("event payload error_kind = %#v, want invalid", got)
-	}
-	if got := ev.Payload["error_code"]; got != "UNKNOWN_HARNESS" {
-		t.Fatalf("event payload error_code = %#v, want UNKNOWN_HARNESS", got)
-	}
-}
-
-// TestSpawnOrchestratorUnknownProjectReturns404 is the orchestrator-side guard
-// for Bug 1: same pre-validation, same typed envelope.
 func TestSpawnOrchestratorUnknownProjectReturns404(t *testing.T) {
 	st := newFakeStore()
 	fc := &fakeCommander{}
@@ -3303,19 +3088,6 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"agent exited", fmt.Errorf("send mer-1: %w", sessionmanager.ErrAgentExited), apierr.KindConflict, "AGENT_EXITED"},
 		{"agent not exited", fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrAgentNotExited), apierr.KindConflict, "AGENT_NOT_EXITED"},
 		{"resume in progress", fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrResumeInProgress), apierr.KindConflict, "AGENT_RESUME_IN_PROGRESS"},
-		{"target agent unauthorized", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrTargetAgentUnauthorized), apierr.KindInvalid, "TARGET_AGENT_UNAUTHORIZED"},
-		{"worker session required", fmt.Errorf("switch agent mer-orchestrator: %w", sessionmanager.ErrUnsupportedSwitchKind), apierr.KindInvalid, "WORKER_SESSION_REQUIRED"},
-		{"unsupported switch harness", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrUnsupportedSwitchHarness), apierr.KindInvalid, "UNSUPPORTED_SWITCH_HARNESS"},
-		{"already using harness", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrAlreadyUsingHarness), apierr.KindConflict, "ALREADY_USING_HARNESS"},
-		{"switch not found", fmt.Errorf("get switch: %w", sessionmanager.ErrSwitchNotFound), apierr.KindNotFound, "AGENT_SWITCH_NOT_FOUND"},
-		{"stale handoff", fmt.Errorf("submit handoff: %w", sessionmanager.ErrStaleHandoff), apierr.KindConflict, "STALE_AGENT_HANDOFF"},
-		{"invalid handoff", fmt.Errorf("submit handoff: %w", sessionmanager.ErrInvalidAgentHandoff), apierr.KindInvalid, "INVALID_AGENT_HANDOFF"},
-		{"switch delivery unconfirmed", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrSwitchDeliveryUnconfirmed), apierr.KindConflict, "AGENT_SWITCH_DELIVERY_UNCONFIRMED"},
-		{"manager switch in progress", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrSwitchInProgress), apierr.KindConflict, "AGENT_SWITCH_IN_PROGRESS"},
-		{"manager switch shutting down", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrSwitchShuttingDown), apierr.KindConflict, "AGENT_SWITCH_UNAVAILABLE"},
-		{"manager switch unavailable", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrSwitchUnavailable), apierr.KindConflict, "AGENT_SWITCH_UNAVAILABLE"},
-		{"switch in progress", fmt.Errorf("switch agent mer-1: %w", domain.ErrAgentSwitchInProgress), apierr.KindConflict, "AGENT_SWITCH_IN_PROGRESS"},
-		{"switch idempotency conflict", fmt.Errorf("switch agent mer-1: %w", domain.ErrAgentSwitchIdempotencyConflict), apierr.KindConflict, "AGENT_SWITCH_IDEMPOTENCY_CONFLICT"},
 		{"chat mode unsupported", fmt.Errorf("spawn: %w", ports.ErrChatUnsupported), apierr.KindConflict, "SESSION_MODE_UNSUPPORTED"},
 		{"chat driver unavailable", fmt.Errorf("spawn: %w", ports.ErrChatDriverUnavailable), apierr.KindConflict, "CHAT_DRIVER_UNAVAILABLE"},
 		{"chat driver incompatible", fmt.Errorf("spawn: %w", ports.ErrChatDriverIncompatible), apierr.KindConflict, "CHAT_DRIVER_INCOMPATIBLE"},
@@ -3411,63 +3183,6 @@ func TestToSpawnAPIErrorMapsSpawnStageSentinels(t *testing.T) {
 	}
 }
 
-func TestSpawnEmitsTypedErrorCodeForRuntimeFailure(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
-	fc := &fakeCommander{
-		spawnErr: fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate),
-	}
-	ts := &fakeTelemetrySink{}
-	svc := NewWithDeps(Deps{Manager: fc, Store: st, Telemetry: ts, Clock: func() time.Time { return time.Unix(1700000000, 0).UTC() }})
-
-	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
-		ProjectID: "mer",
-		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
-	})
-	if err == nil {
-		t.Fatal("Spawn error = nil, want failure")
-	}
-	var apiError *apierr.Error
-	if !errors.As(err, &apiError) || apiError.Code != "RUNTIME_CREATE_FAILED" {
-		t.Fatalf("err = %v, want RUNTIME_CREATE_FAILED", err)
-	}
-	if len(ts.events) != 1 {
-		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
-	}
-	if got := ts.events[0].Payload["error_code"]; got != "RUNTIME_CREATE_FAILED" {
-		t.Fatalf("event payload error_code = %#v, want RUNTIME_CREATE_FAILED", got)
-	}
-	if got := ts.events[0].Payload["error_kind"]; got != "internal" {
-		t.Fatalf("event payload error_kind = %#v, want internal", got)
-	}
-}
-
-func TestEmitSpawnFailedClassifiesRawStageSentinel(t *testing.T) {
-	ts := &fakeTelemetrySink{}
-	svc := NewWithDeps(Deps{
-		Telemetry: ts,
-		Clock:     func() time.Time { return time.Unix(1700000000, 0).UTC() },
-	})
-
-	raw := fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate)
-	svc.emitSpawnFailed(context.Background(), ports.SpawnConfig{
-		ProjectID: "mer",
-		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
-	}, raw, 42)
-
-	if len(ts.events) != 1 {
-		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
-	}
-	if got := ts.events[0].Payload["error_code"]; got != "RUNTIME_CREATE_FAILED" {
-		t.Fatalf("event payload error_code = %#v, want RUNTIME_CREATE_FAILED", got)
-	}
-	if got := ts.events[0].Payload["error_kind"]; got != "internal" {
-		t.Fatalf("event payload error_kind = %#v, want internal", got)
-	}
-}
-
 func TestToSpawnAPIErrorIsIdempotentForMappedErrors(t *testing.T) {
 	raw := fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate)
 	first := toSpawnAPIError(raw)
@@ -3482,53 +3197,9 @@ func TestToSpawnAPIErrorIsIdempotentForMappedErrors(t *testing.T) {
 	}
 }
 
-func TestToAPIErrorSwitchDeliveryUnconfirmedMessage(t *testing.T) {
-	err := fmt.Errorf("switch agent mer-1: confirm continuation: %w", sessionmanager.ErrSwitchDeliveryUnconfirmed)
-	mapped := toAPIError(err)
-
-	var apiError *apierr.Error
-	if !errors.As(mapped, &apiError) {
-		t.Fatalf("mapped = %v, want *apierr.Error", mapped)
-	}
-	if apiError.Kind != apierr.KindConflict {
-		t.Fatalf("kind = %v, want %v", apiError.Kind, apierr.KindConflict)
-	}
-	if apiError.Code != "AGENT_SWITCH_DELIVERY_UNCONFIRMED" {
-		t.Fatalf("code = %q, want AGENT_SWITCH_DELIVERY_UNCONFIRMED", apiError.Code)
-	}
-	const wantMessage = "The target agent started, but AO could not confirm that it accepted the continuation"
-	if apiError.Message != wantMessage {
-		t.Fatalf("message = %q, want %q", apiError.Message, wantMessage)
-	}
-}
-
-func TestToAPIErrorPreservesReportingOwnerAcrossMapping(t *testing.T) {
-	raw := ownership.Own(
-		fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrSwitchInProgress),
-		ownership.OwnerAgentSwitchSaga,
-	)
-
-	mapped := toAPIError(raw)
-
-	if got := ownership.OwnerOf(mapped); got != ownership.OwnerAgentSwitchSaga {
-		t.Fatalf("OwnerOf(mapped) = %q, want %q", got, ownership.OwnerAgentSwitchSaga)
-	}
-	var apiError *apierr.Error
-	if !errors.As(mapped, &apiError) || apiError.Code != "AGENT_SWITCH_IN_PROGRESS" {
-		t.Fatalf("mapped = %v, want AGENT_SWITCH_IN_PROGRESS", mapped)
-	}
-}
-
-func TestToAPIErrorDefaultsUnownedErrorsToHTTP(t *testing.T) {
-	mapped := toAPIError(errors.New("pre-admission storage unavailable"))
-	if got := ownership.OwnerOf(mapped); got != ownership.OwnerHTTP {
-		t.Fatalf("OwnerOf(mapped) = %q, want %q", got, ownership.OwnerHTTP)
-	}
-}
-
 func TestToAPIErrorPreservesMissingChatCapabilityRecoveryDetails(t *testing.T) {
 	mapped := toAPIError(fmt.Errorf("spawn: %w", &ports.ChatCapabilityError{
-		Harness:                domain.HarnessPi,
+		Harness:                domain.HarnessOpenCode,
 		Missing:                []ports.ChatCapability{ports.ChatCapabilityApprovals},
 		AllowedPermissionModes: []ports.PermissionMode{ports.PermissionModeBypassPermissions},
 	}))
@@ -3567,7 +3238,7 @@ func TestRestoreMapsManagerModeToServiceView(t *testing.T) {
 		ID:        "mer-1",
 		ProjectID: "mer",
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Activity:  domain.Activity{State: domain.ActivityIdle},
 	}
 	fc := &fakeCommander{
@@ -3596,7 +3267,7 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 		ID:        "mer-1",
 		ProjectID: "mer",
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Activity:  domain.Activity{State: domain.ActivityIdle},
 	}
 	fc := &fakeCommander{
@@ -3622,7 +3293,7 @@ func TestExitAgentPreservesSessionAndMapsExitedReadModel(t *testing.T) {
 		ID:        "mer-1",
 		ProjectID: "mer",
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Activity:  domain.Activity{State: domain.ActivityIdle},
 	}
 	fc := &fakeCommander{restoreResult: sessionmanager.RestoreResult{Session: rec}}
@@ -3647,7 +3318,7 @@ func TestSpawnGenericOrchestratorReturnsExistingActiveSession(t *testing.T) {
 		ID:        "mer-orch",
 		ProjectID: "mer",
 		Kind:      domain.KindOrchestrator,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 	}
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
@@ -3655,7 +3326,7 @@ func TestSpawnGenericOrchestratorReturnsExistingActiveSession(t *testing.T) {
 	got, promptBytes, systemPromptBytes, err := svc.Spawn(context.Background(), ports.SpawnConfig{
 		ProjectID:   "mer",
 		Kind:        domain.KindOrchestrator,
-		Harness:     domain.HarnessClaudeCode,
+		Harness:     domain.HarnessOpenCode,
 		Prompt:      "start another orchestrator",
 		DisplayName: "duplicate",
 	})
@@ -3686,13 +3357,13 @@ func TestSpawnGenericOrchestratorAllowsReplacementAfterTermination(t *testing.T)
 		ID:        "mer-new",
 		ProjectID: "mer",
 		Kind:      domain.KindOrchestrator,
-		Harness:   domain.HarnessClaudeCode,
+		Harness:   domain.HarnessOpenCode,
 	}}
 	svc := &Service{manager: fc, store: st}
 	cfg := ports.SpawnConfig{
 		ProjectID:   "mer",
 		Kind:        domain.KindOrchestrator,
-		Harness:     domain.HarnessClaudeCode,
+		Harness:     domain.HarnessOpenCode,
 		Branch:      "feature/orchestrator",
 		Prompt:      "coordinate this project",
 		DisplayName: "coordinator",
@@ -3757,7 +3428,7 @@ func TestSpawnGenericOrchestratorSerializesConcurrentRequests(t *testing.T) {
 		return rec
 	}
 	svc := &Service{manager: fc, store: st}
-	cfg := ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex}
+	cfg := ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator, Harness: domain.HarnessOpenCode}
 
 	start := make(chan struct{})
 	results := make(chan domain.Session, 2)
@@ -3860,21 +3531,21 @@ func TestSpawnOrchestratorVerifiesReplacementHarness(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{
 		ID:     "mer",
-		Config: domain.ProjectConfig{Orchestrator: domain.RoleOverride{Harness: domain.HarnessCodex}},
+		Config: domain.ProjectConfig{Orchestrator: domain.RoleOverride{Harness: domain.HarnessOpenCode}},
 	}
 	fc := &fakeCommander{
 		spawnRecord: domain.SessionRecord{
 			ID:        "mer-9",
 			ProjectID: "mer",
 			Kind:      domain.KindOrchestrator,
-			Harness:   domain.HarnessClaudeCode,
+			Harness:   "codex",
 			Metadata:  domain.SessionMetadata{Branch: "ao/mer-orchestrator"},
 		},
 	}
 	svc := &Service{manager: fc, store: st}
 
 	_, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
-	if err == nil || !strings.Contains(err.Error(), `uses harness "claude-code", want "codex"`) {
+	if err == nil || !strings.Contains(err.Error(), `uses harness "codex", want "opencode"`) {
 		t.Fatalf("SpawnOrchestrator err = %v, want harness verification failure", err)
 	}
 }
@@ -3891,7 +3562,7 @@ func TestDelegateTaskPassesAttachmentsToSpawnConfig(t *testing.T) {
 	_, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
 		ProjectID:      "mer",
 		Brief:          "Use the attached image.",
-		RequestedAgent: domain.HarnessCodex,
+		RequestedAgent: domain.HarnessOpenCode,
 		Attachments: []ports.SpawnAttachment{
 			{Ext: ".png", Data: []byte{1, 2, 3}},
 		},
@@ -3905,7 +3576,7 @@ func TestDelegateTaskPassesAttachmentsToSpawnConfig(t *testing.T) {
 	if fc.spawnedCfg.ProjectID != "mer" || fc.spawnedCfg.Kind != domain.KindWorker {
 		t.Fatalf("spawned cfg identity = %#v", fc.spawnedCfg)
 	}
-	if fc.spawnedCfg.Harness != domain.HarnessCodex || fc.spawnedCfg.Prompt != "Use the attached image." {
+	if fc.spawnedCfg.Harness != domain.HarnessOpenCode || fc.spawnedCfg.Prompt != "Use the attached image." {
 		t.Fatalf("spawned cfg fields = %#v", fc.spawnedCfg)
 	}
 	if len(fc.spawnedCfg.Attachments) != 1 {
@@ -5085,57 +4756,4 @@ func sameStrings(got, want []string) bool {
 		}
 	}
 	return true
-}
-
-// TestSpawnTelemetryCarriesRequestID pins the correlation the daemon needs:
-// spawn telemetry detaches from the request context on purpose, so the request
-// id has to be read at the emit site or every session_service row lands with an
-// empty request_id and cannot be joined to the HTTP request that caused it.
-func TestSpawnTelemetryCarriesRequestID(t *testing.T) {
-	requestCtx := context.WithValue(context.Background(), middleware.RequestIDKey, "req-1")
-	cases := []struct {
-		name     string
-		ctx      context.Context
-		spawnErr error
-		want     string
-	}{
-		{name: "request scoped", ctx: requestCtx, want: "req-1"},
-		{
-			name: "spawn failure",
-			ctx:  requestCtx,
-			spawnErr: fmt.Errorf(
-				"spawn mer-1: %w: tmux runtime: create session mer-1: boom",
-				sessionmanager.ErrRuntimeCreate,
-			),
-			want: "req-1",
-		},
-		{name: "background context", ctx: context.Background(), want: ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			st := newFakeStore()
-			st.projects["mer"] = domain.ProjectRecord{ID: "mer", RegisteredAt: time.Unix(100, 0).UTC()}
-			sink := &fakeTelemetrySink{}
-			svc := NewWithDeps(Deps{
-				Manager:   &fakeCommander{spawnErr: tc.spawnErr},
-				Store:     st,
-				Telemetry: sink,
-				Clock:     func() time.Time { return time.Unix(102, 0).UTC() },
-			})
-
-			_, _, _, err := svc.Spawn(tc.ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
-			if (err != nil) != (tc.spawnErr != nil) {
-				t.Fatalf("Spawn err = %v, want error: %t", err, tc.spawnErr != nil)
-			}
-			if len(sink.events) == 0 {
-				t.Fatal("no telemetry events emitted")
-			}
-			for _, ev := range sink.events {
-				if ev.RequestID != tc.want {
-					t.Fatalf("%s RequestID = %q, want %q", ev.Name, ev.RequestID, tc.want)
-				}
-			}
-		})
-	}
 }

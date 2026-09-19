@@ -97,7 +97,7 @@ func TestOriginalBranchTUIRoundtripDoesNotInheritEditedBranchCheckpoint(t *testi
 	})
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 	cfg := chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-fresh", HistoryMode: ports.ChatHistoryRequired,
 		HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 	}

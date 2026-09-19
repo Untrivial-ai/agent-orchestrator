@@ -7,33 +7,7 @@ import (
 	"fmt"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agy"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/aider"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/amp"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/auggie"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/autohand"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cline"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/continueagent"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/copilot"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/crush"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/devin"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/droid"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/goose"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/grok"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kilocode"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimchi"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimi"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kiro"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/muse"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/omp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/pi"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/primeagent"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/qwen"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/vibe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -44,33 +18,7 @@ import (
 // daemon picks up.
 func Constructors() []adapters.Adapter {
 	return []adapters.Adapter{
-		claudecode.New(),
-		codex.New(),
 		opencode.New(),
-		grok.New(),
-		cursor.New(),
-		qwen.New(),
-		copilot.New(),
-		kimi.New(),
-		muse.New(),
-		droid.New(),
-		amp.New(),
-		agy.New(),
-		crush.New(),
-		aider.New(),
-		goose.New(),
-		auggie.New(),
-		continueagent.New(),
-		devin.New(),
-		omp.New(),
-		cline.New(),
-		kiro.New(),
-		kilocode.New(),
-		vibe.New(),
-		pi.New(),
-		kimchi.New(),
-		primeagent.New(),
-		autohand.New(),
 	}
 }
 

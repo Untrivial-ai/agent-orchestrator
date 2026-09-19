@@ -129,7 +129,7 @@ graph TD
     DoesNot[Does NOT Contain] --> HTTP[HTTP DTOs]
     DoesNot --> CLI[CLI Output]
     DoesNot --> Generated[sqlc Generated Rows]
-    DoesNot --> External[External Payloads<br/>GitHub, Claude, etc.]
+    DoesNot --> External[External Payloads<br/>GitHub, etc.]
 
 ```
 
@@ -600,17 +600,13 @@ graph LR
 graph TD
     Ports[Ports Interfaces] -->|implemented by| Adapters[Adapters]
 
-    Adapters --> Agent[agent/*<br/>23+ harnesses]
+    Adapters --> Agent[agent/*<br/>opencode]
     Adapters --> Runtime[runtime/*<br/>tmux, conpty]
     Adapters --> Workspace[workspace/*<br/>gitworktree]
     Adapters --> SCM[scm/*<br/>github]
     Adapters --> Tracker[tracker/*<br/>github]
 
-    Agent --> Codex[codex]
-    Agent --> Claude[claude-code]
-    Agent --> Cursor[cursor]
-    Agent --> Aider[aider]
-    Agent -->|... 20+| More[more agents]
+    Agent --> OpenCode[opencode]
 
 ```
 
@@ -703,7 +699,7 @@ graph LR
 - `AO_SHUTDOWN_TIMEOUT` — Graceful shutdown cap (default: 10s)
 - `AO_RUN_FILE` — PID/port handshake (default: ~/.ao/running.json)
 - `AO_DATA_DIR` — SQLite data directory (default: ~/.ao/data)
-- `AO_AGENT` — Compatibility agent adapter (default: claude-code)
+- `AO_AGENT` — Compatibility agent adapter (default: opencode)
 - `GITHUB_TOKEN` — GitHub authentication
 
 ---

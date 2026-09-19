@@ -1,213 +1,116 @@
 package workerexec
 
 import (
+	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// bakedHelperPath is the helper baked into the sandbox image. It is the last
-// resort: hooks prefer the self-healed helper (hookHelperPath) because the baked
-// copy goes stale on any deploy that changes the ao binary, and the Stop hook
-// invoking a stale helper silently drops durable-restore capture.
-const bakedHelperPath = "/usr/local/bin/ao"
+// opencode's only lifecycle-extensibility surface is a JS/TS plugin loaded from
+// the workspace-local `.opencode/plugins/` directory (it has no native command
+// hooks the way claude-code/codex do). AO therefore installs a dedicated,
+// fully AO-owned plugin file (see assets/ao-activity.ts) that normalizes
+// opencode's native lifecycle events and relays them through
+// `ao hooks opencode <event>` — the cloud agent installed as `ao` in the
+// worker. This mirrors the desktop opencode adapter's install, so session
+// activity reaches the control plane the same way in both worlds.
+const (
+	// opencodePluginDirName is the opencode config dir opencode scans for
+	// plugins (`{plugin,plugins}/*.{ts,js}`); AO writes the plural `plugins/`,
+	// matching upstream opencode tooling.
+	opencodePluginDirName = ".opencode"
+	opencodePluginSubDir  = "plugins"
 
-// hookHelperPath returns the ao helper the harness hooks should invoke. The
-// worker self-heals the current helper to <dataDir>/bin/ao (see the ao-worker
-// selfupdate healHelper) and keeps it current, so hooks run the up-to-date
-// helper regardless of a stale baked copy. Falls back to the baked path when
-// the healed copy is absent (e.g. self-heal disabled) or the data dir is unset.
-func hookHelperPath(dataDir string) string {
-	if dataDir = strings.TrimSpace(dataDir); dataDir != "" {
-		healed := filepath.Join(dataDir, "bin", "ao")
-		if info, err := os.Stat(healed); err == nil && !info.IsDir() {
-			return healed
-		}
-	}
-	return bakedHelperPath
-}
+	// opencodePluginFileName is the AO-owned plugin file. Install overwrites it
+	// and refuses to clobber a same-named file that is not AO-managed.
+	opencodePluginFileName = "ao-activity.ts"
 
-type activityHook struct {
-	nativeEvent string
-	event       string
-	matcher     string
-}
+	// opencodePluginSentinel marks the file as AO-managed. It must appear
+	// verbatim in the embedded plugin source.
+	opencodePluginSentinel = "agent-orchestrator: managed opencode activity plugin"
 
-var claudeActivityHooks = []activityHook{
-	{"SessionStart", "session-start", "startup"},
-	{"UserPromptSubmit", "user-prompt-submit", ""},
-	{"PreToolUse", "pre-tool-use", ""},
-	{"PostToolUse", "post-tool-use", ""},
-	{"PostToolUseFailure", "post-tool-use-failure", ""},
-	{"PermissionRequest", "permission-request", ""},
-	{"Stop", "stop", ""},
-	{"Notification", "notification", ""},
-	{"SessionEnd", "session-end", ""},
-}
+	// opencodePluginGitignoreSentinel marks the workspace .gitignore as
+	// AO-managed so it can be rewritten idempotently while never touching a
+	// user- or repo-provided .gitignore at the same path.
+	opencodePluginGitignoreSentinel = "# managed by agent-orchestrator: AO hook files stay out of git status"
+)
 
-var codexActivityHooks = []activityHook{
-	{"SessionStart", "session-start", ""},
-	{"UserPromptSubmit", "user-prompt-submit", ""},
-	{"PermissionRequest", "permission-request", ""},
-	{"Stop", "stop", ""},
-}
+// opencodePluginSource is the AO-managed opencode plugin, embedded verbatim
+// from the desktop adapter (backend/internal/adapters/agent/opencode/assets) so
+// sandboxes voice the identical plugin contract regardless of which binary
+// installs them. Keep the two copies in sync.
+//
+//go:embed assets/ao-activity.ts
+var opencodePluginSource string
 
-var cursorActivityHooks = []activityHook{
-	{"sessionStart", "session-start", ""},
-	{"beforeSubmitPrompt", "user-prompt-submit", ""},
-	{"stop", "stop", ""},
-	{"beforeShellExecution", "permission-request", ""},
-	{"beforeMCPExecution", "permission-request", ""},
-}
-
-func hookCommand(binary, harness, event string) string {
-	return binary + " hooks " + harness + " " + event
-}
-
-func installClaudeActivityHooks(binary string, settings map[string]any) {
-	hooks := objectValue(settings, "hooks")
-	for _, hook := range claudeActivityHooks {
-		entry := map[string]any{
-			"hooks": []any{map[string]any{
-				"type":    "command",
-				"command": hookCommand(binary, "claude-code", hook.event),
-				"timeout": 5,
-			}},
-		}
-		if hook.matcher != "" {
-			entry["matcher"] = hook.matcher
-		}
-		appendJSONHook(
-			hooks,
-			hook.nativeEvent,
-			entry,
-			hookCommand(binary, "claude-code", hook.event),
-		)
-	}
-}
-
-func removeGlobalClaudeActivityHooks(settings map[string]any) {
-	hooks, _ := settings["hooks"].(map[string]any)
-	for event, value := range hooks {
-		groups, _ := value.([]any)
-		keptGroups := make([]any, 0, len(groups))
-		for _, value := range groups {
-			group, _ := value.(map[string]any)
-			if group == nil {
-				keptGroups = append(keptGroups, value)
-				continue
-			}
-			commands, _ := group["hooks"].([]any)
-			keptCommands := commands[:0]
-			for _, candidate := range commands {
-				entry, _ := candidate.(map[string]any)
-				command, _ := entry["command"].(string)
-				// Match on the command suffix, not a fixed binary prefix, so a
-				// hook installed with an older binary path (baked or a prior
-				// healed path) is still recognized and removed.
-				if strings.Contains(command, " hooks claude-code ") {
-					continue
-				}
-				keptCommands = append(keptCommands, candidate)
-			}
-			if len(keptCommands) == 0 && len(commands) > 0 {
-				continue
-			}
-			group["hooks"] = keptCommands
-			keptGroups = append(keptGroups, group)
-		}
-		if len(keptGroups) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = keptGroups
-		}
-	}
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
-	}
-}
-
-func installCursorActivityHooks(binary, workspace string) error {
-	path := filepath.Join(workspace, ".cursor", "hooks.json")
-	if err := updateJSONFile(path, func(root map[string]any) {
-		if _, ok := root["version"]; !ok {
-			root["version"] = 1
-		}
-		hooks := objectValue(root, "hooks")
-		for _, hook := range cursorActivityHooks {
-			appendJSONHook(
-				hooks,
-				hook.nativeEvent,
-				map[string]any{"command": hookCommand(binary, "cursor", hook.event)},
-				hookCommand(binary, "cursor", hook.event),
+// installOpenCodeActivityHooks writes AO's opencode activity plugin into the
+// workspace-local .opencode/plugins/ directory. The write is atomic and
+// idempotent: re-installing overwrites AO's own file with identical content and
+// fails loudly rather than clobbering a user plugin that occupies the path.
+func installOpenCodeActivityHooks(workspace string) error {
+	pluginPath := opencodePluginPath(workspace)
+	if existing, err := os.ReadFile(pluginPath); err == nil {
+		if !strings.Contains(string(existing), opencodePluginSentinel) {
+			return fmt.Errorf(
+				"refusing to overwrite non-AO opencode plugin at %s — move it so AO can install its plugin",
+				pluginPath,
 			)
 		}
-	}); err != nil {
-		return fmt.Errorf("install Cursor activity hooks: %w", err)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat opencode plugin: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o750); err != nil {
+		return fmt.Errorf("create opencode plugin dir: %w", err)
+	}
+	if err := os.WriteFile(pluginPath, []byte(opencodePluginSource), 0o600); err != nil {
+		return fmt.Errorf("write opencode plugin: %w", err)
+	}
+	if err := ensureOpenCodePluginGitignored(
+		filepath.Dir(pluginPath), opencodePluginFileName,
+	); err != nil {
+		return fmt.Errorf("opencode plugin gitignore: %w", err)
 	}
 	return nil
 }
 
-func codexActivityHookArgs(binary string) []string {
-	args := make([]string, 0, len(codexActivityHooks)*2)
-	for _, hook := range codexActivityHooks {
-		command := strings.ReplaceAll(
-			hookCommand(binary, "codex", hook.event),
-			`"`,
-			`\"`,
-		)
-		value := fmt.Sprintf(
-			`hooks.%s=[{hooks=[{type="command",command="%s",timeout=5}]}]`,
-			hook.nativeEvent,
-			command,
-		)
-		args = append(args, "-c", value)
-	}
-	return args
+func opencodePluginPath(workspace string) string {
+	return filepath.Join(
+		workspace, opencodePluginDirName, opencodePluginSubDir, opencodePluginFileName,
+	)
 }
 
-func objectValue(parent map[string]any, key string) map[string]any {
-	value, _ := parent[key].(map[string]any)
-	if value == nil {
-		value = map[string]any{}
-		parent[key] = value
+// ensureOpenCodePluginGitignored writes a self-ignoring .gitignore beside the
+// plugin so the AO-installed hook file never makes the session worktree
+// permanently dirty (and un-removable). The patterns are anchored to the plugin
+// file only; anything else an agent drops in the same directory still counts as
+// dirt and keeps blocking teardown. A .gitignore at the same path that lacks
+// the sentinel is left untouched and the install proceeds — the worktree then
+// stays dirty and teardown preserves it, which is the safe degradation.
+func ensureOpenCodePluginGitignored(dir string, names ...string) error {
+	path := filepath.Join(dir, ".gitignore")
+	existing, err := os.ReadFile(path) //nolint:gosec // path built from caller-owned workspace dir
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", path, err)
 	}
-	return value
-}
-
-func appendJSONHook(
-	hooks map[string]any,
-	event string,
-	entry map[string]any,
-	command string,
-) {
-	entries, _ := hooks[event].([]any)
-	for _, candidate := range entries {
-		if containsHookCommand(candidate, command) {
-			return
-		}
+	if err == nil && !strings.Contains(string(existing), opencodePluginGitignoreSentinel) {
+		return nil
 	}
-	hooks[event] = append(entries, entry)
-}
-
-func containsHookCommand(value any, command string) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		if typed["command"] == command {
-			return true
-		}
-		for _, child := range typed {
-			if containsHookCommand(child, command) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if containsHookCommand(child, command) {
-				return true
-			}
-		}
+	var b strings.Builder
+	b.WriteString(opencodePluginGitignoreSentinel)
+	b.WriteString("\n/.gitignore\n")
+	for _, name := range names {
+		b.WriteString("/")
+		b.WriteString(filepath.ToSlash(name))
+		b.WriteString("\n")
 	}
-	return false
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }

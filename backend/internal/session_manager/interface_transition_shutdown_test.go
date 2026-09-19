@@ -125,7 +125,7 @@ func TestStartupDefersInterfaceRecoveryBehindExistingSessionOperation(t *testing
 			t.Fatalf("operation release exposed unrecovered handoff: %v %v", active, err)
 		}
 	}
-	m.agentSwitchWorkers.Wait()
+	m.interfaceRecoveryWorkers.Wait()
 	if _, active, err := st.GetActiveSessionInterfaceTransition(ctx, "session-1"); err != nil || active {
 		t.Fatalf("deferred handoff never recovered: %v %v", active, err)
 	}
@@ -138,14 +138,14 @@ func TestDeferredInterfaceRecoveryRespectsWorkerShutdown(t *testing.T) {
 	m, _, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
 	m.deferredInterfaceRecovery = map[domain.SessionID]string{"session-1": "interrupted"}
 	m.agentOperations["session-1"] = agentOperationKill
-	if err := m.WaitAgentSwitchWorkers(context.Background()); err != nil {
+	if err := m.WaitInterfaceRecoveryWorkers(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	m.endAgentOperation("session-1", agentOperationKill)
 	if !m.SessionMutationInProgress("session-1") {
 		t.Fatal("shutdown release removed the deferred input fence")
 	}
-	m.agentSwitchWorkers.Wait()
+	m.interfaceRecoveryWorkers.Wait()
 }
 
 func TestStartupQuarantinesUnconfirmedTargetWithoutBlockingOtherSessions(t *testing.T) {

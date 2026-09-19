@@ -12,7 +12,7 @@ function session(
 		workspaceId: "project-1",
 		workspaceName: "cloud-project",
 		title: "Cloud worker",
-		provider: "claude-code",
+		provider: "opencode",
 		status: "working",
 		updatedAt: "2026-09-01T00:00:00Z",
 		prs: [],

@@ -171,7 +171,7 @@ const workspace: WorkspaceSummary = {
 	id: "proj-1",
 	name: "Project One",
 	path: "/repo/project-one",
-	orchestratorAgent: "claude-code",
+	orchestratorAgent: "opencode",
 	sessions: [],
 };
 
@@ -180,26 +180,13 @@ const session: WorkspaceSession = {
 	workspaceId: "proj-1",
 	workspaceName: "Project One",
 	title: "fix login",
-	provider: "claude-code",
+	provider: "opencode",
 	kind: "worker",
 	branch: "session/proj-1-1",
 	status: "working",
 	updatedAt: "2026-06-30T00:00:00Z",
 	prs: [],
 };
-
-function activeAgentSwitch(
-	overrides: Partial<NonNullable<WorkspaceSession["activeAgentSwitch"]>> = {},
-): NonNullable<WorkspaceSession["activeAgentSwitch"]> {
-	return {
-		agentHandoffStatus: "received",
-		fromHarness: "claude-code",
-		id: "switch-1",
-		state: "starting_target",
-		targetHarness: "codex",
-		...overrides,
-	};
-}
 
 function sidebarPR(overrides: Partial<WorkspaceSession["prs"][number]> = {}): WorkspaceSession["prs"][number] {
 	return {
@@ -295,7 +282,7 @@ function renderSidebar({
 	});
 	if (seedAgents) {
 		queryClient.setQueryData(agentReadinessQueryKey, {
-			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+			agents: [agentReadiness("opencode", "OpenCode")],
 		});
 	}
 	render(
@@ -358,8 +345,8 @@ async function openCreateProjectDialog(
 	await user.click(screen.getByLabelText("New project"));
 	await user.click(screen.getByRole("button", { name: /^Import an existing project$/i }));
 	await screen.findByRole("dialog", { name: "Set up project" });
-	await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "Codex");
-	await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+	await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "OpenCode");
+	await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 	return user;
 }
 
@@ -402,7 +389,7 @@ beforeEach(() => {
 	getMock.mockReset();
 	getMock.mockResolvedValue({
 		data: {
-			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+			agents: [agentReadiness("opencode", "OpenCode")],
 		},
 		error: undefined,
 	});
@@ -807,7 +794,7 @@ describe("Sidebar", () => {
 			id: "proj-2",
 			name: "Project Two",
 			path: "/repo/project-two",
-			orchestratorAgent: "claude-code",
+			orchestratorAgent: "opencode",
 			sessions: [{ ...session, id: "proj-2-1", workspaceId: "proj-2", workspaceName: "Project Two", title: "other task" }],
 		};
 		renderSidebar({
@@ -975,8 +962,8 @@ describe("Sidebar", () => {
 			expect(onCreateProject).toHaveBeenCalledWith(
 				expect.objectContaining({
 					path: "/repo/new-project",
-					workerAgent: "claude-code",
-					orchestratorAgent: "claude-code",
+					workerAgent: "opencode",
+					orchestratorAgent: "opencode",
 				}),
 			),
 		);
@@ -1029,8 +1016,8 @@ describe("Sidebar", () => {
 		await waitFor(() => expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({
 			path: "/repo/web-app",
 			clonePreparationId: "prep-web-app",
-			workerAgent: "claude-code",
-			orchestratorAgent: "claude-code",
+			workerAgent: "opencode",
+			orchestratorAgent: "opencode",
 		})));
 		expect(onCloneProject).not.toHaveBeenCalled();
 	});
@@ -1080,26 +1067,25 @@ describe("Sidebar", () => {
 			expect(onCreateProject).toHaveBeenCalledWith(
 				expect.objectContaining({
 					path: "/repo/local-project",
-					workerAgent: "claude-code",
-					orchestratorAgent: "claude-code",
+					workerAgent: "opencode",
+					orchestratorAgent: "opencode",
 				}),
 			),
 		);
 		expect(onCloneProject).not.toHaveBeenCalled();
 	});
 
-	it("prioritizes authorized project agents by preferred agent order", async () => {
+	it("prioritizes opencode as the preferred project agent", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler;
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/new-project");
 		getMock.mockResolvedValueOnce({
 			data: {
 				agents: [
+					// Listed first on purpose: the preference ranking, not the
+					// catalog order, decides the default and the option order.
 					agentReadiness("goose", "Goose"),
-					agentReadiness("devin", "Devin"),
-					agentReadiness("aider", "Aider"),
 					agentReadiness("opencode", "OpenCode"),
-					agentReadiness("cursor", "Cursor"),
 				],
 			},
 			error: undefined,
@@ -1109,16 +1095,14 @@ describe("Sidebar", () => {
 		await user.click(screen.getByLabelText("New project"));
 		await user.click(screen.getByRole("button", { name: /^Import an existing project$/i }));
 		expect(await screen.findByRole("dialog", { name: "Set up project" })).toBeInTheDocument();
-		expect(screen.getByRole("combobox", { name: "Worker agent" })).toHaveTextContent(/cursor/i);
-		expect(screen.getByRole("combobox", { name: "Orchestrator agent" })).toHaveTextContent(/cursor/i);
+		expect(screen.getByRole("combobox", { name: "Worker agent" })).toHaveTextContent(/opencode/i);
+		expect(screen.getByRole("combobox", { name: "Orchestrator agent" })).toHaveTextContent(/opencode/i);
 
 		await user.click(screen.getByRole("combobox", { name: "Worker agent" }));
 		expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
-			"Cursor",
 			"OpenCode",
-			"Aider",
-			"Devin",
-			"Goose",
+			// Unknown agents render a first-letter tile avatar ("G" + label).
+			"GGoose",
 		]);
 		await user.keyboard("{Escape}");
 
@@ -1126,8 +1110,8 @@ describe("Sidebar", () => {
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith(
 				expect.objectContaining({
-					workerAgent: "cursor",
-					orchestratorAgent: "cursor",
+					workerAgent: "opencode",
+					orchestratorAgent: "opencode",
 				}),
 			),
 		);
@@ -1229,15 +1213,15 @@ describe("Sidebar", () => {
 		expect(window.ao!.app.chooseDirectory).toHaveBeenCalledWith("Choose a workspace folder");
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "Codex");
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Worker agent" }), "OpenCode");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/workspace",
-				workerAgent: "codex",
-				orchestratorAgent: "claude-code",
+				workerAgent: "opencode",
+				orchestratorAgent: "opencode",
 				asWorkspace: true,
 			}),
 		);
@@ -1259,7 +1243,7 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
@@ -1319,7 +1303,7 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(useUiStore.getState().globalToast?.body).toBe("workspace not registered"));
@@ -1477,7 +1461,7 @@ describe("Sidebar", () => {
 		await user.click(screen.getByRole("button", { name: /^Import a workspace folder$/i }));
 		await screen.findByRole("dialog", { name: "Import workspace" });
 		await user.click(screen.getByRole("button", { name: "Continue" }));
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(useUiStore.getState().globalToast).toMatchObject({
@@ -1520,7 +1504,7 @@ describe("Sidebar", () => {
 				"If this folder needs Git setup, AO will initialize it and create the first commit before starting.",
 			),
 		).toBeInTheDocument();
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create workspace and start" }));
 
 		await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
@@ -1540,17 +1524,13 @@ describe("Sidebar", () => {
 		expect(await screen.findByRole("menuitem", { name: /settings/i })).toBeInTheDocument();
 	});
 
-	it("shows needs-auth agents as unavailable while keeping authorized agents selectable", async () => {
+	it("keeps the authorized opencode agent selectable when creating a project", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler;
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/new-project");
 		getMock.mockResolvedValueOnce({
 			data: {
-				agents: [
-					agentReadiness("claude-code", "Claude Code"),
-					agentReadiness("cursor", "Cursor", { authentication: "unauthorized" }),
-					agentReadiness("aider", "Aider", { installation: "not_installed", authentication: "unknown" }),
-				],
+				agents: [agentReadiness("opencode", "OpenCode")],
 			},
 			error: undefined,
 		});
@@ -1562,19 +1542,14 @@ describe("Sidebar", () => {
 
 		await user.click(screen.getByRole("combobox", { name: "Orchestrator agent" }));
 		const options = await screen.findAllByRole("option");
-		expect(options.map((option) => option.textContent)).toEqual([
-			"Claude Code",
-			"CursorNeeds auth",
-			"AiderNeeds install",
-		]);
-		expect(options[1]).toHaveAttribute("aria-disabled", "true");
-		expect(options[2]).toHaveAttribute("aria-disabled", "true");
+		expect(options.map((option) => option.textContent)).toEqual(["OpenCode"]);
+		expect(options[0]).not.toHaveAttribute("aria-disabled", "true");
 		await user.keyboard("{Escape}");
 
 		await user.click(screen.getByRole("button", { name: "Create and start" }));
 
 		await waitFor(() =>
-			expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent: "claude-code" })),
+			expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent: "opencode" })),
 		);
 	});
 
@@ -1600,19 +1575,19 @@ describe("Sidebar", () => {
 
 		resolveAgents({
 			data: {
-				agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+				agents: [agentReadiness("opencode", "OpenCode")],
 			},
 			error: undefined,
 		});
 
-		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "Claude Code");
+		await chooseOption(screen.getByRole("combobox", { name: "Orchestrator agent" }), "OpenCode");
 		await user.click(screen.getByRole("button", { name: "Create and start" }));
 
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/new-project",
-				workerAgent: "claude-code",
-				orchestratorAgent: "claude-code",
+				workerAgent: "opencode",
+				orchestratorAgent: "opencode",
 				trackerIntake: undefined,
 				asWorkspace: false,
 			}),
@@ -1627,18 +1602,20 @@ describe("Sidebar", () => {
 		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
-	it("opens the Mobile settings page from the footer", async () => {
+	it("keeps the Connect mobile footer button disabled", async () => {
 		const user = userEvent.setup();
 		renderSidebar();
-		await user.click((await screen.findAllByRole("button", { name: "Connect mobile" }))[0]);
-		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "mobile" });
+
+		const mobileButtons = await screen.findAllByRole("button", { name: "Connect mobile" });
+		expect(mobileButtons.length).toBeGreaterThan(0);
+		for (const button of mobileButtons) {
+			expect(button).toBeVisible();
+			expect(button).toBeDisabled();
+		}
+
+		await user.click(mobileButtons[0]);
+		expect(useUiStore.getState().settingsModal).toBeNull();
 		expect(navigateMock).not.toHaveBeenCalled();
-	});
-
-	it("always shows Connect mobile", () => {
-		renderSidebar();
-
-		expect(screen.getByRole("button", { name: "Connect mobile" })).toBeVisible();
 	});
 
 	it("opens the command palette when Search is clicked", async () => {
@@ -2059,27 +2036,6 @@ describe("Sidebar", () => {
 		expect(idleDraftDot).toHaveClass("bg-status-in-review");
 		expect(idleActivityDot).not.toHaveClass("animate-status-pulse");
 		expect(idleDraftDot).not.toHaveClass("animate-status-pulse");
-	});
-
-	it("keeps runtime activity on the dot while showing switch progress separately", () => {
-		renderSidebar({
-			workspaces: [{
-				...workspace,
-				sessions: [{
-					...session,
-					status: "exited",
-					activity: { state: "exited", lastActivityAt: "2026-06-30T00:00:00Z" },
-					activeAgentSwitch: activeAgentSwitch(),
-				}],
-			}],
-		});
-
-		const row = screen.getByLabelText("Open fix login");
-		expect(row).toHaveAccessibleDescription("Switching to Codex");
-		expect(within(row).getByText("Switching to Codex")).toBeInTheDocument();
-		const dot = row.querySelector<HTMLElement>("[data-session-status]");
-		expect(dot).toHaveClass("bg-status-needs-you");
-		expect(dot).not.toHaveClass("animate-status-pulse");
 	});
 
 	it("shows sessions on load and hides them once collapsed", async () => {

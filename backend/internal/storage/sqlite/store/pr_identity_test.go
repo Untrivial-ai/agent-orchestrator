@@ -298,7 +298,7 @@ func TestPRReconciliationRepointsNotificationAndReviewHistory(t *testing.T) {
 			t.Fatalf("CreateNotification(%s) = created=%v err=%v", notification.ID, created, err)
 		}
 	}
-	review := domain.Review{ID: "review-21", SessionID: session.ID, ProjectID: "repo", Harness: domain.ReviewerCodex, PRURL: oldURL, CreatedAt: now, UpdatedAt: now}
+	review := domain.Review{ID: "review-21", SessionID: session.ID, ProjectID: "repo", Harness: domain.ReviewerOpenCode, PRURL: oldURL, CreatedAt: now, UpdatedAt: now}
 	if err := s.UpsertReview(ctx, review); err != nil {
 		t.Fatal(err)
 	}

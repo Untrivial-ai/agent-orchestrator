@@ -34,7 +34,7 @@ func sampleRecord(project string) domain.SessionRecord {
 	return domain.SessionRecord{
 		ProjectID:        domain.ProjectID(project),
 		Kind:             domain.KindWorker,
-		Harness:          domain.HarnessClaudeCode,
+		Harness:          domain.HarnessOpenCode,
 		Activity:         domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
 		Metadata:         domain.SessionMetadata{Branch: "feat/x", WorkspacePath: "/ws"},
 		AutoInjectReview: true,
@@ -51,7 +51,7 @@ func TestSessionCreateAllowsFakeHarness(t *testing.T) {
 	ctx := context.Background()
 	seedProject(t, s, "mer")
 	rec := sampleRecord("mer")
-	rec.Harness = domain.HarnessFake
+	rec.Harness = domain.HarnessOpenCode
 	if _, err := s.CreateSession(ctx, rec); err != nil {
 		t.Fatalf("create fake-harness session: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestSessionCreateAllowsPrimeAgentHarness(t *testing.T) {
 	ctx := context.Background()
 	seedProject(t, s, "mer")
 	rec := sampleRecord("mer")
-	rec.Harness = domain.HarnessPrimeAgent
+	rec.Harness = domain.HarnessOpenCode
 	if _, err := s.CreateSession(ctx, rec); err != nil {
 		t.Fatalf("create prime-agent-harness session: %v", err)
 	}
@@ -76,15 +76,15 @@ func TestSessionPersistsReviewerHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.SetSessionReviewerConfig(ctx, rec.ID, domain.ReviewerCodex, domain.AgentConfig{}, time.Now().UTC()); err != nil || !ok {
+	if ok, err := s.SetSessionReviewerConfig(ctx, rec.ID, domain.ReviewerOpenCode, domain.AgentConfig{}, time.Now().UTC()); err != nil || !ok {
 		t.Fatalf("set reviewer config = %v, %v", ok, err)
 	}
 	got, ok, err := s.GetSession(ctx, rec.ID)
 	if err != nil || !ok {
 		t.Fatalf("get session = %v, %v", ok, err)
 	}
-	if got.ReviewerHarness != domain.ReviewerCodex {
-		t.Fatalf("reviewer harness = %q, want %q", got.ReviewerHarness, domain.ReviewerCodex)
+	if got.ReviewerHarness != domain.ReviewerOpenCode {
+		t.Fatalf("reviewer harness = %q, want %q", got.ReviewerHarness, domain.ReviewerOpenCode)
 	}
 }
 
@@ -213,7 +213,7 @@ func TestRecordSessionLatestUserPromptIsNarrowAndMonotonic(t *testing.T) {
 	}
 
 	ownerAt := created.UpdatedAt.Add(2 * time.Second)
-	created.Harness = domain.HarnessCodex
+	created.Harness = domain.HarnessOpenCode
 	created.Metadata.RuntimeLaunchID = "target-generation"
 	created.Metadata.LatestAssistantUpdate = "target already owns this row"
 	created.Metadata.ConversationCheckpointState = domain.ConversationCheckpointComplete
@@ -233,7 +233,7 @@ func TestRecordSessionLatestUserPromptIsNarrowAndMonotonic(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get after stale write: ok=%v err=%v", ok, err)
 	}
-	if current.Harness != domain.HarnessCodex || current.Metadata.RuntimeLaunchID != "target-generation" || current.Metadata.LatestUserPrompt != "" {
+	if current.Harness != domain.HarnessOpenCode || current.Metadata.RuntimeLaunchID != "target-generation" || current.Metadata.LatestUserPrompt != "" {
 		t.Fatalf("stale prompt changed durable owner: %+v", current)
 	}
 
@@ -242,7 +242,7 @@ func TestRecordSessionLatestUserPromptIsNarrowAndMonotonic(t *testing.T) {
 		t.Fatalf("fresh prompt write = changed %v, err %v", changed, err)
 	}
 	current, _, _ = s.GetSession(ctx, created.ID)
-	if current.Metadata.LatestUserPrompt != "continue the target work" || !current.Metadata.LatestUserPromptAt.Equal(promptAt) || current.Harness != domain.HarnessCodex ||
+	if current.Metadata.LatestUserPrompt != "continue the target work" || !current.Metadata.LatestUserPromptAt.Equal(promptAt) || current.Harness != domain.HarnessOpenCode ||
 		current.Metadata.RuntimeLaunchID != "target-generation" || current.Metadata.LatestAssistantUpdate != "" ||
 		current.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy ||
 		current.Metadata.ConversationCheckpointGeneration != "" ||
@@ -268,7 +268,7 @@ func TestSessionCreateAllowsKimchiHarness(t *testing.T) {
 	ctx := context.Background()
 	seedProject(t, s, "mer")
 	rec := sampleRecord("mer")
-	rec.Harness = domain.HarnessKimchi
+	rec.Harness = domain.HarnessOpenCode
 	if _, err := s.CreateSession(ctx, rec); err != nil {
 		t.Fatalf("create kimchi-harness session: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestProjectConfigRoundTrips(t *testing.T) {
 		AgentRulesFile:    "docs/agent-rules.md",
 		OrchestratorRules: "Keep workers unblocked.",
 		AgentConfig:       domain.AgentConfig{Model: "claude-opus-4-5", Permissions: domain.PermissionModeAcceptEdits},
-		Worker:            domain.RoleOverride{Harness: domain.HarnessCodex},
+		Worker:            domain.RoleOverride{Harness: domain.HarnessOpenCode},
 	}
 	if err := s.UpsertProject(ctx, domain.ProjectRecord{
 		ID: "cfg", Path: "/tmp/cfg", RegisteredAt: now, Config: cfg,
@@ -536,7 +536,7 @@ func TestSessionCreateAssignsPerProjectID(t *testing.T) {
 		t.Fatalf("get: ok=%v err=%v", ok, err)
 	}
 	if got.Activity.State != domain.ActivityActive || got.IsTerminated ||
-		got.Harness != domain.HarnessClaudeCode || got.Metadata.Branch != "feat/x" {
+		got.Harness != domain.HarnessOpenCode || got.Metadata.Branch != "feat/x" {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 	if list, _ := s.ListSessions(ctx, "mer"); len(list) != 2 {
@@ -673,7 +673,7 @@ func TestDeleteSessionOnlyRemovesSeedRows(t *testing.T) {
 	seed := domain.SessionRecord{
 		ProjectID: "mer",
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessClaudeCode,
+		Harness:   domain.HarnessOpenCode,
 		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -804,6 +804,55 @@ func TestSessionTerminateOnPRMergePolicyRoundTripAndCDC(t *testing.T) {
 	ok, err = s.SetSessionTerminateOnPRMerge(ctx, "mer-missing", true, updatedAt)
 	if err != nil || ok {
 		t.Fatalf("missing policy update: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestSessionWorkflowModeRoundTripAndCDC(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "wf")
+	r, _ := s.CreateSession(ctx, sampleRecord("wf"))
+
+	got, found, err := s.GetSession(ctx, r.ID)
+	if err != nil || !found {
+		t.Fatalf("get new session: found=%v err=%v", found, err)
+	}
+	if got.WorkflowMode != domain.WorkflowModePlanning {
+		t.Fatalf("persisted workflow mode = %q, want planning", got.WorkflowMode)
+	}
+
+	base, _ := s.LatestSeq(ctx)
+	updatedAt := r.UpdatedAt.Add(time.Minute)
+	ok, err := s.SetSessionWorkflowMode(ctx, r.ID, domain.WorkflowModeBuilding, updatedAt)
+	if err != nil || !ok {
+		t.Fatalf("set workflow mode building: ok=%v err=%v", ok, err)
+	}
+	got, found, err = s.GetSession(ctx, r.ID)
+	if err != nil || !found {
+		t.Fatalf("get session: found=%v err=%v", found, err)
+	}
+	if got.WorkflowMode != domain.WorkflowModeBuilding || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("workflow mode not persisted: %+v", got)
+	}
+
+	evs, err := s.EventsAfter(ctx, base, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || string(evs[0].Type) != "session_updated" {
+		t.Fatalf("workflow change events = %+v, want one session_updated", evs)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if mode, ok := payload["workflowMode"].(string); !ok || mode != string(domain.WorkflowModeBuilding) {
+		t.Fatalf("workflowMode payload = %#v, want %q", payload["workflowMode"], domain.WorkflowModeBuilding)
+	}
+
+	ok, err = s.SetSessionWorkflowMode(ctx, "wf-missing", domain.WorkflowModeBuilding, updatedAt)
+	if err != nil || ok {
+		t.Fatalf("missing workflow mode update: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -1890,6 +1939,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.WorkflowMode = domain.NormalizeWorkflowMode(row.WorkflowMode)
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.Metadata.Permissions = tc.want
 		if tc.saved == "" {

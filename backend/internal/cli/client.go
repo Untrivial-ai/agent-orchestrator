@@ -125,10 +125,6 @@ func (c *commandContext) doJSON(ctx context.Context, method, path string, body, 
 	return c.doJSONPath(ctx, method, "/api/v1/"+path, body, out)
 }
 
-func (c *commandContext) postLoopbackJSON(ctx context.Context, path string, body any) error {
-	return c.doJSONPath(ctx, http.MethodPost, path, body, nil)
-}
-
 func (c *commandContext) doJSONPath(ctx context.Context, method, path string, body, out any) error {
 	return c.doJSONPathWithHeaders(ctx, method, path, body, out, nil)
 }

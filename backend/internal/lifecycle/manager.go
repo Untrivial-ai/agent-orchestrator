@@ -14,9 +14,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 )
 
@@ -101,22 +99,6 @@ type preparedChatSpawnStore interface {
 	) error
 }
 
-// agentSwitchSourceStopStore and agentSwitchTargetActivationStore are the
-// atomic persistence primitives used at the two agent-switch ownership
-// boundaries. They remain optional so focused lifecycle reducer fakes do not
-// need to implement the agent-switch saga; production SQLite implements both.
-type agentSwitchSourceStopStore interface {
-	ConfirmAgentSwitchSourceStopped(context.Context, domain.AgentSwitchSourceStopConfirmation) (bool, error)
-}
-
-type agentSwitchTargetActivationStore interface {
-	ActivateAgentSwitchTarget(context.Context, domain.AgentSwitchTargetActivation) (bool, error)
-}
-
-type agentSwitchChatTargetActivationStore interface {
-	ActivateChatAgentSwitchTarget(context.Context, domain.AgentSwitchChatTargetActivation) (bool, error)
-}
-
 // notificationSink is the optional lifecycle-to-notification-producer boundary.
 type notificationSink interface {
 	Notify(ctx context.Context, intent ports.NotificationIntent) error
@@ -165,11 +147,6 @@ type Option func(*Manager)
 // WithNotificationSink wires lifecycle notification intents to a write-side producer.
 func WithNotificationSink(sink notificationSink) Option {
 	return func(m *Manager) { m.notifications = sink }
-}
-
-// WithTelemetry wires lifecycle activity transitions to the shared telemetry sink.
-func WithTelemetry(sink ports.EventSink) Option {
-	return func(m *Manager) { m.telemetry = sink }
 }
 
 // WithContainerReaper wires the container leg of #2652: MarkTerminated will
@@ -239,11 +216,10 @@ type Manager struct {
 	operationGateMu  sync.RWMutex
 	operationGate    sessionOperationGate
 
-	mu        sync.Mutex
-	window    time.Duration
-	clock     func() time.Time
-	react     reactionState
-	telemetry ports.EventSink
+	mu     sync.Mutex
+	window time.Duration
+	clock  func() time.Time
+	react  reactionState
 	// flights tracks, per session, the in-flight tool executions and the
 	// pending permission dialog's identity (see toolFlight). Guarded by mu.
 	flights map[domain.SessionID]*toolFlight
@@ -369,8 +345,7 @@ func (m *Manager) CancelLaunch(id domain.SessionID, launchID string) {
 // ReleaseLaunch publishes that the caller has durably committed the prepared
 // generation. Hooks waiting behind PrepareLaunch may now re-read the session
 // row and pass normal generation fencing. Unlike MarkSpawned, this does not
-// rewrite session ownership; agent switching commits that ownership together
-// with its saga state in the AgentSwitchStore transaction.
+// rewrite session ownership.
 func (m *Manager) ReleaseLaunch(id domain.SessionID, launchID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -553,37 +528,10 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	}
 	// A response or Stop hook produced by AO's optional source handoff request
 	// may contain last_assistant_message without echoing the internal prompt.
-	// From collection through source teardown, do not let that coordination
-	// response replace the latest user-facing assistant update used by the
-	// target continuation. The semantic outcome may already be received,
-	// rejected, timed out, or failed before the provider emits its final Stop
-	// hook. not_attempted/unavailable do not prove an internal request landed,
-	// so a legitimate source update remains user-facing in those states.
-	if s.LatestAssistantUpdate != "" {
-		if switchStore, ok := m.store.(ports.AgentSwitchStore); ok {
-			if active, found, err := switchStore.GetActiveAgentSwitch(ctx, id); err == nil && found {
-				internalRequestMayHaveLanded := false
-				switch active.AgentHandoffStatus {
-				case domain.AgentHandoffRequested, domain.AgentHandoffReceived, domain.AgentHandoffTimedOut,
-					domain.AgentHandoffFailed, domain.AgentHandoffRejected:
-					internalRequestMayHaveLanded = true
-				}
-				if internalRequestMayHaveLanded {
-					switch active.State {
-					case domain.AgentSwitchPreparingHandoff, domain.AgentSwitchStoppingSource:
-						s.LatestAssistantUpdate = ""
-					}
-				}
-			}
-		}
-	}
+	// The semantic outcome may already be received, rejected, timed out, or
+	// failed before the provider emits its final Stop hook.
 	if !s.Valid && s.AgentSessionID == "" && s.LatestUserPrompt == "" && s.LatestAssistantUpdate == "" && s.TranscriptPath == "" {
 		return nil
-	}
-	if s.LaunchID != "" {
-		if err := m.stagePendingAgentSwitchNativeMetadata(ctx, id, s); err != nil {
-			return err
-		}
 	}
 	var intent *ports.NotificationIntent
 	m.mu.Lock()
@@ -714,25 +662,6 @@ retryProjection:
 		rec.Metadata.AgentSessionIDLaunchID == ownerGeneration {
 		checkpointNativeID = rec.Metadata.AgentSessionID
 	}
-	claudeNativeBoundary := rec.Harness == domain.HarnessClaudeCode && mode == domain.SessionModeTUI &&
-		ownerGeneration != "" && checkpointNativeID != "" && (s.Event == "user-prompt-submit" || s.Event == "stop")
-	if claudeNativeBoundary {
-		if checkpoint.NativeCheckpointEvidence == "" && !nativeIdentityChanged &&
-			(rec.Metadata.ConversationCheckpointState.Trusted() || rec.Metadata.ConversationCheckpointUnsettled) {
-			// A pre-upgrade pending/ambiguous boundary has no retained native witness.
-			// Starting a new evidence journal must not silently discharge that debt.
-			checkpoint.NativeCheckpointEvidence = `{"invalid":true}`
-		}
-		text := s.LatestAssistantUpdate
-		if s.Event == "user-prompt-submit" {
-			text = s.LatestUserPrompt
-		}
-		checkpoint.NativeCheckpointEvidence = domain.AppendNativeCheckpoint(
-			checkpoint.NativeCheckpointEvidence, checkpointNativeID, domain.NativeCheckpointObservation{
-				Generation: ownerGeneration, PromptID: s.ProviderTurnID, Submission: s.Event == "user-prompt-submit", SubmissionID: s.SubmissionID,
-				Text: text, Coordination: s.ConversationCheckpointOrigin == domain.ConversationCheckpointOriginCoordination,
-			})
-	}
 	switch s.Event {
 	case "user-prompt-submit":
 		if s.ConversationCheckpointOrigin == domain.ConversationCheckpointOriginCoordination {
@@ -776,9 +705,6 @@ retryProjection:
 				checkpoint.ConversationCheckpointState = domain.ConversationCheckpointPrompt
 				checkpoint.ConversationCheckpointGeneration = ownerGeneration
 				checkpoint.ConversationCheckpointNativeID = checkpointNativeID
-				if rec.Harness == domain.HarnessCodex {
-					checkpoint.ConversationCheckpointTurnID = s.ProviderTurnID
-				}
 			} else {
 				// An unowned event is retained conservatively for an ordinary strict
 				// switch, but explicit provider-history recovery may identify it as
@@ -787,14 +713,6 @@ retryProjection:
 			}
 		}
 	case "stop":
-		if claudeNativeBoundary {
-			// A queued UserPromptSubmit reuses the executing prompt_id. Never certify
-			// its text with this Stop's answer; native ancestry resolves the pair at
-			// handoff, once the source is conclusively stopped.
-			checkpoint.ConversationCheckpointUnsettled = true
-			s.LatestAssistantUpdate = ""
-			break
-		}
 		coordinationStop := s.ConversationCheckpointOrigin == domain.ConversationCheckpointOriginCoordination ||
 			(checkpoint.ConversationCheckpointState == domain.ConversationCheckpointCoordination &&
 				ownerGeneration != "" && checkpointNativeID != "" &&
@@ -920,8 +838,6 @@ retryProjection:
 		rec.Metadata = checkpoint
 		applyActivityMetadata(&rec.Metadata, s)
 	}
-	prevState := rec.Activity.State
-	prevAt := rec.Activity.LastActivityAt
 	act := domain.Activity{State: s.State, LastActivityAt: timeOr(s.Timestamp, now)}
 	sameState := sameActivity(rec.Activity, act)
 	// A same-state repeat is still a write when it is the FIRST signal for
@@ -945,7 +861,7 @@ retryProjection:
 				return nil
 			}
 			m.mu.Unlock()
-			return m.acknowledgeAgentSwitchTarget(ctx, id, s, now)
+			return nil
 		}
 		m.mu.Unlock()
 		return nil
@@ -990,106 +906,10 @@ retryProjection:
 	// Leaving the needs-input family is the user answering: the notification
 	// that pinged them has nothing left to resolve.
 	resolutions := needsInputResolutions(rec, next, now)
-	waitingEvents := m.waitingInputEvents(next, prevState, prevAt, now)
 	m.mu.Unlock()
-	if err := m.acknowledgeAgentSwitchTarget(ctx, id, s, now); err != nil {
-		return err
-	}
-	for _, ev := range waitingEvents {
-		m.emitTelemetry(ctx, ev)
-	}
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
 	return nil
-}
-
-// stagePendingAgentSwitchNativeMetadata persists provider-assigned startup
-// identity while a target hook is waiting behind PrepareLaunch. It deliberately
-// updates only the switch's retained native-session row, never the source-owned
-// session row. Once ownership transfers, ReleaseLaunch lets the same hook apply
-// its normal activity/metadata update. If the daemon crashes first, recovery
-// can still prove the target conversation is resumable.
-func (m *Manager) stagePendingAgentSwitchNativeMetadata(ctx context.Context, id domain.SessionID, s ports.ActivitySignal) error {
-	if s.AgentSessionID == "" && s.TranscriptPath == "" {
-		return nil
-	}
-	store, ok := m.store.(ports.AgentSwitchStore)
-	if !ok {
-		return nil
-	}
-	sw, found, err := store.GetActiveAgentSwitch(ctx, id)
-	if err != nil {
-		return err
-	}
-	if !found || sw.State != domain.AgentSwitchStartingTarget || string(sw.TargetGenerationID) != s.LaunchID || sw.TargetNativeSessionRef == nil {
-		return nil
-	}
-	native, found, err := store.GetAgentNativeSession(ctx, *sw.TargetNativeSessionRef)
-	if err != nil {
-		return err
-	}
-	if !found || native.AOSessionID != id || native.Harness != sw.TargetHarness || native.LastGenerationID != sw.TargetGenerationID {
-		return nil
-	}
-	changed := false
-	if s.AgentSessionID != "" && native.NativeSessionID != s.AgentSessionID {
-		if native.NativeSessionID != "" {
-			return fmt.Errorf("lifecycle: target native session identity changed from %q to %q", native.NativeSessionID, s.AgentSessionID)
-		}
-		native.NativeSessionID = s.AgentSessionID
-		changed = true
-	}
-	if s.TranscriptPath != "" && native.TranscriptPath != s.TranscriptPath {
-		native.TranscriptPath = s.TranscriptPath
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	updated, err := store.UpdateAgentNativeSession(ctx, native, sw.TargetGenerationID)
-	if err != nil {
-		return err
-	}
-	if !updated {
-		return errors.New("lifecycle: target native session metadata changed concurrently")
-	}
-	return nil
-}
-
-func (m *Manager) acknowledgeAgentSwitchTarget(ctx context.Context, id domain.SessionID, signal ports.ActivitySignal, at time.Time) error {
-	if !signal.Valid || signal.State != domain.ActivityActive || signal.Event != "user-prompt-submit" || signal.LaunchID == "" {
-		return nil
-	}
-	store, ok := m.store.(ports.AgentSwitchStore)
-	if !ok {
-		return nil
-	}
-	sw, found, err := store.GetActiveAgentSwitch(ctx, id)
-	if err != nil {
-		return fmt.Errorf("lifecycle: read active agent switch acknowledgement for %s: %w", id, err)
-	}
-	if !found || sw.State != domain.AgentSwitchDelivering {
-		return nil
-	}
-	changed, ackErr := store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
-	if changed && ackErr == nil {
-		return nil
-	}
-	current, found, readErr := store.GetAgentSwitch(ctx, sw.ID)
-	if readErr != nil {
-		return ownership.Own(fmt.Errorf("lifecycle: read back agent switch %s acknowledgement: %w", sw.ID, readErr), ownership.OwnerAgentSwitchSaga)
-	}
-	if !found || current.State.Terminal() || current.State != domain.AgentSwitchDelivering ||
-		current.TargetGenerationID != domain.AgentGenerationID(signal.LaunchID) || current.TargetAcknowledgedAt != nil {
-		return nil
-	}
-	if ackErr != nil {
-		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, ackErr), ownership.OwnerAgentSwitchSaga)
-	}
-	if changed {
-		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: commit was not observable", sw.ID), ownership.OwnerAgentSwitchSaga)
-	}
-	return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: changed=false with unchanged durable predicate", sw.ID), ownership.OwnerAgentSwitchSaga)
 }
 
 // toolFlight tracks one session's in-flight tool executions and the pending
@@ -1348,59 +1168,6 @@ func (m *Manager) applyToolPrecedenceLocked(id domain.SessionID, cur domain.Acti
 		}
 		return s
 	}
-}
-
-func (m *Manager) waitingInputEvents(next domain.SessionRecord, prevState domain.ActivityState, prevAt, now time.Time) []ports.TelemetryEvent {
-	if m.telemetry == nil {
-		return nil
-	}
-	projectID := next.ProjectID
-	sessionID := next.ID
-	var events []ports.TelemetryEvent
-	// Entry/exit is measured on the needs-input family boundary (waiting_input
-	// or blocked): the event names stay waiting_input_* for dashboard
-	// continuity, the payload state distinguishes the two, and an in-family
-	// transition emits neither event so dwell covers the whole pause.
-	if !prevState.NeedsInput() && next.Activity.State.NeedsInput() && !next.IsTerminated {
-		events = append(events, ports.TelemetryEvent{
-			Name:       "ao.session.waiting_input_entered",
-			Source:     "lifecycle",
-			OccurredAt: now.UTC(),
-			Level:      ports.TelemetryLevelInfo,
-			ProjectID:  &projectID,
-			SessionID:  &sessionID,
-			Payload: map[string]any{
-				"state": string(next.Activity.State),
-			},
-		})
-	}
-	if prevState.NeedsInput() && !next.Activity.State.NeedsInput() {
-		payload := map[string]any{
-			"state":     string(next.Activity.State),
-			"dwell_ms":  now.Sub(prevAt).Milliseconds(),
-			"exited_to": string(next.Activity.State),
-		}
-		events = append(events, ports.TelemetryEvent{
-			Name:       "ao.session.waiting_input_exited",
-			Source:     "lifecycle",
-			OccurredAt: now.UTC(),
-			Level:      ports.TelemetryLevelInfo,
-			ProjectID:  &projectID,
-			SessionID:  &sessionID,
-			Payload:    payload,
-		})
-	}
-	return events
-}
-
-func (m *Manager) emitTelemetry(ctx context.Context, ev ports.TelemetryEvent) {
-	if m.telemetry == nil {
-		return
-	}
-	if ev.RequestID == "" {
-		ev.RequestID = reqid.FromContext(ctx)
-	}
-	m.telemetry.Emit(ctx, ev)
 }
 
 func (m *Manager) emitNotification(ctx context.Context, intent *ports.NotificationIntent) {
@@ -1676,65 +1443,10 @@ func (m *Manager) changeControllerEpoch(
 	next.UpdatedAt = now
 	delete(m.flights, id)
 	resolutions := needsInputResolutions(previous, next, now)
-	waitingEvents := m.waitingInputEvents(
-		next, previous.Activity.State, previous.Activity.LastActivityAt, now,
-	)
 	m.mu.Unlock()
 
-	for _, ev := range waitingEvents {
-		m.emitTelemetry(ctx, ev)
-	}
 	m.resolveNotifications(ctx, resolutions...)
 	return true, nil
-}
-
-// ConfirmAgentSwitchSourceStopped records that the source process is gone and
-// moves the switch saga across the source-stop boundary in the same store
-// transaction. Session Manager coordinates the process; Lifecycle Manager owns
-// the durable activity-state write.
-func (m *Manager) ConfirmAgentSwitchSourceStopped(
-	ctx context.Context,
-	confirmation domain.AgentSwitchSourceStopConfirmation,
-) (bool, error) {
-	writer, ok := m.store.(agentSwitchSourceStopStore)
-	if !ok {
-		return false, fmt.Errorf("lifecycle: agent-switch source-stop persistence is unavailable")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return writer.ConfirmAgentSwitchSourceStopped(ctx, confirmation)
-}
-
-// ActivateAgentSwitchTarget atomically transfers the session owner to the
-// target process and advances the switch saga. Keeping this command on
-// Lifecycle Manager preserves the canonical write boundary without splitting
-// the store's all-or-nothing transaction.
-func (m *Manager) ActivateAgentSwitchTarget(
-	ctx context.Context,
-	activation domain.AgentSwitchTargetActivation,
-) (bool, error) {
-	writer, ok := m.store.(agentSwitchTargetActivationStore)
-	if !ok {
-		return false, fmt.Errorf("lifecycle: agent-switch target activation persistence is unavailable")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return writer.ActivateAgentSwitchTarget(ctx, activation)
-}
-
-// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session
-// from the fenced source generation to the structured target controller.
-func (m *Manager) ActivateChatAgentSwitchTarget(
-	ctx context.Context,
-	activation domain.AgentSwitchChatTargetActivation,
-) (bool, error) {
-	writer, ok := m.store.(agentSwitchChatTargetActivationStore)
-	if !ok {
-		return false, fmt.Errorf("lifecycle: Chat agent-switch target activation persistence is unavailable")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return writer.ActivateChatAgentSwitchTarget(ctx, activation)
 }
 
 // MarkTerminated marks a session terminated. Runtime/workspace teardown is the

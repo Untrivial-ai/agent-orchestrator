@@ -135,14 +135,14 @@ describe("ChatWorkspace rollback", () => {
 
 	it("shows the thread title in the primary agent tab when there is one", () => {
 		render(<ChatWorkspace snapshot={{ ...chatFixture, title: "Fix OAuth Return URL Loss" }} />);
-		expect(screen.getByRole("tab", { name: "Fix OAuth Return URL Loss · Codex" })).toBeInTheDocument();
-		expect(screen.queryByText("Codex")).toBeNull();
+		expect(screen.getByRole("tab", { name: "Fix OAuth Return URL Loss · OpenCode" })).toBeInTheDocument();
+		expect(screen.queryByText("OpenCode")).toBeNull();
 		expect(screen.queryByText(chatFixture.sessionId)).toBeNull();
 	});
 
 	it("falls back to the session id when the thread has no name", () => {
 		render(<ChatWorkspace snapshot={chatFixture} />);
-		expect(screen.getByRole("tab", { name: `${chatFixture.sessionId} · Codex` })).toBeInTheDocument();
-		expect(screen.queryByText("Codex")).toBeNull();
+		expect(screen.getByRole("tab", { name: `${chatFixture.sessionId} · OpenCode` })).toBeInTheDocument();
+		expect(screen.queryByText("OpenCode")).toBeNull();
 	});
 });

@@ -7,16 +7,9 @@ import (
 
 // UsageSourceKind identifies the native artifact shape that produced usage
 // facts. It is deliberately narrower than AgentHarness: only certified usage
-// sources get persisted in the V1 usage pipeline.
+// sources get persisted in the V1 usage pipeline. opencode has no certified
+// transcript pipeline, so no source kind is currently registered.
 type UsageSourceKind string
-
-// UsageSourceKind values identify certified native usage artifact shapes.
-const (
-	UsageSourceClaudeMain     UsageSourceKind = "claude_main"
-	UsageSourceClaudeSubagent UsageSourceKind = "claude_subagent"
-	UsageSourceCodexRollout   UsageSourceKind = "codex_rollout"
-	UsageSourceKimiWire       UsageSourceKind = "kimi_wire"
-)
 
 // UsageBindingState tracks the root native-session binding lifecycle.
 type UsageBindingState string
@@ -56,7 +49,6 @@ const (
 	UsageErrorNonMonotonicCumulativeUsage = "non_monotonic_cumulative_usage"
 	UsageErrorInvalidParserState          = "invalid_parser_state"
 	UsageErrorUnresolvedSpawnCall         = "unresolved_spawn_call"
-	UsageErrorCodexSourceBudgetExceeded   = "codex_source_budget_exceeded"
 )
 
 // Usage ingestion sentinel errors report replay and cursor conflicts.
@@ -129,8 +121,7 @@ type UsageMeasurementKind string
 // Usage measurement kinds.
 const (
 	// UsageMeasurementNativeReported means the counters came from a native
-	// provider or CLI usage record. Exact arithmetic over native counters —
-	// subtracting Codex cumulative totals, summing Claude cache buckets — does
+	// provider or CLI usage record. Exact arithmetic over native counters does
 	// not make an event estimated.
 	UsageMeasurementNativeReported UsageMeasurementKind = "native_reported"
 	// UsageMeasurementAOEstimated means AO approximated counters without native ones.

@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 const LAST_UPDATED = "19 August 2026";
 
 const description =
-  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and orchestrator.inc: local-first operation, optional analytics, waitlists, and testimonial submissions.";
+  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and orchestrator.inc: local-first operation, waitlists, and testimonial submissions.";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
@@ -136,13 +136,11 @@ export default function PrivacyPage() {
               own machine. No account is required, and no hosted AO service stores
               your work. We never see your source code, prompts, agent output,
               terminal contents, repository names, or file paths, and we never
-              sell or rent data to anyone. The desktop app sends{" "}
-              <Strong>anonymous, redacted usage telemetry</Strong> so we can tell
-              whether releases are stable — you can turn it off. Website analytics
-              stay off until you accept them. If you voluntarily join a
-              waitlist or send us a testimonial, we process the details you
-              submit only for the purpose described on that form. The mobile
-              app sends <Strong>no telemetry at all</Strong>{" "}
+              sell or rent data to anyone. The desktop app and this website send{" "}
+              <Strong>no telemetry and run no analytics</Strong>. If you
+              voluntarily join a waitlist or send us a testimonial, we process
+              the details you submit only for the purpose described on that
+              form. The mobile app sends <Strong>no telemetry at all</Strong>{" "}
               and talks only to the server you point it at.
             </p>
           </div>
@@ -197,10 +195,10 @@ export default function PrivacyPage() {
               on hardware you control.
             </p>
             <p>
-              The AI coding agents you run inside AO (Claude Code, Codex,
-              Cursor, and others) are separate third-party tools with their own
-              privacy policies. AO launches them locally; it does not intercept,
-              store, or forward what they send to their own providers.
+              The AI coding agent you run inside AO (OpenCode) is a separate
+              third-party tool with its own privacy policy. AO launches it
+              locally; it does not intercept, store, or forward what it sends to
+              its own provider.
             </p>
           </Section>
 
@@ -281,118 +279,34 @@ export default function PrivacyPage() {
               own disk and is never uploaded to us.
             </p>
             <p>
-              To understand reliability and which features are actually used,
-              the desktop app sends{" "}
-              <Strong>anonymous, sanitized usage events</Strong> to{" "}
-              <Ext href="https://posthog.com/privacy">PostHog</Ext>.
-              Specifically:
-            </p>
-            <Bullets>
-              <Bullet>
-                App activation (capped to one event per six-hour UTC slot per
-                install and channel), screen or route views grouped into coarse
-                surface names, and coarse UI actions such as creating a task or
-                starting a session.
-              </Bullet>
-              <Bullet>
-                Operational events from the local daemon: command invocation,
-                session spawn and failure, waiting-for-input transitions, HTTP
-                5xx errors, and crashes.
-              </Bullet>
-              <Bullet>
-                Crash and exception reports, reduced to an error name and a
-                coarse context label.
-              </Bullet>
-              <Bullet>
-                AO version, operating system platform, and build mode.
-              </Bullet>
-            </Bullets>
-            <p>Before anything leaves your machine:</p>
-            <Bullets>
-              <Bullet>
-                Absolute file paths (<Code>/Users/…</Code>, <Code>/home/…</Code>
-                , <Code>C:\…</Code>) are replaced with{" "}
-                <Code>[redacted-local-path]</Code>.
-              </Bullet>
-              <Bullet>
-                Local URLs (<Code>file://</Code>, <Code>localhost</Code>,{" "}
-                <Code>127.0.0.1</Code>) are replaced with{" "}
-                <Code>[redacted-local-url]</Code>.
-              </Bullet>
-              <Bullet>
-                Project and session identifiers are one-way hashed (SHA-256) and
-                never sent in plain text.
-              </Bullet>
-              <Bullet>
-                Daemon events pass through a strict allowlist, so only
-                known-safe fields are ever exported.
-              </Bullet>
-            </Bullets>
-            <p>
-              Events are sent as <Strong>anonymous</Strong> PostHog events — no
-              person profiles are created and the app never calls{" "}
-              <Code>identify()</Code>. A random install identifier generated on
-              first run and stored at{" "}
-              <Code>~/.ao/data/telemetry_install_id</Code> is used to
-              deduplicate counts. It is not linked to any account, email, or
-              name. Approximate country is derived by PostHog from the
-              connection's IP address; AO itself never sends location data.
-            </p>
-            <p>
-              The desktop app does <Strong>not</Strong> currently send PostHog{" "}
-              <Strong>session recordings</Strong>. Session recording is disabled
-              by default; if a time-boxed investigation enables it, local paths,
-              local URLs, and network request names are masked before
-              transmission. It would cover the AO interface only — never other
-              applications, never your desktop, and never keystroke content.
-            </p>
-
-            <div className="rounded-[8px] border border-border bg-card/50 p-5">
-              <p className="text-[15px] leading-[1.75] text-muted-foreground">
-                <Strong>Turning telemetry off.</Strong> Set{" "}
-                <Code>AO_TELEMETRY_EVENTS=off</Code> and{" "}
-                <Code>AO_TELEMETRY_REMOTE=off</Code> in the daemon's environment
-                to stop daemon events. Because AO is open source, you can also
-                build it yourself with an empty <Code>VITE_AO_POSTHOG_KEY</Code>
-                , which removes transmission entirely. See{" "}
-                <Ext href="https://github.com/Untrivial-ai/agent-orchestrator/blob/main/docs/telemetry.md">
-                  docs/telemetry.md
-                </Ext>{" "}
-                for the full, source-level detail.
-              </p>
-            </div>
-
-            <p>
-              If you connect a GitHub account for pull-request and CI awareness,
-              AO uses your existing local GitHub credentials to talk to GitHub
-              directly from your machine. Those credentials stay on your machine
-              and are never transmitted to us.
+              The desktop app, CLI, and local daemon send{" "}
+              <Strong>no telemetry of any kind</Strong>. Nothing leaves your
+              machine for product analytics: no usage events, no crash reports,
+              no version or OS probes. If you connect a GitHub account for
+              pull-request and CI awareness, AO uses your existing local GitHub
+              credentials to talk to GitHub directly from your machine. Those
+              credentials stay on your machine and are never transmitted to us.
             </p>
           </Section>
 
           <Section id="website" title="This website">
             <p>
-              orchestrator.inc is a static site and runs no advertising. It uses
-              PostHog analytics cookies to understand site usage and improve the
-              experience, but analytics collection is disabled by default until
-              you select <Strong>Accept</Strong>. Selecting opt-out keeps
-              collection disabled. The choice is stored in your browser's local
-              storage, no PostHog person profile is created, and session
-              recording is disabled on the marketing site.
+              orchestrator.inc is a static site and runs{" "}
+              <Strong>no advertising and no analytics</Strong>. It sets no
+              tracking cookies and loads no third-party analytics scripts, so
+              nothing about your visit is collected or stored beyond the
+              standard server logs described below.
             </p>
             <p>
-              Optional waitlists and testimonial submissions are separate from
-              analytics. When you submit one, the details requested by that form
-              are sent to the relevant submission endpoint and stored solely to
-              manage that request. Waitlist forms may also send their requested
-              details to PostHog even if you opted out of site analytics;
-              submitting a form does not enable analytics for later browsing.
-              Testimonial submissions include the testimonial, your public
-              LinkedIn profile URL, and any optional public X post URL. We use
-              those details to review and, with the permission granted on the
-              form, publish your testimonial with public attribution on the AO
-              website. Fonts are self-hosted. Other services involved when you
-              browse are:
+              Voluntary waitlists and testimonial submissions are separate from
+              any site behavior. When you submit one, the details requested by
+              that form are sent to the relevant submission endpoint and stored
+              solely to manage that request. Testimonial submissions include the
+              testimonial, your public LinkedIn profile URL, and any optional
+              public X post URL. We use those details to review and, with the
+              permission granted on the form, publish your testimonial with
+              public attribution on the AO website. Fonts are self-hosted. Other
+              services involved when you browse are:
             </p>
             <Bullets>
               <Bullet>
@@ -453,12 +367,6 @@ export default function PrivacyPage() {
               specific feature work:
             </p>
             <Bullets>
-              <Bullet>
-                <Strong>PostHog</Strong> — product analytics for the desktop
-                app, CLI, and website, plus storage of voluntarily submitted
-                waitlist details (
-                <Ext href="https://posthog.com/privacy">privacy policy</Ext>).
-              </Bullet>
               <Bullet>
                 <Strong>Expo Push Service</Strong> — relays mobile push
                 notifications (
@@ -530,20 +438,10 @@ export default function PrivacyPage() {
                 removes all desktop state.
               </Bullet>
               <Bullet>
-                <Strong>Local daemon telemetry.</Strong> Retained in a local
-                SQLite database for 30 days, then discarded.
-              </Bullet>
-              <Bullet>
-                <Strong>Anonymous analytics.</Strong> Retained by PostHog under
-                their standard retention schedule. Because these events carry no
-                identifier tied to you personally, we generally cannot link them
-                back to an individual.
-              </Bullet>
-              <Bullet>
-                <Strong>Waitlist details.</Strong> Retained in PostHog while
-                needed to notify you about the relevant release or AO Cloud
-                access, then deleted. You may request earlier deletion using the
-                private contact address below.
+                <Strong>Waitlist details.</Strong> Retained only while needed to
+                notify you about the relevant release or AO Cloud access, then
+                deleted. You may request earlier deletion using the private
+                contact address below.
               </Bullet>
               <Bullet>
                 <Strong>Testimonial submissions.</Strong> Retained while they
@@ -564,9 +462,7 @@ export default function PrivacyPage() {
             <p>
               In practice, nearly all data AO touches is already in your own
               hands: delete the app, delete <Code>~/.ao</Code>, and it is gone.
-              For the anonymous telemetry, the most direct way to exercise
-              control is to turn it off using the settings described above. If
-              you submitted a waitlist email or believe we hold other data about
+              If you submitted a waitlist email or believe we hold other data about
               you, contact us privately at{" "}
               <Ext href={COMPANY.MAIL_TO}>{COMPANY.MAIL_TO.replace("mailto:", "")}</Ext>{" "}
               and we will act on the request. We do not sell or share personal

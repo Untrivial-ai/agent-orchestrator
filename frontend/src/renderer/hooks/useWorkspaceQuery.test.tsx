@@ -4,15 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { WorkspaceSummary } from "../types/workspace";
 
-const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, setQueryHealthyMock } = vi.hoisted(
+const { cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock } = vi.hoisted(
 	() => ({
-		captureRendererEventMock: vi.fn().mockResolvedValue(undefined),
 		cloudState: { ready: false, org: undefined as { id: string } | undefined },
 		getMock: vi.fn(),
 		hasTrustedApiBaseUrlMock: vi.fn(() => true),
 		listProjectsMock: vi.fn(),
 		listSessionsMock: vi.fn(),
-		setQueryHealthyMock: vi.fn(),
 	}),
 );
 
@@ -20,9 +18,6 @@ vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock },
 	hasTrustedApiBaseUrl: hasTrustedApiBaseUrlMock,
 }));
-
-vi.mock("../lib/telemetry", () => ({ captureRendererEvent: captureRendererEventMock }));
-vi.mock("../lib/agent-switch-visibility", () => ({ agentSwitchVisibility: { setQueryHealthy: setQueryHealthyMock } }));
 
 vi.mock("./useCloudCp", () => ({
 	useCloudCp: () => ({
@@ -56,14 +51,12 @@ function respondWith(payload: {
 }
 
 beforeEach(() => {
-	captureRendererEventMock.mockClear();
 	getMock.mockReset();
 	hasTrustedApiBaseUrlMock.mockReset().mockReturnValue(true);
 	cloudState.ready = false;
 	cloudState.org = undefined;
 	listProjectsMock.mockReset();
 	listSessionsMock.mockReset().mockResolvedValue({ items: [] });
-	setQueryHealthyMock.mockReset();
 });
 
 describe("useWorkspaceQuery", () => {
@@ -77,7 +70,6 @@ describe("useWorkspaceQuery", () => {
 		await waitFor(() => expect(result.current.isSuccess).toBe(true));
 		expect(result.current.data?.[0].sessions[0]).toMatchObject({ status: "unknown", statusReadiness });
 		expect(result.current.data?.[0].sessions[0].activity).toBeUndefined();
-		expect(captureRendererEventMock).not.toHaveBeenCalled();
 	});
 
 	it("rejects workspace reads while the daemon base URL is untrusted", async () => {
@@ -116,7 +108,7 @@ describe("useWorkspaceQuery", () => {
 							displayName: "fix-bug",
 							issueId: "github:acme/project-one#42",
 							harness: "claude-code",
-							reviewerHarness: "agy",
+							reviewerHarness: "opencode",
 							branch: "qa/modal-worker",
 							status: "mergeable",
 							scmStatus: "review_pending",
@@ -126,27 +118,12 @@ describe("useWorkspaceQuery", () => {
 							autoInjectReview: false,
 							autoInjectCI: false,
 							activity: { state: "idle", lastActivityAt: "2026-06-10T15:30:00Z" },
-							activeAgentSwitch: {
-								agentHandoffStatus: "received",
-								errorCode: "delivery_unconfirmed",
-								fromHarness: "claude-code",
-								id: "switch-1",
-								privateFutureField: "must-not-leak",
-								requestedAt: "2026-06-10T15:31:00Z",
-								semanticHandoffIncluded: true,
-								sessionId: "sess-1",
-								sourceTranscriptStatus: "available",
-								state: "delivering_context",
-								targetHarness: "codex",
-								targetStartMode: "resumed",
-								updatedAt: "2026-06-10T15:32:00Z",
-							},
 							lastUserMessageAt: "2026-06-10T16:10:00Z",
 							updatedAt: "2026-06-10T16:15:04Z",
 						},
 						{
 							// Unknown harness/status and no displayName/issueId: falls back
-							// to codex / unknown / the session id.
+							// to opencode / unknown / the session id.
 							id: "sess-2",
 							projectId: "proj-1",
 							harness: "mystery-agent",
@@ -171,7 +148,7 @@ describe("useWorkspaceQuery", () => {
 			id: "proj-1",
 			name: "my-app",
 			path: "/home/me/my-app",
-			orchestratorAgent: "codex",
+			orchestratorAgent: "opencode",
 		});
 		expect(workspace.sessions).toHaveLength(2);
 		expect(workspace.sessions[0]).toMatchObject({
@@ -180,8 +157,8 @@ describe("useWorkspaceQuery", () => {
 			terminalGeneration: "launch-2",
 			title: "fix-bug",
 			issueId: "github:acme/project-one#42",
-			provider: "claude-code",
-			reviewerHarness: "agy",
+			provider: "opencode",
+			reviewerHarness: "opencode",
 			branch: "qa/modal-worker",
 			status: "mergeable",
 			scmStatus: "review_pending",
@@ -192,32 +169,15 @@ describe("useWorkspaceQuery", () => {
 			autoInjectReview: false,
 			autoInjectCI: false,
 		});
-		expect(workspace.sessions[0].activeAgentSwitch).toEqual({
-			agentHandoffStatus: "received",
-			errorCode: "delivery_unconfirmed",
-			fromHarness: "claude-code",
-			id: "switch-1",
-			state: "delivering_context",
-			targetHarness: "codex",
-			updatedAt: "2026-06-10T15:32:00Z",
-		});
 		expect(workspace.sessions[1]).toMatchObject({
 			id: "sess-2",
 			title: "sess-2",
-			provider: "codex",
+			provider: "opencode",
 			reviewerHarness: undefined,
 			status: "unknown",
 			branch: undefined,
 			autoInjectReview: true,
 			autoInjectCI: true,
-		});
-		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_state_unknown", {
-			field: "status",
-			reason: "unrecognized",
-		});
-		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_state_unknown", {
-			field: "activity",
-			reason: "missing",
 		});
 	});
 
@@ -324,7 +284,7 @@ describe("useWorkspaceQuery", () => {
 			workspaceId: "proj-1",
 			workspaceName: "workspace3",
 			title: "orchestrate",
-			provider: "codex",
+			provider: "opencode",
 			kind: "orchestrator",
 		});
 		await waitFor(() => {
@@ -490,7 +450,6 @@ describe("useWorkspaceQuery", () => {
 
 		await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 3_000 });
 		expect(result.current.error).toBe(failure);
-		expect(setQueryHealthyMock).toHaveBeenCalledWith("history", false, "workspaces");
 	});
 
 	it("surfaces a sessions fetch error even when projects load", async () => {

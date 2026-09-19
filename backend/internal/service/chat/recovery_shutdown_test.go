@@ -45,7 +45,7 @@ func TestRequiredHistoryCannotAdoptTargetWhoseShutdownFailed(t *testing.T) {
 	})
 	t.Cleanup(func() { svc.StopAll(ctx) })
 	cfg := chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	}
 	_, firstErr := svc.Start(ctx, cfg)

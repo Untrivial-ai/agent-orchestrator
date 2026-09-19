@@ -20,14 +20,14 @@ startup and use it as the base for the daemon's environment.
 
 The Electron supervisor spawns the Go daemon with the environment it forwards in
 `daemonEnv()` (`frontend/src/main.ts`), which is essentially `...process.env`
-plus AO's telemetry defaults. The daemon, in turn, is the parent of every agent
-session (it execs `tmux`, which runs `claude`/`codex`, etc.), and the agent's
+(telemetry env vars no longer exist after the telemetry removal). The daemon, in turn, is the parent of every agent
+session (it execs `tmux`, which runs the session agent CLI — `opencode`), and the agent's
 `PATH` is derived from the daemon's own `PATH`
 (`runtimeEnv` -> `HookPATH(m.executable, os.Getenv, ...)` in
 `backend/internal/session_manager/manager.go`).
 
 AO keeps an AO-only directory first after adding agent and Node runtime
-directories, including Codex Chat provider launches, and applies the same pin
+directories, including opencode Chat provider launches, and applies the same pin
 to reviewer and shell-terminal launches.
 Interactive login shells can still reorder `PATH` through user startup files,
 so this is a launch invariant and a best-effort convenience inside a shell.
@@ -39,7 +39,7 @@ entries in that isolated directory.
 So whatever environment the daemon receives propagates to the entire stack:
 
 ```
-launchd (or terminal) -> Electron main -> daemon -> tmux -> agent (claude/codex)
+launchd (or terminal) -> Electron main -> daemon -> tmux -> agent (opencode)
 ```
 
 When that environment is impoverished, everything downstream breaks.
@@ -93,12 +93,12 @@ Forwarding the environment is not the bug. The daemon and agents genuinely need:
 
 - `PATH` to resolve `git`, `node`, and the agent CLIs (plus tmux in development
   and standalone daemon runs);
-- `HOME` for config/credentials (`~/.gitconfig`, `~/.claude`, `~/.codex`, ssh
+- `HOME` for config/credentials (`~/.gitconfig`, `~/.config/opencode`, ssh
   keys);
 - shell-exported credentials (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`,
   ...);
 - locale/proxy (`LANG`, `LC_*`, `HTTPS_PROXY`);
-- AO's own vars (telemetry, `AO_DATA_DIR`, `AO_RUN_FILE`, session ids).
+- AO's own vars (`AO_DATA_DIR`, `AO_RUN_FILE`, session ids).
 
 The bug is the _source_ of what we forward: under a GUI launch, `process.env` is
 launchd's minimal env, not the shell's. The fix is to forward a _good_ base env,

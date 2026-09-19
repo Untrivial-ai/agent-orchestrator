@@ -23,48 +23,6 @@ type openAPISchemaNode struct {
 	OneOf      []openAPISchemaNode          `yaml:"oneOf"`
 }
 
-func TestBuild_CodexSwitchContractIsRedactedAndOnlyMountedRoutesAreDocumented(t *testing.T) {
-	got, err := specgen.Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	var doc struct {
-		Paths      map[string]any `yaml:"paths"`
-		Components struct {
-			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
-		} `yaml:"components"`
-	}
-	if err := yaml.Unmarshal(got, &doc); err != nil {
-		t.Fatalf("parse generated OpenAPI: %v", err)
-	}
-
-	phase := doc.Components.Schemas["CodexAccountSwitchResponse"].Properties["phase"]
-	want := []string{
-		"requested", "checkpointing_source", "activating_target",
-		"recovery_required", "completed", "failed",
-	}
-	if !slices.Equal(phase.Enum, want) {
-		t.Fatalf("CodexAccountSwitchResponse.phase enum = %v, want %v", phase.Enum, want)
-	}
-	for _, obsolete := range []string{"sessions"} {
-		if _, ok := doc.Components.Schemas["CodexAccountSwitchResponse"].Properties[obsolete]; ok {
-			t.Fatalf("obsolete %q remains in CodexAccountSwitchResponse", obsolete)
-		}
-		if _, ok := doc.Components.Schemas["StartCodexAccountSwitchRequest"].Properties[obsolete]; ok {
-			t.Fatalf("obsolete %q remains in StartCodexAccountSwitchRequest", obsolete)
-		}
-	}
-	if _, ok := doc.Components.Schemas["CodexAccountSwitchSessionResponse"]; ok {
-		t.Fatal("obsolete CodexAccountSwitchSessionResponse schema remains")
-	}
-	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}"]; !ok {
-		t.Fatal("durable switch GET path is missing from generated contract")
-	}
-	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}/cancel"]; ok {
-		t.Fatal("stale switch cancel path remains in generated contract")
-	}
-}
-
 // TestBuild_MatchesEmbedded is the drift guard: the committed (embedded)
 // openapi.yaml must equal fresh Build() output. If this fails, run
 // `go generate ./...` and commit the result.
@@ -94,24 +52,24 @@ func TestBuild_InstallJobTargetRemainsAnEnum(t *testing.T) {
 		t.Fatalf("parse generated OpenAPI: %v", err)
 	}
 	targets := doc.Components.Schemas["InstallJob"].Properties["target"].Enum
-	for _, target := range []string{"tmux", "cloudflared", "cursor", "prime-agent"} {
+	for _, target := range []string{"tmux", "cloudflared", "opencode"} {
 		if !slices.Contains(targets, target) {
 			t.Fatalf("InstallJob.target enum = %v, missing %q", targets, target)
 		}
 	}
 }
 
-func TestBuild_SpawnHarnessEnumIncludesPrimeAgent(t *testing.T) {
+func TestBuild_SpawnHarnessEnumIncludesOpenCode(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if !strings.Contains(string(got), "          - prime-agent\n") {
-		t.Fatal("SpawnSessionRequest harness enum does not contain prime-agent")
+	if !strings.Contains(string(got), "          - opencode\n") {
+		t.Fatal("SpawnSessionRequest harness enum does not contain opencode")
 	}
 }
 
-func TestBuild_DelegateAgentEnumIncludesPrimeAgent(t *testing.T) {
+func TestBuild_DelegateAgentEnumIncludesOpenCode(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -129,8 +87,8 @@ func TestBuild_DelegateAgentEnumIncludesPrimeAgent(t *testing.T) {
 		t.Fatalf("parse generated OpenAPI: %v", err)
 	}
 	agents := doc.Components.Schemas["DelegateTaskRequest"].Properties["agent"].Enum
-	if !slices.Contains(agents, "prime-agent") {
-		t.Fatalf("DelegateTaskRequest agent enum = %v, want prime-agent", agents)
+	if !slices.Contains(agents, "opencode") {
+		t.Fatalf("DelegateTaskRequest agent enum = %v, want opencode", agents)
 	}
 }
 
@@ -238,45 +196,6 @@ func schemaAllowsNull(node openAPISchemaNode) bool {
 		return false
 	}
 	return containsNull(node.Type)
-}
-
-func TestBuild_OMPIsPubliclySpawnable(t *testing.T) {
-	doc := buildSchemas(t)
-	harnesses := doc.Components.Schemas["SpawnSessionRequest"].Properties["harness"].Enum
-	if !slices.Contains(harnesses, "omp") {
-		t.Fatalf("SpawnSessionRequest harness enum = %v, want omp", harnesses)
-	}
-}
-
-func TestBuild_OMPIsPubliclyDelegatable(t *testing.T) {
-	doc := buildSchemas(t)
-	agents := doc.Components.Schemas["DelegateTaskRequest"].Properties["agent"].Enum
-	if !slices.Contains(agents, "omp") {
-		t.Fatalf("DelegateTaskRequest agent enum = %v, want omp", agents)
-	}
-}
-
-type schemaDocument struct {
-	Components struct {
-		Schemas map[string]struct {
-			Properties map[string]struct {
-				Enum []string `yaml:"enum"`
-			} `yaml:"properties"`
-		} `yaml:"schemas"`
-	} `yaml:"components"`
-}
-
-func buildSchemas(t *testing.T) schemaDocument {
-	t.Helper()
-	got, err := specgen.Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	var doc schemaDocument
-	if err := yaml.Unmarshal(got, &doc); err != nil {
-		t.Fatalf("parse generated OpenAPI: %v", err)
-	}
-	return doc
 }
 
 // TestBuild_Deterministic guards against nondeterministic output (which would

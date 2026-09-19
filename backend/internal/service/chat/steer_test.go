@@ -145,7 +145,7 @@ func restartSteerService(
 		Now: h.now,
 	})
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
 	}); err != nil {
 		t.Fatalf("restart service: %v", err)

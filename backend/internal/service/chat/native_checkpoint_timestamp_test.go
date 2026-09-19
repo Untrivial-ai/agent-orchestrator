@@ -15,7 +15,7 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 )
 
-func TestNativeReplayDoesNotSupersedeNewHooksWithRepeatedText(t *testing.T) {
+func TestNativeReplaySettlesMatchingHooksAndRejectsConflictingOnes(t *testing.T) {
 	repeatedPrompt := ports.ActivitySignal{Event: "user-prompt-submit", LatestUserPrompt: "continue"}
 	repeatedAnswer := ports.ActivitySignal{Event: "stop", LatestAssistantUpdate: "yes"}
 	repeatedLatest := ports.ActivitySignal{Event: "user-prompt-submit", LatestUserPrompt: "different task", LatestAssistantUpdate: "new answer"}
@@ -35,15 +35,15 @@ func TestNativeReplayDoesNotSupersedeNewHooksWithRepeatedText(t *testing.T) {
 		{name: "repeated_prompt", newHook: repeatedPrompt, wantErr: ports.ErrChatHistoryUnsettled},
 		{name: "repeated_answer", newHook: repeatedAnswer, wantErr: ports.ErrChatHistoryUnsettled},
 		{name: "repeated_failed_prompt", firstTurnState: domain.TurnStateFailed, newHook: repeatedPrompt, wantErr: ports.ErrChatHistoryUnsettled},
-		{name: "repeated_latest", newHook: repeatedLatest, wantErr: ports.ErrChatHistoryUnsettled},
-		{name: "repeated_latest_with_failed_turn", firstTurnState: domain.TurnStateFailed, newHook: repeatedLatest, wantErr: ports.ErrChatHistoryUnsettled},
-		{name: "repeated_latest_with_boundary", withBoundary: true, newHook: repeatedLatest, wantErr: ports.ErrChatHistoryUnsettled},
-		{name: "repeated_latest_reassigned", reassignReplayIDs: true, newHook: repeatedLatest, wantErr: ports.ErrChatHistoryUnsettled},
+		{name: "repeated_latest", newHook: repeatedLatest},
+		{name: "repeated_latest_with_failed_turn", firstTurnState: domain.TurnStateFailed, newHook: repeatedLatest},
+		{name: "repeated_latest_with_boundary", withBoundary: true, newHook: repeatedLatest},
+		{name: "repeated_latest_reassigned", reassignReplayIDs: true, newHook: repeatedLatest},
 		{name: "repeated_latest_complete", withTerminalTurn: true, newHook: repeatedLatest},
 		{name: "repeated_latest_reassigned_complete", reassignReplayIDs: true, withTerminalTurn: true, newHook: repeatedLatest},
-		{name: "repeated_latest_recovered", lastTurnState: domain.TurnStateRecovered, newHook: repeatedLatest, wantErr: ports.ErrChatHistoryUnsettled},
+		{name: "repeated_latest_recovered", lastTurnState: domain.TurnStateRecovered, newHook: repeatedLatest},
 		{name: "repeated_latest_recovered_complete", lastTurnState: domain.TurnStateRecovered, withTerminalTurn: true, newHook: repeatedLatest},
-		{name: "repeated_latest_only_recovered", firstTurnState: domain.TurnStateRecovered, lastTurnState: domain.TurnStateRecovered, newHook: repeatedLatest, wantErr: ports.ErrChatHistoryUnsettled},
+		{name: "repeated_latest_only_recovered", firstTurnState: domain.TurnStateRecovered, lastTurnState: domain.TurnStateRecovered, newHook: repeatedLatest},
 		{name: "repeated_latest_only_recovered_complete", firstTurnState: domain.TurnStateRecovered, lastTurnState: domain.TurnStateRecovered, withTerminalTurn: true, newHook: repeatedLatest},
 		{name: "repeated_latest_subagent_stop_complete", withSubagentStop: true, withTerminalTurn: true, newHook: repeatedLatest},
 	} {
@@ -142,7 +142,7 @@ func TestNativeReplayDoesNotSupersedeNewHooksWithRepeatedText(t *testing.T) {
 			provider := &nativeHistoryConversation{fakeConversation: newFakeConversation(), events: events}
 			svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: snapshotReader(st), Drivers: fakeRegistry{driver: fakeDriver{conv: provider}}, NewID: uuid.NewString})
 			t.Cleanup(func() { svc.StopAll(ctx) })
-			_, err = svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired})
+			_, err = svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode, ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Start error = %v, want %v", err, tc.wantErr)
 			}

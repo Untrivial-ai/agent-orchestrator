@@ -13,7 +13,6 @@ import (
 type agentOperationKind string
 
 const (
-	agentOperationSwitch            agentOperationKind = "switch"
 	agentOperationExit              agentOperationKind = "exit"
 	agentOperationResume            agentOperationKind = "resume"
 	agentOperationKill              agentOperationKind = "kill"
@@ -25,6 +24,11 @@ const (
 
 var errAgentOperationInProgress = errors.New("session: another exclusive operation is in progress")
 
+// errInterfaceRecoveryShutdown is returned by beginInterfaceRecoveryWorker once
+// daemon shutdown has closed worker admission. Callers preserve the deferred
+// input fence so the next boot still recovers the interrupted transition.
+var errInterfaceRecoveryShutdown = errors.New("session: interface recovery unavailable during shutdown")
+
 var _ sessionguard.InputLease = (*Manager)(nil)
 
 // AcquireSessionInput atomically admits one pane write unless an exclusive
@@ -34,7 +38,7 @@ var _ sessionguard.InputLease = (*Manager)(nil)
 func (m *Manager) AcquireSessionInput(id domain.SessionID) (release func(), ok bool) {
 	id = domain.SessionID(strings.TrimSpace(string(id)))
 	m.agentOpMu.Lock()
-	if m.agentOperationActiveLocked(id) && !m.agentSwitchDecisionInputAllowedLocked(id) {
+	if m.agentOperationActiveLocked(id) {
 		m.agentOpMu.Unlock()
 		return nil, false
 	}
@@ -79,19 +83,6 @@ func (m *Manager) agentOperationActiveLocked(id domain.SessionID) bool {
 	_, ok := m.agentOperations[id]
 	_, deferred := m.deferredInterfaceRecovery[id]
 	return ok || deferred
-}
-
-func (m *Manager) agentSwitchDecisionInputAllowedLocked(id domain.SessionID) bool {
-	if _, deferred := m.deferredInterfaceRecovery[id]; deferred {
-		return false
-	}
-	switch m.agentOperations[id] {
-	case agentOperationSwitch:
-		_, allowed := m.switchDecisionInput[id]
-		return allowed
-	default:
-		return false
-	}
 }
 
 // beginAgentOperation closes input admission before waiting for already-issued
@@ -171,10 +162,6 @@ func (m *Manager) beginAgentOperations(ctx context.Context, ids []domain.Session
 func (m *Manager) endAgentOperation(id domain.SessionID, kind agentOperationKind) {
 	m.agentOpMu.Lock()
 	defer m.agentOpMu.Unlock()
-	if kind == agentOperationSwitch {
-		delete(m.retainedSwitches, id)
-		delete(m.switchDecisionInput, id)
-	}
 	if current, ok := m.agentOperations[id]; ok && current == kind {
 		delete(m.agentOperations, id)
 		m.resumeDeferredInterfaceRecoveryLocked(id)
@@ -188,11 +175,11 @@ func (m *Manager) resumeDeferredInterfaceRecoveryLocked(id domain.SessionID) {
 	if !deferred {
 		return
 	}
-	if err := m.beginAgentSwitchAttempt(); err != nil {
+	if err := m.beginInterfaceRecoveryWorker(); err != nil {
 		return // Preserve the fence for the next boot after shutdown admission closes.
 	}
 	go func() {
-		defer m.agentSwitchWorkers.Done()
+		defer m.interfaceRecoveryWorkers.Done()
 		recovered, err := m.recoverInterfaceTransitions(m.backgroundContext, transitionID)
 		if err != nil {
 			m.logger.Error("interface transition: deferred recovery failed", "sessionID", id, "error", err)
@@ -207,140 +194,42 @@ func (m *Manager) resumeDeferredInterfaceRecoveryLocked(id domain.SessionID) {
 	}()
 }
 
-func (m *Manager) allowAgentSwitchDecisionInput(id domain.SessionID, switchID domain.AgentSwitchID) {
-	m.agentOpMu.Lock()
-	defer m.agentOpMu.Unlock()
-	if m.agentOperations[id] != agentOperationSwitch {
-		return
+// beginInterfaceRecoveryWorker admits one deferred interface-transition
+// recovery goroutine. Admission closes during daemon shutdown so a refused
+// recovery leaves its fence intact for the next boot.
+func (m *Manager) beginInterfaceRecoveryWorker() error {
+	m.interfaceRecoveryWorkerMu.Lock()
+	defer m.interfaceRecoveryWorkerMu.Unlock()
+	if m.interfaceRecoveryWorkersClosed {
+		return errInterfaceRecoveryShutdown
 	}
-	if m.switchDecisionInput == nil {
-		m.switchDecisionInput = make(map[domain.SessionID]domain.AgentSwitchID)
-	}
-	m.switchDecisionInput[id] = switchID
-}
-
-// closeAgentSwitchDecisionInput closes the temporary permission lane and waits
-// for an already-admitted keystroke write to finish before source teardown.
-func (m *Manager) closeAgentSwitchDecisionInput(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) error {
-	m.agentOpMu.Lock()
-	if current, ok := m.switchDecisionInput[id]; !ok || current != switchID {
-		m.agentOpMu.Unlock()
-		return nil
-	}
-	delete(m.switchDecisionInput, id)
-	drained := m.inputDrained[id]
-	m.agentOpMu.Unlock()
-	if drained == nil {
-		return nil
-	}
-	select {
-	case <-drained:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (m *Manager) beginAgentSwitch(ctx context.Context, id domain.SessionID) error {
-	if err := m.beginAgentOperation(ctx, id, agentOperationSwitch); err != nil {
-		if errors.Is(err, errAgentOperationInProgress) {
-			return ErrSwitchInProgress
-		}
-		return err
-	}
+	m.interfaceRecoveryWorkers.Add(1)
 	return nil
 }
 
-func (m *Manager) endAgentSwitch(id domain.SessionID) {
-	m.endAgentOperation(id, agentOperationSwitch)
-}
+// WaitInterfaceRecoveryWorkers closes worker admission and waits for every
+// in-flight deferred interface-recovery goroutine to finish.
+func (m *Manager) WaitInterfaceRecoveryWorkers(ctx context.Context) error {
+	m.interfaceRecoveryWorkerMu.Lock()
+	m.interfaceRecoveryWorkersClosed = true
+	m.interfaceRecoveryWorkerMu.Unlock()
 
-// retainAgentSwitch keeps the already-owned switch/input gate closed after an
-// ambiguous external side effect. It also marks the gate as reclaimable by a
-// later recovery pass; ordinary user switches cannot reuse it.
-func (m *Manager) retainAgentSwitch(id domain.SessionID) {
-	id = domain.SessionID(strings.TrimSpace(string(id)))
-	m.agentOpMu.Lock()
-	defer m.agentOpMu.Unlock()
-	if m.agentOperations[id] != agentOperationSwitch {
-		return
-	}
-	if m.retainedSwitches == nil {
-		m.retainedSwitches = make(map[domain.SessionID]struct{})
-	}
-	m.retainedSwitches[id] = struct{}{}
-}
-
-func (m *Manager) agentSwitchRetained(id domain.SessionID) bool {
-	id = domain.SessionID(strings.TrimSpace(string(id)))
-	m.agentOpMu.Lock()
-	defer m.agentOpMu.Unlock()
-	_, retained := m.retainedSwitches[id]
-	return retained
-}
-
-// beginAgentSwitchRecovery acquires the switch gate on daemon boot, or
-// reclaims a gate retained by an earlier inconclusive recovery attempt. It
-// never re-enters a switch that is still executing normally.
-func (m *Manager) beginAgentSwitchRecovery(ctx context.Context, id domain.SessionID) error {
-	id = domain.SessionID(strings.TrimSpace(string(id)))
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	m.agentOpMu.Lock()
-	if current, active := m.agentOperations[id]; active {
-		if current == agentOperationSwitch {
-			if _, retained := m.retainedSwitches[id]; retained {
-				delete(m.retainedSwitches, id)
-				m.agentOpMu.Unlock()
-				return nil
-			}
-		}
-		m.agentOpMu.Unlock()
-		return ErrSwitchInProgress
-	}
-	if m.agentOperations == nil {
-		m.agentOperations = make(map[domain.SessionID]agentOperationKind)
-	}
-	m.agentOperations[id] = agentOperationSwitch
-	drained := m.inputDrained[id]
-	m.agentOpMu.Unlock()
-
-	if drained == nil {
-		return nil
-	}
+	done := make(chan struct{})
+	go func() {
+		m.interfaceRecoveryWorkers.Wait()
+		close(done)
+	}()
 	select {
-	case <-drained:
+	case <-done:
 		return nil
 	case <-ctx.Done():
-		m.endAgentSwitch(id)
 		return ctx.Err()
 	}
-}
-
-// releaseRetainedAgentSwitch closes a stale in-memory fence only when it was
-// explicitly retained for recovery and no durable active saga remains.
-func (m *Manager) releaseRetainedAgentSwitch(id domain.SessionID) {
-	id = domain.SessionID(strings.TrimSpace(string(id)))
-	m.agentOpMu.Lock()
-	defer m.agentOpMu.Unlock()
-	if _, retained := m.retainedSwitches[id]; !retained {
-		return
-	}
-	delete(m.retainedSwitches, id)
-	delete(m.agentOperations, id)
-	m.resumeDeferredInterfaceRecoveryLocked(id)
 }
 
 func (m *Manager) beginAgentResume(ctx context.Context, id domain.SessionID) error {
 	if err := m.beginAgentOperation(ctx, id, agentOperationResume); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
-			m.agentOpMu.Lock()
-			activeOperation := m.agentOperations[id]
-			m.agentOpMu.Unlock()
-			if activeOperation == agentOperationSwitch {
-				return ErrSwitchInProgress
-			}
 			return ErrResumeInProgress
 		}
 		return err
@@ -350,4 +239,20 @@ func (m *Manager) beginAgentResume(ctx context.Context, id domain.SessionID) err
 
 func (m *Manager) endAgentResume(id domain.SessionID) {
 	m.endAgentOperation(id, agentOperationResume)
+}
+
+// conversationFactBytes bounds a single durable user-prompt fact. Larger
+// prompts are truncated so the fact rows stay within the SQLite value limit
+// (and out of per-row metadata bloat).
+const conversationFactBytes = 16 << 10
+
+func boundedConversationFact(value string) string {
+	return boundedString(strings.TrimSpace(value), conversationFactBytes)
+}
+
+func boundedString(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	return strings.ToValidUTF8(value[:maxBytes], "�")
 }

@@ -2,7 +2,6 @@ import { type QueryClient, useMutation, useMutationState, useQueryClient } from 
 import { toKanbanColumn, type WorkspaceSession, type WorkspaceSummary } from "../types/workspace";
 import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { captureRendererEvent } from "../lib/telemetry";
 import { createRendererCloudCpClient } from "./useCloudCp";
 import { settingsQueryKey, type Settings } from "./useSettings";
 import type { CloudCpSession } from "../lib/cloud-cp";
@@ -109,10 +108,9 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 	return useMutation({
 		mutationKey: terminateSessionMutationKey,
 		mutationFn: async (session: WorkspaceSession) => {
-			void captureRendererEvent("ao.renderer.session_kill_requested", { project_id: session.workspaceId });
 			await terminateSession(queryClient, session);
 		},
-		// Archive the card on the click, not on the round trip: the CP delete is
+// Archive the card on the click, not on the round trip: the CP delete is
 		// slow (terminate session + tear down the sandbox), and a card that does
 		// not move reads as "the click did nothing" — the reason a delete needed
 		// two or three taps. Roll the optimistic write back in onError.
@@ -143,7 +141,6 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 			return { workspace, cloud };
 		},
 		onSuccess: (_data, session) => {
-			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
 			// The optimistic write already settled the board; refresh in the
 			// background to reconcile with the control plane's real state.
 			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
@@ -152,8 +149,7 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 			if (session.cloud) void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
 			options.onSuccess?.(session);
 		},
-		onError: (_error, session, context) => {
-			void captureRendererEvent("ao.renderer.session_kill_failed", { project_id: session.workspaceId });
+		onError: (_error, _session, context) => {
 			// Restore the pre-mutation snapshots so a failed kill un-archives the card
 			// rather than leaving it wrongly terminated.
 			const ctx = context as TerminateMutationContext | undefined;

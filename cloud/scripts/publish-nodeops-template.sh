@@ -4,17 +4,14 @@ set -euo pipefail
 AWS_PROFILE="${AWS_PROFILE:-ao-cloud}"
 AWS_REGION="${AWS_REGION:-eu-north-1}"
 NODEOPS_SECRET_ID="${AO_CLOUD_NODEOPS_SECRET_ID:-ao-cloud/staging/nodeops}"
-# HARNESS selects the template flavor: one of claude-code | codex | cursor for
-# a slim single-agent template (Sandbox.base.Dockerfile + the matching
-# nodeops/harness/*.Dockerfile layer), or "all" for the legacy all-agents
-# template built from Sandbox.Dockerfile.
+# HARNESS selects the template flavor: "opencode" for a slim single-agent
+# template (Sandbox.base.Dockerfile + nodeops/harness/opencode.Dockerfile), or
+# "all" for the all-in-one opencode template built from Sandbox.Dockerfile.
 HARNESS="${AO_CLOUD_NODEOPS_HARNESS:-all}"
 case "$HARNESS" in
     all) harness_suffix="baked" ;;
-    claude-code) harness_suffix="claude" ;;
-    codex) harness_suffix="codex" ;;
-    cursor) harness_suffix="cursor" ;;
-    *) echo "AO_CLOUD_NODEOPS_HARNESS must be all|claude-code|codex|cursor, got: $HARNESS" >&2; exit 1 ;;
+    opencode) harness_suffix="opencode" ;;
+    *) echo "AO_CLOUD_NODEOPS_HARNESS must be all|opencode, got: $HARNESS" >&2; exit 1 ;;
 esac
 TEMPLATE_NAME="${AO_CLOUD_NODEOPS_TEMPLATE_NAME:-ao-worker-$(date +%Y%m%d)-${harness_suffix}-v1}"
 DOCKERFILE="${AO_CLOUD_NODEOPS_DOCKERFILE:-nodeops/Sandbox.Dockerfile}"

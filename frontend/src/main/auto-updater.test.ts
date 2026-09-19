@@ -155,7 +155,7 @@ describe("macOS differential update policy", () => {
   });
 
   it("disables immediately while an updater operation is still in flight", async () => {
-    const { module, autoUpdater, updaterEvents, telemetryMessages } = await importAutoUpdater(nightly);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater(nightly);
     await module.setMacDifferentialUpdates(stateDir, true);
     const blocked = deferred();
     autoUpdater.checkForUpdates.mockReturnValueOnce(blocked.promise);
@@ -165,7 +165,6 @@ describe("macOS differential update policy", () => {
     const off = module.setMacDifferentialUpdates(stateDir, false);
     expect(autoUpdater.disableDifferentialDownload).toBe(true);
     updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
-    expect(telemetryMessages().at(-1)?.payload).toMatchObject({ differential_eligible: true });
     blocked.resolve();
     await Promise.all([check, off]);
     await module.downloadUpdateNow();
@@ -173,7 +172,7 @@ describe("macOS differential update policy", () => {
   });
 
   it("omits unavailable progress metrics and sanitizes dependency logs", async () => {
-    const { module, autoUpdater, updaterEvents, statusMessages, telemetryMessages } = await importAutoUpdater(nightly);
+    const { module, autoUpdater, updaterEvents, statusMessages } = await importAutoUpdater(nightly);
     const base = autoUpdater.logger;
     await module.checkForUpdatesNow(stateDir);
     autoUpdater.logger.info("Download block maps (old: https://user:secret@host/old?token=secret)");
@@ -183,7 +182,6 @@ describe("macOS differential update policy", () => {
     expect(statusMessages().at(-1)?.payload).not.toHaveProperty("total");
     expect(statusMessages().at(-1)?.payload).not.toHaveProperty("bytesPerSecond");
     updaterEvents.get("error")?.(new Error("checksum mismatch"));
-    expect(telemetryMessages().at(-1)?.payload).toMatchObject({ transfer_mode: "differential", fallback: true });
     expect(JSON.stringify(base)).not.toContain("secret");
     expect(JSON.stringify([vi.mocked(base.info).mock.calls, vi.mocked(base.error).mock.calls, vi.mocked(base.warn).mock.calls])).not.toContain("secret");
   });
@@ -207,7 +205,7 @@ describe("macOS differential update policy", () => {
   });
 
   it("reports differential fallback and real transfer progress without signed URLs", async () => {
-    const { module, autoUpdater, updaterEvents, telemetryMessages, statusMessages } =
+    const { module, autoUpdater, updaterEvents, statusMessages } =
       await importAutoUpdater({
         enabled: true,
         channel: "nightly",
@@ -254,15 +252,6 @@ describe("macOS differential update policy", () => {
         }),
       ]),
     );
-    expect(telemetryMessages().at(-1)?.payload).toMatchObject({
-      event: "ao.renderer.update_downloaded",
-      transfer_mode: "differential",
-      fallback: true,
-      transferred_bytes: 250,
-      target_bytes: 1000,
-      to_version: "1.2.3",
-    });
-    expect(JSON.stringify(telemetryMessages())).not.toContain("secret");
   });
 
   it("enables only macOS Nightly Developer Mode without a feature pin", async () => {
@@ -351,10 +340,8 @@ async function importAutoUpdater(
   const dialog = {
     showMessageBox: vi.fn(),
   };
-  // Records what actually reaches renderers, by channel. Update telemetry rides
-  // a channel separate from "updates:status" precisely so that suppressing a UI
-  // status never suppresses its telemetry, and only a per-channel view can tell
-  // those two apart.
+  // Records what actually reaches renderers, by channel, so a test can tell a
+  // suppressed (automatic) status push apart from one the user sees.
   const sent: { channel: string; payload: unknown }[] = [];
   // The renderer is reached through the injected shell sink, never by walking
   // BrowserWindow.getAllWindows(): the AO shell is a BaseWindow hosting a
@@ -368,13 +355,6 @@ async function importAutoUpdater(
     getAllWindows: vi.fn(() => [] as unknown[]),
   };
   const statusMessages = () => sent.filter((m) => m.channel === "updates:status");
-  const telemetryMessages = () => sent.filter((m) => m.channel === "updates:telemetry");
-  // Most tests exercise the proposed policy. A separate test locks down the
-  // actual production release gate, which remains closed.
-  vi.doMock("../../scripts/mac-differential-rollout.json", () => ({ default: { enabled: options.rolloutReady ?? true } }));
-  vi.doMock("./mac-differential-v2-updater", () => ({
-    MacDifferentialV2Updater: class { constructor() { return autoUpdater; } },
-  }));
   vi.doMock("electron-updater", () => ({ autoUpdater }));
   vi.doMock("electron", () => ({
     autoUpdater: nativeAutoUpdater,
@@ -430,7 +410,6 @@ async function importAutoUpdater(
     sent,
     rendererSend,
     statusMessages,
-    telemetryMessages,
     module,
     autoUpdater,
     dialog,
@@ -1188,7 +1167,7 @@ describe("startAutoUpdates", () => {
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
-    const { module, autoUpdater, updaterEvents, statusMessages, telemetryMessages } =
+    const { module, autoUpdater, updaterEvents, statusMessages } =
       await importAutoUpdater();
     const err = new Error("feed failed");
     autoUpdater.checkForUpdates.mockImplementationOnce(() => {
@@ -1203,18 +1182,10 @@ describe("startAutoUpdates", () => {
       err,
     );
     // The UI stays quiet: no status is pushed and the status never leaves idle.
+    // Automatic checks run hourly and are how installs go silently stale, so the
+    // failure is logged to the console even though nothing is broadcast.
     expect(statusMessages()).toEqual([]);
     expect(module.getUpdateStatus()).toMatchObject({ state: "idle" });
-    // But the outcome is still reported. Automatic checks run hourly and are how
-    // installs go silently stale, so suppressing the UI must not lose the signal.
-    expect(telemetryMessages().map((m) => m.payload)).toEqual([
-      {
-        event: "ao.renderer.update_failed",
-        phase: "check",
-        trigger: "automatic",
-        error_category: "unknown",
-      },
-    ]);
   });
 
   it("restores the prior renderer status when an automatic check emits checking before an error", async () => {
@@ -1592,7 +1563,7 @@ describe("startAutoUpdates", () => {
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const lateDownload = deferred();
-    const { module, autoUpdater, updaterEvents, statusMessages, telemetryMessages } =
+    const { module, autoUpdater, updaterEvents, statusMessages } =
       await importAutoUpdater();
     const err = new Error("download failed");
     autoUpdater.checkForUpdates.mockResolvedValueOnce({
@@ -1616,14 +1587,6 @@ describe("startAutoUpdates", () => {
       err,
     );
     expect(statusMessages()).toEqual([]);
-    expect(telemetryMessages().map((m) => m.payload)).toEqual([
-      {
-        event: "ao.renderer.update_failed",
-        phase: "check",
-        trigger: "automatic",
-        error_category: "unknown",
-      },
-    ]);
     lateDownload.resolve();
     await startPromise;
   });
@@ -4192,8 +4155,8 @@ describe("e2e staging sentinel", () => {
 // updates:getStatus kept working and it read as a caching bug: "Last checked"
 // was correct when Settings was reopened and never moved while it was open.
 describe("renderer delivery does not depend on the window registry", () => {
-  it("pushes status and telemetry through the shell sink, never through BrowserWindow", async () => {
-    const { module, autoUpdater, updaterEvents, rendererSend, BrowserWindow, statusMessages, telemetryMessages } =
+  it("pushes update status through the shell sink, never through BrowserWindow", async () => {
+    const { module, autoUpdater, updaterEvents, rendererSend, BrowserWindow, statusMessages } =
       await importAutoUpdater();
 
     await module.checkForUpdatesNow(stateDir);
@@ -4204,9 +4167,7 @@ describe("renderer delivery does not depend on the window registry", () => {
     // code that reaches for it delivers nothing.
     expect(BrowserWindow.getAllWindows).not.toHaveBeenCalled();
     expect(statusMessages().length).toBeGreaterThan(0);
-    expect(telemetryMessages().length).toBeGreaterThan(0);
     expect(rendererSend).toHaveBeenCalledWith("updates:status", expect.anything());
-    expect(rendererSend).toHaveBeenCalledWith("updates:telemetry", expect.anything());
     expect(autoUpdater.checkForUpdates).toHaveBeenCalled();
   });
 

@@ -6,7 +6,7 @@ function session(overrides: Partial<UpdateRiskSession> = {}): UpdateRiskSession 
 		id: "s1",
 		title: "Session",
 		workspaceName: "repo",
-		provider: "claude-code",
+		provider: "opencode",
 		mode: "chat",
 		status: "working",
 		...overrides,
@@ -30,7 +30,7 @@ describe("sessionsAtRiskFromInstall", () => {
 		expect(sessionsAtRiskFromInstall([session({ mode: "tui" })])).toEqual([]);
 	});
 
-	it.each(["codex", "claude-code", "cursor", "opencode", "droid", "kimi", "kimchi", "pi", "omp"] as const)(
+	it.each(["opencode"] as const)(
 		"spares %s only when the daemon confirms persistent ownership",
 		(provider) => {
 			expect(sessionsAtRiskFromInstall([session({ provider, chatProviderPreserved: true })])).toEqual([]);

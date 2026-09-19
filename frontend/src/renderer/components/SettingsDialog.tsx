@@ -1,12 +1,9 @@
 import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { FocusScope } from "@radix-ui/react-focus-scope";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
-import { ensureCodexAccounts } from "../hooks/useCodexAccountsQuery";
-import { writeCodexAccounts } from "../hooks/codex-accounts-state";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import {
 	ProjectSettingsForm,
@@ -30,7 +27,6 @@ function initialProjectSaveState(): ProjectSettingsSaveState {
 
 export function SettingsDialog() {
 	const { t } = useTranslation();
-	const queryClient = useQueryClient();
 	const settingsModal = useUiStore((state) => state.settingsModal);
 	const closeSettings = useUiStore((state) => state.closeSettings);
 	// Reads the daemon settings the dialog tree already queries; no extra fetch.
@@ -61,7 +57,6 @@ export function SettingsDialog() {
 	const [activeSection, setActiveSection] = useState<GlobalSettingsSection>("general");
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
-	const globalSettingsWasOpen = useRef(false);
 
 	const activeLabel = isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.identity"))
@@ -98,26 +93,6 @@ export function SettingsDialog() {
 			setProjectSaveState(initialProjectSaveState());
 		}
 	}, [cloudEnabled, settingsModal]);
-
-	useEffect(() => {
-		const globalSettingsOpen = settingsModal?.scope === "global";
-		if (!globalSettingsOpen) {
-			globalSettingsWasOpen.current = false;
-			return;
-		}
-		if (globalSettingsWasOpen.current) return;
-		globalSettingsWasOpen.current = true;
-		// Warm account management as soon as global Settings opens, regardless of
-		// which page is selected. By the time the user visits Accounts, external
-		// login/logout changes and saved-account observations are already current.
-		void ensureCodexAccounts([], {
-			includeUsage: true,
-			forceAuthentication: true,
-			forceDeviceReconciliation: true,
-		})
-			.then((next) => writeCodexAccounts(queryClient, next, "replace"))
-			.catch(() => undefined);
-	}, [queryClient, settingsModal?.scope]);
 
 	if (!open || !displaySettings) return null;
 
@@ -162,9 +137,10 @@ export function SettingsDialog() {
 											onClick={() => setActiveProjectSection(id)}
 										/>
 									))
-								: globalSections.map(({ id, label, icon }) => (
+								: globalSections.map(({ disabled, id, label, icon }) => (
 										<SettingsNavItem
 											active={activeSection === id}
+											disabled={disabled}
 											icon={icon}
 											key={id}
 											label={label(t)}

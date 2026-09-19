@@ -35,18 +35,17 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
-	store                  Store
-	reader                 SnapshotReader
-	pageReader             SnapshotPageReader
-	sessions               SessionReader
-	drivers                ports.ChatDriverRegistry
-	activity               ActivityRecorder
-	log                    *slog.Logger
-	newID                  IDFactory
-	now                    Clock
-	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
-	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
-	stopProviderHost       func(context.Context, domain.SessionID) error
+	store            Store
+	reader           SnapshotReader
+	pageReader       SnapshotPageReader
+	sessions         SessionReader
+	drivers          ports.ChatDriverRegistry
+	activity         ActivityRecorder
+	log              *slog.Logger
+	newID            IDFactory
+	now              Clock
+	onAccountChanged func(domain.SessionID, string, domain.AgentHarness)
+	stopProviderHost func(context.Context, domain.SessionID) error
 
 	mu           sync.RWMutex
 	controllers  map[domain.SessionID]*Controller
@@ -98,10 +97,6 @@ type Options struct {
 	// OnAccountChanged invalidates daemon-owned account readiness for the
 	// harness that emitted an account/updated notification.
 	OnAccountChanged func(domain.SessionID, string, domain.AgentHarness)
-	// OnCodexCapacityChanged attributes a structured provider update to the one
-	// globally active AO Codex account. The callback owns profile-independent
-	// account state; conversation rows are not the authority for Codex capacity.
-	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
@@ -118,22 +113,21 @@ func New(opts Options) *Service {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{
-		store:                  opts.Store,
-		reader:                 opts.Reader,
-		pageReader:             opts.PageReader,
-		sessions:               opts.Sessions,
-		drivers:                opts.Drivers,
-		activity:               opts.Activity,
-		log:                    log,
-		newID:                  opts.NewID,
-		now:                    now,
-		onAccountChanged:       opts.OnAccountChanged,
-		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
-		stopProviderHost:       opts.StopProviderHost,
-		controllers:            make(map[domain.SessionID]*Controller),
-		startConfigs:           make(map[domain.SessionID]StartConfig),
-		gates:                  make(map[domain.SessionID]controllerGate),
-		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
+		store:            opts.Store,
+		reader:           opts.Reader,
+		pageReader:       opts.PageReader,
+		sessions:         opts.Sessions,
+		drivers:          opts.Drivers,
+		activity:         opts.Activity,
+		log:              log,
+		newID:            opts.NewID,
+		now:              now,
+		onAccountChanged: opts.OnAccountChanged,
+		stopProviderHost: opts.StopProviderHost,
+		controllers:      make(map[domain.SessionID]*Controller),
+		startConfigs:     make(map[domain.SessionID]StartConfig),
+		gates:            make(map[domain.SessionID]controllerGate),
+		probed:           make(map[domain.AgentHarness]ports.ChatCapabilities),
 	}
 }
 
@@ -285,9 +279,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			rec.Metadata.ConversationCheckpointNativeID != ""
 		trusted := trustedProvenance &&
 			rec.Metadata.ConversationCheckpointNativeID == cfg.ProviderConversationID
-		if rec.Harness == domain.HarnessClaudeCode && trustedProvenance && nativeEvidence == "" {
-			replayCheckpoint.hardMismatches = append(replayCheckpoint.hardMismatches, ports.ChatHistoryMismatchUnsettledBoundary)
-		}
 		if rec.Metadata.ConversationCheckpointUnsettled ||
 			(checkpointState == domain.ConversationCheckpointComplete &&
 				strings.TrimSpace(rec.Metadata.LatestUserPrompt) == "" &&
@@ -669,7 +660,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged)
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
@@ -1496,8 +1487,7 @@ func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.Chat
 // the connected conversation so model entitlements and model-dependent choices
 // cannot go stale in an AO table.
 func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]ports.ChatConfigOption, error) {
-	record, err := s.requireChatSession(ctx, id)
-	if err != nil {
+	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return nil, err
 	}
 	controller, err := s.Controller(id)
@@ -1509,7 +1499,7 @@ func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]por
 		return nil, ErrConfigOptionsUnsupported
 	}
 	options, err := configurer.ListConfigOptions(ctx)
-	return permissionConfigOptions(record.Harness, options), err
+	return permissionConfigOptions(options), err
 }
 
 // SetConfigOption applies one provider-advertised value and returns the complete
@@ -1539,7 +1529,7 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
-	options = permissionConfigOptions(record.Harness, options)
+	options = permissionConfigOptions(options)
 	previous := controller.Settings()
 	settings, _ := settingsFromConfigOptions(previous, options)
 	if record.Harness == domain.HarnessOpenCode && configID == "mode" {
@@ -1742,28 +1732,9 @@ func (s *Service) StopChat(ctx context.Context, id domain.SessionID) error {
 	return s.Stop(ctx, id)
 }
 
-// permissionConfigOptions annotates only provider controls whose semantics are
-// known. In particular, plan and dontAsk are not AO approval policies.
-func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatConfigOption) []ports.ChatConfigOption {
-	out := append([]ports.ChatConfigOption(nil), options...)
-	for i := range out {
-		out[i].Choices = append([]ports.ChatConfigOptionChoice(nil), out[i].Choices...)
-		for j := range out[i].Choices {
-			out[i].Choices[j].PermissionMode = ""
-			if harness != domain.HarnessClaudeCode || out[i].ID != "mode" {
-				continue
-			}
-			switch out[i].Choices[j].Value {
-			case "manual", "default":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeDefault
-			case "acceptEdits":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAcceptEdits
-			case "auto":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAuto
-			case "bypassPermissions":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeBypassPermissions
-			}
-		}
-	}
-	return out
+// permissionConfigOptions returns the provider options unchanged. The claude
+// "mode" permission mapping that previously annotated these choices was
+// harness-specific and is no longer applied for opencode.
+func permissionConfigOptions(options []ports.ChatConfigOption) []ports.ChatConfigOption {
+	return append([]ports.ChatConfigOption(nil), options...)
 }

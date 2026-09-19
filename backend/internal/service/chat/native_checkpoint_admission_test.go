@@ -108,7 +108,7 @@ func TestStartNativeCheckpointAdmission(t *testing.T) {
 			startCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			defer cancel()
 			_, err = svc.Start(startCtx, chatsvc.StartConfig{
-				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 				ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired, HistoryPolicy: policy,
 			})
 			if (err == nil) != test.wantPass {

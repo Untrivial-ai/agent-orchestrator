@@ -18,9 +18,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
-	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 )
 
 // Manager is the controller-facing contract for the /api/v1/projects surface.
@@ -69,7 +67,6 @@ type Service struct {
 	store          Store
 	sessions       SessionTeardowner
 	clock          func() time.Time
-	telemetry      ports.EventSink
 	defaultHarness domain.AgentHarness
 	logger         *slog.Logger
 	// addMu serialises the whole body of Add. Workspace registration performs
@@ -91,7 +88,6 @@ type Deps struct {
 	Store          Store
 	Sessions       SessionTeardowner
 	Clock          func() time.Time
-	Telemetry      ports.EventSink
 	// Logger receives structured logs. Left nil, the service falls back to
 	// slog.Default, keeping service-focused tests logger-free.
 	Logger *slog.Logger
@@ -112,7 +108,6 @@ func NewWithDeps(d Deps) *Service {
 		store:          d.Store,
 		sessions:       d.Sessions,
 		clock:          d.Clock,
-		telemetry:      d.Telemetry,
 		defaultHarness: defaultHarness,
 		logger:         d.Logger,
 	}
@@ -207,19 +202,17 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		}
 	}
 
-	activeProjects, err := m.store.ListProjects(ctx)
-	if err != nil {
-		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load project")
-	}
-
-	projectCountBefore := len(activeProjects)
-
 	name := string(id)
 	if in.Name != nil {
 		name = strings.TrimSpace(*in.Name)
 	}
 	if name == "" {
 		name = string(id)
+	}
+
+	activeProjects, err := m.store.ListProjects(ctx)
+	if err != nil {
+		return Project{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load project")
 	}
 
 	existing, registered, err := m.store.FindProjectByPath(ctx, path)
@@ -295,7 +288,6 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		if in.ClonePreparationID != "" {
 			removeClonePreparationMarker(path)
 		}
-		m.emitProjectAdded(ctx, row, projectCountBefore == 0)
 		p := m.projectFromRow(ctx, row)
 		p.WorkspaceRepos = workspaceReposFromRecords(row.Path, repos)
 		return p, nil
@@ -343,7 +335,6 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if in.ClonePreparationID != "" {
 		removeClonePreparationMarker(path)
 	}
-	m.emitProjectAdded(ctx, row, projectCountBefore == 0)
 	return m.projectFromRow(ctx, row), nil
 }
 
@@ -552,133 +543,6 @@ func nestedGitRepositoryPaths(root string) ([]string, error) {
 		return nil, err
 	}
 	return nested, nil
-}
-
-func (m *Service) emitProjectAdded(ctx context.Context, row domain.ProjectRecord, firstProject bool) {
-	if m.telemetry == nil {
-		return
-	}
-	projectID := domain.ProjectID(row.ID)
-	at := m.clock().UTC()
-	payload := map[string]any{
-		"kind":           string(row.Kind.WithDefault()),
-		"has_git_remote": row.RepoOriginURL != "",
-	}
-	// Classify the SCM provider (github / gitlab / bitbucket / other) so usage
-	// can be counted per provider. Only the closed-vocabulary category is
-	// derived, never the host, owner, or repo. Self-hosted instances resolve to
-	// "other" because the host is not published.
-	if provider := scmProvider(row.RepoOriginURL); provider != "" {
-		payload["scm_provider"] = provider
-	}
-	// Tag the GitHub org so usage can be attributed/ranked by organisation. Only
-	// the owner is derived — never the repo name or full URL.
-	if owner := githubOwner(row.RepoOriginURL); owner != "" {
-		payload["github_org"] = owner
-	}
-	m.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       "ao.projects.created",
-		Source:     "project_service",
-		OccurredAt: at,
-		Level:      ports.TelemetryLevelInfo,
-		ProjectID:  &projectID,
-		RequestID:  reqid.FromContext(ctx),
-		Payload:    payload,
-	})
-	if !firstProject {
-		return
-	}
-	m.telemetry.Emit(context.Background(), ports.TelemetryEvent{
-		Name:       "ao.onboarding.first_project_added",
-		Source:     "project_service",
-		OccurredAt: at,
-		Level:      ports.TelemetryLevelInfo,
-		ProjectID:  &projectID,
-		RequestID:  reqid.FromContext(ctx),
-		Payload:    payload,
-	})
-}
-
-// githubOwner extracts the owner/org from a GitHub remote URL, or "" if the
-// remote is empty or not a github.com remote. It returns only the org segment,
-// never the repo name or full path, so telemetry can rank by organisation
-// without shipping the repository identity.
-func githubOwner(remote string) string {
-	r := strings.TrimSpace(remote)
-	if r == "" {
-		return "" //nolint:nlreturn // guard clause; a leading blank line adds no clarity
-	}
-	if rest, ok := strings.CutPrefix(r, "git@github.com:"); ok {
-		return firstSegment(rest)
-	}
-	for _, p := range []string{"https://github.com/", "http://github.com/", "ssh://git@github.com/", "git://github.com/"} {
-		if rest, ok := strings.CutPrefix(r, p); ok {
-			return firstSegment(rest)
-		}
-	}
-	return ""
-}
-
-func firstSegment(s string) string {
-	if i := strings.IndexByte(s, '/'); i > 0 {
-		return s[:i]
-	}
-	return ""
-}
-
-// scmProvider classifies the SCM provider from a git remote URL into a closed
-// vocabulary (github / gitlab / bitbucket / other), or "" when the remote is
-// empty. Only the provider category is derived, never the host, owner, or repo,
-// so telemetry can count provider usage without shipping repository identity. A
-// remote whose host is not a known public provider — including any self-hosted
-// instance — resolves to "other" rather than leaking its host.
-func scmProvider(remote string) string {
-	if strings.TrimSpace(remote) == "" {
-		return "" //nolint:nlreturn // guard clause; a leading blank line adds no clarity
-	}
-	switch remoteHost(remote) {
-	case "github.com":
-		return "github"
-	case "gitlab.com":
-		return "gitlab"
-	case "bitbucket.org":
-		return "bitbucket"
-	default:
-		return "other"
-	}
-}
-
-// remoteHost extracts the lower-cased host from a git remote URL, supporting the
-// scp-like syntax (git@host:owner/repo) alongside https/http/ssh/git schemes,
-// stripping any userinfo and port. It returns "" when no host can be identified.
-// The host is used only to classify the provider; it is never emitted.
-func remoteHost(remote string) string {
-	r := strings.TrimSpace(remote)
-	if r == "" {
-		return "" //nolint:nlreturn // guard clause; a leading blank line adds no clarity
-	}
-	if idx := strings.Index(r, "://"); idx >= 0 {
-		// scheme://[user@]host[:port]/path
-		rest := r[idx+3:]
-		if at := strings.IndexByte(rest, '@'); at >= 0 {
-			rest = rest[at+1:]
-		}
-		if i := strings.IndexByte(rest, '/'); i >= 0 {
-			rest = rest[:i]
-		}
-		if i := strings.IndexByte(rest, ':'); i >= 0 {
-			rest = rest[:i]
-		}
-		return strings.ToLower(rest)
-	}
-	// scp-like: [user@]host:path
-	if at := strings.IndexByte(r, '@'); at >= 0 {
-		r = r[at+1:]
-	}
-	if i := strings.IndexAny(r, ":/"); i >= 0 {
-		r = r[:i]
-	}
-	return strings.ToLower(r)
 }
 
 // UpdateSettings atomically replaces the project's stored display name and
@@ -1035,12 +899,7 @@ func (m *Service) SetPermissions(ctx context.Context, id domain.ProjectID, in Se
 	if in.SourceHarness != "" && !in.SourceHarness.IsKnown() {
 		return Project{}, apierr.Invalid("INVALID_HARNESS", "Unknown source harness", nil)
 	}
-	// Codex default grants full access; remember its portable equivalent so
-	// another harness does not interpret it as its own manual baseline.
 	permissions := in.Permissions
-	if in.SourceHarness == domain.HarnessCodex && permissions == domain.PermissionModeDefault {
-		permissions = domain.PermissionModeBypassPermissions
-	}
 	row, ok, err := m.store.SetProjectPermissions(ctx, string(id), permissions)
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_PERMISSIONS_UPDATE_FAILED", "Failed to update project permissions")

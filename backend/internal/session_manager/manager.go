@@ -63,52 +63,15 @@ var (
 	// with the system prompt only). Workers without a task and without a native
 	// session id have nothing meaningful to restore.
 	ErrNotResumable = errors.New("session: nothing to resume from")
-	// ErrSwitchInProgress means an agent switch is already running for this
-	// session. The API maps it to a 409 so a double-submit does not race two
-	// teardown/relaunch cycles over one worktree.
-	ErrSwitchInProgress = errors.New("session: switch already in progress")
-	// ErrSwitchUnavailable means the configured store does not expose the
-	// durable agent-switch contract.
-	ErrSwitchUnavailable = errors.New("session: agent switching unavailable")
-	// ErrSwitchShuttingDown means daemon shutdown has closed background worker
-	// admission, so no new switch can be accepted safely.
-	ErrSwitchShuttingDown = errors.New("session: agent switching unavailable during shutdown")
-	// ErrUnsupportedSwitchHarness keeps the first release deliberately bounded
-	// to providers whose standing-instruction and native-resume behavior AO has
-	// verified end to end.
-	ErrUnsupportedSwitchHarness = errors.New("session: harness does not support agent switching")
-	// ErrUnsupportedSwitchKind keeps the first implementation scoped to worker
-	// sessions. Orchestrators own additional delegation and board semantics and
-	// need an explicit product contract before their process can be replaced.
-	ErrUnsupportedSwitchKind = errors.New("session: only worker sessions support agent switching")
-	// ErrTargetAgentUnauthorized is returned only when the target adapter's
-	// local auth probe conclusively reports missing or invalid credentials.
-	// Unknown/probe failures remain advisory and are allowed to reach launch.
-	ErrTargetAgentUnauthorized = errors.New("session: target agent is not authenticated")
-	// ErrSwitchDeliveryUnconfirmed means AO wrote the continuation turn but did
-	// not receive the target generation's prompt-submit hook before the bounded
-	// acknowledgement window expired. AO never resends this ambiguous turn.
-	ErrSwitchDeliveryUnconfirmed = errors.New("session: target continuation delivery was not acknowledged")
-	// ErrSwitchSourceStopUnconfirmed means runtime teardown returned an error and
-	// AO could not prove whether the source still owns the session. No target is
-	// launched in this case.
-	ErrSwitchSourceStopUnconfirmed = errors.New("session: source agent stop could not be confirmed")
-	// ErrAlreadyUsingHarness rejects a no-op replacement that would otherwise
-	// create a misleading switch record and restart the same process.
-	ErrAlreadyUsingHarness = errors.New("session: already using requested harness")
-	// ErrSwitchNotFound is returned for a switch id outside the requested AO
-	// session (the same response is used for absent and cross-session ids).
-	ErrSwitchNotFound = errors.New("session: agent switch not found")
-	// ErrSwitchRecoveryNotRequired rejects recovery requests for switches that
-	// are terminal or do not carry a durable source-restore marker.
-	ErrSwitchRecoveryNotRequired = errors.New("session: agent switch does not require source recovery")
-	// ErrStaleHandoff rejects semantic handoff submissions from an old provider
-	// generation or after the collection window has closed.
-	ErrStaleHandoff = errors.New("session: stale agent handoff")
-	// ErrInvalidAgentHandoff reports a generation-valid semantic report that did
-	// not satisfy AO's bounded provider-neutral schema. Collection is settled as
-	// rejected before this error is returned.
-	ErrInvalidAgentHandoff = errors.New("session: invalid agent handoff")
+	// ErrExclusiveOperationInProgress means an exclusive provider operation
+	// (kill, retire-for-replacement, restore, resume) already owns the session.
+	// The API maps it to a 409 so a double-submit does not race two teardown or
+	// relaunch cycles over one worktree; the send path maps it from the input
+	// gate so a keystroke during the operation is a conflict, not a drop.
+	ErrExclusiveOperationInProgress = errors.New("session: another exclusive operation is in progress")
+	// ErrAgentStopUnconfirmed means runtime teardown returned an error and AO
+	// could not prove whether the provider still owns the session.
+	ErrAgentStopUnconfirmed = errors.New("session: agent stop could not be confirmed")
 	// ErrInterfaceHandoffUnsupported means the harness has not proven that its
 	// TUI resume identity and Chat protocol identity name the same conversation.
 	ErrInterfaceHandoffUnsupported = errors.New("session: interface handoff unsupported")
@@ -225,12 +188,6 @@ const (
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
 )
 
-// hookBinaryName is the executable name the workspace hook commands invoke:
-// every agent adapter installs a bare `ao hooks <agent> <event>`. The session
-// PATH pin (hookPATH) only works when the daemon's own executable carries this
-// name, since prepending its directory must change what `ao` resolves to.
-const hookBinaryName = "ao"
-
 type lifecycleRecorder interface {
 	PrepareLaunch(id domain.SessionID, launchID string) error
 	CancelLaunch(id domain.SessionID, launchID string)
@@ -240,9 +197,6 @@ type lifecycleRecorder interface {
 	MarkChatSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata, boundary domain.ConversationBranch) error
 	CommitControllerEpoch(ctx context.Context, id domain.SessionID, source, target domain.SessionMode, nativeConversationID string, startFresh bool) (bool, error)
 	RestoreControllerEpoch(ctx context.Context, id domain.SessionID, source, target domain.SessionMode, nativeConversationID string, startFresh bool) (bool, error)
-	ConfirmAgentSwitchSourceStopped(ctx context.Context, confirmation domain.AgentSwitchSourceStopConfirmation) (bool, error)
-	ActivateAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchTargetActivation) (bool, error)
-	ActivateChatAgentSwitchTarget(ctx context.Context, activation domain.AgentSwitchChatTargetActivation) (bool, error)
 	ApplyActivitySignal(ctx context.Context, id domain.SessionID, signal ports.ActivitySignal) error
 	MarkTerminated(ctx context.Context, id domain.SessionID) error
 }
@@ -369,15 +323,12 @@ type conversationSettingsStore interface {
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
-	runtime   runtimeController
-	agents    ports.AgentResolver
-	workspace ports.Workspace
-	store     Store
-	// agentSwitchReporting supplies the exact authorization snapshot immediately
-	// before each failure-aware store transaction. Nil is fail-closed.
-	agentSwitchReporting ports.AgentSwitchReportingPolicy
-	daemonRunID          string
-	agentReadiness       ports.AgentReadinessProvider
+	runtime        runtimeController
+	agents         ports.AgentResolver
+	workspace      ports.Workspace
+	store          Store
+	daemonRunID    string
+	agentReadiness ports.AgentReadinessProvider
 	// messenger is a sessionguard.Guard wrapping the raw messenger, so every
 	// pane write is guarded (re-read state, refuse a blocked session) without
 	// each call site re-deriving the check. Send/confirmActive use Deliver for
@@ -390,11 +341,8 @@ type Manager struct {
 	// defaults resolves the daemon-owned default session interface for a spawn
 	// that names no mode. Nil falls back to the compatibility default, so a build
 	// without it behaves exactly as before.
-	defaults     SessionModeDefaults
-	chat         ChatLauncher
-	modelCatalog interface {
-		Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
-	}
+	defaults                    SessionModeDefaults
+	chat                        ChatLauncher
 	lcm                         lifecycleRecorder
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
@@ -420,7 +368,6 @@ type Manager struct {
 	// workspace hook commands resolve back to this daemon. Tests inject a stub.
 	executable                     func() (string, error)
 	newLaunchID                    func() string
-	codexOperationGate             ports.CodexOperationGate
 	startupBackgroundReconcileDone chan struct{}
 	startupBackgroundReconcileOnce sync.Once
 	statusRecoveryMu               sync.RWMutex
@@ -432,39 +379,18 @@ type Manager struct {
 	agentOperations                map[domain.SessionID]agentOperationKind
 	interfaceRecoveryMu            sync.Mutex
 	deferredInterfaceRecovery      map[domain.SessionID]string
-	// switchDecisionInput opens a narrow human-only terminal lane while the
-	// source is blocked on permission during a mandatory switch.
-	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
-	// retainedSwitches marks switch gates intentionally kept closed after an
-	// ambiguous external side effect (for example a target runtime that could
-	// not be removed). A later reconciliation pass may reclaim exactly these
-	// gates; an actively-running switch remains non-reentrant.
-	retainedSwitches map[domain.SessionID]struct{}
-	inputLeases      map[domain.SessionID]int
-	inputDrained     map[domain.SessionID]chan struct{}
-	// handoffWait bounds optional source-agent enrichment. Time spent waiting
-	// for a human permission decision is paused and charged only against the
-	// separate switchPermissionDecisionWait budget below.
-	handoffWait time.Duration
-	// switchPermissionDecisionWait is a separate human-response budget used only
-	// while the source agent is blocked on a permission prompt. The semantic
-	// handoff budget is paused while this budget is active.
-	switchPermissionDecisionWait time.Duration
-	// switchTargetStartWait bounds proof that the newly-created supervised
-	// provider generation is actually alive before durable ownership transfers.
-	switchTargetStartWait time.Duration
-	// switchPostStopWait bounds aggregate target setup after source ownership is
-	// conclusively stopped. Tests shorten it to exercise phase-budget isolation.
-	switchPostStopWait time.Duration
-	// switchDeliveryAckWait bounds the target generation's prompt-submit hook.
-	// Timeout is an explicit failed/ambiguous delivery, never implicit success.
-	switchDeliveryAckWait time.Duration
-	// backgroundContext owns asynchronous agent-switch execution independently
-	// of the admitting request. The daemon cancels it before waiting for workers.
-	backgroundContext        context.Context
-	agentSwitchWorkers       sync.WaitGroup
-	agentSwitchWorkerMu      sync.Mutex
-	agentSwitchWorkersClosed bool
+	inputLeases                    map[domain.SessionID]int
+	inputDrained                   map[domain.SessionID]chan struct{}
+	// interfaceRecoveryWorkers bounds deferred interface-transition recovery
+	// goroutines and keeps them out of daemon shutdown: admission closes when
+	// WaitInterfaceRecoveryWorkers is called, and a refused admission preserves
+	// the deferred input fence for the next boot.
+	interfaceRecoveryWorkerMu      sync.Mutex
+	interfaceRecoveryWorkers       sync.WaitGroup
+	interfaceRecoveryWorkersClosed bool
+	// backgroundContext owns asynchronous work admitted by request-scoped
+	// methods. The daemon cancels it before waiting for workers.
+	backgroundContext context.Context
 
 	transitionMu sync.Mutex
 	transitions  map[domain.SessionID]*interfaceTransitionRun
@@ -512,13 +438,6 @@ func (m *Manager) beginHarnessUse(harness domain.AgentHarness) (func(), error) {
 		return nil, ErrHarnessInstallActive
 	}
 	return release, nil
-}
-
-// SetModelCatalog late-binds the catalog service after daemon construction.
-func (m *Manager) SetModelCatalog(catalog interface {
-	Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
-}) {
-	m.modelCatalog = catalog
 }
 
 // latestUserPromptRecorder narrows the post-delivery write to the pane prompt's
@@ -682,13 +601,12 @@ const (
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
 type Deps struct {
-	Runtime         runtimeController
-	Agents          ports.AgentResolver
-	Workspace       ports.Workspace
-	Store           Store
-	ReportingPolicy ports.AgentSwitchReportingPolicy
-	DaemonRunID     string
-	Messenger       ports.AgentMessenger
+	Runtime     runtimeController
+	Agents      ports.AgentResolver
+	Workspace   ports.Workspace
+	Store       Store
+	DaemonRunID string
+	Messenger   ports.AgentMessenger
 	// Defaults supplies the daemon-owned default session interface for spawns that
 	// name no mode. Nil means always use the compatibility default.
 	Defaults SessionModeDefaults
@@ -717,9 +635,6 @@ type Deps struct {
 	Executable func() (string, error)
 	// NewLaunchID overrides supervised-process generation for deterministic tests.
 	NewLaunchID func() string
-	// CodexOperationGate is shared with account clients and reviewer launches.
-	// Nil preserves focused-test compatibility by disabling device-global gating.
-	CodexOperationGate ports.CodexOperationGate
 	// ReconcileWorkers bounds concurrent live-session recovery during daemon
 	// startup. Values below one preserve the serial default for embedders/tests;
 	// production explicitly opts into a small worker pool.
@@ -740,7 +655,6 @@ func New(d Deps) *Manager {
 		agents:                         d.Agents,
 		workspace:                      d.Workspace,
 		store:                          d.Store,
-		agentSwitchReporting:           d.ReportingPolicy,
 		daemonRunID:                    strings.TrimSpace(d.DaemonRunID),
 		defaults:                       d.Defaults,
 		chat:                           d.Chat,
@@ -759,24 +673,13 @@ func New(d Deps) *Manager {
 		lookPath:                       d.LookPath,
 		executable:                     d.Executable,
 		newLaunchID:                    d.NewLaunchID,
-		codexOperationGate:             defaultCodexOperationGate(d.CodexOperationGate),
 		backgroundContext:              d.BackgroundContext,
 		startupBackgroundReconcileDone: make(chan struct{}),
 		agentOperations:                make(map[domain.SessionID]agentOperationKind),
-		switchDecisionInput:            make(map[domain.SessionID]domain.AgentSwitchID),
-		retainedSwitches:               make(map[domain.SessionID]struct{}),
 		inputLeases:                    make(map[domain.SessionID]int),
 		inputDrained:                   make(map[domain.SessionID]chan struct{}),
-		handoffWait:                    90 * time.Second,
-		switchPermissionDecisionWait:   time.Minute,
-		switchTargetStartWait:          3 * time.Second,
-		switchPostStopWait:             switchPostStopWait,
-		// Provider startup, including slow MCP initialization, can delay the
-		// prompt-submit hook even though the continuation is correctly buffered.
-		// Leave enough headroom to avoid a false delivery failure.
-		switchDeliveryAckWait:  150 * time.Second,
-		transitions:            make(map[domain.SessionID]*interfaceTransitionRun),
-		transitionDeliveryWake: make(chan struct{}, 1),
+		transitions:                    make(map[domain.SessionID]*interfaceTransitionRun),
+		transitionDeliveryWake:         make(chan struct{}, 1),
 		sendConfirm: sendConfirmConfig{
 			pollInterval:    sendConfirmPollInterval,
 			attemptDeadline: sendConfirmAttemptDeadline,
@@ -850,6 +753,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 		cfg.AgentConfig.Permissions = permissions
 	}
+	// A worker inherits its starting delivery stage from the orchestrator that
+	// requested it: a build-mode orchestrator drops the task straight into the
+	// board's Building lane, while every other spawn starts in Planning.
+	workflowMode := domain.DefaultWorkflowMode
+	if cfg.ParentSessionID != "" {
+		workflowMode = m.inheritedSpawnWorkflowMode(ctx, cfg.ProjectID, cfg.ParentSessionID)
+	}
 	// A per-project role override picks the harness when the spawn names none,
 	// so a project can default workers to one agent and orchestrators to another.
 	cfg.Harness = effectiveHarness(cfg.Harness, cfg.Kind, project.Config)
@@ -910,11 +820,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			mode = domain.SessionModeTUI
 		}
 		if mode == domain.SessionModeChat {
-			resolved, err := m.resolveChatAgentConfig(ctx, cfg, project.Config)
-			if err != nil {
-				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
-			}
-			cfg.AgentConfig = resolved
+			cfg.AgentConfig = m.resolveChatAgentConfig(cfg, project.Config)
 			cfg.AgentConfigResolved = true
 		}
 	}
@@ -935,7 +841,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	promptBytes := len(prompt)
 	systemPromptBytes := len(systemPrompt)
 
-	rec, err := m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock()))
+	rec, err := m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock(), workflowMode))
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
 	}
@@ -1068,12 +974,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepareLaunch, err)
 	}
 	defer m.lcm.CancelLaunch(id, launchID)
-	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, cfg.Harness)
-	if err != nil {
-		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, err)
-	}
-	defer releaseCodexAdmission()
 	handle, err := m.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     id,
 		WorkspacePath: ws.Path,
@@ -1127,70 +1027,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
-func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
+func (m *Manager) resolveChatAgentConfig(cfg ports.SpawnConfig, project domain.ProjectConfig) ports.AgentConfig {
 	base := effectiveAgentConfig(cfg.Harness, cfg.Kind, project)
 	requested := cfg.AgentConfig
 	resolved := applySpawnAgentConfig(base, requested)
-	if cfg.EffortOverride {
-		resolved.Effort = requested.Effort
-	}
-	if cfg.Harness != domain.HarnessCodex {
-		resolved.Effort = ""
-		return resolved, nil
-	}
-	if m.modelCatalog == nil {
-		return resolved, nil
-	}
-	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
-	if err != nil {
-		if resolved.Effort != "" {
-			return ports.AgentConfig{}, fmt.Errorf("%w: %w", ports.ErrModelCapabilitiesUnavailable, err)
-		}
-		return resolved, nil
-	}
-	modelID := resolved.Model
-	if modelID == "" {
-		for _, item := range catalog.Models {
-			if item.IsDefault {
-				modelID = item.ID
-				break
-			}
-		}
-	}
-	var selected *ports.AgentModelInfo
-	for i := range catalog.Models {
-		if catalog.Models[i].ID == modelID {
-			selected = &catalog.Models[i]
-			break
-		}
-	}
-	if requested.Model != "" && requested.Model != base.Model {
-		if !cfg.EffortOverride && requested.Effort == "" && (selected == nil || !containsString(selected.Efforts, base.Effort)) {
-			resolved.Effort = ""
-		}
-	}
-	if resolved.Effort == "" {
-		return resolved, nil
-	}
-	if catalog.Stale || selected == nil {
-		return ports.AgentConfig{}, fmt.Errorf("%w for model %q", ports.ErrModelCapabilitiesUnavailable, modelID)
-	}
-	if resolved.Effort != "" && !containsString(selected.Efforts, resolved.Effort) {
-		return ports.AgentConfig{}, fmt.Errorf("%w %q for model %q", ports.ErrUnsupportedEffort, resolved.Effort, modelID)
-	}
-	return resolved, nil
-}
-
-func containsString(values []string, value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
+	// Effort is a legacy reasoning knob from the codex adapter. opencode is the
+	// only supported harness, so spawn never applies it.
+	resolved.Effort = ""
+	return resolved
 }
 
 // inheritedSpawnPermissions derives a worker override from its requesting chat
@@ -1219,6 +1063,27 @@ func (m *Manager) inheritedSpawnPermissions(ctx context.Context, projectID domai
 		return "", fmt.Errorf("load parent conversation %s: %w", parentID, err)
 	}
 	return conversation.Settings.ApprovalMode, nil
+}
+
+// inheritedSpawnWorkflowMode derives a worker's starting delivery stage from its
+// requesting orchestrator. A worker spawned by an orchestrator that has been
+// toggled into building starts in building too, so `ao spawn` from a build-mode
+// orchestrator drops the task straight into the board's Building lane. Any other
+// parent — a worker, a missing session, or an orchestrator still planning — keeps
+// the planning default. Unlike the permission policy this is a board placement,
+// not a security boundary, so a read failure logs and falls back rather than
+// aborting the spawn.
+func (m *Manager) inheritedSpawnWorkflowMode(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) domain.WorkflowMode {
+	parent, ok, err := m.store.GetSession(ctx, parentID)
+	if err != nil {
+		m.logger.Warn("spawn: load parent for workflow-mode inheritance",
+			"parent", parentID, "error", err)
+		return domain.DefaultWorkflowMode
+	}
+	if !ok || parent.ProjectID != projectID || parent.Kind != domain.KindOrchestrator {
+		return domain.DefaultWorkflowMode
+	}
+	return domain.NormalizeWorkflowMode(parent.WorkflowMode)
 }
 
 // loadProject loads the project record so spawn can resolve its per-project
@@ -1610,7 +1475,11 @@ func effectiveAgentConfig(harness domain.AgentHarness, kind domain.SessionKind, 
 
 func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
 	merged := effectiveAgentConfig(rec.Harness, rec.Kind, cfg)
-	if rec.Harness == domain.HarnessClaudeCode {
+	// opencode persists the exact model it launched with, so a relaunch pins
+	// that snapshot rather than adopting a project default the user may have
+	// changed since. A row with no snapshot stays empty instead of inferring the
+	// current default.
+	if rec.Harness == domain.HarnessOpenCode {
 		merged.Model = rec.Metadata.Model
 	}
 	return merged
@@ -1830,7 +1699,7 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 
 	if err := m.beginAgentOperation(ctx, id, agentOperationKill); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
-			err = ErrSwitchInProgress
+			err = ErrExclusiveOperationInProgress
 		}
 		return false, fmt.Errorf("kill %s: %w", id, err)
 	}
@@ -1970,7 +1839,7 @@ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
 	if err := m.beginAgentOperation(ctx, id, agentOperationRetire); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
-			err = ErrSwitchInProgress
+			err = ErrExclusiveOperationInProgress
 		}
 		return fmt.Errorf("retire replacement %s: %w", id, err)
 	}
@@ -2147,7 +2016,7 @@ func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec 
 func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
 	if err := m.beginAgentOperation(ctx, id, agentOperationRestore); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
-			err = ErrSwitchInProgress
+			err = ErrExclusiveOperationInProgress
 		}
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
 	}
@@ -2255,14 +2124,14 @@ func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.Se
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrNotFound)
 	}
 	if exited.Activity.State != domain.ActivityExited {
-		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrSwitchSourceStopUnconfirmed)
+		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrAgentStopUnconfirmed)
 	}
 	return exited, nil
 }
 
 // stopAgentController is the single controller-stop primitive used by the
-// public exit-agent operation and coordinated Codex account switching. It
-// never terminates the AO session or releases its worktree.
+// public exit-agent operation. It never terminates the AO session or releases
+// its worktree.
 func (m *Manager) stopAgentController(ctx context.Context, rec domain.SessionRecord) error {
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
 		if m.chat == nil {
@@ -2280,6 +2149,49 @@ func (m *Manager) stopAgentController(ctx context.Context, rec domain.SessionRec
 		Generation:     strings.TrimSpace(rec.Metadata.RuntimeLaunchID),
 		NativeIdentity: strings.TrimSpace(rec.Metadata.AgentSessionID),
 	})
+}
+
+// stopSourceRuntime destroys a provider runtime and, when the destroy call
+// fails, probes ownership and retries so a teardown that committed externally
+// is not reported as a failure. The exact feedback loops above it decide which
+// of the remaining states are fatal.
+func (m *Manager) stopSourceRuntime(ctx context.Context, ref ports.FencedRuntimeRef) error {
+	if strings.TrimSpace(ref.Handle.ID) == "" {
+		return ErrIncompleteHandle
+	}
+	firstErr := m.runtime.Destroy(ctx, ref.Handle)
+	if firstErr == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(ErrAgentStopUnconfirmed, firstErr, err)
+	}
+	probe := m.runtime.ProbeFencedRuntime(ctx, ref)
+	if probe.Liveness == ports.FencedDead {
+		// Teardown committed externally even though its response failed.
+		return nil
+	}
+	secondErr := m.runtime.Destroy(ctx, ref.Handle)
+	if secondErr == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(ErrAgentStopUnconfirmed, firstErr, fmt.Errorf("first ownership probe: %s", probe.Reason), secondErr, err)
+	}
+	secondProbe := m.runtime.ProbeFencedRuntime(ctx, ref)
+	if secondProbe.Liveness == ports.FencedDead {
+		return nil
+	}
+	if secondProbe.Liveness == ports.FencedAlive {
+		return fmt.Errorf("%w: runtime remains alive after two destroy attempts: %w", ErrAgentStopUnconfirmed, errors.Join(firstErr, secondErr))
+	}
+	return errors.Join(
+		ErrAgentStopUnconfirmed,
+		firstErr,
+		fmt.Errorf("first ownership probe: %s", probe.Reason),
+		secondErr,
+		fmt.Errorf("second ownership probe: %s", secondProbe.Reason),
+	)
 }
 
 func (m *Manager) recordAgentExited(ctx context.Context, rec domain.SessionRecord) error {
@@ -2363,17 +2275,6 @@ func (m *Manager) resumeAgentRecordWithPolicy(
 	forceFresh bool,
 	requireNativeHistory bool,
 ) (RestoreResult, error) {
-	return m.resumeAgentRecordWithReservedGeneration(ctx, operation, rec, forceFresh, requireNativeHistory, "")
-}
-
-func (m *Manager) resumeAgentRecordWithReservedGeneration(
-	ctx context.Context,
-	operation string,
-	rec domain.SessionRecord,
-	forceFresh bool,
-	requireNativeHistory bool,
-	reservedGeneration string,
-) (RestoreResult, error) {
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
@@ -2392,10 +2293,10 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 		ProjectID: rec.ProjectID,
 	}
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict)
+		return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, domain.SessionInterfaceTransitionHistoryStrict)
 	}
 	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict)
+	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, domain.SessionInterfaceTransitionHistoryStrict)
 }
 
 func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
@@ -2422,10 +2323,6 @@ func (m *Manager) relaunchSessionWithPolicy(
 	forceFresh, requireNativeHistory bool,
 	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle, forceFresh, requireNativeHistory, "", historyPolicy)
-}
-
-func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy) (RestoreResult, error) {
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
 	// after stopping the old controller, then reuses this ordinary restore path.
@@ -2436,7 +2333,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 		}
 		return m.resumeChatController(
-			ctx, operation, rec, project, ws, requireNativeHistory, reservedGeneration, historyPolicy,
+			ctx, operation, rec, project, ws, requireNativeHistory, historyPolicy,
 		)
 	}
 
@@ -2444,15 +2341,11 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if !ok {
 		return RestoreResult{}, fmt.Errorf("%s %s: no agent adapter for harness %q", operation, rec.ID, rec.Harness)
 	}
-	// Recompute standing instructions, then reapply the durable finalized inbound
-	// handoff for this exact native conversation when one exists.
+	// Recompute standing instructions; a restored session keeps them across the
+	// relaunch.
 	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.ProjectID)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt: %w", operation, rec.ID, err)
-	}
-	systemPrompt, err = m.systemPromptForNativeRestore(ctx, rec, systemPrompt)
-	if err != nil {
-		return RestoreResult{}, fmt.Errorf("%s %s: switched continuation: %w", operation, rec.ID, err)
 	}
 	systemPromptFile, err := m.prepareSystemPromptFile(rec.ID, rec.Harness, systemPrompt)
 	if err != nil {
@@ -2499,12 +2392,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
 	}
 	m.augmentRuntimePATHForLaunchBinary(ctx, env, argv)
-	launchID := strings.TrimSpace(reservedGeneration)
-	if launchID == "" {
-		argv, launchID, err = m.superviseAgentProcess(agent, rec.ID, env, argv)
-	} else {
-		argv, err = m.wrapAgentProcessWithLaunchID(agent, rec.ID, env, argv, launchID, true)
-	}
+	argv, launchID, err := m.superviseAgentProcess(agent, rec.ID, env, argv)
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: supervisor: %w", operation, rec.ID, err)
@@ -2514,12 +2402,6 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: prepare launch: %w", operation, rec.ID, err)
 	}
 	defer m.lcm.CancelLaunch(rec.ID, launchID)
-	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, rec.Harness)
-	if err != nil {
-		m.cleanupSystemPromptDir(rec.ID)
-		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
-	}
-	defer releaseCodexAdmission()
 	runtimeCfg := ports.RuntimeConfig{
 		SessionID:     rec.ID,
 		WorkspacePath: ws.Path,
@@ -2547,16 +2429,12 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		Prompt:                    rec.Metadata.Prompt,
 		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
 	}
-	// Bind an exact native resume to the target launch immediately. Passive Codex
-	// resumes do not necessarily emit SessionStart until the next user turn, and
-	// Claude emits SessionStart after its resume process is already running, but
-	// both adapters' explicit resume commands name the exact stored conversation.
-	// The interface coordinator provides the same guarantee after it freezes Chat
-	// and transfers the required native history. Fresh and fallback launches
-	// still require current-generation identity proof from their hooks.
-	bindNativeIdentity := mode == RestoreModeNative &&
-		(rec.Harness == domain.HarnessCodex || rec.Harness == domain.HarnessClaudeCode)
-	if (bindNativeIdentity || (requireNativeHistory && !forceFresh)) && strings.TrimSpace(metadata.AgentSessionID) != "" {
+	// An explicit native resume names the exact stored conversation, so bind the
+	// native identity to this launch immediately rather than waiting for a hook.
+	// opencode's resume command selects the stored session id directly, so the
+	// binding is trustworthy the moment the process starts. Fresh and fallback
+	// launches still require current-generation identity proof from their hooks.
+	if (mode == RestoreModeNative || (requireNativeHistory && !forceFresh)) && strings.TrimSpace(metadata.AgentSessionID) != "" {
 		metadata.AgentSessionIDLaunchID = launchID
 	}
 	if err := m.lcm.MarkSpawned(ctx, rec.ID, metadata); err != nil {
@@ -2947,14 +2825,8 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 }
 
 // ReconcileStartupSafety closes interrupted operations or quarantines ambiguous
-// interface targets and agent switches with a restored input fence before the API accepts input.
+// interface targets with a restored input fence before the API accepts input.
 func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
-	// A daemon restart destroys the in-memory input fence. Close any durable
-	// non-terminal switch before adopting runtimes so the API never implies an
-	// unconfirmed continuation was delivered.
-	if err := m.reconcileAgentSwitches(ctx, true); err != nil {
-		return fmt.Errorf("reconcile: agent-switch pass: %w", err)
-	}
 	m.startTransitionMessageDispatcher(ctx)
 	_, err := m.recoverInterruptedInterfaceTransitions(ctx)
 	if err != nil {
@@ -3619,7 +3491,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	case sessionguard.SuppressedStartupPending:
 		return fmt.Errorf("send %s: %w", id, ErrStartupPending)
 	case sessionguard.SuppressedInputGated:
-		return fmt.Errorf("send %s: %w", id, ErrSwitchInProgress)
+		return fmt.Errorf("send %s: %w", id, ErrExclusiveOperationInProgress)
 	}
 	// confirmActive only helps — and is only SAFE — when the harness reports
 	// both a prompt-submit signal (so the loop can observe active) and a
@@ -3646,36 +3518,12 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 }
 
 func (m *Manager) prepareOutboundMessage(ctx context.Context, id domain.SessionID, message string) (string, error) {
-	rec, ok, err := m.store.GetSession(ctx, id)
-	if err != nil {
+	if _, ok, err := m.store.GetSession(ctx, id); err != nil {
 		return "", fmt.Errorf("send %s: session: %w", id, err)
-	}
-	if !ok {
+	} else if !ok {
 		return message, nil
 	}
-	if rec.Harness != domain.HarnessCopilot || rec.Kind != domain.KindOrchestrator {
-		return message, nil
-	}
-	return copilotOrchestratorMessage(rec.ProjectID, message), nil
-}
-
-func copilotOrchestratorMessage(projectID domain.ProjectID, message string) string {
-	project := strings.TrimSpace(string(projectID))
-	if project == "" {
-		project = "<project>"
-	}
-	return fmt.Sprintf(`AO ORCHESTRATOR DIRECTIVE
-
-You are acting as the AO orchestrator for project %s. Do not implement code changes, edit files, run implementation tests, or complete the user's task yourself.
-
-Your next action for any implementation, fix, UI change, test, PR, or code-review task must be to spawn or redirect a worker session. Use:
-
-ao spawn --project %s --name "<label, max 20 chars>" --prompt "<clear worker task>"
-
-If a suitable worker already exists, use ao send to redirect that worker instead. After spawning or redirecting, report the worker session id and stop. Do not do the worker's task in this orchestrator session.
-
-USER MESSAGE:
-%s`, project, project, message)
+	return message, nil
 }
 
 // harnessNudgeSafe reports whether the session's harness is safe to nudge with
@@ -3749,19 +3597,6 @@ func (m *Manager) confirmActive(ctx context.Context, guard *sessionguard.Guard, 
 }
 
 type confirmationStopCheck func(context.Context) (bool, error)
-
-// confirmActiveUnderMutation is the switch-safe form of confirmActive. Agent
-// switching deliberately closes the ordinary input lease, so a catch-up Enter
-// must bypass that gate while retaining stricter activity checks: only an idle
-// or waiting-input composer may receive it. Active and blocked targets are
-// suppressed at the write boundary so the retry cannot steer a running turn or
-// answer a permission dialog. stop is checked before waiting and immediately
-// before every Enter so a completed target acknowledgement always wins.
-func (m *Manager) confirmActiveUnderMutation(ctx context.Context, guard *sessionguard.Guard, id domain.SessionID, stop confirmationStopCheck) {
-	m.confirmActiveWithNudge(ctx, id, stop, func(nudgeCtx context.Context) (sessionguard.Outcome, error) {
-		return guard.CoordinationUnderMutation(nudgeCtx, id, "", m.harnessNudgeSafe, nil)
-	})
-}
 
 func (m *Manager) confirmActiveWithNudge(ctx context.Context, id domain.SessionID, stop confirmationStopCheck, nudge func(context.Context) (sessionguard.Outcome, error)) {
 	for attempt := 1; ; attempt++ {
@@ -3994,7 +3829,7 @@ func (m *Manager) cleanupRecords(ctx context.Context, project domain.ProjectID) 
 
 // ---- helpers ----
 
-func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now time.Time) domain.SessionRecord {
+func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now time.Time, workflowMode domain.WorkflowMode) domain.SessionRecord {
 	return domain.SessionRecord{
 		ProjectID:   cfg.ProjectID,
 		IssueID:     cfg.IssueID,
@@ -4011,6 +3846,12 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		AutoReviewEnabled: projectConfig.AutoReview,
 		AutoInjectReview:  true,
 		AutoInjectCI:      true,
+		// New sessions default to tearing themselves down once their PR set
+		// completes through a merge. Users can opt out per session.
+		TerminateOnPRMerge: true,
+		// Planning is the default delivery stage; a build-mode orchestrator
+		// passes building so its task lands directly in the Building lane.
+		WorkflowMode: domain.NormalizeWorkflowMode(workflowMode),
 	}
 }
 
@@ -4282,7 +4123,7 @@ func (m *Manager) aoSkillPointer() string {
 		"## AO desktop Browser panel\n\n" +
 		"For frontend work, read `" + previewFile + "` before previewing or starting an app. Static file targets passed to `ao preview` are relative to the session workspace root, regardless of the shell's current directory: use `ao preview README.md`, not `../README.md`. AO serves workspace files through its existing confined loopback preview; do not use `file://` or start a server just to display static files. Never create or modify `package.json` or install dependencies solely to display static files. Do not create `.ao/launch.json` unless the user asks. Automatically open the primary requested browser-displayable artifact immediately after creating or materially updating it, but do not replace an active application preview with a supporting asset. " +
 		"For page inspection or interaction, read `" + browserFile + "` and use `ao browser` from this AO session. Browser network capture is optional and off by default; follow that guide and never enable it for routine browser actions. " +
-		"Do not use Codex/host in-app browser connectors, `agent.browsers.get(\"iab\")`, or a browser MCP for the AO Browser panel: those are separate browser runtimes and cannot see or control AO's session-owned page. " +
+		"Do not use host in-app browser connectors, `agent.browsers.get(\"iab\")`, or a browser MCP for the AO Browser panel: those are separate browser runtimes and cannot see or control AO's session-owned page. " +
 		"`ao browser` operates the same live page the user sees in that panel."
 }
 
@@ -4349,13 +4190,7 @@ func (m *Manager) prepareSystemPromptFile(id domain.SessionID, harness domain.Ag
 
 func systemPromptFileRequired(harness domain.AgentHarness) bool {
 	switch harness {
-	case domain.HarnessAider,
-		domain.HarnessAgy,
-		domain.HarnessAuggie,
-		domain.HarnessKiro,
-		domain.HarnessOpenCode,
-		domain.HarnessCopilot,
-		domain.HarnessVibe:
+	case domain.HarnessOpenCode:
 		return true
 	default:
 		return false
@@ -4843,7 +4678,7 @@ func (m *Manager) deliverAfterStartPrompt(ctx context.Context, agent ports.Agent
 	case sessionguard.SuppressedStartupPending:
 		return fmt.Errorf("send %s: %w", id, ErrStartupPending)
 	case sessionguard.SuppressedInputGated:
-		return fmt.Errorf("send %s: %w", id, ErrSwitchInProgress)
+		return fmt.Errorf("send %s: %w", id, ErrExclusiveOperationInProgress)
 	case sessionguard.SuppressedUnknown:
 		return fmt.Errorf("send %s: pre-write session read failed", id)
 	default:
@@ -5126,28 +4961,17 @@ func (m *Manager) validateRuntimePrerequisites() error {
 }
 
 func (m *Manager) superviseAgentProcess(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string) ([]string, string, error) {
-	// Switching-capable providers always use the exact-generation
-	// supervisor, even when their native hooks also report exit. That gives a
-	// later semantic handoff a safe foreground-process proof and ensures an exit
-	// races into the non-interpreting tmux sink rather than a shell.
-	_, switchingCapable := agent.(ports.AgentContinuationCapabilityProvider)
-	return m.superviseAgentProcessMode(agent, id, env, argv, switchingCapable)
+	return m.superviseAgentProcessMode(agent, id, env, argv)
 }
 
-// superviseAgentProcessForSwitch always installs AO's generation-bearing
-// wrapper. Native hooks still report activity, while the wrapper gives crash
-// recovery a process-level proof that a surviving workload belongs to the
-// target generation rather than the provider that was stopped.
-func (m *Manager) superviseAgentProcessForSwitch(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string) ([]string, string, error) {
-	return m.superviseAgentProcessMode(agent, id, env, argv, true)
-}
-
-func (m *Manager) superviseAgentProcessMode(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string, force bool) ([]string, string, error) {
+// superviseAgentProcessMode installs AO's generation-bearing wrapper when the
+// adapter's process-exit model needs it (supervisor-mode exit detection).
+func (m *Manager) superviseAgentProcessMode(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string) ([]string, string, error) {
 	launchID := m.newLaunchID()
 	if strings.TrimSpace(launchID) == "" {
 		return nil, "", errors.New("generated empty launch id")
 	}
-	wrapped, err := m.wrapAgentProcessWithLaunchID(agent, id, env, argv, launchID, force)
+	wrapped, err := m.wrapAgentProcessWithLaunchID(agent, id, env, argv, launchID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -5155,20 +4979,15 @@ func (m *Manager) superviseAgentProcessMode(agent ports.Agent, id domain.Session
 }
 
 // wrapAgentProcessWithLaunchID rebuilds a preflighted launch command without
-// changing its already-reserved generation. Agent switching uses this after it
-// has assembled the final in-memory continuation for CLIs that can accept the
-// turn directly on fresh/resume launch.
-func (m *Manager) wrapAgentProcessWithLaunchID(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string, launchID string, force bool) ([]string, error) {
+// changing its already-reserved generation. Every provider generation is
+// fenced so an old hook cannot overwrite a newer native session id.
+func (m *Manager) wrapAgentProcessWithLaunchID(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string, launchID string) ([]string, error) {
 	if strings.TrimSpace(launchID) == "" {
 		return nil, errors.New("empty launch id")
 	}
-	// Every provider generation is fenced, including providers that report
-	// process exit through native hooks and therefore do not need the wrapper.
-	// Without this env value an old source hook can overwrite the target's
-	// native session id after an in-place switch.
 	env[EnvRuntimeLaunchID] = launchID
 	detector, ok := agent.(ports.AgentExitDetector)
-	if !force && (!ok || detector.ExitDetectionMode() != ports.AgentExitDetectionSupervisor) {
+	if !ok || detector.ExitDetectionMode() != ports.AgentExitDetectionSupervisor {
 		return argv, nil
 	}
 	env[EnvSupervisedProcess] = "1"

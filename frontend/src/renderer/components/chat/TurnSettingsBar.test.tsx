@@ -538,38 +538,11 @@ describe("ACP session config options", () => {
 		expect(onChange).toHaveBeenCalledWith("model", { value: "sonnet" });
 	});
 
-	it("shows Codex's three native permission choices", async () => {
-		const user = userEvent.setup();
-		const onChange = vi.fn();
+	
+
+	it("keeps native model+effort in one trigger when the provider has no catalog", () => {
 		render(
 			<TurnSettingsBar
-				harness="codex"
-				models={[]}
-				settings={{}}
-				onChange={onChange}
-			/>,
-		);
-
-		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Full access",
-		);
-		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
-		expect(screen.getByRole("menuitemradio", { name: "Ask for approval" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitemradio", { name: "Approve for me" })).toBeInTheDocument();
-		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
-		expect(screen.queryByRole("menuitemradio", { name: "Default approvals" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitemradio", { name: "Accept edits" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitemradio", { name: "Auto-approve" })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitemradio", { name: "Full access" })).toBeInTheDocument();
-
-		await user.click(screen.getByRole("menuitemradio", { name: "Approve for me" }));
-		expect(onChange).toHaveBeenCalledWith({ approvalMode: "auto" });
-	});
-
-	it("keeps Codex native model+effort in one trigger when the provider has no catalog", () => {
-		render(
-			<TurnSettingsBar
-				harness="codex"
 				models={[
 					{ id: "gpt-5.6-terra", displayName: "gpt-5.6-terra", default: true, efforts: ["high"] },
 				]}
@@ -582,7 +555,7 @@ describe("ACP session config options", () => {
 			screen.getByRole("button", { name: "Model and reasoning effort for the next turn" }),
 		).toHaveTextContent("gpt-5.6-terra High");
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Full access",
+			"Default approvals",
 		);
 	});
 
@@ -599,20 +572,7 @@ describe("ACP session config options", () => {
 			"Bypass permissions",
 		);
 	});
-	it("distinguishes Codex bypass permissions from its default full-access posture", () => {
-		render(
-			<TurnSettingsBar
-				harness="codex"
-				models={[]}
-				settings={{ approvalMode: "bypass-permissions" }}
-				onChange={vi.fn()}
-			/>,
-		);
-
-		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toHaveTextContent(
-			"Bypass permissions",
-		);
-	});
+	
 	it("keeps a lone extra option as its own picker rather than inventing a model menu", () => {
 		render(
 			<TurnSettingsBar
@@ -635,13 +595,13 @@ describe("remember project permissions", () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();
 		const remember = vi.fn();
-		const { rerender } = render(<TurnSettingsBar models={[]} harness="codex"
+		const { rerender } = render(<TurnSettingsBar models={[]}
 			settings={{ approvalMode: "auto" }} onChange={onChange} onRememberPermissions={remember} />);
 		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
-		await user.click(screen.getByRole("menuitemradio", { name: "Full access" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Default approvals" }));
 		expect(onChange).toHaveBeenCalledWith({ approvalMode: "default" });
 		expect(remember).not.toHaveBeenCalled();
-		rerender(<TurnSettingsBar models={[]} harness="codex"
+		rerender(<TurnSettingsBar models={[]}
 			settings={{ approvalMode: "default" }} onChange={onChange} onRememberPermissions={remember} />);
 		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
 		await user.click(screen.getByRole("menuitem", { name: "Remember for this project" }));
@@ -716,7 +676,6 @@ describe("native model selection", () => {
 				]}
 				settings={{ model: "nano" }}
 				onChange={vi.fn()}
-				harness="codex"
 			/>,
 		);
 		expect(

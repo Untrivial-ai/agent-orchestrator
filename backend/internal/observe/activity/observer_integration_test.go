@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/tmux"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
@@ -60,7 +60,7 @@ func TestObserverIntegrationReconcilesRealTmuxOutputIntoSQLite(t *testing.T) {
 			session, err := store.CreateSession(ctx, domain.SessionRecord{
 				ProjectID:     projectID,
 				Kind:          domain.KindWorker,
-				Harness:       domain.HarnessCodex,
+				Harness:       domain.HarnessOpenCode,
 				Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: staleAt},
 				FirstSignalAt: staleAt,
 				CreatedAt:     staleAt,
@@ -93,7 +93,16 @@ func TestObserverIntegrationReconcilesRealTmuxOutputIntoSQLite(t *testing.T) {
 				store,
 				manager,
 				runtime,
-				fakeAgents{domain.HarnessCodex: codex.New()},
+				fakeAgents{domain.HarnessOpenCode: detectorAgent{
+					Plugin:     opencode.New(),
+					continuous: true,
+					detect: func(output string) (domain.ActivityState, bool) {
+						if strings.Contains(output, "• Working") {
+							return domain.ActivityActive, true
+						}
+						return domain.ActivityIdle, true
+					},
+				}},
 				Config{
 					StaleAfter: time.Minute,
 					Clock:      func() time.Time { return now },

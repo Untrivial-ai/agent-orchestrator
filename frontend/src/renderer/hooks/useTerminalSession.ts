@@ -16,7 +16,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getApiBaseUrl } from "../lib/api-client";
 import { consumeFreshTerminalHandle } from "../lib/fresh-terminal-handles";
-import { captureRendererEvent } from "../lib/telemetry";
 import { LOCAL_ECHO_ENABLED, withPredictiveLocalEcho } from "../lib/terminal-local-echo";
 import { createTerminalMux, muxUrlFromApiBase, type TerminalMux } from "../lib/terminal-mux";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
@@ -699,7 +698,6 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				// and its error text inspectable while disposing the failed socket;
 				// an explicit session restore can create a fresh attachment later.
 				teardownMux();
-				void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "pane_error" });
 				invalidateWorkspaces();
 			}),
 			mux.onConnectionChange((connectionState) => {
@@ -817,7 +815,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		mux.open(handle, openCols, openRows);
 		r.lastPublishedGrid =
 			openCols > 0 && openRows > 0 ? { cols: openCols, rows: openRows } : null;
-		// Client open timeout for LOCAL panes only. It budgets the time between
+// Client open timeout for LOCAL panes only. It budgets the time between
 		// mux.open() and the pane opening — the daemon's liveness probe + runtime
 		// spawn — so a stalled spawn recovers. A CLOUD pane gets NO client open
 		// timeout: readiness is server-driven (the mux opens its socket directly,
@@ -831,11 +829,6 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			r.openTimer = setTimeout(() => {
 				if (!isCurrentAttachment(generation, handle, mux)) return;
 				r.openTimer = null;
-				// Only the first timeout of a reattach sequence is reported; the
-				// backoff loop retrying against a restarting daemon is not news.
-				if (r.attempts === 0) {
-					void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
-				}
 				transition("reattaching");
 				teardownMux();
 				scheduleReattach();

@@ -1,6 +1,6 @@
 # Agent Orchestrator Architecture
 
-Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex and all ACP Chat processes live in detached per-session hosts so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
+Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. The opencode Chat controller lives in a detached per-session host so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
 
 ## Table of Contents
 
@@ -329,8 +329,8 @@ and PR ownership also stay the same. Only the mode-owned controller changes.
 
 The generic coordinator lives in `session_manager`; providers opt in through the
 small `AgentInterfaceHandoff` capability only after their TUI resume id and Chat
-protocol id are proven to name the same native conversation. Claude Code and
-Codex currently satisfy that contract. Merely having a Chat/ACP driver is not
+protocol id are proven to name the same native conversation. The shipped
+opencode harness currently satisfies that contract. Merely having a Chat/ACP driver is not
 enough to enable switching for another harness.
 
 The native ID handed over is the current Terminal conversation, which can differ
@@ -360,11 +360,12 @@ observation time also orders native identities within a launch, so delayed hooks
 cannot replace the current identity's facts.
 
 Independent handoff publication settles the retired predecessor's work and fails
-pending requests in the same transaction as history and ownership. Codex scopes
-projection IDs at the adapter boundary and decodes them for native RPCs. A durable
-branch flag preserves legacy unscoped Codex IDs on upgrade; native forks inherit
+pending requests in the same transaction as history and ownership. The native
+driver scopes projection IDs at the adapter boundary and decodes them for native
+RPCs. A durable
+branch flag preserves legacy unscoped IDs on upgrade; native forks inherit
 that flag, while new provider boundaries use scoped IDs.
-When Codex proves fork ancestry, replay omits copied prefixes only if their stable
+When native fork ancestry is proven, replay omits copied prefixes only if their stable
 item IDs and complete content match retained ancestor rows. Those rows stay in
 their original scope. Unknown ancestry or changed content is retained in full.
 
@@ -912,7 +913,7 @@ flowchart TD
 The daemon runs two independent HTTP listeners sharing the same chi router:
 
 1. **Primary (Loopback) Listener** — binds `127.0.0.1:3001` with no authentication. All existing daemon operations (CLI, desktop app) use this listener.
-2. **LAN Listener** (Connect Mobile) — an opt-in second listener that binds `0.0.0.0:3011` (or ephemeral fallback) **only when explicitly enabled** by the user through the desktop app's Settings. It wraps the shared router in bearer-password authentication middleware, serves app API routes to mobile clients, but never exposes loopback-gated control routes (`/shutdown`, telemetry, mobile control commands). All traffic is plaintext HTTP on a home network only, by deliberate security decision — see `docs/adr/0001-lan-listener-for-mobile.md` for rationale and threat model. Auth state (hashed password, per-source lockout) is persisted to `~/.ao/mobile/config.json` and restored on daemon boot.
+2. **LAN Listener** (Connect Mobile) — an opt-in second listener that binds `0.0.0.0:3011` (or ephemeral fallback) **only when explicitly enabled** by the user through the desktop app's Settings. It wraps the shared router in bearer-password authentication middleware, serves app API routes to mobile clients, but never exposes loopback-gated control routes (`/shutdown`, `/internal/`, mobile control commands). All traffic is plaintext HTTP on a home network only, by deliberate security decision — see `docs/adr/0001-lan-listener-for-mobile.md` for rationale and threat model. Auth state (hashed password, per-source lockout) is persisted to `~/.ao/mobile/config.json` and restored on daemon boot.
 
 The mobile app is a second thin renderer over those same session resources. It
 branches on the session's persisted `mode`: TUI attaches the existing mux PTY,

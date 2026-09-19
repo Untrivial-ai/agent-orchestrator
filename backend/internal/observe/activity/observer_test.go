@@ -5,14 +5,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/crush"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/droid"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/muse"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -55,6 +52,30 @@ func (f fakeAgents) Agent(harness domain.AgentHarness) (ports.Agent, bool) {
 	return agent, ok
 }
 
+// detectorAgent wraps the opencode plugin with the terminal-activity detector
+// capabilities the observer branches on. Only the opencode adapter ships today,
+// so terminal-screen reconciliation is exercised through this test double with
+// the capability matrix the deleted TUI adapters used to provide.
+type detectorAgent struct {
+	*opencode.Plugin
+	detect          func(string) (domain.ActivityState, bool)
+	continuous      bool
+	waitingDetector bool
+}
+
+func (d detectorAgent) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
+	if d.detect == nil {
+		return "", false
+	}
+	return d.detect(output)
+}
+
+func (d detectorAgent) ContinuouslyDetectTerminalActivity() bool { return d.continuous }
+
+func (d detectorAgent) ContinuouslyDetectTerminalActivityWhileWaiting() bool {
+	return d.waitingDetector
+}
+
 func activeSession(now time.Time, harness domain.AgentHarness) domain.SessionRecord {
 	return domain.SessionRecord{
 		ID:        "ao-1",
@@ -72,16 +93,25 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func TestPollReconcilesStaleCodexAtComposer(t *testing.T) {
+func TestPollReconcilesStaleActiveAtComposer(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
-	session := activeSession(now, domain.HarnessCodex)
+	session := activeSession(now, domain.HarnessOpenCode)
 	sink := &fakeSink{}
 	runtime := &fakeRuntime{output: "› Write tests for @filename\n\ngpt-5.6-sol low · ~/project\n"}
 	observer := New(
 		fakeSessions{rows: []domain.SessionRecord{session}},
 		sink,
 		runtime,
-		fakeAgents{domain.HarnessCodex: codex.New()},
+		fakeAgents{domain.HarnessOpenCode: detectorAgent{
+			Plugin:     opencode.New(),
+			continuous: true,
+			detect: func(output string) (domain.ActivityState, bool) {
+				if strings.HasPrefix(output, "›") {
+					return domain.ActivityIdle, true
+				}
+				return domain.ActivityActive, true
+			},
+		}},
 		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 	)
 
@@ -100,15 +130,21 @@ func TestPollReconcilesStaleCodexAtComposer(t *testing.T) {
 	}
 }
 
-func TestPollKeepsGenuineLongCodexTurnActive(t *testing.T) {
+func TestPollKeepsGenuineLongTurnActive(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
 	sink := &fakeSink{}
 	runtime := &fakeRuntime{output: "• Working (3m 10s • esc to interrupt)\n› Add tests\n\ngpt-5.6-sol low · ~/project\n"}
 	observer := New(
-		fakeSessions{rows: []domain.SessionRecord{activeSession(now, domain.HarnessCodex)}},
+		fakeSessions{rows: []domain.SessionRecord{activeSession(now, domain.HarnessOpenCode)}},
 		sink,
 		runtime,
-		fakeAgents{domain.HarnessCodex: codex.New()},
+		fakeAgents{domain.HarnessOpenCode: detectorAgent{
+			Plugin:     opencode.New(),
+			continuous: true,
+			detect: func(output string) (domain.ActivityState, bool) {
+				return domain.ActivityActive, true
+			},
+		}},
 		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 	)
 
@@ -120,7 +156,7 @@ func TestPollKeepsGenuineLongCodexTurnActive(t *testing.T) {
 	}
 }
 
-func TestPollContinuouslyReconcilesMuse(t *testing.T) {
+func TestPollContinuouslyReconcilesWaitingInput(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
 	tests := []struct {
 		name    string
@@ -129,13 +165,13 @@ func TestPollContinuouslyReconcilesMuse(t *testing.T) {
 		want    domain.ActivityState
 		event   string
 	}{
-		{"fresh active to waiting", domain.ActivityActive, "◆ Request user input AO Muse Fix  1m 02s)\n", domain.ActivityWaitingInput, "terminal-waiting-input"},
+		{"fresh active to waiting", domain.ActivityActive, "◆ Request user input Fix  1m 02s)\n", domain.ActivityWaitingInput, "terminal-waiting-input"},
 		{"waiting to active", domain.ActivityWaitingInput, "◇ Finishing up (25s · esc to interrupt)\n", domain.ActivityActive, "terminal-active"},
 		{"idle to waiting", domain.ActivityIdle, "Enter to select · ↑/↓ to move · Tab for an optional note · Esc to interrupt\n", domain.ActivityWaitingInput, "terminal-waiting-input"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			session := activeSession(now, domain.HarnessMuse)
+			session := activeSession(now, domain.HarnessOpenCode)
 			session.Activity = domain.Activity{State: tt.current, LastActivityAt: now.Add(-time.Second)}
 			session.UpdatedAt = now.Add(-time.Second)
 			sink := &fakeSink{}
@@ -143,7 +179,19 @@ func TestPollContinuouslyReconcilesMuse(t *testing.T) {
 				fakeSessions{rows: []domain.SessionRecord{session}},
 				sink,
 				&fakeRuntime{output: tt.output},
-				fakeAgents{domain.HarnessMuse: muse.New()},
+				fakeAgents{domain.HarnessOpenCode: detectorAgent{
+					Plugin:     opencode.New(),
+					continuous: true,
+					detect: func(output string) (domain.ActivityState, bool) {
+						if strings.HasPrefix(output, "◆") {
+							return domain.ActivityWaitingInput, true
+						}
+						if strings.HasPrefix(output, "◇") {
+							return domain.ActivityActive, true
+						}
+						return domain.ActivityWaitingInput, true
+					},
+				}},
 				Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 			)
 
@@ -157,7 +205,7 @@ func TestPollContinuouslyReconcilesMuse(t *testing.T) {
 	}
 }
 
-func TestPollReconcilesWaitingCrushAfterUserResponds(t *testing.T) {
+func TestPollReconcilesWaitingStateAfterUserResponds(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		output string
@@ -168,7 +216,7 @@ func TestPollReconcilesWaitingCrushAfterUserResponds(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Unix(500, 0).UTC()
-			session := activeSession(now, domain.HarnessCrush)
+			session := activeSession(now, domain.HarnessOpenCode)
 			session.Activity = domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now.Add(-time.Second)}
 			session.UpdatedAt = now.Add(-time.Second)
 			sink := &fakeSink{}
@@ -176,7 +224,16 @@ func TestPollReconcilesWaitingCrushAfterUserResponds(t *testing.T) {
 				fakeSessions{rows: []domain.SessionRecord{session}},
 				sink,
 				&fakeRuntime{output: tt.output},
-				fakeAgents{domain.HarnessCrush: crush.New()},
+				fakeAgents{domain.HarnessOpenCode: detectorAgent{
+					Plugin:     opencode.New(),
+					continuous: true,
+					detect: func(output string) (domain.ActivityState, bool) {
+						if strings.Contains(output, "Ready?") {
+							return domain.ActivityIdle, true
+						}
+						return domain.ActivityActive, true
+					},
+				}},
 				Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 			)
 
@@ -190,18 +247,24 @@ func TestPollReconcilesWaitingCrushAfterUserResponds(t *testing.T) {
 	}
 }
 
-func TestPollPreservesClaudeWaitingInputWithoutContinuousCapability(t *testing.T) {
+func TestPollPreservesWaitingInputWithoutContinuousCapability(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
-	session := activeSession(now, domain.HarnessClaudeCode)
+	session := activeSession(now, domain.HarnessOpenCode)
 	session.Activity = domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now.Add(-time.Second)}
 	session.UpdatedAt = now.Add(-time.Second)
 	sink := &fakeSink{}
-	runtime := &fakeRuntime{output: claudeStuckActiveScreen}
+	runtime := &fakeRuntime{output: stuckActiveScreen}
 	observer := New(
 		fakeSessions{rows: []domain.SessionRecord{session}},
 		sink,
 		runtime,
-		fakeAgents{domain.HarnessClaudeCode: claudecode.New()},
+		fakeAgents{domain.HarnessOpenCode: detectorAgent{
+			Plugin:     opencode.New(),
+			continuous: false,
+			detect: func(output string) (domain.ActivityState, bool) {
+				return domain.ActivityIdle, true
+			},
+		}},
 		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 	)
 
@@ -209,19 +272,21 @@ func TestPollPreservesClaudeWaitingInputWithoutContinuousCapability(t *testing.T
 		t.Fatal(err)
 	}
 	if runtime.calls != 0 || len(sink.signals) != 0 {
-		t.Fatalf("sticky Claude waiting state was sampled: output calls=%d signals=%+v", runtime.calls, sink.signals)
+		t.Fatalf("sticky waiting state was sampled: output calls=%d signals=%+v", runtime.calls, sink.signals)
 	}
 }
 
-func TestPollLeavesOtherHarnessesUntouched(t *testing.T) {
+func TestPollLeavesHarnessesWithoutTerminalDetectionUntouched(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
 	sink := &fakeSink{}
 	runtime := &fakeRuntime{output: "› prompt\nmodel · ~/project\n"}
 	observer := New(
-		fakeSessions{rows: []domain.SessionRecord{activeSession(now, domain.HarnessDroid)}},
+		fakeSessions{rows: []domain.SessionRecord{activeSession(now, domain.HarnessOpenCode)}},
 		sink,
 		runtime,
-		fakeAgents{domain.HarnessDroid: droid.New()},
+		// A plain opencode plugin carries no TerminalActivityDetector
+		// capability, so the observer must not sample its terminal.
+		fakeAgents{domain.HarnessOpenCode: opencode.New()},
 		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 	)
 
@@ -233,11 +298,11 @@ func TestPollLeavesOtherHarnessesUntouched(t *testing.T) {
 	}
 }
 
-// claudeStuckActiveScreen is the rendered Claude Code surface after a turn
-// aborted without its Stop hook (expired login): idle composer holding an
-// unsent draft, provider footer below, no active chrome. This is the screen a
-// session stranded in durable "active" actually shows.
-const claudeStuckActiveScreen = "⏺ Login expired · Please run /login\n" +
+// stuckActiveScreen is a rendered TUI surface after a turn aborted without its
+// Stop signal (expired login): idle composer holding an unsent draft, provider
+// footer below, no active chrome. This is the screen a session stranded in
+// durable "active" actually shows.
+const stuckActiveScreen = "⏺ Login expired · Please run /login\n" +
 	"\n" +
 	"✻ Worked for 0s\n" +
 	"\n" +
@@ -247,16 +312,22 @@ const claudeStuckActiveScreen = "⏺ Login expired · Please run /login\n" +
 	"\n" +
 	"  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #4090\n"
 
-func TestPollReconcilesStaleClaudeCodeAfterAbortedTurn(t *testing.T) {
+func TestPollReconcilesStaleActiveAfterAbortedTurn(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
-	session := activeSession(now, domain.HarnessClaudeCode)
+	session := activeSession(now, domain.HarnessOpenCode)
 	sink := &fakeSink{}
-	runtime := &fakeRuntime{output: claudeStuckActiveScreen}
+	runtime := &fakeRuntime{output: stuckActiveScreen}
 	observer := New(
 		fakeSessions{rows: []domain.SessionRecord{session}},
 		sink,
 		runtime,
-		fakeAgents{domain.HarnessClaudeCode: claudecode.New()},
+		fakeAgents{domain.HarnessOpenCode: detectorAgent{
+			Plugin:     opencode.New(),
+			continuous: false,
+			detect: func(output string) (domain.ActivityState, bool) {
+				return domain.ActivityIdle, true
+			},
+		}},
 		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 	)
 
@@ -275,7 +346,7 @@ func TestPollReconcilesStaleClaudeCodeAfterAbortedTurn(t *testing.T) {
 	}
 }
 
-func TestPollKeepsGenuineLongClaudeTurnActive(t *testing.T) {
+func TestPollKeepsGenuineLongComputingTurnActive(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
 	sink := &fakeSink{}
 	runtime := &fakeRuntime{output: "✻ Computing… (3m 10s · ↓ 114 tokens)\n" +
@@ -284,10 +355,16 @@ func TestPollKeepsGenuineLongClaudeTurnActive(t *testing.T) {
 		"────────────────────────────────────────────────\n" +
 		"⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents\n"}
 	observer := New(
-		fakeSessions{rows: []domain.SessionRecord{activeSession(now, domain.HarnessClaudeCode)}},
+		fakeSessions{rows: []domain.SessionRecord{activeSession(now, domain.HarnessOpenCode)}},
 		sink,
 		runtime,
-		fakeAgents{domain.HarnessClaudeCode: claudecode.New()},
+		fakeAgents{domain.HarnessOpenCode: detectorAgent{
+			Plugin:     opencode.New(),
+			continuous: false,
+			detect: func(output string) (domain.ActivityState, bool) {
+				return domain.ActivityActive, true
+			},
+		}},
 		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 	)
 
@@ -301,14 +378,20 @@ func TestPollKeepsGenuineLongClaudeTurnActive(t *testing.T) {
 
 func TestPollSkipsFreshActiveAndOutputFailures(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
-	fresh := activeSession(now, domain.HarnessCodex)
+	fresh := activeSession(now, domain.HarnessOpenCode)
 	fresh.Activity.LastActivityAt = now.Add(-time.Minute)
 	runtime := &fakeRuntime{err: errors.New("capture failed")}
 	observer := New(
 		fakeSessions{rows: []domain.SessionRecord{fresh}},
 		&fakeSink{},
 		runtime,
-		fakeAgents{domain.HarnessCodex: codex.New()},
+		fakeAgents{domain.HarnessOpenCode: detectorAgent{
+			Plugin:     opencode.New(),
+			continuous: false,
+			detect: func(output string) (domain.ActivityState, bool) {
+				return domain.ActivityIdle, true
+			},
+		}},
 		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
 	)
 	if err := observer.Poll(context.Background()); err != nil {
@@ -318,7 +401,7 @@ func TestPollSkipsFreshActiveAndOutputFailures(t *testing.T) {
 		t.Fatalf("fresh session output calls = %d, want 0", runtime.calls)
 	}
 
-	stale := activeSession(now, domain.HarnessCodex)
+	stale := activeSession(now, domain.HarnessOpenCode)
 	observer.sessions = fakeSessions{rows: []domain.SessionRecord{stale}}
 	if err := observer.Poll(context.Background()); err != nil {
 		t.Fatal(err)

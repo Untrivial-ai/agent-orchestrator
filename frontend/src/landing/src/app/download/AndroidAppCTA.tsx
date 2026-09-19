@@ -2,7 +2,6 @@
 
 import { ANDROID_PLAY_STORE_URL } from "@ao/shared/constants";
 import { useState } from "react";
-import { track } from "../../lib/analytics";
 import { usePlatform } from "../hooks/useOS";
 import { StoreBadgeButton, StoreBadgeLink } from "./StoreBadge";
 import { StoreQRDialog } from "./StoreQRDialog";
@@ -16,23 +15,13 @@ export function AndroidAppCTA() {
 
   if (mobileOS === "android") {
     return (
-      <StoreBadgeLink
-        store="android"
-        href={ANDROID_PLAY_STORE_URL}
-        onClick={() => track("play_store_clicked", { surface: "badge" })}
-      />
+      <StoreBadgeLink store="android" href={ANDROID_PLAY_STORE_URL} />
     );
   }
 
   return (
     <>
-      <StoreBadgeButton
-        store="android"
-        onClick={() => {
-          track("store_qr_opened", { platform: "android" });
-          setOpen(true);
-        }}
-      />
+      <StoreBadgeButton store="android" onClick={() => setOpen(true)} />
       <StoreQRDialog
         platform="android"
         url={ANDROID_PLAY_STORE_URL}

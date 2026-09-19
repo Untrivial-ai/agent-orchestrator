@@ -36,11 +36,7 @@ import {
 	type UpdateCheckOptions,
 } from "./main/auto-updater";
 import { listFeatureBuilds, getActiveFeatureBuild } from "./main/feature-builds";
-import { initMainSentry, sanitizeRendererCapture } from "./main/sentry-main";
-import { TelemetryPolicyAuthority, resolveDesktopDataDir } from "./main/telemetry-policy-file";
-import { DaemonTelemetryPolicyClient } from "./main/daemon-telemetry-policy-client";
-import { DesktopTelemetryController } from "./main/desktop-telemetry-controller";
-import { AgentSwitchVisibilityController } from "./main/agent-switch-observability";
+import { resolveDesktopDataDir } from "./main/data-dir";
 import { readUpdateSettings, type UpdateSettings, type UpdateStatus } from "./main/update-settings";
 import { readKeybindingOverrides, writeKeybindingOverrides } from "./main/keybinding-settings";
 import { readEditorSettings, writeEditorPreference } from "./main/editor-settings";
@@ -124,17 +120,6 @@ import {
 } from "./main/cloud-auth";
 import { installCloudLocalAuthIPC } from "./main/cloud-auth-local";
 import { installCloudCpProxy } from "./main/cloud-cp-proxy";
-import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
-import { DEFAULT_SENTRY_DSN } from "./shared/sentry-config";
-import { buildTelemetryBootstrap, rendererTelemetryEnabled } from "./shared/telemetry";
-import {
-	TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL,
-	TELEMETRY_POLICY_CHANGED_CHANNEL,
-	TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL,
-	telemetryPolicyRetryable,
-	type RendererTelemetryCapture,
-	type TelemetryPolicyView,
-} from "./shared/telemetry-policy";
 import {
 	createBrowserViewHost,
 	shouldHandleAppShortcutInBrowserContext,
@@ -162,7 +147,6 @@ import { dockBounceType, shouldReplaceBounce, shouldSignalAttention, shouldToast
 import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
-import { AGENT_SWITCH_VISIBILITY_IPC_CHANNEL } from "./shared/agent-switch-observability";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -234,44 +218,7 @@ app.setPath(
 // absolute value is shared by policy bootstrap and every daemon spawn.
 const desktopLaunchWorkingDirectory = process.cwd();
 const desktopDataDir = resolveDesktopDataDir(process.env, os.homedir(), desktopLaunchWorkingDirectory, app.isPackaged);
-let telemetryPolicyController: DesktopTelemetryController | null = null;
-let agentSwitchVisibilityController: AgentSwitchVisibilityController | null = null;
 const trustedShellWebContents = new Map<number, WebContents>();
-const pendingRendererQueuePurges = new Map<string, {
-	senderId: number;
-	contents: WebContents;
-	resolve: () => void;
-	reject: (error: Error) => void;
-	timeout: ReturnType<typeof setTimeout>;
-	onDestroyed: () => void;
-}>();
-
-function finishRendererQueuePurge(requestId: string, error?: Error): void {
-	const pending = pendingRendererQueuePurges.get(requestId);
-	if (!pending) return;
-	pendingRendererQueuePurges.delete(requestId);
-	clearTimeout(pending.timeout);
-	pending.contents.removeListener("destroyed", pending.onDestroyed);
-	if (error) pending.reject(error);
-	else pending.resolve();
-}
-
-function requestRendererQueuePurge(contents: WebContents): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const requestId = randomUUID();
-		const onDestroyed = () => finishRendererQueuePurge(requestId, new Error("renderer destroyed before telemetry queue purge"));
-		const timeout = setTimeout(() => finishRendererQueuePurge(requestId, new Error("renderer telemetry queue purge timed out")), 5_000);
-		pendingRendererQueuePurges.set(requestId, { senderId: contents.id, contents, resolve, reject, timeout, onDestroyed });
-		contents.once("destroyed", onDestroyed);
-		try { contents.send(TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL, { requestId }); }
-		catch (error) { finishRendererQueuePurge(requestId, error instanceof Error ? error : new Error("renderer telemetry queue purge failed")); }
-	});
-}
-
-async function clearRendererTelemetryQueues(): Promise<void> {
-	const liveShells = [...trustedShellWebContents.values()].filter((contents) => !contents.isDestroyed());
-	await Promise.all(liveShells.map(requestRendererQueuePurge));
-}
 
 let mainWindow: BaseWindow | null = null;
 let trayController: TrayController | null = null;
@@ -633,10 +580,8 @@ async function createWindowInternal(): Promise<void> {
 	const shellWebContents = getShellWebContents();
 	if (!shellWebContents) throw new Error("AO shell WebContents was not created");
 	trustedShellWebContents.set(shellWebContents.id, shellWebContents);
-	agentSwitchVisibilityController?.registerWindow(shellWebContents.id);
 	shellWebContents.once("destroyed", () => {
 		trustedShellWebContents.delete(shellWebContents.id);
-		agentSwitchVisibilityController?.destroyWindow(shellWebContents.id);
 	});
 
 	// On Windows the app paints its own title bar (WindowTitlebar), so the native
@@ -953,35 +898,6 @@ let cachedShellEnv: Record<string, string> | null = null;
 let shellEnvPromise: Promise<void> | null = null;
 let terminalShellPreference: TerminalShellPreference = { ...DEFAULT_TERMINAL_SHELL };
 
-// Telemetry defaults stamped on the daemon env on every platform; explicit env
-// always wins.
-//
-// Unpackaged builds keep local event recording but never export to PostHog: a
-// dev loop or a CI job driving the real app would otherwise bill production
-// events and inflate install/DAU counts. Set AO_TELEMETRY_REMOTE explicitly to
-// exercise the export path from a dev build.
-function telemetryOverrides(): Record<string, string> {
-	return {
-		AO_TELEMETRY_EVENTS: process.env.AO_TELEMETRY_EVENTS ?? "on",
-		AO_TELEMETRY_REMOTE: process.env.AO_TELEMETRY_REMOTE ?? (isDev ? "off" : "posthog"),
-		AO_TELEMETRY_POSTHOG_KEY: process.env.AO_TELEMETRY_POSTHOG_KEY ?? DEFAULT_POSTHOG_PROJECT_KEY,
-		AO_TELEMETRY_POSTHOG_HOST: process.env.AO_TELEMETRY_POSTHOG_HOST ?? DEFAULT_POSTHOG_HOST,
-		// Daemon-side Sentry (5xx + panics with Go stacks). Stamped on the daemon
-		// env so the spawned daemon inherits the DSN; off in dev to match the
-		// PostHog remote gate, and an explicit env always wins. A blank value
-		// leaves the daemon's Sentry a no-op.
-		AO_SENTRY_DSN: process.env.AO_SENTRY_DSN ?? (isDev ? "" : DEFAULT_SENTRY_DSN),
-		// The daemon binary has no version of its own that release tooling sets,
-		// so without this every daemon event lands unattributable to a release.
-		AO_TELEMETRY_APP_VERSION: process.env.AO_TELEMETRY_APP_VERSION ?? app.getVersion(),
-		// Kill switch: forwarded so a noisy stream can be silenced by env on an
-		// install that already exists, without shipping a new build.
-		...(process.env.AO_TELEMETRY_DISABLED_EVENTS
-			? { AO_TELEMETRY_DISABLED_EVENTS: process.env.AO_TELEMETRY_DISABLED_EVENTS }
-			: {}),
-	};
-}
-
 // Run the user's login shell to dump its env. stdin is ignored so an rc that
 // reads input hits EOF instead of hanging; stderr is ignored to drop banner
 // noise. Never rejects: resolves null on spawn error, non-zero exit, or timeout
@@ -1155,9 +1071,9 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	// Windows keeps its native environment semantics while overlaying values
 	// exported by the selected login-shell probe.
 	if (process.platform === "win32") {
-		return { ...process.env, ...(cachedShellEnv ?? {}), ...devExtras, ...telemetryOverrides(), ...ownerTag };
+		return { ...process.env, ...(cachedShellEnv ?? {}), ...devExtras, ...ownerTag };
 	}
-	return buildDaemonEnv(process.env, cachedShellEnv, { ...devExtras, ...telemetryOverrides(), ...ownerTag });
+	return buildDaemonEnv(process.env, cachedShellEnv, { ...devExtras, ...ownerTag });
 }
 
 function pathKey(value: string): string {
@@ -1828,10 +1744,9 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		if (daemonProcess !== child) return;
 		daemonProcess = null;
 		// An explicit stopDaemon() already set a clean `{ state: "stopped" }`.
-		// daemon-telemetry reports any status carrying a `code` as
-		// ao.renderer.daemon_failure, so don't stamp `code: "exited"` on a stop
-		// the user or app asked for — that would count intentional stops as
-		// failures. Preserve the clean stopped status instead.
+		// Don't overwrite it with an `exited` status carrying a code, which
+		// would present the intentional stop as a failure. Preserve the clean
+		// stopped status instead.
 		if (daemonStoppingProcess === child) {
 			daemonStoppingProcess = null;
 			if (daemonRestartAfterExitProcess === child) {
@@ -2094,39 +2009,6 @@ ipcMain.handle("menu:action", (_event, action: string) => {
 			return;
 	}
 });
-ipcMain.handle("telemetry:getBootstrap", () => {
-	if (!telemetryPolicyController) return null;
-	return buildTelemetryBootstrap({ ...process.env, AO_DATA_DIR: desktopDataDir }, app.getVersion(), process.platform, os.homedir(), app.isPackaged, telemetryPolicyController.snapshot());
-});
-ipcMain.handle("telemetry:getPolicy", () => telemetryPolicyController?.snapshot() ?? failClosedTelemetryPolicyView());
-ipcMain.handle("telemetry:setEventsEnabled", (_event, input: { eventsEnabled?: unknown; expectedGeneration?: unknown }) => {
-	if (!telemetryPolicyController || typeof input?.eventsEnabled !== "boolean" || typeof input.expectedGeneration !== "string") throw new Error("invalid telemetry policy request");
-	return telemetryPolicyController.setEventsEnabled(input.eventsEnabled, input.expectedGeneration);
-});
-ipcMain.on(TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL, (event, input: unknown) => {
-	const trustedSender = trustedShellWebContents.get(event.sender.id);
-	if (!trustedSender || trustedSender !== event.sender || trustedSender.isDestroyed()) return;
-	if (!input || typeof input !== "object" || Array.isArray(input)) return;
-	const result = input as Record<string, unknown>;
-	if (Object.keys(result).length !== 2 || typeof result.requestId !== "string" || typeof result.ok !== "boolean") return;
-	const pending = pendingRendererQueuePurges.get(result.requestId);
-	if (!pending || pending.senderId !== event.sender.id) return;
-	finishRendererQueuePurge(result.requestId, result.ok ? undefined : new Error("renderer telemetry queue purge failed"));
-});
-ipcMain.handle("telemetry:capture", (_event, request: RendererTelemetryCapture) => {
-	const sanitized = sanitizeRendererCapture(request);
-	if (!telemetryPolicyController || !sanitized) return false;
-	return telemetryPolicyController.capture(sanitized);
-});
-ipcMain.on(AGENT_SWITCH_VISIBILITY_IPC_CHANNEL, (event, request: unknown) => {
-	const trustedSender = trustedShellWebContents.get(event.sender.id);
-	if (trustedSender !== event.sender || trustedSender.isDestroyed()) return;
-	agentSwitchVisibilityController?.signal(event.sender.id, request);
-});
-
-function failClosedTelemetryPolicyView(): TelemetryPolicyView {
-	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
-}
 async function chooseDirectory(title: string, defaultPath?: string): Promise<string | null> {
 	if (defaultPath) await mkdir(defaultPath, { recursive: true });
 	const options: OpenDialogOptions = {
@@ -2689,29 +2571,6 @@ app.whenReady().then(async () => {
 		);
 	}
 	void refreshGitHubOwners();
-	const visibilityKillSwitched = (process.env.AO_TELEMETRY_DISABLED_EVENTS ?? "").split(",").some((name) => name.trim() === "ao.agent_switch.visibility_failure");
-	// The approved release gate is intentionally closed. Tests inject the
-	// dedicated no-cache sender; the shipping composition creates no visibility
-	// network transport until that gate is separately approved.
-	agentSwitchVisibilityController = new AgentSwitchVisibilityController({ send: async () => undefined, killSwitched: visibilityKillSwitched, diagnostic: (code) => console.warn("agent switch visibility diagnostic:", code) });
-	for (const shellContents of trustedShellWebContents.values()) agentSwitchVisibilityController.registerWindow(shellContents.id);
-	const authority = new TelemetryPolicyAuthority({ dataDir: desktopDataDir, packagedDefault: app.isPackaged, platform: process.platform });
-	const daemonPolicy = new DaemonTelemetryPolicyClient(() => daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null, (url, init) => net.fetch(url, init));
-	const policyController = new DesktopTelemetryController({
-		authority,
-		daemon: daemonPolicy,
-		environmentAllowsEvents: rendererTelemetryEnabled(process.env, app.isPackaged),
-		transportFactory: () => initMainSentry(app.getVersion(), app.getPath("userData")),
-		visibility: agentSwitchVisibilityController,
-		clearRendererQueues: clearRendererTelemetryQueues,
-		broadcast: (view) => {
-			for (const shellContents of trustedShellWebContents.values()) if (!shellContents.isDestroyed()) shellContents.send(TELEMETRY_POLICY_CHANGED_CHANNEL, view);
-		},
-	});
-	telemetryPolicyController = policyController;
-	try { await policyController.initialize(); }
-	catch (error) { console.error("telemetry policy bootstrap failed; reporting remains disabled:", error); }
-	setInterval(() => { if (telemetryPolicyRetryable(policyController.snapshot())) void policyController.retryPendingCleanup(); }, 1_000).unref();
 	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
 	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
 	// code past a successful move never runs in this instance, so a post-move-only
@@ -2880,10 +2739,7 @@ app.on("before-quit", (event) => {
 	if (!browserCleanupComplete) {
 		event.preventDefault();
 		if (!browserQuitCleanupPromise) {
-			const cleanup = Promise.all([
-				disposeAllBrowserViewHosts(),
-				telemetryPolicyController?.close() ?? Promise.resolve(),
-			]);
+			const cleanup = disposeAllBrowserViewHosts();
 			const finishQuit = () => {
 				browserCleanupComplete = true;
 				browserQuitCleanupPromise = null;

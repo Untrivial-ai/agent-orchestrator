@@ -49,7 +49,10 @@ SELECT COALESCE((
 	).Scan(&autoInjectCIColumn); err != nil {
 		t.Fatalf("read auto-inject-CI column: %v", err)
 	}
-	if agentSwitchTable != 1 || autoInjectCIColumn != 1 {
+	// Migration 0149 dropped the agent-switching tables, so a fully migrated
+	// database must NOT have agent_switches while still carrying the
+	// auto-inject-CI column from migration 148.
+	if agentSwitchTable != 0 || autoInjectCIColumn != 1 {
 		t.Fatalf("later migrations not applied: agent_switches=%d auto_inject_ci=%d", agentSwitchTable, autoInjectCIColumn)
 	}
 }

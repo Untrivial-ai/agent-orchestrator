@@ -73,12 +73,6 @@ type fakeSessionService struct {
 	staged                     []ports.SpawnAttachment
 	stagedPaths                []string
 	stageErr                   error
-	agentSwitches              map[domain.AgentSwitchID]domain.AgentSwitch
-	switchConfig               sessionsvc.SwitchAgentInput
-	switchErr                  error
-	recoveredSwitch            domain.AgentSwitchID
-	handoff                    json.RawMessage
-	handoffSource              domain.AgentGenerationID
 	autoInjectCISession        domain.SessionID
 	autoInjectCIEnabled        bool
 }
@@ -193,8 +187,7 @@ func newFakeSessionService() *fakeSessionService {
 	now := time.Now().UTC()
 	s := domain.Session{SessionRecord: domain.SessionRecord{ID: "ao-1", ProjectID: "ao", Kind: domain.KindWorker, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, AutoInjectReview: true, AutoInjectCI: true, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle, TerminalHandleID: "ao-1/terminal_0"}
 	return &fakeSessionService{
-		sessions:      map[domain.SessionID]domain.Session{s.ID: s},
-		agentSwitches: map[domain.AgentSwitchID]domain.AgentSwitch{},
+		sessions: map[domain.SessionID]domain.Session{s.ID: s},
 	}
 }
 
@@ -271,6 +264,16 @@ func (f *fakeSessionService) SetTerminateOnPRMerge(_ context.Context, id domain.
 		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
 	s.TerminateOnPRMerge = terminate
+	f.sessions[id] = s
+	return s, nil
+}
+
+func (f *fakeSessionService) SetWorkflowMode(_ context.Context, id domain.SessionID, mode domain.WorkflowMode) (domain.Session, error) {
+	s, ok := f.sessions[id]
+	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	s.WorkflowMode = mode
 	f.sessions[id] = s
 	return s, nil
 }
@@ -363,79 +366,6 @@ func (f *fakeSessionService) ResumeAgent(_ context.Context, id domain.SessionID)
 	s.Status = domain.StatusIdle
 	f.sessions[id] = s
 	return sessionsvc.ResumeAgentOutcome{Session: s, Mode: sessionsvc.RestoreModeViewNative}, nil
-}
-
-func (f *fakeSessionService) SwitchAgent(_ context.Context, id domain.SessionID, cfg sessionsvc.SwitchAgentInput) (domain.AgentSwitch, error) {
-	if f.switchErr != nil {
-		return domain.AgentSwitch{}, f.switchErr
-	}
-	if _, ok := f.sessions[id]; !ok {
-		return domain.AgentSwitch{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
-	}
-	f.switchConfig = cfg
-	now := time.Now().UTC()
-	targetRef := domain.AgentNativeSessionID("native-target")
-	record := domain.AgentSwitch{
-		ID: "switch-1", SessionID: id, IdempotencyKey: "private-retry-key", RequestFingerprint: "v1:private-fingerprint",
-		FromHarness: domain.HarnessClaudeCode, TargetHarness: cfg.TargetHarness,
-		TargetNativeSessionRef: &targetRef,
-		TargetStartMode:        domain.AgentSwitchTargetStartFresh, State: domain.AgentSwitchPreparingHandoff,
-		AgentHandoffStatus:      domain.AgentHandoffReceived,
-		SemanticHandoffIncluded: true,
-		AgentHandoffPath:        "/private/ao/handoff.json", AgentHandoffHash: "private-hash",
-		FinalHandoffPath: "/private/ao/handoff.json", FinalHandoffHash: "private-hash",
-		SourceGenerationID: "private-source-generation", TargetGenerationID: "private-target-generation",
-		TargetRuntimeHandleID:  "private-target-runtime-handle",
-		TargetAcknowledgedAt:   &now,
-		ErrorCode:              domain.AgentSwitchErrorTargetStartUnconfirmed,
-		SourceTranscriptStatus: domain.AgentSwitchSourceTranscriptUnavailable,
-		RequestedAt:            now, UpdatedAt: now,
-	}
-	f.agentSwitches[record.ID] = record
-	return record, nil
-}
-
-func (f *fakeSessionService) ListAgentSwitches(_ context.Context, id domain.SessionID) ([]domain.AgentSwitch, error) {
-	if _, ok := f.sessions[id]; !ok {
-		return nil, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
-	}
-	out := make([]domain.AgentSwitch, 0, len(f.agentSwitches))
-	for _, record := range f.agentSwitches {
-		if record.SessionID == id {
-			out = append(out, record)
-		}
-	}
-	return out, nil
-}
-
-func (f *fakeSessionService) RecoverAgentSwitch(_ context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error) {
-	record, ok := f.agentSwitches[switchID]
-	if !ok || record.SessionID != id {
-		return domain.AgentSwitch{}, apierr.NotFound("AGENT_SWITCH_NOT_FOUND", "Unknown agent switch")
-	}
-	f.recoveredSwitch = switchID
-	return record, nil
-}
-
-func (f *fakeSessionService) SubmitAgentHandoff(
-	_ context.Context,
-	id domain.SessionID,
-	switchID domain.AgentSwitchID,
-	sourceGenerationID domain.AgentGenerationID,
-	handoff json.RawMessage,
-) (domain.AgentSwitch, error) {
-	record, ok := f.agentSwitches[switchID]
-	if !ok || record.SessionID != id {
-		return domain.AgentSwitch{}, apierr.NotFound("AGENT_SWITCH_NOT_FOUND", "Unknown agent switch")
-	}
-	f.handoffSource = sourceGenerationID
-	f.handoff = append(json.RawMessage(nil), handoff...)
-	record.SourceGenerationID = sourceGenerationID
-	record.AgentHandoffStatus = domain.AgentHandoffReceived
-	record.AgentHandoffPath = "/private/ao/agent-handoff.json"
-	record.AgentHandoffHash = "private-hash"
-	f.agentSwitches[switchID] = record
-	return record, nil
 }
 
 func (f *fakeSessionService) Kill(_ context.Context, id domain.SessionID) (bool, error) {
@@ -759,202 +689,6 @@ func TestSessionsAPI_ListWorkspaceTree(t *testing.T) {
 	}
 }
 
-func TestSessionsAPI_AgentSwitchLifecycle(t *testing.T) {
-	svc := newFakeSessionService()
-	srv := newSessionTestServer(t, svc)
-
-	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/switch-agent", `{
-		"targetHarness":"codex",
-		"model":" gpt-\u0000-5.4 ",
-		"idempotencyKey":"retry-1"
-	}`)
-	if status != http.StatusAccepted {
-		t.Fatalf("switch agent = %d, want 202; body=%s", status, body)
-	}
-	assertAgentSwitchResponseRedacted(t, body)
-	var switched controllers.AgentSwitchResponse
-	mustJSON(t, body, &switched)
-	if switched.Switch.ID != "switch-1" || switched.Switch.TargetHarness != domain.HarnessCodex {
-		t.Fatalf("switch response = %+v", switched.Switch)
-	}
-	if switched.Switch.ErrorCode != domain.AgentSwitchErrorTargetStartUnconfirmed {
-		t.Fatalf("safe error code = %q", switched.Switch.ErrorCode)
-	}
-	if switched.Switch.SourceTranscriptStatus != domain.AgentSwitchSourceTranscriptUnavailable {
-		t.Fatalf("source transcript status = %q", switched.Switch.SourceTranscriptStatus)
-	}
-	if !switched.Switch.SemanticHandoffIncluded {
-		t.Fatal("semantic handoff inclusion fact was not projected")
-	}
-	if svc.switchConfig.Model != "gpt--5.4" || svc.switchConfig.IdempotencyKey != "retry-1" {
-		t.Fatalf("switch config = %+v", svc.switchConfig)
-	}
-
-	body, status, _ = doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/agent-switches", "")
-	if status != http.StatusOK {
-		t.Fatalf("list switches = %d, want 200; body=%s", status, body)
-	}
-	assertAgentSwitchResponseRedacted(t, body)
-	var listed controllers.ListAgentSwitchesResponse
-	mustJSON(t, body, &listed)
-	if len(listed.Switches) != 1 || listed.Switches[0].ID != "switch-1" {
-		t.Fatalf("listed switches = %+v", listed.Switches)
-	}
-
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", `{
-		"sourceGenerationId":"generation-7",
-		"handoff":{"summary":"tests pass","nextSteps":["review diff"]}
-	}`)
-	if status != http.StatusOK {
-		t.Fatalf("submit handoff = %d, want 200; body=%s", status, body)
-	}
-	assertAgentSwitchResponseRedacted(t, body)
-	if svc.handoffSource != "generation-7" {
-		t.Fatalf("source generation = %q", svc.handoffSource)
-	}
-	var handoff map[string]any
-	if err := json.Unmarshal(svc.handoff, &handoff); err != nil {
-		t.Fatalf("decode recorded handoff: %v", err)
-	}
-	if handoff["summary"] != "tests pass" {
-		t.Fatalf("recorded handoff = %#v", handoff)
-	}
-	recovery := svc.agentSwitches["switch-1"]
-	recovery.State = domain.AgentSwitchSourceStopped
-	recovery.ErrorCode = domain.AgentSwitchErrorSourceRestoreUnconfirmed
-	svc.agentSwitches[recovery.ID] = recovery
-	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/agent-switches/switch-1/recover", "")
-	if status != http.StatusAccepted {
-		t.Fatalf("recover switch = %d, want 202; body=%s", status, body)
-	}
-	assertAgentSwitchResponseRedacted(t, body)
-	if svc.recoveredSwitch != "switch-1" {
-		t.Fatalf("recovered switch = %q, want switch-1", svc.recoveredSwitch)
-	}
-
-}
-
-func TestSessionsAPIActiveSwitchProjectionRedactsPrivateFacts(t *testing.T) {
-	svc := newFakeSessionService()
-	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	targetRef := domain.AgentNativeSessionID("native-target")
-	session := svc.sessions["ao-1"]
-	session.ActiveAgentSwitch = &domain.AgentSwitch{
-		ID: "switch-active", SessionID: "ao-1", IdempotencyKey: "private-key",
-		RequestFingerprint: "v1:private-fingerprint", FromHarness: domain.HarnessClaudeCode,
-		TargetHarness: domain.HarnessCodex, TargetNativeSessionRef: &targetRef,
-		TargetStartMode: domain.AgentSwitchTargetStartFresh, State: domain.AgentSwitchStartingTarget,
-		AgentHandoffStatus: domain.AgentHandoffReceived, SemanticHandoffIncluded: true,
-		SourceTranscriptStatus: domain.AgentSwitchSourceTranscriptAvailable,
-		AgentHandoffPath:       "/private/agent-handoff.json", AgentHandoffHash: "private-agent-hash",
-		FinalHandoffPath: "/private/final-handoff.json", FinalHandoffHash: "private-final-hash",
-		SourceGenerationID: "private-source-generation", TargetGenerationID: "private-target-generation",
-		TargetRuntimeHandleID: "private-runtime-handle", TargetAcknowledgedAt: &now,
-		RequestedAt: now, UpdatedAt: now,
-	}
-	svc.sessions["ao-1"] = session
-	srv := newSessionTestServer(t, svc)
-
-	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
-	if status != http.StatusOK {
-		t.Fatalf("get session = %d, want 200; body=%s", status, body)
-	}
-	assertAgentSwitchResponseRedacted(t, body)
-	var response struct {
-		Session struct {
-			ActiveAgentSwitch *controllers.AgentSwitchView `json:"activeAgentSwitch"`
-		} `json:"session"`
-	}
-	mustJSON(t, body, &response)
-	if response.Session.ActiveAgentSwitch == nil || response.Session.ActiveAgentSwitch.ID != "switch-active" || response.Session.ActiveAgentSwitch.State != domain.AgentSwitchStartingTarget {
-		t.Fatalf("active switch projection = %+v", response.Session.ActiveAgentSwitch)
-	}
-}
-
-func assertAgentSwitchResponseRedacted(t *testing.T, body []byte) {
-	t.Helper()
-	privateFields := []string{
-		"idempotencyKey",
-		"requestFingerprint",
-		"targetNativeSessionRef",
-		"agentHandoffPath",
-		"agentHandoffHash",
-		"finalHandoffPath",
-		"finalHandoffHash",
-		"sourceGenerationId",
-		"targetGenerationId",
-		"targetRuntimeHandleId",
-		"targetAcknowledgedAt",
-	}
-	for _, field := range privateFields {
-		if strings.Contains(string(body), `"`+field+`"`) {
-			t.Errorf("public agent-switch response leaked %s: %s", field, body)
-		}
-	}
-}
-
-func TestSessionsAPI_SubmitAgentHandoffPreservesRawObject(t *testing.T) {
-	svc := newFakeSessionService()
-	svc.agentSwitches["switch-1"] = domain.AgentSwitch{ID: "switch-1", SessionID: "ao-1"}
-	srv := newSessionTestServer(t, svc)
-
-	const handoff = `{"schemaVersion":1,"goal":"first","goal":"second","progressSummary":"ready"}`
-	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", `{
-		"sourceGenerationId":"generation-7",
-		"handoff":`+handoff+`
-	}`)
-	if status != http.StatusOK {
-		t.Fatalf("submit handoff = %d, want 200; body=%s", status, body)
-	}
-	if got := string(svc.handoff); got != handoff {
-		t.Fatalf("handoff raw JSON = %s, want exact input %s", got, handoff)
-	}
-	assertAgentSwitchResponseRedacted(t, body)
-}
-
-func TestSessionsAPI_AgentSwitchValidationAndErrors(t *testing.T) {
-	tests := []struct {
-		name     string
-		method   string
-		path     string
-		body     string
-		wantCode string
-	}{
-		{name: "target required", method: http.MethodPost, path: "/api/v1/sessions/ao-1/switch-agent", body: `{}`, wantCode: "TARGET_HARNESS_REQUIRED"},
-		{name: "retired note rejected", method: http.MethodPost, path: "/api/v1/sessions/ao-1/switch-agent", body: `{"targetHarness":"codex","note":"old context"}`, wantCode: "INVALID_JSON"},
-		{name: "model bounded", method: http.MethodPost, path: "/api/v1/sessions/ao-1/switch-agent", body: `{"targetHarness":"codex","model":"` + strings.Repeat("x", 257) + `"}`, wantCode: "MODEL_TOO_LONG"},
-		{name: "source generation required", method: http.MethodPost, path: "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", body: `{"handoff":{}}`, wantCode: "SOURCE_GENERATION_REQUIRED"},
-		{name: "handoff required", method: http.MethodPost, path: "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", body: `{"sourceGenerationId":"generation-7"}`, wantCode: "HANDOFF_REQUIRED"},
-		{name: "handoff bounded", method: http.MethodPost, path: "/api/v1/sessions/ao-1/agent-switches/switch-1/handoff", body: `{"sourceGenerationId":"generation-7","handoff":{"summary":"` + strings.Repeat("x", 65537) + `"}}`, wantCode: "HANDOFF_TOO_LARGE"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			svc := newFakeSessionService()
-			svc.agentSwitches["switch-1"] = domain.AgentSwitch{ID: "switch-1", SessionID: "ao-1"}
-			srv := newSessionTestServer(t, svc)
-			body, status, _ := doRequest(t, srv, tc.method, tc.path, tc.body)
-			if status != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400; body=%s", status, body)
-			}
-			var apiErr struct {
-				Code string `json:"code"`
-			}
-			mustJSON(t, body, &apiErr)
-			if apiErr.Code != tc.wantCode {
-				t.Fatalf("code = %q, want %q; body=%s", apiErr.Code, tc.wantCode, body)
-			}
-		})
-	}
-
-	svc := newFakeSessionService()
-	svc.switchErr = apierr.Conflict("AGENT_SWITCH_IN_PROGRESS", "switch in progress", nil)
-	srv := newSessionTestServer(t, svc)
-	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/switch-agent", `{"targetHarness":"codex"}`)
-	if status != http.StatusConflict || !strings.Contains(string(body), "AGENT_SWITCH_IN_PROGRESS") {
-		t.Fatalf("typed conflict = %d body=%s", status, body)
-	}
-}
-
 func (f *fakeSessionService) InvalidateWorkspaceCache(_ domain.SessionID) {}
 
 func newSessionTestServer(t *testing.T, svc *fakeSessionService) *httptest.Server {
@@ -1164,7 +898,7 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 		t.Fatalf("list leaked prompt: %s", body)
 	}
 
-	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","issueId":"ISS-1","kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker"}`)
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","issueId":"ISS-1","kind":"worker","harness":"opencode","prompt":"fix","displayName":"my worker"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
 	}
@@ -1174,7 +908,7 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 		SystemPromptBytes *int        `json:"systemPromptBytes"`
 	}
 	mustJSON(t, body, &spawned)
-	if spawned.Session.ID != "ao-2" || spawned.Session.IssueID != "ISS-1" || spawned.Session.Harness != "codex" {
+	if spawned.Session.ID != "ao-2" || spawned.Session.IssueID != "ISS-1" || spawned.Session.Harness != "opencode" {
 		t.Fatalf("spawned = %#v", spawned)
 	}
 	if spawned.Session.DisplayName != "my worker" {
@@ -1283,6 +1017,26 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 	if !svc.sessions["ao-2"].TerminateOnPRMerge {
 		t.Fatalf("session merge policy not updated: %+v", svc.sessions["ao-2"])
+	}
+
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-2/workflow-mode", `{"workflowMode":"building"}`)
+	if status != http.StatusOK {
+		t.Fatalf("workflow mode = %d, want 200; body=%s", status, body)
+	}
+	var workflow struct {
+		OK           bool                `json:"ok"`
+		SessionID    string              `json:"sessionId"`
+		WorkflowMode domain.WorkflowMode `json:"workflowMode"`
+		Session      struct {
+			WorkflowMode domain.WorkflowMode `json:"workflowMode"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &workflow)
+	if !workflow.OK || workflow.SessionID != "ao-2" || workflow.WorkflowMode != domain.WorkflowModeBuilding {
+		t.Fatalf("workflow mode response = %#v", workflow)
+	}
+	if workflow.Session.WorkflowMode != domain.WorkflowModeBuilding || svc.sessions["ao-2"].WorkflowMode != domain.WorkflowModeBuilding {
+		t.Fatalf("session workflow mode not updated: response=%+v stored=%+v", workflow, svc.sessions["ao-2"])
 	}
 
 	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/sessions/ao-2/auto-review", `{"enabled":true}`)
@@ -1446,24 +1200,24 @@ func TestSessionsAPI_SpawnRejectsUnknownExplicitMode(t *testing.T) {
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
-		`{"projectId":"ao","kind":"worker","harness":"codex","prompt":"fix","mode":"tuii"}`)
+		`{"projectId":"ao","kind":"worker","harness":"opencode","prompt":"fix","mode":"tuii"}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "SESSION_MODE_INVALID")
 	if len(svc.sessions) != 1 {
 		t.Fatalf("invalid mode created a session: %#v", svc.sessions)
 	}
 }
 
-func TestSessionsAPI_SpawnsOMPChat(t *testing.T) {
+func TestSessionsAPI_SpawnsChat(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
-		`{"projectId":"ao","harness":"omp","mode":"chat","prompt":"fix"}`)
+		`{"projectId":"ao","harness":"opencode","mode":"chat","prompt":"fix"}`)
 	if status != http.StatusCreated {
-		t.Fatalf("spawn OMP Chat = %d, want 201; body=%s", status, body)
+		t.Fatalf("spawn opencode Chat = %d, want 201; body=%s", status, body)
 	}
-	if svc.lastSpawn.Harness != domain.HarnessOMP || svc.lastSpawn.RequestedMode != domain.SessionModeChat {
-		t.Fatalf("spawn config = %#v, want OMP Chat", svc.lastSpawn)
+	if svc.lastSpawn.Harness != domain.HarnessOpenCode || svc.lastSpawn.RequestedMode != domain.SessionModeChat {
+		t.Fatalf("spawn config = %#v, want opencode Chat", svc.lastSpawn)
 	}
 }
 
@@ -1472,12 +1226,12 @@ func TestSessionsAPI_SpawnsStandaloneWorkerWithoutProjectID(t *testing.T) {
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
-		`{"kind":"worker","harness":"codex","prompt":"research","displayName":"Research"}`)
+		`{"kind":"worker","harness":"opencode","prompt":"research","displayName":"Research"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("spawn standalone = %d, want 201; body=%s", status, body)
 	}
-	if svc.lastSpawn.ProjectID != "" || svc.lastSpawn.Kind != domain.KindWorker || svc.lastSpawn.Harness != domain.HarnessCodex {
-		t.Fatalf("spawn config = %#v, want projectless codex worker", svc.lastSpawn)
+	if svc.lastSpawn.ProjectID != "" || svc.lastSpawn.Kind != domain.KindWorker || svc.lastSpawn.Harness != domain.HarnessOpenCode {
+		t.Fatalf("spawn config = %#v, want projectless opencode worker", svc.lastSpawn)
 	}
 }
 
@@ -1486,7 +1240,7 @@ func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
-		`{"projectId":"ao","kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker","model":"sonnet"}`)
+		`{"projectId":"ao","kind":"worker","harness":"opencode","prompt":"fix","displayName":"my worker","model":"sonnet"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
 	}
@@ -1500,7 +1254,7 @@ func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
-		`{"projectId":"ao","kind":"worker","harness":"claude-code","parentSessionId":"ao-1","prompt":"fix"}`)
+		`{"projectId":"ao","kind":"worker","harness":"opencode","parentSessionId":"ao-1","prompt":"fix"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
 	}
@@ -2815,7 +2569,7 @@ func TestSessionsAPI_SpawnRejectsOverlongDisplayName(t *testing.T) {
 	srv := newSessionTestServer(t, newFakeSessionService())
 
 	overlong := strings.Repeat("x", 21)
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","harness":"codex","displayName":"`+overlong+`"}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","harness":"opencode","displayName":"`+overlong+`"}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_TOO_LONG")
 }
 
@@ -2897,7 +2651,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"opencode","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
 	if status != http.StatusAccepted {
 		t.Fatalf("delegate = %d, want 202; body=%s", status, body)
 	}
@@ -2910,7 +2664,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	if !got.OK || got.WorkerID != "ao-worker" || got.OrchestratorID != "ao-orch" {
 		t.Fatalf("response = %#v", got)
 	}
-	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions {
+	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessOpenCode || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions {
 		t.Fatalf("delegation input = %#v", svc.delegationInput)
 	}
 	if len(svc.delegationInput.Attachments) != 1 {
@@ -2968,17 +2722,17 @@ func TestSessionsAPI_DelegateTaskRejectsBriefPastLaunchSafeLimit(t *testing.T) {
 	}
 }
 
-func TestSessionsAPI_DelegatesOMPChat(t *testing.T) {
+func TestSessionsAPI_DelegatesChat(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/orchestrators/delegate",
-		`{"projectId":"ao","brief":"Fix it","agent":"omp","mode":"chat"}`)
+		`{"projectId":"ao","brief":"Fix it","agent":"opencode","mode":"chat"}`)
 	if status != http.StatusAccepted {
-		t.Fatalf("delegate OMP Chat = %d, want 202; body=%s", status, body)
+		t.Fatalf("delegate opencode Chat = %d, want 202; body=%s", status, body)
 	}
-	if svc.delegationInput.RequestedAgent != domain.HarnessOMP || svc.delegationInput.RequestedMode != domain.SessionModeChat {
-		t.Fatalf("delegation input = %#v, want OMP Chat", svc.delegationInput)
+	if svc.delegationInput.RequestedAgent != domain.HarnessOpenCode || svc.delegationInput.RequestedMode != domain.SessionModeChat {
+		t.Fatalf("delegation input = %#v, want opencode Chat", svc.delegationInput)
 	}
 }
 

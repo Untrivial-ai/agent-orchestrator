@@ -49,7 +49,7 @@ func openStore(t *testing.T) *sqlite.Store {
 		ID:        testSession,
 		ProjectID: testProject,
 		Kind:      domain.KindOrchestrator,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Mode:      domain.SessionModeChat,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -342,7 +342,7 @@ type sequenceDriver struct {
 	conversations []ports.ChatConversation
 }
 
-func (d *sequenceDriver) Harness() domain.AgentHarness { return domain.HarnessCodex }
+func (d *sequenceDriver) Harness() domain.AgentHarness { return domain.HarnessOpenCode }
 func (d *sequenceDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	return productionCaps(), nil
 }
@@ -363,7 +363,7 @@ func (d *sequenceDriver) Resume(context.Context, ports.ChatResumeConfig) (ports.
 	return d.next()
 }
 
-func (d fakeDriver) Harness() domain.AgentHarness { return domain.HarnessCodex }
+func (d fakeDriver) Harness() domain.AgentHarness { return domain.HarnessOpenCode }
 func (d fakeDriver) Probe(context.Context) (ports.ChatCapabilities, error) {
 	if d.probe != nil {
 		if err := d.probe(); err != nil {
@@ -470,11 +470,11 @@ func TestSuccessfulChatProbeIsReusedByStart(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
-	if err := svc.PreflightChat(context.Background(), domain.HarnessCodex, ports.PermissionModeDefault); err != nil {
+	if err := svc.PreflightChat(context.Background(), domain.HarnessOpenCode, ports.PermissionModeDefault); err != nil {
 		t.Fatalf("PreflightChat: %v", err)
 	}
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(),
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -495,13 +495,13 @@ func TestFailedChatProbeCanBeRetriedThenCached(t *testing.T) {
 	}}
 	svc := chatsvc.New(chatsvc.Options{Drivers: fakeRegistry{driver: driver}})
 
-	if err := svc.PreflightChat(context.Background(), domain.HarnessCodex, ports.PermissionModeDefault); err == nil {
+	if err := svc.PreflightChat(context.Background(), domain.HarnessOpenCode, ports.PermissionModeDefault); err == nil {
 		t.Fatal("first PreflightChat must surface the transient probe failure")
 	}
-	if err := svc.PreflightChat(context.Background(), domain.HarnessCodex, ports.PermissionModeDefault); err != nil {
+	if err := svc.PreflightChat(context.Background(), domain.HarnessOpenCode, ports.PermissionModeDefault); err != nil {
 		t.Fatalf("second PreflightChat: %v", err)
 	}
-	if err := svc.PreflightChat(context.Background(), domain.HarnessCodex, ports.PermissionModeDefault); err != nil {
+	if err := svc.PreflightChat(context.Background(), domain.HarnessOpenCode, ports.PermissionModeDefault); err != nil {
 		t.Fatalf("cached PreflightChat: %v", err)
 	}
 	if attempts != 2 {
@@ -524,13 +524,13 @@ func TestCapabilityCacheEvaluatesEveryRequestedPermissionMode(t *testing.T) {
 	}
 	svc := chatsvc.New(chatsvc.Options{Drivers: fakeRegistry{driver: driver}})
 
-	if err := svc.PreflightChat(context.Background(), domain.HarnessCodex, ports.PermissionModeDefault); !errors.Is(err, ports.ErrChatUnsupported) {
+	if err := svc.PreflightChat(context.Background(), domain.HarnessOpenCode, ports.PermissionModeDefault); !errors.Is(err, ports.ErrChatUnsupported) {
 		t.Fatalf("default preflight error = %v, want ErrChatUnsupported", err)
 	}
-	if err := svc.PreflightChat(context.Background(), domain.HarnessCodex, ports.PermissionModeBypassPermissions); err != nil {
+	if err := svc.PreflightChat(context.Background(), domain.HarnessOpenCode, ports.PermissionModeBypassPermissions); err != nil {
 		t.Fatalf("bypass preflight: %v", err)
 	}
-	if err := svc.PreflightChat(context.Background(), domain.HarnessCodex, ports.PermissionModeDefault); !errors.Is(err, ports.ErrChatUnsupported) {
+	if err := svc.PreflightChat(context.Background(), domain.HarnessOpenCode, ports.PermissionModeDefault); !errors.Is(err, ports.ErrChatUnsupported) {
 		t.Fatalf("cached default preflight error = %v, want ErrChatUnsupported", err)
 	}
 	if probes != 1 {
@@ -576,7 +576,7 @@ func TestResumeUsesPersistedBypassPermissionForCapabilityAdmission(t *testing.T)
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	if _, err := svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-bypass",
 		Permissions: ports.PermissionModeDefault,
 	}); err != nil {
@@ -625,7 +625,7 @@ func TestServicePassesRecomputedSystemPromptToResume(t *testing.T) {
 	workspace := t.TempDir()
 	dataDir := t.TempDir()
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		DataDir: dataDir, WorkspacePath: workspace, ProviderConversationID: "thread-1",
 		SystemPrompt: "Recomputed AO orchestrator instructions",
 	})
@@ -667,7 +667,7 @@ func TestServiceResumePreservesExplicitProviderDefaultTuning(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
 		Effort: "high",
 	})
@@ -702,7 +702,7 @@ func TestServicePersistsAndPassesInitialModelTuningBeforeProviderStart(t *testin
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), Model: "gpt-test", Effort: "high",
 	})
 	if err != nil {
@@ -741,7 +741,7 @@ func TestPendingAgentSwitchFreshStartUsesReservedProviderScope(t *testing.T) {
 
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderScopeID: "switch-fresh:provider",
 	})
 	if err != nil {
@@ -782,7 +782,7 @@ func TestPendingAgentSwitchResumeUsesReservedProviderScope(t *testing.T) {
 
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: "target-provider-thread",
 		ProviderScopeID:        "switch-resume:provider",
 		HistoryMode:            ports.ChatHistoryDeferred,
@@ -828,7 +828,7 @@ func TestOrdinaryResumeRejectsProviderHandleOutsideActiveBranch(t *testing.T) {
 
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: "unowned-provider-thread",
 		HistoryMode:            ports.ChatHistoryDeferred,
 	})
@@ -887,7 +887,7 @@ func TestFreshProjectStartPersistsNewProviderScopeForSubsequentResume(t *testing
 	before, sourceBranch := seedProjectConversationWithProviderHistory(
 		t, st, "fresh-project-conversation", now)
 	targetSession, err := st.CreateSession(ctx, domain.SessionRecord{
-		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessOpenCode,
 		Mode: domain.SessionModeChat, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
 	})
 	if err != nil {
@@ -912,7 +912,7 @@ func TestFreshProjectStartPersistsNewProviderScopeForSubsequentResume(t *testing
 
 	controller, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: targetSession.ID, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if result.ProviderBoundary == nil {
 				return chatsvc.ControllerCommit{}, errors.New("fresh provider boundary was not reserved")
@@ -974,7 +974,7 @@ func TestFreshProjectStartPersistsNewProviderScopeForSubsequentResume(t *testing
 	t.Cleanup(func() { _ = restarted.Stop(context.Background(), targetSession.ID) })
 	if _, err := restarted.Start(ctx, chatsvc.StartConfig{
 		SessionID: targetSession.ID, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: "fresh-provider-thread",
 		HistoryMode:            ports.ChatHistoryDeferred,
 	}); err != nil {
@@ -1009,7 +1009,7 @@ func TestFreshProjectProviderStartFailurePreservesSourceHeadAndOwner(t *testing.
 
 	_, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 	})
 	if !errors.Is(err, providerErr) {
 		t.Fatalf("Start error = %v, want provider failure", err)
@@ -1058,7 +1058,7 @@ func TestFreshProjectControllerReadyFailurePreservesSourceHeadAndOwner(t *testin
 
 	_, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			reservedBoundary = result.ProviderBoundary
 			return chatsvc.ControllerCommit{}, readyErr
@@ -1119,7 +1119,7 @@ func TestResumeCanSkipNativeHistoryImportWithoutStartingFresh(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	controller, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath:          t.TempDir(),
 		Model:                  "selected-target-model",
 		ProviderConversationID: "target-native-thread",
@@ -1243,7 +1243,7 @@ func TestResumeImportsNativeHistoryBeforeTheChatControllerStarts(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if err != nil {
@@ -1321,7 +1321,7 @@ func TestInterfaceHandoffRefreshesNativeHistoryUntilSettledBeforeStartingChat(t 
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if err != nil {
@@ -1390,7 +1390,7 @@ func TestInterfaceHandoffRefreshesNativeHistoryUntilItReachesTheCheckpoint(t *te
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if err != nil {
@@ -1437,7 +1437,7 @@ func TestInterfaceHandoffImportsInterruptedUserOnlyNativeHistory(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if err != nil {
@@ -1492,7 +1492,7 @@ func TestInterfaceHandoffImportsOutcomeUnknownNativeHistoryAsRecovered(t *testin
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if err != nil {
@@ -1523,7 +1523,7 @@ func TestInterfaceHandoffRejectsAProviderWithoutNativeHistoryReplay(t *testing.T
 	})
 
 	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if !errors.Is(err, ports.ErrChatHistoryUnavailable) {
@@ -1548,7 +1548,7 @@ func TestOrdinaryResumeAllowsACPContextWithoutHistoryReplay(t *testing.T) {
 	})
 
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
 	}); err != nil {
 		t.Fatalf("ordinary resume with provider context: %v", err)
@@ -1574,7 +1574,7 @@ func TestInterfaceHandoffReportsUnsettledHistoryWhenContextEndsBeforeRefresh(t *
 		NewID:   func() string { return fmt.Sprintf("unsettled-%d", time.Now().UnixNano()) },
 	})
 	_, err := svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
@@ -1612,7 +1612,7 @@ func TestInterfaceHandoffRejectsUnsettledImmutableHistoryWithoutRereading(t *tes
 		NewID:   func() string { return fmt.Sprintf("immutable-unsettled-%d", time.Now().UnixNano()) },
 	})
 	_, err := svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
@@ -1660,7 +1660,7 @@ func TestInterfaceHandoffRejectsSettledReplayBeforeLatestSessionCheckpoint(t *te
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	_, err = svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
@@ -1712,7 +1712,7 @@ func TestInterfaceHandoffCheckpointHistoryPolicy(t *testing.T) {
 			})
 			t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 			ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 				HistoryPolicy: tc.policy,
 			})
@@ -1807,7 +1807,7 @@ func TestInterfaceHandoffTrustedCheckpointMayPrecedeLaterCompletedTurn(t *testin
 			t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 			ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 				HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 			})
@@ -1905,7 +1905,7 @@ func TestInterfaceHandoffPanePromptWithMissedHookCannotAcceptHistoryBeforeObserv
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 		HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
 	})
@@ -1943,7 +1943,7 @@ func TestInterfaceHandoffImmutableBoundaryFailsBeforeReadingProviderHistory(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	_, err = svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 		HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
 	})
@@ -1992,7 +1992,7 @@ func TestInterfaceHandoffAssistantOnlyCheckpointFailsClosedOnRepeatedText(t *tes
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 		HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
 	})
@@ -2039,7 +2039,7 @@ func TestInterfaceHandoffTrustedCheckpointMustMatchOneCompletedTurn(t *testing.T
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	_, err = svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 		HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
 	})
@@ -2123,7 +2123,7 @@ func TestInterfaceHandoffAOHighWaterFallbackMustStayInItsTurn(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	_, err = svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
@@ -2204,7 +2204,7 @@ func TestInterfaceHandoffAOHighWaterAcceptsMappedReassignedTurn(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	if _, err := svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	}); err != nil {
 		t.Fatalf("Start with mapped reassigned provider turn: %v", err)
@@ -2247,7 +2247,7 @@ func TestInterfaceHandoffProviderHistoryCannotWaiveTrustedCheckpointNativeIdenti
 			t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 			_, err = svc.Start(context.Background(), chatsvc.StartConfig{
-				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-after-clear",
 				HistoryMode:   ports.ChatHistoryRequired,
 				HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
@@ -2354,7 +2354,7 @@ func TestInterfaceHandoffRoundTripRetiresTrustedTerminalCheckpointAfterChatTurn(
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	if _, err := svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 		HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 	}); err != nil {
@@ -2490,7 +2490,7 @@ func TestInterfaceHandoffDoesNotAnchorReplayCheckpointOnFailedTurn(t *testing.T)
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 	})
 	if err != nil {
@@ -2628,7 +2628,7 @@ func TestInterfaceHandoffDoesNotAnchorReplayBeforeProviderCoordinationBoundary(t
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "new-provider-thread", HistoryMode: ports.ChatHistoryRequired,
 	}); err != nil {
 		t.Fatalf("Start resume = %v, want success after the replacement-provider boundary", err)
@@ -2662,7 +2662,7 @@ func TestSlowNativeHistoryDoesNotBlockOtherControllerLookups(t *testing.T) {
 	startDone := make(chan error, 1)
 	go func() {
 		_, err := svc.Start(context.Background(), chatsvc.StartConfig{
-			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 			WorkspacePath: workspace, ProviderConversationID: "thread-1",
 		})
 		startDone <- err
@@ -2715,7 +2715,7 @@ func TestFreshProjectControllerRecordsNativeContextBoundary(t *testing.T) {
 		ID:        replacement,
 		ProjectID: testProject,
 		Kind:      domain.KindOrchestrator,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Mode:      domain.SessionModeChat,
 		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
 		Metadata:  domain.SessionMetadata{Branch: "feat/replacement", WorkspacePath: t.TempDir()},
@@ -2747,7 +2747,7 @@ func TestFreshProjectControllerRecordsNativeContextBoundary(t *testing.T) {
 	})
 	start := chatsvc.StartConfig{
 		SessionID: replacement, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 	}
 	if _, err := svc.Start(ctx, start); err != nil {
 		t.Fatalf("Start replacement: %v", err)
@@ -2838,7 +2838,7 @@ func TestFreshProjectControllerStartFailureKeepsPreviousHistoryHidden(t *testing
 	replacementRecord, err := st.CreateSession(ctx, domain.SessionRecord{
 		ProjectID: testProject,
 		Kind:      domain.KindOrchestrator,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Mode:      domain.SessionModeChat,
 		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
 		Metadata:  domain.SessionMetadata{Branch: "feat/replacement", WorkspacePath: t.TempDir()},
@@ -2865,7 +2865,7 @@ func TestFreshProjectControllerStartFailureKeepsPreviousHistoryHidden(t *testing
 	})
 	if _, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: replacement, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 	}); err == nil || !strings.Contains(err.Error(), "provider failed") {
 		t.Fatalf("Start replacement error = %v, want provider failure", err)
 	}
@@ -2933,7 +2933,7 @@ func newHarnessWithConversationAndStore(
 	conv ports.ChatConversation,
 	wrapStore func(*sqlite.Store) chatsvc.Store,
 ) *harness {
-	return newHarnessWithConversationAndStoreForHarness(t, conv, wrapStore, domain.HarnessCodex)
+	return newHarnessWithConversationAndStoreForHarness(t, conv, wrapStore, domain.HarnessOpenCode)
 }
 
 func newHarnessForHarness(t *testing.T, agentHarness domain.AgentHarness) *harness {
@@ -3616,7 +3616,7 @@ func TestControllerReadyRunsBeforeStreamProjection(t *testing.T) {
 	})
 
 	controller, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ControllerGeneration: "reserved-generation",
 		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if signals := activity.snapshot(); len(signals) != 0 {
@@ -3651,7 +3651,7 @@ func TestSwitchControllerReadyLeavesSourceGenerationForAtomicActivation(t *testi
 	if err != nil || !found {
 		t.Fatalf("get source Chat session: found=%v err=%v", found, err)
 	}
-	record.Harness = domain.HarnessClaudeCode
+	record.Harness = domain.HarnessOpenCode
 	record.Metadata.ProviderConversationID = "source-provider"
 	record.Metadata.ControllerGeneration = "source-generation"
 	if err := st.UpdateSession(ctx, record); err != nil {
@@ -3668,7 +3668,7 @@ func TestSwitchControllerReadyLeavesSourceGenerationForAtomicActivation(t *testi
 	})
 
 	_, err = svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderScopeID: "switch-1:provider",
 		ControllerGeneration: "target-generation",
 		ControllerReady: func(chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
@@ -3719,7 +3719,7 @@ func TestControllerReadyDurableSettingsRefreshBeforeFirstDispatch(t *testing.T) 
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	controller, err := svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ControllerGeneration: "target-generation",
 		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if err := st.SetConversationSettings(ctx, conversation.ID, domain.ConversationSettings{
@@ -3795,7 +3795,7 @@ func TestControllerReadyDoesNotDependOnAFalliblePostCommitRead(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	controller, err := svc.Start(ctx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ControllerGeneration: "target-generation",
 		ControllerReady: func(started chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if err := st.SetConversationSettings(ctx, conversation.ID, domain.ConversationSettings{
@@ -3838,7 +3838,7 @@ func TestSendRefusedForTUISession(t *testing.T) {
 		ID:        tuiSession,
 		ProjectID: testProject,
 		Kind:      domain.KindWorker,
-		Harness:   domain.HarnessCodex,
+		Harness:   domain.HarnessOpenCode,
 		Mode:      domain.SessionModeTUI,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -4630,7 +4630,7 @@ func TestServiceStopAllClosesHealthyControllerAfterStuckStreamExhaustsShutdownCo
 	st := openStore(t)
 	now := time.Date(2026, 9, 14, 15, 0, 0, 0, time.UTC)
 	healthyRecord, err := st.CreateSession(context.Background(), domain.SessionRecord{
-		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessOpenCode,
 		Mode: domain.SessionModeChat, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
@@ -4672,13 +4672,13 @@ func TestServiceStopAllClosesHealthyControllerAfterStuckStreamExhaustsShutdownCo
 	})
 	workspace := t.TempDir()
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: stuckSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: stuckSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: workspace,
 	}); err != nil {
 		t.Fatalf("Start stuck: %v", err)
 	}
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: healthySession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: healthySession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: workspace,
 	}); err != nil {
 		t.Fatalf("Start healthy: %v", err)
@@ -4729,7 +4729,7 @@ func TestServiceStopAllReturnsByDeadlineWhenControllerGateIsHeld(t *testing.T) {
 	st := openStore(t)
 	now := time.Date(2026, 9, 14, 17, 0, 0, 0, time.UTC)
 	healthyRecord, err := st.CreateSession(context.Background(), domain.SessionRecord{
-		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex,
+		ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessOpenCode,
 		Mode: domain.SessionModeChat, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
@@ -4773,13 +4773,13 @@ func TestServiceStopAllReturnsByDeadlineWhenControllerGateIsHeld(t *testing.T) {
 	})
 	workspace := t.TempDir()
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: heldSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: heldSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: workspace,
 	}); err != nil {
 		t.Fatalf("Start held: %v", err)
 	}
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: healthySession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: healthySession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: workspace,
 	}); err != nil {
 		t.Fatalf("Start healthy: %v", err)
@@ -4894,7 +4894,7 @@ func TestServiceLiveReconnectSkipsSettledHistoryBarrier(t *testing.T) {
 		Log: slog.New(slog.DiscardHandler), NewID: func() string { return "live-reconnect-id" },
 	})
 	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
 		PrepareControllerEnv: func(context.Context, domain.SessionControllerOwner) (map[string]string, error) {
 			prepareCalls.Add(1)
@@ -4924,7 +4924,7 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 		Log:     slog.New(slog.DiscardHandler), NewID: newID,
 	})
 	firstController, err := first.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(),
 	})
 	if err != nil {
@@ -4969,7 +4969,7 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 	})
 	t.Cleanup(func() { second.StopAll(context.Background()) })
 	secondController, err := second.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: firstProvider.ProviderConversationID(),
 		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 			if !result.LiveReconnect {
@@ -5026,7 +5026,7 @@ func TestStartWaitsForStoppedControllerCleanupBeforeRelaunch(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 
 	firstController, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(),
 	})
 	if err != nil {
@@ -5051,7 +5051,7 @@ func TestStartWaitsForStoppedControllerCleanupBeforeRelaunch(t *testing.T) {
 	waitCtx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	controller, err := svc.Start(waitCtx, chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: replacementWorkspace, ProviderConversationID: "thread-1",
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -5063,7 +5063,7 @@ func TestStartWaitsForStoppedControllerCleanupBeforeRelaunch(t *testing.T) {
 	}
 	firstController.Wait()
 	replacement, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: replacementWorkspace, ProviderConversationID: "thread-1",
 	})
 	if err != nil {
@@ -5103,7 +5103,7 @@ func TestConcurrentReconcileAndResumeShareOneCredentialedControllerLaunch(t *tes
 	})
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 	cfg := chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(), Env: map[string]string{"AO_BROWSER_CAPABILITY": "stale"},
 		PrepareControllerEnv: prepare,
 	}
@@ -5854,7 +5854,7 @@ func TestStartSettlesWorkLeftByAKilledController(t *testing.T) {
 	if _, err := next.Start(ctx, chatsvc.StartConfig{
 		SessionID:              testSession,
 		ProjectID:              testProject,
-		Harness:                domain.HarnessCodex,
+		Harness:                domain.HarnessOpenCode,
 		WorkspacePath:          t.TempDir(),
 		ProviderConversationID: "thread-1",
 	}); err != nil {
@@ -5972,7 +5972,7 @@ func TestUsageProjectionWithoutContextWindow(t *testing.T) {
 // Rate limits are current state too, and an unreported window must survive a round
 // trip through the database as unreported rather than as a reassuring zero.
 func TestRateLimitProjectionKeepsOnlyTheLatest(t *testing.T) {
-	h := newHarnessForHarness(t, domain.HarnessClaudeCode)
+	h := newHarnessForHarness(t, domain.HarnessOpenCode)
 
 	h.conv.emit(
 		ports.ChatEvent{Kind: ports.ChatEventRateLimits, RateLimits: &ports.ChatRateLimits{
@@ -6002,62 +6002,6 @@ func TestRateLimitProjectionKeepsOnlyTheLatest(t *testing.T) {
 	}
 	if got := limits.WorstUsedPercent(); got != 71 {
 		t.Errorf("worst window = %v, want 71", got)
-	}
-}
-
-func TestCodexRateLimitsUpdateActiveAccountCapacityWithoutConversationPersistence(t *testing.T) {
-	st := openStore(t)
-	conv := newFakeConversation()
-	updates := make(chan ports.CodexCapacityObservation, 1)
-	svc := chatsvc.New(chatsvc.Options{
-		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
-		Log:     slog.New(slog.DiscardHandler),
-		NewID:   func() string { return "bound-capacity" },
-		OnCodexCapacityChanged: func(sessionID domain.SessionID, generation string, observation ports.CodexCapacityObservation) {
-			if sessionID != testSession || generation != "managed-generation" {
-				t.Errorf("capacity attribution = %s/%s", sessionID, generation)
-			}
-			updates <- observation
-		},
-	})
-	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: t.TempDir(), ControllerGeneration: "managed-generation",
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
-	observation := ports.CodexCapacityObservation{Partial: true, Overall: &domain.CodexCapacityBucket{
-		LimitID: "codex", Reached: domain.CodexCapacityNotReached,
-		Primary: &domain.CodexCapacityWindow{UsedPercent: 81},
-	}}
-	conv.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, ProviderEventID: "capacity-1", RateLimits: &ports.ChatRateLimits{
-		PrimaryUsedPercent: 81, PlanLabel: "pro", CodexCapacity: &observation,
-	}})
-	select {
-	case got := <-updates:
-		if got.Overall == nil || got.Overall.Primary == nil || got.Overall.Primary.UsedPercent != 81 {
-			t.Fatalf("capacity callback = %#v", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for bound profile capacity update")
-	}
-	snapshot, err := st.LoadConversationSnapshot(context.Background(), ctrl.ConversationID())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Conversation.RateLimits != nil {
-		t.Fatalf("bound Codex rate limits persisted: %#v", snapshot.Conversation.RateLimits)
-	}
-	events, err := st.ProviderEventsSince(context.Background(), ctrl.ConversationID(), 0, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var archived map[string]any
-	if len(events) != 1 || json.Unmarshal([]byte(events[0].PayloadJson), &archived) != nil || archived["rateLimits"] != nil || strings.Contains(events[0].PayloadJson, "usedPercent") {
-		t.Fatalf("bound Codex capacity leaked into provider archive: %#v", events)
 	}
 }
 
@@ -6410,7 +6354,7 @@ func TestProjectionFailureThenStopStillStopsTheTurn(t *testing.T) {
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID:     testSession,
 		ProjectID:     testProject,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		WorkspacePath: t.TempDir(),
 	})
 	if err != nil {
@@ -6570,7 +6514,7 @@ func TestReservedBoundaryAdoptsSuccessorHandleWithoutRewritingHistory(t *testing
 	var boundaryBranch domain.ConversationBranch
 	_, err := svc.Start(ctx, chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
-		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir(),
 		ProviderConversationID: successor,
 		ProviderScopeID:        boundary,
 		HistoryMode:            ports.ChatHistoryDeferred,

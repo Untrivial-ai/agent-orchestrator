@@ -7,7 +7,6 @@ import { cloudSessionsQueryKey, workspaceQueryKey, type WorkspaceScope } from ".
 import { spawnCloudOrchestrator } from "../lib/cloud-orchestrator";
 import { isChatPreflightError, spawnOrchestrator, type OrchestratorSpawnSource } from "../lib/spawn-orchestrator";
 import { formatOrchestratorStartupError } from "../lib/orchestrator-startup-error";
-import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
 import { useUiStore } from "../stores/ui-store";
 
 export function useProjectOrchestratorAction({
@@ -79,23 +78,12 @@ export function useProjectOrchestratorAction({
 				});
 			}
 		},
-		onError: (cause) => {
-			void captureRendererException(cause, {
-				source: "orchestrator-open", operation: "open_orchestrator",
-				surface: sessionId ? "session_detail" : "project_board", project_id: projectId,
-			});
-		},
 	});
 	const openOrchestrator = (mode?: "tui") => {
 		if (!projectId || isProjectRestarting || isProvisioning) return;
 		// Read the cache synchronously as well as disabling both rendered copies.
 		// Two clicks in the same render must still produce just one request.
 		if (queryClient.isMutating({ mutationKey, exact: true })) return;
-		void addRendererExceptionStep("Orchestrator open requested", {
-			source: "orchestrator-open", operation: "open_orchestrator",
-			surface: sessionId ? "session_detail" : "project_board", project_id: projectId,
-		});
-		void captureRendererEvent("ao.renderer.orchestrator_open_requested", { project_id: projectId });
 		if (orchestrator) {
 			void navigate({ to: "/projects/$projectId/sessions/$sessionId", params: { projectId, sessionId: orchestrator.id } });
 		} else if (project?.kind !== CLOUD_PROJECT_KIND && !hasConfiguredOrchestratorAgent(project)) {

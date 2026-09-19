@@ -1,9 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import posthog from "posthog-js";
 import { useId, useState } from "react";
-import { track } from "@/lib/analytics";
 
 export function CloudWaitlistForm() {
   const emailId = useId();
@@ -24,29 +22,6 @@ export function CloudWaitlistForm() {
     if (!normalizedEmail || !trimmedRole || !trimmedSocialProfile) return;
     setError("");
     setIsSubmitting(true);
-
-    let wasOptedOut = false;
-    try {
-      wasOptedOut = posthog.has_opted_out_capturing();
-      if (wasOptedOut) {
-        posthog.opt_in_capturing();
-      }
-    } catch {
-      wasOptedOut = false;
-    }
-
-    track("cloud_waitlist_signup", {
-      email: normalizedEmail,
-      role: trimmedRole,
-    });
-
-    try {
-      if (wasOptedOut) {
-        posthog.opt_out_capturing();
-      }
-    } catch {
-      // The form should still complete if analytics is unavailable.
-    }
 
     try {
       const response = await fetch("/api/cloud-waitlist/", {

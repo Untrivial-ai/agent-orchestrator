@@ -66,30 +66,6 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	}
 }
 
-// codexAccountOriginMiddleware gives credential-management routes a stricter
-// browser boundary than the rest of the loopback API. Workspace previews are
-// intentionally accepted by corsMiddleware so they can use ordinary daemon
-// APIs, but they must never read account metadata or execute account
-// mutations. Native clients do not send Origin and remain unauthenticated;
-// browser clients must present one of the exact configured renderer origins.
-func codexAccountOriginMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
-	allowed := exactAllowedOrigins(allowedOrigins)
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := r.Header.Get("Origin")
-			if origin != "" && isCodexAccountPath(r.URL.Path) {
-				w.Header().Add("Vary", "Origin")
-				if _, ok := allowed[origin]; !ok {
-					envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "ORIGIN_FORBIDDEN",
-						"Origin is not allowed to access Codex account management", nil)
-					return
-				}
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 func exactAllowedOrigins(origins []string) map[string]struct{} {
 	allowed := make(map[string]struct{}, len(origins))
 	for _, origin := range origins {
@@ -100,18 +76,6 @@ func exactAllowedOrigins(origins []string) map[string]struct{} {
 		allowed[origin] = struct{}{}
 	}
 	return allowed
-}
-
-func isCodexAccountPath(path string) bool {
-	for _, prefix := range []string{
-		"/api/v1/agents/codex/accounts",
-		"/api/v1/agents/codex/account-switches",
-	} {
-		if path == prefix || strings.HasPrefix(path, prefix+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // isLoopbackOrigin reports whether a browser origin is content served from

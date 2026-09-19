@@ -56,10 +56,9 @@ type lifecycleStack struct {
 // reaper. The goroutine stops when ctx is cancelled; Stop waits for it to drain.
 // The messenger is the per-daemon agent messenger the LCM uses to nudge agents
 // in response to SCM observations (CI failure, review feedback, merge conflict).
-func startLifecycle(ctx context.Context, store *sqlite.Store, runtime ports.Runtime, messenger ports.AgentMessenger, notifier notificationSink, telemetry ports.EventSink, agents ports.AgentResolver, logger *slog.Logger) *lifecycleStack {
+func startLifecycle(ctx context.Context, store *sqlite.Store, runtime ports.Runtime, messenger ports.AgentMessenger, notifier notificationSink, agents ports.AgentResolver, logger *slog.Logger) *lifecycleStack {
 	lcm := lifecycle.New(store, messenger,
 		lifecycle.WithNotificationSink(notifier),
-		lifecycle.WithTelemetry(telemetry),
 		lifecycle.WithContainerReaper(dockerreap.New(), store),
 		lifecycle.WithActiveSteering(activeTurnSteering(agents)),
 		lifecycle.WithStartupSignalGate(startupSignalGatesInput(agents)),
@@ -95,7 +94,7 @@ func startupSignalGatesInput(agents ports.AgentResolver) func(domain.AgentHarnes
 // urgentNudgeWaitingInputSafe resolves whether an adapter reports a permission
 // dialog AS blocked (ports.BlockedActivitySignaler) rather than as
 // waiting_input. Only then is an urgent merge-conflict nudge safe to paste at a
-// waiting_input prompt — a harness like codex, which maps permission-request to
+// waiting_input prompt — a harness like copilot, which maps permission-request to
 // waiting_input and opts out of the signal, must not receive that unsolicited
 // write while it could be sitting on a masked decision. Unknown and opted-out
 // adapters answer false, so lifecycle withholds the urgent nudge there.
@@ -170,7 +169,6 @@ type sessionLifecycle interface {
 	ReconcileStartupSafety(ctx context.Context) error
 	ReconcileBackground(ctx context.Context) error
 	RestoreAll(ctx context.Context) error
-	WaitAgentSwitchWorkers(ctx context.Context) error
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
 	// SetShellTerminalCloser late-binds Kill/Cleanup to close a session's
@@ -215,7 +213,7 @@ func (m sessionLifecycleMessenger) Send(ctx context.Context, id domain.SessionID
 // (issue #2685). The returned service is mounted at httpd APIDeps.Sessions.
 // It also returns the manager so the caller can wire Reconcile into the boot
 // sequence.
-func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
+func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, tracker ports.Tracker, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
 	gitWS, err := gitworktree.New(gitworktree.Options{
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
@@ -245,8 +243,6 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Agents:              agents,
 		Workspace:           ws,
 		Store:               store,
-		ReportingPolicy:     reportingPolicy,
-		DaemonRunID:         cfg.AppRunID,
 		Messenger:           messenger,
 		Chat:                chat,
 		Defaults:            defaults,
@@ -259,7 +255,6 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		BackgroundContext:   ctx,
 		Logger:              log,
 		ReconcileWorkers:    startupReconcileWorkers,
-		CodexOperationGate:  codexOperationGate,
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)
@@ -270,7 +265,6 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		SCM:               scmProvider,
 		DataDir:           cfg.DataDir,
 		Tracker:           tracker,
-		Telemetry:         telemetry,
 		Logger:            log,
 		BackgroundContext: ctx,
 		AgentReadiness:    agentReadiness,
@@ -297,8 +291,6 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	})
 	reviewOpts := []reviewsvc.Option{
 		reviewsvc.WithLifecycleReducer(lcm),
-		reviewsvc.WithTelemetry(telemetry),
-		reviewsvc.WithCodexAccountOperationGate(codexOperationGate),
 	}
 	if scmProvider != nil {
 		reviewOpts = append(reviewOpts,

@@ -68,7 +68,7 @@ func TestSessionsAPI_ActivityForwardsUsageMetadataWithoutChangingActivity(t *tes
 		"event":"subagent-stop",
 		"agentSessionId":"native-1",
 		"usage":{
-			"harness":"claude-code",
+			"harness":"opencode",
 			"providerId":"zai",
 			"transcriptPath":"/tmp/main.jsonl",
 			"modelId":"claude-sonnet",
@@ -83,7 +83,7 @@ func TestSessionsAPI_ActivityForwardsUsageMetadataWithoutChangingActivity(t *tes
 		t.Fatalf("usage calls=%d id=%q", usage.calls, usage.gotID)
 	}
 	if usage.gotSignal.NativeSessionID != "native-1" ||
-		usage.gotSignal.Harness != domain.HarnessClaudeCode ||
+		usage.gotSignal.Harness != domain.HarnessOpenCode ||
 		usage.gotSignal.ProviderHint != "zai" ||
 		usage.gotSignal.SubagentTranscriptPath != "/tmp/sub.jsonl" {
 		t.Fatalf("usage signal = %+v", usage.gotSignal)
@@ -98,7 +98,7 @@ func TestSessionsAPI_ActivityContentionRemainsRetryableAndRecordsUsage(t *testin
 		httpd.APIDeps{Activity: activity, UsageHooks: usage}, httpd.ControlDeps{}))
 	t.Cleanup(srv.Close)
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
-		`{"state":"idle","event":"stop","agentSessionId":"native-1","launchId":"launch-1","usage":{"harness":"claude-code","transcriptPath":"/tmp/main.jsonl"}}`)
+		`{"state":"idle","event":"stop","agentSessionId":"native-1","launchId":"launch-1","usage":{"harness":"opencode","transcriptPath":"/tmp/main.jsonl"}}`)
 	if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "ACTIVITY_PROJECTION_BUSY") {
 		t.Fatalf("contention should be explicitly retryable: %d %s", status, body)
 	}
@@ -124,7 +124,7 @@ func TestSessionsAPI_ActivitySanitizesAndBoundsUsageMetadata(t *testing.T) {
 		"event":"subagent-stop",
 		"agentSessionId":"native-1",
 		"usage":{
-			"harness":"claude-\u001bcode",
+			"harness":"open\u001bcode",
 			"transcriptPath":"/tmp/\u001bmain.jsonl",
 			"modelId":"claude-\u001bsonnet",
 			"subagentId":"sub-\u001b1",
@@ -137,7 +137,7 @@ func TestSessionsAPI_ActivitySanitizesAndBoundsUsageMetadata(t *testing.T) {
 	if usage.calls != 1 {
 		t.Fatalf("usage calls=%d, want 1", usage.calls)
 	}
-	if usage.gotSignal.Harness != domain.HarnessClaudeCode ||
+	if usage.gotSignal.Harness != domain.HarnessOpenCode ||
 		usage.gotSignal.TranscriptPath != "/tmp/main.jsonl" ||
 		usage.gotSignal.ModelID != "claude-sonnet" ||
 		usage.gotSignal.SubagentID != "sub-1" ||

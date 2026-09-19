@@ -533,10 +533,6 @@ type ChatRateLimits struct {
 	SecondaryResetsInSeconds int64
 	// PlanLabel is the provider's name for the account tier, when it says.
 	PlanLabel string
-	// CodexCapacity carries the normalized full/sparse provider observation to
-	// the daemon-owned account coordinator. It is never persisted with the
-	// conversation quota projection.
-	CodexCapacity *CodexCapacityObservation
 }
 
 // ChatTurnDiff is the running diff of what a turn changed on disk.

@@ -4,28 +4,7 @@ import { COMPANY } from "@ao/shared/constants";
 import { ArrowUpRight } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { HashLink } from "../HashLink/HashLink";
-import { track } from "@/lib/analytics";
 import { TileWordmark } from "./TileWordmark";
-
-/**
- * Coarse destination for an outbound link.
- *
- * A category rather than the URL: this answers "how many people go to Discord
- * versus GitHub" without recording exactly which page, and a new link is covered
- * automatically instead of needing to be tagged by hand.
- */
-function outboundDestination(href: string): string {
-  try {
-    const host = new URL(href).hostname.replace(/^www\./, "");
-    if (host.endsWith("github.com")) return href.includes("/releases") ? "github_releases" : "github";
-    if (host.endsWith("discord.com") || host.endsWith("discord.gg")) return "discord";
-    if (host === "x.com" || host.endsWith("twitter.com")) return "x";
-    if (host.endsWith("linkedin.com")) return "linkedin";
-    return host;
-  } catch {
-    return "unknown";
-  }
-}
 
 export function Footer() {
   const pathname = usePathname();
@@ -131,12 +110,6 @@ function FooterColumn({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="group flex min-h-8 items-center justify-between gap-1 py-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground sm:gap-3 sm:text-sm"
-                onClick={() =>
-                  track("outbound_link_clicked", {
-                    destination: outboundDestination(link.href),
-                    label: link.label,
-                  })
-                }
               >
                 {link.label}
                 <ArrowUpRight className="hidden h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 sm:block" />

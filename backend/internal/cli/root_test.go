@@ -2,9 +2,7 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,11 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
-	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 func TestRootHelpDoesNotShowDaemon(t *testing.T) {
@@ -86,170 +81,6 @@ func TestChatHostRejectsMalformedInternalArgumentsAsUsage(t *testing.T) {
 				t.Fatalf("ExitCode(%v) = %d, want 2", err, got)
 			}
 		})
-	}
-}
-
-func TestVersionEmitsCLIInvocationBestEffort(t *testing.T) {
-	t.Setenv("AO_SESSION_ID", "")
-	cfg := setConfigEnv(t)
-	called := make(chan map[string]string, 1)
-	if err := runfile.Write(cfg.runFile, runfile.Info{PID: os.Getpid(), Port: 3001, StartedAt: time.Unix(100, 0).UTC()}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := executeCLI(t, Deps{
-		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path == "/internal/telemetry/cli-invoked" {
-				defer req.Body.Close()
-				var body map[string]string
-				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-					t.Fatalf("decode telemetry body: %v", err)
-				}
-				called <- body
-				return jsonResponse(http.StatusAccepted, ""), nil
-			}
-			return jsonResponse(http.StatusNotFound, ""), nil
-		})},
-		ProcessAlive: func(pid int) bool { return pid == os.Getpid() },
-	}, "version"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case body := <-called:
-		if body["actorType"] != "user" {
-			t.Fatalf("telemetry actorType = %q, want user", body["actorType"])
-		}
-	default:
-		t.Fatal("version did not emit CLI invocation")
-	}
-}
-
-func TestShouldEmitCLIInvocationSkipsNonUsageAndRoutineInternalCommands(t *testing.T) {
-	byName := map[string]*cobra.Command{}
-	for _, cmd := range NewRootCommand(Deps{}).Commands() {
-		byName[cmd.Name()] = cmd
-	}
-	for name, want := range map[string]bool{
-		"daemon": false, // supervisor-driven bootstrapping, not human usage
-		"start":  false,
-		// hooks/status are routine internal polling paths; pty-host is only an
-		// internal Windows runtime process. Successful executions should not
-		// count as CLI usage.
-		"hooks":    false,
-		"pty-host": false,
-		"status":   false,
-		"spawn":    true,
-	} {
-		cmd, ok := byName[name]
-		if !ok {
-			t.Fatalf("command %q not registered", name)
-		}
-		if got := shouldEmitCLIInvocation(cmd); got != want {
-			t.Errorf("shouldEmitCLIInvocation(%s) = %v, want %v", cmd.CommandPath(), got, want)
-		}
-	}
-}
-
-func TestCLIInvocationActorType(t *testing.T) {
-	t.Setenv("AO_SESSION_ID", "")
-	byName := map[string]*cobra.Command{}
-	for _, cmd := range NewRootCommand(Deps{}).Commands() {
-		byName[cmd.Name()] = cmd
-	}
-
-	if got := cliInvocationActorType(byName["hooks"]); got != "agent" {
-		t.Fatalf("hooks actor = %q, want agent", got)
-	}
-	if got := cliInvocationActorType(byName["status"]); got != "user" {
-		t.Fatalf("status actor without session env = %q, want user", got)
-	}
-
-	t.Setenv("AO_SESSION_ID", "ao-session-1")
-	if got := cliInvocationActorType(byName["status"]); got != "agent" {
-		t.Fatalf("status actor with session env = %q, want agent", got)
-	}
-}
-
-func TestTelemetryMetaClassifiesRegisteredCommandPaths(t *testing.T) {
-	systemCommands := map[string]struct{}{
-		"ao agent-process":           {},
-		"ao agent-process supervise": {},
-		"ao chat-host":               {},
-		"ao completion":              {},
-		"ao daemon":                  {},
-		"ao help":                    {},
-		"ao pty-host":                {},
-		"ao start":                   {},
-	}
-
-	var failures []string
-	var walk func(*cobra.Command)
-	walk = func(cmd *cobra.Command) {
-		for _, child := range cmd.Commands() {
-			path := telemetrymeta.NormalizeCommandPath(child.CommandPath())
-			got := telemetrymeta.CLIActorType("", path)
-			if got == "system" {
-				_, explicitlySystem := systemCommands[path]
-				if !explicitlySystem && !telemetrymeta.IsRoutineInternalCLICommand(path) {
-					failures = append(failures, path)
-				}
-			}
-			walk(child)
-		}
-	}
-	walk(NewRootCommand(Deps{}))
-
-	if len(failures) > 0 {
-		t.Fatalf("actor-less command paths classified as system: %s", strings.Join(failures, ", "))
-	}
-}
-
-func TestUsageErrorCommandDropsUserArgs(t *testing.T) {
-	for _, tc := range []struct {
-		args        []string
-		wantCommand string
-		wantPath    string
-	}{
-		{[]string{"send", "orchestrator-pack-5", "wake", "heartbeat.reconcile"}, "send", "ao send"},
-		{[]string{"status", "extra"}, "status", "ao status"},
-		{[]string{"not-a-command", "whatever"}, "ao", "ao"},
-		{[]string{"--bad-flag"}, "ao", "ao"},
-	} {
-		command, path := usageErrorCommand(tc.args)
-		if command != tc.wantCommand || path != tc.wantPath {
-			t.Errorf("usageErrorCommand(%v) = (%q, %q), want (%q, %q)", tc.args, command, path, tc.wantCommand, tc.wantPath)
-		}
-	}
-}
-
-func TestUsageErrorEmitsCLIUsageTelemetryBestEffort(t *testing.T) {
-	cfg := setConfigEnv(t)
-	called := make(chan string, 1)
-	if err := runfile.Write(cfg.runFile, runfile.Info{PID: os.Getpid(), Port: 3001, StartedAt: time.Unix(100, 0).UTC()}); err != nil {
-		t.Fatal(err)
-	}
-
-	deps := Deps{
-		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path == "/internal/telemetry/cli-usage-error" {
-				called <- req.URL.Path
-				return jsonResponse(http.StatusAccepted, ""), nil
-			}
-			return jsonResponse(http.StatusNotFound, ""), nil
-		})},
-		ProcessAlive: func(pid int) bool { return pid == os.Getpid() },
-	}
-	err := executeWithDeps(deps, []string{"status", "extra"})
-	if err == nil {
-		t.Fatal("expected usage error")
-	}
-	select {
-	case path := <-called:
-		if path != "/internal/telemetry/cli-usage-error" {
-			t.Fatalf("telemetry path = %q, want /internal/telemetry/cli-usage-error", path)
-		}
-	default:
-		t.Fatal("usage error did not emit CLI usage telemetry")
 	}
 }
 
@@ -502,14 +333,3 @@ func closedPort(t *testing.T) int {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
-func jsonResponse(status int, body string) *http.Response {
-	if body == "" {
-		body = "{}"
-	}
-	return &http.Response{
-		StatusCode: status,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(body)),
-	}
-}

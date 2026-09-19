@@ -82,8 +82,7 @@ AO derives every stateful path beneath that root:
 | Repository and uncommitted files | `repository` |
 | AO worker token, Git helper, sockets, and logs | `.ao/worker` |
 | Worker `HOME` | `.ao/home` |
-| Claude Code configuration and conversations | `.ao/home/.claude` |
-| Codex configuration and conversations | `.ao/home/.codex` |
+| OpenCode configuration and conversations | `.ao/home/.opencode` |
 | AO/Coder restore identity | `.ao/durable-session-id` |
 
 The owner, template ID, template parameters, selected agent, and durable root

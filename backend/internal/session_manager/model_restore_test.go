@@ -52,10 +52,10 @@ func TestClaudeSessionModelSurvivesRestore(t *testing.T) {
 						Config: domain.ProjectConfig{
 							AgentConfig: domain.AgentConfig{Model: selection.projectModel},
 							Worker: domain.RoleOverride{
-								Harness: domain.HarnessClaudeCode, AgentConfig: domain.AgentConfig{Model: selection.roleModel},
+								Harness: domain.HarnessOpenCode, AgentConfig: domain.AgentConfig{Model: selection.roleModel},
 							},
 							Orchestrator: domain.RoleOverride{
-								Harness: domain.HarnessClaudeCode, AgentConfig: domain.AgentConfig{Model: selection.roleModel},
+								Harness: domain.HarnessOpenCode, AgentConfig: domain.AgentConfig{Model: selection.roleModel},
 							},
 						},
 					}
