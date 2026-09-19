@@ -17,10 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+	_ "modernc.org/sqlite" // register the read-only credential database driver
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"gopkg.in/yaml.v3"
-	_ "modernc.org/sqlite"
 )
 
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
@@ -31,11 +32,13 @@ type ompAuthDependencies struct {
 	OpenDB func(string) (*sql.DB, error)
 }
 
-// OMP positional status commands start its interactive agent. Only inspect
+// AuthStatus avoids OMP positional status commands, which start its interactive agent. It inspects
 // bounded local sources, without launching a CLI, refreshing, or contacting a broker.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
+
+// AuthStatusFor checks credentials for the effective OMP invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, scope ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -512,7 +515,7 @@ func ompDatabaseCredentials(ctx context.Context, d ompAuthDependencies, path, pr
 	if err != nil {
 		return nil
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	timeout := d.Timeout
 	if timeout <= 0 {
 		timeout = 3 * time.Second
@@ -530,7 +533,7 @@ func ompDatabaseCredentials(ctx context.Context, d ompAuthDependencies, path, pr
 	if err != nil {
 		return nil
 	}
-	defer result.Close()
+	defer func() { _ = result.Close() }()
 	var rows []ompCredentialRow
 	for result.Next() {
 		var id, kind, payload string

@@ -21,6 +21,7 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Grok invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err

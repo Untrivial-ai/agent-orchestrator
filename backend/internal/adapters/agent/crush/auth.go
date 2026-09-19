@@ -18,10 +18,12 @@ import (
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
+// AuthStatus checks device-wide defaults using the scoped resolver.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Crush invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, scope ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -347,7 +349,7 @@ func crushValue(value string, env func(string) string) string {
 	unresolved := false
 	value = os.Expand(value, func(key string) string {
 		for _, c := range key {
-			if !(c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+			if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
 				unresolved = true
 				return ""
 			}

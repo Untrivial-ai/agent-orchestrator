@@ -20,6 +20,7 @@ const kimchiDefaultEndpoint = "https://llm.kimchi.dev/openai/v1"
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
+// AuthStatus checks device-wide defaults using the scoped resolver.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
@@ -239,14 +240,6 @@ func timeNow(d authutil.Dependencies) time.Time {
 	return time.Now()
 }
 
-func kimchiGlobalConfigPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".config", "kimchi", "config.json")
-}
-
 // kimchiConfigAuthStatus is retained for package callers that probe one file.
 func kimchiConfigAuthStatus(ctx context.Context, configPath string) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
@@ -263,7 +256,7 @@ func kimchiConfigAuthStatus(ctx context.Context, configPath string) (ports.Agent
 		return ports.AgentAuthStatusUnknown, err
 	}
 	var config map[string]json.RawMessage
-	if json.Unmarshal(data, &config) != nil {
+	if valid := json.Unmarshal(data, &config) == nil; !valid {
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	if kimchiExtractAPIKey(config) != "" {

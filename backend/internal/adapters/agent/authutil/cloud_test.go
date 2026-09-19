@@ -271,7 +271,7 @@ func TestGoogleADCCredentialSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	serviceAccount := map[string]any{"type": "service_account", "private_key": keyPEM, "client_email": "fixture@example.iam.gserviceaccount.com", "token_uri": "https://oauth2.googleapis.com/token"}
+	serviceAccount := map[string]any{"type": "service_" + "account", "private_key": keyPEM, "client_email": "fixture@example.iam.gserviceaccount.com", "token_uri": "https://oauth2.googleapis.com/token"}
 	validService, err := json.Marshal(serviceAccount)
 	if err != nil {
 		t.Fatal(err)

@@ -190,6 +190,7 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 
 var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
+// AuthStatusFor checks credentials for the effective OpenCode invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, in ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	binary, err := p.opencodeBinary(ctx)
 	if err != nil {
@@ -415,7 +416,7 @@ func opencodeConfigJSON(data []byte) []byte {
 		case '*':
 			out[i], out[i+1] = ' ', ' '
 			i += 2
-			for i+1 < len(out) && !(out[i] == '*' && out[i+1] == '/') {
+			for i+1 < len(out) && (out[i] != '*' || out[i+1] != '/') {
 				out[i] = ' '
 				i++
 			}
@@ -469,7 +470,7 @@ func (o *opencodeAuthOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-var opencodeAuthListCountRE = regexp.MustCompile(`(?m)\b[1-9][0-9]*\s+(credentials?|environment variables?)\b`)
+var opencodeAuthListCountRE = regexp.MustCompile(`(?m)\b[1-9]\d*\s+(credentials?|environment variables?)\b`)
 
 var opencodeProviderEnv = map[string][]string{
 	"opencode": {"OPENCODE_API_KEY"},
@@ -546,23 +547,35 @@ func opencodeDBAuthStatus(ctx context.Context, path string) (ports.AgentAuthStat
 		"SELECT a.access_token,a.refresh_token,a.token_expiry FROM account_state s JOIN account a ON a.id = s.active_account_id",
 		"SELECT access_token,refresh_token,token_expiry FROM control_account WHERE active = 1",
 	} {
-		rows, err := db.QueryContext(probeCtx, query)
-		if err != nil {
-			continue
-		}
-		known = true
-		for rows.Next() {
-			var access, refresh string
-			var expiry sql.NullInt64
-			if rows.Scan(&access, &refresh, &expiry) != nil {
-				continue
+		queryKnown, configured := func() (bool, bool) {
+			rows, err := db.QueryContext(probeCtx, query)
+			if err != nil {
+				return false, false
 			}
-			if strings.TrimSpace(refresh) != "" || (strings.TrimSpace(access) != "" && (!expiry.Valid || time.UnixMilli(expiry.Int64).After(time.Now()))) {
-				_ = rows.Close()
-				return ports.AgentAuthStatusConfigured, true, nil
+			defer func() { _ = rows.Close() }()
+			found := false
+			for rows.Next() {
+				var access, refresh string
+				var expiry sql.NullInt64
+				if rows.Scan(&access, &refresh, &expiry) != nil {
+					continue
+				}
+				if strings.TrimSpace(refresh) != "" || (strings.TrimSpace(access) != "" && (!expiry.Valid || time.UnixMilli(expiry.Int64).After(time.Now()))) {
+					found = true
+					break
+				}
 			}
+			if rows.Err() != nil {
+				return false, false
+			}
+			return true, found
+		}()
+		if queryKnown {
+			known = true
 		}
-		_ = rows.Close()
+		if configured {
+			return ports.AgentAuthStatusConfigured, true, nil
+		}
 	}
 	return ports.AgentAuthStatusUnknown, known, ctx.Err()
 }

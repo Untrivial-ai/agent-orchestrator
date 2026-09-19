@@ -13,8 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	_ "modernc.org/sqlite"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 )

@@ -15,10 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
-	"gopkg.in/yaml.v3"
 )
 
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
@@ -323,6 +324,11 @@ func gooseHasNullField(fields map[string]json.RawMessage, names ...string) bool 
 
 var gooseProviderID = regexp.MustCompile(`^[a-z0-9_][a-z0-9_-]*$`)
 
+func gooseValidEndpoint(raw string) bool {
+	endpoint, err := url.Parse(raw)
+	return err == nil && endpoint.Hostname() != "" && (endpoint.Scheme == "https" || endpoint.Scheme == "http") && endpoint.User == nil
+}
+
 func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil.Dependencies) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -463,8 +469,7 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 				metadata.BaseURL = strings.ReplaceAll(metadata.BaseURL, placeholder, value)
 			}
 		}
-		endpoint, err := url.Parse(metadata.BaseURL)
-		if strings.Contains(metadata.BaseURL, "${") || err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.User != nil {
+		if strings.Contains(metadata.BaseURL, "${") || !gooseValidEndpoint(metadata.BaseURL) {
 			return ports.AgentAuthStatusUnknown, nil
 		}
 		if metadata.RequiresAuth != nil && !*metadata.RequiresAuth {
@@ -504,8 +509,7 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 		if host == "" {
 			host = secret("DATABRICKS_HOST")
 		}
-		endpoint, err := url.Parse(host)
-		if err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.User != nil {
+		if !gooseValidEndpoint(host) {
 			return ports.AgentAuthStatusUnknown, nil
 		}
 		if secret("DATABRICKS_TOKEN") != "" {
@@ -688,11 +692,14 @@ func gooseOAuthStatus(ctx context.Context, d authutil.Dependencies, dir, provide
 		}
 		return ports.AgentAuthStatusConfigured
 	default:
-		path := filepath.Join(dir, "xai_oauth", "tokens.json")
-		if provider == "kimi_code" {
+		var path string
+		switch provider {
+		case "kimi_code":
 			path = filepath.Join(dir, "kimicode", "token.json")
-		} else if provider == "chatgpt_codex" {
+		case "chatgpt_codex":
 			path = filepath.Join(dir, "chatgpt_codex", "tokens.json")
+		default:
+			path = filepath.Join(dir, "xai_oauth", "tokens.json")
 		}
 		if authutil.ReadJSON(ctx, d, path, &token) != nil {
 			return ports.AgentAuthStatusUnknown

@@ -15,10 +15,12 @@ import (
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
+// AuthStatus checks device-wide defaults using the scoped resolver.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Kimi invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -307,12 +309,12 @@ func kimiOAuthCredentialPath(home, key string) string {
 	return filepath.Join(home, "credentials", name+".json")
 }
 
-func kimiCredentialsAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
+func kimiCredentialsAuthStatus(path string) (ports.AgentAuthStatus, bool) {
 	data, err := authutil.ReadFile(context.Background(), authutil.Dependencies{}, path)
 	if err == nil && kimiStoredToken(data) {
-		return ports.AgentAuthStatusConfigured, true, nil
+		return ports.AgentAuthStatusConfigured, true
 	}
-	return ports.AgentAuthStatusUnknown, false, nil
+	return ports.AgentAuthStatusUnknown, false
 }
 
 func kimiStoredToken(data []byte) bool {

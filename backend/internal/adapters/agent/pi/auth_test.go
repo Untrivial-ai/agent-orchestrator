@@ -512,11 +512,9 @@ func TestPiNativeCheckPrecedesCloudFallback(t *testing.T) {
 func piTestStatus(t *testing.T, provider string, files, env map[string]string, extra authutil.Dependencies) ports.AgentAuthStatus {
 	t.Helper()
 	root := t.TempDir()
-	if files != nil {
-		for name, content := range files {
-			if content != "" {
-				writePiTestFile(t, filepath.Join(root, name), content)
-			}
+	for name, content := range files {
+		if content != "" {
+			writePiTestFile(t, filepath.Join(root, name), content)
 		}
 	}
 	values := map[string]string{"PI_CODING_AGENT_DIR": root, "HOME": root}

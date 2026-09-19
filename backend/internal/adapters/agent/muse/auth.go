@@ -22,6 +22,7 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Muse invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, scope ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -125,7 +126,7 @@ func museAuthJSONStatusWith(ctx context.Context, path string, d authutil.Depende
 			if len(meta.ExpiresAt) > 0 {
 				// The native auth.json field is an integer Unix timestamp.
 				var seconds int64
-				if json.Unmarshal(meta.ExpiresAt, &seconds) != nil {
+				if valid := json.Unmarshal(meta.ExpiresAt, &seconds) == nil; !valid {
 					return ports.AgentAuthStatusUnknown, false, nil
 				}
 				expires, ok := authutil.ParseExpiry(seconds)

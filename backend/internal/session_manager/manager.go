@@ -4829,12 +4829,9 @@ func (m *Manager) checkScopedAgentAuth(ctx context.Context, agent ports.Agent, c
 		WorkingDir: cfg.WorkspacePath, DataDir: cfg.DataDir, Config: cfg.Config,
 		Env: env, Args: argv, Interactive: true,
 	})
-	if err != nil {
-		// Adapter errors can contain credential-bearing command output. Keep
-		// the advisory failure out of logs and let the native launch decide.
-		return nil
-	}
-	if status == ports.AgentAuthStatusUnauthorized {
+	// Adapter errors can contain credential-bearing command output. Keep
+	// advisory failures out of logs and let the native launch decide.
+	if err == nil && status == ports.AgentAuthStatusUnauthorized {
 		return ports.ErrAgentScopedAuthUnauthorized
 	}
 	return nil

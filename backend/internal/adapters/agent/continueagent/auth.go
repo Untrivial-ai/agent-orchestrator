@@ -130,7 +130,7 @@ func continueAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authu
 			!strings.Contains(key, "${") &&
 			!strings.EqualFold(key, "null") &&
 			!strings.EqualFold(key, "none") &&
-			!(strings.HasPrefix(key, "<") && strings.HasSuffix(key, ">")) {
+			(!strings.HasPrefix(key, "<") || !strings.HasSuffix(key, ">")) {
 			return ports.AgentAuthStatusConfigured, nil
 		}
 		return ports.AgentAuthStatusUnknown, nil

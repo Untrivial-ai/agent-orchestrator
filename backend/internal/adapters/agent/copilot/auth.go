@@ -24,6 +24,7 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Copilot invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, scope ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	if _, err := p.ResolveBinary(ctx); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -197,7 +198,7 @@ func copilotAccountKey(host, login string) string {
 		return ""
 	}
 	for _, char := range login {
-		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-') {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
 			return ""
 		}
 	}
@@ -235,7 +236,7 @@ func copilotUsableToken(value string) bool {
 			continue
 		}
 		for _, char := range strings.TrimPrefix(value, prefix) {
-			if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || prefix == "github_pat_" && char == '_') {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && (prefix != "github_pat_" || char != '_') {
 				return false
 			}
 		}

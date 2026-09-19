@@ -18,10 +18,12 @@ import (
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
+// AuthStatus checks device-wide defaults using the scoped resolver.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Devin invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	binary, err := p.ResolveBinary(ctx)
 	if err != nil {
@@ -121,7 +123,7 @@ func devinNativeStatus(ctx context.Context, binary string, check ports.AgentAuth
 			cmd.WaitDelay = 100 * time.Millisecond
 			err := cmd.Run()
 			if output.exceeded {
-				return nil, errors.New("Devin status output exceeds limit")
+				return nil, errors.New("devin status output exceeds limit")
 			}
 			return output.data, err
 		}

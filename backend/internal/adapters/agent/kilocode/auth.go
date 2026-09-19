@@ -23,10 +23,12 @@ import (
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
+// AuthStatus checks device-wide defaults using the scoped resolver.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Kilo Code invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, in ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	binary, err := p.ResolveBinary(ctx)
 	if err != nil {
@@ -324,9 +326,14 @@ func kiloDatabaseEvidence(ctx context.Context, path, provider string, now time.T
 	defer cancel()
 	// Current Kilo stores typed JSON values by integration_id. NULL active is
 	// normal for current rows; explicitly disabled rows are not evidence.
-	rows, err := db.QueryContext(probeCtx, "SELECT integration_id, value FROM credential WHERE (active IS NULL OR active = 1) AND (? = '' OR integration_id = ?) ORDER BY time_created DESC", provider, provider)
-	if err == nil {
+	configured := func() bool {
+		rows, err := db.QueryContext(probeCtx, "SELECT integration_id, value FROM credential WHERE (active IS NULL OR active = 1) AND (? = '' OR integration_id = ?) ORDER BY time_created DESC", provider, provider)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = rows.Close() }()
 		seen := make(map[string]bool)
+		found := false
 		for rows.Next() {
 			var id string
 			var raw []byte
@@ -336,11 +343,14 @@ func kiloDatabaseEvidence(ctx context.Context, path, provider string, now time.T
 			seen[id] = true
 			var credential kiloCredential
 			if json.Unmarshal(raw, &credential) == nil && credential.configured(now, true) {
-				_ = rows.Close()
-				return true
+				found = true
+				break
 			}
 		}
-		_ = rows.Close()
+		return rows.Err() == nil && found
+	}()
+	if configured {
+		return true
 	}
 	if provider != "" && provider != "kilo" {
 		return false
@@ -350,22 +360,29 @@ func kiloDatabaseEvidence(ctx context.Context, path, provider string, now time.T
 		"SELECT a.access_token, a.refresh_token, a.token_expiry FROM account_state s JOIN account a ON a.id = s.active_account_id",
 		"SELECT access_token, refresh_token, token_expiry FROM control_account WHERE active = 1",
 	} {
-		rows, err := db.QueryContext(probeCtx, query)
-		if err != nil {
-			continue
-		}
-		for rows.Next() {
-			var access, refresh string
-			var expiry sql.NullInt64
-			if rows.Scan(&access, &refresh, &expiry) != nil {
-				continue
+		configured := func() bool {
+			rows, err := db.QueryContext(probeCtx, query)
+			if err != nil {
+				return false
 			}
-			if strings.TrimSpace(refresh) != "" || (strings.TrimSpace(access) != "" && (!expiry.Valid || time.UnixMilli(expiry.Int64).After(now))) {
-				_ = rows.Close()
-				return true
+			defer func() { _ = rows.Close() }()
+			found := false
+			for rows.Next() {
+				var access, refresh string
+				var expiry sql.NullInt64
+				if rows.Scan(&access, &refresh, &expiry) != nil {
+					continue
+				}
+				if strings.TrimSpace(refresh) != "" || (strings.TrimSpace(access) != "" && (!expiry.Valid || time.UnixMilli(expiry.Int64).After(now))) {
+					found = true
+					break
+				}
 			}
+			return rows.Err() == nil && found
+		}()
+		if configured {
+			return true
 		}
-		_ = rows.Close()
 	}
 	return false
 }

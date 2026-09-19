@@ -2,6 +2,7 @@ package grok
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -103,7 +104,7 @@ func TestGrokAuthCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	status, _, err := grokLocalAuthStatus(ctx)
-	if status != ports.AgentAuthStatusUnknown || err != context.Canceled {
+	if status != ports.AgentAuthStatusUnknown || !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled status = %q, %v", status, err)
 	}
 }

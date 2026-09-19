@@ -209,4 +209,6 @@ title = "gitleaks config"
         "2a0c8a0f3e27ae78612b9896f07e0a79b181a431",
         "d1d4092df1adfe6f9581b03484845485dfb91b76",
         "423f0de6fa12d55785f2cc254e033edb94773a84",
+        # Synthetic Google service-account fixture introduced on this branch.
+        "8a54aa24a761e855c9d37db6c0223d9bfc0eab81",
     ]

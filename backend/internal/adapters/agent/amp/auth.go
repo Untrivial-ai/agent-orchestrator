@@ -111,7 +111,7 @@ func ampAuthStatus(ctx context.Context, binary string, check ports.AgentAuthChec
 		server = override
 	}
 	parsed, err := url.Parse(server)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil {
+	if valid := err == nil && parsed.Host != "" && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.User == nil; !valid {
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	// Amp canonicalizes its default server with a trailing slash. Custom
@@ -251,7 +251,7 @@ func ampSettingsJSON(data []byte) []byte {
 		case '*':
 			out[i], out[i+1] = ' ', ' '
 			i += 2
-			for ; i+1 < len(out) && !(out[i] == '*' && out[i+1] == '/'); i++ {
+			for ; i+1 < len(out) && (out[i] != '*' || out[i+1] != '/'); i++ {
 				out[i] = ' '
 			}
 			if i+1 >= len(out) {

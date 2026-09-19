@@ -15,14 +15,12 @@ import (
 )
 
 func TestGooseLocalAuthStatusReadsSecretsFile(t *testing.T) {
-	gooseTestHome(t)
+	configDir := gooseTestConfigDir(t)
 	t.Setenv("GOOSE_PROVIDER", "openai")
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	if err := os.MkdirAll(filepath.Join(configHome, "goose"), 0o700); err != nil {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configHome, "goose", "secrets.yaml"), []byte("OPENAI_API_KEY: test-key\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "secrets.yaml"), []byte("OPENAI_API_KEY: test-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -296,6 +294,16 @@ func gooseTestHome(t *testing.T) string {
 	return home
 }
 
+func gooseTestConfigDir(t *testing.T) string {
+	t.Helper()
+	gooseTestHome(t)
+	dir := gooseConfigDir(authutil.Dependencies{Getenv: os.Getenv})
+	if dir == "" {
+		t.Fatal("Goose config directory is empty")
+	}
+	return dir
+}
+
 func gooseWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -324,9 +332,9 @@ func TestGooseSelectedProviderLocalEvidence(t *testing.T) {
 		{"malformed YAML", "GOOSE_PROVIDER: [", "", nil, ports.AgentAuthStatusUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home := gooseTestHome(t)
-			gooseWrite(t, filepath.Join(home, ".config", "goose", "config.yaml"), tc.config)
-			gooseWrite(t, filepath.Join(home, ".config", "goose", "secrets.yaml"), tc.secrets)
+			configDir := gooseTestConfigDir(t)
+			gooseWrite(t, filepath.Join(configDir, "config.yaml"), tc.config)
+			gooseWrite(t, filepath.Join(configDir, "secrets.yaml"), tc.secrets)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}

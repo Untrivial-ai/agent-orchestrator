@@ -9,9 +9,10 @@ import (
 	"runtime"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"gopkg.in/yaml.v3"
 )
 
 var _ ports.AgentAuthChecker = (*Plugin)(nil)

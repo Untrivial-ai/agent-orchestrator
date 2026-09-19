@@ -71,12 +71,12 @@ func agyAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil.D
 			var settings struct {
 				ModelProvider json.RawMessage `json:"modelProvider"`
 			}
-			if json.Unmarshal(data, &settings) != nil {
+			if valid := json.Unmarshal(data, &settings) == nil; !valid {
 				return ports.AgentAuthStatusUnknown, nil
 			}
 			if len(settings.ModelProvider) > 0 {
 				var provider string
-				if json.Unmarshal(settings.ModelProvider, &provider) != nil || provider != "gemini" {
+				if valid := json.Unmarshal(settings.ModelProvider, &provider) == nil; !valid || provider != "gemini" {
 					return ports.AgentAuthStatusUnknown, nil
 				}
 				if lookup("GEMINI_API_KEY") != "" {

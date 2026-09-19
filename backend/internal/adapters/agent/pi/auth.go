@@ -22,10 +22,12 @@ import (
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
+// AuthStatus checks device-wide defaults using the scoped resolver.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
 	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
+// AuthStatusFor checks credentials for the effective Pi invocation.
 func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
 	binary, err := p.ResolveBinary(ctx)
 	if err != nil {
@@ -571,10 +573,6 @@ func piLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error)
 	return status, status != ports.AgentAuthStatusUnknown, ctx.Err()
 }
 
-func piConfigDir() (string, bool) {
-	return piConfigDirWith(os.Getenv)
-}
-
 func piAuthJSONStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	if strings.TrimSpace(path) == "" {
 		return ports.AgentAuthStatusUnknown, false, nil
@@ -587,7 +585,7 @@ func piAuthJSONStatus(path string) (ports.AgentAuthStatus, bool, error) {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
 	var raw map[string]json.RawMessage
-	if json.Unmarshal(data, &raw) != nil {
+	if valid := json.Unmarshal(data, &raw) == nil; !valid {
 		return ports.AgentAuthStatusUnknown, false, nil
 	}
 	for provider, encoded := range raw {
@@ -600,8 +598,4 @@ func piAuthJSONStatus(path string) (ports.AgentAuthStatus, bool, error) {
 		}
 	}
 	return ports.AgentAuthStatusUnknown, false, nil
-}
-
-func piAuthKeyIsResolved(key string) bool {
-	return piResolvedValue(key, nil, os.Getenv)
 }
