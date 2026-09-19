@@ -14,8 +14,8 @@ import {
 	type BoardColumnLabels,
 } from "./SessionsBoardView";
 import {
-	boardKanbanColumnOrder,
-	getKanbanColumnView,
+	boardLaneOrder,
+	getBoardLaneView,
 	getSessionStatusView,
 } from "./session-presentation";
 import type { ExternalLinkProps } from "./external-link";
@@ -90,7 +90,7 @@ describe("SessionsBoardView", () => {
 		expect(screen.getByText(statusReadiness === "checking" ? "Checking…" : "Unable to verify")).toBeInTheDocument();
 	});
 
-	it("renders one lane per Kanban column, newest first, with one scroller each", () => {
+	it("renders one lane per board lane, newest first, with one scroller each", () => {
 		const sessions: BoardSessionPresentation[] = [
 			baseSession,
 			{ ...baseSession, id: "later", title: "later task", updatedAt: "2026-08-09T12:00:00Z" },
@@ -104,7 +104,7 @@ describe("SessionsBoardView", () => {
 		];
 		render(
 			<SessionsBoardGridView
-				columns={boardKanbanColumnOrder.map((column) => getKanbanColumnView(column))}
+				columns={boardLaneOrder.map((lane) => getBoardLaneView(lane))}
 				labels={columnLabels}
 				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
 				sessions={sessions}
@@ -132,55 +132,66 @@ describe("SessionsBoardView", () => {
 
 		expect(within(screen.getByRole("region", { name: "Ready sessions" })).getByTestId("card-ready")).toBeInTheDocument();
 		// Empty lanes still render, so the four-column grid never collapses.
-		expect(screen.getByRole("region", { name: "Validating sessions" })).toBeInTheDocument();
-		expect(screen.getByRole("region", { name: "In review sessions" })).toBeInTheDocument();
+		expect(screen.getByRole("region", { name: "Planning sessions" })).toBeInTheDocument();
+		expect(screen.getByRole("region", { name: "Review sessions" })).toBeInTheDocument();
 		expect(screen.getByTestId("board-horizontal-scroll")).toHaveClass("board-horizontal-scrollbar");
 	});
 
 	it("pins attention-required sessions first inside every lane without changing lanes", () => {
-		const columns = boardKanbanColumnOrder.map((column) => getKanbanColumnView(column));
-		const sessions: BoardSessionPresentation[] = columns.flatMap(({ column }, index) => [
-			{
-				...baseSession,
-				id: `${column}-newer`,
-				kanbanColumn: column,
-				status: column === "ready" ? "mergeable" : "idle",
-				title: `${column} newer`,
-				updatedAt: `2026-08-09T1${index}:00:00Z`,
-			},
-			{
-				...baseSession,
-				id: `${column}-attention`,
-				kanbanColumn: column,
-				status: "needs_input",
-				title: `${column} attention`,
-				updatedAt: "2026-08-08T09:00:00Z",
-			},
-		]);
+		const lanes = boardLaneOrder.map((lane) => getBoardLaneView(lane));
+		const sessions: BoardSessionPresentation[] = lanes.flatMap(({ lane }, index) => {
+			const kanbanColumn =
+				lane === "planning" || lane === "building"
+					? "building"
+					: lane === "review"
+						? "needs_review"
+						: lane;
+			const workflowMode = lane === "planning" ? ("planning" as const) : undefined;
+			return [
+				{
+					...baseSession,
+					id: `${lane}-newer`,
+					kanbanColumn,
+					workflowMode,
+					status: lane === "ready" ? "mergeable" : "idle",
+					title: `${lane} newer`,
+					updatedAt: `2026-08-09T1${index}:00:00Z`,
+				},
+				{
+					...baseSession,
+					id: `${lane}-attention`,
+					kanbanColumn,
+					workflowMode,
+					status: "needs_input",
+					title: `${lane} attention`,
+					updatedAt: "2026-08-08T09:00:00Z",
+				},
+			];
+		});
 
 		render(
 			<SessionsBoardGridView
-				columns={columns}
+				columns={lanes}
 				labels={columnLabels}
 				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
 				sessions={sessions}
 			/>,
 		);
 
-		for (const column of columns) {
-			const lane = screen.getByRole("region", { name: `${column.label} sessions` });
+		for (const { lane, label } of lanes) {
+			const region = screen.getByRole("region", { name: `${label} sessions` });
 			expect(
-				within(lane)
+				within(region)
 					.getAllByTestId(/^card-/)
 					.map((card) => card.textContent),
-			).toEqual([`${column.column} attention`, `${column.column} newer`]);
+			).toEqual([`${lane} attention`, `${lane} newer`]);
 		}
 	});
 
 	it("pins display-status attention cards first inside the lane", () => {
 		render(
 			<SessionsBoardGridView
-				columns={boardKanbanColumnOrder.map((column) => getKanbanColumnView(column))}
+				columns={boardLaneOrder.map((lane) => getBoardLaneView(lane))}
 				labels={columnLabels}
 				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
 				sessions={[
@@ -205,7 +216,7 @@ describe("SessionsBoardView", () => {
 			/>,
 		);
 
-		const lane = screen.getByRole("region", { name: "In review sessions" });
+		const lane = screen.getByRole("region", { name: "Review sessions" });
 		expect(
 			within(lane)
 				.getAllByTestId(/^card-/)
@@ -698,7 +709,7 @@ describe("SessionsBoardView", () => {
 		expect(screen.getByText("Rebasing onto main")).toBeInTheDocument();
 	});
 
-	it("styles the display status with the daemon-owned Kanban column", () => {
+	it("styles the display status with the daemon-owned delivery lane", () => {
 		render(
 			<SessionCardView
 				externalLink={ExternalLink}
@@ -723,8 +734,8 @@ describe("SessionsBoardView", () => {
 
 		const label = screen.getByText("Fixing CI failures");
 		const status = label.parentElement;
-		expect(status).toHaveAttribute("data-kanban-column", "validating");
-		expect(status).toHaveClass("text-status-validating");
+		expect(status).toHaveAttribute("data-kanban-column", "review");
+		expect(status).toHaveClass("text-status-in-review");
 		expect(status).not.toHaveClass("rounded-sm", "border");
 		expect(status?.style.getPropertyValue("--session-status-tone")).toBe("");
 		expect(status?.querySelector(".rounded-full")).toBeNull();

@@ -111,6 +111,7 @@
 	--color-danger-strong: var(--destructive);
 
 	/* Board lane signals, matched to the landing hero's board preview. */
+	--color-status-planning: #2dd4bf;
 	--color-status-working: #60a5fa;
 	--color-status-needs-you: #f06445;
 	--color-status-validating: #facc15;
@@ -589,6 +590,7 @@
 	--bridge-warning: var(--color-warning);
 	--bridge-danger: var(--color-danger);
 	--bridge-danger-strong: var(--color-danger-strong);
+	--bridge-status-planning: var(--color-status-planning);
 	--bridge-status-working: var(--color-status-working);
 	--bridge-status-needs-you: var(--color-status-needs-you);
 	--bridge-status-validating: var(--color-status-validating);
@@ -719,6 +721,7 @@
 	--color-danger-strong: var(--destructive);
 
 	/* Same lane hues as dark, deepened so they hold contrast on a light canvas. */
+	--color-status-planning: #0d9488;
 	--color-status-working: #2563eb;
 	--color-status-needs-you: #c2412d;
 	--color-status-validating: #ca8a04;

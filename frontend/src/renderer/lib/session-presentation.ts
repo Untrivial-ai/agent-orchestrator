@@ -2,24 +2,27 @@ import {
 	attentionZone,
 	attentionZoneOrder,
 	boardAttentionZoneOrder,
-	boardKanbanColumnOrder,
+	boardLaneOrder,
 	getAgentActivityView as getPortableAgentActivityView,
 	getAttentionZoneView as getPortableAttentionZoneView,
 	getAttentionZoneViewForZone as getPortableAttentionZoneViewForZone,
-	getKanbanColumnView as getPortableKanbanColumnView,
+	getBoardLaneView as getPortableBoardLaneView,
 	getSessionStatusView as getPortableSessionStatusView,
 	getSessionTimelinePillView as getPortableSessionTimelinePillView,
 	isAgentActivityWorking,
 	isSessionIdle,
+	toBoardLane,
 	type AgentActivityView,
 	type AttentionZone,
 	type AttentionZoneView,
+	type BoardLane,
+	type BoardLaneView,
 	type KanbanColumn,
-	type KanbanColumnView,
 	type ProductUITranslator,
 	type SessionStatusView,
 	type SessionTimelinePillStatus,
 	type SessionTimelinePillView,
+	type WorkflowMode,
 } from "@aoagents/product-ui";
 import type { TFunction } from "i18next";
 import { appI18n, type MessageKey } from "../i18n";
@@ -97,11 +100,11 @@ export function getSessionStatusDotView(
 	};
 }
 
-export function getKanbanColumnView(
-	column: KanbanColumn,
+export function getBoardLaneView(
+	lane: BoardLane,
 	t: TFunction = appI18n.t,
-): KanbanColumnView {
-	return getPortableKanbanColumnView(column, translator(t));
+): BoardLaneView {
+	return getPortableBoardLaneView(lane, translator(t));
 }
 
 export function getSessionTimelinePillView(
@@ -134,16 +137,20 @@ export {
 	attentionZone,
 	attentionZoneOrder,
 	boardAttentionZoneOrder,
-	boardKanbanColumnOrder,
+	boardLaneOrder,
 	isAgentActivityWorking,
 	isSessionIdle,
+	toBoardLane,
 };
 export type {
 	AgentActivityView,
 	AttentionZone,
 	AttentionZoneView,
-	KanbanColumnView,
+	BoardLane,
+	BoardLaneView,
+	KanbanColumn,
 	SessionStatusView,
 	SessionTimelinePillStatus,
 	SessionTimelinePillView,
+	WorkflowMode,
 };

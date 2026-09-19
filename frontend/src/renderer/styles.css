@@ -281,6 +281,7 @@
 	--color-success-bright: var(--color-success-bright);
 	--color-warning: var(--bridge-warning);
 	--color-error: var(--bridge-danger);
+	--color-status-planning: var(--bridge-status-planning);
 	--color-status-working: var(--bridge-status-working);
 	--color-status-needs-you: var(--bridge-status-needs-you);
 	--color-status-validating: var(--bridge-status-validating);
@@ -2750,6 +2751,23 @@ html.sidebar-reordering * {
 	--composer-border-focus: color-mix(in oklch, var(--color-text-primary) 32%, transparent);
 
 	box-shadow: none;
+}
+
+/* Delivery-stage identity: the composer frame carries the workflow tone so the
+   current mode is visible without reading a label. `data-workflow="default"`
+   (orchestrators) keeps the neutral frame above as the third, deliberately
+   distinct tone. Declared after the light-theme frame so `:root` raises the
+   specificity past it. */
+:root .cursor-chat-composer[data-workflow="planning"] {
+	--composer-border: color-mix(in oklch, var(--color-status-planning) 60%, transparent);
+	--composer-border-hover: var(--color-status-planning);
+	--composer-border-focus: var(--color-status-planning);
+}
+
+:root .cursor-chat-composer[data-workflow="building"] {
+	--composer-border: color-mix(in oklch, var(--color-status-working) 60%, transparent);
+	--composer-border-hover: var(--color-status-working);
+	--composer-border-focus: var(--color-status-working);
 }
 
 /* Light theme collapses the surface stack the dark bubble relies on: `--card`

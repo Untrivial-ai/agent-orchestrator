@@ -3,10 +3,11 @@ import {
 	attentionZone,
 	getAgentActivityView,
 	getAttentionZoneView,
+	getBoardLaneView,
 	getDisplayStatusLabel,
 	getSessionStatusView,
 	getSessionTimelinePillView,
-	getKanbanColumnView,
+	toBoardLane,
 	toKanbanColumn,
 	isAgentActivityWorking,
 	isSessionIdle,
@@ -75,19 +76,36 @@ describe("session presentation", () => {
 	});
 
 	it.each([
+		["planning", "Planning", "bg-status-planning"],
 		["building", "Building", "bg-status-working"],
-		["validating", "Validating", "bg-status-validating"],
-		["needs_review", "In review", "bg-status-in-review"],
+		["review", "Review", "bg-status-in-review"],
 		["ready", "Ready", "bg-status-ready"],
 		["archive", "Archive", "bg-status-terminated"],
-	] as const)("gives the %s column its own label and palette", (column, label, dotClassName) => {
-		expect(getKanbanColumnView(column)).toMatchObject({ column, label, dotClassName });
+	] as const)("gives the %s lane its own label and palette", (lane, label, dotClassName) => {
+		expect(getBoardLaneView(lane)).toMatchObject({ lane, label, dotClassName });
 	});
 
-	it("accepts injected labels for Kanban columns", () => {
-		expect(getKanbanColumnView("needs_review", (key) => `translated:${key}`).label).toBe(
-			"translated:column.needs_review",
+	it("accepts injected labels for board lanes", () => {
+		expect(getBoardLaneView("review", (key) => `translated:${key}`).label).toBe(
+			"translated:column.review",
 		);
+	});
+
+	it("splits the pre-PR building column by workflow mode", () => {
+		expect(toBoardLane("building", "working", "planning")).toBe("planning");
+		expect(toBoardLane("building", "working", "building")).toBe("building");
+		// A daemon too old to send a mode keeps the pre-existing Building lane.
+		expect(toBoardLane("building", "working")).toBe("building");
+	});
+
+	it("collapses the review-feedback columns into one lane", () => {
+		expect(toBoardLane("validating", "review_pending")).toBe("review");
+		expect(toBoardLane("needs_review", "changes_requested")).toBe("review");
+	});
+
+	it("does not move a post-PR session back to planning", () => {
+		expect(toBoardLane("ready", "mergeable", "planning")).toBe("ready");
+		expect(toBoardLane("validating", "review_pending", "planning")).toBe("review");
 	});
 
 	it("has exactly one translation key for every daemon display status", () => {

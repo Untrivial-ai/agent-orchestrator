@@ -2157,3 +2157,20 @@ it("restores an image thumbnail from its durable path after the composer remount
 		.toHaveAttribute("src", attachmentURL(getApiBaseUrl(), sessionId, path));
 	expect(props.onStageAttachments).toHaveBeenCalledOnce();
 });
+
+describe("composer workflow tone", () => {
+	it("tints a worker's composer with its planning stage", () => {
+		renderComposer({ workflowMode: "planning" });
+		expect(document.querySelector(".cursor-chat-composer")).toHaveAttribute("data-workflow", "planning");
+	});
+
+	it("reads an absent mode as building for a worker", () => {
+		renderComposer({});
+		expect(document.querySelector(".cursor-chat-composer")).toHaveAttribute("data-workflow", "building");
+	});
+
+	it("keeps the neutral default tone for an orchestrator", () => {
+		renderComposer({ workflowMode: "planning", orchestrator: true });
+		expect(document.querySelector(".cursor-chat-composer")).toHaveAttribute("data-workflow", "default");
+	});
+});

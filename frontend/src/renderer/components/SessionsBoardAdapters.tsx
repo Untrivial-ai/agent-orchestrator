@@ -44,6 +44,7 @@ export function toBoardSessionPresentation(
 		id: session.id,
 		isTerminated: session.isTerminated,
 		kanbanColumn: session.kanbanColumn,
+		workflowMode: session.workflowMode,
 		displayStatus: session.displayStatus,
 		provider: session.provider,
 		status: session.status,

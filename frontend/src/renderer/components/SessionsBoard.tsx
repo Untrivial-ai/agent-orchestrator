@@ -15,9 +15,9 @@ import {
 	workerSessions,
 } from "../types/workspace";
 import {
-	boardKanbanColumnOrder,
-	getKanbanColumnView,
-	type KanbanColumnView,
+	boardLaneOrder,
+	getBoardLaneView,
+	type BoardLaneView,
 } from "../lib/session-presentation";
 import {
 	useSessionUsageSummaries,
@@ -73,10 +73,11 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
-	// Lanes follow the daemon's delivery order: building -> validating ->
-	// in review -> ready. The middle two are one review-feedback loop, split by
-	// whose turn it is.
-	const columns: KanbanColumnView[] = boardKanbanColumnOrder.map((column) => getKanbanColumnView(column, t));
+	// Lanes follow the delivery order the user asked for: planning -> building
+	// -> review -> ready. Planning and Building split the daemon's pre-PR
+	// `building` column by workflow mode; Review groups the validating and
+	// in-review feedback loop.
+	const columns: BoardLaneView[] = boardLaneOrder.map((lane) => getBoardLaneView(lane, t));
 	const workspaceQuery = useWorkspaceQuery();
 	const liveUsageBySession = useSessionUsageSummaries(projectId).data ?? emptyUsageBySession;
 	// Evaluated at render so platform mocks in tests can flip the in-panel chrome.

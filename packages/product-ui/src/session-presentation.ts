@@ -1,11 +1,13 @@
 import { isDisplayStatus, isKanbanColumn } from "./session-models";
 import type {
+	BoardLane,
 	DisplayStatus,
 	KanbanColumn,
 	SessionActivity,
 	SessionActivityState,
 	SessionStatus,
 	SessionStatusModel,
+	WorkflowMode,
 } from "./session-models";
 
 export type SessionPresentationMessageKey =
@@ -14,7 +16,7 @@ export type SessionPresentationMessageKey =
 	| `activity.${SessionActivityState}`
 	| `status.${SessionStatus}`
 	| `zone.${AttentionZone}`
-	| `column.${KanbanColumn}`
+	| `column.${BoardLane}`
 	| `timeline.${SessionTimelinePillStatus}`
 	| (typeof displayStatusLabelKeys)[DisplayStatus];
 
@@ -52,17 +54,13 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
 	"zone.pending": "In review",
 	"zone.working": "Working",
 	"zone.done": "Terminated",
+	"column.planning": "Planning",
 	"column.building": "Building",
-	"column.validating": "Validating",
 	// Deliberate: this lane is the review-feedback loop, not a queue of PRs
-	// awaiting a first human review. It is the fallthrough of
-	// derivePRKanbanColumn, so a card lands here whenever the PR is in its
-	// review cycle and no AO loop is turning it -- awaiting review, carrying
-	// feedback someone has to answer, or holding a failing check someone has to
-	// decide about. The next turn is a person's, but the loop is the same one
-	// "validating" holds while AO turns it. The enum stays needs_review, so
-	// different wording later is one string per locale.
-	"column.needs_review": "In review",
+	// awaiting a first human review. It groups the daemon's validating and
+	// needs_review columns -- the same loop seen from either side, AO turning it
+	// or a person taking the next turn -- under one lane.
+	"column.review": "Review",
 	"column.ready": "Ready",
 	"column.archive": "Archive",
 	"timeline.no_signal": "No Signal",
@@ -322,18 +320,13 @@ export const attentionZoneOrder: AttentionZone[] = ["merge", "action", "pending"
 export const boardAttentionZoneOrder: AttentionZone[] = ["working", "action", "pending", "merge"];
 
 /**
- * Board lanes in delivery order: building -> validating -> in review ->
- * ready. The middle two are the same review-feedback loop seen from either
- * side: validating while AO turns it, in review while a person does.
- * `archive` is deliberately absent — terminated sessions render in the archive
- * sheet, not as a lane.
+ * Board lanes in delivery order: planning -> building -> review -> ready.
+ * Planning and Building split the daemon's pre-PR `building` column by the
+ * session's workflow mode; Review groups the validating/in-review feedback loop
+ * the daemon still reports separately. `archive` is deliberately absent —
+ * terminated sessions render in the archive sheet, not as a lane.
  */
-export const boardKanbanColumnOrder: KanbanColumn[] = [
-	"building",
-	"validating",
-	"needs_review",
-	"ready",
-];
+export const boardLaneOrder: BoardLane[] = ["planning", "building", "review", "ready"];
 
 /**
  * Resolve the lane a session belongs in. The daemon derives the column from
@@ -362,8 +355,33 @@ export function toKanbanColumn(column: string | undefined, status: SessionStatus
 	}
 }
 
-export type KanbanColumnView = {
-	column: KanbanColumn;
+/**
+ * Resolve the presentation lane a session belongs in. The daemon's column is
+ * authoritative for delivery facts; this only remaps it for the four-lane
+ * board: a pre-PR `building` session is Planning while its workflow mode is
+ * planning, and both review-feedback columns collapse into Review. A daemon too
+ * old to send `kanbanColumn` goes through {@link toKanbanColumn} first, so the
+ * fallback matches the placement status already implied.
+ */
+export function toBoardLane(
+	column: string | undefined,
+	status: SessionStatus,
+	workflowMode?: WorkflowMode,
+): BoardLane {
+	const resolved = toKanbanColumn(column, status);
+	switch (resolved) {
+		case "building":
+			return workflowMode === "planning" ? "planning" : "building";
+		case "validating":
+		case "needs_review":
+			return "review";
+		default:
+			return resolved;
+	}
+}
+
+export type BoardLaneView = {
+	lane: BoardLane;
 	label: string;
 	glow: string;
 	dot: string;
@@ -372,13 +390,22 @@ export type KanbanColumnView = {
 	dotClassName: string;
 };
 
-type KanbanColumnBase = Omit<KanbanColumnView, "label"> & {
+type BoardLaneBase = Omit<BoardLaneView, "label"> & {
 	labelKey: SessionPresentationMessageKey;
 };
 
-const kanbanColumnBases: Record<KanbanColumn, KanbanColumnBase> = {
+const boardLaneBases: Record<BoardLane, BoardLaneBase> = {
+	planning: {
+		lane: "planning",
+		labelKey: "column.planning",
+		glow: "color-mix(in srgb, var(--color-status-planning) 7%, transparent)",
+		dot: "var(--color-status-planning)",
+		dotGlow: false,
+		titleClassName: "text-status-planning",
+		dotClassName: "bg-status-planning",
+	},
 	building: {
-		column: "building",
+		lane: "building",
 		labelKey: "column.building",
 		glow: "color-mix(in srgb, var(--color-status-working) 7%, transparent)",
 		dot: "var(--color-status-working)",
@@ -386,18 +413,9 @@ const kanbanColumnBases: Record<KanbanColumn, KanbanColumnBase> = {
 		titleClassName: "text-status-working",
 		dotClassName: "bg-status-working",
 	},
-	validating: {
-		column: "validating",
-		labelKey: "column.validating",
-		glow: "color-mix(in srgb, var(--color-status-validating) 5%, transparent)",
-		dot: "var(--color-status-validating)",
-		dotGlow: false,
-		titleClassName: "text-status-validating",
-		dotClassName: "bg-status-validating",
-	},
-	needs_review: {
-		column: "needs_review",
-		labelKey: "column.needs_review",
+	review: {
+		lane: "review",
+		labelKey: "column.review",
 		glow: "color-mix(in srgb, var(--color-status-in-review) 5%, transparent)",
 		dot: "var(--color-status-in-review)",
 		dotGlow: false,
@@ -405,7 +423,7 @@ const kanbanColumnBases: Record<KanbanColumn, KanbanColumnBase> = {
 		dotClassName: "bg-status-in-review",
 	},
 	ready: {
-		column: "ready",
+		lane: "ready",
 		labelKey: "column.ready",
 		glow: "color-mix(in srgb, var(--color-status-ready) 7%, transparent)",
 		dot: "var(--color-status-ready)",
@@ -414,7 +432,7 @@ const kanbanColumnBases: Record<KanbanColumn, KanbanColumnBase> = {
 		dotClassName: "bg-status-ready",
 	},
 	archive: {
-		column: "archive",
+		lane: "archive",
 		labelKey: "column.archive",
 		glow: "var(--color-overlay-faint)",
 		dot: "var(--color-status-terminated)",
@@ -424,11 +442,11 @@ const kanbanColumnBases: Record<KanbanColumn, KanbanColumnBase> = {
 	},
 };
 
-export function getKanbanColumnView(
-	column: KanbanColumn,
+export function getBoardLaneView(
+	lane: BoardLane,
 	translate: ProductUITranslator = defaultProductUITranslator,
-): KanbanColumnView {
-	const { labelKey, ...view } = kanbanColumnBases[column];
+): BoardLaneView {
+	const { labelKey, ...view } = boardLaneBases[lane];
 	return { ...view, label: translate(labelKey) };
 }
 

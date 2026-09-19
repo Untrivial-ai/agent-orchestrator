@@ -9,12 +9,13 @@ import {
 	type SessionActivity,
 	type SessionActivityState,
 	type SessionStatus,
+	type WorkflowMode,
 } from "@aoagents/product-ui";
 
 import type { ReviewerHarnessId } from "../lib/reviewer-harnesses";
 
 export { toKanbanColumn, toSessionActivity, toSessionStatus };
-export type { KanbanColumn, SessionActivity, SessionActivityState, SessionStatus };
+export type { KanbanColumn, SessionActivity, SessionActivityState, SessionStatus, WorkflowMode };
 
 export type AgentProvider = AgentId;
 
@@ -93,6 +94,13 @@ export type WorkspaceSession = {
 	 * implied rather than inventing a new one.
 	 */
 	kanbanColumn?: KanbanColumn;
+	/**
+	 * User-controlled delivery stage, persisted on the session row. Splits the
+	 * daemon's pre-PR `building` column into the Planning and Building board
+	 * lanes. Absent means Building, so a daemon too old to send one keeps cards
+	 * where they already were.
+	 */
+	workflowMode?: WorkflowMode;
 	/**
 	 * Phrase the daemon derived for what is happening inside
 	 * {@link kanbanColumn} — "Reviewing", "Fixing CI failures", "Needs human

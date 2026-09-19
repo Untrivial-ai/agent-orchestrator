@@ -649,7 +649,7 @@ describe("SessionsBoard", () => {
 		expect(within(card).queryByText("Exited")).not.toBeInTheDocument();
 	});
 
-	it("styles legacy statuses from their status-implied Kanban columns", () => {
+	it("styles legacy statuses from their status-implied board lanes", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				{
@@ -710,11 +710,11 @@ describe("SessionsBoard", () => {
 		);
 		expect(within(noSignalCard).getByText("No signal").parentElement).toHaveAttribute(
 			"data-kanban-column",
-			"needs_review",
+			"review",
 		);
 		expect(within(draftCard).getByText("Draft PR").parentElement).toHaveAttribute(
 			"data-kanban-column",
-			"validating",
+			"review",
 		);
 	});
 
@@ -1246,7 +1246,8 @@ describe("SessionsBoard", () => {
 						kanbanColumn: "building",
 					}),
 					// Mergeable on the card, but no AO loop is turning it, so the
-					// review-feedback loop is on a person's turn.
+					// review-feedback loop is on a person's turn. It joins the same
+					// Review lane as the validating worker.
 					boardSession({
 						id: "s-needs-review",
 						title: "in review worker",
@@ -1263,8 +1264,9 @@ describe("SessionsBoard", () => {
 
 		const lane = (label: string) => screen.getByLabelText(label);
 		expect(within(lane("Building sessions")).getByText("building worker")).toBeInTheDocument();
-		expect(within(lane("Validating sessions")).getByText("validating worker")).toBeInTheDocument();
-		expect(within(lane("In review sessions")).getByText("in review worker")).toBeInTheDocument();
+		const review = lane("Review sessions");
+		expect(within(review).getByText("validating worker")).toBeInTheDocument();
+		expect(within(review).getByText("in review worker")).toBeInTheDocument();
 		expect(within(lane("Ready sessions")).queryByText("in review worker")).toBeNull();
 	});
 
@@ -1360,12 +1362,13 @@ describe("SessionsBoard", () => {
 
 		const lane = (label: string) => screen.getByLabelText(label);
 		expect(within(lane("Building sessions")).getByText("legacy working worker")).toBeInTheDocument();
-		expect(within(lane("Validating sessions")).getByText("legacy review worker")).toBeInTheDocument();
-		expect(within(lane("In review sessions")).getByText("legacy action worker")).toBeInTheDocument();
+		const review = lane("Review sessions");
+		expect(within(review).getByText("legacy review worker")).toBeInTheDocument();
+		expect(within(review).getByText("legacy action worker")).toBeInTheDocument();
 		expect(within(lane("Ready sessions")).getByText("legacy ready worker")).toBeInTheDocument();
 	});
 
-	it("orders the lanes building, validating, in review, then ready", () => {
+	it("orders the lanes planning, building, review, then ready", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [workspaceWithSessions([boardSession({ id: "s-one", title: "worker one", status: "idle" })])],
 			isError: false,
@@ -1375,9 +1378,9 @@ describe("SessionsBoard", () => {
 		renderBoard("p1");
 
 		expect(screen.getAllByTestId("board-column").map((column) => column.dataset.column)).toEqual([
+			"planning",
 			"building",
-			"validating",
-			"needs_review",
+			"review",
 			"ready",
 		]);
 	});

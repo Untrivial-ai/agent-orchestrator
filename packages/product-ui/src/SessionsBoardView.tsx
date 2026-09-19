@@ -21,14 +21,14 @@ import {
 import {
 	attentionZone,
 	defaultProductUITranslator,
+	getBoardLaneView,
 	getDisplayStatusLabel,
-	getKanbanColumnView,
 	getSessionStatusView,
-	toKanbanColumn,
-	type KanbanColumnView,
+	toBoardLane,
+	type BoardLaneView,
 	type ProductUITranslator,
 } from "./session-presentation";
-import type { KanbanColumn, SessionActivity, SessionStatus } from "./session-models";
+import type { BoardLane, KanbanColumn, SessionActivity, SessionStatus, WorkflowMode } from "./session-models";
 import { UserAvatar } from "./UserAvatar";
 import { cn } from "./utils";
 
@@ -42,6 +42,12 @@ export type BoardSessionPresentation = {
 	 * session's status already implied.
 	 */
 	kanbanColumn?: KanbanColumn;
+	/**
+	 * User-controlled delivery stage. Splits the pre-PR `building` column into
+	 * the Planning and Building lanes. Absent means Building, keeping cards from
+	 * a daemon too old to send one where they already were.
+	 */
+	workflowMode?: WorkflowMode;
 	/**
 	 * Daemon-derived phrase for what is happening inside {@link kanbanColumn}
 	 * ("Fixing CI failures", "Needs human review"), replacing {@link status} as
@@ -126,7 +132,7 @@ export type BoardColumnLabels = {
 export type SessionsBoardGridViewProps<
 	TSession extends BoardSessionPresentation = BoardSessionPresentation,
 > = {
-	columns: KanbanColumnView[];
+	columns: BoardLaneView[];
 	labels: BoardColumnLabels;
 	renderSessionCard: (session: TSession) => ReactNode;
 	sessions: TSession[];
@@ -138,12 +144,12 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 	renderSessionCard,
 	sessions,
 }: SessionsBoardGridViewProps<TSession>) {
-	const byColumn = new Map<KanbanColumn, TSession[]>();
+	const byColumn = new Map<BoardLane, TSession[]>();
 	for (const session of sessions) {
-		const column = toKanbanColumn(session.kanbanColumn, session.status);
-		const sessionsForColumn = byColumn.get(column);
-		if (sessionsForColumn) sessionsForColumn.push(session);
-		else byColumn.set(column, [session]);
+		const lane = toBoardLane(session.kanbanColumn, session.status, session.workflowMode);
+		const sessionsForLane = byColumn.get(lane);
+		if (sessionsForLane) sessionsForLane.push(session);
+		else byColumn.set(lane, [session]);
 	}
 
 	return (
@@ -156,13 +162,13 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 					aria-hidden="true"
 					className="pointer-events-none absolute inset-x-0 top-12 z-10 border-t border-border-strong"
 				/>
-				{columns.map((column) => (
+				{columns.map((lane) => (
 					<BoardColumnView
-						column={column}
-						key={column.column}
+						key={lane.lane}
 						labels={labels}
+						lane={lane}
 						renderSessionCard={renderSessionCard}
-						sessions={byColumn.get(column.column) ?? []}
+						sessions={byColumn.get(lane.lane) ?? []}
 					/>
 				))}
 			</div>
@@ -171,12 +177,12 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 }
 
 function BoardColumnView<TSession extends BoardSessionPresentation>({
-	column,
+	lane,
 	labels,
 	renderSessionCard,
 	sessions,
 }: {
-	column: KanbanColumnView;
+	lane: BoardLaneView;
 	labels: BoardColumnLabels;
 	renderSessionCard: (session: TSession) => ReactNode;
 	sessions: TSession[];
@@ -188,19 +194,19 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 	});
 	return (
 		<section
-			aria-label={labels.columnAria(column.label)}
+			aria-label={labels.columnAria(lane.label)}
 			className="flex min-w-0 flex-col overflow-hidden"
 			data-testid="board-column"
-			data-column={column.column}
+			data-column={lane.lane}
 		>
 			<div className="flex h-12 shrink-0 items-center gap-2.5 px-4">
 				<span
 					data-testid="board-column-swatch"
 					className="size-[var(--size-swatch)] rounded-full"
-					style={{ backgroundColor: column.dot }}
+					style={{ backgroundColor: lane.dot }}
 				/>
-				<span className={cn("text-xs font-medium", column.titleClassName)}>
-					{column.label}
+				<span className={cn("text-xs font-medium", lane.titleClassName)}>
+					{lane.label}
 				</span>
 				<span className="ml-auto tabular-nums text-xs leading-none text-passive">{ordered.length}</span>
 			</div>
@@ -262,13 +268,16 @@ export function SessionCardView({
 	const statusPresentation = session.statusPresentation;
 	const needsAttention = boardSessionNeedsAttention(session);
 	const needsAttentionChip = needsAttention;
-	const column = getKanbanColumnView(toKanbanColumn(session.kanbanColumn, session.status), translate);
+	const lane = getBoardLaneView(
+		toBoardLane(session.kanbanColumn, session.status, session.workflowMode),
+		translate,
+	);
 	const statusClassName =
 		session.displayStatus === "Closed without merge"
 			? "text-status-exited"
 			: session.status === "mergeable" || session.displayStatus === "Mergeable"
 				? "text-success"
-				: (session.statusPresentation?.className ?? column.titleClassName);
+				: (session.statusPresentation?.className ?? lane.titleClassName);
 	const branch = session.branch ?? "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
 	const renderedStatusLabel =
@@ -385,7 +394,7 @@ export function SessionCardView({
 								? "text-status-needs-you"
 								: statusClassName,
 						)}
-						data-kanban-column={statusPresentation ? undefined : column.column}
+						data-kanban-column={statusPresentation ? undefined : lane.lane}
 						data-testid="session-status"
 					>
 						{showStatusLoader ? <LoaderCircleIcon aria-hidden="true" className="mr-1 size-icon-2xs animate-spin" /> : null}

@@ -68,6 +68,7 @@ import {
 } from "../../hooks/useFileAttachments";
 import { File } from "lucide-react";
 import type { ChatSkill, ChatSteerOutcome } from "../../types/conversation";
+import type { WorkflowMode } from "../../types/workspace";
 import {
 	acknowledgeChatComposerMutation,
 	beginChatComposerMutation,
@@ -177,6 +178,8 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionId,
 	draftSessionIncarnation,
 	acceptedClientMessageIds,
+	workflowMode,
+	orchestrator,
 }: {
 	onSend: (
 		text: string,
@@ -259,6 +262,10 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionIncarnation?: string;
 	/** Client ids already present in daemon-authoritative conversation history. */
 	acceptedClientMessageIds?: ReadonlySet<string>;
+	/** User-controlled delivery stage; tints the composer border. */
+	workflowMode?: WorkflowMode;
+	/** Orchestrators keep the neutral border so they read apart from workers. */
+	orchestrator?: boolean;
 }) {
 	const translateDraft = useChatDraftTranslation();
 	const draftScope = useMemo<ChatDraftScope | undefined>(
@@ -1373,11 +1380,16 @@ export const ChatComposer = memo(function ChatComposer({
 			</div>
 		);
 
+	// Orchestrators own the neutral frame; workers carry their delivery stage.
+	// Absent workflow mode reads as `building`, matching the daemon default.
+	const workflowTone = orchestrator ? "default" : workflowMode === "planning" ? "planning" : "building";
+
 	if (approval) {
 		return withQueueStack(
 			<form
 				onSubmit={(event) => event.preventDefault()}
 				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-workflow={workflowTone}
 				className="cursor-chat-composer relative flex flex-col gap-1.5 border px-3 py-3"
 			>
 				{approval}
@@ -1406,6 +1418,7 @@ export const ChatComposer = memo(function ChatComposer({
 				// here and half there.
 				data-dragging={dragging || undefined}
 				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-workflow={workflowTone}
 				onClick={(e) => {
 					if (controlsDisabled) return;
 					if (

@@ -60,6 +60,7 @@ import {
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useSetWorkflowMode } from "../hooks/useSetWorkflowMode";
 import { cloudLifecycleStage, type CloudLifecycleStage } from "../lib/cloud-lifecycle";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
@@ -1756,6 +1757,29 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
 	}, [handleToggleInspector, hasInspector]);
+
+	// The workflow mode is a per-session delivery stage, so the shortcut always
+	// acts on the session this view is showing. It is registered on the renderer
+	// (like toggle-inspector) rather than the main process, so it never fires for
+	// a background session. A missing mode reads as `planning`, matching the
+	// daemon default for freshly created work.
+	const setWorkflowMode = useSetWorkflowMode();
+	const toggleWorkflowMode = useCallback(() => {
+		const session = workspaceQuery.data;
+		if (!session) return;
+		const nextMode = session.workflowMode === "planning" ? "building" : "planning";
+		setWorkflowMode.mutate({ sessionId: session.id, workflowMode: nextMode });
+	}, [setWorkflowMode, workspaceQuery.data]);
+
+	useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (!matchesRendererShortcut("toggle-workflow-mode", event)) return;
+			event.preventDefault();
+			toggleWorkflowMode();
+		};
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, [toggleWorkflowMode]);
 
 	const inspectorMotionReadyRef = useRef(false);
 	const handleInspectorCloseAnimationComplete = useCallback(() => {

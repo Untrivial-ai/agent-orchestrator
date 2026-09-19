@@ -53,6 +53,27 @@ export function isKanbanColumn(value: string): value is KanbanColumn {
 	return KANBAN_COLUMNS.some((column) => column === value);
 }
 
+/**
+ * Board lanes are a presentation grouping over the daemon's {@link KanbanColumn}.
+ * `planning` and `building` split the daemon's pre-PR `building` column by the
+ * session's user-controlled workflow mode; `review` groups the two
+ * review-feedback columns (`validating` + `needs_review`) the user asked to see
+ * as one. `archive` is kept so terminated cards still resolve. The daemon never
+ * sends these values — {@link toBoardLane} derives them client-side.
+ */
+export const BOARD_LANES = ["planning", "building", "review", "ready", "archive"] as const;
+
+export type BoardLane = (typeof BOARD_LANES)[number];
+
+export function isBoardLane(value: string): value is BoardLane {
+	return BOARD_LANES.some((lane) => lane === value);
+}
+
+/** User-controlled delivery stage persisted on the session row. */
+export const WORKFLOW_MODES = ["planning", "building"] as const;
+
+export type WorkflowMode = (typeof WORKFLOW_MODES)[number];
+
 export const DISPLAY_STATUSES = [
 	"Working",
 	"Blocked",
