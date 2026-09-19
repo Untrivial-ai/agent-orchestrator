@@ -499,3 +499,35 @@ func TestGuard_NudgeCoordinationEnforcesSteeringAtWriteBoundary(t *testing.T) {
 		})
 	}
 }
+
+// Junie has no observation-only permission signal yet: idle and active can
+// both hide a native decision. Never send automated paste+Enter to its TUI.
+func TestJunieSuppressesAutomatedPaneInput(t *testing.T) {
+	for _, state := range []domain.ActivityState{domain.ActivityIdle, domain.ActivityActive, domain.ActivityWaitingInput, domain.ActivityBlocked} {
+		for _, kind := range []string{"nudge", "urgent", "coordination", "mutation"} {
+			t.Run(string(state)+"/"+kind, func(t *testing.T) {
+				rec := record(state, false)
+				rec.Harness = domain.HarnessJunie
+				rec.Mode = domain.SessionModeTUI
+				messenger := &fakeMessenger{}
+				g := New(&fakeStore{rec: rec, ok: true}, messenger, nil)
+				yes := func(domain.AgentHarness) bool { return true }
+				var outcome Outcome
+				var err error
+				switch kind {
+				case "nudge":
+					outcome, err = g.Nudge(context.Background(), "s1", "hello")
+				case "urgent":
+					outcome, err = g.NudgeUrgent(context.Background(), "s1", "hello", yes)
+				case "coordination":
+					outcome, err = g.NudgeCoordination(context.Background(), "s1", "hello", yes)
+				case "mutation":
+					outcome, err = g.CoordinationUnderMutation(context.Background(), "s1", "", yes, yes)
+				}
+				if err != nil || outcome != SuppressedAwaitingUser || len(messenger.sent) != 0 {
+					t.Fatalf("outcome=%v err=%v writes=%v", outcome, err, messenger.sent)
+				}
+			})
+		}
+	}
+}

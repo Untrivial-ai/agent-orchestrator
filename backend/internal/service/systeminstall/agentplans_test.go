@@ -101,8 +101,8 @@ func TestAgentPlansCoverEveryHarnessOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 27 {
-		t.Fatalf("got %d plans, want 27", len(plans))
+	if len(plans) != 28 {
+		t.Fatalf("got %d plans, want 28", len(plans))
 	}
 	seen := make(map[string]bool, len(plans))
 	for _, plan := range plans {
@@ -151,6 +151,8 @@ func TestOfficialInstallerPlansAreAutomaticAndServerOwned(t *testing.T) {
 		wantURL     string
 		wantProgram string
 	}{
+		{"darwin", Target("junie"), []string{"bash"}, "https://junie.jetbrains.com/install.sh", "bash"},
+		{"windows", Target("junie"), []string{"pwsh.exe"}, "https://junie.jetbrains.com/install.ps1", "pwsh.exe"},
 		{"darwin", TargetCursor, []string{"bash"}, "https://cursor.com/install", "bash"},
 		{"windows", TargetCursor, []string{"pwsh.exe"}, "https://cursor.com/install?win32=true", "pwsh.exe"},
 		{"linux", TargetAider, []string{"sh"}, "https://aider.chat/install.sh", "sh"},

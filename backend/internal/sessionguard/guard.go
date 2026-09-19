@@ -137,7 +137,17 @@ func (g *Guard) refuseDeliver(rec domain.SessionRecord) (Outcome, bool) {
 	return SuppressedUnknown, false
 }
 
+// Junie has no verified observation-only permission signal. Idle and active
+// can conceal a native decision, so automated input must remain disabled.
+func requiresDirectTerminalInput(rec domain.SessionRecord) bool {
+	return rec.Harness == domain.HarnessJunie && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI
+}
+
 func (g *Guard) refuseNudge(rec domain.SessionRecord) (Outcome, bool) {
+	if requiresDirectTerminalInput(rec) {
+		return SuppressedAwaitingUser, true
+	}
+
 	if g.tuiAwaitingStartupInput(rec) {
 		return SuppressedStartupPending, true
 	}
@@ -257,6 +267,10 @@ func (g *Guard) coordinationUnderMutation(
 	preWrite func(context.Context, domain.SessionRecord) error,
 ) (Outcome, error) {
 	return g.sendAdmittedChecked(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
+		if requiresDirectTerminalInput(rec) {
+			return SuppressedAwaitingUser, true
+		}
+
 		switch rec.Activity.State {
 		case domain.ActivityIdle:
 			return SuppressedUnknown, false
@@ -301,6 +315,10 @@ func (g *Guard) Nudge(ctx context.Context, id domain.SessionID, msg string) (Out
 // CoordinationUnderMutation's waiting_input gating.
 func (g *Guard) NudgeUrgent(ctx context.Context, id domain.SessionID, msg string, acceptsWaitingInput func(domain.AgentHarness) bool) (Outcome, error) {
 	return g.send(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
+		if requiresDirectTerminalInput(rec) {
+			return SuppressedAwaitingUser, true
+		}
+
 		if g.tuiAwaitingStartupInput(rec) {
 			return SuppressedStartupPending, true
 		}
@@ -324,6 +342,10 @@ func (g *Guard) NudgeUrgent(ctx context.Context, id domain.SessionID, msg string
 // unsolicited write during a live turn.
 func (g *Guard) NudgeCoordination(ctx context.Context, id domain.SessionID, msg string, steersActiveTurn func(domain.AgentHarness) bool) (Outcome, error) {
 	return g.send(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
+		if requiresDirectTerminalInput(rec) {
+			return SuppressedAwaitingUser, true
+		}
+
 		if g.tuiAwaitingStartupInput(rec) {
 			return SuppressedStartupPending, true
 		}

@@ -1822,6 +1822,7 @@
 	"settings.harness.authClosing": "Closing authentication terminal…",
 	"settings.harness.authTimedOut": "Authentication timed out. Retry to continue.",
 	"settings.harness.authTerminalGuidance": "Complete the native sign-in flow in the terminal.",
+	"settings.harness.junieExperimental": "Experimental · Terminal UI only. Activity tracking requires Junie Early Access; session restore is not yet verified.",
 	"settings.harness.checkLogin": "Check login",
 	"settings.harness.checkConfiguration": "Check configuration",
 	"settings.harness.openLogin": "Open login",
