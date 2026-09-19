@@ -18,6 +18,8 @@ vi.mock("motion/react", async (importOriginal) => {
 const {
 	navigateMock,
 	notificationShowMock,
+	getMock,
+	patchMock,
 	postMock,
 	workspaceQueryMock,
 	usageQueryMock,
@@ -25,6 +27,8 @@ const {
 } = vi.hoisted(() => ({
 	navigateMock: vi.fn(),
 	notificationShowMock: vi.fn(),
+	getMock: vi.fn(),
+	patchMock: vi.fn(),
 	postMock: vi.fn(),
 	workspaceQueryMock: vi.fn(),
 	usageQueryMock: vi.fn(),
@@ -53,7 +57,11 @@ vi.mock("../hooks/useSessionUsageSummaries", () => ({
 }));
 
 vi.mock("../lib/api-client", () => ({
-	apiClient: { POST: (...args: unknown[]) => postMock(...args) },
+	apiClient: {
+		GET: (...args: unknown[]) => getMock(...args),
+		PATCH: (...args: unknown[]) => patchMock(...args),
+		POST: (...args: unknown[]) => postMock(...args),
+	},
 	apiErrorMessage: (_error: unknown, fallback: string) => fallback,
 }));
 
@@ -107,6 +115,8 @@ async function expandArchive() {
 beforeEach(() => {
 	navigateMock.mockReset();
 	notificationShowMock.mockReset().mockResolvedValue(undefined);
+	getMock.mockReset().mockResolvedValue({ data: {} });
+	patchMock.mockReset().mockResolvedValue({ data: {} });
 	postMock.mockReset().mockResolvedValue({ data: {} });
 	workspaceQueryMock.mockReset().mockReturnValue({ data: [], isError: false });
 	usageQueryMock.mockReset().mockReturnValue({ data: new Map() });
@@ -1291,6 +1301,112 @@ describe("SessionsBoard", () => {
 
 		expect(screen.getByText("Fixing CI failures")).toBeInTheDocument();
 		expect(screen.queryByText("CI failed")).not.toBeInTheDocument();
+	});
+
+	function awaitingPrSession(overrides: Partial<WorkspaceSession> = {}): WorkspaceSession {
+		return boardSession({
+			id: "s-stage",
+			title: "stage worker",
+			status: "idle",
+			kanbanColumn: "building",
+			displayStatus: "Awaiting PR",
+			workflowMode: "planning",
+			...overrides,
+		});
+	}
+
+	it("places an Awaiting PR card in the review lane once building is confirmed", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					awaitingPrSession({ id: "s-build", title: "built worker", workflowMode: "building" }),
+					awaitingPrSession({ id: "s-plan", title: "planned worker", workflowMode: "planning" }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		expect(
+			within(screen.getByLabelText("Review sessions")).getByText("built worker"),
+		).toBeInTheDocument();
+		expect(
+			within(screen.getByLabelText("Planning sessions")).getByText("planned worker"),
+		).toBeInTheDocument();
+	});
+
+	it("confirms building from an Awaiting PR card", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([awaitingPrSession()])],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		expect(screen.queryByText("Awaiting PR")).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Confirm building" }));
+
+		await waitFor(() =>
+			expect(patchMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workflow-mode", {
+				params: { path: { sessionId: "s-stage" } },
+				body: { workflowMode: "building" },
+			}),
+		);
+	});
+
+	it("reviews to commit from an Awaiting PR card by approving the pending edit", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([awaitingPrSession({ workflowMode: "building" })])],
+			isError: false,
+			isSuccess: true,
+		});
+		getMock.mockResolvedValue({
+			data: {
+				activities: [
+					{
+						activityKind: "approval",
+						status: "pending",
+						requestId: "approval-1",
+						detail: { decisions: [{ id: "accept", label: "Approve" }] },
+					},
+				],
+			},
+		});
+
+		renderBoard("p1");
+		await userEvent.click(screen.getByRole("button", { name: "Commit" }));
+
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith(
+				"/api/v1/sessions/{sessionId}/conversation/approvals/{requestId}/resolve",
+				{
+					params: { path: { sessionId: "s-stage", requestId: "approval-1" } },
+					body: { decisionId: "accept" },
+				},
+			),
+		);
+	});
+
+	it("opens the session for review to commit when there is nothing to approve", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([awaitingPrSession({ workflowMode: "building" })])],
+			isError: false,
+			isSuccess: true,
+		});
+		getMock.mockResolvedValue({ data: { activities: [] } });
+
+		renderBoard("p1");
+		await userEvent.click(screen.getByRole("button", { name: "Commit" }));
+
+		await waitFor(() =>
+			expect(navigateMock).toHaveBeenCalledWith({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId: "p1", sessionId: "s-stage" },
+			}),
+		);
+		expect(postMock).not.toHaveBeenCalled();
 	});
 
 	it("highlights every user-attention status while leaving ordinary cards neutral", () => {

@@ -64,11 +64,15 @@ export function sessionsBoardLabels(t: TFunction): BoardColumnLabels {
 export function BoardSessionCardAdapter({
 	onOpen,
 	onTerminate,
+	onConfirmBuilding,
+	onReviewToCommit,
 	session,
 	usage,
 }: {
 	onOpen: () => void;
 	onTerminate: () => void;
+	onConfirmBuilding?: (session: WorkspaceSession) => void;
+	onReviewToCommit?: (session: WorkspaceSession) => void;
 	session: WorkspaceSession;
 	usage?: SessionUsageSummary;
 }) {
@@ -76,6 +80,8 @@ export function BoardSessionCardAdapter({
 		<DesktopSessionCard
 			onOpen={onOpen}
 			onTerminate={onTerminate}
+			onConfirmBuilding={onConfirmBuilding}
+			onReviewToCommit={onReviewToCommit}
 			session={session}
 			usage={usage}
 		/>
@@ -124,6 +130,8 @@ function DesktopSessionCard({
 	interactive = true,
 	onOpen,
 	onTerminate,
+	onConfirmBuilding,
+	onReviewToCommit,
 	session,
 	usage,
 }: {
@@ -133,6 +141,8 @@ function DesktopSessionCard({
 	interactive?: boolean;
 	onOpen?: () => void;
 	onTerminate?: () => void;
+	onConfirmBuilding?: (session: WorkspaceSession) => void;
+	onReviewToCommit?: (session: WorkspaceSession) => void;
 	session: WorkspaceSession;
 	usage?: SessionUsageSummary;
 }) {
@@ -145,6 +155,28 @@ function DesktopSessionCard({
 	const keepTerminateVisible = session.status === "merged";
 	const usagePresentation = toUsagePresentation(usage, t);
 	const translate: ProductUITranslator = (key, values) => t(key as MessageKey, values);
+	// The daemon reports a finished pre-PR session as "Awaiting PR". That text
+	// is replaced here with the delivery-stage actions: confirm a finished plan,
+	// or review the pending edit so the agent commits and waits on PR approval.
+	const pausedAwaitingPR = session.displayStatus === "Awaiting PR";
+	const canAdvance = interactive && session.isTerminated !== true;
+	const statusAction =
+		pausedAwaitingPR && canAdvance ? (
+			<div className="flex min-w-0 items-center gap-1.5">
+				{session.workflowMode === "planning" && onConfirmBuilding ? (
+					<WorkflowStageActionButton
+						label="Confirm building"
+						onClick={() => onConfirmBuilding(session)}
+					/>
+				) : null}
+				{onReviewToCommit ? (
+					<WorkflowStageActionButton
+						label="Commit"
+						onClick={() => onReviewToCommit(session)}
+					/>
+				) : null}
+			</div>
+		) : undefined;
 
 	const terminationOverlay = showTerminate ? (
 		<Tooltip>
@@ -231,6 +263,7 @@ function DesktopSessionCard({
 			}))}
 			renderAvatar={(provider) => <AgentAvatar provider={provider} />}
 			session={toBoardSessionPresentation(session, t)}
+			statusAction={statusAction}
 			translate={translate}
 			renderUsage={(usage) => (
 				<Tooltip>
@@ -242,6 +275,22 @@ function DesktopSessionCard({
 			)}
 			usage={usagePresentation}
 		/>
+	);
+}
+
+/** Compact card action used in place of the "Awaiting PR" status label. */
+function WorkflowStageActionButton({ label, onClick }: { label: string; onClick: () => void }) {
+	return (
+		<button
+			type="button"
+			onClick={(event) => {
+				event.stopPropagation();
+				onClick();
+			}}
+			className="inline-flex min-w-0 items-center rounded-sm border border-border/80 px-1.5 py-0.5 text-2xs font-medium text-foreground transition-colors hover:border-foreground/30 hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+		>
+			<span className="truncate">{label}</span>
+		</button>
 	);
 }
 

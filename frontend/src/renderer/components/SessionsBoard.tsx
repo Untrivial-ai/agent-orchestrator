@@ -26,6 +26,9 @@ import {
 import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useSetWorkflowMode } from "../hooks/useSetWorkflowMode";
+import { apiClient } from "../lib/api-client";
+import type { components } from "../../api/schema";
 import { NotificationCenter } from "./NotificationCenter";
 import { BoardWelcome, ProjectBoardEmpty } from "./BoardEmptyStates";
 import { TopbarButton, topbarProjectLabelClass } from "./TopbarButton";
@@ -63,6 +66,33 @@ function isArchivedSession(session: WorkspaceSession): boolean {
 		session.isTerminated === true ||
 		session.status === "terminated"
 	);
+}
+
+type WireConversationActivity = components["schemas"]["ConversationActivityResponse"];
+type WireConversationSnapshot = components["schemas"]["ConversationSnapshotResponse"];
+
+/** The wire-format pending approval, for the card's one-shot review action. */
+function pendingWireApproval(snapshot: WireConversationSnapshot): WireConversationActivity | undefined {
+	return (snapshot.activities ?? []).find(
+		(activity) => activity.activityKind === "approval" && activity.status === "pending",
+	);
+}
+
+/**
+ * The wire-format accept decision for "Commit", mirroring the
+ * composer's allow-once preference and the ApprovalCard fallbacks.
+ */
+function wireAllowOnceDecision(detail: Record<string, unknown> | undefined): { id: string } | undefined {
+	const raw = detail?.decisions;
+	if (!Array.isArray(raw)) return undefined;
+	const options = raw.filter(
+		(entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object",
+	);
+	const picked =
+		options.find((entry) => entry.kind === "allow_once") ??
+		options.find((entry) => typeof entry.id === "string" && /(allow|approve|accept)/i.test(entry.id)) ??
+		options[0];
+	return picked && typeof picked.id === "string" && picked.id !== "" ? { id: picked.id } : undefined;
 }
 
 const isMac = isMacPlatform();
@@ -137,6 +167,43 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: session.workspaceId, sessionId: session.id },
 		}), [navigate]);
+
+	const setWorkflowMode = useSetWorkflowMode();
+	const confirmBuilding = useCallback(
+		(session: WorkspaceSession) => setWorkflowMode.mutate({ sessionId: session.id, workflowMode: "building" }),
+		[setWorkflowMode],
+	);
+	const reviewToCommit = useCallback(
+		async (session: WorkspaceSession) => {
+			// Approve the pending conversation edit so the agent commits and the
+			// session waits on PR approval. With nothing pending the same action
+			// needs the composer, so hand the session over.
+			if (usesPreviewWorkspaceData) {
+				openSession(session);
+				return;
+			}
+			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/conversation", {
+				params: { path: { sessionId: session.id } },
+			});
+			const approval = error || !data ? undefined : pendingWireApproval(data);
+			const decision = approval?.requestId ? wireAllowOnceDecision(approval.detail) : undefined;
+			if (approval?.requestId && decision) {
+				const { error: resolveError } = await apiClient.POST(
+					"/api/v1/sessions/{sessionId}/conversation/approvals/{requestId}/resolve",
+					{
+						params: { path: { sessionId: session.id, requestId: approval.requestId } },
+						body: { decisionId: decision.id },
+					},
+				);
+				if (!resolveError) {
+					void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+					return;
+				}
+			}
+			openSession(session);
+		},
+		[openSession, queryClient],
+	);
 
 	const restartOrchestrator = async () => {
 		if (!projectId) return;
@@ -242,6 +309,8 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 								<BoardSessionCardAdapter
 								onOpen={() => openSession(session)}
 									onTerminate={() => terminateSession.mutate(session)}
+									onConfirmBuilding={() => confirmBuilding(session)}
+									onReviewToCommit={() => void reviewToCommit(session)}
 									session={session}
 								usage={usageBySession.get(session.id)}
 							/>
