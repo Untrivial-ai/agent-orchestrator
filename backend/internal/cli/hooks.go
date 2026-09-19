@@ -683,6 +683,9 @@ func validLaunchID(value string) string {
 }
 
 func shouldEmitSessionStartContext(agent, event string) bool {
+	if agent == "gemini" {
+		return event == "user-prompt-submit"
+	}
 	if event != "session-start" {
 		return false
 	}
@@ -711,6 +714,9 @@ func (c *commandContext) emitSessionStartContext(agent, event, sessionID string)
 	}
 	var out sessionStartHookOutput
 	out.HookSpecificOutput.HookEventName = "SessionStart"
+	if agent == "gemini" {
+		out.HookSpecificOutput.HookEventName = "BeforeAgent"
+	}
 	out.HookSpecificOutput.AdditionalContext = prompt
 	if err := json.NewEncoder(c.deps.Out).Encode(out); err != nil {
 		c.reportHookFailure(agent, event, sessionID, fmt.Errorf("write session-start context: %w", err))

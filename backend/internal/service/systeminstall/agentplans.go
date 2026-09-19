@@ -24,6 +24,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetCline:      "https://github.com/cline/cline",
 	TargetGoose:      "https://goose-docs.ai/docs/getting-started/installation/",
 	TargetQwen:       "https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/",
+	TargetGemini:     "https://geminicli.com/docs/get-started/installation/",
 	TargetContinue:   "https://docs.continue.dev/cli/quickstart",
 	TargetDevin:      "https://docs.devin.ai/get-started/devin-intro",
 	TargetKiro:       "https://kiro.dev/docs/getting-started/installation/",
@@ -128,6 +129,11 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 			plans = []Plan{s.planShellInstaller(target, "https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh", "bash")}
 		default:
 			plans = []Plan{manualPlan(target, "Goose publishes this installer for macOS and Linux only.", agentDocumentationURLs[target])}
+		}
+	case TargetGemini:
+		plans = []Plan{s.planNPM(target, "@google/gemini-cli@latest")}
+		if s.goos == "darwin" {
+			plans = append([]Plan{s.planBrew(target, "gemini-cli")}, plans...)
 		}
 	case TargetQwen:
 		official := s.officialByOS(target, "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh", "bash", "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1", agentDocumentationURLs[target])

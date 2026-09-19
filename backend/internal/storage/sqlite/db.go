@@ -1739,7 +1739,8 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsKimchi := !strings.Contains(schema, "'kimchi'")
 	needsPrimeAgent := !strings.Contains(schema, "'prime-agent'")
 	needsOMP := !strings.Contains(schema, "'omp'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP {
+	needsGemini := !strings.Contains(schema, "'gemini'")
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsGemini {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -1780,6 +1781,14 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgent, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP},
 		)
 	}
+	if needsGemini {
+		// Goose runs before reconciliation. A legacy constraint can therefore
+		// miss migration 0148, then reach the OMP shape through repairs above.
+		// Widen both known variants here without dropping the legacy QM value.
+		for _, old := range []string{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP} {
+			repairs = append(repairs, replacement{old, strings.Replace(old, "'omp'", "'gemini', 'omp'", 1)})
+		}
+	}
 	for _, r := range repairs {
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
@@ -1810,6 +1819,9 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	if !strings.Contains(schema, "'omp'") {
 		return fmt.Errorf("schema repair: sessions harness constraint is missing OMP and did not match known pre-OMP schema")
+	}
+	if !strings.Contains(schema, "'gemini'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing Gemini and did not match known pre-Gemini schema")
 	}
 	return nil
 }

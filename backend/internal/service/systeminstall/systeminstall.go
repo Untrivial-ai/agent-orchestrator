@@ -56,6 +56,7 @@ const (
 	TargetCline      Target = "cline"
 	TargetGoose      Target = "goose"
 	TargetQwen       Target = "qwen"
+	TargetGemini     Target = "gemini"
 	TargetContinue   Target = "continue"
 	TargetDevin      Target = "devin"
 	TargetKiro       Target = "kiro"
@@ -76,7 +77,7 @@ const (
 var agentTargets = []Target{
 	TargetClaudeCode, TargetCodex, TargetCursor, TargetOpencode, TargetAider,
 	TargetCopilot, TargetGrok, TargetKimi, TargetPi, TargetAmp, TargetAuggie,
-	TargetDroid, TargetCrush, TargetCline, TargetGoose, TargetQwen,
+	TargetDroid, TargetCrush, TargetCline, TargetGoose, TargetQwen, TargetGemini,
 	TargetContinue, TargetDevin, TargetKiro, TargetKilocode, TargetVibe,
 	TargetMuse, TargetAgy, TargetAutohand, TargetKimchi, TargetPrimeAgent,
 	TargetOMP,
@@ -240,7 +241,7 @@ const defaultPersistenceTimeout = 2 * time.Second
 
 // Job is the tracked state of one install run for a Target.
 type Job struct {
-	Target              Target `json:"target" enum:"tmux,gh,claude,claude-code,codex,cursor,opencode,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,cloudflared" description:"Fixed install target this job ran (or is running) for."`
+	Target              Target `json:"target" enum:"tmux,gh,claude,claude-code,codex,cursor,opencode,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,gemini,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,cloudflared" description:"Fixed install target this job ran (or is running) for."`
 	Status              Status `json:"status" enum:"idle,running,installing,verifying,succeeded,failed,unsupported,interrupted" description:"Current lifecycle state of the job."`
 	Method              string `json:"method,omitempty" description:"Server-owned installation method selected for this harness job."`
 	Command             string `json:"command,omitempty" description:"Human-readable install command, e.g. \"brew install tmux\", for display even before/without output."`
@@ -1243,7 +1244,7 @@ func (p requestPlanner) planNPM(target Target, pkg string) Plan {
 
 func minimumNodeVersionForTarget(target Target) [3]int {
 	switch target {
-	case TargetAuggie, TargetDroid:
+	case TargetAuggie, TargetDroid, TargetGemini:
 		return [3]int{20, 0, 0}
 	case TargetClaudeCode, TargetQwen, TargetAutohand:
 		return [3]int{22, 0, 0}

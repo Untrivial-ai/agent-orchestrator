@@ -1014,7 +1014,7 @@ func TestMigrateRepairsOMPHarnessConstraint(t *testing.T) {
 	).Scan(&schema); err != nil {
 		t.Fatalf("read sessions schema: %v", err)
 	}
-	for _, harness := range []string{"'omp'"} {
+	for _, harness := range []string{"'omp'", "'gemini'"} {
 		if !strings.Contains(schema, harness) {
 			t.Fatalf("sessions.harness CHECK is missing %s after repair:\n%s", harness, schema)
 		}
@@ -1026,6 +1026,12 @@ INSERT INTO sessions (id, project_id, num, harness, activity_last_at, created_at
 VALUES ('agent-orchestrator-1', 'agent-orchestrator', 1, 'omp', ?, ?, ?);
 `, time.Unix(100, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC()); err != nil {
 		t.Fatalf("insert omp session after repair: %v", err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO sessions (id, project_id, num, harness, activity_last_at, created_at, updated_at)
+VALUES ('agent-orchestrator-2', 'agent-orchestrator', 2, 'gemini', ?, ?, ?);
+`, time.Unix(102, 0).UTC(), time.Unix(102, 0).UTC(), time.Unix(102, 0).UTC()); err != nil {
+		t.Fatalf("insert gemini session after legacy harness repair: %v", err)
 	}
 }
 
