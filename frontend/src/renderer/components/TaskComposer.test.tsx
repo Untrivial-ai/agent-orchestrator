@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { TaskComposerAgentOption } from "@aoagents/product-ui";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	get: vi.fn(),
@@ -62,7 +63,7 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
 
 import { TaskComposer } from "./TaskComposer";
-import { agentReadiness } from "../test/agent-readiness-fixtures";
+import { agentReadiness, type AgentReadinessSnapshot } from "../test/agent-readiness-fixtures";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
 
 function Wrap({ children, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }) }: {
@@ -102,6 +103,10 @@ afterEach(() => {
 });
 
 describe("TaskComposer", () => {
+	it("accepts generated readiness states in the shared agent control", () => {
+		expectTypeOf<AgentReadinessSnapshot>().toExtend<TaskComposerAgentOption>();
+	});
+
 	it("starts a standalone worker without loading or sending a project", async () => {
 		const onCreated = vi.fn();
 		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
