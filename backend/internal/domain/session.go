@@ -140,6 +140,9 @@ type SessionMetadata struct {
 	// Model is the agent model this session resolved to at spawn time, including
 	// any per-spawn --model override. Empty means the agent's default model.
 	Model string `json:"model,omitempty"`
+	// Effort is the reasoning level resolved with Model at spawn time. It is
+	// pinned so a later project-default change cannot alter native resume.
+	Effort string `json:"effort,omitempty"`
 	// BrowserCapabilityVerifier is a one-way verifier for the random browser
 	// capability held by this session's worker process. The bearer token itself
 	// is never persisted, so reading the database cannot grant access to another

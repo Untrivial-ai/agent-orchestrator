@@ -4931,7 +4931,7 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 // column, and is read back by the API — but mergeMetadata never copied it, so
 // every `ao spawn --model X` persisted an empty model and the session reported
 // no model at all.
-func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
+func TestMarkSpawnedPersistsResolvedModelAndEffort(t *testing.T) {
 	ctx := context.Background()
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
@@ -4940,6 +4940,7 @@ func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
 	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{
 		WorkspacePath: "/ws",
 		Model:         "sonnet",
+		Effort:        "high",
 	}); err != nil {
 		t.Fatalf("MarkSpawned: %v", err)
 	}
@@ -4952,6 +4953,10 @@ func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
 		t.Fatalf("model = %q, want %q; a spawn's resolved model must survive the merge",
 			got.Metadata.Model, "sonnet")
 	}
+	if got.Metadata.Effort != "high" {
+		t.Fatalf("effort = %q, want %q; a spawn's resolved effort must survive the merge",
+			got.Metadata.Effort, "high")
+	}
 
 	// Merged rather than assigned: a relaunch that resolves no explicit model
 	// must leave the recorded one alone instead of blanking it.
@@ -4961,6 +4966,9 @@ func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
 	got, _, _ = st.GetSession(ctx, "mer-1")
 	if got.Metadata.Model != "sonnet" {
 		t.Fatalf("model = %q after a relaunch that resolved none, want it preserved", got.Metadata.Model)
+	}
+	if got.Metadata.Effort != "high" {
+		t.Fatalf("effort = %q after a relaunch that resolved none, want it preserved", got.Metadata.Effort)
 	}
 }
 

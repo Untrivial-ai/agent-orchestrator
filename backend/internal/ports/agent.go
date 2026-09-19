@@ -42,6 +42,13 @@ const (
 	AgentAuthStatusUnauthorized AgentAuthStatus = "unauthorized"
 	// AgentAuthStatusUnknown means the daemon could not determine auth status.
 	AgentAuthStatusUnknown AgentAuthStatus = "unknown"
+	// AgentAuthStatusConfigured means a credential is present locally but no
+	// check has proven it valid. Presence is not validity: a key can be
+	// revoked, downgraded, or rate-limited with no change on disk, so only a
+	// provider round-trip may report AgentAuthStatusAuthorized. Local evidence
+	// (a config file, an env var, or a CLI that reports loggedIn) reports
+	// configured instead, and must never render as a ready state.
+	AgentAuthStatusConfigured AgentAuthStatus = "configured"
 )
 
 // Agent is the contract every CLI coding agent adapter (claude-code, codex, …)
@@ -176,10 +183,15 @@ const (
 
 // AgentModelInfo is one model or mode that an adapter reports as selectable.
 type AgentModelInfo struct {
-	ID            string   `json:"id"`
-	Label         string   `json:"label"`
-	Provider      string   `json:"provider,omitempty"`
-	IsDefault     bool     `json:"isDefault,omitempty"`
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Provider  string `json:"provider,omitempty"`
+	IsDefault bool   `json:"isDefault,omitempty"`
+	// Efforts are the reasoning levels this specific model accepts, in the
+	// provider's own ascending order. Empty means the model takes no effort
+	// setting, which is a real answer rather than a missing one — Sonnet 4.5
+	// and Haiku 4.5 accept none while the 5 family accepts five — so a picker
+	// must render no effort control at all rather than an empty one.
 	Efforts       []string `json:"efforts,omitempty"`
 	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }

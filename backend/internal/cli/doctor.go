@@ -21,6 +21,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
 
@@ -216,7 +217,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 			ExpectedVersionPrefix: spec.ExpectedVersionPrefix,
 		}))
 	}
-	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
+	checks = append(checks, c.checkClaudeAuth(ctx), c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
 }
 
@@ -453,6 +454,33 @@ func (c *commandContext) checkHarness(ctx context.Context, harness harnessProbe)
 		}
 	}
 	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: harness.Name, Message: fmt.Sprintf("%s resolves to %s (%s)", harness.BinaryName, path, version)}
+}
+
+// checkClaudeAuth presents the adapter's authentication result without
+// duplicating its credential resolution and provider validation.
+func (c *commandContext) checkClaudeAuth(ctx context.Context) doctorCheck {
+	const name = "claude-auth"
+	path, err := c.deps.LookPath("claude")
+	if err != nil || path == "" {
+		return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "skipped: claude not found in PATH"}
+	}
+	status, err := c.deps.ClaudeAuthStatus(ctx)
+	if err != nil {
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: "Claude authentication is unknown: " + err.Error()}
+	}
+	switch status {
+	case ports.AgentAuthStatusAuthorized:
+		return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "Claude authentication is verified."}
+	case ports.AgentAuthStatusUnauthorized:
+		return doctorCheck{
+			Level: doctorFail, Section: doctorSectionAgents, Name: name,
+			Message: "claude reports signed out; run `claude login`",
+		}
+	case ports.AgentAuthStatusConfigured:
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: "Claude credentials are configured but not verified."}
+	default:
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: "Claude authentication is unknown."}
+	}
 }
 
 // checkCodexLaunchFlags smoke-tests AO's codex launch surface against the

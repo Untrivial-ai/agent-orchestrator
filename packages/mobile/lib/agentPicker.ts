@@ -29,7 +29,9 @@ const priorityOf = (id: string) => {
 export function availabilityOf(agent: AgentInfo, catalog: AgentCatalog): AgentAvailability {
 	const installed = catalog.installed.find((a) => a.id === agent.id);
 	if (!installed) return "needs-install";
-	const authorized = catalog.authorized.some((a) => a.id === agent.id) || installed.authStatus === "authorized";
+	const authorized =
+		catalog.authorized.some((a) => a.id === agent.id) ||
+		installed.authStatus === "authorized";
 	if (authorized) return "authorized";
 	// Absent is treated as unknown: the daemon could not determine credential
 	// state, which is not the same as knowing the agent is unusable.

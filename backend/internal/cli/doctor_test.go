@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestDoctorChecksGitVersion(t *testing.T) {
@@ -160,6 +161,9 @@ func TestDoctorChecksHarnessVersions(t *testing.T) {
 		case "/bin/git":
 			return []byte("git version 2.43.0\n"), nil
 		case "/bin/claude", "/bin/codex", "/bin/muse":
+			if name == "/bin/claude" && len(args) == 2 && args[0] == "auth" && args[1] == "status" {
+				return []byte(`{"loggedIn":false}`), nil
+			}
 			if len(args) == 1 && args[0] == "--version" {
 				if name == "/bin/muse" {
 					return []byte("Muse Code 0.1.0 (0.1.0-R708.1)\n"), nil
@@ -803,5 +807,56 @@ func writeHooksLogLines(t *testing.T, dataDir string, lines ...string) {
 	content := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(dataDir, hooksLogName), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func claudeAuthContext(t *testing.T, status ports.AgentAuthStatus, authErr error) *commandContext {
+	t.Helper()
+	c := doctorContext(t, map[string]string{"claude": "/usr/local/bin/claude"}, nil)
+	c.deps.ClaudeAuthStatus = func(context.Context) (ports.AgentAuthStatus, error) {
+		return status, authErr
+	}
+	return c
+}
+
+func TestDoctorClaudeAuthSkipsWhenNotInstalled(t *testing.T) {
+	check := doctorContext(t, nil, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorPass || !strings.Contains(check.Message, "skipped") {
+		t.Fatalf("check = %+v, want a skipped PASS", check)
+	}
+}
+
+func TestDoctorClaudeAuthPassesOnlyWhenTheProviderAccepts(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusAuthorized, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorPass || !strings.Contains(check.Message, "verified") {
+		t.Fatalf("check = %+v, want verified authentication", check)
+	}
+}
+
+func TestDoctorClaudeAuthFailsWhenTheProviderRejects(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusUnauthorized, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorFail || !strings.Contains(check.Message, "claude login") {
+		t.Fatalf("check = %+v, want rejected credential failure", check)
+	}
+}
+
+func TestDoctorClaudeAuthWarnsWhenCredentialIsOnlyConfigured(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusConfigured, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "not verified") {
+		t.Fatalf("check = %+v, want configured warning", check)
+	}
+}
+
+func TestDoctorClaudeAuthWarnsWhenStatusIsUnknown(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusUnknown, nil).checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "unknown") {
+		t.Fatalf("check = %+v, want unknown warning", check)
+	}
+}
+
+func TestDoctorClaudeAuthWarnsWhenAdapterCheckFails(t *testing.T) {
+	check := claudeAuthContext(t, ports.AgentAuthStatusUnknown, errors.New("probe failed")).checkClaudeAuth(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "probe failed") {
+		t.Fatalf("check = %+v, want adapter failure warning", check)
 	}
 }

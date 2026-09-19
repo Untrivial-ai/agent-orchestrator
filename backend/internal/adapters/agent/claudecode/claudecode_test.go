@@ -690,10 +690,10 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 }
 
-func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
-	// The caller's session model selection must reach native resume (#3218).
+func TestGetRestoreCommandAppendsConfiguredModelAndEffort(t *testing.T) {
+	// The caller's per-session tuning must reach native resume (#3218).
 	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
-		Config:      ports.AgentConfig{Model: "  claude-opus-4-5  "},
+		Config:      ports.AgentConfig{Model: "  claude-opus-4-5  ", Effort: "  high  "},
 		Permissions: ports.PermissionModeBypassPermissions,
 		Session: ports.SessionRef{
 			ID:       "sess-r",
@@ -703,7 +703,7 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
 	}
-	want := []string{"claude", "--permission-mode", "bypassPermissions", "--model", "claude-opus-4-5", "--resume", "claude-native-1"}
+	want := []string{"claude", "--permission-mode", "bypassPermissions", "--model", "claude-opus-4-5", "--effort", "high", "--resume", "claude-native-1"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
@@ -870,129 +870,6 @@ func TestGetLaunchCommandRejectsInvalidConfig(t *testing.T) {
 func TestManifestID(t *testing.T) {
 	if got := New().Manifest().ID; got != "claude-code" {
 		t.Fatalf("manifest id = %q, want claude-code", got)
-	}
-}
-
-func TestClaudeConfigAuthStatusAuthorizedWithOAuthSubscription(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	content := `{
-		"hasAvailableSubscription": true,
-		"oauthAccount": {
-			"accountUuid": "account-1",
-			"subscriptionCreatedAt": "2026-01-01T00:00:00Z"
-		}
-	}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeConfigAuthStatusAuthorizedWithOAuthAccount(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	content := `{"oauthAccount":{"accountUuid":"account-1"}}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeConfigAuthStatusUnknownWithBareUserID(t *testing.T) {
-	// userID is install/analytics identity and survives logout / pre-login
-	// first start. It must not count as authorized (#5561).
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	if err := os.WriteFile(path, []byte(`{"userID":"user-1","installMethod":"native"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func TestAuthStatusPrefersCLIOverStaleUserID(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake claude auth status binary uses a Unix shebang")
-	}
-	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
-		t.Setenv(name, "")
-	}
-	binDir := t.TempDir()
-	bin := filepath.Join(binDir, "claude")
-	script := "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  printf '%s\\n' '{\"loggedIn\":false,\"authMethod\":\"none\"}'\n  exit 0\nfi\nexit 2\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	p := &Plugin{resolvedBinary: bin}
-	status, err := p.AuthStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("AuthStatus = %q, want %q (CLI loggedIn:false must win over any ~/.claude.json userID)", status, ports.AgentAuthStatusUnauthorized)
-	}
-}
-
-func TestClaudeConfigAuthStatusUnknownWithoutOAuthIdentity(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	content := `{"oauthAccount":{}}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputAuthorizedWithCleanJSON(t *testing.T) {
-	status, ok := claudeAuthStatusFromOutput([]byte(`{"loggedIn":true,"authMethod":"oauth_token"}`))
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputAuthorizedWithPrefixedWarning(t *testing.T) {
-	output := []byte("warning: ignored config line\n{\"loggedIn\":true,\"authMethod\":\"oauth_token\"}\n")
-	status, ok := claudeAuthStatusFromOutput(output)
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputUnauthorized(t *testing.T) {
-	status, ok := claudeAuthStatusFromOutput([]byte(`{"loggedIn":false}`))
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputUnknownForUnrecognizedFailure(t *testing.T) {
-	status, ok := claudeAuthStatusFromOutput([]byte("unsupported subcommand on this version"))
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 

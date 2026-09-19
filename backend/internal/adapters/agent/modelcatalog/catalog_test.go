@@ -142,6 +142,7 @@ func TestMuseReturnsStaticCatalogWithoutStartingAgent(t *testing.T) {
 }
 
 func TestClaudeReturnsStaticCatalogWithConfiguredFallback(t *testing.T) {
+	claudeRequest(t)
 	t.Setenv("ANTHROPIC_MODEL", "")
 	t.Setenv("HOME", t.TempDir())
 	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{
@@ -580,6 +581,7 @@ func writeClaudeSettings(t *testing.T, dir, model string) {
 }
 
 func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
+	claudeRequest(t)
 	t.Setenv("ANTHROPIC_MODEL", "")
 	dir := t.TempDir()
 	writeClaudeSettings(t, dir, "opus")
@@ -588,18 +590,113 @@ func TestCatalogFingerprintTracksTheConfiguredClaudeCodeModel(t *testing.T) {
 	if first == "" {
 		t.Fatal("fingerprint is empty for a configured model")
 	}
-
-	// A settings edit changes the catalog, so it has to change the fingerprint —
-	// otherwise the cached catalog stays authoritative forever.
 	writeClaudeSettings(t, dir, "haiku")
 	second := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil)
 	if second == first {
 		t.Fatalf("fingerprint unchanged (%q) after the configured model changed", second)
 	}
+}
 
+func TestCatalogFingerprintTracksClaudeProviderInputs(t *testing.T) {
+	claudeRequest(t)
+	dir := t.TempDir()
 	writeClaudeSettings(t, dir, "opus")
-	if again := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil); again != first {
-		t.Fatalf("fingerprint = %q, want %q for identical inputs", again, first)
+	base := map[string]string{
+		"CLAUDE_CODE_USE_BEDROCK":     "1",
+		"ANTHROPIC_BASE_URL":          "https://gateway.example",
+		"AWS_REGION":                  "us-east-1",
+		"ANTHROPIC_VERTEX_PROJECT_ID": "project-a",
+		"ANTHROPIC_FOUNDRY_RESOURCE":  "resource-a",
+		"ANTHROPIC_API_KEY":           "secret-a",
+	}
+	first := CatalogFingerprint(context.Background(), "claude-code", "", dir, base)
+	if strings.Contains(first, "secret-a") {
+		t.Fatal("catalog fingerprint exposed a raw credential")
+	}
+	changes := map[string]string{
+		"CLAUDE_CODE_USE_BEDROCK":     "",
+		"ANTHROPIC_BASE_URL":          "https://other.example",
+		"AWS_REGION":                  "eu-west-1",
+		"ANTHROPIC_VERTEX_PROJECT_ID": "project-b",
+		"ANTHROPIC_FOUNDRY_RESOURCE":  "resource-b",
+		"ANTHROPIC_API_KEY":           "secret-b",
+	}
+	for key, value := range changes {
+		t.Run(key, func(t *testing.T) {
+			changed := make(map[string]string, len(base))
+			for name, current := range base {
+				changed[name] = current
+			}
+			changed[key] = value
+			if got := CatalogFingerprint(context.Background(), "claude-code", "", dir, changed); got == first {
+				t.Fatalf("fingerprint unchanged after %s changed", key)
+			}
+		})
+	}
+}
+
+func TestCatalogFingerprintTracksClaudeProviderSettings(t *testing.T) {
+	claudeRequest(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	writeClaudeSettings(t, dir, "opus")
+	if err := os.WriteFile(settingsPath, []byte(`{"model":"opus","env":{"ANTHROPIC_BASE_URL":"https://gateway-a.example"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil)
+	if err := os.WriteFile(settingsPath, []byte(`{"model":"opus","env":{"ANTHROPIC_BASE_URL":"https://gateway-b.example"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := CatalogFingerprint(context.Background(), "claude-code", "", dir, nil); got == first {
+		t.Fatal("fingerprint unchanged after Claude provider settings changed")
+	}
+}
+
+func TestClaudeCatalogDefaultUsesResolvedSettingsEnvironment(t *testing.T) {
+	request := claudeRequest(t)
+	configDir := t.TempDir()
+	request.Env["CLAUDE_CONFIG_DIR"] = configDir
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(`{"model":"top-level-model","env":{"ANTHROPIC_MODEL":"kimi-k2"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_MODEL", "daemon-model")
+	catalog, err := discoverClaudeCatalog(context.Background(), request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range catalog.Models {
+		if item.IsDefault {
+			if item.ID != "kimi-k2" {
+				t.Fatalf("default = %q, want settings env model", item.ID)
+			}
+			return
+		}
+	}
+	t.Fatal("configured gateway model is not the default")
+}
+
+func TestClaudeCatalogFingerprintUsesOnlyResolvedSettings(t *testing.T) {
+	request := claudeRequest(t)
+	configDir := t.TempDir()
+	request.Env["CLAUDE_CONFIG_DIR"] = configDir
+	request.Env["ANTHROPIC_API_KEY"] = "explicit-key"
+	path := filepath.Join(configDir, "settings.json")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fingerprint := func() string { return (Discoverer{}).CatalogFingerprint(context.Background(), request) }
+	write(`{"env":{"ANTHROPIC_API_KEY":"shadowed-key-a","SECRET":"unrelated-a","ANTHROPIC_DEFAULT_OPUS_MODEL":"glm-4"}}`)
+	first := fingerprint()
+	write(`{"env":{"ANTHROPIC_API_KEY":"shadowed-key-b","SECRET":"unrelated-b","ANTHROPIC_DEFAULT_OPUS_MODEL":"glm-4"}}`)
+	if got := fingerprint(); got != first {
+		t.Fatal("shadowed or unapproved settings changed the fingerprint")
+	}
+	write(`{"env":{"ANTHROPIC_API_KEY":"shadowed-key-b","SECRET":"unrelated-b","ANTHROPIC_DEFAULT_OPUS_MODEL":"glm-5"}}`)
+	if got := fingerprint(); got == first {
+		t.Fatal("effective configured alias did not change the fingerprint")
 	}
 }
 
@@ -611,19 +708,5 @@ func TestCatalogFingerprintKeepsTheExecutableOnlyValueForConfiglessAgents(t *tes
 	got := CatalogFingerprint(context.Background(), "codex", "codex", dir, nil)
 	if want := BinaryVersion(context.Background(), "codex"); got != want {
 		t.Fatalf("fingerprint = %q, want the executable fingerprint %q", got, want)
-	}
-}
-
-func TestCatalogFingerprintDistinguishesConfiguredFromUnconfigured(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	t.Setenv("HOME", t.TempDir())
-	unset := t.TempDir()
-	writeClaudeSettings(t, unset, "")
-	configured := t.TempDir()
-	writeClaudeSettings(t, configured, "opus")
-
-	if CatalogFingerprint(context.Background(), "claude-code", "", unset, nil) ==
-		CatalogFingerprint(context.Background(), "claude-code", "", configured, nil) {
-		t.Fatal("configuring a model must change the fingerprint")
 	}
 }

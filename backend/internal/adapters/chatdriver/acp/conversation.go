@@ -124,6 +124,10 @@ type conversation struct {
 	detaching          bool
 	terminalEventID    string
 	ignorePromptResult bool
+	// onAuthRejected corrects cached auth state when the provider rejects the
+	// credential mid-turn. Nil when the binding does not supply one.
+	onAuthRejected        func()
+	promptResponseFailure func(acpsdk.PromptResponse) error
 
 	contextTokens     int64
 	contextWindow     int64
@@ -449,6 +453,42 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 		}
 		c.applyAcceptedConfigOption("model", ports.ChatConfigOptionValue{Select: model})
 	}
+	var options []SessionOption
+	if optionsFor != nil {
+		options = optionsFor(settings)
+	}
+	applyOption := func(option SessionOption) error {
+		if option.ID == "" || option.Value == "" {
+			return nil
+		}
+		if (option.ID == "model" && legacyModel) || (option.ID == "mode" && legacyMode) {
+			return nil
+		}
+		resp, err := c.conn.SetSessionConfigOption(ctx, acpsdk.SetSessionConfigOptionRequest{
+			ValueId: &acpsdk.SetSessionConfigOptionValueId{
+				SessionId: acpsdk.SessionId(sessionID), ConfigId: acpsdk.SessionConfigId(option.ID),
+				Value: acpsdk.SessionConfigValueId(option.Value),
+			},
+		})
+		if err != nil {
+			if isACPMethodNotFound(err) {
+				return fmt.Errorf("%w: session/set_config_option %q", ErrACPSetterUnsupported, option.ID)
+			}
+			return fmt.Errorf("set ACP session option %q: %w", option.ID, err)
+		}
+		c.replaceConfigOptions(resp.ConfigOptions)
+		return nil
+	}
+	// A model switch may change the modes an ACP agent offers. Apply a modern
+	// model config option before session/set_mode so the requested mode is
+	// validated against the selected model rather than the session's default.
+	for _, option := range options {
+		if option.ID == "model" {
+			if err := applyOption(option); err != nil {
+				return err
+			}
+		}
+	}
 	if modeFor != nil {
 		if mode := modeFor(settings.Approval); mode != "" {
 			if _, err := c.conn.SetSessionMode(ctx, acpsdk.SetSessionModeRequest{
@@ -461,27 +501,11 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 			}
 		}
 	}
-	if optionsFor != nil {
-		for _, option := range optionsFor(settings) {
-			if option.ID == "" || option.Value == "" {
-				continue
+	for _, option := range options {
+		if option.ID != "model" {
+			if err := applyOption(option); err != nil {
+				return err
 			}
-			if (option.ID == "model" && legacyModel) || (option.ID == "mode" && legacyMode) {
-				continue
-			}
-			resp, err := c.conn.SetSessionConfigOption(ctx, acpsdk.SetSessionConfigOptionRequest{
-				ValueId: &acpsdk.SetSessionConfigOptionValueId{
-					SessionId: acpsdk.SessionId(sessionID), ConfigId: acpsdk.SessionConfigId(option.ID),
-					Value: acpsdk.SessionConfigValueId(option.Value),
-				},
-			})
-			if err != nil {
-				if isACPMethodNotFound(err) {
-					return fmt.Errorf("%w: session/set_config_option %q", ErrACPSetterUnsupported, option.ID)
-				}
-				return fmt.Errorf("set ACP session option %q: %w", option.ID, err)
-			}
-			c.replaceConfigOptions(resp.ConfigOptions)
 		}
 	}
 	if settings.Approval != "" {
@@ -584,10 +608,11 @@ func (c *conversation) finishPrompt(
 		}
 	} else {
 		state = turnState(resp.StopReason)
-		if failure := promptResponseFailure(resp.Meta); failure != nil &&
-			state != domain.TurnStateInterrupted && !interruptedLocally {
-			state = domain.TurnStateFailed
-			turnErr = failure
+		if c.promptResponseFailure != nil && state != domain.TurnStateInterrupted && !interruptedLocally {
+			if failure := c.promptResponseFailure(resp); failure != nil {
+				state = domain.TurnStateFailed
+				turnErr = failure
+			}
 		}
 		if resp.Usage != nil {
 			cached := 0
@@ -603,6 +628,19 @@ func (c *conversation) finishPrompt(
 				TotalsKnown: true,
 			}})
 		}
+	}
+	if errors.Is(turnErr, ports.ErrChatAuthRequired) {
+		// The provider has just contradicted whatever the readiness cache holds.
+		// Correct it for both request errors and structured prompt failures.
+		if c.onAuthRejected != nil {
+			c.onAuthRejected()
+		}
+	} else if turnErr == nil && state == domain.TurnStateCompleted {
+		// A successful provider turn is affirmative recovery evidence, including
+		// after a daemon restart where this conversation has no in-memory memory
+		// of the earlier rejection. The projector ignores this when no durable
+		// reauthentication demand exists.
+		c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{ReauthRecovered: true}})
 	}
 	if isCompaction {
 		if state == domain.TurnStateCompleted {
@@ -622,8 +660,6 @@ func (c *conversation) finishPrompt(
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
 		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
 	})
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
-
 	c.mu.Lock()
 	if c.activeTurn == turnID {
 		c.activeTurn = ""
@@ -635,6 +671,7 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
 
 func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {

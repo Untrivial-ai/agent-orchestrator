@@ -575,6 +575,10 @@ type ChatAccount struct {
 	// expected to supply. AO does not hold provider credentials, so this is
 	// reported to the user rather than answered.
 	ReauthRequired bool
+	// ReauthRecovered explicitly clears an earlier credential demand after a
+	// later provider turn succeeds. It is separate from false/zero because most
+	// account updates say nothing about authentication state.
+	ReauthRecovered bool
 	// ReauthReason is the provider's stated reason, e.g. "unauthorized".
 	ReauthReason string
 }

@@ -11,15 +11,25 @@ const h = vi.hoisted(() => ({
 	ensureReadiness: vi.fn(),
 	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
+	queryClient: null as QueryClient | null,
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../hooks/useAgentReadinessQuery")>();
+	const queryKey = ["agent-readiness"] as const;
 	return {
 		...actual,
 		ensureAgentReadiness: h.ensureTargetedReadiness,
-		useAgentReadinessQuery: () => ({ data: undefined, isFetching: false }),
+		useAgentReadinessQuery: () => {
+			// Return data from query client if it has been set, otherwise undefined
+			if (h.queryClient) {
+				const data = h.queryClient.getQueryData(queryKey);
+				return { data, isFetching: false };
+			}
+			return { data: undefined, isFetching: false };
+		},
 		useEnsureAgentReadiness: h.ensureReadiness,
+		agentReadinessQueryKey: queryKey,
 	};
 });
 
@@ -61,6 +71,21 @@ vi.mock("../lib/api-client", () => ({
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
 
+vi.mock("../hooks/useWorkspaceQuery", () => ({
+	useCloudProjectsQuery: () => ({ data: undefined }),
+	cloudProjectsQueryKey: ["cloud-projects"] as const,
+	useCloudSessionsQuery: () => ({ data: [] }),
+	cloudSessionsQueryKey: ["cloud-sessions"] as const,
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: undefined }),
+}));
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({ client: undefined }),
+}));
+
 import { TaskComposer } from "./TaskComposer";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
@@ -69,6 +94,7 @@ function Wrap({ children, queryClient = new QueryClient({ defaultOptions: { quer
 	children: ReactNode;
 	queryClient?: QueryClient;
 }) {
+	h.queryClient = queryClient;
 	return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
@@ -131,6 +157,44 @@ describe("TaskComposer", () => {
 		expect(h.get.mock.calls.some(([path]) => path === "/api/v1/projects/{id}")).toBe(false);
 	});
 
+	it("sends the selected effort when starting a standalone worker", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "text",
+						models: [{ id: "gpt-5", label: "GPT-5", isDefault: true, efforts: ["high"] }],
+						allowCustom: true,
+						refreshRecommended: false,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="__standalone__" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Agent"));
+		const model = await screen.findByRole("button", { name: "Model" });
+		await userEvent.click(model);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() =>
+			expect(h.post).toHaveBeenCalledWith(
+				"/api/v1/sessions",
+				expect.objectContaining({ body: expect.objectContaining({ effort: "high" }) }),
+			),
+		);
+	});
+
 	it("ensures display readiness for every harness when the composer opens", async () => {
 		render(
 			<Wrap>
@@ -156,6 +220,76 @@ describe("TaskComposer", () => {
 				purpose: "launch",
 			}),
 		);
+	});
+
+	it("submits a gateway-backed Claude project when refreshed global readiness is unauthorized", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return {
+				data: {
+					status: "ok",
+					project: {
+						agent: "claude-code",
+						config: { env: { ANTHROPIC_BASE_URL: "https://gateway.example" } },
+					},
+				},
+			};
+		});
+		const unauthorized = agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" });
+		h.ensureTargetedReadiness.mockResolvedValueOnce({ agents: [unauthorized] });
+		h.post.mockResolvedValueOnce({ data: { workerId: "worker-1" } });
+		const onCreated = vi.fn();
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={onCreated} />
+			</Wrap>,
+		);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
+		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("worker-1"));
+		expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["claude-code"], "launch");
+	});
+
+	it("keeps submission enabled for a gateway-backed Claude project when cached global readiness is unauthorized", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return {
+				data: {
+					status: "ok",
+					project: {
+						agent: "claude-code",
+						config: { env: { ANTHROPIC_BASE_URL: "https://gateway.example" } },
+					},
+				},
+			};
+		});
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(agentReadinessQueryKey, {
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" })],
+		});
+		h.ensureTargetedReadiness.mockResolvedValueOnce({
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "authorized" })],
+		});
+		h.post.mockResolvedValueOnce({ data: { workerId: "worker-1" } });
+
+		render(
+			<Wrap queryClient={queryClient}>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
+		const submit = screen.getByRole("button", { name: "Start task" });
+		expect(submit).toBeEnabled();
+		fireEvent.click(submit);
+
+		await waitFor(() => expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["claude-code"], "launch"));
+		await waitFor(() => expect(h.post).toHaveBeenCalled());
 	});
 
 	it("waits for and caches targeted readiness after a binary launch failure", async () => {
@@ -792,7 +926,7 @@ describe("TaskComposer", () => {
 		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
 	});
 
-	it("does not expose Codex effort controls for Claude Code", async () => {
+	it("uses the combined model and effort menu for Claude Code", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
@@ -806,12 +940,19 @@ describe("TaskComposer", () => {
 			}
 			return { data: { status: "ok", project: { agent: "claude-code", config: {} } } };
 		});
+		h.post.mockResolvedValueOnce({ data: { workerId: "claude-worker" } });
 
 		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
 
 		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
-		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Sonnet");
-		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent("Sonnet · Provider default");
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		expect(h.post.mock.calls[0][1].body).toEqual(expect.objectContaining({ effort: "high" }));
 	});
 
 	it("preselects the agent's default model when the project configures none", async () => {

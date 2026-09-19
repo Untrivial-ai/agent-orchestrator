@@ -1223,6 +1223,181 @@ func TestModelsKeepsFullerCacheWhenRefreshReturnsPartialCatalog(t *testing.T) {
 	}
 }
 
+func TestClaudeModelsKeepProviderCacheWhenRefreshFallsBackToStaticAliases(t *testing.T) {
+	validatedAt := time.Now().Add(-time.Hour)
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1", Efforts: []string{"high"}}},
+		Source: "provider", FetchedAt: validatedAt, ValidatedAt: validatedAt,
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "same-fingerprint", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "same-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoverer.discoverCalls.Load() != 1 {
+		t.Fatalf("discovery calls = %d, want revalidation despite matching fingerprint", discoverer.discoverCalls.Load())
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale provider cache", got)
+	}
+}
+
+func TestClaudeModelsKeepProviderCacheWhenDiscoveryFingerprintChanges(t *testing.T) {
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{
+			ID: "us.anthropic.claude-opus-v1", Efforts: []string{"low", "high"}, DefaultEffort: "high",
+		}}, Source: "provider",
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "credential-a", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "credential-b",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" ||
+		!reflect.DeepEqual(got.Models[0].Efforts, []string{"low", "high"}) || got.Models[0].DefaultEffort != "high" ||
+		got.Source != "provider" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale provider IDs and efforts after fingerprint change", got)
+	}
+}
+
+func TestClaudeModelsPreferAgentWideProviderCacheOverNonProviderFallback(t *testing.T) {
+	validatedAt := time.Now().Add(-time.Hour)
+	shared := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{
+			ID: "shared-provider-model", Efforts: []string{"medium", "high"}, DefaultEffort: "medium",
+		}}, Source: "provider", FetchedAt: validatedAt, ValidatedAt: validatedAt,
+	}
+	data, err := json.Marshal(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00project-a": {
+			AgentID: "claude-code", ProjectID: "project-a", BinaryVersion: "old-fingerprint",
+			CatalogJSON: string(data), FetchedAt: validatedAt,
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "new-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "configured-gateway-model"}, {ID: "sonnet"}}, Source: "catalog",
+		},
+		err: errors.New("gateway model listing unavailable"),
+	}
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"project-b": {ID: "project-b", Path: "/work/project-b"},
+	}}
+	svc := newService([]agentregistry.HarnessAgent{
+		harnessAgent("claude-code", "Claude Code", nil),
+	}, cache, projects, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "project-b", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "shared-provider-model" ||
+		!reflect.DeepEqual(got.Models[0].Efforts, []string{"medium", "high"}) || got.Models[0].DefaultEffort != "medium" ||
+		got.Source != "provider" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale agent-wide provider catalog with efforts", got)
+	}
+}
+
+func TestClaudeModelsPreferConfiguredGatewayFallbackOverCrossFingerprintCatalogCache(t *testing.T) {
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00project-a": {
+			AgentID: "claude-code", ProjectID: "project-a", BinaryVersion: "old-fingerprint", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "new-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{
+				{ID: "gateway-primary"}, {ID: "gateway-opus"}, {ID: "sonnet"}, {ID: "opus"},
+			}, Source: "catalog",
+		},
+		err: errors.New("gateway model listing unavailable"),
+	}
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"project-a": {
+			ID: "project-a", Path: "/work/project-a",
+			Config: domain.ProjectConfig{Env: map[string]string{
+				"ANTHROPIC_BASE_URL":           "https://gateway.example",
+				"ANTHROPIC_MODEL":              "gateway-primary",
+				"ANTHROPIC_DEFAULT_OPUS_MODEL": "gateway-opus",
+			}},
+		},
+	}}
+	svc := newService([]agentregistry.HarnessAgent{
+		harnessAgent("claude-code", "Claude Code", nil),
+	}, cache, projects, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "project-a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []string{"gateway-primary", "gateway-opus"}
+	if len(got.Models) < len(wantPrefix) {
+		t.Fatalf("catalog = %#v, want configured gateway fallback", got)
+	}
+	for i, want := range wantPrefix {
+		if got.Models[i].ID != want {
+			t.Fatalf("models[%d] = %q, want %q; catalog = %#v", i, got.Models[i].ID, want, got)
+		}
+	}
+	if got.Source != "catalog" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale non-provider discovery fallback", got)
+	}
+}
+
 func TestModelsUsesNewestAgentWideCacheWhenCurrentProjectDiscoveryFails(t *testing.T) {
 	older := cachedModelRecord(t, "cursor", "project-a", time.Now().Add(-2*time.Hour), false)
 	newer := cachedModelRecord(t, "cursor", "project-b", time.Now().Add(-time.Hour), false)
@@ -1339,6 +1514,7 @@ func TestModelsFingerprintsTheSameInputsDiscoveryReads(t *testing.T) {
 	fingerprinted := discoverer.lastFingerprintRequest.Load()
 	if fingerprinted == nil {
 		t.Fatal("catalog fingerprint was never requested")
+		return
 	}
 	if !reflect.DeepEqual(*fingerprinted, discoverer.lastRequest) {
 		t.Fatalf("fingerprint request = %#v, want the discovery request %#v", *fingerprinted, discoverer.lastRequest)

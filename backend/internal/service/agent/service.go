@@ -61,6 +61,7 @@ type Service struct {
 	modelCalls    map[string]*modelCatalogCall
 	codexAccounts *codexAccountManager
 	codexSwitches *codexAccountSwitchCoordinator
+	logger        *slog.Logger
 }
 
 // Deps contains optional durable dependencies for the agent catalog service.
@@ -104,6 +105,9 @@ func New() *Service {
 func NewWithDeps(deps Deps) *Service {
 	agents := agentregistry.Harnessed()
 	svc := newService(agents, deps.Cache, deps.Projects, deps.Discoverer)
+	if deps.Logger != nil {
+		svc.logger = deps.Logger
+	}
 	if deps.CodexAccountRoot != "" && deps.CodexGlobalHome != "" {
 		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.Logger, deps.CodexOperationGate)
 		if deps.Clock != nil {
@@ -142,7 +146,7 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 	for _, item := range agents {
 		resolverMu[string(item.Harness)] = &sync.Mutex{}
 	}
-	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}}
+	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, logger: slog.Default()}
 }
 
 // WarmModelCatalogs starts a non-blocking, sequential refresh of the Claude
@@ -271,7 +275,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	// Fingerprints the same inputs the discovery run would read, so a change to
 	// either the executable or the configuration behind it invalidates the cache.
 	version := s.discoverer.CatalogFingerprint(ctx, request)
-	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version {
+	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version && agentID != "claude-code" {
 		// A command-backed catalog can drift without the binary or its config
 		// changing (a provider adds a model), which no fingerprint can see. Ask
 		// cache-first clients to revalidate in the background once the catalog is
@@ -285,14 +289,33 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
 	if discoverErr != nil {
-		if hasCached && len(cached.Catalog.Models) > len(discovered.Models) {
+		// A changed fingerprint requires revalidation, but a failed refresh is
+		// not evidence that last-known-good provider models became unusable.
+		staleCurrent := func() ports.AgentModelCatalog {
 			cached.Catalog.Stale = true
 			cached.Catalog.Warning = discoverErr.Error()
 			cached.Catalog.RefreshRecommended = true
 			if err := s.saveCatalog(ctx, projectID, cached.Catalog); err != nil {
 				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
 			}
-			return cached.Catalog, nil
+			return cached.Catalog
+		}
+		isClaude := agentID == "claude-code"
+		cacheMatchesContext := !isClaude || cached.BinaryVersion == version
+		if hasCached && len(cached.Catalog.Models) > 0 && (!isClaude || cached.Catalog.Source == "provider") {
+			return staleCurrent(), nil
+		}
+		if isClaude {
+			if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID, "provider"); ok {
+				shared = applyCustomModelEntryPolicy(shared, policy)
+				shared.Stale = true
+				shared.Warning = discoverErr.Error()
+				shared.RefreshRecommended = true
+				return shared, nil
+			}
+		}
+		if hasCached && cacheMatchesContext && len(cached.Catalog.Models) > 0 {
+			return staleCurrent(), nil
 		}
 		if len(discovered.Models) > 0 {
 			discovered.Stale = true
@@ -303,16 +326,10 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 			}
 			return discovered, nil
 		}
-		if hasCached {
-			cached.Catalog.Stale = true
-			cached.Catalog.Warning = discoverErr.Error()
-			cached.Catalog.RefreshRecommended = true
-			if err := s.saveCatalog(ctx, projectID, cached.Catalog); err != nil {
-				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
-			}
-			return cached.Catalog, nil
+		if hasCached && cacheMatchesContext {
+			return staleCurrent(), nil
 		}
-		if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID); ok {
+		if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID, ""); ok {
 			shared = applyCustomModelEntryPolicy(shared, policy)
 			shared.Stale = true
 			shared.Warning = discoverErr.Error()
@@ -337,7 +354,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 // latestAgentCatalog returns a last-known-good catalog from another project as
 // a display-only fallback. Discovery remains project-scoped and this result is
 // deliberately not persisted under the requested project key.
-func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID string) (ports.AgentModelCatalog, bool) {
+func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID, requiredSource string) (ports.AgentModelCatalog, bool) {
 	if s.cache == nil {
 		return ports.AgentModelCatalog{}, false
 	}
@@ -353,6 +370,9 @@ func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID str
 		}
 		var candidate ports.AgentModelCatalog
 		if err := json.Unmarshal([]byte(record.CatalogJSON), &candidate); err != nil || len(candidate.Models) == 0 {
+			continue
+		}
+		if requiredSource != "" && candidate.Source != requiredSource {
 			continue
 		}
 		at := record.FetchedAt

@@ -6058,6 +6058,36 @@ func TestSpawn_RejectsUnknownHarness(t *testing.T) {
 	}
 }
 
+func TestSpawn_RejectsUnsupportedClaudeTUIEffortBeforeSessionRow(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "sonnet", IsDefault: true, Efforts: []string{"low", "high"}},
+	}}})
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID:     "mer",
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeTUI,
+		AgentConfig: ports.AgentConfig{
+			Model: "sonnet", Effort: "max",
+		},
+		EffortOverride: true,
+	})
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("err = %v, want ErrUnsupportedEffort", err)
+	}
+	if len(st.sessions) != 0 {
+		t.Fatalf("no session row should be created, got %d", len(st.sessions))
+	}
+	if ws.lastCfg.SessionID != "" || ws.destroyed != 0 {
+		t.Fatal("workspace must not be created for an unsupported Claude effort")
+	}
+	if rt.created != 0 {
+		t.Fatal("runtime must not be created for an unsupported Claude effort")
+	}
+}
+
 // pathPinManager builds a manager whose Executable dep is stubbed, plus a
 // buffer capturing its log output, for the hook PATH pin tests.
 func pathPinManager(executable func() (string, error)) (*Manager, *fakeStore, *fakeRuntime, *bytes.Buffer) {

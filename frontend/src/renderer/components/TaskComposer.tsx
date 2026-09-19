@@ -165,12 +165,12 @@ export function TaskComposer({
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			try {
 				const { data, error } = await apiClient.POST("/api/v1/orchestrators/delegate", {
-				body: {
-					projectId: input.projectId,
-					brief: input.brief,
-					agent: input.agent,
-					...(input.model ? { model: input.model } : {}),
-					...(input.effort !== undefined ? { effort: input.effort } : {}),
+					body: {
+						projectId: input.projectId,
+						brief: input.brief,
+						agent: input.agent,
+						...(input.model ? { model: input.model } : {}),
+						...(input.effort !== undefined ? { effort: input.effort } : {}),
 						...(input.mode ? { mode: input.mode } : {}),
 						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 						...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
@@ -218,6 +218,7 @@ export function TaskComposer({
 					prompt: input.brief,
 					displayName,
 					model: input.model,
+					...(input.effort ? { effort: input.effort } : {}),
 					...(input.mode ? { mode: input.mode } : {}),
 					...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
 				},
@@ -381,6 +382,15 @@ export function TaskComposer({
 		setError(undefined);
 		setFallbackAction(undefined);
 		try {
+			if (!isCloudProject && selectedAgent) {
+				try {
+					const completed = await ensureAgentReadiness([selectedAgent], "launch");
+					cacheAgentReadiness(queryClient, completed);
+				} catch {
+					// This check lacks the selected project's cwd and environment, so it
+					// is advisory. The project-aware launch path remains authoritative.
+				}
+			}
 			const attachmentPayloads = await toSettledPayload();
 			const sessionId = await createTask({
 				projectId,
@@ -445,8 +455,8 @@ export function TaskComposer({
 					setAgentTouched(true);
 					setModel("");
 					setMode("");
-					setModelTouched(false);
 					setEffort("");
+					setModelTouched(false);
 					setEffortTouched(false);
 				},
 			}}
@@ -467,11 +477,19 @@ export function TaskComposer({
 					setModel(value);
 					setMode("");
 					setModelTouched(true);
+					// Effort levels are per-model, so a level the newly chosen model
+					// does not advertise has to be dropped rather than carried over.
+					const nextEfforts =
+						modelCatalog?.models?.find((item) => item.id === value)?.efforts ?? [];
+					setEffort((current) => (current !== "" && !nextEfforts.includes(current) ? "" : current));
 				},
 				onModeChange: (value) => {
 					setMode(value);
 					setModel("");
 					setModelTouched(true);
+					// A mode replaces the model entirely, so no model vouches for a
+					// previously chosen level any more.
+					setEffort("");
 				},
 			}}
 			attachments={{
@@ -494,7 +512,7 @@ export function TaskComposer({
 			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
 			renderModelControl={(control) => (
 				<TaskModelPicker {...control} onRefresh={refreshSelectedModels}
-					tuning={selectedAgent === "codex" && !requiresTuiFallback ? {
+					tuning={!requiresTuiFallback ? {
 						effort,
 						onEffortChange: (value) => { setEffort(value); setEffortTouched(true); },
 						onEffortReset: setEffort,
