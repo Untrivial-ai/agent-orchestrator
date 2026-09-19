@@ -49,18 +49,34 @@ func kimiLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, erro
 	if !ok {
 		return ports.AgentAuthStatusUnknown, false, nil
 	}
+	var unknownFound bool
 	for _, home := range homes {
 		for _, configName := range []string{"config.toml", "config.json"} {
 			status, found, err := kimiConfigAuthStatus(filepath.Join(home, configName))
-			if err != nil || found {
+			if err != nil {
 				return status, found, err
+			}
+			if found {
+				if status == ports.AgentAuthStatusAuthorized {
+					return status, true, nil
+				}
+				unknownFound = true
 			}
 		}
 		// Legacy Kimi Code stored its hosted OAuth token at this fixed path.
 		status, found, err := kimiCredentialsAuthStatus(filepath.Join(home, "credentials", "kimi-code.json"))
-		if err != nil || found {
+		if err != nil {
 			return status, found, err
 		}
+		if found {
+			if status == ports.AgentAuthStatusAuthorized {
+				return status, true, nil
+			}
+			unknownFound = true
+		}
+	}
+	if unknownFound {
+		return ports.AgentAuthStatusUnknown, true, nil
 	}
 	return ports.AgentAuthStatusUnknown, false, nil
 }
@@ -189,6 +205,7 @@ func kimiConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	if decodeErr != nil {
 		return ports.AgentAuthStatusUnknown, false, decodeErr
 	}
+	var unknownFound bool
 	for _, provider := range config.Providers {
 		if strings.TrimSpace(provider.APIKey) != "" || kimiProviderEnvHasCredential(provider.Env) {
 			return ports.AgentAuthStatusAuthorized, true, nil
@@ -198,9 +215,31 @@ func kimiConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 		}
 		credentialPath := kimiOAuthCredentialPath(filepath.Dir(path), provider.OAuth.Key)
 		status, found, err := kimiCredentialsAuthStatus(credentialPath)
-		if err != nil || found {
-			return status, found, err
+		if err != nil {
+			// Kimi treats unreadable credential files as missing and falls back
+			// to the keyring for legacy keyring-backed profiles. Keep returning
+			// file errors for file-backed profiles so their failure is visible.
+			if !strings.EqualFold(strings.TrimSpace(provider.OAuth.Storage), "keyring") {
+				return status, found, err
+			}
+			status, found = ports.AgentAuthStatusUnknown, false
 		}
+		if found {
+			if status == ports.AgentAuthStatusAuthorized {
+				return status, true, nil
+			}
+			unknownFound = true
+			continue
+		}
+		// Before Kimi migrates deprecated keyring storage to a credentials file,
+		// the configured reference is the only local, non-secret signal available
+		// to AO. A credentials file, even without tokens, takes precedence above.
+		if strings.EqualFold(strings.TrimSpace(provider.OAuth.Storage), "keyring") {
+			return ports.AgentAuthStatusAuthorized, true, nil
+		}
+	}
+	if unknownFound {
+		return ports.AgentAuthStatusUnknown, true, nil
 	}
 	return ports.AgentAuthStatusUnknown, false, nil
 }
@@ -251,5 +290,5 @@ func kimiCredentialsAuthStatus(path string) (ports.AgentAuthStatus, bool, error)
 		strings.TrimSpace(credentials.RefreshToken) != "" {
 		return ports.AgentAuthStatusAuthorized, true, nil
 	}
-	return ports.AgentAuthStatusUnknown, false, nil
+	return ports.AgentAuthStatusUnknown, true, nil
 }

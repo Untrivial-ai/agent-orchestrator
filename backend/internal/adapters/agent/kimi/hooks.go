@@ -164,7 +164,10 @@ func seedKimiCredential(sourcePath, targetPath string) error {
 	}
 	status, ok, err := kimiCredentialsAuthStatus(sourcePath)
 	if err != nil {
-		return fmt.Errorf("read source Kimi credentials %s: %w", sourcePath, err)
+		// Kimi treats unreadable credential files as absent. Do not copy
+		// malformed data; config auth detection will still allow a keyring
+		// profile to seed its non-secret provider mapping.
+		return nil //nolint:nilerr // Kimi treats unreadable credential files as absent.
 	}
 	if !ok || status != ports.AgentAuthStatusAuthorized {
 		return nil
@@ -230,20 +233,11 @@ func kimiSeedConfig(targetPath string, existing []byte) ([]byte, bool, error) {
 
 func kimiSourceOAuthAuthorized(sourceHome string) (bool, error) {
 	configPath := filepath.Join(sourceHome, "config.toml")
-	paths, err := kimiConfigOAuthCredentialPaths(configPath)
+	status, found, err := kimiConfigAuthStatus(configPath)
 	if err != nil {
-		return false, fmt.Errorf("read source Kimi config %s: %w", configPath, err)
+		return false, fmt.Errorf("read source Kimi auth %s: %w", configPath, err)
 	}
-	for _, path := range paths {
-		status, ok, err := kimiCredentialsAuthStatus(path)
-		if err != nil {
-			return false, fmt.Errorf("read source Kimi credentials %s: %w", path, err)
-		}
-		if ok && status == ports.AgentAuthStatusAuthorized {
-			return true, nil
-		}
-	}
-	return false, nil
+	return found && status == ports.AgentAuthStatusAuthorized, nil
 }
 
 func kimiConfigCanSeed(existing []byte) bool {
