@@ -338,6 +338,7 @@ func TestPromptReadinessHints(t *testing.T) {
 }
 
 func TestAuthStatusUsesKiroWhoami(t *testing.T) {
+	t.Setenv("KIRO_API_KEY", "")
 	restore := stubKiroAuthRunner(t, func(_ context.Context, name string, arg ...string) ([]byte, error) {
 		if name != "kiro-cli" {
 			t.Fatalf("binary = %q, want kiro-cli", name)
@@ -345,7 +346,7 @@ func TestAuthStatusUsesKiroWhoami(t *testing.T) {
 		if !reflect.DeepEqual(arg, []string{"whoami", "--format", "json"}) {
 			t.Fatalf("args = %#v, want [whoami --format json]", arg)
 		}
-		return []byte("Logged in with Google\nEmail: nicachale456@gmail.com\n"), nil
+		return []byte(`{"accountType":"BuilderId","startUrl":null,"region":"us-east-1"}`), nil
 	})
 	defer restore()
 
@@ -354,8 +355,8 @@ func TestAuthStatusUsesKiroWhoami(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusAuthorized)
+	if status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -396,8 +397,9 @@ func TestGetConfigSpecHonorsContextCancellation(t *testing.T) {
 	}
 }
 func TestAuthStatusUnauthorizedFromKiroWhoami(t *testing.T) {
+	t.Setenv("KIRO_API_KEY", "")
 	restore := stubKiroAuthRunner(t, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		return []byte("Not logged in\n"), nil
+		return []byte(`{"account":null}`), nil
 	})
 	defer restore()
 
