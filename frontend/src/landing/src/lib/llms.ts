@@ -64,7 +64,7 @@ export function buildDeveloperResourcesSection(
 		...(includeDocumentationLinks
 			? [
 					`- [Documentation](${docsUrl}/): product and workflow documentation`,
-					`- [Quickstart](${docsUrl}/quickstart/): install and first-run guide`,
+					`- [Quickstart](${docsUrl}/quickstart/): download, open a folder, chat, and pair your phone`,
 					`- [CLI](${docsUrl}/cli/): local \`ao\` command reference`,
 				]
 			: []),

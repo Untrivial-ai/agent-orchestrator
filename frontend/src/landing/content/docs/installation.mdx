@@ -3,6 +3,8 @@ title: Installation
 description: Download the AO desktop app and connect your coding tools.
 ---
 
+No account required. AO runs locally: the desktop app owns the daemon on your machine, and agent provider sign-ins stay with the CLIs you already use.
+
 <InstallDownloads />
 
 The desktop app is the canonical install path. It owns the local daemon, requires no global `ao` command, and checks for updates after launch and while it is running.
@@ -11,10 +13,10 @@ The desktop app is the canonical install path. It owns the local daemon, require
 
 | Tool | When you need it | Why |
 | --- | --- | --- |
-| Git | Always | Creates and manages isolated worktrees and branches. |
-| GitHub CLI `gh` | GitHub projects | Uses your existing authentication for repository and pull-request operations. |
-| An agent harness | Always | The coding agent AO launches, such as Claude Code, Codex, Cursor, Aider, or OpenCode. |
-| tmux | Terminal UI on macOS/Linux | Keeps native TUI sessions attachable. Chat does not require an agent tmux pane. |
+| Git | Always | Creates and manages worktrees, branches, and (for standalone agents) AO-managed directories. Required to open the app. |
+| An agent harness | Always | The coding agent AO launches, such as Claude Code, Codex, Cursor, Aider, or OpenCode. Required to open the app. |
+| tmux | Terminal UI on macOS/Linux | Keeps native TUI sessions attachable. Chat does not require an agent tmux pane. Required on macOS/Linux at startup; Windows uses ConPTY instead. |
+| GitHub CLI `gh` | GitHub PR and issue workflows | Lets agents open pull requests and read issues. **Advisory only** — AO does not block without it. See [When you're ready for a team of agents](/docs/team-of-agents). |
 
 AO uses the agent binaries and sign-ins already installed on your machine. It does not bundle Claude Code, Codex, or other provider CLIs.
 
@@ -30,20 +32,6 @@ Choose the download for your platform above, install it, and open **Agent Orches
 </Step>
 <Step>
 
-### Authenticate GitHub
-
-For a GitHub repository, sign in with the GitHub CLI:
-
-```bash
-gh auth login
-gh auth status
-```
-
-Use an account that can read the repository and perform the branch and pull-request actions you expect the agent to take.
-
-</Step>
-<Step>
-
 ### Install and sign in to an agent
 
 Install at least one supported agent harness and run it once outside AO to complete its sign-in flow. AO detects available harnesses when you create a session.
@@ -53,12 +41,16 @@ For structured Chat, start with Claude Code, Codex, OpenCode, or Droid. Other su
 </Step>
 <Step>
 
-### Add a project
+### Open a folder or start a standalone agent
 
-In the desktop app, choose **Add project** and select an existing local git repository. AO registers the project without moving your original checkout. New worker sessions receive their own isolated worktrees.
+In the desktop app, choose **Add a project** → **Import an existing project** and select a local folder, or drag a folder onto the window. AO registers the project without moving your original checkout.
+
+Standalone agents need no repository: use **New standalone agent** for a branchless AO-managed directory. Full first loop: [Quickstart](/docs/quickstart).
 
 </Step>
 </Steps>
+
+GitHub authentication is not part of first install. When you want pull requests, issue intake, or a GitHub remote during import, follow [When you're ready for a team of agents](/docs/team-of-agents).
 
 ## Legacy npm CLI
 
@@ -96,7 +88,7 @@ All AO application state lives under `~/.ao` by default, including the daemon da
 		Install a supported agent harness, run it once to authenticate, then restart AO so the desktop-launched daemon receives the updated login-shell environment.
 	</Accordion>
 	<Accordion title="GitHub data is missing">
-		Run `gh auth status`. Confirm the active account can access the repository and its pull requests.
+		`gh` is optional for local Chat. When you need pull requests or issues, run `gh auth status` and follow [When you're ready for a team of agents](/docs/team-of-agents). Confirm the active account can access the repository.
 	</Accordion>
 	<Accordion title="Terminal UI cannot start on macOS or Linux">
 		Install `tmux`, or choose Chat when the selected harness supports it.
@@ -109,7 +101,8 @@ All AO application state lives under `~/.ao` by default, including the daemon da
 ## Next
 
 <Cards>
-	<Card title="Quickstart" description="Create a project and run the first worker." href="/docs/quickstart" />
+	<Card title="Quickstart" description="Download, open a folder, chat with one agent, pair your phone." href="/docs/quickstart" />
+	<Card title="When you're ready for a team of agents" description="Authenticate gh and run the pull-request loop." href="/docs/team-of-agents" />
 	<Card title="Platforms" description="Review platform downloads and terminal behavior." href="/docs/platforms" />
 	<Card title="Troubleshooting" description="Diagnose desktop, daemon, and agent problems." href="/docs/troubleshooting" />
 </Cards>

@@ -37,6 +37,7 @@ export async function GET() {
 			"",
 			`- **[Documentation overview](${docsUrl}/index.html.md)**`,
 			`- **[Quickstart guide](${docsUrl}/quickstart/index.html.md)**`,
+			`- **[When you're ready for a team of agents](${docsUrl}/team-of-agents/index.html.md)**`,
 			`- **[Command-line interface (CLI) reference](${docsUrl}/cli/index.html.md)**`,
 		].join("\n"),
 	);

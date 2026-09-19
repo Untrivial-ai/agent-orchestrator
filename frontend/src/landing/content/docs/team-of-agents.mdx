@@ -1,0 +1,119 @@
+---
+title: When you're ready for a team of agents
+description: Authenticate GitHub, set up a repository project, and run the pull-request loop across workers.
+---
+
+The [Quickstart](/docs/quickstart) gets you from download to a first Chat session without GitHub. This page is the next loop: authenticate `gh`, register a GitHub-backed project, run focused workers, and follow each change through pull request, CI, and review.
+
+## Authenticate GitHub
+
+AO uses the GitHub CLI already on your machine. It does not store a separate AO GitHub password.
+
+```bash
+gh auth login
+gh auth status
+```
+
+Use an account that can read the repository and perform the branch and pull-request actions you expect agents to take.
+
+In the desktop app you can also open the advisory **Connect GitHub for pull requests** notice and complete `gh auth login` in an in-app terminal.
+
+<Callout type="info" title="What still needs gh">
+	Missing or unsigned-in `gh` does **not** block AO startup. You need it to create a GitHub remote during project import, open or claim pull requests, read issues, and observe CI and review state. Local Chat and [standalone agents](/docs/quickstart) keep working without it.
+</Callout>
+
+## Set Up A GitHub Project
+
+1. Choose **Add a project** → **Import an existing project** (or drag a folder onto the app).
+2. Pick a local Git checkout that already has a GitHub `origin`, or approve AO's setup steps when the folder still needs Git init, a first commit, or a remote.
+3. Select worker and orchestrator harnesses when prompted.
+
+AO registers the project without moving your original checkout. New worker sessions receive their own isolated worktrees and branches.
+
+If the folder has no GitHub remote and you approve **Create remote repository**, AO needs working GitHub credentials before it can create and push the repo.
+
+## Pick A Safe First Team Task
+
+Choose work with a clear finish line on a repository where you can open a pull request:
+
+- Fix a small bug with a reproducible failure.
+- Add one focused test.
+- Update a short documentation page.
+- Make a narrow refactor with explicit acceptance criteria.
+
+## Run Workers And Follow The PR
+
+<Steps>
+<Step>
+
+### Create a worker
+
+From the project, choose **New task**. Enter a short name and a specific prompt. Select an installed agent harness and **Chat** or **Terminal UI**.
+
+AO creates an isolated git worktree and branch for the session before launching the selected controller.
+
+</Step>
+<Step>
+
+### Follow the session
+
+Select the session in the sidebar or board. The main pane shows Chat or the live terminal. The inspector keeps session details, pull-request state, reviews, changed files, and browser preview close at hand.
+
+</Step>
+<Step>
+
+### Give feedback
+
+Use the Chat composer or session message controls:
+
+```text
+Keep this change limited to the API route. Do not refactor the shared client.
+```
+
+For a TUI session, the terminal remains available when direct interaction is needed.
+
+</Step>
+<Step>
+
+### Review the pull request
+
+After the worker opens or claims a pull request, AO shows CI, reviewers, unresolved review comments, and mergeability. You can run a reviewer agent, send requested changes back to the worker, resolve comments, or merge when appropriate.
+
+AO never force-deletes a dirty worktree. Cleanup preserves user work when it cannot safely remove a session workspace.
+
+</Step>
+</Steps>
+
+## Scale To A Team Of Agents
+
+Once one worker's PR loop feels solid:
+
+- Start parallel **New task** workers on separate slices of work; each keeps its own worktree and conversation.
+- Use the project **orchestrator** to plan across the repository, spawn workers, and pass focused context.
+- Watch the Kanban for working, needs-you, in-review, and ready-to-merge state derived from session and pull-request facts.
+- Pair the phone with [Connect Mobile](/docs/configuration/remote-access) so you can steer workers away from the desk.
+
+## Optional CLI
+
+```bash
+ao status
+ao session ls
+ao spawn --project <project-id> --agent codex --name "Fix validation" --prompt "Add a regression test and open a PR."
+ao send --session <session-id> --message "Run the focused tests before you finish."
+ao session claim-pr <session-id> 142
+```
+
+```bash
+ao preview http://127.0.0.1:5173
+```
+
+If the repository includes `.ao/launch.json`, `ao preview start` can start a configured development server.
+
+## Next
+
+<Cards>
+	<Card title="Quickstart" description="Download, open a folder, chat, and pair your phone." href="/docs/quickstart" />
+	<Card title="Dashboard" description="Board, session view, inspector, Chat, and terminal." href="/docs/dashboard" />
+	<Card title="Examples" description="Desktop and CLI workflows for PRs, reviews, and previews." href="/docs/examples" />
+	<Card title="Guides" description="Parallel issues, CI recovery, and review loops." href="/docs/guides" />
+</Cards>

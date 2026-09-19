@@ -8,7 +8,7 @@ Agent Orchestrator (**AO**) is a desktop IDE for supervising AI coding agents. I
 The agents still write the code. AO provides the control layer around them: projects, sessions, workspaces, status, follow-up messages, review runs, notifications, and browser previews in one place.
 
 <Callout type="info" title="Fastest path">
-	Download the desktop app, add a repository, and start one small session. See [Installation](/docs/installation), then [Quickstart](/docs/quickstart).
+	No account required — AO runs locally. Download the desktop app, open a folder (or start a standalone agent), chat once, and optionally pair your phone. See [Installation](/docs/installation), then [Quickstart](/docs/quickstart). GitHub and the PR loop come later in [When you're ready for a team of agents](/docs/team-of-agents).
 </Callout>
 
 ## What AO Helps You Do
@@ -26,10 +26,16 @@ AO works best when each worker has a clear, reviewable outcome: a focused bug, f
 ## The Basic Loop
 
 ```text
-add project -> start session -> isolated worktree -> pull request -> CI/review -> merge -> cleanup
+download -> open a folder (or standalone agent) -> chat -> pair phone
 ```
 
-You can create sessions from the desktop app or the optional CLI. AO launches the selected agent interface, observes durable activity and pull-request facts, and derives the status shown in the UI.
+When you are ready for GitHub-backed work:
+
+```text
+authenticate gh -> register project -> workers on isolated worktrees -> pull request -> CI/review -> merge -> cleanup
+```
+
+You can create sessions from the desktop app or the optional CLI. AO launches the selected agent interface, observes durable activity and pull-request facts, and derives the status shown in the UI. Standalone agents need no repository.
 
 ## Chat And Terminal UI
 
@@ -58,7 +64,8 @@ GitHub is the currently shipped source-control observation path. Broader tracker
 
 <Cards>
 	<Card title="Installation" description="Download the desktop app and connect your tools." href="/docs/installation" />
-	<Card title="Quickstart" description="Run one worker session from task to pull request." href="/docs/quickstart" />
+	<Card title="Quickstart" description="Download, open a folder, chat, and pair your phone." href="/docs/quickstart" />
+	<Card title="When you're ready for a team of agents" description="Authenticate gh and run the pull-request loop." href="/docs/team-of-agents" />
 	<Card title="Dashboard" description="Learn the desktop board, session view, Chat, terminal, and inspector." href="/docs/dashboard" />
 	<Card title="Architecture" description="Understand the Go daemon, Electron app, storage, and session modes." href="/docs/architecture" />
 	<Card title="Troubleshooting" description="Resolve common desktop, daemon, agent, and session problems." href="/docs/troubleshooting" />
