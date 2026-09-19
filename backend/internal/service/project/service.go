@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -79,7 +80,7 @@ type Service struct {
 	addMu sync.Mutex
 }
 
-const maxDisplayNameLen = 20
+const maxDisplayNameLen = 100
 
 var _ Manager = (*Service)(nil)
 
@@ -142,7 +143,7 @@ func (m *Service) List(ctx context.Context) ([]Summary, error) {
 		}
 		out = append(out, Summary{
 			ID:                domain.ProjectID(row.ID),
-			Name:              displayName(row),
+			Name:              projectDisplayName(row),
 			Path:              row.Path,
 			Kind:              row.Kind.WithDefault(),
 			SessionPrefix:     resolveSessionPrefix(row),
@@ -217,9 +218,16 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	name := string(id)
 	if in.Name != nil {
 		name = strings.TrimSpace(*in.Name)
+		if utf8.RuneCountInString(name) > maxDisplayNameLen {
+			return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", fmt.Sprintf("Display name must be %d characters or fewer", maxDisplayNameLen), nil)
+		}
 	}
 	if name == "" {
 		name = string(id)
+	}
+	if utf8.RuneCountInString(name) > maxDisplayNameLen {
+		runes := []rune(name)
+		name = string(runes[:maxDisplayNameLen])
 	}
 
 	existing, registered, err := m.store.FindProjectByPath(ctx, path)
@@ -687,12 +695,9 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}
-	displayName := strings.TrimSpace(in.DisplayName)
-	if displayName == "" {
+	inDisplayName := strings.TrimSpace(in.DisplayName)
+	if inDisplayName == "" {
 		return Project{}, apierr.Invalid("DISPLAY_NAME_REQUIRED", "Display name is required", nil)
-	}
-	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
-		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", "Display name must be 20 characters or fewer", nil)
 	}
 	if err := in.Config.Validate(); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
@@ -704,6 +709,9 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if !ok || !row.ArchivedAt.IsZero() {
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
+	if utf8.RuneCountInString(inDisplayName) > maxDisplayNameLen && inDisplayName != strings.TrimSpace(projectDisplayName(row)) {
+		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", fmt.Sprintf("Display name must be %d characters or fewer", maxDisplayNameLen), nil)
+	}
 	if row.Kind.WithDefault() == domain.ProjectKindScratch {
 		if err := validateScratchProjectConfig(in.Config); err != nil {
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
@@ -712,14 +720,14 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
-	updated, err := m.store.UpdateProjectSettings(ctx, string(id), displayName, in.Config)
+	updated, err := m.store.UpdateProjectSettings(ctx, string(id), inDisplayName, in.Config)
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_SETTINGS_UPDATE_FAILED", "Failed to update project settings")
 	}
 	if !updated {
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
-	row.DisplayName = displayName
+	row.DisplayName = inDisplayName
 	row.Config = in.Config
 	return m.projectFromRow(ctx, row), nil
 }
@@ -856,7 +864,7 @@ func (m *Service) projectFromRow(ctx context.Context, row domain.ProjectRecord) 
 	}
 	p := Project{
 		ID:            domain.ProjectID(row.ID),
-		Name:          displayName(row),
+		Name:          projectDisplayName(row),
 		Kind:          kind,
 		Path:          row.Path,
 		Repo:          row.RepoOriginURL,
@@ -876,7 +884,7 @@ func projectConfigPtr(projectConfig domain.ProjectConfig) *domain.ProjectConfig 
 	return &cfg
 }
 
-func displayName(row domain.ProjectRecord) string {
+func projectDisplayName(row domain.ProjectRecord) string {
 	if strings.TrimSpace(row.DisplayName) != "" {
 		return row.DisplayName
 	}
