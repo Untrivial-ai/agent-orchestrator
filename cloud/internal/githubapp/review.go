@@ -13,15 +13,15 @@ import (
 // TriggerReview starts one review in a dedicated agent terminal. Opening or
 // claiming a PR intentionally does not invoke it: cloud must follow the same
 // explicit "Run review" action as local sessions.
-func (s *Service) TriggerReview(ctx context.Context, orgID, sessionID string, pr domain.PullRequest) (domain.ReviewRun, bool, error) {
-	run, created, err := s.store.CreateReviewRun(ctx, orgID, pr.ID, sessionID, pr.HeadSHA)
+func (s *Service) TriggerReview(ctx context.Context, orgID, sessionID, harness string, pr domain.PullRequest) (domain.ReviewRun, bool, error) {
+	run, created, err := s.store.CreateReviewRun(ctx, orgID, pr.ID, sessionID, pr.HeadSHA, harness)
 	if err != nil {
 		return domain.ReviewRun{}, false, err
 	}
 	if !created {
 		return run, false, nil
 	}
-	terminalID, err := s.store.OpenReviewTerminal(ctx, orgID, sessionID, run.ID, reviewPrompt(run.ID, pr))
+	terminalID, err := s.store.OpenReviewTerminal(ctx, orgID, sessionID, run.ID, reviewPrompt(run.ID, pr), harness)
 	if err != nil {
 		// A run is durable before the terminal is queued. Queue failures must
 		// resolve that durable record too; otherwise every client truthfully

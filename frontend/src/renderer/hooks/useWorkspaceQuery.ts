@@ -90,6 +90,10 @@ function toWorkspaceSession(
 		title: session.displayName ?? session.issueId ?? session.id,
 		issueId: session.issueId,
 		provider: toAgentProvider(session.harness),
+		reviewerHarness: session.reviewerHarness ? toAgentProvider(session.reviewerHarness) : undefined,
+		autoInjectCI: session.autoInjectCI,
+		autoInjectReview: session.autoInjectReview,
+		terminateOnPrMerge: session.terminateOnPrMerge,
 		reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
 		reviewerConfig: session.reviewerConfig
 			? {

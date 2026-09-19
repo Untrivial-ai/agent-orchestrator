@@ -262,6 +262,9 @@ type WorkspaceFile struct {
 type TerminalCommand struct {
 	TerminalID string `json:"terminalId"`
 	Kind       string `json:"kind,omitempty"`
+	// Harness selects the provider for a dedicated reviewer terminal. It is
+	// ignored for regular workspace and interactive agent terminals.
+	Harness string `json:"harness,omitempty"`
 	// Review starts an isolated coding-agent conversation for an automated PR
 	// review. It shares the session workspace, but never resumes the session's
 	// interactive agent thread.

@@ -71,6 +71,7 @@ import { agentLabel } from "../lib/agent-options";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { Switch } from "./ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { appI18n } from "../i18n";
 import type { MessageKey } from "../i18n";
@@ -573,6 +574,7 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectCI ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectCI ?? true);
@@ -580,6 +582,10 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const save = useMutation({
 		mutationFn: async (autoInjectCI: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.updateSessionPreferences(session.cloud.orgId, session.id, { autoInjectCI });
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-ci", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectCI },
@@ -676,12 +682,17 @@ function ProviderUsageDetails({ harness }: { harness: SessionUsage["harnesses"][
 function AutoInjectReviewPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectReview ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectReview ?? true);
 	}, [session.id, session.autoInjectReview]);
 	const save = useMutation({
 		mutationFn: async (autoInjectReview: boolean) => {
+			if (session.cloud) {
+				await cloudClient.updateSessionPreferences(session.cloud.orgId, session.id, { autoInjectReview });
+				return;
+			}
 			const { error } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-review", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectReview },
@@ -1102,9 +1113,14 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const terminate = useTerminateSession();
+	const { client: cloudClient } = useCloudCp();
 	const policy = useMutation({
 		mutationFn: async (terminateOnPrMerge: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.updateSessionPreferences(session.cloud.orgId, session.id, { terminateOnPrMerge });
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/merge-policy", {
 				params: { path: { sessionId: session.id } },
 				body: { terminateOnPrMerge },
@@ -1793,6 +1809,17 @@ function CloudReviewsSection({
 			queryClient.setQueryData(["cloud-session-reviews", baseUrl, orgId, session.id], data);
 		},
 	});
+	const updateReviewerHarness = useMutation({
+		mutationFn: (reviewerHarness: string) => client.updateSessionPreferences(orgId, session.id, { reviewerHarness }),
+		onSuccess: (data) => {
+			queryClient.setQueryData(
+				["cloud-session-reviews", baseUrl, orgId, session.id],
+				(current: CloudCpSessionReviewState | undefined) =>
+					current ? { ...current, reviewerHarness: data.session.reviewerHarness || data.session.harness } : current,
+			);
+			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+	});
 	const cloudSession = {
 		...session,
 		prs: (pullRequestsQuery.data?.pullRequests ?? []).map(cloudPullRequestFacts),
@@ -1803,7 +1830,7 @@ function CloudReviewsSection({
 			<ReviewPanel
 				cloud
 				autoReviewEnabled={false}
-				error={pullRequestsQuery.error ?? reviewsQuery.error ?? triggerReview.error ?? cancelReview.error}
+				error={pullRequestsQuery.error ?? reviewsQuery.error ?? triggerReview.error ?? cancelReview.error ?? updateReviewerHarness.error}
 				isAutoReviewSaving={false}
 				isCancelling={cancelReview.isPending}
 				isKilling={false}
@@ -1816,6 +1843,9 @@ function CloudReviewsSection({
 				onKill={() => undefined}
 				onReviewerHarnessPreviewChange={() => undefined}
 				onReviewerOverrideChange={() => undefined}
+				cloudReviewerHarnesses={reviewsQuery.data?.availableReviewerHarnesses ?? []}
+				cloudReviewerHarness={reviewsQuery.data?.reviewerHarness || session.reviewerHarness || session.provider}
+				onCloudReviewerHarnessChange={(harness) => updateReviewerHarness.mutate(harness)}
 				onTrigger={() => triggerReview.mutate()}
 				reviewerHandleId={reviewsQuery.data?.reviewerHandleId ?? ""}
 				reviewerMode=""
@@ -2338,12 +2368,15 @@ function ReviewPanel({
 	reviewerMode,
 	onReviewerOverrideChange,
 	onReviewerHarnessPreviewChange,
+	cloudReviewerHarnesses = [],
+	cloudReviewerHarness = "",
+	onCloudReviewerHarnessChange,
 	onTrigger,
 	onCancel,
 	onAutoReviewChange,
 	onKill,
 }: {
-	/** Cloud sessions use their own fixed harness and do not expose local-only reviewer preferences. */
+	/** Cloud sessions choose from only credentials connected for the session owner. */
 	cloud?: boolean;
 	autoReviewEnabled: boolean;
 	session: WorkspaceSession;
@@ -2364,6 +2397,9 @@ function ReviewPanel({
 	reviewerMode: string;
 	onReviewerOverrideChange: (next: ReviewerHarness | "", config: { model?: string; mode?: string }) => void;
 	onReviewerHarnessPreviewChange: (next: ReviewerHarness | "") => void;
+	cloudReviewerHarnesses?: string[];
+	cloudReviewerHarness?: string;
+	onCloudReviewerHarnessChange?: (harness: string) => void;
 	onTrigger: () => void;
 	onCancel: () => void;
 	onAutoReviewChange: (enabled: boolean) => void;
@@ -2470,7 +2506,27 @@ function ReviewPanel({
 					</TooltipProvider>
 				) : null}
 				<div className="review-run-controls-container min-w-0 divide-y divide-border/70 text-xs">
-					{!cloud ? (
+					{cloud ? (
+						<div className="flex min-h-10 min-w-0 items-center justify-between gap-3 py-2">
+							<span className="min-w-0 text-xs font-medium text-foreground">{t("inspector.selectReviewerAgent")}</span>
+							<Select
+								disabled={cloudReviewerHarnesses.length === 0 || reviewRunning || isTriggering || isCancelling}
+								onValueChange={(harness) => onCloudReviewerHarnessChange?.(harness)}
+								value={cloudReviewerHarness}
+							>
+								<SelectTrigger aria-label={t("inspector.selectReviewerAgent")} className="h-control-md max-w-[11rem] text-xs" size="sm">
+									<SelectValue placeholder={t("inspector.selectReviewerAgent")} />
+								</SelectTrigger>
+								<SelectContent align="end">
+									{cloudReviewerHarnesses.map((harness) => (
+										<SelectItem key={harness} value={harness}>
+											{agentLabel(harness)}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+					) : (
 						<div className="flex min-h-10 min-w-0 items-center justify-between gap-3 py-2">
 						<span className="min-w-0 text-xs font-medium text-foreground">
 							{t("inspector.selectReviewerAgent")}
@@ -2492,7 +2548,7 @@ function ReviewPanel({
 							showDefaultOption
 						/>
 						</div>
-					) : null}
+						)}
 					{!cloud ? (
 						<InspectorPolicyRow
 							checked={autoReviewEnabled}

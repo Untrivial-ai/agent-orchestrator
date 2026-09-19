@@ -917,7 +917,9 @@ func (s *Store) GetSession(
 
 const sessionSelect = `
 	SELECT session.id, session.org_id, session.project_id, session.kind,
-		session.harness, session.display_name, session.branch,
+		session.harness, session.reviewer_harness, session.auto_inject_ci,
+		session.auto_inject_review, session.terminate_on_pr_merge,
+		session.display_name, session.branch,
 		session.mode, session.denied_commands,
 		CASE
 			WHEN EXISTS (
@@ -995,6 +997,10 @@ func scanSession(row scanner, session *domain.Session) error {
 		&session.ProjectID,
 		&session.Kind,
 		&session.Harness,
+		&session.ReviewerHarness,
+		&session.AutoInjectCI,
+		&session.AutoInjectReview,
+		&session.TerminateOnPRMerge,
 		&session.DisplayName,
 		&session.Branch,
 		&session.Mode,

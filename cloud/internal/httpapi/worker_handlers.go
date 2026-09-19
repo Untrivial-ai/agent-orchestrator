@@ -934,9 +934,12 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "CREDENTIALS_UNAVAILABLE", "Coding-agent credentials are unavailable.")
 		return
 	}
-	credential, err := s.store.WorkerAgentCredential(
-		r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch,
-	)
+	provider := r.URL.Query().Get("provider")
+	if provider != "" && !validAgentProvider(provider) {
+		writeError(w, r, http.StatusUnprocessableEntity, "INVALID_CREDENTIAL", "The selected coding-agent credential is invalid.")
+		return
+	}
+	credential, err := s.workerCredentialForProvider(r.Context(), claims, provider)
 	if err != nil {
 		s.writeWorkerStoreError(w, r, err)
 		return
@@ -966,6 +969,19 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 		CredentialType: credential.CredentialType,
 		Secret:         string(plaintext),
 	})
+}
+
+type workerCredentialProviderStore interface {
+	WorkerAgentCredentialForProvider(context.Context, string, string, string, int64, string) (domain.WorkerCredential, error)
+}
+
+func (s *Server) workerCredentialForProvider(ctx context.Context, claims worker.Claims, provider string) (domain.WorkerCredential, error) {
+	if provider != "" {
+		if store, ok := s.store.(workerCredentialProviderStore); ok {
+			return store.WorkerAgentCredentialForProvider(ctx, claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch, provider)
+		}
+	}
+	return s.store.WorkerAgentCredential(ctx, claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch)
 }
 
 func (s *Server) writeWorkerStoreError(w http.ResponseWriter, r *http.Request, err error) {
