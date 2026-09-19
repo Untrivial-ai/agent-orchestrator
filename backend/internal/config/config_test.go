@@ -10,7 +10,7 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	// Clear every recognised var so we observe pure defaults regardless of the
 	// surrounding environment.
-	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_ALLOWED_ORIGINS", "AO_TELEMETRY_EVENTS", "AO_TELEMETRY_METRICS", "AO_TELEMETRY_REMOTE", "AO_TELEMETRY_POSTHOG_KEY", "AO_TELEMETRY_POSTHOG_HOST", "AO_TELEMETRY_DISABLED_EVENTS", "AO_TELEMETRY_APP_VERSION"} {
+	for _, k := range []string{"AO_PORT", "AO_REQUEST_TIMEOUT", "AO_SHUTDOWN_TIMEOUT", "AO_RUN_FILE", "AO_DATA_DIR", "AO_AGENT", "AO_MAX_CONCURRENT_SESSIONS", "AO_ALLOWED_ORIGINS", "AO_TELEMETRY_EVENTS", "AO_TELEMETRY_METRICS", "AO_TELEMETRY_REMOTE", "AO_TELEMETRY_POSTHOG_KEY", "AO_TELEMETRY_POSTHOG_HOST", "AO_TELEMETRY_DISABLED_EVENTS", "AO_TELEMETRY_APP_VERSION"} {
 		t.Setenv(k, "")
 	}
 
@@ -29,6 +29,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != DefaultShutdownTimeout {
 		t.Errorf("ShutdownTimeout = %s, want %s", cfg.ShutdownTimeout, DefaultShutdownTimeout)
+	}
+	if cfg.MaxConcurrentSessions != DefaultMaxConcurrentSessions {
+		t.Errorf("MaxConcurrentSessions = %d, want %d", cfg.MaxConcurrentSessions, DefaultMaxConcurrentSessions)
 	}
 	if cfg.RunFilePath == "" {
 		t.Error("RunFilePath is empty, want a resolved default path")
@@ -106,6 +109,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("AO_TELEMETRY_REMOTE", "posthog")
 	t.Setenv("AO_TELEMETRY_POSTHOG_KEY", "phc_test")
 	t.Setenv("AO_TELEMETRY_POSTHOG_HOST", "https://eu.i.posthog.com")
+	t.Setenv("AO_MAX_CONCURRENT_SESSIONS", "4")
 
 	cfg, err := Load()
 	if err != nil {
@@ -138,6 +142,20 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.Telemetry.Remote != TelemetryRemotePostHog || cfg.Telemetry.PostHogKey != "phc_test" || cfg.Telemetry.PostHogHost != "https://eu.i.posthog.com" {
 		t.Fatalf("Telemetry remote = %+v", cfg.Telemetry)
 	}
+	if cfg.MaxConcurrentSessions != 4 {
+		t.Errorf("MaxConcurrentSessions = %d, want 4", cfg.MaxConcurrentSessions)
+	}
+}
+
+func TestLoadAllowsExplicitUnlimitedConcurrency(t *testing.T) {
+	t.Setenv("AO_MAX_CONCURRENT_SESSIONS", "0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxConcurrentSessions != 0 {
+		t.Fatalf("MaxConcurrentSessions = %d, want explicit unlimited 0", cfg.MaxConcurrentSessions)
+	}
 }
 
 func TestLoadInvalid(t *testing.T) {
@@ -158,6 +176,8 @@ func TestLoadInvalid(t *testing.T) {
 		{"bad telemetry events", map[string]string{"AO_TELEMETRY_EVENTS": "maybe"}},
 		{"bad telemetry metrics", map[string]string{"AO_TELEMETRY_METRICS": "maybe"}},
 		{"bad telemetry remote", map[string]string{"AO_TELEMETRY_REMOTE": "otlp"}},
+		{"non-numeric max concurrent sessions", map[string]string{"AO_MAX_CONCURRENT_SESSIONS": "many"}},
+		{"negative max concurrent sessions", map[string]string{"AO_MAX_CONCURRENT_SESSIONS": "-1"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

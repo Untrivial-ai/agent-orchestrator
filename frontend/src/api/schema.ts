@@ -3738,6 +3738,7 @@ export interface components {
             env?: {
                 [key: string]: string;
             };
+            maxConcurrentSessions?: number;
             orchestrator?: components["schemas"]["RoleOverride"];
             orchestratorRules?: string;
             postCreate?: string[];

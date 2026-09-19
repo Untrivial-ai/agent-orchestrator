@@ -59,6 +59,13 @@ type ProjectConfig struct {
 	// tracker is not commented on or transitioned.
 	TrackerIntake TrackerIntakeConfig `json:"trackerIntake,omitempty"`
 
+	// MaxConcurrentSessions caps how many non-terminated sessions this project
+	// may hold before a new worker spawn is refused (orchestrator spawns are
+	// exempt so a stuck project can always be recovered). 0 means "no
+	// project-level cap"; the daemon-wide AO_MAX_CONCURRENT_SESSIONS cap still
+	// applies either way.
+	MaxConcurrentSessions int `json:"maxConcurrentSessions,omitempty"`
+
 	// ContainerReap controls whether AO reaps a worker session's ao.session-
 	// labeled Docker containers on terminal state / kill. Enabled by default;
 	// set Disabled to opt a project out entirely. Per-container sparing uses
@@ -191,6 +198,9 @@ func (c ProjectConfig) Validate() error {
 		if err := ro.AgentConfig.Validate(); err != nil {
 			return fmt.Errorf("%s.%w", role, err)
 		}
+	}
+	if c.MaxConcurrentSessions < 0 {
+		return fmt.Errorf("maxConcurrentSessions: must be >= 0 (0 = no project-level cap)")
 	}
 	for _, s := range c.Symlinks {
 		if err := validateRepoRelative(s); err != nil {

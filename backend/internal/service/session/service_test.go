@@ -3649,6 +3649,15 @@ func TestToAPIError_NotResumable(t *testing.T) {
 	}
 }
 
+func TestToAPIError_ConcurrencyLimit(t *testing.T) {
+	err := fmt.Errorf("restore mer-1: %w", sessionmanager.ErrConcurrencyLimit)
+	mapped := toAPIError(err)
+	var apiError *apierr.Error
+	if !errors.As(mapped, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "SESSION_CONCURRENCY_LIMIT" {
+		t.Fatalf("mapped = %v, want Conflict SESSION_CONCURRENCY_LIMIT", mapped)
+	}
+}
+
 func TestRestoreMapsManagerModeToServiceView(t *testing.T) {
 	st := newFakeStore()
 	rec := domain.SessionRecord{
