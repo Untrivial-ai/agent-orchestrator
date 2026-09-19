@@ -1101,7 +1101,7 @@ describe("TaskComposer", () => {
 		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low" }));
 
 		await userEvent.click(effortPicker);
-		await userEvent.click(await screen.findByRole("menuitem", { name: "Provider default" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Default" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
 		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "" }));

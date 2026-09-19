@@ -527,8 +527,8 @@ export function TaskComposer({
 
 function TaskEffortPicker({ disabled, label, onChange, options, value }: TaskComposerEffortControl) {
 	const { t } = useTranslation();
-	const providerDefault = t("settings.models.providerDefault");
-	const visibleLabel = value ? formatEffortLabel(value) : providerDefault;
+	const defaultLabel = t("settings.models.default");
+	const visibleLabel = value ? formatEffortLabel(value) : defaultLabel;
 
 	return (
 		<SettingsOptionMenu
@@ -536,7 +536,7 @@ function TaskEffortPicker({ disabled, label, onChange, options, value }: TaskCom
 			disabled={disabled}
 			value={value || "__default__"}
 			options={[
-				{ value: "__default__", label: providerDefault },
+				{ value: "__default__", label: defaultLabel },
 				...options.map((option) => ({ value: option, label: formatEffortLabel(option) })),
 			]}
 			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
