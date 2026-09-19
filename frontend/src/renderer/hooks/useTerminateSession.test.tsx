@@ -115,25 +115,29 @@ describe("useTerminateSession", () => {
 		expect(postMock).not.toHaveBeenCalled();
 	});
 
-	// The delete control is disabled while the mutation is pending, and a
-	// mutation stays pending until its onSuccess settles. Waiting on the
-	// workspace refetch there kept the spinner up for an extra round trip after
-	// the daemon had already finished the kill.
-	it("settles without waiting for the workspace refetch", async () => {
+	// Success waits for the workspace refresh so a CDC/refetch cannot resurrect
+	// the row after optimisticKillIds clears. The kill API itself has already
+	// finished before onSuccess runs.
+	it("refreshes workspaces after a successful kill", async () => {
 		postMock.mockResolvedValue({ data: { ok: true }, error: undefined, response: { status: 200 } });
 		const queryClient = newQueryClient();
 		let refetchResolved = false;
-		// An observer on the workspace query, as the real board always has: it is
-		// what makes the post-kill invalidation actually refetch.
 		const { result } = renderHook(
 			() => ({
 				terminate: useTerminateSession(),
 				workspaces: useQuery({
 					queryKey: workspaceQueryKey,
 					queryFn: async () => {
-						await new Promise((resolve) => setTimeout(resolve, 100));
+						await new Promise((resolve) => setTimeout(resolve, 40));
 						refetchResolved = true;
-						return workspaces;
+						return workspaces.map((workspace) => ({
+							...workspace,
+							sessions: workspace.sessions.map((candidate) =>
+								candidate.id === session.id
+									? { ...candidate, isTerminated: true, status: "terminated" as const, kanbanColumn: "archive" as const }
+									: candidate,
+							),
+						}));
 					},
 					initialData: workspaces,
 					staleTime: Number.POSITIVE_INFINITY,
@@ -144,29 +148,64 @@ describe("useTerminateSession", () => {
 
 		result.current.terminate.mutate(session);
 
-		// isSuccess flips only once onSuccess has settled, so a refetch that is
-		// still in flight here is one the delete control never waited on.
 		await waitFor(() => expect(result.current.terminate.isSuccess).toBe(true));
-		expect(refetchResolved).toBe(false);
-		// The refresh is still requested, just not blocking.
-		await waitFor(() => expect(refetchResolved).toBe(true));
+		expect(refetchResolved).toBe(true);
 	});
 
-	it("marks the killed session terminated in the cached board", async () => {
+	it("marks the killed session terminated in the cached board optimistically", async () => {
 		postMock.mockResolvedValue({ data: { ok: true }, error: undefined, response: { status: 200 } });
 		const queryClient = newQueryClient();
 		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
 
-		result.current.mutate(session);
+		act(() => {
+			result.current.mutate(session);
+		});
 
+		// Applied in onMutate — before the daemon round-trip finishes.
+		await waitFor(() =>
+			expect(queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey)?.[0]?.sessions[0]).toMatchObject({
+				id: "sess-1",
+				isTerminated: true,
+				kanbanColumn: "archive",
+				status: "terminated",
+			}),
+		);
 		await waitFor(() => expect(result.current.isSuccess).toBe(true));
-		const cached = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
-		expect(cached?.[0]?.sessions[0]).toMatchObject({
+	});
+
+	it("keeps the optimistic remove when a workspace refetch returns the live session", async () => {
+		let resolveKill: (() => void) | undefined;
+		postMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveKill = () => resolve({ data: { ok: true }, error: undefined, response: { status: 200 } });
+				}),
+		);
+		const queryClient = newQueryClient();
+		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
+
+		act(() => {
+			result.current.mutate(session);
+		});
+		await waitFor(() =>
+			expect(queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey)?.[0]?.sessions[0]?.isTerminated).toBe(
+				true,
+			),
+		);
+
+		// Simulate CDC/refetch writing a still-alive snapshot while kill is pending.
+		const { applyOptimisticSessionKills } = await import("./optimistic-session-kills");
+		queryClient.setQueryData(workspaceQueryKey, applyOptimisticSessionKills(workspaces));
+
+		expect(queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey)?.[0]?.sessions[0]).toMatchObject({
 			id: "sess-1",
 			isTerminated: true,
-			kanbanColumn: "archive",
-			status: "terminated",
 		});
+
+		await act(async () => {
+			resolveKill?.();
+		});
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
 	});
 
 	it("leaves the board untouched when the kill fails", async () => {
