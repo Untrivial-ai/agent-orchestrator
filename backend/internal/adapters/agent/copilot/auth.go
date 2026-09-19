@@ -5,87 +5,126 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
+var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
-// AuthStatus returns the plugin's local authentication status.
+// AuthStatus reports local configuration, without claiming provider validation.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
-	_, err := p.ResolveBinary(ctx)
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	}
-	if status, ok, err := copilotLocalAuthStatus(ctx); err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	} else if ok {
-		return status, nil
-	}
-	return ports.AgentAuthStatusUnknown, nil
+	return p.AuthStatusFor(ctx, ports.AgentAuthCheck{})
 }
 
-var copilotTokenEnvVars = []string{
-	"COPILOT_GITHUB_TOKEN",
-	"GH_TOKEN",
-	"GITHUB_TOKEN",
+func (p *Plugin) AuthStatusFor(ctx context.Context, scope ports.AgentAuthCheck) (ports.AgentAuthStatus, error) {
+	if _, err := p.ResolveBinary(ctx); err != nil {
+		return ports.AgentAuthStatusUnknown, err
+	}
+	return copilotAuthStatus(ctx, scope, authutil.Dependencies{})
 }
+
+var copilotTokenEnvVars = []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}
 
 func copilotLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
+	status, err := copilotAuthStatus(ctx, ports.AgentAuthCheck{}, authutil.Dependencies{})
+	return status, status != ports.AgentAuthStatusUnknown, err
+}
+
+func copilotAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil.Dependencies) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+		return ports.AgentAuthStatusUnknown, err
 	}
-	for _, name := range copilotTokenEnvVars {
-		if copilotUsableToken(os.Getenv(name)) {
-			return ports.AgentAuthStatusAuthorized, true, nil
+	baseEnv := d.Getenv
+	if baseEnv == nil {
+		baseEnv = os.Getenv
+	}
+	env := func(key string) string {
+		if value, ok := scope.Env[key]; ok {
+			return value
+		}
+		return baseEnv(key)
+	}
+	for _, key := range copilotTokenEnvVars {
+		if token := strings.TrimSpace(env(key)); token != "" {
+			// The first set variable selects the token, including unsupported
+			// classic PATs. A lower-priority credential cannot override it.
+			if copilotUsableToken(token) {
+				return ports.AgentAuthStatusConfigured, nil
+			}
+			return ports.AgentAuthStatusUnknown, nil
 		}
 	}
-	if copilotBYOKConfigured() {
-		return ports.AgentAuthStatusAuthorized, true, nil
+	// BYOK endpoints can be keyless. Presence identifies configuration only;
+	// it does not validate the endpoint or establish a no-auth provider.
+	if strings.TrimSpace(env("COPILOT_PROVIDER_BASE_URL")) != "" && strings.TrimSpace(env("COPILOT_MODEL")) != "" {
+		return ports.AgentAuthStatusConfigured, nil
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+	goos := d.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
 	}
-	if home == "" {
-		return ports.AgentAuthStatusUnknown, false, nil
+	if goos == "darwin" {
+		// Copilot supports multiple accounts under this documented service;
+		// there is no fixed account selector. A service-only read establishes
+		// local configuration, never validation of an active account.
+		out, err := authutil.RunCommand(ctx, d, "/usr/bin/security", "find-generic-password", "-s", "copilot-cli", "-w")
+		if ctx.Err() != nil {
+			return ports.AgentAuthStatusUnknown, ctx.Err()
+		}
+		if err == nil && copilotUsableToken(string(out)) {
+			return ports.AgentAuthStatusConfigured, nil
+		}
 	}
-	// Copilot credentials can come from several independent sources. A corrupt
-	// config file must not prevent the documented GitHub CLI token fallback.
-	configStatus, configOK, _ := copilotConfigAuthStatus(filepath.Join(copilotHomeDir(home), "config.json"))
-	if configOK {
-		return configStatus, true, nil
+	// The bounded command runner inherits the daemon environment. If the
+	// invocation changes gh's credential selection, do not mistake the
+	// daemon's gh token for the scoped credential; try the scoped file next.
+	ghEnvMatches := true
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_CONFIG_DIR", "HOME", "USERPROFILE", "XDG_CONFIG_HOME"} {
+		if value, ok := scope.Env[key]; ok && value != baseEnv(key) {
+			ghEnvMatches = false
+			break
+		}
 	}
-	if status, ok, err := copilotGHAuthStatus(ctx); err != nil || ok {
-		return status, ok, err
+	if ghEnvMatches {
+		out, err := authutil.RunCommand(ctx, d, "gh", "auth", "token")
+		if ctx.Err() != nil {
+			return ports.AgentAuthStatusUnknown, ctx.Err()
+		}
+		if err == nil && copilotUsableToken(string(out)) {
+			return ports.AgentAuthStatusConfigured, nil
+		}
 	}
-	return ports.AgentAuthStatusUnknown, false, nil
-}
-
-// copilotBYOKConfigured recognizes Copilot CLI's documented local BYOK setup.
-// An API key is optional because providers such as local Ollama do not require
-// one; the endpoint and model identify a usable provider configuration.
-func copilotBYOKConfigured() bool {
-	return strings.TrimSpace(os.Getenv("COPILOT_PROVIDER_BASE_URL")) != "" &&
-		strings.TrimSpace(os.Getenv("COPILOT_MODEL")) != ""
-}
-
-func copilotHomeDir(home string) string {
-	if path := strings.TrimSpace(os.Getenv("COPILOT_HOME")); path != "" {
-		return path
+	dir := strings.TrimSpace(env("COPILOT_HOME"))
+	if dir == "" {
+		homeKey := "HOME"
+		if goos == "windows" {
+			homeKey = "USERPROFILE"
+		}
+		if home := strings.TrimSpace(env(homeKey)); home != "" {
+			dir = filepath.Join(home, ".copilot")
+		}
 	}
-	return filepath.Join(home, ".copilot")
+	if dir == "" {
+		return ports.AgentAuthStatusUnknown, nil
+	}
+	if !filepath.IsAbs(dir) && scope.WorkingDir != "" {
+		dir = filepath.Join(scope.WorkingDir, dir)
+	}
+	status, _, _ := copilotConfigAuthStatusWith(ctx, filepath.Join(dir, "config.json"), d)
+	return status, ctx.Err()
 }
 
 func copilotConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
+	return copilotConfigAuthStatusWith(context.Background(), path, authutil.Dependencies{})
+}
+
+func copilotConfigAuthStatusWith(ctx context.Context, path string, d authutil.Dependencies) (ports.AgentAuthStatus, bool, error) {
+	data, err := authutil.ReadFile(ctx, d, path)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, false, err
 	}
@@ -94,53 +133,31 @@ func copilotConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	}
 	var config map[string]json.RawMessage
 	if err := json.Unmarshal(data, &config); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
+		return ports.AgentAuthStatusUnknown, false, nil
 	}
 	for _, key := range []string{"authToken", "accessToken", "token"} {
 		var token string
 		if err := json.Unmarshal(config[key], &token); err == nil && copilotUsableToken(token) {
-			return ports.AgentAuthStatusAuthorized, true, nil
+			return ports.AgentAuthStatusConfigured, true, nil
 		}
 	}
-	if copilotLoggedInUser(config) {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	return ports.AgentAuthStatusUnknown, false, nil
-}
-
-func copilotGHAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	out, err := authprobe.CmdRunner(probeCtx, "gh", "auth", "token")
-	if probeCtx.Err() != nil {
-		if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			return ports.AgentAuthStatusUnknown, false, nil
+	// Native Copilot stores plaintext fallbacks by host:login under this
+	// field. Read only string tokens, never account metadata objects.
+	var tokens map[string]json.RawMessage
+	if json.Unmarshal(config["copilot_tokens"], &tokens) == nil {
+		for _, value := range tokens {
+			var token string
+			if json.Unmarshal(value, &token) == nil && copilotUsableToken(token) {
+				return ports.AgentAuthStatusConfigured, true, nil
+			}
 		}
-		return ports.AgentAuthStatusUnknown, false, probeCtx.Err()
 	}
-	if err == nil && copilotUsableToken(string(out)) {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	// GitHub CLI state is only one Copilot credential source. A negative result
-	// cannot rule out Copilot's own stored OAuth or token credentials.
+	// loggedInUsers is account metadata, and session events are historical
+	// activity. Neither establishes the presence of an effective credential.
 	return ports.AgentAuthStatusUnknown, false, nil
 }
 
 func copilotUsableToken(value string) bool {
 	value = strings.TrimSpace(value)
 	return value != "" && !strings.HasPrefix(value, "ghp_")
-}
-
-func copilotLoggedInUser(config map[string]json.RawMessage) bool {
-	var users map[string]json.RawMessage
-	if err := json.Unmarshal(config["loggedInUsers"], &users); err != nil {
-		return false
-	}
-	for _, user := range users {
-		if len(user) > 0 && string(user) != "null" && string(user) != `""` {
-			return true
-		}
-	}
-	return false
 }

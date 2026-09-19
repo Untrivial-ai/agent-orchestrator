@@ -408,7 +408,7 @@ func writeExecutable(t *testing.T, path string) string {
 	return path
 }
 
-func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
+func TestAuthStatusConfiguredFromEnv(t *testing.T) {
 	clearCopilotAuthEnv(t)
 	t.Setenv("GH_TOKEN", "github_pat_test")
 	plugin := &Plugin{resolvedBinary: "copilot"}
@@ -417,8 +417,8 @@ func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -438,7 +438,7 @@ func TestCopilotClassicPATIsNotAnAuthorizationSignal(t *testing.T) {
 	}
 }
 
-func TestCopilotConfigAuthStatusAuthorizedWithPlainTextToken(t *testing.T) {
+func TestCopilotConfigAuthStatusConfiguredWithPlainTextToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configPath, []byte(`{"authToken":"token"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -448,8 +448,8 @@ func TestCopilotConfigAuthStatusAuthorizedWithPlainTextToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	if !ok || status != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -485,9 +485,12 @@ func TestCopilotConfigAuthStatusDoesNotTreatAuthModeAsCredential(t *testing.T) {
 
 func clearCopilotAuthEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range copilotTokenEnvVars {
+	for _, name := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_TYPE", "COPILOT_PROVIDER_API_KEY", "COPILOT_MODEL", "COPILOT_HOME"} {
 		t.Setenv(name, "")
 	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 }
 
 func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
