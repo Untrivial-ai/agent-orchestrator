@@ -1844,6 +1844,7 @@
 	"settings.harness.interrupted": "Interrupted",
 	"settings.harness.loggedIn": "Logged in",
 	"settings.harness.configured": "Configured",
+	"settings.harness.credentialsUnverified": "Identifiants trouvés, non vérifiés",
 	"settings.harness.loginUnknown": "Login status unknown",
 	"settings.harness.configurationUnknown": "Configuration status unknown",
 	"settings.harness.loggingIn": "Opening…",
