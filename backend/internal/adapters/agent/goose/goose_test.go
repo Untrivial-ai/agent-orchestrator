@@ -233,8 +233,9 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 	}
 }
 
-func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
+func TestAuthStatusConfiguredFromEnv(t *testing.T) {
 	clearGooseAuthEnv(t)
+	t.Setenv("GOOSE_PROVIDER", "openrouter")
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	plugin := &Plugin{resolvedBinary: "goose"}
 
@@ -242,12 +243,12 @@ func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 
-func TestAuthStatusAuthorizedFromGooseConfig(t *testing.T) {
+func TestAuthStatusUnknownFromGooseConfigSecrets(t *testing.T) {
 	clearGooseAuthEnv(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -266,8 +267,8 @@ func TestAuthStatusAuthorizedFromGooseConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusUnknown)
 	}
 }
 
@@ -297,9 +298,7 @@ func TestAuthStatusUnknownFromEmptyGooseConfig(t *testing.T) {
 
 func clearGooseAuthEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range gooseAPIKeyEnvVars {
-		t.Setenv(name, "")
-	}
+	gooseTestHome(t)
 }
 
 func TestContextCancellationIsHonored(t *testing.T) {
