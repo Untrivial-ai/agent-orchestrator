@@ -338,7 +338,7 @@ func (b *Broker) runLiveness(ctx context.Context, conn net.Conn) {
 			b.disconnect(conn, ErrUnresponsive)
 			return
 		}
-		pingCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		pingCtx, cancel := context.WithTimeout(ctx, time.Second)
 		err := b.write(pingCtx, conn, wireMessage{Type: "ping"})
 		cancel()
 		if err != nil {
