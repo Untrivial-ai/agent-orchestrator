@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 )
 
 func authorizedAgentsJSON(agent string) string {
@@ -31,6 +34,37 @@ func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
 	}
 	if !strings.Contains(out, "prime-agent") {
 		t.Fatalf("spawn help does not list prime-agent:\n%s", out)
+	}
+}
+
+// TestSpawnHelpListsEveryRegisteredHarness is the drift guard for the
+// --harness/--agent help text: the enum shown in `ao spawn --help` is derived
+// from the agent registry, so every registered harness id must appear. Before
+// the list was registry-derived, this drifted (zcode and omp shipped without
+// appearing in the help).
+func TestSpawnHelpListsEveryRegisteredHarness(t *testing.T) {
+	out, errOut, err := executeCLI(t, Deps{}, "spawn", "--help")
+	if err != nil {
+		t.Fatalf("spawn --help: %v\nstderr: %s", err, errOut)
+	}
+	for _, a := range registry.Constructors() {
+		id := a.Manifest().ID
+		if !strings.Contains(out, id) {
+			t.Errorf("spawn help does not list registered harness %q:\n%s", id, out)
+		}
+	}
+}
+
+// TestSpawnHarnessListSortedAlphabetically pins the alphabetical ordering of
+// the derived help list so it stays scannable as harnesses are added.
+func TestSpawnHarnessListSortedAlphabetically(t *testing.T) {
+	list := spawnHarnessList()
+	ids := strings.Split(list, ", ")
+	if !sort.StringsAreSorted(ids) {
+		t.Errorf("spawnHarnessList is not alphabetical: %s", list)
+	}
+	if len(ids) != len(registry.Constructors()) {
+		t.Errorf("spawnHarnessList has %d ids, registry has %d constructors: %s", len(ids), len(registry.Constructors()), list)
 	}
 }
 

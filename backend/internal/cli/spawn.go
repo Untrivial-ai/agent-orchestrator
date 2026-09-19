@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 )
 
 // maxDisplayNameLen caps the sidebar label set by `--name`. Mirrored by the
@@ -214,7 +216,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	})
 	f.StringVar(&opts.project, "project", "", "Project id to spawn the session in (default: AO_PROJECT_ID or the current registered repo)")
 	f.BoolVar(&opts.standalone, "standalone", false, "Spawn a projectless worker in an AO-managed plain directory (requires --agent)")
-	f.StringVar(&opts.harness, "harness", "", "Agent harness / --agent: claude-code, codex, aider, opencode, grok, droid, amp, agy, crush, cursor, qwen, copilot, goose, auggie, continue, devin, cline, kimi, muse, kiro, kilocode, vibe, pi, kimchi, prime-agent, autohand (default: project worker.agent; orchestrator spawns default to project orchestrator.agent; required if the project has none)")
+	f.StringVar(&opts.harness, "harness", "", "Agent harness / --agent: "+spawnHarnessList()+" (default: project worker.agent; orchestrator spawns default to project orchestrator.agent; required if the project has none)")
 	f.StringVar(&opts.kind, "kind", "", "Session role: worker or orchestrator (default: worker)")
 	f.StringVar(&opts.mode, "mode", "", "Initial session interface: chat (structured agent connection) or tui (the agent's native terminal). Omitted uses the daemon default; compatible sessions can switch later.")
 	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for standalone or Scratch sessions)")
@@ -227,6 +229,19 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip CLI readiness warnings (the daemon still validates launch readiness)")
 	return cmd
+}
+
+// spawnHarnessList returns the comma-separated list of registered harness ids
+// for the --harness/--agent flag help, derived from the agent registry so the
+// help text can never drift from the harnesses the daemon actually ships. The
+// ids are sorted alphabetically for scannability.
+func spawnHarnessList() string {
+	ids := make([]string, 0, len(registry.Constructors()))
+	for _, a := range registry.Constructors() {
+		ids = append(ids, a.Manifest().ID)
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ", ")
 }
 
 func (c *commandContext) fetchAgentInventory(ctx context.Context, refresh bool) (agentInventory, error) {
