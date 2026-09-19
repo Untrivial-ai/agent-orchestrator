@@ -2,9 +2,11 @@ package pi
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,6 +211,18 @@ func TestPiProviderScopedEvidence(t *testing.T) {
 			provider: "ollama", models: `{"providers":{"ollama":{"baseUrl":"http://127.0.0.1:11434/v1","api":"openai-completions","models":[{"id":"model"}]}}}`,
 			want: ports.AgentAuthStatusNotApplicable,
 		},
+		"custom loopback provider needs an effective API": {
+			provider: "ollama", models: `{"providers":{"ollama":{"baseUrl":"http://127.0.0.1:11434/v1","models":[{"id":"model"}]}}}`,
+			want: ports.AgentAuthStatusUnknown,
+		},
+		"custom loopback provider accepts a per-model API": {
+			provider: "ollama", models: `{"providers":{"ollama":{"baseUrl":"http://127.0.0.1:11434/v1","models":[{"id":"model","api":"anthropic-messages"}]}}}`,
+			want: ports.AgentAuthStatusNotApplicable,
+		},
+		"custom loopback provider rejects an unsupported API": {
+			provider: "ollama", models: `{"providers":{"ollama":{"baseUrl":"http://127.0.0.1:11434/v1","api":"unknown-api","models":[{"id":"model"}]}}}`,
+			want: ports.AgentAuthStatusUnknown,
+		},
 		"built in llama.cpp needs no auth": {provider: "llama.cpp", want: ports.AgentAuthStatusNotApplicable},
 	}
 	for name, tc := range tests {
@@ -225,26 +239,44 @@ func TestPiProviderScopedEvidence(t *testing.T) {
 
 func TestPiNativeProviderCheck(t *testing.T) {
 	tests := map[string]struct {
-		out  string
-		err  error
-		want ports.AgentAuthStatus
+		out     string
+		err     error
+		timeout bool
+		want    ports.AgentAuthStatus
 	}{
 		"ready":             {out: "ready\n", want: ports.AgentAuthStatusAuthorized},
 		"not ready":         {out: "not_ready\n", err: piTestExitError(1), want: ports.AgentAuthStatusUnauthorized},
 		"invalid":           {out: "invalid\n", err: piTestExitError(2), want: ports.AgentAuthStatusUnknown},
 		"unexpected output": {out: "logged in", want: ports.AgentAuthStatusUnknown},
 		"mismatched exit":   {out: "not_ready\n", err: piTestExitError(2), want: ports.AgentAuthStatusUnknown},
+		"timeout":           {timeout: true, want: ports.AgentAuthStatusUnknown},
+		"oversized output":  {out: strings.Repeat("x", authutil.MaxFileSize+1), want: ports.AgentAuthStatusUnknown},
+		"transport absence": {err: errors.New("transport unavailable"), want: ports.AgentAuthStatusConfigured},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writePiTestFile(t, filepath.Join(root, "auth.json"), `{"openai":{"type":"api_key","key":"local-key"}}`)
 			var gotName string
 			var gotArgs []string
 			deps := authutil.Dependencies{
-				Getenv: func(string) string { return "" },
-				Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				Getenv: func(key string) string {
+					if key == "PI_CODING_AGENT_DIR" {
+						return root
+					}
+					return ""
+				},
+				Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 					gotName, gotArgs = name, append([]string(nil), args...)
+					if tc.timeout {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
 					return []byte(tc.out), tc.err
 				},
+			}
+			if tc.timeout {
+				deps.Timeout = time.Millisecond
 			}
 			got, err := piAuthStatus(context.Background(), "/opt/pi", ports.AgentAuthCheck{
 				WorkingDir: "/workspace", Config: ports.AgentConfig{Model: "openai/gpt-5"},
@@ -259,6 +291,56 @@ func TestPiNativeProviderCheck(t *testing.T) {
 				t.Fatalf("command = %q %q", gotName, gotArgs)
 			}
 		})
+	}
+}
+
+func TestPiUnresolvedBareModelDoesNotScanGlobalCredentials(t *testing.T) {
+	tests := map[string]struct {
+		auth string
+		env  map[string]string
+	}{
+		"unrelated environment credential": {env: map[string]string{"ANTHROPIC_API_KEY": "unrelated"}},
+		"unrelated stored credential":      {auth: `{"anthropic":{"type":"api_key","key":"unrelated"}}`},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.auth != "" {
+				writePiTestFile(t, filepath.Join(root, "auth.json"), tc.auth)
+			}
+			values := map[string]string{"PI_CODING_AGENT_DIR": root, "HOME": root}
+			for key, value := range tc.env {
+				values[key] = value
+			}
+			got, err := piAuthStatus(context.Background(), "", ports.AgentAuthCheck{
+				Args: []string{"pi", "--model", "gpt-5"},
+			}, authutil.Dependencies{Getenv: func(key string) string { return values[key] }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, want unknown", got)
+			}
+		})
+	}
+}
+
+func TestPiUnscopedAuthStatusRetainsGlobalCredentialScan(t *testing.T) {
+	root := t.TempDir()
+	got, err := piAuthStatus(context.Background(), "", ports.AgentAuthCheck{}, authutil.Dependencies{Getenv: func(key string) string {
+		if key == "PI_CODING_AGENT_DIR" || key == "HOME" {
+			return root
+		}
+		if key == "ANTHROPIC_API_KEY" {
+			return "credential"
+		}
+		return ""
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want configured", got)
 	}
 }
 

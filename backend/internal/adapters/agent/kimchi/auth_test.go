@@ -312,6 +312,7 @@ func TestKimchiScopedAuthResolution(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	tests := map[string]struct {
 		model       string
+		args        []string
 		global      string
 		project     string
 		auth        string
@@ -338,6 +339,14 @@ func TestKimchiScopedAuthResolution(t *testing.T) {
 		"upstream subscription OAuth is configured": {
 			model: "openai-codex/gpt-5", auth: `{"openai-codex":{"type":"oauth","access":"access-token","refresh":"refresh-token","expires":1800003600000}}`,
 			want: ports.AgentAuthStatusConfigured,
+		},
+		"explicit provider ignores global Kimchi key": {
+			args: []string{"kimchi", "--provider", "openai-codex"}, global: `{"apiKey":"global-key"}`,
+			want: ports.AgentAuthStatusUnknown,
+		},
+		"equals provider uses its exact harness credential": {
+			args: []string{"kimchi", "--provider=openai-codex"}, global: `{"apiKey":"global-key"}`,
+			auth: `{"openai-codex":{"type":"api_key","key":"subscription-key"}}`, want: ports.AgentAuthStatusConfigured,
 		},
 		"custom endpoint pairs with the effective key": {
 			global: `{"apiKey":"global-key"}`, project: `{"llmEndpoint":"https://proxy.example/v1"}`,
@@ -393,6 +402,7 @@ func TestKimchiScopedAuthResolution(t *testing.T) {
 			got, err := kimchiAuthStatus(context.Background(), ports.AgentAuthCheck{
 				WorkingDir: work,
 				Config:     ports.AgentConfig{Model: tc.model},
+				Args:       tc.args,
 			}, deps, probe)
 			if err != nil {
 				t.Fatal(err)

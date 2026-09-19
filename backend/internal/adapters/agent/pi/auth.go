@@ -41,15 +41,18 @@ func piAuthStatus(ctx context.Context, binary string, check ports.AgentAuthCheck
 		return ports.AgentAuthStatusUnknown, err
 	}
 	d.Getenv = piScopedGetenv(check.Env, d.Getenv)
-	provider := piSelectedProvider(check)
+	provider, scoped := piSelectedProvider(check)
 	if status := piSelectedNoAuthStatus(ctx, provider, d); status == ports.AgentAuthStatusNotApplicable {
 		return status, nil
 	}
 	if provider != "" && binary != "" {
-		status, err := piNativeAuthStatus(ctx, binary, provider, check, d)
-		if err != nil || status != ports.AgentAuthStatusUnknown {
+		status, localFallback, err := piNativeAuthStatus(ctx, binary, provider, check, d)
+		if err != nil || !localFallback {
 			return status, err
 		}
+	}
+	if scoped && provider == "" {
+		return ports.AgentAuthStatusUnknown, nil
 	}
 	return piLocalProviderStatus(ctx, provider, d), ctx.Err()
 }
@@ -67,13 +70,8 @@ func piSelectedNoAuthStatus(ctx context.Context, provider string, d authutil.Dep
 		return ports.AgentAuthStatusUnknown
 	}
 	config, ok := models.Providers[provider]
-	if !ok || len(config.Models) == 0 {
+	if !ok || !piModelsProviderValid(provider, config) {
 		return ports.AgentAuthStatusUnknown
-	}
-	for _, model := range config.Models {
-		if strings.TrimSpace(model.ID) == "" {
-			return ports.AgentAuthStatusUnknown
-		}
 	}
 	if piLoopbackURL(config.BaseURL) {
 		return ports.AgentAuthStatusNotApplicable
@@ -93,9 +91,10 @@ func piScopedGetenv(scoped map[string]string, base func(string) string) func(str
 	}
 }
 
-func piSelectedProvider(check ports.AgentAuthCheck) string {
+func piSelectedProvider(check ports.AgentAuthCheck) (string, bool) {
 	provider := ""
 	model := strings.TrimSpace(check.Config.Model)
+	scoped := model != ""
 	args := check.Args
 	if len(args) > 0 && (filepath.Base(args[0]) == "pi" || filepath.Base(args[0]) == "pi.exe") {
 		args = args[1:]
@@ -106,27 +105,31 @@ func piSelectedProvider(check ports.AgentAuthCheck) string {
 		}
 		switch {
 		case strings.HasPrefix(args[i], "--provider="):
+			scoped = true
 			provider = strings.TrimSpace(strings.TrimPrefix(args[i], "--provider="))
 		case args[i] == "--provider" && i+1 < len(args):
+			scoped = true
 			i++
 			provider = strings.TrimSpace(args[i])
 		case strings.HasPrefix(args[i], "--model="):
+			scoped = true
 			model = strings.TrimSpace(strings.TrimPrefix(args[i], "--model="))
 		case args[i] == "--model" && i+1 < len(args):
+			scoped = true
 			i++
 			model = strings.TrimSpace(args[i])
 		}
 	}
 	if provider != "" {
-		return provider
+		return provider, true
 	}
 	if slash := strings.IndexByte(model, '/'); slash > 0 {
-		return strings.TrimSpace(model[:slash])
+		return strings.TrimSpace(model[:slash]), true
 	}
-	return ""
+	return "", scoped
 }
 
-func piNativeAuthStatus(ctx context.Context, binary, provider string, check ports.AgentAuthCheck, d authutil.Dependencies) (ports.AgentAuthStatus, error) {
+func piNativeAuthStatus(ctx context.Context, binary, provider string, check ports.AgentAuthCheck, d authutil.Dependencies) (ports.AgentAuthStatus, bool, error) {
 	timeout := d.Timeout
 	if timeout <= 0 {
 		timeout = 8 * time.Second
@@ -155,19 +158,20 @@ func piNativeAuthStatus(ctx context.Context, binary, provider string, check port
 	}
 	out, err := run(probeCtx, binary, "auth", "check", "--provider", provider)
 	if ctx.Err() != nil {
-		return ports.AgentAuthStatusUnknown, ctx.Err()
+		return ports.AgentAuthStatusUnknown, false, ctx.Err()
 	}
 	if probeCtx.Err() != nil || len(out) > authutil.MaxFileSize {
-		return ports.AgentAuthStatusUnknown, nil
+		return ports.AgentAuthStatusUnknown, false, nil
 	}
 	output := strings.TrimSpace(string(out))
 	if output == "ready" && err == nil {
-		return ports.AgentAuthStatusAuthorized, nil
+		return ports.AgentAuthStatusAuthorized, false, nil
 	}
 	if output == "not_ready" && piExitCode(err) == 1 {
-		return ports.AgentAuthStatusUnauthorized, nil
+		return ports.AgentAuthStatusUnauthorized, false, nil
 	}
-	return ports.AgentAuthStatusUnknown, nil
+	localFallback := output == "" && err != nil && piExitCode(err) == -1
+	return ports.AgentAuthStatusUnknown, localFallback, nil
 }
 
 func piExitCode(err error) int {
@@ -419,12 +423,14 @@ type piModelsFile struct {
 
 type piModelsProvider struct {
 	BaseURL string          `json:"baseUrl"`
+	API     string          `json:"api"`
 	APIKey  *string         `json:"apiKey"`
 	Models  []piModelsModel `json:"models"`
 }
 
 type piModelsModel struct {
-	ID string `json:"id"`
+	ID  string `json:"id"`
+	API string `json:"api"`
 }
 
 func piModelsProviderStatus(ctx context.Context, d authutil.Dependencies, path, provider string) ports.AgentAuthStatus {
@@ -433,13 +439,8 @@ func piModelsProviderStatus(ctx context.Context, d authutil.Dependencies, path, 
 		return ports.AgentAuthStatusUnknown
 	}
 	config, ok := models.Providers[provider]
-	if !ok || len(config.Models) == 0 {
+	if !ok || !piModelsProviderValid(provider, config) {
 		return ports.AgentAuthStatusUnknown
-	}
-	for _, model := range config.Models {
-		if strings.TrimSpace(model.ID) == "" {
-			return ports.AgentAuthStatusUnknown
-		}
 	}
 	if piLoopbackURL(config.BaseURL) {
 		return ports.AgentAuthStatusNotApplicable
@@ -451,6 +452,36 @@ func piModelsProviderStatus(ctx context.Context, d authutil.Dependencies, path, 
 		return ports.AgentAuthStatusConfigured
 	}
 	return ports.AgentAuthStatusUnknown
+}
+
+func piModelsProviderValid(provider string, config piModelsProvider) bool {
+	if len(config.Models) == 0 {
+		return false
+	}
+	_, builtIn := piProviderEnv[provider]
+	builtIn = builtIn || provider == "amazon-bedrock" || provider == "google-vertex" || provider == "openai-codex"
+	for _, model := range config.Models {
+		if strings.TrimSpace(model.ID) == "" {
+			return false
+		}
+		api := strings.TrimSpace(model.API)
+		if api == "" {
+			api = strings.TrimSpace(config.API)
+		}
+		if !builtIn && !piCustomAPI(api) {
+			return false
+		}
+	}
+	return true
+}
+
+func piCustomAPI(api string) bool {
+	switch api {
+	case "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai":
+		return true
+	default:
+		return false
+	}
 }
 
 func piRemoteURL(value string) (*url.URL, bool) {

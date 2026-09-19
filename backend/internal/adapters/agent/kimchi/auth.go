@@ -100,6 +100,7 @@ func kimchiScopedGetenv(scoped map[string]string, base func(string) string) func
 }
 
 func kimchiSelectedProvider(check ports.AgentAuthCheck) string {
+	provider := ""
 	model := strings.TrimSpace(check.Config.Model)
 	args := check.Args
 	if len(args) > 0 && (filepath.Base(args[0]) == "kimchi" || filepath.Base(args[0]) == "kimchi.exe") {
@@ -109,12 +110,20 @@ func kimchiSelectedProvider(check ports.AgentAuthCheck) string {
 		if args[i] == "--" {
 			break
 		}
-		if strings.HasPrefix(args[i], "--model=") {
+		if strings.HasPrefix(args[i], "--provider=") {
+			provider = strings.TrimSpace(strings.TrimPrefix(args[i], "--provider="))
+		} else if args[i] == "--provider" && i+1 < len(args) {
+			i++
+			provider = strings.TrimSpace(args[i])
+		} else if strings.HasPrefix(args[i], "--model=") {
 			model = strings.TrimSpace(strings.TrimPrefix(args[i], "--model="))
 		} else if args[i] == "--model" && i+1 < len(args) {
 			i++
 			model = strings.TrimSpace(args[i])
 		}
+	}
+	if provider != "" {
+		return provider
 	}
 	if slash := strings.IndexByte(model, '/'); slash > 0 {
 		return strings.TrimSpace(model[:slash])
