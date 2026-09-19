@@ -17,7 +17,7 @@ import { haptics } from "./haptics";
 import { BREATHE_MS, shouldBreathe } from "./motion";
 import { useEnterTransition, usePressScale } from "./motionHooks";
 import { NativeHeaderButton, type NativeHeaderButtonIcon } from "./native-header-button";
-import { useOptionalSidebarNavigation } from "./sidebar-navigation-shell";
+import { useOptionalSidebarNavigation } from "./sidebar-navigation-context";
 import { useReducedMotion } from "./useReducedMotion";
 import { fontScaleCap, press, space, type } from "./tokens";
 import type { ConnStatus } from "./store";

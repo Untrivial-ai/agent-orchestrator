@@ -47,29 +47,9 @@ import { SidebarSpawnButton } from "./sidebar-spawn-button";
 import { useApp } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles, useThemeState } from "./ThemeProvider";
+import { SidebarNavigationContext, type SidebarScrollRequest } from "./sidebar-navigation-context";
 import { type, space } from "./tokens";
 
-type ScrollRequest = {
-	destination: SidebarDestinationId;
-	sequence: number;
-};
-
-type SidebarNavigationContextValue = {
-	openSidebar: () => void;
-	scrollRequest: ScrollRequest | null;
-};
-
-const SidebarNavigationContext = createContext<SidebarNavigationContextValue | null>(null);
-
-export function useSidebarNavigation() {
-	const context = useContext(SidebarNavigationContext);
-	if (!context) throw new Error("useSidebarNavigation must be used within <SidebarNavigationShell>");
-	return context;
-}
-
-export function useOptionalSidebarNavigation() {
-	return useContext(SidebarNavigationContext);
-}
 
 export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 	const t = useTheme();
@@ -87,7 +67,7 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 	const { width } = useWindowDimensions();
 	const [open, setOpen] = useState(false);
 	const reduceMotion = useReducedMotion();
-	const [scrollRequest, setScrollRequest] = useState<ScrollRequest | null>(null);
+	const [scrollRequest, setScrollRequest] = useState<SidebarScrollRequest | null>(null);
 	const progress = useRef(new Animated.Value(0)).current;
 	const gestureStartedOpen = useRef(false);
 	const activeDestination = activeSidebarDestination(pathname);

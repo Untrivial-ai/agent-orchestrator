@@ -47,26 +47,10 @@ import { useReducedMotion } from "./useReducedMotion";
 import { useApp } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
+import { SidebarNavigationContext, type SidebarScrollRequest } from "./sidebar-navigation-context";
 import { type, space } from "./tokens";
 
-type ScrollRequest = { destination: SidebarDestinationId; sequence: number };
-type SidebarNavigationContextValue = {
-	openSidebar: () => void;
-	scrollRequest: ScrollRequest | null;
-};
-
-const SidebarNavigationContext = createContext<SidebarNavigationContextValue | null>(null);
 let retainedDrawerOpen = false;
-
-export function useSidebarNavigation() {
-	const context = useContext(SidebarNavigationContext);
-	if (!context) throw new Error("useSidebarNavigation must be used within <SidebarNavigationShell>");
-	return context;
-}
-
-export function useOptionalSidebarNavigation() {
-	return useContext(SidebarNavigationContext);
-}
 
 export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 	const styles = useThemedStyles(makeStyles);
@@ -83,7 +67,7 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 	const progress = useRef(new Animated.Value(retainedDrawerOpen ? 1 : 0)).current;
 	const gestureStartedOpen = useRef(false);
 	const pendingClosePath = useRef<string | null>(null);
-	const [scrollRequest, setScrollRequest] = useState<ScrollRequest | null>(null);
+	const [scrollRequest, setScrollRequest] = useState<SidebarScrollRequest | null>(null);
 	const activeDestination = activeSidebarDestination(pathname);
 	const lastPrimaryDestination = useRef<PrimarySidebarDestinationId>("agents");
 	const selectedPrimaryDestination = selectedPrimarySidebarDestination(

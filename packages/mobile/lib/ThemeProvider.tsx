@@ -1,3 +1,4 @@
+import { requireOptionalNativeModule } from "expo-modules-core";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Appearance, useColorScheme } from "react-native";
 import { themeFor, type ColorScheme, type Theme } from "./theme";
@@ -77,16 +78,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 	// around a screen as it moves.
 	const backgroundColor = themeFor(scheme).bgBase;
 	useEffect(() => {
-		// Required lazily, inside a guard: this is a native module, and a build made
-		// before it was added has no ExpoSystemUI to bind to. A static import would
-		// fail at startup — taking the whole app down — where the only thing actually
-		// at stake is whether the window is tinted.
-		try {
-			const systemUI = require("expo-system-ui") as typeof import("expo-system-ui");
-			void systemUI.setBackgroundColorAsync(backgroundColor).catch(() => {});
-		} catch {
-			// Older native build; the in-tree backdrop still covers the transition.
-		}
+		// Optional, not required: this is a native module, and a build made before it
+		// was added has no ExpoSystemUI to bind to. `expo-system-ui`'s own JS calls
+		// requireNativeModule at import time and throws there — so importing the
+		// package is exactly what broke the app on such a build. Asking the runtime
+		// for the module directly returns null instead, and the only thing at stake
+		// is whether the window is tinted.
+		const systemUI = requireOptionalNativeModule<{ setBackgroundColorAsync(color: string): Promise<void> }>("ExpoSystemUI");
+		if (systemUI) void systemUI.setBackgroundColorAsync(backgroundColor).catch(() => {});
 	}, [backgroundColor]);
 
 	const value = useMemo<ThemeState>(
