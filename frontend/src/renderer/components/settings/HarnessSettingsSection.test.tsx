@@ -128,38 +128,8 @@ describe("HarnessSettingsSection", () => {
 		expect(openExternal).toHaveBeenCalledWith("https://example.test/login");
 	});
 
-	it("automatically checks only installed harnesses with available authentication", async () => {
-		const probed: string[] = [];
-		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
-			if (path === "/api/v1/agents/readiness") return { data: catalogWithInstalled("claude-code", "cursor") } as never;
-			if (path === "/api/v1/agents/installers") return { data: plans } as never;
-			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
-			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [
-				{ agentId: "claude-code", action: "login", launchMode: "terminal", available: true },
-				{ agentId: "codex", action: "login", launchMode: "terminal", available: true },
-				{ agentId: "cursor", action: "instructions", launchMode: "documentation", available: true },
-			] } } as never;
-			return { data: undefined } as never;
-		});
-		vi.mocked(apiClient.POST).mockImplementation(async (path, options) => {
-			if (path === "/api/v1/agents/readiness/ensure") return { data: catalogWithInstalled("claude-code", "cursor") } as never;
-			if (path === "/api/v1/agents/{agent}/probe") {
-				const agent = (options as { params: { path: { agent: string } } }).params.path.agent;
-				probed.push(agent);
-				return { data: { agent: { id: agent, label: agent }, supported: true, installed: true } } as never;
-			}
-			return { data: undefined } as never;
-		});
-
-		renderSection();
-
-		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", {
-			params: { path: { agent: "claude-code" } },
-		}));
-		expect(probed).toEqual(["claude-code"]);
-	});
-
-	it("does not force a global readiness scan when the page opens", async () => {
+	it("ensures and caches readiness when the page opens", async () => {
+		const refreshed = catalogWithInstalled("claude-code", "codex");
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
@@ -167,11 +137,18 @@ describe("HarnessSettingsSection", () => {
 			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [] } } as never;
 			return { data: undefined } as never;
 		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness/ensure") return { data: refreshed } as never;
+			return { data: undefined } as never;
+		});
 
 		renderSection();
-		await screen.findByText("Claude Code");
+		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 
-		expect(apiClient.POST).not.toHaveBeenCalledWith("/api/v1/agents/readiness/ensure", expect.anything());
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/readiness/ensure", {
+			body: { agentIds: [], purpose: "display" },
+		}));
+		await waitFor(() => expect(row).toHaveTextContent("Installed"));
 	});
 
 	it("shows a compact authentication status with a separate manual recheck control", async () => {
@@ -206,11 +183,11 @@ describe("HarnessSettingsSection", () => {
 		}));
 	});
 
-	it("shares an automatic authentication check with terminal completion", async () => {
+	it("runs a fresh authentication check after terminal completion", async () => {
 		const authorized = catalogWithInstalled("claude-code");
 		authorized.agents[0].authentication.state = "authorized";
-		let resolveProbe!: (value: unknown) => void;
-		const pendingProbe = new Promise((resolve) => { resolveProbe = resolve; });
+		let resolveInitialProbe!: (value: unknown) => void;
+		const pendingInitialProbe = new Promise((resolve) => { resolveInitialProbe = resolve; });
 		let probeCalls = 0;
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
@@ -224,7 +201,8 @@ describe("HarnessSettingsSection", () => {
 		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/{agent}/probe") {
 				probeCalls += 1;
-				return await pendingProbe as never;
+				if (probeCalls === 1) return await pendingInitialProbe as never;
+				return { data: { agent: { id: "claude-code", label: "Claude Code", authStatus: "authorized" }, supported: true, installed: true } } as never;
 			}
 			if (path === "/api/v1/agents/readiness/ensure") return { data: authorized } as never;
 			if (path === "/api/v1/agents/{agent}/auth") return { data: {
@@ -245,6 +223,7 @@ describe("HarnessSettingsSection", () => {
 
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
+		await user.click(within(row).getByRole("button", { name: "Claude Code: Check login" }));
 		await waitFor(() => expect(probeCalls).toBe(1));
 		await user.click(within(row).getByRole("button", { name: "Login" }));
 		await within(row).findByTestId("inline-terminal-body");
@@ -252,7 +231,8 @@ describe("HarnessSettingsSection", () => {
 
 		act(() => terminalStateCallback.value?.("exited"));
 		expect(probeCalls).toBe(1);
-		resolveProbe({ data: { agent: { id: "claude-code", label: "Claude Code", authStatus: "authorized" }, supported: true, installed: true } });
+		resolveInitialProbe({ data: { agent: { id: "claude-code", label: "Claude Code", authStatus: "unauthorized" }, supported: true, installed: true } });
+		await waitFor(() => expect(probeCalls).toBe(2));
 
 		await waitFor(() => expect(close).toHaveBeenCalledWith("/api/v1/shell-terminals/{handleId}", {
 			params: { path: { handleId: "auth-terminal-1" } },

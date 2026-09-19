@@ -8,6 +8,7 @@ import {
 	cacheAgentReadiness,
 	ensureAgentReadiness,
 	useAgentReadinessQuery,
+	useEnsureAgentReadiness,
 } from "../../hooks/useAgentReadinessQuery";
 import { agentAuthPlansQueryKey, probeAgentAuth, useAgentAuthPlans, useStartAgentAuth } from "../../hooks/useAgentAuth";
 import { closeShellTerminal, shellTerminalsQueryKey } from "../../hooks/useShellTerminals";
@@ -98,6 +99,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	const { i18n, t } = useTranslation();
 	const queryClient = useQueryClient();
 	const agents = useAgentReadinessQuery();
+	useEnsureAgentReadiness();
 	const installers = useQuery({ queryKey: installerQueryKey, queryFn: fetchInstallers, staleTime: 60_000 });
 	const jobs = useQuery({ queryKey: installJobsQueryKey, queryFn: fetchInstallJobs, retry: false });
 	const authPlans = useAgentAuthPlans();
@@ -124,16 +126,6 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	const installed = useMemo(
 		() => new Set<AgentId>(agents.data?.agents.filter((agent) => agent.installation.state === "installed").map((agent) => agent.id as AgentId) ?? []),
 		[agents.data],
-	);
-	const automaticAuthAgentIDsKey = useMemo(
-		() => [...installed]
-			.filter((agentId) => {
-				const plan = agentAuthPlans.get(agentId);
-				return plan?.available && plan.action !== "instructions";
-			})
-			.sort()
-			.join("\u0000"),
-		[agentAuthPlans, installed],
 	);
 	const normalizedSearch = search.trim().toLowerCase();
 	const rows = AGENT_OPTIONS.filter((agentId) => agentId === authWorkflow?.agentId || agentLabel(agentId).toLowerCase().includes(normalizedSearch));
@@ -285,10 +277,15 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		}
 	};
 
-	const checkAuth = useCallback((agentId: AgentId): Promise<AgentAuthProbeResult | undefined> => {
+	const checkAuth = useCallback(async (
+		agentId: AgentId,
+		{ fresh = false }: { fresh?: boolean } = {},
+	): Promise<AgentAuthProbeResult | undefined> => {
 		const existing = authChecksInFlight.current.get(agentId);
-		if (existing) return existing;
-		const check = (async () => {
+		if (existing && !fresh) return existing;
+		let check: Promise<AgentAuthProbeResult | undefined>;
+		check = (async () => {
+			if (existing) await existing;
 			updateAuthState(agentId, { checking: true, error: null });
 			try {
 				const result = await probeAgentAuth(agentId);
@@ -299,7 +296,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 				updateAuthState(agentId, { error: error instanceof Error ? error.message : t("settings.harness.authFailed") });
 				return undefined;
 			} finally {
-				authChecksInFlight.current.delete(agentId);
+				if (authChecksInFlight.current.get(agentId) === check) authChecksInFlight.current.delete(agentId);
 				updateAuthState(agentId, { checking: false });
 			}
 		})();
@@ -307,17 +304,10 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		return check;
 	}, [queryClient, t, updateAuthState]);
 
-	useEffect(() => {
-		if (!agents.isSuccess || !authPlans.isSuccess || !automaticAuthAgentIDsKey) return;
-		for (const agentId of automaticAuthAgentIDsKey.split("\u0000") as AgentId[]) {
-			void checkAuth(agentId);
-		}
-	}, [agents.isSuccess, authPlans.isSuccess, automaticAuthAgentIDsKey, checkAuth]);
-
 	const finishAuth = useCallback(async (workflow: AuthTerminalWorkflow) => {
 		if (authWorkflowRef.current?.terminal.handleId !== workflow.terminal.handleId) return;
 		setAuthWorkflow((current) => current?.terminal.handleId === workflow.terminal.handleId ? { ...current, phase: "verifying", reason: undefined } : current);
-		const result = await checkAuth(workflow.agentId);
+		const result = await checkAuth(workflow.agentId, { fresh: true });
 		if (authWorkflowRef.current?.terminal.handleId !== workflow.terminal.handleId) return;
 		if (result?.agent.authStatus === "authorized") {
 			try {
