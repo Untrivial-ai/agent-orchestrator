@@ -1502,7 +1502,7 @@ func TestSpawn_DropsRoleModelOnHarnessMismatch(t *testing.T) {
 			})
 
 			rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
-				ProjectID: "mer", Kind: tc.kind, Harness: domain.HarnessCodex,
+				ProjectID: "mer", Kind: tc.kind, Harness: domain.AgentHarness("codex"),
 			})
 			if err != nil {
 				t.Fatal(err)

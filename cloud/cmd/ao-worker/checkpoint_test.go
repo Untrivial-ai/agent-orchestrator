@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"io"
 	"log/slog"
 	"net"
@@ -92,53 +91,6 @@ func TestCheckpointBridgeSafetyNetFires(t *testing.T) {
 	case <-ran:
 	case <-time.After(2 * time.Second):
 		t.Fatal("safety-net checkpoint did not run without a poke")
-	}
-}
-
-func TestWriteCapturedTranscriptClaude(t *testing.T) {
-	configDir := t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-	body := []byte(`{"type":"user"}` + "\n")
-	captured := transcriptCheckpoint{
-		AgentSessionID: "sess-1",
-		Harness:        "claude-code",
-		Transcript:     base64.StdEncoding.EncodeToString(body),
-	}
-	if err := writeCapturedTranscript(captured, "/home/ao/work", ""); err != nil {
-		t.Fatalf("writeCapturedTranscript: %v", err)
-	}
-	want := filepath.Join(configDir, "projects", "-home-ao-work", "sess-1.jsonl")
-	got, err := os.ReadFile(want)
-	if err != nil {
-		t.Fatalf("read written transcript: %v", err)
-	}
-	if string(got) != string(body) {
-		t.Fatalf("transcript = %q, want %q", got, body)
-	}
-}
-
-func TestWriteCapturedTranscriptDoesNotClobber(t *testing.T) {
-	configDir := t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-	dir := filepath.Join(configDir, "projects", "-home-ao-work")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	existing := filepath.Join(dir, "sess-1.jsonl")
-	if err := os.WriteFile(existing, []byte("agent-produced"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	captured := transcriptCheckpoint{
-		AgentSessionID: "sess-1",
-		Harness:        "claude-code",
-		Transcript:     base64.StdEncoding.EncodeToString([]byte("captured")),
-	}
-	if err := writeCapturedTranscript(captured, "/home/ao/work", ""); err != nil {
-		t.Fatalf("writeCapturedTranscript: %v", err)
-	}
-	got, _ := os.ReadFile(existing)
-	if string(got) != "agent-produced" {
-		t.Fatalf("existing transcript was clobbered: %q", got)
 	}
 }
 

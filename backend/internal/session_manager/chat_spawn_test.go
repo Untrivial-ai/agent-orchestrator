@@ -1424,13 +1424,13 @@ func TestChatSpawn_RollbackGivesEachCleanupStepAFreshDeadline(t *testing.T) {
 		recordingLauncher: &recordingLauncher{},
 		cancel:            cancel,
 	}
-	mgr, st, _ := newChatManager(launcher)
+	mgr, st, _ := newChatManager(t, launcher)
 	ws := mgr.workspace.(*fakeWorkspace)
 
 	_, _, _, err := mgr.Spawn(spawnCtx, ports.SpawnConfig{
 		ProjectID:     chatTestProject,
 		Kind:          domain.KindWorker,
-		Harness:       domain.HarnessCodex,
+		Harness:       domain.HarnessOpenCode,
 		Prompt:        "fix the button",
 		RequestedMode: domain.SessionModeChat,
 	})

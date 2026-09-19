@@ -45,17 +45,7 @@ let lastAppliedUpdateSettings: UpdateSettings = FAIL_CLOSED_UPDATE_SETTINGS;
 let developerModeHydrated = false;
 let developerModeRequested = false;
 let differentialEligible = false;
-let pendingTargetBytes: number | undefined;
 let offeredUpdateVersion: string | undefined;
-let offeredMacFiles: Array<{ url: string; size?: number }> = [];
-
-function selectMacTargetBytes(arm64: boolean): void {
-  const hasArm64 = offeredMacFiles.some(file => file.url.includes("arm64"));
-  const file = offeredMacFiles.find(file =>
-    /\.zip(?:$|[?#])/i.test(file.url) && file.url.includes("arm64") === (arm64 && hasArm64));
-  pendingTargetBytes = typeof file?.size === "number" && Number.isFinite(file.size) && file.size >= 0
-    ? file.size : undefined;
-}
 let transferObservation = {
   eligible: false,
   attemptedDifferential: false,
@@ -95,10 +85,6 @@ function wireUpdaterLogger(): void {
   const base = autoUpdater.logger ?? console;
   const observe = (level: "info" | "warn" | "error" | "debug", first: unknown) => {
     const message = typeof first === "string" ? first : "";
-    if (message === "Checked for macOS Rosetta environment (isRosetta=true)" ||
-        message === "Checked 'uname -a': arm64=true") {
-      selectMacTargetBytes(true);
-    }
     if (message.startsWith("Download block maps") || message.startsWith("Differential download:")) {
       transferObservation.attemptedDifferential = true;
       base.info("[auto-updater] differential transfer attempted");
@@ -106,7 +92,7 @@ function wireUpdaterLogger(): void {
       transferObservation.fallback = true;
       base.warn("[auto-updater] differential transfer fell back to full download");
     } else if (level === "warn" || level === "error") {
-      base[level](`[auto-updater] ${updateFailureCategory(message)}`);
+      base[level](`[auto-updater] ${message}`);
     }
   };
   autoUpdater.logger = {
@@ -1642,9 +1628,7 @@ function wireUpdaterEvents(): void {
     broadcastUpdaterStatus({ state: "checking" });
   });
   autoUpdater.on("update-available", (info) => {
-    offeredMacFiles = Array.isArray(info?.files) ? info.files : [];
     offeredUpdateVersion = info?.version;
-    selectMacTargetBytes(process.arch === "arm64");
     transferObservation = {
       eligible: differentialEligible,
       attemptedDifferential: false,

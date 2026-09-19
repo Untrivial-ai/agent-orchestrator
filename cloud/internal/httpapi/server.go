@@ -281,7 +281,7 @@ func New(options Options) *Server {
 	}
 	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
-		server.credentialValidator = newAgentCredentialValidator()
+		server.credentialValidator = newAgentCredentialValidator(nil)
 	}
 	if server.repositoryProbeClient == nil {
 		server.repositoryProbeClient = &http.Client{Timeout: 5 * time.Second}

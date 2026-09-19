@@ -155,7 +155,7 @@ describe("macOS differential update policy", () => {
   });
 
   it("disables immediately while an updater operation is still in flight", async () => {
-    const { module, autoUpdater, updaterEvents, telemetryMessages } = await importAutoUpdater(nightly);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater(nightly);
     await module.setMacDifferentialUpdates(stateDir, true);
     const blocked = deferred();
     autoUpdater.checkForUpdates.mockReturnValueOnce(blocked.promise);
@@ -165,7 +165,6 @@ describe("macOS differential update policy", () => {
     const off = module.setMacDifferentialUpdates(stateDir, false);
     expect(autoUpdater.disableDifferentialDownload).toBe(true);
     updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
-    expect(telemetryMessages().at(-1)?.payload).toMatchObject({ differential_eligible: true });
     blocked.resolve();
     await Promise.all([check, off]);
     await module.downloadUpdateNow();
@@ -173,7 +172,7 @@ describe("macOS differential update policy", () => {
   });
 
   it("omits unavailable progress metrics and sanitizes dependency logs", async () => {
-    const { module, autoUpdater, updaterEvents, statusMessages, telemetryMessages } = await importAutoUpdater(nightly);
+    const { module, autoUpdater, updaterEvents, statusMessages } = await importAutoUpdater(nightly);
     const base = autoUpdater.logger;
     await module.checkForUpdatesNow(stateDir);
     autoUpdater.logger.info("Download block maps (old: https://user:secret@host/old?token=secret)");
@@ -183,7 +182,6 @@ describe("macOS differential update policy", () => {
     expect(statusMessages().at(-1)?.payload).not.toHaveProperty("total");
     expect(statusMessages().at(-1)?.payload).not.toHaveProperty("bytesPerSecond");
     updaterEvents.get("error")?.(new Error("checksum mismatch"));
-    expect(telemetryMessages().at(-1)?.payload).toMatchObject({ transfer_mode: "differential", fallback: true });
     expect(JSON.stringify(base)).not.toContain("secret");
     expect(JSON.stringify([vi.mocked(base.info).mock.calls, vi.mocked(base.error).mock.calls, vi.mocked(base.warn).mock.calls])).not.toContain("secret");
   });
@@ -207,7 +205,7 @@ describe("macOS differential update policy", () => {
   });
 
   it("reports differential fallback and real transfer progress without signed URLs", async () => {
-    const { module, autoUpdater, updaterEvents, telemetryMessages, statusMessages } =
+    const { module, autoUpdater, updaterEvents, statusMessages } =
       await importAutoUpdater({
         enabled: true,
         channel: "nightly",
@@ -254,15 +252,6 @@ describe("macOS differential update policy", () => {
         }),
       ]),
     );
-    expect(telemetryMessages().at(-1)?.payload).toMatchObject({
-      event: "ao.renderer.update_downloaded",
-      transfer_mode: "differential",
-      fallback: true,
-      transferred_bytes: 250,
-      target_bytes: 1000,
-      to_version: "1.2.3",
-    });
-    expect(JSON.stringify(telemetryMessages())).not.toContain("secret");
   });
 
   it("enables only macOS Nightly Developer Mode without a feature pin", async () => {

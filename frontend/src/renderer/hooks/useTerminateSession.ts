@@ -149,7 +149,7 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 			if (session.cloud) void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
 			options.onSuccess?.(session);
 		},
-		onError: (_error, session, context) => {
+		onError: (_error, _session, context) => {
 			// Restore the pre-mutation snapshots so a failed kill un-archives the card
 			// rather than leaving it wrongly terminated.
 			const ctx = context as TerminateMutationContext | undefined;
