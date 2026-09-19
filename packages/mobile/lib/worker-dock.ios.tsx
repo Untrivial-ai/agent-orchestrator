@@ -1,5 +1,5 @@
 import { Host } from "@expo/ui";
-import { Button, GlassEffectContainer, HStack, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
+import { Button, GlassEffectContainer, Group, HStack, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
 import {
 	accessibilityIdentifier,
 	Animation,
@@ -16,7 +16,8 @@ import {
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { useEffect } from "react";
-import { glassField } from "./glass";
+import { glassCircle, glassField } from "./glass";
+import { GLASS_CIRCLE_SIZE } from "./native-header-button.ios";
 import { haptics } from "./haptics";
 import { duration } from "./tokens";
 import { useTheme, useThemeState } from "./ThemeProvider";
@@ -55,14 +56,18 @@ export function WorkerDock({
 			    A single container lets the system blend their glass as they meet. */}
 			<GlassEffectContainer spacing={10}>
 			<HStack spacing={10} modifiers={[frame({ height: 52, maxWidth: 1000 })]}>
-				{visibility.showControls ? <Menu
+				{visibility.showControls ? <Group
+					modifiers={[
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
+						glassCircle(),
+					]}
+				><Menu
 					label="Worker options"
 					systemImage="line.3.horizontal.decrease"
 					modifiers={[
-						buttonStyle("glass"),
+						buttonStyle("plain"),
 						controlSize("large"),
-						buttonBorderShape("circle"),
-						frame({ width: 44, height: 44 }),
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 						labelStyle("iconOnly"),
 						tint(projectFiltered ? t.accent : t.textSecondary),
 						accessibilityIdentifier("worker-controls"),
@@ -91,7 +96,7 @@ export function WorkerDock({
 							))}
 						</Menu>
 					</Section>
-				</Menu> : null}
+				</Menu></Group> : null}
 				{visibility.showSearch ? (
 					<HStack
 						spacing={0}
@@ -138,20 +143,24 @@ export function WorkerDock({
 				) : visibility.showControls && visibility.showSpawn ? (
 					<Spacer />
 				) : null}
-				{visibility.showSpawn ? <Button
+				{visibility.showSpawn ? <Group
+					modifiers={[
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
+						glassCircle(),
+					]}
+				><Button
 					label="Spawn worker"
 					systemImage="plus"
 					onPress={onSpawn}
 					modifiers={[
-						buttonStyle("glass"),
+						buttonStyle("plain"),
 						controlSize("large"),
-						buttonBorderShape("circle"),
-						frame({ width: 44, height: 44 }),
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 						labelStyle("iconOnly"),
 						tint(t.textPrimary),
 						accessibilityIdentifier("spawn-worker"),
 					]}
-				/> : null}
+				/></Group> : null}
 			</HStack>
 			</GlassEffectContainer>
 		</Host>
