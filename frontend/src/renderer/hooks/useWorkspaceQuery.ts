@@ -93,10 +93,6 @@ function toWorkspaceSession(
 		title: session.displayName ?? session.issueId ?? session.id,
 		issueId: session.issueId,
 		provider: toAgentProvider(session.harness),
-		reviewerHarness: session.reviewerHarness ? toAgentProvider(session.reviewerHarness) : undefined,
-		autoInjectCI: session.autoInjectCI,
-		autoInjectReview: session.autoInjectReview,
-		terminateOnPrMerge: session.terminateOnPrMerge,
 		reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
 		reviewerConfig: session.reviewerConfig
 			? {
@@ -301,6 +297,10 @@ function toCloudWorkspaceSession(
 		workspaceName: project.displayName,
 		title: session.displayName || session.id,
 		provider: toAgentProvider(session.harness),
+		reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
+		autoInjectCI: session.autoInjectCI ?? true,
+		autoInjectReview: session.autoInjectReview ?? true,
+		terminateOnPrMerge: session.terminateOnPrMerge ?? false,
 		kind: session.kind === "orchestrator" ? "orchestrator" : "worker",
 		branch: session.branch || undefined,
 		status: toSessionStatus(session.status, session.isTerminated),
