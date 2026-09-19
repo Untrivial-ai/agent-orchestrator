@@ -7,8 +7,12 @@ import { AgentBrowserCDPBridge, type AgentBrowserTargetProvider } from "./agent-
 const MAX_ARGUMENTS = 100;
 const MAX_ARGUMENT_CHARS = 16_384;
 const MAX_OUTPUT_BYTES = 1 << 20;
-const MAX_SCREENSHOT_BYTES = 5 << 20;
+export const MAX_SCREENSHOT_BYTES = 5 << 20;
 const COMMAND_TIMEOUT_MS = 60_000;
+// Screenshot capture must fail well inside the daemon's 60s REST deadline so a
+// stalled frame capture surfaces as AGENT_BROWSER_TIMEOUT (and the capturePage
+// fallback) instead of a generic request timeout.
+const SCREENSHOT_TIMEOUT_MS = 30_000;
 const CLOSE_TIMEOUT_MS = 10_000;
 const BRIDGE_CLOSE_TIMEOUT_MS = 5_000;
 export const BROWSER_RUNTIME_RECLAIM_GRACE_MS = 15 * 60_000;
@@ -179,6 +183,7 @@ export class AgentBrowserRuntime {
 		args: string[],
 		provider: AgentBrowserTargetProvider,
 		signal?: AbortSignal,
+		timeoutMs?: number,
 	): Promise<AgentBrowserRunResult> {
 		if (this.disposed) throw runtimeError("AGENT_BROWSER_RUNTIME_CLOSED", "Browser automation runtime is closed");
 		await this.assertBinary();
@@ -203,7 +208,7 @@ export class AgentBrowserRuntime {
 				disabled.stderr.trim() || "Unable to disable agent-browser streaming",
 			);
 		}
-		const result = await this.processRunner(this.options.binaryPath, args, environment, signal);
+		const result = await this.processRunner(this.options.binaryPath, args, environment, signal, timeoutMs);
 		if (result.exitCode !== 0) {
 			throw runtimeError(
 				"AGENT_BROWSER_COMMAND_FAILED",
@@ -235,7 +240,7 @@ export class AgentBrowserRuntime {
 		const directory = await mkdtemp(path.join(runtime.runtimeDir, "screenshot-"));
 		const target = path.join(directory, "screenshot.png");
 		try {
-			await this.run(sessionId, ["screenshot", target, "--json"], provider, signal);
+			await this.run(sessionId, ["screenshot", target, "--json"], provider, signal, SCREENSHOT_TIMEOUT_MS);
 			const image = await readFile(target);
 			if (image.length > MAX_SCREENSHOT_BYTES) {
 				throw runtimeError("AGENT_BROWSER_OUTPUT_TOO_LARGE", "Browser screenshot exceeded AO's size limit");

@@ -1025,6 +1025,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
       summary: Execute a target-scoped command in a session's desktop browser
       tags:
       - browser

@@ -94,6 +94,13 @@ func writeBrowserError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "BROWSER_RUNTIME_UNAVAILABLE", "Desktop browser runtime is not connected", nil)
 		return
 	}
+	// A browser command that outlives the request deadline is a stalled desktop
+	// runtime, not momentary service contention — report it as a gateway timeout
+	// instead of letting it fall through to the generic SERVICE_UNAVAILABLE.
+	if errors.Is(err, context.DeadlineExceeded) {
+		envelope.WriteAPIError(w, r, http.StatusGatewayTimeout, "timeout", "BROWSER_COMMAND_TIMEOUT", "Browser command timed out waiting for the desktop browser runtime", nil)
+		return
+	}
 	var commandErr browserruntime.CommandError
 	if errors.As(err, &commandErr) {
 		status := http.StatusUnprocessableEntity
@@ -106,6 +113,9 @@ func writeBrowserError(w http.ResponseWriter, r *http.Request, err error) {
 		case "STALE_REFERENCE", "TAB_NOT_FOUND":
 			status = http.StatusConflict
 			typeName = "conflict"
+		case "AGENT_BROWSER_TIMEOUT":
+			status = http.StatusGatewayTimeout
+			typeName = "timeout"
 		case "BROWSER_TARGET_UNAVAILABLE", "BROWSER_AUTOMATION_UNAVAILABLE", "AGENT_BROWSER_NOT_INSTALLED",
 			"AGENT_BROWSER_START_FAILED", "BROWSER_DEVTOOLS_UNAVAILABLE":
 			status = http.StatusServiceUnavailable
