@@ -18,7 +18,7 @@ var _ ports.AgentScopedAuthChecker = (*Plugin)(nil)
 
 type autohandAuthConfig struct {
 	Provider           string                              `json:"provider" toml:"provider" yaml:"provider"`
-	Profiles           map[string]autohandAuthConfig       `json:"profiles" toml:"profiles" yaml:"profiles"`
+	Profiles           map[string]map[string]any           `json:"profiles" toml:"profiles" yaml:"profiles"`
 	Auth               autohandAuthSettings                `json:"auth" toml:"auth" yaml:"auth"`
 	AutohandAI         autohandProviderSettings            `json:"autohandai" toml:"autohandai" yaml:"autohandai"`
 	OpenRouter         autohandProviderSettings            `json:"openrouter" toml:"openrouter" yaml:"openrouter"`
@@ -71,14 +71,17 @@ type autohandProviderSettings struct {
 	APIMode        string                `json:"apiMode" toml:"apiMode" yaml:"apiMode"`
 	ModelPath      string                `json:"modelPath" toml:"modelPath" yaml:"modelPath"`
 	ModelSHA256    string                `json:"modelSha256" toml:"modelSha256" yaml:"modelSha256"`
+	Disabled       bool                  `json:"disabled" toml:"disabled" yaml:"disabled"`
 	ChatGPTAuth    autohandOAuthSettings `json:"chatgptAuth" toml:"chatgptAuth" yaml:"chatgptAuth"`
 	OAuthAuth      autohandOAuthSettings `json:"oauthAuth" toml:"oauthAuth" yaml:"oauthAuth"`
 	APIKeyRequired *bool                 `json:"apiKeyRequired" toml:"apiKeyRequired" yaml:"apiKeyRequired"`
 }
 
 type autohandOAuthSettings struct {
-	AccessToken string `json:"accessToken" toml:"accessToken" yaml:"accessToken"`
-	AccountID   string `json:"accountId" toml:"accountId" yaml:"accountId"`
+	AccessToken  string `json:"accessToken" toml:"accessToken" yaml:"accessToken"`
+	RefreshToken string `json:"refreshToken" toml:"refreshToken" yaml:"refreshToken"`
+	AccountID    string `json:"accountId" toml:"accountId" yaml:"accountId"`
+	ExpiresAt    string `json:"expiresAt" toml:"expiresAt" yaml:"expiresAt"`
 }
 
 type autohandWorkspaceSettings struct {
@@ -254,7 +257,9 @@ func applyAutohandRunOverrides(config *autohandAuthConfig, args []string) bool {
 		if !ok {
 			return false
 		}
-		mergeAutohandConfig(config, overlay)
+		if !applyAutohandProfile(config, overlay) {
+			return false
+		}
 	}
 	for _, entry := range sets {
 		if !applyAutohandSet(config, entry) {
@@ -306,114 +311,25 @@ func autohandRunArgs(args []string) (profile string, sets []string, provider str
 	return profile, sets, provider, true
 }
 
-func mergeAutohandConfig(base *autohandAuthConfig, overlay autohandAuthConfig) {
-	if overlay.Provider != "" {
-		base.Provider = overlay.Provider
-	}
-	for _, provider := range []string{
-		"autohandai", "openrouter", "anthropic", "ollama", "llamacpp", "openai", "mlx", "llmgateway",
-		"azure", "zai", "sakana", "vertexai", "xai", "cerebras", "nvidia", "deepseek", "bedrock", "blueprint-local",
-	} {
-		settings, ok := overlay.autohandProvider(provider)
-		if !ok {
-			continue
+func applyAutohandProfile(config *autohandAuthConfig, profile map[string]any) bool {
+	var applyLeaves func([]string, any) bool
+	applyLeaves = func(path []string, value any) bool {
+		if object, ok := value.(map[string]any); ok && len(object) > 0 {
+			for key, child := range object {
+				if !applyLeaves(append(path, key), child) {
+					return false
+				}
+			}
+			return true
 		}
-		current, _ := base.autohandProvider(provider)
-		base.setAutohandProvider(provider, mergeAutohandProviderSettings(current, settings))
+		return applyAutohandPath(config, path, value)
 	}
-	for name, settings := range overlay.CustomProviders {
-		current := base.CustomProviders[name]
-		if base.CustomProviders == nil {
-			base.CustomProviders = make(map[string]autohandProviderSettings)
+	for key, value := range profile {
+		if !applyLeaves([]string{key}, value) {
+			return false
 		}
-		base.CustomProviders[name] = mergeAutohandProviderSettings(current, settings)
 	}
-	for name, settings := range overlay.ExtensionProviders {
-		current := base.ExtensionProviders[name]
-		if base.ExtensionProviders == nil {
-			base.ExtensionProviders = make(map[string]autohandProviderSettings)
-		}
-		base.ExtensionProviders[name] = mergeAutohandProviderSettings(current, settings)
-	}
-}
-
-func mergeAutohandProviderSettings(base, overlay autohandProviderSettings) autohandProviderSettings {
-	if overlay.ID != "" {
-		base.ID = overlay.ID
-	}
-	if overlay.DisplayName != "" {
-		base.DisplayName = overlay.DisplayName
-	}
-	if overlay.APIFormat != "" {
-		base.APIFormat = overlay.APIFormat
-	}
-	if overlay.APIKey != "" {
-		base.APIKey = overlay.APIKey
-	}
-	if overlay.AuthToken != "" {
-		base.AuthToken = overlay.AuthToken
-	}
-	if overlay.Model != "" {
-		base.Model = overlay.Model
-	}
-	if overlay.Plan != "" {
-		base.Plan = overlay.Plan
-	}
-	if overlay.AuthMode != "" {
-		base.AuthMode = overlay.AuthMode
-	}
-	if overlay.AuthMethod != "" {
-		base.AuthMethod = overlay.AuthMethod
-	}
-	if overlay.BaseURL != "" {
-		base.BaseURL = overlay.BaseURL
-	}
-	if overlay.Endpoint != "" {
-		base.Endpoint = overlay.Endpoint
-	}
-	if overlay.ResourceName != "" {
-		base.ResourceName = overlay.ResourceName
-	}
-	if overlay.DeploymentName != "" {
-		base.DeploymentName = overlay.DeploymentName
-	}
-	if overlay.TenantID != "" {
-		base.TenantID = overlay.TenantID
-	}
-	if overlay.ClientID != "" {
-		base.ClientID = overlay.ClientID
-	}
-	if overlay.ClientSecret != "" {
-		base.ClientSecret = overlay.ClientSecret
-	}
-	if overlay.ProjectID != "" {
-		base.ProjectID = overlay.ProjectID
-	}
-	if overlay.Region != "" {
-		base.Region = overlay.Region
-	}
-	if overlay.Profile != "" {
-		base.Profile = overlay.Profile
-	}
-	if overlay.APIMode != "" {
-		base.APIMode = overlay.APIMode
-	}
-	if overlay.ModelPath != "" {
-		base.ModelPath = overlay.ModelPath
-	}
-	if overlay.ModelSHA256 != "" {
-		base.ModelSHA256 = overlay.ModelSHA256
-	}
-	if overlay.ChatGPTAuth != (autohandOAuthSettings{}) {
-		base.ChatGPTAuth = overlay.ChatGPTAuth
-	}
-	if overlay.OAuthAuth != (autohandOAuthSettings{}) {
-		base.OAuthAuth = overlay.OAuthAuth
-	}
-	if overlay.APIKeyRequired != nil {
-		base.APIKeyRequired = overlay.APIKeyRequired
-	}
-	return base
+	return true
 }
 
 func applyAutohandSet(config *autohandAuthConfig, input string) bool {
@@ -427,11 +343,35 @@ func applyAutohandSet(config *autohandAuthConfig, input string) bool {
 			return false
 		}
 	}
-	if parts[0] == "auth" || parts[0] == "profiles" {
+	value := any(strings.TrimSpace(raw))
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(strings.TrimSpace(raw)), &value)
+	}
+	return applyAutohandPath(config, parts, value)
+}
+
+func applyAutohandPath(config *autohandAuthConfig, parts []string, value any) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for index, part := range parts {
+		if index == 1 && parts[0] == "extensionProviders" && strings.HasPrefix(part, "extension:") {
+			continue
+		}
+		if !validAutohandSetSegment(part) {
+			return false
+		}
+	}
+	switch parts[0] {
+	case "profiles", "auth", "configPath", "isNewConfig", "workspaceOverlay", "workspaceTrust", "overlayWorkspaceRoot", "runOverlay":
 		return false
 	}
 	if len(parts) == 1 && parts[0] == "provider" {
-		config.Provider = strings.Trim(strings.TrimSpace(raw), `"`)
+		provider, ok := value.(string)
+		if !ok {
+			return false
+		}
+		config.Provider = provider
 		return true
 	}
 	if len(parts) < 2 {
@@ -439,107 +379,151 @@ func applyAutohandSet(config *autohandAuthConfig, input string) bool {
 	}
 	provider := parts[0]
 	if provider == "customProviders" || provider == "extensionProviders" {
-		if len(parts) != 3 {
+		if len(parts) < 2 {
 			return false
 		}
 		if provider == "customProviders" {
 			provider = "custom:" + parts[1]
 		} else {
-			provider = "extension:" + parts[1]
+			provider = parts[1]
+			if !strings.HasPrefix(provider, "extension:") {
+				provider = "extension:" + provider
+			}
 		}
-		parts = []string{provider, parts[2]}
+		parts = append([]string{provider}, parts[2:]...)
 	}
 	provider = normalizedAutohandProvider(provider)
 	if !validAutohandProvider(provider) {
 		return true
 	}
-	settings, _ := config.autohandProvider(provider)
-	value := strings.TrimSpace(raw)
-	var decoded any
-	if value != "" && json.Unmarshal([]byte(value), &decoded) == nil {
-		switch typed := decoded.(type) {
-		case string:
-			value = typed
-		case bool:
-			if parts[1] != "apiKeyRequired" {
-				return false
-			}
-			settings.APIKeyRequired = &typed
-			config.setAutohandProvider(provider, settings)
-			return true
-		default:
+	if len(parts) == 1 {
+		if object, ok := value.(map[string]any); !ok || len(object) != 0 {
 			return false
 		}
+		config.setAutohandProvider(provider, autohandProviderSettings{})
+		return true
+	}
+	settings, _ := config.autohandProvider(provider)
+	if len(parts) == 2 && (parts[1] == "chatgptAuth" || parts[1] == "oauthAuth") {
+		if object, ok := value.(map[string]any); !ok || len(object) != 0 {
+			return false
+		}
+		if parts[1] == "chatgptAuth" {
+			settings.ChatGPTAuth = autohandOAuthSettings{}
+		} else {
+			settings.OAuthAuth = autohandOAuthSettings{}
+		}
+		config.setAutohandProvider(provider, settings)
+		return true
 	}
 	if len(parts) == 3 {
+		text, ok := value.(string)
+		if !ok {
+			return false
+		}
 		switch {
 		case provider == "openai" && parts[1] == "chatgptAuth":
 			switch parts[2] {
 			case "accessToken":
-				settings.ChatGPTAuth.AccessToken = value
+				settings.ChatGPTAuth.AccessToken = text
+			case "refreshToken":
+				settings.ChatGPTAuth.RefreshToken = text
 			case "accountId":
-				settings.ChatGPTAuth.AccountID = value
+				settings.ChatGPTAuth.AccountID = text
+			case "expiresAt":
+				settings.ChatGPTAuth.ExpiresAt = text
 			default:
 				return true
 			}
 		case provider == "xai" && parts[1] == "oauthAuth":
-			if parts[2] != "accessToken" {
+			switch parts[2] {
+			case "accessToken":
+				settings.OAuthAuth.AccessToken = text
+			case "refreshToken":
+				settings.OAuthAuth.RefreshToken = text
+			case "expiresAt":
+				settings.OAuthAuth.ExpiresAt = text
+			default:
 				return true
 			}
-			settings.OAuthAuth.AccessToken = value
 		default:
 			return true
 		}
 		config.setAutohandProvider(provider, settings)
 		return true
 	}
+	if len(parts) != 2 {
+		return true
+	}
+	if parts[1] == "apiKeyRequired" {
+		required, ok := value.(bool)
+		if !ok {
+			return false
+		}
+		settings.APIKeyRequired = &required
+		config.setAutohandProvider(provider, settings)
+		return true
+	}
+	if parts[1] == "disabled" {
+		disabled, ok := value.(bool)
+		if !ok {
+			return false
+		}
+		settings.Disabled = disabled
+		config.setAutohandProvider(provider, settings)
+		return true
+	}
+	text, ok := value.(string)
+	if !ok {
+		return false
+	}
 	switch parts[1] {
 	case "id":
-		settings.ID = value
+		settings.ID = text
 	case "displayName":
-		settings.DisplayName = value
+		settings.DisplayName = text
 	case "apiFormat":
-		settings.APIFormat = value
+		settings.APIFormat = text
 	case "apiKey":
-		settings.APIKey = value
+		settings.APIKey = text
 	case "authToken":
-		settings.AuthToken = value
+		settings.AuthToken = text
 	case "model":
-		settings.Model = value
+		settings.Model = text
 	case "plan":
-		settings.Plan = value
+		settings.Plan = text
 	case "authMode":
-		settings.AuthMode = value
+		settings.AuthMode = text
 	case "authMethod":
-		settings.AuthMethod = value
+		settings.AuthMethod = text
 	case "baseUrl":
-		settings.BaseURL = value
+		settings.BaseURL = text
 	case "endpoint":
-		settings.Endpoint = value
+		settings.Endpoint = text
 	case "resourceName":
-		settings.ResourceName = value
+		settings.ResourceName = text
 	case "deploymentName":
-		settings.DeploymentName = value
+		settings.DeploymentName = text
 	case "tenantId":
-		settings.TenantID = value
+		settings.TenantID = text
 	case "clientId":
-		settings.ClientID = value
+		settings.ClientID = text
 	case "clientSecret":
-		settings.ClientSecret = value
+		settings.ClientSecret = text
 	case "projectId":
-		settings.ProjectID = value
+		settings.ProjectID = text
 	case "region":
-		settings.Region = value
+		settings.Region = text
 	case "profile":
-		settings.Profile = value
+		settings.Profile = text
 	case "apiMode":
-		settings.APIMode = value
+		settings.APIMode = text
 	case "modelPath":
-		settings.ModelPath = value
+		settings.ModelPath = text
 	case "modelSha256":
-		settings.ModelSHA256 = value
+		settings.ModelSHA256 = text
 	default:
-		return false
+		return true
 	}
 	config.setAutohandProvider(provider, settings)
 	return true
@@ -565,7 +549,10 @@ func autohandProviderStatus(ctx context.Context, d authutil.Dependencies, config
 		return ports.AgentAuthStatusUnknown
 	}
 	if provider == "blueprint-local" {
-		if strings.TrimSpace(settings.ModelPath) == "" || strings.TrimSpace(settings.ModelSHA256) == "" {
+		modelPath := strings.TrimSpace(settings.ModelPath)
+		modelSHA256 := strings.TrimSpace(settings.ModelSHA256)
+		if !filepath.IsAbs(modelPath) || filepath.Clean(modelPath) != modelPath || filepath.Ext(modelPath) != ".gguf" ||
+			!validAutohandSHA256(modelSHA256) {
 			return ports.AgentAuthStatusUnknown
 		}
 		return ports.AgentAuthStatusNotApplicable
@@ -575,7 +562,7 @@ func autohandProviderStatus(ctx context.Context, d authutil.Dependencies, config
 	}
 	if strings.HasPrefix(provider, "custom:") {
 		id := strings.TrimPrefix(provider, "custom:")
-		if strings.TrimSpace(settings.ID) != id || strings.TrimSpace(settings.DisplayName) == "" ||
+		if settings.Disabled || strings.TrimSpace(settings.ID) != id || strings.TrimSpace(settings.DisplayName) == "" ||
 			strings.TrimSpace(settings.APIFormat) != "openai-compatible" || strings.TrimSpace(settings.BaseURL) == "" {
 			return ports.AgentAuthStatusUnknown
 		}
@@ -608,10 +595,7 @@ func autohandProviderStatus(ctx context.Context, d authutil.Dependencies, config
 	if provider == "openai" {
 		switch strings.ToLower(strings.TrimSpace(settings.AuthMode)) {
 		case "chatgpt":
-			if usableSecret(settings.ChatGPTAuth.AccessToken) && usableSecret(settings.ChatGPTAuth.AccountID) {
-				return ports.AgentAuthStatusConfigured
-			}
-			return ports.AgentAuthStatusUnknown
+			return autohandOAuthStatus(settings.ChatGPTAuth, true, d)
 		case "", "api-key":
 		default:
 			return ports.AgentAuthStatusUnknown
@@ -620,7 +604,7 @@ func autohandProviderStatus(ctx context.Context, d authutil.Dependencies, config
 	if provider == "xai" {
 		switch strings.ToLower(strings.TrimSpace(settings.AuthMode)) {
 		case "oauth":
-			return configuredIfSecret(settings.OAuthAuth.AccessToken)
+			return autohandOAuthStatus(settings.OAuthAuth, false, d)
 		case "", "api-key":
 		default:
 			return ports.AgentAuthStatusUnknown
@@ -641,6 +625,10 @@ func autohandProviderStatus(ctx context.Context, d authutil.Dependencies, config
 			} else {
 				authMode = "bedrock-api-key"
 			}
+		}
+		if (apiMode == "converse" && authMode != "aws-credentials") ||
+			(apiMode != "converse" && authMode != "bedrock-api-key") {
+			return ports.AgentAuthStatusUnknown
 		}
 		if authMode == "bedrock-api-key" {
 			return configuredIfSecret(settings.APIKey)
@@ -669,7 +657,7 @@ func autohandProviderStatus(ctx context.Context, d authutil.Dependencies, config
 		return authutil.GoogleADCEvidence(ctx, d).Status
 	}
 	if provider == "azure" {
-		baseURL := firstNonempty(settings.BaseURL, settings.Endpoint, d.Getenv("AZURE_OPENAI_ENDPOINT"))
+		baseURL := firstNonempty(settings.BaseURL, d.Getenv("AZURE_OPENAI_ENDPOINT"))
 		resource := strings.TrimSpace(settings.ResourceName)
 		deployment := firstNonempty(settings.DeploymentName, d.Getenv("AZURE_OPENAI_DEPLOYMENT"))
 		if baseURL == "" && (resource == "" || deployment == "") {
@@ -797,6 +785,39 @@ func validAutohandProvider(provider string) bool {
 		}
 	}
 	return false
+}
+
+func validAutohandSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func autohandOAuthStatus(auth autohandOAuthSettings, requireAccount bool, d authutil.Dependencies) ports.AgentAuthStatus {
+	if !usableSecret(auth.AccessToken) || (requireAccount && !usableSecret(auth.AccountID)) {
+		return ports.AgentAuthStatusUnknown
+	}
+	if strings.TrimSpace(auth.ExpiresAt) == "" {
+		return ports.AgentAuthStatusConfigured
+	}
+	expires, ok := authutil.ParseExpiry(auth.ExpiresAt)
+	if !ok {
+		return ports.AgentAuthStatusUnknown
+	}
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	if !expires.After(now()) && !usableSecret(auth.RefreshToken) {
+		return ports.AgentAuthStatusUnknown
+	}
+	return ports.AgentAuthStatusConfigured
 }
 
 func autohandAccountStatus(auth autohandAuthSettings, d authutil.Dependencies) ports.AgentAuthStatus {
