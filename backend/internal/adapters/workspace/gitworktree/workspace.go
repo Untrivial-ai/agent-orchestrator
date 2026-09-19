@@ -60,6 +60,36 @@ func repoTeardownLock(repo string) (func(), error) {
 	return m.Unlock, nil
 }
 
+// repoSpawnLock serializes the SPAWN lane per repository. `git worktree add`
+// writes branch.<name>.remote/merge into .git/config, whose `.config.lock`
+// races when concurrent spawns target the same repo (#4350): the loser exits
+// 255 ("could not lock config file") and surfaces as an opaque 500. Teardown
+// already has this same per-repo fence (repoTeardownLock); spawn must hold the
+// analogous one for the duration of fetch+add so all spawns funnel through the
+// same serialization as teardown. Mirrors live in their own lane and never
+// take this lock, so restoring a repo is never delayed behind a sibling spawn;
+// different repositories stay unlocked and spawn in parallel.
+var (
+	spawnMu    sync.Mutex
+	spawnLocks = map[string]*sync.Mutex{}
+)
+
+func repoSpawnLock(repo string) (func(), error) {
+	key, err := physicalAbs(repo)
+	if err != nil {
+		return nil, err
+	}
+	spawnMu.Lock()
+	m := spawnLocks[key]
+	if m == nil {
+		m = &sync.Mutex{}
+		spawnLocks[key] = m
+	}
+	spawnMu.Unlock()
+	m.Lock()
+	return m.Unlock, nil
+}
+
 // ErrPreservedConflict is an adapter-local alias of ports.ErrPreservedConflict.
 // Tests inside this package use this name; callers outside use ports.ErrPreservedConflict
 // and errors.Is works because the adapter wraps the ports sentinel.
@@ -75,6 +105,7 @@ var (
 	ErrBranchNotFetched          = ports.ErrWorkspaceBranchNotFetched
 	ErrBranchInvalid             = ports.ErrWorkspaceBranchInvalid
 	ErrDefaultBranchUnresolved   = ports.ErrWorkspaceDefaultBranchUnresolved
+	ErrWorkspaceCreateFailed     = ports.ErrWorkspaceCreateFailed
 	// ErrWorktreeLocked is an adapter-local alias of ports.ErrWorkspaceLocked,
 	// following the same aliasing convention as the branch sentinels above.
 	ErrWorktreeLocked = ports.ErrWorkspaceLocked
@@ -252,6 +283,15 @@ func (w *Workspace) FetchDefaultBranch(ctx context.Context, repoPath string, tar
 	if err := w.validateBranch(ctx, repo, target.Branch); err != nil {
 		return err
 	}
+	// Serialize with worktree adds on the same repo: a fetch rewrites
+	// packed-refs (packed-refs.lock) and can also take .git/config.lock, so
+	// concurrent spawn-time fetches race worktree adds on the same clone
+	// (#4350).
+	unlock, err := repoSpawnLock(repo)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if _, err := w.run(ctx, w.binary, fetchBranchArgs(repo, target.Remote, target.Branch)...); err != nil {
 		return fmt.Errorf("gitworktree: fetch %s %s: %w", target.Remote, target.Branch, err)
 	}
@@ -1293,6 +1333,20 @@ func registeredWorktreeDirMissing(rec worktreeRecord) (bool, error) {
 }
 
 func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBranch, baseRef string, resolveExistingBase bool) (string, error) {
+	// Concurrent spawns against one repo race the create lane: `git fetch` and
+	// `git worktree add` both write .git/config via git's config.lock, so the
+	// loser dies with `could not lock config file ... exit status 255` and
+	// surfaces as an opaque 500 (#4350). Serialize the spawn lane per repo the
+	// same way teardown already does (repoTeardownLock). Different repositories
+	// have independent locks and still spawn in parallel; mirrors and restores
+	// funnel through addWorktree too for the same fence; teardown takes its own
+	// lock and never takes this one, so the two lanes stay orthogonal.
+	unlock, err := repoSpawnLock(repo)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
 	// Refuse early if the branch is already checked out in another worktree:
 	// `git worktree add` will fail, but its stderr leaks through as an opaque
 	// 500. A typed sentinel lets the HTTP layer surface a 409.
@@ -1333,7 +1387,7 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 			baseRef = refs.baseRef
 		}
 		if _, err := w.run(ctx, w.binary, worktreeAddBranchArgs(repo, path, branch, force)...); err != nil {
-			return "", fmt.Errorf("gitworktree: worktree add existing branch %q: %w", branch, err)
+			return "", fmt.Errorf("%w: gitworktree: worktree add existing branch %q: %w", ErrWorkspaceCreateFailed, branch, err)
 		}
 		return baseRef, nil
 	}
@@ -1348,7 +1402,7 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 		}
 		baseRef = refs.baseRef
 		if err := w.addNewBranchWorktree(ctx, repo, branch, path, refs.seedRef, force); err != nil {
-			return "", fmt.Errorf("gitworktree: worktree add branch %q from %q: %w", branch, refs.seedRef, err)
+			return "", fmt.Errorf("%w: gitworktree: worktree add branch %q from %q: %w", ErrWorkspaceCreateFailed, branch, refs.seedRef, err)
 		}
 		return baseRef, nil
 	}
@@ -1364,7 +1418,7 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 	// comparison ref remains. Fresh creation returns above after resolving its
 	// seed and comparison refs independently.
 	if err := w.addNewBranchWorktree(ctx, repo, branch, path, seedRef, force); err != nil {
-		return "", fmt.Errorf("gitworktree: worktree add branch %q from %q: %w", branch, seedRef, err)
+		return "", fmt.Errorf("%w: gitworktree: worktree add branch %q from %q: %w", ErrWorkspaceCreateFailed, branch, seedRef, err)
 	}
 	return baseRef, nil
 }
@@ -1496,6 +1550,14 @@ func (w *Workspace) workspaceProjectBranchFree(ctx context.Context, repos []work
 }
 
 func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspaceProjectRepo, branch string) (string, error) {
+	// Same per-repo serialization as addWorktree: this path runs its own
+	// `git worktree add -b` and races the same .git/config.lock (#4350).
+	unlock, err := repoSpawnLock(repo.repoPath)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
 	baseRef := strings.TrimSpace(repo.baseRef)
 	if baseRef == "" {
 		return "", errors.New("gitworktree: workspace repository base was not resolved before creation")
@@ -1523,7 +1585,7 @@ func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspa
 	// prune this used to run, which would also drop sibling sessions'
 	// registrations.
 	if err := w.addNewBranchWorktree(ctx, repo.repoPath, branch, repo.outputPath, seedRef, force); err != nil {
-		return "", fmt.Errorf("gitworktree: workspace repo %q worktree add branch %q from %q: %w", repo.name, branch, seedRef, err)
+		return "", fmt.Errorf("%w: gitworktree: workspace repo %q worktree add branch %q from %q: %w", ErrWorkspaceCreateFailed, repo.name, branch, seedRef, err)
 	}
 	return baseSHA, nil
 }

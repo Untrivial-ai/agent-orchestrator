@@ -424,6 +424,13 @@ var (
 	// ErrWorkspaceBranchInvalid reports the requested branch name is not a valid
 	// git ref (rejected by `git check-ref-format`).
 	ErrWorkspaceBranchInvalid = errors.New("workspace: invalid branch name")
+	// ErrWorkspaceCreateFailed reports that materializing the session worktree
+	// (`git worktree add`) failed. Distinct from the typed preconditions above:
+	// by the time this fires, git itself refused — e.g. lock contention on
+	// .git/config from concurrent operations, a corrupted clone, or a full
+	// disk. Callers should surface the underlying git error to the user rather
+	// than collapsing it to a generic internal error (#4350).
+	ErrWorkspaceCreateFailed = errors.New("workspace: worktree creation failed")
 	// ErrWorkspaceDirty reports Destroy refused to remove a workspace because
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.
