@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	codexagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	cursoragent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -409,6 +411,26 @@ type emptyTransitionAgent struct{ transitionAgent }
 
 func (emptyTransitionAgent) NativeConversationExists(context.Context, ports.SessionRef, string, map[string]string) (bool, error) {
 	return false, nil
+}
+
+type augmentedProbeTransitionAgent struct {
+	transitionAgent
+	wantDataDir string
+	probeEnv    map[string]string
+}
+
+func (a *augmentedProbeTransitionAgent) AugmentRuntimeEnv(env map[string]string, dataDir string) {
+	env["PROVIDER_DATA_DIR"] = filepath.Join(dataDir, "provider")
+}
+
+func (a *augmentedProbeTransitionAgent) NativeConversationExists(
+	_ context.Context,
+	_ ports.SessionRef,
+	_ string,
+	env map[string]string,
+) (bool, error) {
+	a.probeEnv = maps.Clone(env)
+	return env["PROVIDER_DATA_DIR"] == filepath.Join(a.wantDataDir, "provider"), nil
 }
 
 type untouchedEmptyTransitionAgent struct{ emptyTransitionAgent }
@@ -992,6 +1014,25 @@ func TestInterfaceTransitionStatusBlocksReservedNativeIDWithoutHistoryOrFreshPro
 		domain.SessionInterfaceTransitionHistoryStrict,
 	); !errors.Is(err, ErrNativeConversationMissing) {
 		t.Fatalf("StartInterfaceTransition error = %v, want ErrNativeConversationMissing", err)
+	}
+}
+
+func TestInterfaceTransitionHistoryProbeReceivesAugmentedAgentEnvironment(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	manager.dataDir = t.TempDir()
+	agent := &augmentedProbeTransitionAgent{wantDataDir: manager.dataDir}
+	manager.agents = singleAgent{agent: agent}
+	rec := store.sessions["session-1"]
+
+	id, err := manager.persistedNativeConversationID(context.Background(), rec, "native-1", agent)
+	if err != nil {
+		t.Fatalf("persistedNativeConversationID: %v", err)
+	}
+	if id != "native-1" {
+		t.Fatalf("native id = %q, want native-1", id)
+	}
+	if got, want := agent.probeEnv["PROVIDER_DATA_DIR"], filepath.Join(manager.dataDir, "provider"); got != want {
+		t.Fatalf("history probe PROVIDER_DATA_DIR = %q, want %q", got, want)
 	}
 }
 
@@ -2962,6 +3003,31 @@ func TestInterfaceTransitionRequiresExplicitAdapterCapability(t *testing.T) {
 	}
 	if len(store.transitions) != 0 || runtime.destroyed != 0 || chat.start.ProviderConversationID != "" {
 		t.Fatal("unsupported handoff mutated session or controllers")
+	}
+}
+
+func TestCursorInterfaceTransitionRejectsUnverifiedHistoryBeforeTouchingControllers(t *testing.T) {
+	for _, mode := range []domain.SessionMode{domain.SessionModeTUI, domain.SessionModeChat} {
+		t.Run(string(mode), func(t *testing.T) {
+			manager, store, _, _, log := newTransitionManager(t, mode)
+			manager.agents = singleAgent{agent: cursoragent.New()}
+			rec := store.sessions["session-1"]
+			rec.Harness = domain.HarnessCursor
+			store.sessions["session-1"] = rec
+
+			status, err := manager.InterfaceTransitionStatus(context.Background(), rec.ID)
+			if err != nil || status.Supported || status.ReasonCode != "INTERFACE_HANDOFF_UNSUPPORTED" {
+				t.Fatalf("status=%+v err=%v; want unsupported Cursor handoff", status, err)
+			}
+			_, err = manager.StartInterfaceTransition(context.Background(), rec.ID, oppositeSessionMode(mode),
+				domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+			if !errors.Is(err, ErrInterfaceHandoffUnsupported) {
+				t.Fatalf("start error=%v; want ErrInterfaceHandoffUnsupported", err)
+			}
+			if len(store.transitions) != 0 || len(*log) != 0 || store.sessions[rec.ID].Mode != mode {
+				t.Fatalf("unsupported Cursor handoff touched ownership: transitions=%v log=%v mode=%v", store.transitions, *log, store.sessions[rec.ID].Mode)
+			}
+		})
 	}
 }
 

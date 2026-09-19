@@ -141,6 +141,44 @@ func hookAgentSessionID(payload []byte) string {
 	return id
 }
 
+// hookResumeSessionID accepts Cursor identity only at its foreground sessionStart
+// boundary. Other Cursor hooks (including permission and subagent hooks) can carry
+// a conversation_id belonging to a different controller. The foreground startup
+// payload uses that same ID as generation_id; neither field proves a native turn
+// checkpoint. AO_RUNTIME_LAUNCH_ID remains the daemon's independent launch fence.
+func hookResumeSessionID(agent, event string, payload []byte) string {
+	if domain.AgentHarness(agent) != domain.HarnessCursor {
+		return hookAgentSessionID(payload)
+	}
+	if event != "session-start" {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(payload, &fields) != nil {
+		return ""
+	}
+	// These markers are absent from the main Cursor sessionStart schema. Never
+	// fall back to another provider's aliases or accept child/background metadata.
+	for _, field := range []string{
+		"agent_id", "agentId", "subagent_id", "subagentId", "parent_agent_id", "parentAgentId",
+		"session_id", "sessionId", "conversationId",
+	} {
+		if _, present := fields[field]; present {
+			return ""
+		}
+	}
+	var id, generation string
+	var background *bool
+	if json.Unmarshal(fields["conversation_id"], &id) != nil ||
+		json.Unmarshal(fields["generation_id"], &generation) != nil ||
+		json.Unmarshal(fields["is_background_agent"], &background) != nil ||
+		background == nil || *background || generation != id ||
+		len(id) > maxActivityMetaLen || !sessionIDPattern.MatchString(id) {
+		return ""
+	}
+	return id
+}
+
 // hookLaunchID extracts the runtime launch id a plugin embeds in its payload.
 // It is a fallback for AO_RUNTIME_LAUNCH_ID when child-process env inheritance
 // is trimmed by the agent runtime.
@@ -486,7 +524,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
 	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
-		agentSessionID = hookAgentSessionID(payload)
+		agentSessionID = hookResumeSessionID(agent, event, payload)
 	}
 	usage := hookUsageMetadata(agent, payload)
 	if !hasActivity && agentSessionID == "" && usage == nil {
@@ -594,7 +632,7 @@ func (c *commandContext) runCursorPermissionHook(ctx context.Context, agent, eve
 		State:          string(decision.State),
 		Event:          event,
 		ToolName:       cursor.HookToolName(event, payload),
-		AgentSessionID: hookAgentSessionID(payload),
+		AgentSessionID: hookResumeSessionID(agent, event, payload),
 		LaunchID:       launchID,
 	}
 	if err := c.postActivityHook(ctx, path, req); err != nil {
@@ -643,7 +681,7 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
 	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
-		agentSessionID = hookAgentSessionID(payload)
+		agentSessionID = hookResumeSessionID(agent, event, payload)
 	}
 	if !hasActivity && agentSessionID == "" {
 		return nil
