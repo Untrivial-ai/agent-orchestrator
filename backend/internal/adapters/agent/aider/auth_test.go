@@ -408,10 +408,12 @@ func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
 }
 
 func TestAiderAuthStatusSeparatesAzureProviders(t *testing.T) {
+	configuredCloud := authutil.CloudCredential{Token: "fixture-token"}
 	tests := []struct {
 		name  string
 		model string
 		env   map[string]string
+		deps  authutil.Dependencies
 		want  ports.AgentAuthStatus
 	}{
 		{
@@ -431,10 +433,27 @@ func TestAiderAuthStatusSeparatesAzureProviders(t *testing.T) {
 			want: ports.AgentAuthStatusConfigured,
 		},
 		{
+			name:  "Azure AI identity chain",
+			model: "azure_ai/deployment",
+			env:   map[string]string{"AZURE_AI_API_BASE": "https://fixture.services.ai.azure.com"},
+			deps: authutil.Dependencies{LoadAzure: func(context.Context) (authutil.CloudCredential, error) {
+				return configuredCloud, nil
+			}},
+			want: ports.AgentAuthStatusConfigured,
+		},
+		{
 			name:  "Azure AI rejects Azure OpenAI key",
 			model: "azure_ai/deployment",
 			env: map[string]string{
 				"AZURE_API_KEY": "fixture-key", "AZURE_AI_API_BASE": "https://fixture.services.ai.azure.com",
+			},
+			want: ports.AgentAuthStatusUnknown,
+		},
+		{
+			name:  "Azure AI rejects alternate Azure OpenAI key",
+			model: "azure_ai/deployment",
+			env: map[string]string{
+				"AZURE_OPENAI_API_KEY": "fixture-key", "AZURE_AI_API_BASE": "https://fixture.services.ai.azure.com",
 			},
 			want: ports.AgentAuthStatusUnknown,
 		},
@@ -448,7 +467,7 @@ func TestAiderAuthStatusSeparatesAzureProviders(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			test.env["HOME"] = t.TempDir()
-			got := runAiderAuth(t, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: test.model}}, test.env, nil)
+			got := runAiderAuth(t, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: test.model}}, test.env, &test.deps)
 			if got != test.want {
 				t.Fatalf("status = %q, want %q", got, test.want)
 			}

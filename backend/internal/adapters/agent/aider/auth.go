@@ -655,7 +655,16 @@ func aiderProviderStatus(ctx context.Context, provider string, environment aider
 		if aiderHasProviderKey(provider, environment) {
 			return ports.AgentAuthStatusConfigured
 		}
-		return ports.AgentAuthStatusUnknown
+		identityDependencies := d
+		identityDependencies.Getenv = func(name string) string {
+			switch name {
+			case "AZURE_API_KEY", "AZURE_OPENAI_API_KEY":
+				return ""
+			default:
+				return environment.get(name)
+			}
+		}
+		return authutil.AzureEvidence(ctx, identityDependencies).Status
 	case "ollama":
 		if usableAiderSecret(environment.get("OLLAMA_API_KEY")) {
 			return ports.AgentAuthStatusConfigured
