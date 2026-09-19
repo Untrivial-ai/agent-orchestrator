@@ -1,0 +1,1450 @@
+{
+  "schemaVersion": 1,
+  "actionVocabularyVersion": 1,
+  "catalogId": "chatui-regression-2026-08-25",
+  "title": "ChatUI packaged-Electron and deterministic regression certification",
+  "source": {
+    "baselineCommit": "d71acca1e13ddd9ab3a01a43f029853686f4c693",
+    "fixtureRepositoryEnv": "AO_CHATUI_E2E_REPO",
+    "defaultFixtureRepository": "/Users/dhruvsharma/Development/todo-app"
+  },
+  "executionPolicy": {
+    "serial": true,
+    "modes": [
+      "capture",
+      "strict"
+    ],
+    "sourceRepositoryMutationAllowed": false,
+    "fixtureStrategy": "local-no-hardlinks-clone-of-committed-head",
+    "requiredElectronUserDataOverrideEnv": "AO_E2E_USER_DATA_DIR",
+    "requiredElectronUserDataOverrideGateEnv": "AO_CHATUI_E2E",
+    "repurposeHomeAllowed": false,
+    "captureExitZeroRequiresPersistedSummary": true,
+    "infrastructureFailuresAreNonZero": true,
+    "liveArtifactRoot": "e2e-artifacts/chatui-regression/live",
+    "outcomes": [
+      "passed",
+      "failed",
+      "blocked",
+      "inconclusive"
+    ]
+  },
+  "laneDefinitions": {
+    "deterministic-contract": {
+      "requiresPackagedElectron": false,
+      "requiresProviderAuthentication": false,
+      "strictEligible": true,
+      "description": "Controlled renderer and tagged Go contracts with injected state and no model dependency."
+    },
+    "packaged-electron-live-canary": {
+      "requiresPackagedElectron": true,
+      "requiresProviderAuthentication": true,
+      "strictEligible": true,
+      "description": "Actual packaged Electron, bundled daemon/runtime, and authenticated provider behavior."
+    }
+  },
+  "scenarios": [
+    {
+      "id": "MQA-01",
+      "title": "Plan Mode copy and filesystem effects match the provider boundary",
+      "severity": "P1",
+      "lane": "packaged-electron-live-canary",
+      "supplementalLanes": [
+        "deterministic-contract"
+      ],
+      "providersByLane": {
+        "packaged-electron-live-canary": [
+          "claude-code"
+        ],
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ]
+      },
+      "interfaces": [
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S08",
+        "S09"
+      ],
+      "preconditions": [
+        {
+          "id": "electron-isolated",
+          "kind": "isolation",
+          "value": "test-only-electron-user-data"
+        },
+        {
+          "id": "claude-profile",
+          "kind": "provider-profile",
+          "value": "dedicated-authenticated-claude-config-dir"
+        },
+        {
+          "id": "fixture-clean",
+          "kind": "fixture",
+          "value": "todo-app-committed-head-clone"
+        },
+        {
+          "id": "plan-mode-supported",
+          "kind": "capability",
+          "value": "claude-code-plan-mode"
+        }
+      ],
+      "actions": [
+        {
+          "id": "snapshot-before",
+          "operation": "snapshot_filesystem_metadata",
+          "arguments": {
+            "scopes": [
+              {
+                "name": "fixture",
+                "capture": "git-status-and-diff"
+              },
+              {
+                "name": "dedicated-provider-profile",
+                "capture": "allowlisted-metadata-only",
+                "allowlistedGlobs": [
+                  "plans/**"
+                ],
+                "fields": [
+                  "relativePath",
+                  "fileType",
+                  "sizeBytes",
+                  "modifiedAt",
+                  "sha256"
+                ],
+                "includeFileContents": false,
+                "includeProviderConfiguration": false
+              }
+            ],
+            "label": "before-plan-mode"
+          }
+        },
+        {
+          "id": "create-chat-session",
+          "operation": "create_session",
+          "arguments": {
+            "harness": "claude-code",
+            "interface": "chat",
+            "fixture": "todo-app"
+          }
+        },
+        {
+          "id": "select-plan-mode",
+          "operation": "set_turn_setting",
+          "arguments": {
+            "setting": "permission-mode",
+            "value": "plan"
+          }
+        },
+        {
+          "id": "send-no-write-prompt",
+          "operation": "send_message",
+          "arguments": {
+            "text": "In exactly two numbered steps, propose how to add persistence to this todo app. Do not execute or modify files.",
+            "delivery": "queue"
+          }
+        },
+        {
+          "id": "wait-for-settlement",
+          "operation": "wait_for_turn",
+          "arguments": {
+            "state": "terminal",
+            "resolveImplementationApproval": "deny"
+          }
+        },
+        {
+          "id": "snapshot-after",
+          "operation": "snapshot_filesystem_metadata",
+          "arguments": {
+            "scopes": [
+              {
+                "name": "fixture",
+                "capture": "git-status-and-diff"
+              },
+              {
+                "name": "dedicated-provider-profile",
+                "capture": "allowlisted-metadata-only",
+                "allowlistedGlobs": [
+                  "plans/**"
+                ],
+                "fields": [
+                  "relativePath",
+                  "fileType",
+                  "sizeBytes",
+                  "modifiedAt",
+                  "sha256"
+                ],
+                "includeFileContents": false,
+                "includeProviderConfiguration": false
+              }
+            ],
+            "label": "after-plan-mode"
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "truthful-copy",
+          "assertion": "turn_setting_copy_matches_observed_capability",
+          "description": "AO must not promise no tool execution if the selected provider mode reads or writes a private plan artifact."
+        },
+        {
+          "id": "no-undisclosed-write",
+          "assertion": "no_undisclosed_filesystem_write",
+          "description": "Any provider-private plan write is disclosed and remains inside the dedicated test profile; the source repository is untouched."
+        },
+        {
+          "id": "fixture-protected",
+          "assertion": "fixture_has_no_unrequested_change",
+          "description": "The no-modification prompt leaves the todo fixture unchanged."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "checkpoint": "plan-mode-description",
+          "required": true
+        },
+        {
+          "kind": "screenshot",
+          "checkpoint": "settled-plan-timeline",
+          "required": true
+        },
+        {
+          "kind": "redacted-filesystem-metadata",
+          "checkpoint": "before-after-fixture-and-allowlisted-plan-files",
+          "scope": {
+            "fixture": "git-status-and-diff",
+            "providerProfile": "plans/** metadata only",
+            "includeFileContents": false,
+            "includeProviderConfiguration": false
+          },
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "conversation-after-settlement",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-02",
+      "title": "Stopping active work does not silently discard accepted queued work",
+      "severity": "P1",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [
+        "packaged-electron-live-canary"
+      ],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ],
+        "packaged-electron-live-canary": [
+          "codex"
+        ]
+      },
+      "interfaces": [
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S03"
+      ],
+      "preconditions": [
+        {
+          "id": "busy-chat",
+          "kind": "session-state",
+          "value": "active-turn-with-queue-support"
+        }
+      ],
+      "actions": [
+        {
+          "id": "enqueue-first",
+          "operation": "enqueue_message",
+          "arguments": {
+            "text": "MQA-02 queued first"
+          }
+        },
+        {
+          "id": "enqueue-second",
+          "operation": "enqueue_message",
+          "arguments": {
+            "text": "MQA-02 queued second"
+          }
+        },
+        {
+          "id": "stop-active",
+          "operation": "stop_active_turn",
+          "arguments": {}
+        },
+        {
+          "id": "cancel-one-queued-item",
+          "operation": "cancel_queued_turn",
+          "arguments": {
+            "queueIndex": 0
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "stop-scope-truthful",
+          "assertion": "stop_scope_is_disclosed",
+          "description": "The Stop control either preserves queued turns or names and confirms a broader cancellation before mutation."
+        },
+        {
+          "id": "queue-item-control",
+          "assertion": "queued_turn_can_be_cancelled_independently",
+          "description": "Cancelling one queued turn leaves the active and other queued work unchanged."
+        },
+        {
+          "id": "daemon-ui-agree",
+          "assertion": "queue_timeline_matches_daemon_state",
+          "description": "Visible queue state and durable conversation state agree after stop and queue-only cancel."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "checkpoint": "queue-before-stop",
+          "required": true
+        },
+        {
+          "kind": "request-log",
+          "checkpoint": "stop-and-queue-cancel-requests",
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "conversation-after-stop",
+          "required": true
+        },
+        {
+          "kind": "trace",
+          "checkpoint": "complete-scenario",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-03",
+      "title": "Agent-switch claims match durable semantic-handoff facts",
+      "severity": "P1",
+      "lane": "packaged-electron-live-canary",
+      "supplementalLanes": [
+        "deterministic-contract"
+      ],
+      "providersByLane": {
+        "packaged-electron-live-canary": [
+          "codex",
+          "claude-code"
+        ],
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ]
+      },
+      "interfaces": [
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S06"
+      ],
+      "preconditions": [
+        {
+          "id": "electron-isolated",
+          "kind": "isolation",
+          "value": "test-only-electron-user-data"
+        },
+        {
+          "id": "provider-profiles",
+          "kind": "provider-profile",
+          "value": "dedicated-authenticated-codex-and-claude"
+        },
+        {
+          "id": "fixture-clean",
+          "kind": "fixture",
+          "value": "todo-app-committed-head-clone"
+        }
+      ],
+      "actions": [
+        {
+          "id": "create-codex-session",
+          "operation": "create_session",
+          "arguments": {
+            "harness": "codex",
+            "interface": "chat",
+            "fixture": "todo-app"
+          }
+        },
+        {
+          "id": "establish-completed-fact",
+          "operation": "send_message",
+          "arguments": {
+            "text": "Read README.md only. Reply with MQA03_BASELINE_COMPLETE followed by one sentence describing the app. Do not modify files.",
+            "delivery": "queue"
+          }
+        },
+        {
+          "id": "wait-source-complete",
+          "operation": "wait_for_turn",
+          "arguments": {
+            "state": "completed",
+            "requiredText": "MQA03_BASELINE_COMPLETE"
+          }
+        },
+        {
+          "id": "snapshot-before-switch",
+          "operation": "snapshot_api",
+          "arguments": {
+            "resources": [
+              "session",
+              "conversation"
+            ],
+            "label": "before-agent-switch"
+          }
+        },
+        {
+          "id": "switch-to-claude",
+          "operation": "switch_agent",
+          "arguments": {
+            "targetHarness": "claude-code"
+          }
+        },
+        {
+          "id": "wait-switch-terminal",
+          "operation": "wait_for_agent_switch",
+          "arguments": {
+            "state": "terminal"
+          }
+        },
+        {
+          "id": "snapshot-after-switch",
+          "operation": "snapshot_api",
+          "arguments": {
+            "resources": [
+              "session",
+              "conversation",
+              "agent-switch"
+            ],
+            "label": "after-agent-switch"
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "copy-derived-from-facts",
+          "assertion": "agent_switch_copy_matches_durable_handoff_facts",
+          "description": "Fresh start, transcript availability, and semantic handoff are described distinctly and truthfully."
+        },
+        {
+          "id": "no-false-context-card",
+          "assertion": "automation_card_does_not_overstate_context_transfer",
+          "description": "The target UI never claims semantic transfer when agentHandoffStatus is unavailable or semanticHandoffIncluded is false."
+        },
+        {
+          "id": "single-target-controller",
+          "assertion": "agent_switch_has_single_target_controller",
+          "description": "The AO session and worktree remain stable while exactly one target controller owns the session."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "checkpoint": "agent-switch-dialog",
+          "required": true
+        },
+        {
+          "kind": "screenshot",
+          "checkpoint": "agent-switch-complete",
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "agent-switch-before-after",
+          "required": true
+        },
+        {
+          "kind": "conversation-export",
+          "checkpoint": "source-and-target-transcript",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-04",
+      "title": "Session drafts survive every promised persistence boundary",
+      "severity": "P1",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [
+        "packaged-electron-live-canary"
+      ],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ],
+        "packaged-electron-live-canary": [
+          "claude-code"
+        ]
+      },
+      "interfaces": [
+        "chat",
+        "tui"
+      ],
+      "manualScenarioIds": [
+        "S12",
+        "S19",
+        "S25",
+        "S26"
+      ],
+      "preconditions": [
+        {
+          "id": "two-sessions",
+          "kind": "session-state",
+          "value": "two-ready-chat-sessions"
+        }
+      ],
+      "actions": [
+        {
+          "id": "type-session-draft",
+          "operation": "set_draft",
+          "arguments": {
+            "text": "MQA04_DRAFT_DO_NOT_SEND"
+          }
+        },
+        {
+          "id": "round-trip-interface",
+          "operation": "switch_interface_round_trip",
+          "arguments": {
+            "destination": "tui",
+            "policy": "drain"
+          }
+        },
+        {
+          "id": "round-trip-navigation",
+          "operation": "navigate_session_round_trip",
+          "arguments": {
+            "destinationSession": "secondary"
+          }
+        },
+        {
+          "id": "reload-renderer",
+          "operation": "reload_renderer",
+          "arguments": {}
+        },
+        {
+          "id": "restart-live-app",
+          "operation": "restart_packaged_app",
+          "arguments": {
+            "onlyInLanes": [
+              "packaged-electron-live-canary"
+            ]
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "draft-restored",
+          "assertion": "session_draft_restored_after_each_boundary",
+          "description": "The exact unsent text returns after interface unmount, session navigation, renderer reload, and the supported cold-restart boundary."
+        },
+        {
+          "id": "session-scoped",
+          "assertion": "drafts_are_session_scoped",
+          "description": "The draft never appears in the secondary session."
+        },
+        {
+          "id": "clear-contract",
+          "assertion": "draft_clears_only_after_accept_or_discard",
+          "description": "Navigation and surface teardown do not clear an unsent draft."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot-series",
+          "checkpoint": "draft-before-and-after-each-boundary",
+          "required": true
+        },
+        {
+          "kind": "trace",
+          "checkpoint": "complete-scenario",
+          "required": true
+        },
+        {
+          "kind": "storage-snapshot",
+          "checkpoint": "session-draft-state",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-05",
+      "title": "Busy Chat requires explicit finish-versus-stop consent before Terminal handoff",
+      "severity": "P1",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [
+        "packaged-electron-live-canary"
+      ],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ],
+        "packaged-electron-live-canary": [
+          "claude-code"
+        ]
+      },
+      "interfaces": [
+        "chat",
+        "tui"
+      ],
+      "manualScenarioIds": [
+        "S15"
+      ],
+      "preconditions": [
+        {
+          "id": "busy-chat",
+          "kind": "session-state",
+          "value": "active-turn-with-one-queued-turn"
+        },
+        {
+          "id": "handoff-supported",
+          "kind": "capability",
+          "value": "chat-to-tui"
+        }
+      ],
+      "actions": [
+        {
+          "id": "request-switch",
+          "operation": "request_interface_switch",
+          "arguments": {
+            "target": "tui"
+          }
+        },
+        {
+          "id": "check-before-choice",
+          "operation": "assert_no_request",
+          "arguments": {
+            "route": "/api/v1/sessions/{sessionId}/interface-transition"
+          }
+        },
+        {
+          "id": "choose-finish",
+          "operation": "choose_transition_policy",
+          "arguments": {
+            "policy": "drain"
+          }
+        },
+        {
+          "id": "repeat-and-choose-stop",
+          "operation": "repeat_scenario_branch",
+          "arguments": {
+            "from": "busy-chat",
+            "policy": "interrupt"
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "dialog-before-post",
+          "assertion": "transition_policy_dialog_precedes_mutation",
+          "description": "No transition POST or interrupt occurs before explicit user policy selection."
+        },
+        {
+          "id": "finish-preserves-work",
+          "assertion": "drain_policy_preserves_accepted_work",
+          "description": "Finish work allows the active and accepted queued contract to settle before TUI ownership."
+        },
+        {
+          "id": "stop-names-loss",
+          "assertion": "interrupt_policy_discloses_cancelled_work",
+          "description": "Stop now names active and queued losses before applying interrupt."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "checkpoint": "policy-dialog",
+          "required": true
+        },
+        {
+          "kind": "request-timeline",
+          "checkpoint": "before-and-after-policy-choice",
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "drain-and-interrupt-transition-results",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-06",
+      "title": "Unsettled Terminal-to-Chat history converges without poisoning the session",
+      "severity": "P1",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [
+        "packaged-electron-live-canary"
+      ],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ],
+        "packaged-electron-live-canary": [
+          "claude-code"
+        ]
+      },
+      "interfaces": [
+        "tui",
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S16",
+        "S17"
+      ],
+      "preconditions": [
+        {
+          "id": "deterministic-fault",
+          "kind": "fault-injection",
+          "value": "first-fresh-chat-target-returns-history-unsettled"
+        },
+        {
+          "id": "live-claude",
+          "kind": "provider-profile",
+          "value": "dedicated-authenticated-claude-for-live-lane"
+        }
+      ],
+      "actions": [
+        {
+          "id": "start-busy-terminal-turn",
+          "operation": "send_terminal_input",
+          "arguments": {
+            "text": "Run a bounded wait, then reply MQA06_INTERRUPT_DONE."
+          }
+        },
+        {
+          "id": "stop-now-to-chat",
+          "operation": "request_interface_switch",
+          "arguments": {
+            "target": "chat",
+            "policy": "interrupt"
+          }
+        },
+        {
+          "id": "wait-for-convergence",
+          "operation": "wait_for_interface_transition",
+          "arguments": {
+            "state": "terminal",
+            "allowActionableFailure": true
+          }
+        },
+        {
+          "id": "retry-if-required",
+          "operation": "retry_interface_transition",
+          "arguments": {
+            "requireFreshTargetAttempt": true
+          }
+        },
+        {
+          "id": "live-restart-check",
+          "operation": "restart_packaged_app",
+          "arguments": {
+            "onlyInLanes": [
+              "packaged-electron-live-canary"
+            ],
+            "retryAfterRestart": true
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "fresh-retry",
+          "assertion": "unsettled_target_is_retried_with_fresh_observation",
+          "description": "A transient unsettled history response cannot permanently poison later target starts."
+        },
+        {
+          "id": "one-controller",
+          "assertion": "at_most_one_chat_target_controller_exists",
+          "description": "Retries converge without duplicate target controllers."
+        },
+        {
+          "id": "recoverable-source",
+          "assertion": "source_remains_usable_or_failure_is_actionable",
+          "description": "An exhausted automatic retry preserves usable TUI and exposes a safe retry that can later succeed."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "transition-phase-log",
+          "checkpoint": "all-attempts",
+          "required": true
+        },
+        {
+          "kind": "controller-count",
+          "checkpoint": "after-each-target-attempt",
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "transition-before-after-retry",
+          "required": true
+        },
+        {
+          "kind": "screenshot",
+          "checkpoint": "recovery-or-actionable-failure",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-07",
+      "title": "Every advertised conversation branch ID is activatable",
+      "severity": "P1",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [
+        "packaged-electron-live-canary"
+      ],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ],
+        "packaged-electron-live-canary": [
+          "codex"
+        ]
+      },
+      "interfaces": [
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S18"
+      ],
+      "preconditions": [
+        {
+          "id": "editable-turn",
+          "kind": "conversation-state",
+          "value": "completed-turn-with-edit-capability"
+        }
+      ],
+      "actions": [
+        {
+          "id": "edit-turn",
+          "operation": "edit_turn",
+          "arguments": {
+            "text": "Read README.md only. Reply with MQA07_EDITED_BRANCH and do not modify files."
+          }
+        },
+        {
+          "id": "wait-edited-branch",
+          "operation": "wait_for_turn",
+          "arguments": {
+            "state": "completed",
+            "requiredText": "MQA07_EDITED_BRANCH"
+          }
+        },
+        {
+          "id": "read-advertised-branches",
+          "operation": "snapshot_api",
+          "arguments": {
+            "resources": [
+              "conversation"
+            ],
+            "label": "edited-branch"
+          }
+        },
+        {
+          "id": "activate-previous",
+          "operation": "activate_conversation_branch",
+          "arguments": {
+            "branchIdSource": "conversation.previousBranchId"
+          }
+        },
+        {
+          "id": "activate-next",
+          "operation": "activate_conversation_branch",
+          "arguments": {
+            "branchIdSource": "conversation.nextBranchId"
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "advertised-id-resolves",
+          "assertion": "every_advertised_branch_id_activates",
+          "description": "Previous and next identifiers returned by the read model are accepted by the activation route."
+        },
+        {
+          "id": "synthetic-id-decoded",
+          "assertion": "encoded_synthetic_root_id_is_decoded_before_service_call",
+          "description": "Transport encoding cannot make the advertised root branch unreachable."
+        },
+        {
+          "id": "branch-round-trip",
+          "assertion": "branch_navigation_restores_expected_transcript",
+          "description": "Previous and next controls round-trip between the original and edited transcript."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "request-log",
+          "checkpoint": "branch-activation-paths",
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "conversation-before-after-each-activation",
+          "required": true
+        },
+        {
+          "kind": "screenshot-series",
+          "checkpoint": "original-edited-original",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-08",
+      "title": "Imported successful terminal turns receive truthful completion labeling",
+      "severity": "P2",
+      "lane": "packaged-electron-live-canary",
+      "supplementalLanes": [
+        "deterministic-contract"
+      ],
+      "providersByLane": {
+        "packaged-electron-live-canary": [
+          "claude-code"
+        ],
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ]
+      },
+      "interfaces": [
+        "tui",
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S07",
+        "S13"
+      ],
+      "preconditions": [
+        {
+          "id": "electron-isolated",
+          "kind": "isolation",
+          "value": "test-only-electron-user-data"
+        },
+        {
+          "id": "claude-profile",
+          "kind": "provider-profile",
+          "value": "dedicated-authenticated-claude-config-dir"
+        },
+        {
+          "id": "handoff-supported",
+          "kind": "capability",
+          "value": "claude-tui-to-chat"
+        }
+      ],
+      "actions": [
+        {
+          "id": "create-terminal-session",
+          "operation": "create_session",
+          "arguments": {
+            "harness": "claude-code",
+            "interface": "tui",
+            "fixture": "todo-app"
+          }
+        },
+        {
+          "id": "complete-terminal-turn",
+          "operation": "send_terminal_input",
+          "arguments": {
+            "text": "Reply with exactly MQA08_TERMINAL_OK and nothing else."
+          }
+        },
+        {
+          "id": "wait-terminal-marker",
+          "operation": "wait_for_terminal_output",
+          "arguments": {
+            "text": "MQA08_TERMINAL_OK"
+          }
+        },
+        {
+          "id": "drain-to-chat",
+          "operation": "request_interface_switch",
+          "arguments": {
+            "target": "chat",
+            "policy": "drain"
+          }
+        },
+        {
+          "id": "wait-chat-ready",
+          "operation": "wait_for_interface_transition",
+          "arguments": {
+            "state": "completed"
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "content-imported",
+          "assertion": "terminal_turn_content_is_imported_once",
+          "description": "The exact terminal marker appears once in Chat history."
+        },
+        {
+          "id": "outcome-truthful",
+          "assertion": "imported_turn_outcome_is_truthful",
+          "description": "Known completion maps to completed; unavailable structured metadata is labelled as imported status unavailable rather than a failed-looking OUTCOME UNKNOWN boundary."
+        },
+        {
+          "id": "identity-preserved",
+          "assertion": "native_conversation_identity_survives_handoff",
+          "description": "The same provider-native conversation remains associated with the AO session."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "checkpoint": "terminal-completed-marker",
+          "required": true
+        },
+        {
+          "kind": "screenshot",
+          "checkpoint": "chat-imported-outcome-label",
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "conversation-and-transition-after-import",
+          "required": true
+        },
+        {
+          "kind": "native-identity",
+          "checkpoint": "before-after-handoff",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-09",
+      "title": "At-sign chips identify path references rather than embedded context",
+      "severity": "P2",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ]
+      },
+      "interfaces": [
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S10"
+      ],
+      "preconditions": [
+        {
+          "id": "file-index",
+          "kind": "fixture",
+          "value": "todo-app-with-readme"
+        }
+      ],
+      "actions": [
+        {
+          "id": "open-file-completion",
+          "operation": "type_composer_text",
+          "arguments": {
+            "text": "@READ"
+          }
+        },
+        {
+          "id": "select-readme",
+          "operation": "select_file_reference",
+          "arguments": {
+            "path": "README.md"
+          }
+        },
+        {
+          "id": "inspect-chip",
+          "operation": "inspect_accessibility",
+          "arguments": {
+            "target": "selected-file-reference"
+          }
+        },
+        {
+          "id": "send-reference",
+          "operation": "send_message",
+          "arguments": {
+            "textAfterReference": "Summarize the referenced README in one sentence."
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "reference-labelled",
+          "assertion": "file_reference_is_labelled_as_path_reference",
+          "description": "Visual and accessible copy says the agent must read the worktree path with normal permissions."
+        },
+        {
+          "id": "path-discoverable",
+          "assertion": "full_reference_path_is_discoverable",
+          "description": "The full relative path remains available when basenames collide."
+        },
+        {
+          "id": "payload-truthful",
+          "assertion": "file_reference_payload_contains_path_not_attachment",
+          "description": "The request and UI agree that no file bytes or snapshot were embedded."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "checkpoint": "selected-reference-chip",
+          "required": true
+        },
+        {
+          "kind": "accessibility-snapshot",
+          "checkpoint": "selected-reference-chip",
+          "required": true
+        },
+        {
+          "kind": "request-log",
+          "checkpoint": "sent-reference-payload",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-10",
+      "title": "Attachment delivery mode is disclosed and original identity remains durable",
+      "severity": "P2-P3",
+      "lane": "packaged-electron-live-canary",
+      "supplementalLanes": [
+        "deterministic-contract"
+      ],
+      "providersByLane": {
+        "packaged-electron-live-canary": [
+          "codex"
+        ],
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ]
+      },
+      "interfaces": [
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S20"
+      ],
+      "preconditions": [
+        {
+          "id": "electron-isolated",
+          "kind": "isolation",
+          "value": "test-only-electron-user-data"
+        },
+        {
+          "id": "codex-profile",
+          "kind": "provider-profile",
+          "value": "dedicated-authenticated-codex-home"
+        },
+        {
+          "id": "image-fixture",
+          "kind": "attachment",
+          "value": "small-png-with-unique-original-name"
+        }
+      ],
+      "actions": [
+        {
+          "id": "stage-image",
+          "operation": "stage_attachment",
+          "arguments": {
+            "input": "hidden-file-input",
+            "originalName": "mqa10-original-name.png"
+          }
+        },
+        {
+          "id": "inspect-delivery-copy",
+          "operation": "inspect_attachment_delivery",
+          "arguments": {
+            "checkpoint": "before-send"
+          }
+        },
+        {
+          "id": "send-image",
+          "operation": "send_message",
+          "arguments": {
+            "text": "Describe this image in one sentence. Do not modify files."
+          }
+        },
+        {
+          "id": "wait-image-turn",
+          "operation": "wait_for_turn",
+          "arguments": {
+            "state": "terminal"
+          }
+        },
+        {
+          "id": "reload-history",
+          "operation": "reload_renderer",
+          "arguments": {}
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "delivery-disclosed",
+          "assertion": "attachment_delivery_mode_is_disclosed_before_send",
+          "description": "The UI distinguishes native image bytes from a staged workspace path the provider must read."
+        },
+        {
+          "id": "original-name-durable",
+          "assertion": "attachment_original_name_survives_history_reload",
+          "description": "The original display name remains in the request, durable transcript, and reloaded UI while storage identity may remain randomized."
+        },
+        {
+          "id": "preview-not-proof",
+          "assertion": "preview_copy_does_not_imply_provider_received_bytes",
+          "description": "A local thumbnail cannot be mistaken for native provider delivery."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "checkpoint": "staged-attachment-and-delivery-label",
+          "required": true
+        },
+        {
+          "kind": "request-log",
+          "checkpoint": "attachment-stage-and-send-payloads",
+          "required": true
+        },
+        {
+          "kind": "api-snapshot",
+          "checkpoint": "conversation-before-after-reload",
+          "required": true
+        },
+        {
+          "kind": "provider-event-summary",
+          "checkpoint": "actual-delivery-route",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-11",
+      "title": "Queue, Steer, and turn settings expose selected-state semantics",
+      "severity": "P2",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [
+        "packaged-electron-live-canary"
+      ],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ],
+        "packaged-electron-live-canary": [
+          "codex",
+          "claude-code"
+        ]
+      },
+      "interfaces": [
+        "chat"
+      ],
+      "manualScenarioIds": [
+        "S04",
+        "S08",
+        "S21"
+      ],
+      "preconditions": [
+        {
+          "id": "busy-chat",
+          "kind": "session-state",
+          "value": "busy-chat-with-config-options"
+        }
+      ],
+      "actions": [
+        {
+          "id": "select-queue",
+          "operation": "select_delivery_mode",
+          "arguments": {
+            "value": "queue",
+            "input": "keyboard"
+          }
+        },
+        {
+          "id": "select-steer",
+          "operation": "select_delivery_mode",
+          "arguments": {
+            "value": "steer",
+            "input": "keyboard"
+          }
+        },
+        {
+          "id": "select-turn-settings",
+          "operation": "select_turn_settings",
+          "arguments": {
+            "model": "non-default",
+            "effort": "non-default",
+            "permissionMode": "non-default",
+            "input": "keyboard"
+          }
+        },
+        {
+          "id": "inspect-tree",
+          "operation": "inspect_accessibility",
+          "arguments": {
+            "targets": [
+              "delivery-choice",
+              "model-menu",
+              "effort-menu",
+              "permission-menu"
+            ]
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "delivery-semantics",
+          "assertion": "delivery_choice_exposes_selected_state",
+          "description": "Queue and Steer use a named radio/toggle contract with the current value exposed."
+        },
+        {
+          "id": "settings-semantics",
+          "assertion": "turn_settings_expose_selected_state",
+          "description": "Model, effort, and permission items expose semantic checked/current state."
+        },
+        {
+          "id": "keyboard-contract",
+          "assertion": "selection_controls_are_keyboard_operable",
+          "description": "Role, focus movement, activation, and announcement remain consistent."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "accessibility-snapshot",
+          "checkpoint": "queue-selected",
+          "required": true
+        },
+        {
+          "kind": "accessibility-snapshot",
+          "checkpoint": "steer-and-turn-settings-selected",
+          "required": true
+        },
+        {
+          "kind": "screenshot-series",
+          "checkpoint": "visible-selected-states",
+          "required": true
+        },
+        {
+          "kind": "trace",
+          "checkpoint": "keyboard-interactions",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "MQA-12",
+      "title": "Renderer and xterm lifecycle errors fail strict runs",
+      "severity": "P2",
+      "lane": "deterministic-contract",
+      "supplementalLanes": [
+        "packaged-electron-live-canary"
+      ],
+      "providersByLane": {
+        "deterministic-contract": [
+          "scripted-chat-driver"
+        ],
+        "packaged-electron-live-canary": [
+          "claude-code"
+        ]
+      },
+      "interfaces": [
+        "chat",
+        "tui",
+        "worktree-shell"
+      ],
+      "manualScenarioIds": [
+        "S27"
+      ],
+      "preconditions": [
+        {
+          "id": "strict-error-listener",
+          "kind": "harness",
+          "value": "pageerror-and-error-console-listeners-enabled"
+        },
+        {
+          "id": "terminal-surface",
+          "kind": "capability",
+          "value": "xterm-session-and-worktree-shell"
+        }
+      ],
+      "actions": [
+        {
+          "id": "open-terminals",
+          "operation": "exercise_terminal_lifecycle",
+          "arguments": {
+            "steps": [
+              "open-session-terminal",
+              "open-worktree-shell",
+              "switch-tabs",
+              "resize-window",
+              "close-worktree-shell",
+              "switch-chat-tui-chat"
+            ]
+          }
+        },
+        {
+          "id": "collect-errors",
+          "operation": "collect_renderer_errors",
+          "arguments": {
+            "include": [
+              "pageerror",
+              "console-error",
+              "requestfailed"
+            ]
+          }
+        },
+        {
+          "id": "verify-mode-contract",
+          "operation": "verify_capture_and_strict_outcomes",
+          "arguments": {
+            "injectKnownPageError": true
+          }
+        }
+      ],
+      "expectedResults": [
+        {
+          "id": "no-lifecycle-error",
+          "assertion": "terminal_lifecycle_emits_no_uncaught_error",
+          "description": "Resize and disposal do not emit ResizeObserver or xterm dimensions exceptions."
+        },
+        {
+          "id": "strict-fails",
+          "assertion": "unallowlisted_page_error_fails_strict_mode",
+          "description": "A deliberately injected page error produces a non-zero strict result."
+        },
+        {
+          "id": "capture-truthful",
+          "assertion": "capture_mode_preserves_failed_outcome",
+          "description": "Capture mode may exit zero, but summary.json remains passed false with outcome captured_failures."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "renderer-error-log",
+          "checkpoint": "complete-terminal-lifecycle",
+          "required": true
+        },
+        {
+          "kind": "trace",
+          "checkpoint": "complete-scenario",
+          "required": true
+        },
+        {
+          "kind": "video",
+          "checkpoint": "complete-scenario",
+          "required": true
+        },
+        {
+          "kind": "aggregate-summary",
+          "checkpoint": "capture-and-strict-probes",
+          "required": true
+        }
+      ]
+    }
+  ]
+}
