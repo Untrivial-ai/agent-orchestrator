@@ -73,7 +73,7 @@ func cursorCLIAuthStatus(ctx context.Context, binary string) (ports.AgentAuthSta
 		if *result.IsAuthenticated && *result.HasAccessToken && *result.HasRefreshToken {
 			// Cursor also emits authenticated after getMe fails. Only its
 			// successful getMe branch supplies userInfo (status.ts, 2026.09.15).
-			if result.UserInfo != nil && (strings.TrimSpace(result.UserInfo.Email) != "" || strings.TrimSpace(result.UserInfo.UserID) != "") {
+			if user := result.UserInfo; user != nil && (user.Email != nil || user.UserID != nil || user.FirstName != nil || user.LastName != nil || user.TeamID != nil || user.CreatedAt != nil) {
 				return ports.AgentAuthStatusAuthorized, nil
 			}
 			return ports.AgentAuthStatusConfigured, nil
@@ -96,7 +96,11 @@ type cursorStatusResponse struct {
 	HasAccessToken  *bool  `json:"hasAccessToken"`
 	HasRefreshToken *bool  `json:"hasRefreshToken"`
 	UserInfo        *struct {
-		Email  string `json:"email"`
-		UserID string `json:"userId"`
+		Email     *string `json:"email"`
+		UserID    *int32  `json:"userId"`
+		FirstName *string `json:"firstName"`
+		LastName  *string `json:"lastName"`
+		TeamID    *int32  `json:"teamId"`
+		CreatedAt *string `json:"createdAt"`
 	} `json:"userInfo"`
 }

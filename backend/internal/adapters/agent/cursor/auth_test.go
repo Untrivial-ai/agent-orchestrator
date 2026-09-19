@@ -20,7 +20,7 @@ func TestCursorCLIAuthStatusJSON(t *testing.T) {
 		err       error
 		want      ports.AgentAuthStatus
 	}{
-		{"validated account", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,"userInfo":{"email":"user@example.com","userId":"user_123"}}`, nil, ports.AgentAuthStatusAuthorized},
+		{"validated account", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,"userInfo":{"email":"user@example.com","userId":123}}`, nil, ports.AgentAuthStatusAuthorized},
 		{"unvalidated tokens", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,"message":"Logged in (unable to fetch user details)"}`, nil, ports.AgentAuthStatusConfigured},
 		{"signed out", `{"status":"unauthenticated","isAuthenticated":false,"hasAccessToken":false,"hasRefreshToken":false,"message":"Not logged in"}`, nil, ports.AgentAuthStatusUnauthorized},
 		{"partial credentials", `{"status":"partially-authenticated","isAuthenticated":false,"hasAccessToken":true,"hasRefreshToken":false,"message":"Partially authenticated (missing refresh token)"}`, nil, ports.AgentAuthStatusConfigured},
@@ -37,6 +37,37 @@ func TestCursorCLIAuthStatusJSON(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stubCursorAuthCommand(t, []byte(tt.out), tt.err)
+			got, err := cursorCLIAuthStatus(context.Background(), "cursor-agent")
+			if err != nil || got != tt.want {
+				t.Fatalf("status = %q, err = %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCursorCLIAuthStatusValidatedAccountFields(t *testing.T) {
+	for _, tt := range []struct {
+		name, userInfo string
+		want           ports.AgentAuthStatus
+	}{
+		{"email", `{"email":"user@example.com"}`, ports.AgentAuthStatusAuthorized},
+		{"user id", `{"userId":123}`, ports.AgentAuthStatusAuthorized},
+		{"first name", `{"firstName":"Casey"}`, ports.AgentAuthStatusAuthorized},
+		{"last name", `{"lastName":"Example"}`, ports.AgentAuthStatusAuthorized},
+		{"team id", `{"teamId":456}`, ports.AgentAuthStatusAuthorized},
+		{"created at", `{"createdAt":"2026-09-19T00:00:00Z"}`, ports.AgentAuthStatusAuthorized},
+		{"empty string is present", `{"firstName":""}`, ports.AgentAuthStatusAuthorized},
+		{"zero user id is present", `{"userId":0}`, ports.AgentAuthStatusAuthorized},
+		{"empty object", `{}`, ports.AgentAuthStatusConfigured},
+		{"null fields", `{"email":null,"userId":null,"firstName":null,"lastName":null,"teamId":null,"createdAt":null}`, ports.AgentAuthStatusConfigured},
+		{"unrelated field", `{"token":"not-account-evidence"}`, ports.AgentAuthStatusConfigured},
+		{"wrong user id type", `{"email":"user@example.com","userId":"user_123"}`, ports.AgentAuthStatusUnknown},
+		{"wrong team id type", `{"email":"user@example.com","teamId":"456"}`, ports.AgentAuthStatusUnknown},
+		{"wrong created at type", `{"email":"user@example.com","createdAt":123}`, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			out := `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,"userInfo":` + tt.userInfo + `}`
+			stubCursorAuthCommand(t, []byte(out), nil)
 			got, err := cursorCLIAuthStatus(context.Background(), "cursor-agent")
 			if err != nil || got != tt.want {
 				t.Fatalf("status = %q, err = %v; want %q", got, err, tt.want)

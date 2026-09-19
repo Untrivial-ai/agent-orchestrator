@@ -52,12 +52,13 @@ func TestKiroAuthStatusForScope(t *testing.T) {
 		out             string
 		want            ports.AgentAuthStatus
 	}{
-		{"headless key", "key", ports.AgentAuthCheck{Interactive: false}, `{"account":null}`, ports.AgentAuthStatusConfigured},
-		{"interactive ignores key", "key", ports.AgentAuthCheck{Interactive: true}, `{"account":null}`, ports.AgentAuthStatusUnauthorized},
-		{"scoped headless key", "", ports.AgentAuthCheck{Env: map[string]string{"KIRO_API_KEY": "scope-key"}}, `{"account":null}`, ports.AgentAuthStatusConfigured},
-		{"cleared inherited key", "key", ports.AgentAuthCheck{Env: map[string]string{"KIRO_API_KEY": ""}}, `{"account":null}`, ports.AgentAuthStatusUnauthorized},
-		{"unknown with key", "key", ports.AgentAuthCheck{}, `{}`, ports.AgentAuthStatusConfigured},
-		{"browser before key", "key", ports.AgentAuthCheck{}, `{"accountType":"BuilderId","startUrl":null,"region":"us-east-1"}`, ports.AgentAuthStatusConfigured},
+		{"headless key", "ksk_test_key", ports.AgentAuthCheck{Interactive: false}, `{"account":null}`, ports.AgentAuthStatusConfigured},
+		{"interactive ignores key", "ksk_test_key", ports.AgentAuthCheck{Interactive: true}, `{"account":null}`, ports.AgentAuthStatusUnauthorized},
+		{"scoped headless key", "", ports.AgentAuthCheck{Env: map[string]string{"KIRO_API_KEY": "ksk_scoped_key"}}, `{"account":null}`, ports.AgentAuthStatusConfigured},
+		{"cleared inherited key", "ksk_test_key", ports.AgentAuthCheck{Env: map[string]string{"KIRO_API_KEY": ""}}, `{"account":null}`, ports.AgentAuthStatusUnauthorized},
+		{"unknown with key", "ksk_test_key", ports.AgentAuthCheck{}, `{}`, ports.AgentAuthStatusConfigured},
+		{"browser before key", "ksk_test_key", ports.AgentAuthCheck{}, `{"accountType":"BuilderId","startUrl":null,"region":"us-east-1"}`, ports.AgentAuthStatusConfigured},
+		{"browser before malformed key", "key", ports.AgentAuthCheck{}, `{"accountType":"BuilderId","startUrl":null,"region":"us-east-1"}`, ports.AgentAuthStatusConfigured},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("KIRO_API_KEY", tt.inherited)
@@ -77,8 +78,36 @@ func TestKiroAuthStatusForScope(t *testing.T) {
 	}
 }
 
+func TestKiroAuthStatusForMalformedAPIKey(t *testing.T) {
+	for _, tt := range []struct{ name, key string }{
+		{"wrong prefix", "key"},
+		{"empty suffix", "ksk_"},
+		{"whitespace suffix", "ksk_ "},
+		{"internal whitespace", "ksk_bad key"},
+		{"surrounding whitespace", " ksk_test_key "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("KIRO_API_KEY", tt.key)
+			stubKiroAuthCommand(t, []byte(`{"account":null}`), nil)
+			p := &Plugin{resolvedBinary: "kiro-cli"}
+			got, err := p.AuthStatusFor(context.Background(), ports.AgentAuthCheck{})
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, err = %v; want unknown", got, err)
+			}
+		})
+	}
+	t.Run("scoped malformed key overrides valid inherited key", func(t *testing.T) {
+		t.Setenv("KIRO_API_KEY", "ksk_test_key")
+		stubKiroAuthCommand(t, []byte(`{}`), nil)
+		got, err := (&Plugin{resolvedBinary: "kiro-cli"}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{Env: map[string]string{"KIRO_API_KEY": "scope-key"}})
+		if err != nil || got != ports.AgentAuthStatusUnknown {
+			t.Fatalf("status = %q, err = %v; want unknown", got, err)
+		}
+	})
+}
+
 func TestKiroAuthStatusGlobalIgnoresHeadlessKey(t *testing.T) {
-	t.Setenv("KIRO_API_KEY", "key")
+	t.Setenv("KIRO_API_KEY", "ksk_test_key")
 	calls := stubKiroAuthCommand(t, []byte(`{"account":null}`), nil)
 	got, err := (&Plugin{resolvedBinary: "kiro-cli"}).AuthStatus(context.Background())
 	if err != nil || got != ports.AgentAuthStatusUnauthorized || *calls != 1 {
@@ -87,7 +116,7 @@ func TestKiroAuthStatusGlobalIgnoresHeadlessKey(t *testing.T) {
 }
 
 func TestKiroAuthStatusCanceled(t *testing.T) {
-	t.Setenv("KIRO_API_KEY", "key")
+	t.Setenv("KIRO_API_KEY", "ksk_test_key")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	got, err := (&Plugin{resolvedBinary: "kiro-cli"}).AuthStatus(ctx)
