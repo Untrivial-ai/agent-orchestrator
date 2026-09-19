@@ -1201,6 +1201,23 @@ type ConversationRows struct {
 	HasMoreBefore                    bool
 }
 
+// preConversationControllerState answers what a session that has no conversation
+// row yet should report for its controller. Such a session has never had a
+// controller, so "stopped" is a claim that something ran and ended, and the chat
+// surface faithfully paints that claim as a destructive crash banner offering to
+// resume an agent that has not yet run.
+//
+// The reading is taken from durable state alone, never from the row's age: a
+// terminated session, and one whose agent process exited, keep reporting stopped
+// from the first poll, so a genuine failure is never masked by a startup grace
+// period.
+func preConversationControllerState(record domain.SessionRecord) ports.ChatControllerState {
+	if record.IsTerminated || record.Activity.State == domain.ActivityExited {
+		return ports.ChatControllerStopped
+	}
+	return ports.ChatControllerConnecting
+}
+
 // Snapshot reads a session's conversation.
 //
 // It does not require a live controller: history must remain readable after the
@@ -1217,12 +1234,14 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 	if errors.Is(err, domain.ErrNoConversation) {
 		// A chat session has no conversation until its controller first starts.
 		// That is an empty conversation, not a failure — returning an error here
-		// would make a brand-new session look broken.
+		// would make a brand-new session look broken. Report connecting while the
+		// controller is still coming up so the surface shows a startup spinner
+		// rather than a crash; a session that really ended still reads as stopped.
 		return Snapshot{
 			SessionID:  id,
 			Harness:    record.Harness,
 			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: ports.ChatControllerStopped,
+			Controller: preConversationControllerState(record),
 		}, nil
 	}
 	if err != nil {
@@ -1274,7 +1293,7 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 			SessionID:  id,
 			Harness:    record.Harness,
 			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: ports.ChatControllerStopped,
+			Controller: preConversationControllerState(record),
 		}, nil
 	}
 	if err != nil {
