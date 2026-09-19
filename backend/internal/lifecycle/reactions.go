@@ -696,7 +696,16 @@ func (m *Manager) ApplyTrackerFacts(ctx context.Context, id domain.SessionID, o 
 		if m.sessionMutationInProgress(id) {
 			return nil
 		}
-		return m.MarkTerminated(ctx, id)
+		// The daemon wires Kill as the completion terminator. Use it here so a
+		// Done/Cancelled issue releases runtime and workspace resources rather
+		// than only flipping the terminal flag.
+		m.mu.Lock()
+		terminator := m.completionTerminator
+		m.mu.Unlock()
+		if terminator == nil {
+			return m.MarkTerminated(ctx, id)
+		}
+		return m.terminateCompletedSession(ctx, id)
 	}
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil || !ok {
