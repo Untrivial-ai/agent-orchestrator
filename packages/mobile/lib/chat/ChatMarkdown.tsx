@@ -1,13 +1,20 @@
 import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
-import * as Linking from "expo-linking";
-import { Fragment, memo, useState, type ReactNode } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { createContext, Fragment, memo, useContext, useState, type ReactNode } from "react";
+import { Image, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from "react-native";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { HighlightedCodeText } from "./HighlightedCodeText";
 import { parseBlocks } from "./markdownBlocks";
+
+// The conversation screen decides how a tapped link opens (it knows the AO host
+// that the agent's localhost links map onto); the renderer only reports the tap.
+const OpenChatLink = createContext<((url: string) => void) | null>(null);
+
+export function ChatLinkProvider({ onLinkOpen, children }: { onLinkOpen: (url: string) => void; children: ReactNode }) {
+	return <OpenChatLink.Provider value={onLinkOpen}>{children}</OpenChatLink.Provider>;
+}
 
 /**
  * Small native CommonMark renderer for the conversation surface.
@@ -108,6 +115,12 @@ function CodeBlock({ text, language, streaming }: { text: string; language?: str
 	);
 }
 
+function MarkdownLink({ url, label, style }: { url: string; label: string; style: StyleProp<TextStyle> }) {
+	const open = useContext(OpenChatLink);
+	if (!open) throw new Error("ChatMarkdown must be used within <ChatLinkProvider>");
+	return <Text accessibilityRole="link" style={style} onPress={() => { haptics.tap(); open(url); }}>{label}</Text>;
+}
+
 function inline(text: string, styles: ReturnType<typeof makeStyles>): ReactNode[] {
 	const pattern = /(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s>]+)>|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*\n]+)\*|_([^_\n]+)_|(https?:\/\/[^\s<]+))/g;
 	const nodes: ReactNode[] = [];
@@ -118,16 +131,7 @@ function inline(text: string, styles: ReturnType<typeof makeStyles>): ReactNode[
 		if ((match[2] && match[3]) || match[4] || match[11]) {
 			const url = match[3] ?? match[4] ?? match[11];
 			const label = match[2] ?? url;
-			nodes.push(
-				<Text
-					key={`${match.index}-link`}
-					accessibilityRole="link"
-					style={styles.link}
-					onPress={() => { haptics.tap(); void Linking.openURL(url).catch(() => haptics.error()); }}
-				>
-					{label}
-				</Text>,
-			);
+			nodes.push(<MarkdownLink key={`${match.index}-link`} url={url} label={label} style={styles.link} />);
 		} else if (match[5]) {
 			nodes.push(<Text key={`${match.index}-code`} style={styles.inlineCode}>{match[5]}</Text>);
 		} else if (match[6] || match[7]) {
