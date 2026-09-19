@@ -189,9 +189,9 @@ export interface CloudCpSession {
 	kind: string;
 	harness: string;
 	reviewerHarness?: string;
-	autoInjectCI: boolean;
-	autoInjectReview: boolean;
-	terminateOnPrMerge: boolean;
+	autoInjectCI?: boolean;
+	autoInjectReview?: boolean;
+	terminateOnPrMerge?: boolean;
 	displayName: string;
 	branch: string;
 	mode: string;
