@@ -8207,6 +8207,41 @@ func TestReconcileLive_DeadSessionRelaunchesInExistingWorktree(t *testing.T) {
 	}
 }
 
+func TestReconcileStartupSafety_TerminatesInterruptedSpawnSeed(t *testing.T) {
+	m, st, _, _ := newManager()
+	lcm := m.lcm.(*fakeLCM)
+	interrupted := domain.SessionRecord{
+		ID:           "mer-1",
+		ProjectID:    "mer",
+		Kind:         domain.KindOrchestrator,
+		Harness:      domain.HarnessClaudeCode,
+		IsTerminated: false,
+	}
+	withWorkspace := domain.SessionRecord{
+		ID: "mer-2", ProjectID: "mer", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/worktrees/mer-2"},
+	}
+	withRuntime := domain.SessionRecord{
+		ID: "mer-3", ProjectID: "mer", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{RuntimeHandleID: "mer-3"},
+	}
+	st.sessions[interrupted.ID] = interrupted
+	st.sessions[withWorkspace.ID] = withWorkspace
+	st.sessions[withRuntime.ID] = withRuntime
+
+	if err := m.ReconcileStartupSafety(context.Background()); err != nil {
+		t.Fatalf("ReconcileStartupSafety: %v", err)
+	}
+	if !st.sessions[interrupted.ID].IsTerminated || lcm.terminated[interrupted.ID] != 1 {
+		t.Fatalf("interrupted seed = %+v; terminated calls = %v, want one termination", st.sessions[interrupted.ID], lcm.terminated)
+	}
+	for _, id := range []domain.SessionID{withWorkspace.ID, withRuntime.ID} {
+		if st.sessions[id].IsTerminated || lcm.terminated[id] != 0 {
+			t.Fatalf("recoverable session %s was terminated: row=%+v calls=%v", id, st.sessions[id], lcm.terminated)
+		}
+	}
+}
+
 func TestReconcileLive_PreservesScopedShellTerminalsWithExistingWorktree(t *testing.T) {
 	st := newFakeStore()
 	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
