@@ -130,6 +130,8 @@ describe("HarnessSettingsSection", () => {
 
 	it("ensures and caches readiness when the page opens", async () => {
 		const refreshed = catalogWithInstalled("claude-code", "codex");
+		let resolveEnsure!: (value: { data: typeof refreshed }) => void;
+		const pendingEnsure = new Promise<{ data: typeof refreshed }>((resolve) => { resolveEnsure = resolve; });
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
@@ -138,7 +140,7 @@ describe("HarnessSettingsSection", () => {
 			return { data: undefined } as never;
 		});
 		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
-			if (path === "/api/v1/agents/readiness/ensure") return { data: refreshed } as never;
+			if (path === "/api/v1/agents/readiness/ensure") return await pendingEnsure as never;
 			return { data: undefined } as never;
 		});
 
@@ -148,7 +150,13 @@ describe("HarnessSettingsSection", () => {
 		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/readiness/ensure", {
 			body: { agentIds: [], purpose: "display" },
 		}));
-		await waitFor(() => expect(row).toHaveTextContent("Installed"));
+		await within(row).findByRole("button", { name: "Install" });
+		await act(async () => {
+			resolveEnsure({ data: refreshed });
+		});
+		await waitFor(() => {
+			expect(within(row).getByRole("button", { name: "Installed" })).toBeDisabled();
+		});
 	});
 
 	it("shows a compact authentication status with a separate manual recheck control", async () => {
@@ -223,9 +231,15 @@ describe("HarnessSettingsSection", () => {
 
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
-		await user.click(within(row).getByRole("button", { name: "Claude Code: Check login" }));
+		const checkLogin = await within(row).findByRole(
+			"button",
+			{ name: "Claude Code: Check login" },
+			{ timeout: 10_000 },
+		);
+		await user.click(checkLogin);
 		await waitFor(() => expect(probeCalls).toBe(1));
-		await user.click(within(row).getByRole("button", { name: "Login" }));
+		const login = await within(row).findByRole("button", { name: "Login" });
+		await user.click(login);
 		await within(row).findByTestId("inline-terminal-body");
 		expect(terminalStateCallback.value).toBeDefined();
 
