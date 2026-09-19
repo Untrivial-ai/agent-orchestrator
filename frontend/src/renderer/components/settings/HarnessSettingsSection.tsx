@@ -116,7 +116,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	const authWorkflowRef = useRef<AuthTerminalWorkflow | null>(null);
 	const authStartPendingRef = useRef(false);
 	authWorkflowRef.current = authWorkflow;
-	const refreshedSuccess = useRef(new Set<string>());
+	const activeInstallJobs = useRef(new Set<AgentId>());
 	const pendingActions = useRef(new Set<AgentId>());
 	const authChecksInFlight = useRef(new Map<AgentId, Promise<AgentAuthProbeResult | undefined>>());
 	const [pendingAgentIds, setPendingAgentIds] = useState<Set<AgentId>>(new Set());
@@ -141,11 +141,6 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		() => (jobs.data ?? []).filter((job) => isActive(job)).map((job) => job.target).sort().join(","),
 		[jobs.data],
 	);
-	const succeededKey = useMemo(
-		() => (jobs.data ?? []).filter((job) => job.status === "succeeded").map((job) => `${job.target}:${job.updatedAt ?? job.finishedAt ?? "done"}`).sort().join(","),
-		[jobs.data],
-	);
-
 	useEffect(() => {
 		if (!activeKey) return;
 		const timer = window.setInterval(() => void jobs.refetch(), POLL_INTERVAL_MS);
@@ -153,10 +148,14 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	}, [activeKey, jobs.refetch]);
 
 	useEffect(() => {
-		for (const token of succeededKey ? succeededKey.split(",") : []) {
-			if (!token || refreshedSuccess.current.has(token)) continue;
-			refreshedSuccess.current.add(token);
-			const agentId = token.split(":", 1)[0] as AgentId;
+		for (const job of jobs.data ?? []) {
+			const agentId = job.target as AgentId;
+			if (isActive(job)) {
+				activeInstallJobs.current.add(agentId);
+				continue;
+			}
+			const completedWhileMounted = activeInstallJobs.current.delete(agentId);
+			if (job.status !== "succeeded" || !completedWhileMounted) continue;
 			setActionErrors((current) => ({ ...current, [agentId]: undefined }));
 			void apiClient.POST("/api/v1/agents/{agent}/probe", {
 				params: { path: { agent: agentId } },
@@ -175,7 +174,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 				}
 			});
 		}
-	}, [queryClient, succeededKey]);
+	}, [jobs.data, queryClient]);
 
 	useEffect(() => {
 		setExpandedDiagnostics((current) => {
@@ -286,8 +285,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	): Promise<AgentAuthProbeResult | undefined> => {
 		const existing = authChecksInFlight.current.get(agentId);
 		if (existing && !fresh) return existing;
-		let check: Promise<AgentAuthProbeResult | undefined>;
-		check = (async () => {
+		const check = (async () => {
 			if (existing) await existing;
 			updateAuthState(agentId, { checking: true, error: null });
 			try {
@@ -298,12 +296,14 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 			} catch (error) {
 				updateAuthState(agentId, { error: error instanceof Error ? error.message : t("settings.harness.authFailed") });
 				return undefined;
-			} finally {
-				if (authChecksInFlight.current.get(agentId) === check) authChecksInFlight.current.delete(agentId);
-				updateAuthState(agentId, { checking: false });
 			}
 		})();
 		authChecksInFlight.current.set(agentId, check);
+		const finishCheck = () => {
+			if (authChecksInFlight.current.get(agentId) === check) authChecksInFlight.current.delete(agentId);
+			updateAuthState(agentId, { checking: false });
+		};
+		void check.then(finishCheck, finishCheck);
 		return check;
 	}, [queryClient, t, updateAuthState]);
 

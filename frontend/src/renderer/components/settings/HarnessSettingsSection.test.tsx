@@ -396,18 +396,28 @@ describe("HarnessSettingsSection", () => {
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		await waitFor(() => expect(row).toHaveTextContent("Available via Homebrew & npm"));
 		expect(within(row).getByRole("button", { name: "Install" })).toBeEnabled();
+		expect(apiClient.POST).not.toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", expect.anything());
 	});
 
-	it("probes the installed harness before refreshing inventory after success", async () => {
+	it("probes the installed harness after an observed install completes", async () => {
 		let installed = false;
 		let installerFetches = 0;
+		let jobFetches = 0;
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: installed ? catalogWithInstalled("claude-code", "codex") : catalog } as never;
 			if (path === "/api/v1/agents/installers") {
 				installerFetches += 1;
 				return { data: plans } as never;
 			}
-			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [{ target: "codex", status: "succeeded", method: "npm", updatedAt: "2026-08-31T00:00:00Z" }] } } as never;
+			if (path === "/api/v1/agents/install-jobs") {
+				jobFetches += 1;
+				return { data: { jobs: [{
+					target: "codex",
+					status: jobFetches === 1 ? "installing" : "succeeded",
+					method: "npm",
+					updatedAt: "2026-08-31T00:00:00Z",
+				}] } } as never;
+			}
 			return { data: undefined } as never;
 		});
 		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
@@ -422,7 +432,7 @@ describe("HarnessSettingsSection", () => {
 		});
 		renderSection();
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
-		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", { params: { path: { agent: "codex" } } }));
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", { params: { path: { agent: "codex" } } }), { timeout: 3_000 });
 		await waitFor(() => expect(row).toHaveTextContent("Installed"));
 		await waitFor(() => expect(installerFetches).toBe(2));
 	});
