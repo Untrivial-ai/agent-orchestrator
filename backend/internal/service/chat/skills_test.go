@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -53,6 +54,28 @@ func TestSkillsReportsUnsupportedForADriverThatCannotList(t *testing.T) {
 	_, err := h.svc.Skills(context.Background(), testSession)
 	if !errorsIs(err, chatsvc.ErrSkillsUnsupported) {
 		t.Fatalf("err = %v, want ErrSkillsUnsupported", err)
+	}
+}
+
+// A provider that supports skills but fails this particular call (e.g. Codex
+// app-server's `skills/list` returning a JSON-RPC error) is a different failure
+// than "this agent has no concept of skills": it must report ErrSkillsUnavailable,
+// not ErrSkillsUnsupported, and the raw upstream error must still be reachable
+// through it so nothing gets lost behind a generic wrapper.
+func TestSkillsReportsUnavailableWhenTheProviderCallFails(t *testing.T) {
+	upstream := errors.New(`skills/list: rpc error: {"code":-32000,"message":"boom"}`)
+	conv := &skillfulConversation{
+		fakeConversation: newFakeConversation(),
+		err:              upstream,
+	}
+	h := newHarnessWithConversation(t, conv)
+
+	_, err := h.svc.Skills(context.Background(), testSession)
+	if !errorsIs(err, chatsvc.ErrSkillsUnavailable) {
+		t.Fatalf("err = %v, want ErrSkillsUnavailable", err)
+	}
+	if !errorsIs(err, upstream) {
+		t.Fatalf("err = %v, want it to still wrap the raw upstream error", err)
 	}
 }
 
