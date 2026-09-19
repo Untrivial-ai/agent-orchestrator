@@ -742,7 +742,7 @@ func TestInstallAgentProfileInstallsSessionCopilotAgent(t *testing.T) {
 			t.Fatalf("agent profile missing %q:\n%s", want, agentText)
 		}
 	}
-	if !strings.Contains(string(exclude), "/.github/agents/ao-sess-1.agent.md\n") {
+	if !strings.Contains(string(exclude), "/.github/agents/ao-*.agent.md\n") {
 		t.Fatalf("git exclude does not ignore custom agent:\n%s", exclude)
 	}
 }
@@ -782,7 +782,7 @@ func TestInstallAgentProfileDoesNotInstallLifecycleHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(exclude), "/.github/agents/ao-review-sess-1.agent.md\n") {
+	if !strings.Contains(string(exclude), "/.github/agents/ao-*.agent.md\n") {
 		t.Fatalf("profile is not git-excluded:\n%s", exclude)
 	}
 }
@@ -849,7 +849,7 @@ func TestGetAgentHooksIgnoresSessionCopilotAgentInLinkedWorktreeCommonExclude(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(exclude), "/.github/agents/ao-sess-1.agent.md\n") {
+	if !strings.Contains(string(exclude), "/.github/agents/ao-*.agent.md\n") {
 		t.Fatalf("common git exclude does not ignore custom agent:\n%s", exclude)
 	}
 	if _, err := os.Stat(filepath.Join(worktreeGitDir, "info", "exclude")); !errors.Is(err, os.ErrNotExist) {
