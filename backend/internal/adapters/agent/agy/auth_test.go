@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -103,13 +104,20 @@ func TestAgyAuthStatusRequiresSupportedLocalEvidence(t *testing.T) {
 }
 
 func TestAgyAuthStatusUsesFixedKeyringEntry(t *testing.T) {
+	now := time.Date(2026, time.September, 19, 12, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
 		name   string
 		secret string
 		runErr error
 		want   ports.AgentAuthStatus
 	}{
-		{"present", `{"token":{"access_token":"test-access"}}`, nil, ports.AgentAuthStatusConfigured},
+		{"unexpired access token", `{"token":{"access_token":"test-access","expiry":"2026-09-19T13:00:00Z"}}`, nil, ports.AgentAuthStatusConfigured},
+		{"access token without expiry", `{"token":{"access_token":"test-access"}}`, nil, ports.AgentAuthStatusConfigured},
+		{"expired access token with refresh path", `{"token":{"access_token":"expired-access","refresh_token":"test-refresh","expiry":"2026-09-19T11:00:00Z"}}`, nil, ports.AgentAuthStatusConfigured},
+		{"expired access token without refresh path", `{"token":{"access_token":"expired-access","expiry":"2026-09-19T11:00:00Z"}}`, nil, ports.AgentAuthStatusUnknown},
+		{"missing token fields", `{"token":{}}`, nil, ports.AgentAuthStatusUnknown},
+		{"wrong token nesting", `{"access_token":"test-access"}`, nil, ports.AgentAuthStatusUnknown},
+		{"corrupt JSON", `not-json`, nil, ports.AgentAuthStatusUnknown},
 		{"empty", "  \n", nil, ports.AgentAuthStatusUnknown},
 		{"unavailable", "", errors.New("keychain unavailable with secret detail"), ports.AgentAuthStatusUnknown},
 	} {
@@ -117,6 +125,7 @@ func TestAgyAuthStatusUsesFixedKeyringEntry(t *testing.T) {
 			home := t.TempDir()
 			d := authutil.Dependencies{
 				GOOS: "darwin",
+				Now:  func() time.Time { return now },
 				Getenv: func(name string) string {
 					if name == "HOME" {
 						return home
@@ -141,24 +150,41 @@ func TestAgyAuthStatusUsesFixedKeyringEntry(t *testing.T) {
 	}
 }
 
-func TestAgyMalformedSettingsFallsThroughToKeyring(t *testing.T) {
-	home := t.TempDir()
-	writeAgyAuthFixture(t, filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), `{"modelProvider":`)
-	d := authutil.Dependencies{
-		GOOS: "darwin",
-		Getenv: func(name string) string {
-			if name == "HOME" {
-				return home
+func TestAgyInvalidExplicitProviderDoesNotUseKeyring(t *testing.T) {
+	for _, tt := range []struct {
+		name, settings string
+		env            map[string]string
+	}{
+		{name: "malformed settings", settings: `{"modelProvider":`},
+		{name: "unsupported provider", settings: `{"modelProvider":"other"}`},
+		{name: "provider matching only by case", settings: `{"modelProvider":"Gemini"}`, env: map[string]string{"GEMINI_API_KEY": "test-gemini-key"}},
+		{name: "provider with wrong type", settings: `{"modelProvider":1}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			writeAgyAuthFixture(t, filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), tt.settings)
+			keyringCalls := 0
+			d := authutil.Dependencies{
+				GOOS: "darwin",
+				Getenv: func(name string) string {
+					if name == "HOME" {
+						return home
+					}
+					return tt.env[name]
+				},
+				Run: func(context.Context, string, ...string) ([]byte, error) {
+					keyringCalls++
+					return []byte(`{"token":{"access_token":"test-access"}}`), nil
+				},
 			}
-			return ""
-		},
-		Run: func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("browser-login-secret"), nil
-		},
-	}
-	got, err := agyAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
-	if err != nil || got != ports.AgentAuthStatusConfigured {
-		t.Fatalf("status = %q, err = %v", got, err)
+			got, err := agyAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, err = %v; want unknown", got, err)
+			}
+			if keyringCalls != 0 {
+				t.Fatalf("keyring calls = %d; invalid explicit provider must remain unknown", keyringCalls)
+			}
+		})
 	}
 }
 
@@ -176,7 +202,7 @@ func TestAgyGeminiModeSelectsOnlyGeminiAPIKey(t *testing.T) {
 		},
 		Run: func(context.Context, string, ...string) ([]byte, error) {
 			keyringCalls++
-			return []byte("browser-login-secret"), nil
+			return []byte(`{"token":{"access_token":"test-access"}}`), nil
 		},
 	}
 	got, err := agyAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)

@@ -79,10 +79,6 @@ func continueAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authu
 		}
 	}
 
-	if continueHasModelFlag(check.Args) {
-		return ports.AgentAuthStatusUnknown, nil
-	}
-
 	configPath, explicitConfig := continueSelectedConfigPath(check, continueHome)
 	if configPath == "" {
 		return ports.AgentAuthStatusUnknown, nil
@@ -95,7 +91,7 @@ func continueAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authu
 		if err := ctx.Err(); err != nil {
 			return ports.AgentAuthStatusUnknown, err
 		}
-		if !explicitConfig && lookup("ANTHROPIC_API_KEY") != "" {
+		if !explicitConfig && !continueHasModelFlag(check.Args) && lookup("ANTHROPIC_API_KEY") != "" {
 			return ports.AgentAuthStatusConfigured, nil
 		}
 		return ports.AgentAuthStatusUnknown, nil
@@ -211,9 +207,11 @@ func continueSecretEnv(value string) (string, bool) {
 	if !ok || strings.ContainsAny(name, " \t\r\n}") {
 		return "", true
 	}
-	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
-		name = name[slash+1:]
+	parts := strings.Split(name, "/")
+	if len(parts)%2 == 0 {
+		return "", true
 	}
+	name = parts[len(parts)-1]
 	if name == "" {
 		return "", false
 	}

@@ -61,6 +61,28 @@ models:
 			want: ports.AgentAuthStatusConfigured,
 		},
 		{
+			name: "selected model valid fully qualified environment reference",
+			config: `models:
+  - name: GPT
+    provider: openai
+    model: gpt-5
+    apiKey: ${{ secrets.owner/package/SELECTED_PROVIDER_KEY }}
+`,
+			env:  map[string]string{"SELECTED_PROVIDER_KEY": "test-provider-key"},
+			want: ports.AgentAuthStatusConfigured,
+		},
+		{
+			name: "selected model rejects unpaired fully qualified environment reference",
+			config: `models:
+  - name: GPT
+    provider: openai
+    model: gpt-5
+    apiKey: ${{ secrets.owner/SELECTED_PROVIDER_KEY }}
+`,
+			env:  map[string]string{"SELECTED_PROVIDER_KEY": "test-provider-key"},
+			want: ports.AgentAuthStatusUnknown,
+		},
+		{
 			name: "unresolved selected model environment reference",
 			config: `models:
   - name: GPT
@@ -279,10 +301,16 @@ func TestContinueAuthStatusForUsesScopedConfigAndEnvironment(t *testing.T) {
 			want:       ports.AgentAuthStatusUnknown,
 		},
 		{
-			name:       "model flag selects injected model before default config",
+			name:       "model flag preserves first default config model",
 			args:       []string{"cn", "--model", "anthropic/claude-sonnet"},
 			defaultKey: true,
-			want:       ports.AgentAuthStatusUnknown,
+			want:       ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:      "model flag without file model does not use Anthropic onboarding key",
+			args:      []string{"cn", "--model", "openai/gpt-5"},
+			anthropic: "test-anthropic-key",
+			want:      ports.AgentAuthStatusUnknown,
 		},
 		{
 			name:      "explicit config does not fall back to Anthropic environment",
