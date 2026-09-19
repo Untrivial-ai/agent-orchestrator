@@ -119,8 +119,9 @@ type aiderArgs struct {
 }
 
 type aiderEnvironment struct {
-	overrides map[string]string
-	base      func(string) string
+	overrides  map[string]string
+	base       func(string) string
+	baseLookup func(string) (string, bool)
 }
 
 func (environment aiderEnvironment) get(name string) string {
@@ -134,6 +135,17 @@ func (environment aiderEnvironment) set(name, value string) {
 	environment.overrides[name] = value
 }
 
+func (environment aiderEnvironment) lookup(name string) (string, bool) {
+	if value, ok := environment.overrides[name]; ok {
+		return value, true
+	}
+	if environment.baseLookup != nil {
+		return environment.baseLookup(name)
+	}
+	value := environment.base(name)
+	return value, value != ""
+}
+
 func aiderAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil.Dependencies) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
@@ -143,10 +155,12 @@ func aiderAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	baseGetenv := d.Getenv
+	var baseLookup func(string) (string, bool)
 	if baseGetenv == nil {
 		baseGetenv = os.Getenv
+		baseLookup = os.LookupEnv
 	}
-	environment := aiderEnvironment{overrides: make(map[string]string), base: baseGetenv}
+	environment := aiderEnvironment{overrides: make(map[string]string), base: baseGetenv, baseLookup: baseLookup}
 	for name, value := range check.Env {
 		environment.set(name, value)
 	}
@@ -162,7 +176,7 @@ func aiderAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 		return ports.AgentAuthStatusUnknown, err
 	}
 
-	configPaths, explicitConfig := aiderConfigPaths(args, environment, home, gitRoot, workingDir)
+	configPaths, explicitConfig := aiderConfigPaths(args, home, gitRoot, workingDir)
 	if explicitConfig && len(configPaths) == 0 {
 		return ports.AgentAuthStatusUnknown, nil
 	}
@@ -202,12 +216,8 @@ func aiderAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 			}
 			continue
 		}
-		values, parseErr := authutil.ParseDotenv(data)
-		if parseErr != nil {
+		if applyAiderDotenv(data, environment) != nil {
 			continue
-		}
-		for name, value := range values {
-			environment.set(name, value)
 		}
 	}
 
@@ -257,6 +267,50 @@ func aiderAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 		return ports.AgentAuthStatusUnknown, err
 	}
 	return status, nil
+}
+
+func applyAiderDotenv(data []byte, environment aiderEnvironment) error {
+	if _, err := authutil.ParseDotenv(data); err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		values, err := authutil.ParseDotenv([]byte(line))
+		if err != nil {
+			return err
+		}
+		for name, value := range values {
+			environment.set(name, interpolateAiderDotenv(value, environment))
+		}
+	}
+	return nil
+}
+
+func interpolateAiderDotenv(value string, environment aiderEnvironment) string {
+	var result strings.Builder
+	for {
+		start := strings.Index(value, "${")
+		if start < 0 {
+			result.WriteString(value)
+			return result.String()
+		}
+		result.WriteString(value[:start])
+		rest := value[start+2:]
+		end := strings.IndexByte(rest, '}')
+		if end < 0 {
+			result.WriteString(value[start:])
+			return result.String()
+		}
+		expression := rest[:end]
+		name, fallback, hasFallback := strings.Cut(expression, ":-")
+		if strings.Contains(name, ":") {
+			result.WriteString(value[start : start+2+end+1])
+		} else if resolved, ok := environment.lookup(name); ok {
+			result.WriteString(resolved)
+		} else if hasFallback {
+			result.WriteString(fallback)
+		}
+		value = rest[end+1:]
+	}
 }
 
 func parseAiderArgs(values []string) (aiderArgs, bool) {
@@ -350,11 +404,8 @@ func aiderGitRoot(ctx context.Context, d authutil.Dependencies, start string) (s
 	}
 }
 
-func aiderConfigPaths(args aiderArgs, environment aiderEnvironment, home, gitRoot, workingDir string) ([]string, bool) {
-	path, explicit := strings.TrimSpace(environment.get("AIDER_CONFIG")), false
-	if path != "" {
-		explicit = true
-	}
+func aiderConfigPaths(args aiderArgs, home, gitRoot, workingDir string) ([]string, bool) {
+	path, explicit := "", false
 	if args.ConfigPathSet {
 		path, explicit = args.ConfigPath, true
 	}
@@ -509,6 +560,9 @@ func aiderModelProvider(model string) string {
 	if model == "" {
 		return ""
 	}
+	if resolved, ok := aiderBuiltInModelAliases[model]; ok {
+		model = resolved
+	}
 	if strings.HasPrefix(model, "us.anthropic.") || strings.HasPrefix(model, "global.anthropic.") {
 		return "bedrock"
 	}
@@ -546,11 +600,32 @@ func aiderModelProvider(model string) string {
 		return "nvidia_nim"
 	case "cohere_chat":
 		return "cohere"
-	case "azure_ai":
-		return "azure"
 	default:
 		return provider
 	}
+}
+
+var aiderBuiltInModelAliases = map[string]string{
+	"sonnet":               "claude-sonnet-4-6",
+	"haiku":                "claude-haiku-4-5",
+	"opus":                 "claude-opus-4-7",
+	"4":                    "gpt-4-0613",
+	"4o":                   "gpt-4o",
+	"4-turbo":              "gpt-4-1106-preview",
+	"35turbo":              "gpt-3.5-turbo",
+	"35-turbo":             "gpt-3.5-turbo",
+	"3":                    "gpt-3.5-turbo",
+	"deepseek":             "deepseek/deepseek-chat",
+	"flash":                "gemini/gemini-flash-latest",
+	"flash-lite":           "gemini/gemini-2.5-flash-lite",
+	"quasar":               "openrouter/openrouter/quasar-alpha",
+	"r1":                   "deepseek/deepseek-reasoner",
+	"gemini-2.5-pro":       "gemini/gemini-2.5-pro",
+	"gemini-3-pro-preview": "gemini/gemini-3-pro-preview",
+	"gemini":               "gemini/gemini-3-pro-preview",
+	"gemini-exp":           "gemini/gemini-2.5-pro-exp-03-25",
+	"grok3":                "xai/grok-3-beta",
+	"optimus":              "openrouter/openrouter/optimus-alpha",
 }
 
 func aiderProviderStatus(ctx context.Context, provider string, environment aiderEnvironment, d authutil.Dependencies) ports.AgentAuthStatus {
@@ -573,6 +648,14 @@ func aiderProviderStatus(ctx context.Context, provider string, environment aider
 			return ports.AgentAuthStatusConfigured
 		}
 		return authutil.AzureEvidence(ctx, d).Status
+	case "azure_ai":
+		if !validAiderURL(environment.get("AZURE_AI_API_BASE")) {
+			return ports.AgentAuthStatusUnknown
+		}
+		if aiderHasProviderKey(provider, environment) {
+			return ports.AgentAuthStatusConfigured
+		}
+		return ports.AgentAuthStatusUnknown
 	case "ollama":
 		if usableAiderSecret(environment.get("OLLAMA_API_KEY")) {
 			return ports.AgentAuthStatusConfigured
@@ -635,7 +718,8 @@ var aiderProviderEnvVars = map[string][]string{
 	"aleph_alpha":       {"ALEPH_ALPHA_API_KEY", "ALEPHALPHA_API_KEY"},
 	"anthropic":         {"ANTHROPIC_API_KEY"},
 	"anyscale":          {"ANYSCALE_API_KEY"},
-	"azure":             {"AZURE_AI_API_KEY", "AZURE_API_KEY", "AZURE_OPENAI_API_KEY"},
+	"azure":             {"AZURE_API_KEY", "AZURE_OPENAI_API_KEY"},
+	"azure_ai":          {"AZURE_AI_API_KEY"},
 	"baseten":           {"BASETEN_API_KEY"},
 	"bytez":             {"BYTEZ_API_KEY"},
 	"cerebras":          {"CEREBRAS_API_KEY"},

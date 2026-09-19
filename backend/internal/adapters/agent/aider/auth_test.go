@@ -72,7 +72,6 @@ func TestAiderAuthStatusUsesExplicitConfigPaths(t *testing.T) {
 		{name: "CLI config", args: []string{"aider", "--config", "selected.yml"}},
 		{name: "inline CLI config", args: []string{"aider", "--config=selected.yml"}},
 		{name: "short CLI config", args: []string{"aider", "-c", "selected.yml"}},
-		{name: "scoped environment config", env: map[string]string{"AIDER_CONFIG": "selected.yml"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			home, workspace := t.TempDir(), t.TempDir()
@@ -96,6 +95,20 @@ func TestAiderAuthStatusUsesExplicitConfigPaths(t *testing.T) {
 		}, map[string]string{"HOME": t.TempDir()}, nil)
 		if got != ports.AgentAuthStatusUnknown {
 			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusUnknown)
+		}
+	})
+
+	t.Run("AIDER_CONFIG does not select a config file", func(t *testing.T) {
+		home, workspace := t.TempDir(), t.TempDir()
+		writeAiderPath(t, filepath.Join(workspace, ".aider.conf.yml"), "model: openai/gpt-5\nopenai-api-key: default-key\n")
+		writeAiderPath(t, filepath.Join(workspace, "selected.yml"), "model: ollama/qwen\n")
+
+		got := runAiderAuth(t, ports.AgentAuthCheck{
+			WorkingDir: workspace,
+			Env:        map[string]string{"AIDER_CONFIG": "selected.yml"},
+		}, map[string]string{"HOME": home}, nil)
+		if got != ports.AgentAuthStatusConfigured {
+			t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
 		}
 	})
 }
@@ -164,6 +177,31 @@ func TestAiderAuthStatusUsesDotenvPrecedence(t *testing.T) {
 	})
 }
 
+func TestAiderAuthStatusInterpolatesDotenvLikePythonDotenv(t *testing.T) {
+	tests := []struct {
+		name   string
+		dotenv string
+		want   ports.AgentAuthStatus
+	}{
+		{name: "unresolved variable becomes empty", dotenv: "OPENAI_API_KEY=${MISSING}\n", want: ports.AgentAuthStatusUnknown},
+		{name: "prior variable is resolved", dotenv: "SOURCE_KEY=fixture-key\nOPENAI_API_KEY=${SOURCE_KEY}\n", want: ports.AgentAuthStatusConfigured},
+		{name: "resolved placeholder is rejected", dotenv: "SOURCE_KEY=your-api-key\nOPENAI_API_KEY=${SOURCE_KEY}\n", want: ports.AgentAuthStatusUnknown},
+		{name: "missing variable uses default", dotenv: "OPENAI_API_KEY=${MISSING:-fixture-key}\n", want: ports.AgentAuthStatusConfigured},
+		{name: "explicit empty variable does not use default", dotenv: "SOURCE_KEY=\nOPENAI_API_KEY=${SOURCE_KEY:-fixture-key}\n", want: ports.AgentAuthStatusUnknown},
+		{name: "malformed file retains no partial values", dotenv: "OPENAI_API_KEY=fixture-key\nnot-an-assignment\n", want: ports.AgentAuthStatusUnknown},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			writeAiderPath(t, filepath.Join(home, ".env"), test.dotenv)
+			got := runAiderAuth(t, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "openai/gpt-5"}}, map[string]string{"HOME": home}, nil)
+			if got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAiderAuthStatusIgnoresDaemonWorkingDirectory(t *testing.T) {
 	daemonDir := t.TempDir()
 	writeAiderPath(t, filepath.Join(daemonDir, ".aider.conf.yml"), "model: openai/gpt-5\nopenai-api-key: daemon-secret\n")
@@ -225,6 +263,43 @@ func TestAiderAuthStatusUsesDocumentedLiteLLMVariablesForSelectedProvider(t *tes
 	}
 }
 
+func TestAiderAuthStatusResolvesPinnedBuiltInModelAliases(t *testing.T) {
+	tests := []struct {
+		alias   string
+		envName string
+	}{
+		{alias: "sonnet", envName: "ANTHROPIC_API_KEY"},
+		{alias: "haiku", envName: "ANTHROPIC_API_KEY"},
+		{alias: "opus", envName: "ANTHROPIC_API_KEY"},
+		{alias: "4", envName: "OPENAI_API_KEY"},
+		{alias: "4o", envName: "OPENAI_API_KEY"},
+		{alias: "4-turbo", envName: "OPENAI_API_KEY"},
+		{alias: "35turbo", envName: "OPENAI_API_KEY"},
+		{alias: "35-turbo", envName: "OPENAI_API_KEY"},
+		{alias: "3", envName: "OPENAI_API_KEY"},
+		{alias: "deepseek", envName: "DEEPSEEK_API_KEY"},
+		{alias: "flash", envName: "GEMINI_API_KEY"},
+		{alias: "flash-lite", envName: "GEMINI_API_KEY"},
+		{alias: "quasar", envName: "OPENROUTER_API_KEY"},
+		{alias: "r1", envName: "DEEPSEEK_API_KEY"},
+		{alias: "gemini-2.5-pro", envName: "GEMINI_API_KEY"},
+		{alias: "gemini-3-pro-preview", envName: "GEMINI_API_KEY"},
+		{alias: "gemini", envName: "GEMINI_API_KEY"},
+		{alias: "gemini-exp", envName: "GEMINI_API_KEY"},
+		{alias: "grok3", envName: "XAI_API_KEY"},
+		{alias: "optimus", envName: "OPENROUTER_API_KEY"},
+	}
+	for _, test := range tests {
+		t.Run(test.alias, func(t *testing.T) {
+			env := map[string]string{"HOME": t.TempDir(), test.envName: "fixture-key"}
+			got := runAiderAuth(t, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: test.alias}}, env, nil)
+			if got != ports.AgentAuthStatusConfigured {
+				t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
+			}
+		})
+	}
+}
+
 func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
 	configuredCloud := authutil.CloudCredential{Token: "fixture-token"}
 	tests := []struct {
@@ -271,14 +346,6 @@ func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
 			model: "azure/deployment",
 			env: map[string]string{
 				"AZURE_OPENAI_API_KEY": "fixture-key", "AZURE_API_BASE": "https://fixture.openai.azure.com", "AZURE_API_VERSION": "2026-01-01",
-			},
-			want: ports.AgentAuthStatusConfigured,
-		},
-		{
-			name:  "Azure AI API key",
-			model: "azure/deployment",
-			env: map[string]string{
-				"AZURE_AI_API_KEY": "fixture-key", "AZURE_API_BASE": "https://fixture.openai.azure.com", "AZURE_API_VERSION": "2026-01-01",
 			},
 			want: ports.AgentAuthStatusConfigured,
 		},
@@ -333,6 +400,55 @@ func TestAiderAuthStatusProviderSpecificCredentials(t *testing.T) {
 			}
 			test.env["HOME"] = t.TempDir()
 			got := runAiderAuth(t, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: test.model}}, test.env, &test.deps)
+			if got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAiderAuthStatusSeparatesAzureProviders(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		env   map[string]string
+		want  ports.AgentAuthStatus
+	}{
+		{
+			name:  "Azure OpenAI rejects Azure AI key",
+			model: "azure/deployment",
+			env: map[string]string{
+				"AZURE_AI_API_KEY": "fixture-key", "AZURE_API_BASE": "https://fixture.openai.azure.com", "AZURE_API_VERSION": "2026-01-01",
+			},
+			want: ports.AgentAuthStatusUnknown,
+		},
+		{
+			name:  "Azure AI key and base require no API version",
+			model: "azure_ai/deployment",
+			env: map[string]string{
+				"AZURE_AI_API_KEY": "fixture-key", "AZURE_AI_API_BASE": "https://fixture.services.ai.azure.com",
+			},
+			want: ports.AgentAuthStatusConfigured,
+		},
+		{
+			name:  "Azure AI rejects Azure OpenAI key",
+			model: "azure_ai/deployment",
+			env: map[string]string{
+				"AZURE_API_KEY": "fixture-key", "AZURE_AI_API_BASE": "https://fixture.services.ai.azure.com",
+			},
+			want: ports.AgentAuthStatusUnknown,
+		},
+		{
+			name:  "Azure AI requires base",
+			model: "azure_ai/deployment",
+			env:   map[string]string{"AZURE_AI_API_KEY": "fixture-key"},
+			want:  ports.AgentAuthStatusUnknown,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.env["HOME"] = t.TempDir()
+			got := runAiderAuth(t, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: test.model}}, test.env, nil)
 			if got != test.want {
 				t.Fatalf("status = %q, want %q", got, test.want)
 			}
