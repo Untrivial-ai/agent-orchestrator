@@ -148,6 +148,12 @@ func TestStartPreparesKimiAuthWorkspaceWithSeededTrust(t *testing.T) {
 	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/test/bin/kimi"}) {
 		t.Fatalf("terminal argv = %#v, want kimi TUI launch", got)
 	}
+	if opener.input.InitialInput != "/login" {
+		t.Fatalf("initial input = %q, want automatic /login injection", opener.input.InitialInput)
+	}
+	if got := opener.input.InitialInputReadyStates; !reflect.DeepEqual(got, []shellterm.InitialInputReadyState{{Text: "│ >"}}) {
+		t.Fatalf("initial input ready states = %#v, want Kimi composer marker", got)
+	}
 	matches, err := filepath.Glob(filepath.Join(home, ".kimi-code", "workspace-trust", "wd_*"))
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("seeded trust records = %v (err %v), want exactly one", matches, err)

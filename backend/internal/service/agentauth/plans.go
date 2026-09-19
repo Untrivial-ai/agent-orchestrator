@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimi"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
 // plans is the code-reviewed authentication allowlist in stable Harness
@@ -51,11 +52,16 @@ func terminalInputPlan(agentID string, action Action, title string, command []st
 
 // kimiLoginPlan opens Kimi's TUI and injects /login so the native platform
 // picker (Kimi Code browser login and Kimi Platform API keys) is offered;
-// the bare `kimi login` subcommand only runs the device-code flow. Kimi's
-// first-run "Trust this folder?" dialog would swallow that input in AO's
-// private auth workspace, so the workspace trust record is seeded first.
+// the bare `kimi login` subcommand only runs the device-code flow. The input
+// is sent automatically once Kimi's composer renders its "│ >" ready marker —
+// initialInput carries no trailing Enter because the terminal delivery
+// (SendMessage) presses it. Kimi's first-run "Trust this folder?" dialog would
+// swallow that input in AO's private auth workspace, so the workspace trust
+// record is seeded first.
 func kimiLoginPlan() Plan {
-	p := terminalInputPlan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi"}, "/login\r", "Select Open login after Kimi finishes starting", "https://moonshotai.github.io/kimi-code/en/")
+	p := plan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi"}, "Kimi opens its login picker after it finishes starting; type /login if it does not", "https://moonshotai.github.io/kimi-code/en/")
+	p.initialInput = "/login"
+	p.initialInputReadyStates = []shellterm.InitialInputReadyState{{Text: "│ >"}}
 	p.prepareWorkspace = kimi.EnsureWorkspaceTrusted
 	return p
 }

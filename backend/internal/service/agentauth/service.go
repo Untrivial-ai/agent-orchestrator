@@ -67,6 +67,11 @@ type Plan struct {
 	command          []string
 	title            string
 	terminalInput    string
+	// initialInput and initialInputReadyStates, when set, make the daemon inject
+	// the reviewed input automatically once the terminal renders a known ready
+	// state, instead of waiting for the user to trigger terminalInput.
+	initialInput            string
+	initialInputReadyStates []shellterm.InitialInputReadyState
 	// prepareWorkspace, when set, runs reviewed harness-specific setup against
 	// the plan's stable auth workspace before the terminal launches (for
 	// example pre-recording workspace trust so a first-run dialog cannot
@@ -132,8 +137,10 @@ func (s *Service) Plan(ctx context.Context, agentID string) (Plan, error) {
 
 // Start opens the reviewed native authentication flow for agentID. Callers
 // choose only the registry key; command arguments come exclusively from the
-// resolved private plan fields. Interactive slash commands are returned as a
-// fixed, reviewed action that the user explicitly triggers after the TUI starts.
+// resolved private plan fields. Interactive slash commands are either returned
+// as a fixed, reviewed action that the user explicitly triggers after the TUI
+// starts, or — for plans with initialInput — injected by the daemon
+// automatically once the terminal renders a reviewed ready state.
 func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error) {
 	plan, ok := planByAgentID[agentID]
 	if !ok {
@@ -153,8 +160,10 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 		return StartResult{}, apierr.Internal("AGENT_AUTH_TERMINAL_UNAVAILABLE", "Authentication terminal service is unavailable.")
 	}
 	input := shellterm.OpenCommandTerminalInput{
-		Argv:  plan.command,
-		Title: plan.title,
+		Argv:                    plan.command,
+		Title:                   plan.title,
+		InitialInput:            plan.initialInput,
+		InitialInputReadyStates: plan.initialInputReadyStates,
 	}
 	if plan.prepareWorkspace != nil {
 		workingDir, err := s.prepareAuthWorkspace(ctx, plan)
