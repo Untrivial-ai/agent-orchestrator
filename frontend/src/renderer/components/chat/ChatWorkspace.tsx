@@ -1455,7 +1455,6 @@ function ChatWorkspaceContent({
 									draftSessionIncarnation={draftScope.incarnation}
 									acceptedClientMessageIds={acceptedClientMessageIds}
 									workflowMode={session?.workflowMode}
-									orchestrator={session?.kind === "orchestrator"}
 								/>
 							</div>
 						</div>

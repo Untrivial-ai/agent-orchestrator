@@ -78,7 +78,7 @@ describe("session presentation", () => {
 	it.each([
 		["planning", "Planning", "bg-status-planning"],
 		["building", "Building", "bg-status-working"],
-		["review", "Review", "bg-status-in-review"],
+		["review", "Review", "bg-status-review"],
 		["ready", "Ready", "bg-status-ready"],
 		["archive", "Archive", "bg-status-terminated"],
 	] as const)("gives the %s lane its own label and palette", (lane, label, dotClassName) => {

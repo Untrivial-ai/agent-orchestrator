@@ -286,6 +286,7 @@
 	--color-status-needs-you: var(--bridge-status-needs-you);
 	--color-status-validating: var(--bridge-status-validating);
 	--color-status-in-review: var(--bridge-status-in-review);
+	--color-status-review: var(--bridge-status-review);
 	--color-status-ready: var(--bridge-status-ready);
 	--color-status-merged: var(--bridge-status-merged);
 	--color-status-idle: var(--bridge-status-idle);
@@ -2754,10 +2755,9 @@ html.sidebar-reordering * {
 }
 
 /* Delivery-stage identity: the composer frame carries the workflow tone so the
-   current mode is visible without reading a label. `data-workflow="default"`
-   (orchestrators) keeps the neutral frame above as the third, deliberately
-   distinct tone. Declared after the light-theme frame so `:root` raises the
-   specificity past it. */
+   current mode is visible without reading a label. Every session, orchestrators
+   included, reads by its stage. Declared after the light-theme frame so `:root`
+   raises the specificity past it. */
 :root .cursor-chat-composer[data-workflow="planning"] {
 	--composer-border: color-mix(in oklch, var(--color-status-planning) 60%, transparent);
 	--composer-border-hover: var(--color-status-planning);

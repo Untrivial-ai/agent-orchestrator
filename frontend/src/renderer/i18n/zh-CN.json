@@ -1122,7 +1122,7 @@
 	"shortcut.searchPlaceholder": "搜索命令或按键组合",
 	"shortcut.toggle-inspector": "切换检查器",
 	"shortcut.toggle-sidebar": "切换侧边栏",
-	"shortcut.toggle-workflow-mode": "切换规划 / 构建",
+	"shortcut.toggle-workflow-mode": "切换模式",
 	"shortcut.tryReopen": "请尝试重新打开键盘快捷键设置。",
 	"shortcut.unassigned": "未分配",
 	"shortcut.undo": "撤销",

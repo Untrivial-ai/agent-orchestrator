@@ -1272,7 +1272,7 @@
 	"shortcut.searchPlaceholder": "Search commands or key combinations",
 	"shortcut.toggle-inspector": "Toggle inspector",
 	"shortcut.toggle-sidebar": "Toggle sidebar",
-	"shortcut.toggle-workflow-mode": "Toggle planning / building",
+	"shortcut.toggle-workflow-mode": "Toggle mode",
 	"shortcut.tryReopen": "Try reopening keyboard shortcut settings.",
 	"shortcut.unassigned": "Unassigned",
 	"shortcut.undo": "Undo",

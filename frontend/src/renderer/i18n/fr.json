@@ -1137,7 +1137,7 @@
 	"shortcut.searchPlaceholder": "Rechercher des commandes ou des combinaisons de touches",
 	"shortcut.toggle-inspector": "Basculer l'inspecteur",
 	"shortcut.toggle-sidebar": "Basculer la barre latérale",
-	"shortcut.toggle-workflow-mode": "Basculer planification / construction",
+	"shortcut.toggle-workflow-mode": "Basculer le mode",
 	"shortcut.tryReopen": "Essayez de rouvrir les paramètres des raccourcis clavier.",
 	"shortcut.unassigned": "Non attribué",
 	"shortcut.undo": "Annuler",

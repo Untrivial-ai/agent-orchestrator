@@ -1121,7 +1121,7 @@
 	"shortcut.searchPlaceholder": "명령 또는 키 조합 검색",
 	"shortcut.toggle-inspector": "인스펙터 전환",
 	"shortcut.toggle-sidebar": "사이드바 전환",
-	"shortcut.toggle-workflow-mode": "계획 / 구현 전환",
+	"shortcut.toggle-workflow-mode": "모드 전환",
 	"shortcut.tryReopen": "키보드 단축키 설정을 다시 열어 보세요.",
 	"shortcut.unassigned": "할당되지 않음",
 	"shortcut.undo": "실행 취소",

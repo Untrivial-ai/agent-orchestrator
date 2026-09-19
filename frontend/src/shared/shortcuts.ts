@@ -136,7 +136,7 @@ export const APP_SHORTCUTS: readonly ShortcutDefinition[] = [
 	},
 	{
 		id: "toggle-workflow-mode",
-		label: "Toggle planning / building",
+		label: "Toggle mode",
 		category: "Session",
 	},
 ];

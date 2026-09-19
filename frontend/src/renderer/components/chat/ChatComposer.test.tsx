@@ -2169,8 +2169,10 @@ describe("composer workflow tone", () => {
 		expect(document.querySelector(".cursor-chat-composer")).toHaveAttribute("data-workflow", "building");
 	});
 
-	it("keeps the neutral default tone for an orchestrator", () => {
-		renderComposer({ workflowMode: "planning", orchestrator: true });
-		expect(document.querySelector(".cursor-chat-composer")).toHaveAttribute("data-workflow", "default");
+	// Orchestrators are not special-cased: they carry the same delivery stage as
+	// any other session, so the composer only knows planning vs building.
+	it("tints a session with its building stage", () => {
+		renderComposer({ workflowMode: "building" });
+		expect(document.querySelector(".cursor-chat-composer")).toHaveAttribute("data-workflow", "building");
 	});
 });

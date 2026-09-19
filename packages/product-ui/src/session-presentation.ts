@@ -416,11 +416,11 @@ const boardLaneBases: Record<BoardLane, BoardLaneBase> = {
 	review: {
 		lane: "review",
 		labelKey: "column.review",
-		glow: "color-mix(in srgb, var(--color-status-in-review) 5%, transparent)",
-		dot: "var(--color-status-in-review)",
+		glow: "color-mix(in srgb, var(--color-status-review) 5%, transparent)",
+		dot: "var(--color-status-review)",
 		dotGlow: false,
-		titleClassName: "text-status-in-review",
-		dotClassName: "bg-status-in-review",
+		titleClassName: "text-status-review",
+		dotClassName: "bg-status-review",
 	},
 	ready: {
 		lane: "ready",

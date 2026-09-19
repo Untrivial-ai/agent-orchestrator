@@ -179,7 +179,6 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionIncarnation,
 	acceptedClientMessageIds,
 	workflowMode,
-	orchestrator,
 }: {
 	onSend: (
 		text: string,
@@ -264,8 +263,6 @@ export const ChatComposer = memo(function ChatComposer({
 	acceptedClientMessageIds?: ReadonlySet<string>;
 	/** User-controlled delivery stage; tints the composer border. */
 	workflowMode?: WorkflowMode;
-	/** Orchestrators keep the neutral border so they read apart from workers. */
-	orchestrator?: boolean;
 }) {
 	const translateDraft = useChatDraftTranslation();
 	const draftScope = useMemo<ChatDraftScope | undefined>(
@@ -1380,9 +1377,9 @@ export const ChatComposer = memo(function ChatComposer({
 			</div>
 		);
 
-	// Orchestrators own the neutral frame; workers carry their delivery stage.
+	// Every session carries its delivery stage, orchestrators included.
 	// Absent workflow mode reads as `building`, matching the daemon default.
-	const workflowTone = orchestrator ? "default" : workflowMode === "planning" ? "planning" : "building";
+	const workflowTone = workflowMode === "planning" ? "planning" : "building";
 
 	if (approval) {
 		return withQueueStack(
