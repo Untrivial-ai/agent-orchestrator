@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import * as SystemUI from "expo-system-ui";
 import { Appearance, useColorScheme } from "react-native";
 import { themeFor, type ColorScheme, type Theme } from "./theme";
 import { DEFAULT_PREFERENCE, nativeColorSchemeOverride, resolveScheme, type ThemePreference } from "./themePreference";
@@ -70,6 +71,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 	// Recomputed whenever the OS scheme changes, so a "system" preference follows
 	// live instead of only at next launch.
 	const scheme = resolveScheme(preference, systemScheme);
+
+	// The window sits below the React tree, so a page transition that opens a gap
+	// shows its colour — the platform default, white — and nothing inside the tree
+	// can cover it. Keeping the window on the palette is what stops the white edge
+	// around a screen as it moves.
+	const backgroundColor = themeFor(scheme).bgBase;
+	useEffect(() => {
+		void SystemUI.setBackgroundColorAsync(backgroundColor).catch(() => {});
+	}, [backgroundColor]);
 
 	const value = useMemo<ThemeState>(
 		() => ({ theme: themeFor(scheme), scheme, preference, setPreference }),
