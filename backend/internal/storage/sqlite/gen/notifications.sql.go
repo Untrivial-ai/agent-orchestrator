@@ -105,6 +105,50 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 	return i, err
 }
 
+const dismissNotification = `-- name: DismissNotification :execrows
+UPDATE notifications
+SET dismissed_at = CURRENT_TIMESTAMP,
+    status = 'read'
+WHERE id = ?
+  AND dismissed_at IS NULL
+`
+
+func (q *Queries) DismissNotification(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, dismissNotification, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getNotificationForDismissal = `-- name: GetNotificationForDismissal :one
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
+FROM notifications
+WHERE id = ?
+  AND dismissed_at IS NULL
+`
+
+// Read before dismissal so the delete response and live event keep the row's
+// original unread state. Clients use that state to decrement their badge.
+func (q *Queries) GetNotificationForDismissal(ctx context.Context, id string) (Notification, error) {
+	row := q.db.QueryRowContext(ctx, getNotificationForDismissal, id)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.ProjectID,
+		&i.PRURL,
+		&i.Type,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+		&i.DismissedAt,
+	)
+	return i, err
+}
+
 const getOpenNotificationByDedupe = `-- name: GetOpenNotificationByDedupe :one
 SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at
 FROM notifications

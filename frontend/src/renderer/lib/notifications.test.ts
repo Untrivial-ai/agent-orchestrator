@@ -39,18 +39,23 @@ vi.mock("./bridge", () => ({
 
 import {
 	applyNotificationsCleared,
+	applyNotificationDeleted,
+	applyOptimisticNotificationDelete,
 	applyResolvedNotification,
 	clearAllNotifications,
 	createNotificationsTransport,
+	deleteNotification,
 	fetchNotificationsPage,
 	getCachedNotifications,
 	getCachedUnreadCount,
+	isNotificationsCacheFromClear,
 	keepLatestNotificationsPage,
 	markAllCachedNotificationsRead,
 	mergeUnreadNotification,
 	NOTIFICATION_PAGE_SIZE,
 	recentNotificationsQueryKey,
 	reconcileNotifications,
+	rollbackOptimisticNotificationDelete,
 	unreadNotificationsQueryKey,
 } from "./notifications";
 
@@ -140,6 +145,15 @@ describe("notification cache helpers", () => {
 			clearedCount: 2,
 		});
 		expect(apiDeleteMock).toHaveBeenCalledWith("/api/v1/notifications");
+	});
+
+	it("calls the single-notification delete endpoint", async () => {
+		apiDeleteMock.mockResolvedValue({ data: { notification: notification() } });
+
+		await expect(deleteNotification("ntf_1")).resolves.toEqual(notification());
+		expect(apiDeleteMock).toHaveBeenCalledWith("/api/v1/notifications/{id}", {
+			params: { path: { id: "ntf_1" } },
+		});
 	});
 
 	it.each([
@@ -396,6 +410,93 @@ describe("notification cache helpers", () => {
 		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(1);
 	});
 
+	it("deletes one notification once and updates global counts even when the row is not loaded", () => {
+		const qc = queryClient();
+		const other = notification({ id: "ntf_2", status: "read", type: "pr_merged" });
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			qc.setQueryData<NotificationsCache>(queryKey, {
+				pageParams: [""],
+				pages: [{ notifications: [other], unreadCount: 1, unresolvedCount: 1 }],
+			});
+		}
+
+		expect(applyNotificationDeleted(qc, notification())).toBe(true);
+		expect(applyNotificationDeleted(qc, notification())).toBe(false);
+
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			const cache = qc.getQueryData<NotificationsCache>(queryKey);
+			expect(getCachedNotifications(cache)).toEqual([other]);
+			expect(cache?.pages[0]?.unreadCount).toBe(0);
+			expect(cache?.pages[0]?.unresolvedCount).toBe(0);
+		}
+	});
+
+	it("rolls an optimistic delete back unless a live event confirmed it", () => {
+		const qc = queryClient();
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			qc.setQueryData<NotificationsCache>(queryKey, {
+				pageParams: [""],
+				pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1 }],
+			});
+		}
+
+		applyOptimisticNotificationDelete(qc, notification());
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([]);
+		expect(rollbackOptimisticNotificationDelete(qc, "ntf_1")).toBe(true);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([
+			notification(),
+		]);
+		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unreadCount).toBe(1);
+
+		applyOptimisticNotificationDelete(qc, notification());
+		expect(applyNotificationDeleted(qc, notification())).toBe(false);
+		expect(rollbackOptimisticNotificationDelete(qc, "ntf_1")).toBe(false);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([]);
+	});
+
+	it("does not restore counts when the row was absent or its page was replaced", () => {
+		const qc = queryClient();
+		const deleted = notification({ status: "read" });
+		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2 }],
+		});
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+			pageParams: ["", "older"],
+			pages: [
+				{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2 },
+				{ notifications: [deleted], unreadCount: 1, unresolvedCount: 2 },
+			],
+		});
+
+		applyOptimisticNotificationDelete(qc, deleted);
+		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(2);
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [notification({ id: "replacement" })], unreadCount: 0, unresolvedCount: 1 }],
+		});
+
+		expect(rollbackOptimisticNotificationDelete(qc, deleted.id)).toBe(true);
+		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(2);
+		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(1);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([
+			expect.objectContaining({ id: "replacement" }),
+		]);
+	});
+
+	it("bounds remembered delete confirmations without dropping active optimistic deletes", () => {
+		const qc = queryClient();
+		applyOptimisticNotificationDelete(qc, notification({ id: "pending" }));
+
+		for (let index = 0; index < 300; index++) {
+			applyNotificationDeleted(qc, notification({ id: `confirmed-${index}` }));
+		}
+
+		expect(rollbackOptimisticNotificationDelete(qc, "pending")).toBe(true);
+		expect(applyNotificationDeleted(qc, notification({ id: "confirmed-299" }))).toBe(false);
+		expect(applyNotificationDeleted(qc, notification({ id: "confirmed-0" }))).toBe(true);
+	});
+
 	it("does not let an older clear generation erase a newer notification", () => {
 		const qc = queryClient();
 		expect(
@@ -511,6 +612,25 @@ describe("createNotificationsTransport", () => {
 		await vi.waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(2));
 	});
 
+	it("removes a deleted notification from every live cache", async () => {
+		const qc = queryClient();
+		const cancelSpy = vi.spyOn(qc, "cancelQueries");
+		createNotificationsTransport(qc).connect();
+		const source = EventSourceStub.instances[0];
+		source.dispatch("notification_created", notification());
+
+		source.dispatch("notification_deleted", notification());
+
+		await vi.waitFor(() =>
+			expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([]),
+		);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([]);
+			expect(cancelSpy).toHaveBeenCalledWith(
+			{ queryKey: ["notifications", "history"] },
+			{ revert: false },
+		);
+	});
+
 	it("replays clear and create events then reconciles once after a reconnect snapshot", async () => {
 		const qc = queryClient();
 		mergeUnreadNotification(qc, notification({ id: "before-clear" }));
@@ -569,6 +689,57 @@ describe("createNotificationsTransport", () => {
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([
 			expect.objectContaining({ id: "during-refresh" }),
 		]);
+	});
+
+	it("buffers live creates while a per-item delete reconciles snapshots", async () => {
+		const qc = queryClient();
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+		let finishRefresh: (() => void) | undefined;
+		const refresh = new Promise<void>((resolve) => {
+			finishRefresh = resolve;
+		});
+		invalidateSpy.mockReturnValue(refresh);
+		createNotificationsTransport(qc).connect();
+		const source = EventSourceStub.instances[0];
+		const deleted = notification({ id: "deleted" });
+		source.dispatch("notification_created", deleted);
+		applyOptimisticNotificationDelete(qc, deleted);
+		applyNotificationDeleted(qc, deleted);
+
+		const reconciliation = reconcileNotifications(qc);
+		source.dispatch("notification_created", notification({ id: "during-delete-refresh" }));
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			qc.setQueryData<NotificationsCache>(queryKey, {
+				pageParams: [""],
+				pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+			});
+		}
+
+		finishRefresh?.();
+		await reconciliation;
+
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(queryKey))).toEqual([
+				expect.objectContaining({ id: "during-delete-refresh" }),
+			]);
+		}
+	});
+
+	it("identifies only the cache snapshot installed by clear-all", () => {
+		const qc = queryClient();
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+		});
+		expect(isNotificationsCacheFromClear(qc)).toBe(false);
+
+		applyNotificationsCleared(qc, { clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1 });
+		expect(isNotificationsCacheFromClear(qc)).toBe(true);
+
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, (current) =>
+			current ? { ...current, pageParams: ["fresh"] } : current,
+		);
+		expect(isNotificationsCacheFromClear(qc)).toBe(false);
 	});
 
 	it("cancels an in-flight history fetch before applying a clear and later create", async () => {

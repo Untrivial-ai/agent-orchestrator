@@ -16,6 +16,9 @@ export const recentNotificationsQueryKey = ["notifications", "history", "all"] a
 export const NOTIFICATION_PAGE_SIZE = 100;
 
 const EVENTSOURCE_CLOSED = 2;
+// HTTP responses and SSE deletes can arrive in either order. Keep recent
+// confirmations for deduplication, but never let that session state grow without bound.
+const MAX_CONFIRMED_NOTIFICATION_DELETIONS = 256;
 
 /**
  * Only these two kinds describe something still waiting on the user.
@@ -30,9 +33,11 @@ type NotificationsQueryKey = typeof unreadNotificationsQueryKey | typeof recentN
 type LiveNotificationEvent =
 	| { kind: "created"; notification: NotificationDTO }
 	| { kind: "resolved"; notification: NotificationDTO }
+	| { kind: "deleted"; notification: NotificationDTO }
 	| { kind: "cleared"; clear: NotificationClear };
 
 const latestClearGeneration = new WeakMap<QueryClient, { epoch: string; sequence: number }>();
+const clearedNotificationSnapshots = new WeakMap<QueryClient, NotificationsCache>();
 const notificationReconcilers = new WeakMap<QueryClient, () => Promise<void>>();
 
 export function reconcileNotifications(queryClient: QueryClient): Promise<void> {
@@ -43,6 +48,16 @@ export function reconcileNotifications(queryClient: QueryClient): Promise<void> 
 		queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey }),
 	]).then(() => undefined);
 }
+
+type NotificationDeletionState =
+	| {
+			kind: "optimistic";
+			notification: NotificationDTO;
+			present: { recent: boolean; unread: boolean };
+			positions: { recent?: number; unread?: number };
+	  }
+	| { kind: "confirmed" };
+const notificationDeletionStates = new WeakMap<QueryClient, Map<string, NotificationDeletionState>>();
 
 export function notificationsQueryKey(status: NotificationListStatus): NotificationsQueryKey {
 	return status === "unread" ? unreadNotificationsQueryKey : recentNotificationsQueryKey;
@@ -98,6 +113,14 @@ export async function clearAllNotifications(): Promise<ClearNotificationsResult>
 	return data;
 }
 
+export async function deleteNotification(id: string): Promise<NotificationDTO> {
+	const { data, error } = await apiClient.DELETE("/api/v1/notifications/{id}", {
+		params: { path: { id } },
+	});
+	if (error || !data) throw new Error(apiErrorMessage(error, "Could not clear notification"));
+	return data.notification;
+}
+
 export function mergeUnreadNotification(queryClient: QueryClient, notification: NotificationDTO): boolean {
 	if (notification.status !== "unread") return false;
 	const inserted = mergeNotificationIntoCache(queryClient, unreadNotificationsQueryKey, notification);
@@ -137,6 +160,127 @@ export function applyResolvedNotification(queryClient: QueryClient, notification
 		if (!found) foundInEveryCache = false;
 	}
 	return foundInEveryCache;
+}
+
+function deletionStates(queryClient: QueryClient): Map<string, NotificationDeletionState> {
+	let states = notificationDeletionStates.get(queryClient);
+	if (!states) {
+		states = new Map();
+		notificationDeletionStates.set(queryClient, states);
+	}
+	return states;
+}
+
+function pruneConfirmedNotificationDeletions(states: Map<string, NotificationDeletionState>): void {
+	let confirmedCount = 0;
+	for (const state of states.values()) {
+		if (state.kind === "confirmed") confirmedCount++;
+	}
+	if (confirmedCount <= MAX_CONFIRMED_NOTIFICATION_DELETIONS) return;
+	for (const [id, state] of states) {
+		if (state.kind !== "confirmed") continue;
+		states.delete(id);
+		confirmedCount--;
+		if (confirmedCount <= MAX_CONFIRMED_NOTIFICATION_DELETIONS) return;
+	}
+}
+
+function cachedPageIndex(
+	queryClient: QueryClient,
+	queryKey: NotificationsQueryKey,
+	id: string,
+): number | undefined {
+	return queryClient
+		.getQueryData<NotificationsCache>(queryKey)
+		?.pages.findIndex((page) => page.notifications.some((item) => item.id === id));
+}
+
+function removeNotificationFromCaches(
+	queryClient: QueryClient,
+	notification: NotificationDTO,
+	requirePresent = false,
+): void {
+	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+		queryClient.setQueryData<NotificationsCache>(queryKey, (current) => {
+			if (!current) return current;
+			const present = getCachedNotifications(current).some((item) => item.id === notification.id);
+			if (requirePresent && !present) return current;
+			return {
+				...current,
+				pages: current.pages.map((page) => ({
+					...page,
+					notifications: page.notifications.filter((item) => item.id !== notification.id),
+					unreadCount: Math.max(0, page.unreadCount - Number(notification.status === "unread")),
+					unresolvedCount: Math.max(0, page.unresolvedCount - Number(isUnresolved(notification))),
+				})),
+			};
+		});
+	}
+}
+
+/** Removes a row immediately while retaining enough local state to restore it. */
+export function applyOptimisticNotificationDelete(queryClient: QueryClient, notification: NotificationDTO): void {
+	const states = deletionStates(queryClient);
+	if (states.has(notification.id)) return;
+	const unreadIndex = cachedPageIndex(queryClient, unreadNotificationsQueryKey, notification.id);
+	const recentIndex = cachedPageIndex(queryClient, recentNotificationsQueryKey, notification.id);
+	states.set(notification.id, {
+		kind: "optimistic",
+		notification,
+		present: {
+			unread: unreadIndex !== undefined && unreadIndex >= 0,
+			recent: recentIndex !== undefined && recentIndex >= 0,
+		},
+		positions: {
+			unread: unreadIndex === -1 ? undefined : unreadIndex,
+			recent: recentIndex === -1 ? undefined : recentIndex,
+		},
+	});
+	removeNotificationFromCaches(queryClient, notification, true);
+}
+
+/** Applies the server response or live event exactly once across both caches. */
+export function applyNotificationDeleted(queryClient: QueryClient, notification: NotificationDTO): boolean {
+	const states = deletionStates(queryClient);
+	const current = states.get(notification.id);
+	if (current?.kind === "confirmed") return false;
+	states.delete(notification.id);
+	states.set(notification.id, { kind: "confirmed" });
+	pruneConfirmedNotificationDeletions(states);
+	if (current?.kind === "optimistic") return false;
+	removeNotificationFromCaches(queryClient, notification);
+	return true;
+}
+
+/** Restores only this row when its request fails and no live delete confirmed it. */
+export function rollbackOptimisticNotificationDelete(queryClient: QueryClient, id: string): boolean {
+	const states = deletionStates(queryClient);
+	const state = states.get(id);
+	if (state?.kind !== "optimistic") return false;
+	states.delete(id);
+	for (const [name, queryKey] of [
+		["unread", unreadNotificationsQueryKey],
+		["recent", recentNotificationsQueryKey],
+	] as const) {
+		if (!state.present[name]) continue;
+		queryClient.setQueryData<NotificationsCache>(queryKey, (current) => {
+			if (!current) return current;
+			const pageIndex = state.positions[name];
+			const alreadyPresent = getCachedNotifications(current).some((item) => item.id === id);
+			if (pageIndex === undefined || pageIndex >= current.pages.length || alreadyPresent) return current;
+			const pages = current.pages.map((page, index) => ({
+				...page,
+				notifications:
+					pageIndex === index
+						? sortNotifications([...page.notifications, state.notification])
+						: page.notifications,
+				unreadCount: page.unreadCount + Number(state.notification.status === "unread"),
+				unresolvedCount: page.unresolvedCount + Number(isUnresolved(state.notification)),
+			}));
+			return { ...current, pages };
+		});
+	}
+	return true;
 }
 
 function mergeNotificationIntoCache(
@@ -269,13 +413,28 @@ export function applyNotificationsCleared(queryClient: QueryClient, clear: Notif
 	const latest = latestClearGeneration.get(queryClient);
 	if (latest?.epoch === clear.clearEpoch && latest.sequence >= clear.clearSequence) return false;
 	latestClearGeneration.set(queryClient, { epoch: clear.clearEpoch, sequence: clear.clearSequence });
+	const states = deletionStates(queryClient);
+	for (const id of states.keys()) {
+		states.set(id, { kind: "confirmed" });
+	}
+	pruneConfirmedNotificationDeletions(states);
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, {
 			pageParams: [""],
 			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
 		});
 	}
+	const recentSnapshot = queryClient.getQueryData<NotificationsCache>(recentNotificationsQueryKey);
+	if (recentSnapshot) clearedNotificationSnapshots.set(queryClient, recentSnapshot);
 	return true;
+}
+
+// A failed background refresh may keep the exact cache installed by a
+// confirmed clear. Only that snapshot should render as confirmed empty; an
+// unrelated cached empty page must still show the load error.
+export function isNotificationsCacheFromClear(queryClient: QueryClient): boolean {
+	const cleared = clearedNotificationSnapshots.get(queryClient);
+	return Boolean(cleared) && queryClient.getQueryData(recentNotificationsQueryKey) === cleared;
 }
 
 export function getCachedNotifications(cache: NotificationsCache | undefined): NotificationDTO[] {
@@ -363,6 +522,14 @@ export function createNotificationsTransport(
 							applyNotificationsCleared(queryClient, event.clear);
 						});
 				}
+				if (event.kind === "deleted") {
+					return queryClient
+						.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false })
+						.catch(() => undefined)
+						.then(() => {
+							applyNotificationDeleted(queryClient, event.notification);
+						});
+				}
 				if (event.kind === "resolved") {
 					if (!applyResolvedNotification(queryClient, event.notification)) {
 						void invalidateNotifications();
@@ -382,7 +549,7 @@ export function createNotificationsTransport(
 			};
 
 			const enqueueLiveNotificationEvent = (event: LiveNotificationEvent): Promise<void> | undefined => {
-				if (!pendingLiveEvents && event.kind !== "cleared") {
+				if (!pendingLiveEvents && event.kind !== "cleared" && event.kind !== "deleted") {
 					applyLiveNotificationEvent(event);
 					return undefined;
 				}
@@ -407,7 +574,7 @@ export function createNotificationsTransport(
 					// The snapshot may already contain a post-clear row whose create
 					// event was dropped. Reconcile once after replaying the clear so the
 					// buffered reset cannot erase that row permanently.
-					if (event.kind === "cleared") snapshotRefresh.dirty = true;
+					if (event.kind === "cleared" || event.kind === "deleted") snapshotRefresh.dirty = true;
 					return;
 				}
 				enqueueLiveNotificationEvent(event);
@@ -492,6 +659,11 @@ export function createNotificationsTransport(
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
 						receiveLiveNotificationEvent({ kind: "resolved", notification });
+					});
+					source.addEventListener("notification_deleted", (event) => {
+						const notification = parseNotificationEvent(event);
+						if (!notification) return;
+						receiveLiveNotificationEvent({ kind: "deleted", notification });
 					});
 					source.addEventListener("notification_cleared", (event) => {
 						const clear = parseNotificationClearEvent(event);

@@ -1,7 +1,10 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
 	applyNotificationsCleared,
+	applyNotificationDeleted,
+	applyOptimisticNotificationDelete,
 	clearAllNotifications,
+	deleteNotification,
 	fetchNotificationsPage,
 	markAllCachedNotificationsRead,
 	markAllNotificationsRead,
@@ -9,6 +12,8 @@ import {
 	reconcileNotifications,
 	type NotificationListStatus,
 	unreadNotificationsQueryKey,
+	rollbackOptimisticNotificationDelete,
+	type NotificationDTO,
 } from "../lib/notifications";
 
 export function useNotificationsQuery(status: NotificationListStatus, enabled = true) {
@@ -53,5 +58,24 @@ export function useClearAllNotificationsMutation() {
 			applyNotificationsCleared(queryClient, result);
 			await reconcileNotifications(queryClient);
 		},
+	});
+}
+
+export function useClearNotificationMutation() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (notification: NotificationDTO) => deleteNotification(notification.id),
+		onMutate: async (notification) => {
+			await queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
+			applyOptimisticNotificationDelete(queryClient, notification);
+		},
+		onSuccess: async (notification) => {
+			await queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
+			applyNotificationDeleted(queryClient, notification);
+		},
+		onError: (_error, notification) => {
+			rollbackOptimisticNotificationDelete(queryClient, notification.id);
+		},
+		onSettled: () => reconcileNotifications(queryClient),
 	});
 }
