@@ -193,6 +193,32 @@ func TestClineSelectedProviderEnvironmentKeysAndAliases(t *testing.T) {
 	}
 }
 
+func TestClineGeneratedProviderAPIKeyEnvironmentCoverage(t *testing.T) {
+	tests := []struct {
+		provider string
+		envKey   string
+	}{
+		{provider: "302ai", envKey: "302AI_API_KEY"},
+		{provider: "abacus", envKey: "ABACUS_API_KEY"},
+		{provider: "baseten", envKey: "BASETEN_API_KEY"},
+		{provider: "huggingface", envKey: "HF_TOKEN"},
+		{provider: "nebius", envKey: "NEBIUS_API_KEY"},
+		{provider: "poolside", envKey: "POOLSIDE_API_KEY"},
+		{provider: "wandb", envKey: "WANDB_API_KEY"},
+		{provider: "xiaomi", envKey: "XIAOMI_API_KEY"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			home := isolateClineAuth(t)
+			entry := `"` + tt.provider + `":{"settings":{"provider":"` + tt.provider + `"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`
+			writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), clineProviders(tt.provider, entry))
+			if got := scopedClineStatus(t, ports.AgentAuthCheck{Env: map[string]string{tt.envKey: "test-key"}}); got != ports.AgentAuthStatusConfigured {
+				t.Fatalf("status = %q, want configured", got)
+			}
+		})
+	}
+}
+
 func TestClineOAuthRequiresSupportedProviderAndAccessToken(t *testing.T) {
 	future := strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)
 	tests := []struct {
@@ -229,8 +255,16 @@ func TestClineRejectsInvalidNativeProviderFileSchema(t *testing.T) {
 		{name: "invalid protocol", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key","protocol":"magic"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
 		{name: "invalid auth account", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"accountId":42}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
 		{name: "invalid auth organization metadata", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"organizationId":{},"organizationName":[],"memberId":false,"metadata":[]}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "null auth account id", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"accountId":null}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "null auth organization id", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"organizationId":null}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "null auth organization name", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"organizationName":null}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "null auth member id", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"memberId":null}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "null auth metadata", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"metadata":null}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
 		{name: "invalid OCA prompt cache", file: clineProviders("oca", `"oca":{"settings":{"provider":"oca","apiKey":"test-key","oca":{"usePromptCache":"yes"}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "null OCA prompt cache", file: clineProviders("oca", `"oca":{"settings":{"provider":"oca","apiKey":"test-key","oca":{"usePromptCache":null}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
 		{name: "invalid routing provider id", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key","routingProviderId":"bad/provider"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "null routing provider id", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key","routingProviderId":null},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "empty routing provider id", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key","routingProviderId":""},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

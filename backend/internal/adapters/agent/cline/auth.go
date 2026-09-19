@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -43,28 +44,29 @@ type clineProvider struct {
 }
 
 type clineProviderSettings struct {
-	Provider          string                     `json:"provider"`
-	APIKey            string                     `json:"apiKey"`
-	Auth              *clineProviderAuth         `json:"auth"`
-	Model             string                     `json:"model"`
-	BaseURL           string                     `json:"baseUrl"`
-	AWS               *clineAWSSettings          `json:"aws"`
-	GCP               *clineGCPSettings          `json:"gcp"`
-	Azure             *clineAzureSettings        `json:"azure"`
-	SAP               *clineSAPSettings          `json:"sap"`
-	OCA               *clineOCASettings          `json:"oca"`
-	Protocol          string                     `json:"protocol"`
-	Client            string                     `json:"client"`
-	APILine           string                     `json:"apiLine"`
-	Capabilities      []string                   `json:"capabilities"`
-	MaxTokens         *int                       `json:"maxTokens"`
-	ContextWindow     *int                       `json:"contextWindow"`
-	Timeout           *int                       `json:"timeout"`
-	Headers           map[string]string          `json:"headers"`
-	RoutingProviderID string                     `json:"routingProviderId"`
-	Region            string                     `json:"region"`
-	Reasoning         *clineReasoningSettings    `json:"reasoning"`
-	ModelCatalog      *clineModelCatalogSettings `json:"modelCatalog"`
+	Provider             string                     `json:"provider"`
+	APIKey               string                     `json:"apiKey"`
+	Auth                 *clineProviderAuth         `json:"auth"`
+	Model                string                     `json:"model"`
+	BaseURL              string                     `json:"baseUrl"`
+	AWS                  *clineAWSSettings          `json:"aws"`
+	GCP                  *clineGCPSettings          `json:"gcp"`
+	Azure                *clineAzureSettings        `json:"azure"`
+	SAP                  *clineSAPSettings          `json:"sap"`
+	OCA                  *clineOCASettings          `json:"oca"`
+	Protocol             string                     `json:"protocol"`
+	Client               string                     `json:"client"`
+	APILine              string                     `json:"apiLine"`
+	Capabilities         []string                   `json:"capabilities"`
+	MaxTokens            *int                       `json:"maxTokens"`
+	ContextWindow        *int                       `json:"contextWindow"`
+	Timeout              *int                       `json:"timeout"`
+	Headers              map[string]string          `json:"headers"`
+	RoutingProviderID    string                     `json:"routingProviderId"`
+	Region               string                     `json:"region"`
+	Reasoning            *clineReasoningSettings    `json:"reasoning"`
+	ModelCatalog         *clineModelCatalogSettings `json:"modelCatalog"`
+	routingProviderIDSet bool
 }
 
 type clineProviderAuth struct {
@@ -117,6 +119,51 @@ type clineSAPSettings struct {
 type clineOCASettings struct {
 	Mode           string `json:"mode"`
 	UsePromptCache *bool  `json:"usePromptCache"`
+}
+
+func (s *clineProviderSettings) UnmarshalJSON(data []byte) error {
+	type plain clineProviderSettings
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	fields, err := clineJSONFields(data)
+	if err != nil {
+		return err
+	}
+	routingProviderID, present := fields["routingProviderId"]
+	if present && clineJSONNull(routingProviderID) {
+		return fmt.Errorf("cline field %q must not be null", "routingProviderId")
+	}
+	*s = clineProviderSettings(decoded)
+	s.routingProviderIDSet = present
+	return nil
+}
+
+func (a *clineProviderAuth) UnmarshalJSON(data []byte) error {
+	type plain clineProviderAuth
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if err := clineRejectPresentNull(data, "accountId", "organizationId", "organizationName", "memberId", "metadata"); err != nil {
+		return err
+	}
+	*a = clineProviderAuth(decoded)
+	return nil
+}
+
+func (s *clineOCASettings) UnmarshalJSON(data []byte) error {
+	type plain clineOCASettings
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if err := clineRejectPresentNull(data, "usePromptCache"); err != nil {
+		return err
+	}
+	*s = clineOCASettings(decoded)
+	return nil
 }
 
 type clineSAPServiceKey struct {
@@ -233,7 +280,7 @@ func (s clineProviderSettings) valid() bool {
 	if s.BaseURL != "" && !clineValidURL(s.BaseURL) {
 		return false
 	}
-	if s.RoutingProviderID != "" && !clineValidProviderID(s.RoutingProviderID) {
+	if s.routingProviderIDSet && !clineValidProviderID(s.RoutingProviderID) {
 		return false
 	}
 	if s.Auth != nil && s.Auth.ExpiresAt != nil && *s.Auth.ExpiresAt <= 0 {
@@ -317,9 +364,11 @@ func clineProviderEvidence(ctx context.Context, d authutil.Dependencies, setting
 	if strings.TrimSpace(settings.APIKey) != "" || (settings.Auth != nil && strings.TrimSpace(settings.Auth.APIKey) != "") {
 		return ports.AgentAuthStatusConfigured
 	}
-	for _, name := range clineProviderAPIKeyEnv[clineNormalizeProviderID(settings.Provider)] {
-		if strings.TrimSpace(d.Getenv(name)) != "" {
-			return ports.AgentAuthStatusConfigured
+	if !clineProviderUsesStructuredEnvironment(settings.Provider) {
+		for _, name := range clineProviderAPIKeyEnv[clineNormalizeProviderID(settings.Provider)] {
+			if strings.TrimSpace(d.Getenv(name)) != "" {
+				return ports.AgentAuthStatusConfigured
+			}
 		}
 	}
 	if settings.Auth != nil && clineOAuthProvider(settings.Provider) {
@@ -394,43 +443,222 @@ func clineProviderEvidence(ctx context.Context, d authutil.Dependencies, setting
 }
 
 var clineProviderAPIKeyEnv = map[string][]string{
-	"anthropic":         {"ANTHROPIC_API_KEY"},
-	"aihubmix":          {"AIHUBMIX_API_KEY"},
-	"asksage":           {"ASKSAGE_API_KEY"},
-	"cline":             {"CLINE_API_KEY"},
-	"cline-pass":        {"CLINE_API_KEY"},
-	"cerebras":          {"CEREBRAS_API_KEY"},
-	"crusoe":            {"CRUSOE_API_KEY"},
-	"deepseek":          {"DEEPSEEK_API_KEY"},
-	"dify":              {"DIFY_API_KEY"},
-	"doubao":            {"DOUBAO_API_KEY"},
-	"elevenlabs":        {"ELEVENLABS_API_KEY"},
-	"fireworks":         {"FIREWORKS_API_KEY"},
-	"gemini":            {"GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"},
-	"groq":              {"GROQ_API_KEY"},
-	"hicap":             {"HICAP_API_KEY"},
-	"huawei-cloud-maas": {"HUAWEI_CLOUD_MAAS_API_KEY"},
-	"kilo":              {"KILO_GATEWAY_API_KEY"},
-	"litellm":           {"LITELLM_API_KEY"},
-	"lmstudio":          {"LMSTUDIO_API_KEY"},
-	"minimax":           {"MINIMAX_API_KEY"},
-	"mistral":           {"MISTRAL_API_KEY"},
-	"moonshot":          {"MOONSHOT_API_KEY"},
-	"nousResearch":      {"NOUS_RESEARCH_API_KEY", "NOUSRESEARCH_API_KEY"},
-	"oca":               {"OCA_API_KEY"},
-	"ollama":            {"OLLAMA_API_KEY"},
-	"openai-compatible": {"OPENAI_API_KEY"},
-	"openai-native":     {"OPENAI_API_KEY"},
-	"openrouter":        {"OPENROUTER_API_KEY"},
-	"qwen":              {"QWEN_API_KEY"},
-	"requesty":          {"REQUESTY_API_KEY"},
-	"sambanova":         {"SAMBANOVA_API_KEY"},
-	"together":          {"TOGETHER_API_KEY"},
-	"v0":                {"V0_API_KEY"},
-	"vercel-ai-gateway": {"AI_GATEWAY_API_KEY"},
-	"xai":               {"XAI_API_KEY"},
-	"zai":               {"ZHIPU_API_KEY"},
-	"zai-coding-plan":   {"ZHIPU_API_KEY"},
+	"302ai":                  {"302AI_API_KEY"},
+	"abacus":                 {"ABACUS_API_KEY"},
+	"abliteration-ai":        {"ABLIT_KEY"},
+	"above":                  {"ABOVE_API_KEY"},
+	"agentrouter":            {"AGENTROUTER_API_KEY"},
+	"agnes":                  {"AGNES_API_KEY"},
+	"ai-router":              {"AI_ROUTER_API_KEY"},
+	"aiand":                  {"AIAND_API_KEY"},
+	"aihubmix":               {"AIHUBMIX_API_KEY"},
+	"aixy":                   {"AIXY_API_KEY"},
+	"aki-io":                 {"AKI_IO_API_KEY"},
+	"alibaba":                {"DASHSCOPE_API_KEY"},
+	"alibaba-cn":             {"DASHSCOPE_API_KEY"},
+	"alibaba-coding-plan":    {"ALIBABA_CODING_PLAN_API_KEY"},
+	"alibaba-coding-plan-cn": {"ALIBABA_CODING_PLAN_API_KEY"},
+	"alibaba-token-plan":     {"ALIBABA_TOKEN_PLAN_API_KEY"},
+	"alibaba-token-plan-cn":  {"ALIBABA_TOKEN_PLAN_API_KEY"},
+	"ambient":                {"AMBIENT_API_KEY"},
+	"amd":                    {"AMD_API_KEY"},
+	"anthropic":              {"ANTHROPIC_API_KEY"},
+	"anyapi":                 {"ANYAPI_API_KEY"},
+	"arcee":                  {"ARCEE_API_KEY"},
+	"asksage":                {"ASKSAGE_API_KEY"},
+	"atomic-chat":            {"ATOMIC_CHAT_API_KEY"},
+	"auriko":                 {"AURIKO_API_KEY"},
+	"bailing":                {"BAILING_API_TOKEN"},
+	"baseten":                {"BASETEN_API_KEY"},
+	"bedrock":                {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK"},
+	"berget":                 {"BERGET_API_KEY"},
+	"blueclaw":               {"BLUECLAW_API_KEY"},
+	"bothub":                 {"BOTHUB_API_KEY"},
+	"cerebras":               {"CEREBRAS_API_KEY"},
+	"chutes":                 {"CHUTES_API_KEY"},
+	"clarifai":               {"CLARIFAI_PAT"},
+	"claudinio":              {"CLAUDINIO_API_KEY"},
+	"cline":                  {"CLINE_API_KEY"},
+	"cline-pass":             {"CLINE_API_KEY"},
+	"cloudferro-sherlock":    {"CLOUDFERRO_SHERLOCK_API_KEY"},
+	"cloudflare-workers-ai":  {"CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_KEY"},
+	"coralbricks":            {"CORAL_API_KEY"},
+	"cortecs":                {"CORTECS_API_KEY"},
+	"crof":                   {"CROF_API_KEY"},
+	"crossmodel":             {"CROSSMODEL_API_KEY"},
+	"crusoe":                 {"CRUSOE_API_KEY"},
+	"daoxe":                  {"DAOXE_API_KEY"},
+	"databricks":             {"DATABRICKS_HOST", "DATABRICKS_TOKEN"},
+	"deepseek":               {"DEEPSEEK_API_KEY"},
+	"dify":                   {"DIFY_API_KEY"},
+	"digitalocean":           {"DIGITALOCEAN_ACCESS_TOKEN"},
+	"dinference":             {"DINFERENCE_API_KEY"},
+	"doubao":                 {"DOUBAO_API_KEY"},
+	"drun":                   {"DRUN_API_KEY"},
+	"ebcloud":                {"EBCLOUD_API_KEY"},
+	"echo":                   {"ECHO_API_KEY"},
+	"edenai":                 {"EDENAI_API_KEY"},
+	"elevenlabs":             {"ELEVENLABS_API_KEY"},
+	"empiriolabs":            {"EMPIRIOLABS_API_KEY"},
+	"evroc":                  {"EVROC_API_KEY"},
+	"fastrouter":             {"FASTROUTER_API_KEY"},
+	"fireworks":              {"FIREWORKS_API_KEY"},
+	"freemodel":              {"FREEMODEL_API_KEY"},
+	"friendli":               {"FRIENDLI_TOKEN"},
+	"frogbot":                {"FROGBOT_API_KEY"},
+	"gemini":                 {"GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"},
+	"github-copilot":         {"GITHUB_TOKEN"},
+	"gmicloud":               {"GMICLOUD_API_KEY"},
+	"greenpt":                {"GREENPT_API_KEY"},
+	"groq":                   {"GROQ_API_KEY"},
+	"helicone":               {"HELICONE_API_KEY"},
+	"hetzner":                {"HETZNER_API_KEY"},
+	"hicap":                  {"HICAP_API_KEY"},
+	"hpc-ai":                 {"HPC_AI_API_KEY"},
+	"huawei-cloud-maas":      {"HUAWEI_CLOUD_MAAS_API_KEY"},
+	"huggingface":            {"HF_TOKEN"},
+	"hyper":                  {"HYPER_API_KEY"},
+	"iflowcn":                {"IFLOW_API_KEY"},
+	"impossibl":              {"IMPOSSIBL_API_KEY"},
+	"inception":              {"INCEPTION_API_KEY"},
+	"inceptron":              {"INCEPTRON_API_KEY"},
+	"infer":                  {"INFER_API_KEY"},
+	"inference":              {"INFERENCE_API_KEY"},
+	"inferx":                 {"INFERX_API_KEY"},
+	"infomaniak":             {"INFOMANIAK_API_KEY", "INFOMANIAK_PRODUCT_ID"},
+	"io-net":                 {"IOINTELLIGENCE_API_KEY"},
+	"iteracompute":           {"ITERACOMPUTE_API_KEY"},
+	"jalapeno":               {"JALAPENO_API_KEY"},
+	"jiekou":                 {"JIEKOU_API_KEY"},
+	"kenari":                 {"KENARI_API_KEY"},
+	"kilo":                   {"KILO_GATEWAY_API_KEY"},
+	"kimi-for-coding":        {"KIMI_API_KEY"},
+	"klokintegration":        {"KLOKINTEGRATION_API_KEY"},
+	"kosmik":                 {"KOSMIK_API_KEY"},
+	"kuae-cloud-coding-plan": {"KUAE_API_KEY"},
+	"lilac":                  {"LILAC_API_KEY"},
+	"litellm":                {"LITELLM_API_KEY"},
+	"llama":                  {"LLAMA_API_KEY"},
+	"llmgateway":             {"LLMGATEWAY_API_KEY"},
+	"llmgateway-providers":   {"LLMGATEWAY_API_KEY"},
+	"llmtech":                {"LLMTECH_API_KEY"},
+	"llmtr":                  {"LLMTR_API_KEY"},
+	"lmstudio":               {"LMSTUDIO_API_KEY"},
+	"longcat":                {"LONGCAT_API_KEY"},
+	"lucidquery":             {"LUCIDQUERY_API_KEY"},
+	"lynkr":                  {"LYNKR_API_KEY"},
+	"meganova":               {"MEGANOVA_API_KEY"},
+	"melious":                {"MELIOUS_API_KEY"},
+	"meta":                   {"META_MODEL_API_KEY"},
+	"minimax":                {"MINIMAX_API_KEY"},
+	"minimax-cn":             {"MINIMAX_API_KEY"},
+	"minimax-cn-coding-plan": {"MINIMAX_API_KEY"},
+	"minimax-coding-plan":    {"MINIMAX_API_KEY"},
+	"mistral":                {"MISTRAL_API_KEY"},
+	"mixlayer":               {"MIXLAYER_API_KEY"},
+	"moark":                  {"MOARK_API_KEY"},
+	"modal":                  {"MODAL_PROXY_TOKEN"},
+	"model-oracle-ai":        {"MODEL_ORACLE_API_KEY"},
+	"modelis":                {"MODELIS_API_KEY"},
+	"modelscope":             {"MODELSCOPE_API_KEY"},
+	"moonshot":               {"MOONSHOT_API_KEY"},
+	"moonshotai-cn":          {"MOONSHOT_API_KEY"},
+	"morph":                  {"MORPH_API_KEY"},
+	"nan":                    {"NAN_API_KEY"},
+	"nano-gpt":               {"NANO_GPT_API_KEY"},
+	"nearai":                 {"NEARAI_API_KEY"},
+	"nebius":                 {"NEBIUS_API_KEY"},
+	"neon":                   {"NEON_AI_GATEWAY_BASE_URL", "NEON_AI_GATEWAY_TOKEN"},
+	"neosmith":               {"NEOSMITH_API_KEY"},
+	"neuralwatt":             {"NEURALWATT_API_KEY"},
+	"nousResearch":           {"NOUS_RESEARCH_API_KEY", "NOUSRESEARCH_API_KEY"},
+	"nova":                   {"NOVA_API_KEY"},
+	"novita-ai":              {"NOVITA_API_KEY"},
+	"nvidia":                 {"NVIDIA_API_KEY"},
+	"oca":                    {"OCA_API_KEY"},
+	"ofox":                   {"OFOX_API_KEY"},
+	"ollama":                 {"OLLAMA_API_KEY"},
+	"openai-compatible":      {"OPENAI_API_KEY"},
+	"openai-native":          {"OPENAI_API_KEY"},
+	"opencode":               {"OPENCODE_API_KEY"},
+	"opencode-go":            {"OPENCODE_API_KEY"},
+	"openreason":             {"OPENREASON_API_KEY"},
+	"openrouter":             {"OPENROUTER_API_KEY"},
+	"opper":                  {"OPPER_API_KEY"},
+	"orcarouter":             {"ORCAROUTER_API_KEY"},
+	"ovhcloud":               {"OVHCLOUD_API_KEY"},
+	"pendra":                 {"PENDRA_API_KEY"},
+	"perplexity-agent":       {"PERPLEXITY_API_KEY"},
+	"pioneer":                {"PIONEER_API_KEY"},
+	"poe":                    {"POE_API_KEY"},
+	"poolside":               {"POOLSIDE_API_KEY"},
+	"privatemode-ai":         {"PRIVATEMODE_API_KEY", "PRIVATEMODE_ENDPOINT"},
+	"qihang-ai":              {"QIHANG_API_KEY"},
+	"qiniu-ai":               {"QINIU_API_KEY"},
+	"qwen":                   {"QWEN_API_KEY"},
+	"regolo-ai":              {"REGOLO_API_KEY"},
+	"requesty":               {"REQUESTY_API_KEY"},
+	"routing-run":            {"ROUTING_RUN_API_KEY"},
+	"runinfra":               {"RUNINFRA_GATEWAY_KEY"},
+	"sakana":                 {"SAKANA_API_KEY"},
+	"sambanova":              {"SAMBANOVA_API_KEY"},
+	"sapaicore":              {"AICORE_SERVICE_KEY"},
+	"sarvam":                 {"SARVAM_API_KEY"},
+	"scaleway":               {"SCALEWAY_API_KEY"},
+	"scnet-token-plan":       {"SCNET_API_KEY"},
+	"scx-ai":                 {"SCX_API_KEY"},
+	"sensenova":              {"SENSENOVA_API_KEY"},
+	"siliconflow":            {"SILICONFLOW_API_KEY"},
+	"siliconflow-cn":         {"SILICONFLOW_CN_API_KEY"},
+	"snowflake-cortex":       {"SNOWFLAKE_ACCOUNT", "SNOWFLAKE_CORTEX_PAT"},
+	"stackit":                {"STACKIT_API_KEY"},
+	"standardcompute":        {"STANDARDCOMPUTE_API_KEY"},
+	"stepfun":                {"STEPFUN_API_KEY"},
+	"stepfun-ai":             {"STEPFUN_API_KEY"},
+	"stepfun-ai-step-plan":   {"STEPFUN_API_KEY"},
+	"stepfun-step-plan":      {"STEPFUN_API_KEY"},
+	"subconscious":           {"SUBCONSCIOUS_API_KEY"},
+	"submodel":               {"SUBMODEL_INSTAGEN_ACCESS_KEY"},
+	"synthetic":              {"SYNTHETIC_API_KEY"},
+	"tencent-coding-plan":    {"TENCENT_CODING_PLAN_API_KEY"},
+	"tencent-token-plan":     {"TENCENT_TOKEN_PLAN_API_KEY"},
+	"tencent-tokenhub":       {"TENCENT_TOKENHUB_API_KEY"},
+	"tensorx":                {"TENSORX_API_KEY"},
+	"the-grid-ai":            {"THEGRID_API_KEY"},
+	"thinkingmachines":       {"TINKER_API_KEY"},
+	"tinfoil":                {"TINFOIL_API_KEY"},
+	"together":               {"TOGETHER_API_KEY"},
+	"tokengo":                {"TOKENGO_API_KEY"},
+	"tokenrouter":            {"TOKENROUTER_API_KEY"},
+	"trustedrouter":          {"TRUSTEDROUTER_API_KEY"},
+	"umans-ai":               {"UMANS_AI_API_KEY"},
+	"umans-ai-coding-plan":   {"UMANS_AI_CODING_PLAN_API_KEY"},
+	"unorouter":              {"UNOROUTER_API_KEY"},
+	"upstage":                {"UPSTAGE_API_KEY"},
+	"v0":                     {"V0_API_KEY"},
+	"vancine":                {"VANCINE_API_KEY"},
+	"vercel-ai-gateway":      {"AI_GATEWAY_API_KEY"},
+	"vertex":                 {"GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS"},
+	"vivgrid":                {"VIVGRID_API_KEY"},
+	"volcengine":             {"ARK_API_KEY"},
+	"volcengine-coding-plan": {"ARK_CODING_PLAN_API_KEY"},
+	"vultr":                  {"VULTR_API_KEY"},
+	"wafer.ai":               {"WAFER_API_KEY"},
+	"wallaby":                {"WALLABY_API_KEY"},
+	"wandb":                  {"WANDB_API_KEY"},
+	"xai":                    {"XAI_API_KEY"},
+	"xiaomi":                 {"XIAOMI_API_KEY"},
+	"xiaomi-token-plan-ams":  {"XIAOMI_API_KEY"},
+	"xiaomi-token-plan-cn":   {"XIAOMI_API_KEY"},
+	"xiaomi-token-plan-sgp":  {"XIAOMI_API_KEY"},
+	"xpersona":               {"XPERSONA_API_KEY"},
+	"zai":                    {"ZHIPU_API_KEY"},
+	"zai-coding-plan":        {"ZHIPU_API_KEY"},
+	"zeldoc":                 {"ZELDOC_API_KEY"},
+	"zenifra":                {"ZENIFRA_AI_KEY"},
+	"zenmux":                 {"ZENMUX_API_KEY"},
+	"zhipuai":                {"ZHIPU_API_KEY"},
+	"zhipuai-coding-plan":    {"ZHIPU_API_KEY"},
 }
 
 func clineValidSAPServiceKey(data []byte) bool {
@@ -460,6 +688,40 @@ func clineValidSAPVCAPServices(data []byte) bool {
 		}
 	}
 	return false
+}
+
+func clineProviderUsesStructuredEnvironment(provider string) bool {
+	switch clineNormalizeProviderID(provider) {
+	case "bedrock", "sapaicore", "vertex":
+		return true
+	default:
+		return false
+	}
+}
+
+func clineRejectPresentNull(data []byte, names ...string) error {
+	fields, err := clineJSONFields(data)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if value, present := fields[name]; present && clineJSONNull(value) {
+			return fmt.Errorf("cline field %q must not be null", name)
+		}
+	}
+	return nil
+}
+
+func clineJSONFields(data []byte) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+func clineJSONNull(value json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(value), []byte("null"))
 }
 
 func clineNormalizeProviderID(provider string) string {
