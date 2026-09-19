@@ -3377,6 +3377,12 @@ func TestToSpawnAPIErrorMapsSpawnStageSentinels(t *testing.T) {
 			"WORKSPACE_PROVISION_FAILED",
 		},
 		{
+			"orchestrator predecessor release",
+			fmt.Errorf("%w: preserve workspace: access denied", sessionmanager.ErrOrchestratorRecovery),
+			apierr.KindConflict,
+			"ORCHESTRATOR_REPLACEMENT_BLOCKED",
+		},
+		{
 			"runtime create",
 			fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: context deadline exceeded", sessionmanager.ErrRuntimeCreate),
 			apierr.KindInternal,
@@ -3577,6 +3583,15 @@ func TestToAPIError_NotResumable(t *testing.T) {
 	var e *apierr.Error
 	if !errors.As(mapped, &e) || e.Kind != apierr.KindConflict || e.Code != "SESSION_NOT_RESUMABLE" {
 		t.Fatalf("mapped = %v, want Conflict SESSION_NOT_RESUMABLE", mapped)
+	}
+}
+
+func TestToAPIError_ConcurrencyLimit(t *testing.T) {
+	err := fmt.Errorf("restore mer-1: %w", sessionmanager.ErrConcurrencyLimit)
+	mapped := toAPIError(err)
+	var apiError *apierr.Error
+	if !errors.As(mapped, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "SESSION_CONCURRENCY_LIMIT" {
+		t.Fatalf("mapped = %v, want Conflict SESSION_CONCURRENCY_LIMIT", mapped)
 	}
 }
 

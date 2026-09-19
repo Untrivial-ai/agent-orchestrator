@@ -1944,3 +1944,37 @@ func TestClaimChatControllerGenerationPreservesRecency(t *testing.T) {
 		t.Fatalf("claim changed user-visible facts: before=%+v after=%+v", before, after)
 	}
 }
+
+func TestUpdateSessionCannotRevertTerminateOnPRMerge(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stale, ok, err := s.GetSession(ctx, rec.ID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.SetSessionTerminateOnPRMerge(ctx, rec.ID, true, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("set policy: ok=%v err=%v", ok, err)
+	}
+
+	stale.Activity.State = domain.ActivityIdle
+	stale.UpdatedAt = time.Now().UTC()
+	if err := s.UpdateSession(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.GetSession(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TerminateOnPRMerge {
+		t.Fatal("stale UpdateSession reverted terminate-on-merge")
+	}
+	if got.Activity.State != domain.ActivityIdle {
+		t.Fatalf("UpdateSession stopped writing its own fields: %+v", got.Activity)
+	}
+}

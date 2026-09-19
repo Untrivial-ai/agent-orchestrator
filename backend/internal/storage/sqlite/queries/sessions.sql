@@ -25,6 +25,9 @@ INSERT INTO sessions (
 );
 
 -- name: UpdateSession :exec
+-- terminate_on_pr_merge is intentionally owned by the narrow
+-- SetSessionTerminateOnPRMerge query. A lifecycle full-row update may carry a
+-- stale snapshot and must not revert a user policy change.
 UPDATE sessions SET
     issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
@@ -34,7 +37,7 @@ UPDATE sessions SET
     conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
     conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?, native_checkpoint_evidence = ?,
     native_transcript_path = ?,
-    preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
+    preview_url = ?, preview_revision = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?

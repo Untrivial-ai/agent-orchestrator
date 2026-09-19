@@ -258,7 +258,9 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 		.flatMap((workspace) => workerSessions(workspace.sessions).map((session) => ({ workspace, session })))
 		.filter(
 			({ session }) =>
-				session.id !== currentSessionId && (attentionZone(session) === "merge" || sessionNeedsAttention(session)),
+				session.id !== currentSessionId &&
+				sessionIsActive(session) &&
+				(attentionZone(session) === "merge" || sessionNeedsAttention(session)),
 		)
 		.sort(
 			(a, b) =>

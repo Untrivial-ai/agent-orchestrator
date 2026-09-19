@@ -78,6 +78,10 @@ type commander interface {
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
 }
 
+type terminatedOrchestratorReleaser interface {
+	ReleaseTerminatedOrchestratorWorkspaces(ctx context.Context, projectID domain.ProjectID) error
+}
+
 // interfaceTransitionCommander is an optional command capability. Keeping it
 // separate avoids widening every focused session-service fake while production
 // can expose the feature through the concrete Session Manager.
@@ -292,6 +296,16 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 		if cfg.Harness == "" {
 			return domain.Session{}, 0, 0, apierr.Invalid("HARNESS_REQUIRED", "harness is required for a standalone session", nil)
+		}
+	}
+	if cfg.Kind == domain.KindOrchestrator {
+		if releaser, ok := s.manager.(terminatedOrchestratorReleaser); ok {
+			if err := releaser.ReleaseTerminatedOrchestratorWorkspaces(ctx, cfg.ProjectID); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("spawn orchestrator: terminated predecessor release failed", "projectID", cfg.ProjectID, "error", err)
+				}
+				return domain.Session{}, 0, 0, toSpawnAPIError(err)
+			}
 		}
 	}
 	if s.agentReadiness != nil && cfg.Harness != "" {
@@ -1175,6 +1189,8 @@ func mapSessionError(err error) error {
 	case errors.Is(err, sessionmanager.ErrNotResumable):
 		return apierr.Conflict("SESSION_NOT_RESUMABLE",
 			"This session has no saved agent session or prompt to resume from", nil)
+	case errors.Is(err, sessionmanager.ErrConcurrencyLimit):
+		return apierr.Conflict("SESSION_CONCURRENCY_LIMIT", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrProjectNotResolvable):
 		return apierr.Invalid("PROJECT_NOT_RESOLVABLE", "Project is not registered or has no repo. Register it with `ao project add`", nil)
 	case errors.Is(err, sessionmanager.ErrUnknownHarness):
@@ -1310,6 +1326,9 @@ func toSpawnAPIError(err error) error {
 		return apierr.Conflict("WORKSPACE_CREATE_FAILED", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrWorkspaceProvision):
 		return apierr.Conflict("WORKSPACE_PROVISION_FAILED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrOrchestratorRecovery):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_BLOCKED",
+			"The previous orchestrator's workspace could not be preserved and released. Retry after resolving the workspace error.", nil)
 	case errors.Is(err, sessionmanager.ErrSpawnAttachments):
 		return apierr.Invalid("SPAWN_ATTACHMENTS_FAILED", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrSpawnBrowser):
