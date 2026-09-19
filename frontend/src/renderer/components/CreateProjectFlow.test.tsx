@@ -1532,6 +1532,10 @@ describe("CreateProjectFlow project import validation", () => {
 		// provider connections, one valid "claude-code" by default here) is new.
 		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
 		await waitFor(() => expect(createButton).not.toBeDisabled());
+		await user.click(screen.getByLabelText("Worker agent"));
+		expect(screen.getByRole("option", { name: /Codex/ })).toHaveAttribute("data-disabled");
+		expect(screen.queryByRole("option", { name: "Manage agents…" })).not.toBeInTheDocument();
+		await user.keyboard("{Escape}");
 		await user.click(createButton);
 
 		await waitFor(() =>

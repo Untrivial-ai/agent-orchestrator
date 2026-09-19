@@ -46,6 +46,13 @@ function renderDialogs(origin?: "create-project" | "new-task") {
 	return client;
 }
 
+async function openAgentManagement(label: string) {
+	await userEvent.click(await screen.findByLabelText(label));
+	const action = screen.queryByRole("menuitem", { name: "Manage agents…" }) ?? screen.getByRole("option", { name: "Manage agents…" });
+	await userEvent.click(action);
+	await screen.findByRole("textbox", { name: "Search harnesses" });
+}
+
 function requireCodexLogin(client?: QueryClient) {
 	catalog = { agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex", { authentication: "unauthorized" })] };
 	if (client) act(() => client.setQueryData(agentReadinessQueryKey, catalog));
@@ -92,26 +99,30 @@ describe("Settings recovery modal integration", () => {
 		await waitFor(() => expect(document.activeElement).toBe(login));
 	});
 
-	it("returns focus to project settings after recovery removes its originating action", async () => {
+	it("returns focus to the project selector after setup and refreshes its choices", async () => {
 		requireCodexLogin();
 		useUiStore.getState().openProjectSettings("proj-1");
 		const client = renderDialogs();
 		await userEvent.click(await screen.findByRole("button", { name: "Agents" }));
 		const projectDialog = screen.getByRole("dialog");
-		const recoveryAction = await screen.findByRole("button", { name: "Log in" });
-		await userEvent.click(recoveryAction);
+		const trigger = await screen.findByLabelText("Default worker agent");
+		await openAgentManagement("Default worker agent");
 		await screen.findByRole("textbox", { name: "Search harnesses" });
 
 		act(() => client.setQueryData(agentReadinessQueryKey, {
 			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
 		}));
-		await waitFor(() => expect(recoveryAction).not.toBeInTheDocument());
+		await waitFor(() => expect(trigger).not.toHaveTextContent("Needs setup"));
 		await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
 
 		await waitFor(() => {
 			expect(document.activeElement?.isConnected).toBe(true);
 			expect(projectDialog).toContainElement(document.activeElement as HTMLElement);
+			expect(trigger).toHaveFocus();
 		});
+		await userEvent.click(trigger);
+		expect(await screen.findByRole("menuitem", { name: /Codex/ })).toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
 		expect(screen.getByRole("button", { name: "Agents" })).toHaveAttribute("aria-current", "page");
 		await userEvent.keyboard("{Escape}");
 		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -124,7 +135,7 @@ describe("Settings recovery modal integration", () => {
 		await userEvent.click(screen.getByLabelText("Automatically work on assigned issues"));
 		await userEvent.type(screen.getByLabelText("Assignee"), "octocat");
 		requireCodexLogin(client);
-		await userEvent.click(await screen.findByRole("button", { name: "Log in" }));
+		await openAgentManagement("Worker agent");
 
 		const search = await screen.findByRole("textbox", { name: "Search harnesses" });
 		await userEvent.type(search, "Claude");
@@ -142,7 +153,7 @@ describe("Settings recovery modal integration", () => {
 		requireCodexLogin();
 		renderDialogs("new-task");
 		await userEvent.type(screen.getByRole("textbox", { name: "Task" }), "Keep the task draft");
-		await userEvent.click(await screen.findByRole("button", { name: "Log in" }));
+		await openAgentManagement("Agent");
 		await screen.findByRole("textbox", { name: "Search harnesses" });
 		await userEvent.keyboard("{Escape}");
 
@@ -162,7 +173,7 @@ describe("Settings recovery modal integration", () => {
 		await userEvent.type(name, "Unsaved project name");
 		await userEvent.click(screen.getByRole("button", { name: "Agents" }));
 		const form = document.getElementById("project-settings-form");
-		await userEvent.click(await screen.findByRole("button", { name: "Log in" }));
+		await openAgentManagement("Default worker agent");
 		await screen.findByRole("textbox", { name: "Search harnesses" });
 
 		expect(form).toBeInTheDocument();
