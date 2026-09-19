@@ -5,6 +5,7 @@ import {
 	buttonBorderShape,
 	buttonStyle,
 	controlSize,
+	frame,
 	labelStyle,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
@@ -43,6 +44,10 @@ export function NativeHeaderButton({
 					buttonStyle("glass"),
 					controlSize("large"),
 					buttonBorderShape("circle"),
+					// Pinned, not left to the control size: the bell glyph is taller than
+					// the hamburger, and an intrinsic-size circle grew with it — so the
+					// notifications button drew visibly bigger than the menu button.
+					frame({ width: 44, height: 44 }),
 					labelStyle("iconOnly"),
 					tint(t.textSecondary),
 					accessibilityIdentifier(`header-${icon}`),
