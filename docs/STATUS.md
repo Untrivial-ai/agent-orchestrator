@@ -128,6 +128,66 @@ surface (`npm run sqlc`, `npm run api`).
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 
+### Agent authentication coverage
+
+Authentication observations distinguish five states: `authorized` requires a
+source-backed native/provider check accepting the effective credentials;
+`configured` means usable local credential/configuration evidence without that
+validation; `unauthorized` requires explicit native rejection or trustworthy
+expired, nonrefreshable credentials where the provider contract supports it;
+`not_applicable` requires a resolved, documented no-auth route; and `unknown`
+covers missing, malformed, unreadable, unsupported, or inconclusive evidence.
+Binary presence is not authorization. `configured` retains unknown effective
+readiness rather than being promoted to ready; launch remains the final check.
+
+The following coverage applies to the current authentication-check paths for
+the 25 adapters changed by this work. Claude Code and Codex authentication and
+account management are unchanged. Scoped TUI spawn and agent-switch checks use
+the effective working directory, environment, configuration, and command
+arguments without replacing device-global readiness. This does not add scoped
+Chat/restore integration or frontend authentication-recovery behavior.
+
+In the table, local evidence yields `configured` unless an exception is stated.
+AWS, Google Application Default Credentials (ADC), and Azure chains are bounded
+local evidence checks, not cloud authorization probes. They do not call metadata
+services, refresh credentials, contact providers, or execute arbitrary shell
+credential helpers by default. Supported native validation commands may contact
+their provider. Keychain access uses only source-confirmed service/account
+selectors. A dash means no added authoritative check or no-auth branch.
+
+| Adapter | Implemented local evidence (`configured`) | Authoritative results and explicit no-auth routes |
+| --- | --- | --- |
+| Aider | Home/git-root/workspace YAML and native `--config`/`-c`; dotenv, OAuth key file, environment/CLI keys and `set-env`; pinned model aliases and provider-matched LiteLLM credentials; Bedrock AWS, Vertex ADC, and separate Azure OpenAI/Azure AI key/identity chains. `AIDER_CONFIG` is not a native selector. | No-auth: selected keyless Ollama. LM Studio still requires its key. |
+| Agy | Explicit Gemini provider plus `GEMINI_API_KEY`, or browser-mode typed macOS `gemini`/`antigravity` keychain OAuth envelope. Missing provider selection permits browser lookup; unsupported/malformed selection does not. Refreshable OAuth is configuration evidence. | —; expired access-only keychain data remains `unknown`. |
+| Amp | Valid `AMP_API_KEY`, selected-server `secrets.json` entry, and JSON/JSONC server/settings routing. An invalid nonempty environment key does not fall back to storage. | Bounded `amp usage --no-color` runs first: successful native balance-check exit authorizes regardless of display text; exact native signed-out failure rejects. |
+| Auggie | `--augment-session-json` JSON/path, then `AUGMENT_SESSION_AUTH`, then `.augment/session.json`; typed access token, tenant URL, and scopes, including opaque/service-account tokens. | Trustworthy JWT expiry can reject; no invented refresh field or no-auth route. |
+| Autohand | JSON/TOML/YAML workspace settings, profiles, `--set`, environment/provider selection; built-in/custom/extension keys, separate account credentials, OpenAI ChatGPT/xAI OAuth, AWS/ADC/Azure auth-mode chains. Durable `ahc_` account tokens ignore stale expiry. | Supported expired nonrefreshable OAuth/account credentials reject. No-auth: selected Ollama/llamacpp/mlx, validated Blueprint Local GGUF path+SHA, custom `apiKeyRequired:false`, or autohandai local plan. |
+| Cline | Selected typed provider settings, CLI keys, source-confirmed provider key environment names, supported OAuth, AWS/Vertex ADC/Azure identity, and structured SAP credentials. Aliases are normalized; endpoints/account identifiers alone are not keys. | Supported OAuth expiry can reject. No-auth: selected default/loopback Ollama or LM Studio. |
+| Continue | Typed browser login, `CONTINUE_API_KEY`, or the effective first chat-capable config model key; local/fully qualified secret references resolved through documented dotenv precedence. Bare Anthropic key applies only to no-config onboarding. | —; `--model` does not suppress an existing first file model. Unresolved Hub-only models remain `unknown` without independent Continue account evidence. |
+| GitHub Copilot | Ordered supported GitHub token environment variables; selected-account `copilot_tokens`; macOS `copilot-cli` keychain with validated native `host:login`; scoped-environment `gh auth token`; typed BYOK API key/bearer. Classic PATs/arbitrary tokens do not qualify. | No-auth: documented keyless loopback Ollama BYOK on port 11434. Token discovery is not live validation. |
+| Crush | Global/project/workspace JSON and safe literal crushrc subset; selected provider keys/OAuth/environment references, top-level environment, AWS/ADC/Azure. Relevant malformed configuration or null auth overrides remain `unknown`. | Supported OAuth expiry can reject. No-auth: selected keyless Ollama or custom OpenAI-compatible endpoint. Shell configuration is not executed. |
+| Cursor | Scoped/environment/CLI API key; bounded `status --format json` stored-auth/token evidence. | Source-confirmed successful `getMe` account fields authorize; exact signed-out structure rejects. Token-only output remains `configured`. |
+| Devin | `DEVIN_API_KEY` with native `cog_` shape, ACP-only `WINDSURF_API_KEY`, or selected typed `credentials.toml` historical `windsurf_api_key`. | Bounded native `auth status`: exact successful/signed-out output authorizes/rejects. |
+| Droid | Factory key, encrypted browser file plus key presence; hierarchical legacy/current/project/runtime settings; selected custom model API key/headers; Bedrock AWS. User/project `apiKeyHelper` is ignored, neither counted nor executed. | No-auth: valid explicitly selected keyless custom endpoint. |
+| Goose | Selected provider metadata/environment, `secrets.yaml`, fixed macOS `goose`/`secrets` keychain, typed Gemini/Kimi/xAI/Goose ChatGPT/Copilot/Databricks OAuth caches, AWS/ADC/Azure. Valid custom command-auth declarations are configuration only, never executed. | Supported OAuth expiry can reject. No-auth: selected native local providers or valid custom `requires_auth:false`. Selected empty/malformed keyring data does not fall back to stale file credentials. |
+| Grok | Selected TOML model API/environment key, `XAI_API_KEY`, deployment key, or `GROK_AUTH`/selected `auth.json` account map. Unsupported generic token aliases are ignored. | — |
+| Kilo Code | Selected provider config keys/environment, legacy `auth.json`, `KILO_AUTH_CONTENT`, current/legacy SQLite credential/account schemas, native `kilo db path` and auth-list counts. Native counts/stores prove configuration only. | No-auth: selected Ollama/LM Studio or harness-hosted public free models. Free OpenRouter models still need a key. |
+| Kimchi | Environment/project/global key and endpoint, exact selected harness `auth.json` API/OAuth credentials. | Injected official validator at the default endpoint can authorize/reject; production readiness does not initiate this network probe. Supported OAuth expiry can reject. No no-auth branch. |
+| Kimi | Current/legacy model/provider config, explicit key/environment bindings, selected typed OAuth reference, exact Authorization headers, legacy fixed macOS `kimi-code`/`oauth/kimi-code` keychain, provider-configured Vertex ADC. | No-auth: selected legacy `_echo` or `_scripted_echo` only. |
+| Kiro | Known stored-account schema from `whoami --format json`; `ksk_` key fallback only in an explicitly noninteractive scope. Native stored-token identity is not live authorization. | Exact `account:null` signed-out result rejects; unknown social-account schema remains `unknown`. |
+| Muse | `META_API_KEY`; selected `MUSE_AUTH_PATH` or XDG/home typed `providers.meta` credential file. | Supported expired nonrefreshable OAuth rejects. Keychain-backed storage remains unsupported/`unknown`: source-confirmed selectors are unavailable and are not guessed. |
+| OMP | Global/project model roles, selected environment/dotenv, models YAML, read-only enabled provider SQLite rows, `auth.json` fallback, runtime key, AWS/ADC. Broker URL+token is device-wide configuration; selected-provider broker evidence requires a matching usable encrypted snapshot or applicable override, without a broker call. Native active XDG data/cache migration and default profiles are supported. | Supported OAuth expiry can reject. No-auth: selected `auth:none` or Bedrock skip-auth. Nondefault profiles, config overlays, aliases/account pools, ambiguous `--plan`, and multi-selector roles remain `unknown`. |
+| OpenCode | Native JSON/JSONC model selection, provider environment/`auth.json`, bounded `opencode auth list`, Bedrock AWS. Auth lists are configuration only; no guessed database discovery. | No-auth: selected Ollama/LM Studio or harness-hosted public free models. |
+| Pi | Environment, typed provider environment/OAuth `auth.json`, custom `models.json` API/key, AWS/Vertex. Explicit empty/null/malformed API fields do not inherit a lower-priority value. | Exact native `pi auth check --provider <id>` ready/exit 0 authorizes; not_ready/exit 1 rejects; ambiguous output stays `unknown`. Supported OAuth expiry can reject. No-auth: selected llama.cpp or validated loopback custom provider. |
+| Prime Agent | Selected settings/`auth.json`/`models.json`, environment/runtime key, native credentials kept separate from AO-owned runtime directory, AWS/Vertex. Explicit unqualified models must resolve independently, without borrowing the saved provider. | Supported OAuth expiry can reject. No-auth: selected local Ollama or Bedrock skip-auth. No native status probe. |
+| Qwen | Typed system/user/project settings, dotenv/environment, selected protocol/model/environment-key binding, CLI keys, Vertex ADC. Retired free-tier OAuth caches are not credential evidence. | No-auth: selected configured loopback OpenAI Chat/Responses route. |
+| Vibe | Defaults/user/project TOML, active model, agent profile including AO-scoped profiles, environment and `VIBE_HOME` dotenv selected key. | No-auth: valid selected provider with empty `api_key_env_var`, including llama.cpp. |
+
+Unresolved provider/model routing stays `unknown` rather than borrowing another
+provider's credentials or assuming that a local-looking URL needs no auth.
+These observations are advisory: locally configured credentials can still be
+expired, revoked, or insufficient when the native harness uses them.
+
 ### Frontend (Electron + React)
 
 - Electron + React 19 + TanStack Router/Query + Tailwind + shadcn primitives.
