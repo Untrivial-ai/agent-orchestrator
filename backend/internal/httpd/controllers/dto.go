@@ -1745,8 +1745,10 @@ type IdentityResponse struct {
 type MobileStatusResponse struct {
 	Enabled bool `json:"enabled"`
 	// Endpoints is every way the phone can reach this daemon, in the client's
-	// preference order. The phone races them; Host/TailscaleHost below are the
-	// head of each kind, kept for the existing renderer.
+	// preference order. The phone races them. Host/TailscaleHost below are the
+	// first LAN and tailnet addresses, kept for the existing renderer; the
+	// list's tailnet entry may be the secure-pairing proxy rather than that
+	// address, or absent while the proxy is unverified (mobilebridge.Endpoints).
 	Endpoints []mobilebridge.Endpoint `json:"endpoints"`
 	// HostID is this machine's stable identity, echoed into the pairing code.
 	// The phone checks every endpoint it races against this value.
