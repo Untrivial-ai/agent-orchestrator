@@ -98,6 +98,17 @@ describe("session presentation", () => {
 		expect(toBoardLane("building", "working")).toBe("building");
 	});
 
+	it("moves a finished pre-PR build into the review lane", () => {
+		// Idle with no PR is the daemon's "Awaiting PR": the build is done and the
+		// human's next step is to commit, so the card joins the review loop.
+		expect(toBoardLane("building", "idle", "building", "Awaiting PR")).toBe("review");
+		// Work still turning stays in Building, as does a plan awaiting confirmation.
+		expect(toBoardLane("building", "working", "building", "Working")).toBe("building");
+		expect(toBoardLane("building", "idle", "planning", "Awaiting PR")).toBe("planning");
+		// A daemon too old to send a mode still moves once the build is done.
+		expect(toBoardLane("building", "idle", undefined, "Awaiting PR")).toBe("review");
+	});
+
 	it("collapses the review-feedback columns into one lane", () => {
 		expect(toBoardLane("validating", "review_pending")).toBe("review");
 		expect(toBoardLane("needs_review", "changes_requested")).toBe("review");

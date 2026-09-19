@@ -359,19 +359,26 @@ export function toKanbanColumn(column: string | undefined, status: SessionStatus
  * Resolve the presentation lane a session belongs in. The daemon's column is
  * authoritative for delivery facts; this only remaps it for the four-lane
  * board: a pre-PR `building` session is Planning while its workflow mode is
- * planning, and both review-feedback columns collapse into Review. A daemon too
- * old to send `kanbanColumn` goes through {@link toKanbanColumn} first, so the
- * fallback matches the placement status already implied.
+ * planning, Review once its build has finished and the agent is idle on the
+ * commit, and Building while it is still turning; both review-feedback columns
+ * collapse into Review. A daemon too old to send `kanbanColumn` goes through
+ * {@link toKanbanColumn} first, so the fallback matches the placement status
+ * already implied.
  */
 export function toBoardLane(
 	column: string | undefined,
 	status: SessionStatus,
 	workflowMode?: WorkflowMode,
+	displayStatus?: string,
 ): BoardLane {
 	const resolved = toKanbanColumn(column, status);
 	switch (resolved) {
 		case "building":
-			return workflowMode === "planning" ? "planning" : "building";
+			if (workflowMode === "planning") return "planning";
+			// "Awaiting PR" is the daemon's phrase for a finished pre-PR build: the
+			// agent is idle and the human's next step is to commit, so the card sits
+			// with the review loop rather than the building lane it just left.
+			return displayStatus === "Awaiting PR" ? "review" : "building";
 		case "validating":
 		case "needs_review":
 			return "review";

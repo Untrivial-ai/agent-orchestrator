@@ -146,7 +146,12 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 }: SessionsBoardGridViewProps<TSession>) {
 	const byColumn = new Map<BoardLane, TSession[]>();
 	for (const session of sessions) {
-		const lane = toBoardLane(session.kanbanColumn, session.status, session.workflowMode);
+		const lane = toBoardLane(
+			session.kanbanColumn,
+			session.status,
+			session.workflowMode,
+			session.displayStatus,
+		);
 		const sessionsForLane = byColumn.get(lane);
 		if (sessionsForLane) sessionsForLane.push(session);
 		else byColumn.set(lane, [session]);
@@ -241,6 +246,8 @@ export type SessionCardViewProps = {
 	renderAvatar: (provider: string) => ReactNode;
 	renderUsage?: (usage: BoardUsagePresentation) => ReactNode;
 	session: BoardSessionPresentation;
+	/** Replaces the daemon status label (e.g. "Awaiting PR") with session actions. */
+	statusAction?: ReactNode;
 	translate?: ProductUITranslator;
 	usage?: BoardUsagePresentation;
 };
@@ -260,6 +267,7 @@ export function SessionCardView({
 	renderAvatar,
 	renderUsage = (usage) => <SessionUsageMetricView usage={usage} />,
 	session,
+	statusAction,
 	translate,
 	usage,
 }: SessionCardViewProps) {
@@ -269,7 +277,12 @@ export function SessionCardView({
 	const needsAttention = boardSessionNeedsAttention(session);
 	const needsAttentionChip = needsAttention;
 	const lane = getBoardLaneView(
-		toBoardLane(session.kanbanColumn, session.status, session.workflowMode),
+		toBoardLane(
+			session.kanbanColumn,
+			session.status,
+			session.workflowMode,
+			session.displayStatus,
+		),
 		translate,
 	);
 	const statusClassName =
@@ -387,19 +400,25 @@ export function SessionCardView({
 			)}
 			<div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-t border-border px-3.5 py-2.5">
 				<div className="flex min-w-0 flex-1">
-					<span
-						className={cn(
-							"inline-flex min-w-0 max-w-full items-center text-2xs font-medium",
-							needsAttentionChip
-								? "text-status-needs-you"
-								: statusClassName,
-						)}
-						data-kanban-column={statusPresentation ? undefined : lane.lane}
-						data-testid="session-status"
-					>
-						{showStatusLoader ? <LoaderCircleIcon aria-hidden="true" className="mr-1 size-icon-2xs animate-spin" /> : null}
-						<span className="min-w-0 truncate">{renderedStatusLabel}</span>
-					</span>
+					{statusAction ? (
+						<div className="flex min-w-0 items-center gap-1.5" data-testid="session-status">
+							{statusAction}
+						</div>
+					) : (
+						<span
+							className={cn(
+								"inline-flex min-w-0 max-w-full items-center text-2xs font-medium",
+								needsAttentionChip
+									? "text-status-needs-you"
+									: statusClassName,
+							)}
+							data-kanban-column={statusPresentation ? undefined : lane.lane}
+							data-testid="session-status"
+						>
+							{showStatusLoader ? <LoaderCircleIcon aria-hidden="true" className="mr-1 size-icon-2xs animate-spin" /> : null}
+							<span className="min-w-0 truncate">{renderedStatusLabel}</span>
+						</span>
+					)}
 				</div>
 				<div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-2xs text-muted-foreground">
 					{usage ? renderUsage(usage) : null}

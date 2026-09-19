@@ -137,6 +137,63 @@ describe("SessionsBoardView", () => {
 		expect(screen.getByTestId("board-horizontal-scroll")).toHaveClass("board-horizontal-scrollbar");
 	});
 
+	it("moves a finished pre-PR build into the review lane", () => {
+		render(
+			<SessionsBoardGridView
+				columns={boardLaneOrder.map((lane) => getBoardLaneView(lane))}
+				labels={columnLabels}
+				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
+				sessions={[
+					{
+						...baseSession,
+						displayStatus: "Awaiting PR",
+						id: "awaiting-commit",
+						kanbanColumn: "building",
+						status: "idle",
+						title: "awaiting commit",
+						workflowMode: "building",
+					},
+				]}
+			/>,
+		);
+
+		expect(
+			within(screen.getByRole("region", { name: "Review sessions" })).getByTestId("card-awaiting-commit"),
+		).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("region", { name: "Building sessions" })).queryByTestId(
+				"card-awaiting-commit",
+			),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps a finished plan in the planning lane until building is confirmed", () => {
+		render(
+			<SessionsBoardGridView
+				columns={boardLaneOrder.map((lane) => getBoardLaneView(lane))}
+				labels={columnLabels}
+				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
+				sessions={[
+					{
+						...baseSession,
+						displayStatus: "Awaiting PR",
+						id: "awaiting-confirm",
+						kanbanColumn: "building",
+						status: "idle",
+						title: "awaiting confirm",
+						workflowMode: "planning",
+					},
+				]}
+			/>,
+		);
+
+		expect(
+			within(screen.getByRole("region", { name: "Planning sessions" })).getByTestId(
+				"card-awaiting-confirm",
+			),
+		).toBeInTheDocument();
+	});
+
 	it("pins attention-required sessions first inside every lane without changing lanes", () => {
 		const lanes = boardLaneOrder.map((lane) => getBoardLaneView(lane));
 		const sessions: BoardSessionPresentation[] = lanes.flatMap(({ lane }, index) => {
@@ -739,6 +796,55 @@ describe("SessionsBoardView", () => {
 		expect(status).not.toHaveClass("rounded-sm", "border");
 		expect(status?.style.getPropertyValue("--session-status-tone")).toBe("");
 		expect(status?.querySelector(".rounded-full")).toBeNull();
+	});
+
+	it("styles an awaiting-PR card with the review lane it now sits in", () => {
+		render(
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "1h ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: progressLabels,
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={{
+					...baseSession,
+					displayStatus: "Awaiting PR",
+					kanbanColumn: "building",
+					status: "idle",
+					workflowMode: "building",
+				}}
+			/>,
+		);
+
+		expect(screen.getByTestId("session-status")).toHaveAttribute("data-kanban-column", "review");
+	});
+
+	it("replaces the status label with a status action when one is supplied", () => {
+		render(
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "1h ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: {
+						short: "PR",
+						states: { closed: "closed", draft: "draft", merged: "merged", open: "open" },
+					},
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={{ ...baseSession, displayStatus: "Awaiting PR" }}
+				statusAction={<button type="button">Commit</button>}
+			/>,
+		);
+
+		expect(screen.queryByText("Awaiting PR")).not.toBeInTheDocument();
+		expect(screen.getByTestId("session-status")).toContainElement(
+			screen.getByRole("button", { name: "Commit" }),
+		);
 	});
 
 	it("keeps archive toggle height and board offset classes in lockstep", () => {
