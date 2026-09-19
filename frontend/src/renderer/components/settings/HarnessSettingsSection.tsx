@@ -340,7 +340,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 			authWorkflowRef.current = null;
 			setAuthWorkflow(null);
 			void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
-			await checkAuth(workflow.agentId);
+			await checkAuth(workflow.agentId, { fresh: true });
 			return true;
 		} catch (error) {
 			setAuthWorkflow((current) => current?.terminal.handleId === workflow.terminal.handleId ? { ...current, phase: "cleanup_failed", reason: error instanceof Error ? error.message : t("settings.harness.authFailed") } : current);
@@ -461,6 +461,9 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 						const isSetupAction = authPlan?.action === "setup";
 						const authState = authStates[agentId];
 						const authStatus = readinessAgent?.authentication.state;
+						const installationStatusLabel = authStatus === "authorized"
+							? t("settings.harness.authorized")
+							: t("settings.harness.installed");
 						const rowHasError = failed || Boolean(authState?.error);
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
@@ -525,10 +528,10 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 					size="none"
 					variant="ghost"
 					className={cn(MENU_TRIGGER_CHROME, "h-8! min-h-8! shrink-0 rounded-md! border-0! bg-[var(--color-bg-settings-trigger)] px-3! text-xs leading-4")}
-					aria-label={t("settings.harness.installed")}
+					aria-label={installationStatusLabel}
 					disabled
 								>
-									{t("settings.harness.installed")}
+									{installationStatusLabel}
 								</Button>
 								{reinstallControls}
 								{authControls}
