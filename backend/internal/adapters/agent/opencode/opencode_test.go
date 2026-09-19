@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -197,6 +198,166 @@ func TestOpenCodeAuthListIsConservative(t *testing.T) {
 				t.Fatalf("status = %q, %v; want %q", got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestOpenCodeNativeConfigSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, global, custom, project, directory, content, model string
+		args                                                     []string
+		want                                                     ports.AgentAuthStatus
+	}{
+		{name: "global rejects unrelated key", global: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "global selects local", global: `{"model":"ollama/llama3"}`, want: ports.AgentAuthStatusNotApplicable},
+		{name: "custom precedes project", custom: `{"model":"openai/gpt-5"}`, project: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "project selects local", project: `{"model":"ollama/llama3"}`, want: ports.AgentAuthStatusNotApplicable},
+		{name: "config directory overrides project", project: `{"model":"openai/gpt-5"}`, directory: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "inline selects provider", content: `{"model":"anthropic/claude"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "inline overrides project", project: `{"model":"anthropic/claude"}`, content: `{"model":"ollama/llama3"}`, want: ports.AgentAuthStatusNotApplicable},
+		{name: "AO model overrides native", global: `{"model":"anthropic/claude"}`, model: "openai/gpt-5", want: ports.AgentAuthStatusConfigured},
+		{name: "native argv overrides AO", global: `{"model":"anthropic/claude"}`, model: "openai/gpt-5", args: []string{"opencode", "--model", "ollama/llama3"}, want: ports.AgentAuthStatusNotApplicable},
+		{name: "native env prefix selects local", args: []string{"env", `OPENCODE_CONFIG_CONTENT={"model":"ollama/llama3"}`, "opencode"}, want: ports.AgentAuthStatusNotApplicable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, workspace := t.TempDir(), t.TempDir()
+			env := map[string]string{"HOME": home, "OPENAI_API_KEY": "unrelated-openai"}
+			write := func(path, body string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.global != "" {
+				write(filepath.Join(home, ".config", "opencode", "opencode.json"), tc.global)
+			}
+			if tc.custom != "" {
+				env["OPENCODE_CONFIG"] = filepath.Join(home, "custom.json")
+				write(env["OPENCODE_CONFIG"], tc.custom)
+			}
+			if tc.project != "" {
+				write(filepath.Join(workspace, "opencode.json"), tc.project)
+			}
+			if tc.directory != "" {
+				env["OPENCODE_CONFIG_DIR"] = filepath.Join(home, "custom-dir")
+				write(filepath.Join(env["OPENCODE_CONFIG_DIR"], "opencode.json"), tc.directory)
+			}
+			if tc.content != "" {
+				env["OPENCODE_CONFIG_CONTENT"] = tc.content
+			}
+			in := ports.AgentAuthCheck{Config: ports.AgentConfig{Model: tc.model}, Args: tc.args}
+			if tc.project != "" {
+				in.WorkingDir = workspace
+			}
+			deps := authutil.Dependencies{Getenv: func(name string) string { return env[name] }, Run: func(context.Context, string, ...string) ([]byte, error) { return []byte("2 credentials\n"), nil }}
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", in, deps)
+			if err != nil || got != tc.want {
+				t.Fatalf("native selection = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenCodeUnresolvedScopeDoesNotUseAggregateEvidence(t *testing.T) {
+	for _, source := range []string{"environment", "auth file", "native list"} {
+		t.Run(source, func(t *testing.T) {
+			home := t.TempDir()
+			env := map[string]string{"HOME": home}
+			if source == "environment" {
+				env["OPENAI_API_KEY"] = "unrelated"
+			}
+			if source == "auth file" {
+				path := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{"openai":{"type":"api","key":"unrelated"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deps := authutil.Dependencies{Getenv: func(name string) string { return env[name] }, Run: func(context.Context, string, ...string) ([]byte, error) { return []byte("1 credential\n"), nil }}
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{WorkingDir: t.TempDir()}, deps)
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("unresolved scope = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestOpenCodeWindowsProfilePaths(t *testing.T) {
+	for _, source := range []string{"auth", "config"} {
+		t.Run(source, func(t *testing.T) {
+			profile := t.TempDir()
+			path := filepath.Join(profile, ".local", "share", "opencode", "auth.json")
+			body := `{"openai":{"type":"api","key":"secret"}}`
+			want := ports.AgentAuthStatusConfigured
+			if source == "config" {
+				path = filepath.Join(profile, ".config", "opencode", "opencode.json")
+				body = `{"model":"ollama/llama3"}`
+				want = ports.AgentAuthStatusNotApplicable
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			deps := authutil.Dependencies{GOOS: "windows", Getenv: func(name string) string {
+				if name == "USERPROFILE" {
+					return profile
+				}
+				return ""
+			}, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+			if err != nil || got != want {
+				t.Fatalf("Windows %s = %q, %v; want %q", source, got, err, want)
+			}
+			deps.GOOS = "linux"
+			got, err = opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("non-Windows profile = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestOpenCodeJSONCSelectsProvider(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{\n// provider selection\n\"model\":\"anthropic/claude\", /* native JSONC */\n}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"HOME": home, "OPENAI_API_KEY": "unrelated"}
+	deps := authutil.Dependencies{Getenv: func(name string) string { return env[name] }, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+	got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+	if err != nil || got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("JSONC selection = %q, %v; want unknown", got, err)
+	}
+}
+
+func TestOpenCodeHomeConfigDirectorySelectsModel(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"model":"ollama/llama3"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := authutil.Dependencies{Getenv: func(name string) string {
+		if name == "HOME" {
+			return home
+		}
+		return ""
+	}, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+	got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+	if err != nil || got != ports.AgentAuthStatusNotApplicable {
+		t.Fatalf("home config directory = %q, %v; want not_applicable", got, err)
 	}
 }
 

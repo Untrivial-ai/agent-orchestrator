@@ -289,6 +289,96 @@ func TestKiloInjectedRunnerAndClock(t *testing.T) {
 	}
 }
 
+func TestKiloConfigMergePreservesOmittedAPIKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, project string
+		want          ports.AgentAuthStatus
+	}{
+		{"provider metadata", `{"provider":{"custom":{"name":"Project"}}}`, ports.AgentAuthStatusConfigured},
+		{"non-key option", `{"provider":{"custom":{"options":{"baseURL":"https://example.invalid"}}}}`, ports.AgentAuthStatusConfigured},
+		{"explicit empty key", `{"provider":{"custom":{"options":{"apiKey":""}}}}`, ports.AgentAuthStatusUnknown},
+		{"explicit replacement", `{"provider":{"custom":{"options":{"apiKey":"{env:MISSING_KEY}"}}}}`, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, workspace := t.TempDir(), t.TempDir()
+			path := filepath.Join(home, ".config", "kilo", "kilo.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(`{"model":"custom/model","provider":{"custom":{"options":{"apiKey":"global-key"}}}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workspace, "kilo.json"), []byte(tc.project), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			deps := authutil.Dependencies{Getenv: func(name string) string {
+				if name == "HOME" {
+					return home
+				}
+				return ""
+			}, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+			got, err := kilocodeAuthStatusFor(context.Background(), "injected-kilo", ports.AgentAuthCheck{WorkingDir: workspace}, deps)
+			if err != nil || got != tc.want {
+				t.Fatalf("merged config = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestKiloWindowsProfilePaths(t *testing.T) {
+	// The injected environment never falls through to the machine's real home.
+	t.Setenv("KILO_AUTH_CONTENT", "")
+	if err := os.Unsetenv("KILO_AUTH_CONTENT"); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"auth", "config", "relative database"} {
+		t.Run(source, func(t *testing.T) {
+			profile := t.TempDir()
+			env := map[string]string{"USERPROFILE": profile}
+			dataDir := filepath.Join(profile, ".local", "share", "kilo")
+			if err := os.MkdirAll(dataDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			switch source {
+			case "auth":
+				if err := os.WriteFile(filepath.Join(dataDir, "auth.json"), []byte(`{"openai":{"type":"api","key":"secret"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "config":
+				path := filepath.Join(profile, ".config", "kilo", "kilo.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{"model":"custom/model","provider":{"custom":{"options":{"apiKey":"secret"}}}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "relative database":
+				env["KILO_DB"] = "selected.db"
+				db, err := sql.Open("sqlite", filepath.Join(dataDir, "selected.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`CREATE TABLE credential(integration_id text,value text,active integer,time_created integer); INSERT INTO credential VALUES('openai','{"type":"key","key":"secret"}',NULL,1)`); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deps := authutil.Dependencies{GOOS: "windows", Getenv: func(name string) string { return env[name] }, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unavailable") }}
+			got, err := kilocodeAuthStatusFor(context.Background(), "injected-kilo", ports.AgentAuthCheck{}, deps)
+			if err != nil || got != ports.AgentAuthStatusConfigured {
+				t.Fatalf("Windows %s = %q, %v; want configured", source, got, err)
+			}
+			deps.GOOS = "linux"
+			got, err = kilocodeAuthStatusFor(context.Background(), "injected-kilo", ports.AgentAuthCheck{}, deps)
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("non-Windows profile = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
 func kiloScopedStatus(t *testing.T, p *Plugin, in ports.AgentAuthCheck) ports.AgentAuthStatus {
 	t.Helper()
 	checker, ok := any(p).(ports.AgentScopedAuthChecker)

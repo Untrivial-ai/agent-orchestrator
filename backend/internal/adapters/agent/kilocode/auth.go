@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -91,7 +92,10 @@ func kilocodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 		return ports.AgentAuthStatusNotApplicable, nil
 	}
 	if provider != "" {
-		key := strings.TrimSpace(config.Provider[provider].Options.APIKey)
+		key := ""
+		if value := config.Provider[provider].Options.APIKey; value != nil {
+			key = strings.TrimSpace(*value)
+		}
 		if strings.HasPrefix(key, "{env:") && strings.HasSuffix(key, "}") {
 			key = strings.TrimSpace(deps.Getenv(strings.TrimSuffix(strings.TrimPrefix(key, "{env:"), "}")))
 		}
@@ -124,10 +128,10 @@ func kilocodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 		return ports.AgentAuthStatusUnknown, nil
 	}
 	dataDir := deps.Getenv("XDG_DATA_HOME")
-	if dataDir == "" && deps.Getenv("HOME") != "" {
-		dataDir = filepath.Join(deps.Getenv("HOME"), ".local", "share")
+	if home := kiloAuthHome(deps); dataDir == "" && home != "" {
+		dataDir = filepath.Join(home, ".local", "share")
 	}
-	if deps.Getenv("HOME") != "" || deps.Getenv("XDG_DATA_HOME") != "" {
+	if dataDir != "" {
 		data, err := authutil.ReadFile(ctx, deps, filepath.Join(dataDir, "kilo", "auth.json"))
 		if err == nil && kiloAuthEntries(data, provider, now) {
 			return ports.AgentAuthStatusConfigured, nil
@@ -233,7 +237,7 @@ type kiloAuthConfig struct {
 	Model    string `json:"model"`
 	Provider map[string]struct {
 		Options struct {
-			APIKey string `json:"apiKey"`
+			APIKey *string `json:"apiKey"`
 		} `json:"options"`
 	} `json:"provider"`
 }
@@ -241,8 +245,8 @@ type kiloAuthConfig struct {
 func kiloAuthConfigFor(ctx context.Context, in ports.AgentAuthCheck, deps authutil.Dependencies) kiloAuthConfig {
 	var result kiloAuthConfig
 	configHome := deps.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" && deps.Getenv("HOME") != "" {
-		configHome = filepath.Join(deps.Getenv("HOME"), ".config")
+	if home := kiloAuthHome(deps); configHome == "" && home != "" {
+		configHome = filepath.Join(home, ".config")
 	}
 	var paths []string
 	if configHome != "" {
@@ -269,7 +273,13 @@ func kiloAuthConfigFor(ctx context.Context, in ports.AgentAuthCheck, deps authut
 			result.Provider = next.Provider
 		} else {
 			for id, value := range next.Provider {
-				result.Provider[id] = value
+				// Native config merges nested objects. Omitted API keys inherit;
+				// an explicitly supplied empty string still replaces the key.
+				if value.Options.APIKey != nil {
+					current := result.Provider[id]
+					current.Options.APIKey = value.Options.APIKey
+					result.Provider[id] = current
+				}
 			}
 		}
 	}
@@ -282,6 +292,20 @@ func kiloAuthConfigFor(ctx context.Context, in ports.AgentAuthCheck, deps authut
 		merge([]byte(content))
 	}
 	return result
+}
+
+func kiloAuthHome(deps authutil.Dependencies) string {
+	if home := deps.Getenv("HOME"); home != "" {
+		return home
+	}
+	platform := deps.GOOS
+	if platform == "" {
+		platform = runtime.GOOS
+	}
+	if platform == "windows" {
+		return deps.Getenv("USERPROFILE")
+	}
+	return ""
 }
 
 func kiloDatabaseEvidence(ctx context.Context, path, provider string, now time.Time) bool {

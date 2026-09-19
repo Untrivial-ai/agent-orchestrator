@@ -206,8 +206,22 @@ func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 	if baseGetenv == nil {
 		baseGetenv = os.Getenv
 	}
+	launchEnv := make(map[string]string, len(in.Env))
+	for name, value := range in.Env {
+		launchEnv[name] = value
+	}
+	// AO's generated config may be carried by the native command's env prefix.
+	if len(in.Args) > 0 && filepath.Base(in.Args[0]) == "env" {
+		for _, arg := range in.Args[1:] {
+			name, value, ok := strings.Cut(arg, "=")
+			if !ok || name == "" {
+				break
+			}
+			launchEnv[name] = value
+		}
+	}
 	deps.Getenv = func(name string) string {
-		if value, ok := in.Env[name]; ok {
+		if value, ok := launchEnv[name]; ok {
 			return value
 		}
 		return baseGetenv(name)
@@ -217,7 +231,7 @@ func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 			cmd := aoprocess.CommandContext(ctx, name, args...)
 			cmd.Dir = in.WorkingDir
 			cmd.Env = os.Environ()
-			for key, value := range in.Env {
+			for key, value := range launchEnv {
 				cmd.Env = append(cmd.Env, key+"="+value)
 			}
 			out := &opencodeAuthOutput{}
@@ -227,7 +241,10 @@ func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 			return out.data, err
 		}
 	}
-	model := in.Config.Model
+	model := opencodeAuthModel(ctx, in, deps)
+	if in.Config.Model != "" {
+		model = in.Config.Model
+	}
 	for i, arg := range in.Args {
 		if (arg == "--model" || arg == "-m") && i+1 < len(in.Args) {
 			model = in.Args[i+1]
@@ -237,6 +254,12 @@ func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 		}
 	}
 	provider, modelID, _ := strings.Cut(strings.TrimSpace(model), "/")
+	if provider == "" && (in.WorkingDir != "" || in.DataDir != "" || !in.Config.IsZero() ||
+		len(in.Args) > 0 || len(in.Env) > 0 || in.Interactive) {
+		// A launch without a resolved provider cannot borrow device-wide
+		// credentials or aggregate auth-list counts.
+		return ports.AgentAuthStatusUnknown, ctx.Err()
+	}
 	if provider == "ollama" || provider == "lmstudio" ||
 		(provider == "opencode" && (modelID == "big-pickle" || strings.HasSuffix(modelID, "-free"))) {
 		return ports.AgentAuthStatusNotApplicable, nil
@@ -257,8 +280,8 @@ func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 		}
 	}
 	dataDir := deps.Getenv("XDG_DATA_HOME")
-	if dataDir == "" && deps.Getenv("HOME") != "" {
-		dataDir = filepath.Join(deps.Getenv("HOME"), ".local", "share")
+	if home := opencodeAuthHome(deps); dataDir == "" && home != "" {
+		dataDir = filepath.Join(home, ".local", "share")
 	}
 	if dataDir != "" {
 		data, err := authutil.ReadFile(ctx, deps, filepath.Join(dataDir, "opencode", "auth.json"))
@@ -279,6 +302,157 @@ func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 		}
 	}
 	return ports.AgentAuthStatusUnknown, ctx.Err()
+}
+
+func opencodeAuthHome(deps authutil.Dependencies) string {
+	if home := deps.Getenv("HOME"); home != "" {
+		return home
+	}
+	platform := deps.GOOS
+	if platform == "" {
+		platform = runtime.GOOS
+	}
+	if platform == "windows" {
+		return deps.Getenv("USERPROFILE")
+	}
+	return ""
+}
+
+// Model selection follows native config precedence, before inspecting any
+// credentials: global, explicit file, project, config directories, inline.
+func opencodeAuthModel(ctx context.Context, in ports.AgentAuthCheck, deps authutil.Dependencies) string {
+	configHome := deps.Getenv("XDG_CONFIG_HOME")
+	if home := opencodeAuthHome(deps); configHome == "" && home != "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	var paths []string
+	if configHome != "" {
+		for _, name := range []string{"config.json", "opencode.json", "opencode.jsonc"} {
+			paths = append(paths, filepath.Join(configHome, "opencode", name))
+		}
+	}
+	if path := deps.Getenv("OPENCODE_CONFIG"); path != "" {
+		if !filepath.IsAbs(path) && in.WorkingDir != "" {
+			path = filepath.Join(in.WorkingDir, path)
+		}
+		paths = append(paths, path)
+	}
+	if in.WorkingDir != "" && deps.Getenv("OPENCODE_DISABLE_PROJECT_CONFIG") != "1" &&
+		!strings.EqualFold(deps.Getenv("OPENCODE_DISABLE_PROJECT_CONFIG"), "true") {
+		// Reverse nearest-first results, including filename order, so JSONC
+		// follows JSON and the nearest project has highest precedence.
+		found, _ := authutil.FindUpward(ctx, deps, in.WorkingDir, "opencode.jsonc", "opencode.json")
+		for i := len(found) - 1; i >= 0; i-- {
+			paths = append(paths, found[i])
+		}
+		found, _ = authutil.FindUpward(ctx, deps, in.WorkingDir, filepath.Join(".opencode", "opencode.jsonc"), filepath.Join(".opencode", "opencode.json"))
+		for i := len(found) - 1; i >= 0; i-- {
+			paths = append(paths, found[i])
+		}
+	}
+	if home := opencodeAuthHome(deps); home != "" {
+		paths = append(paths, filepath.Join(home, ".opencode", "opencode.json"), filepath.Join(home, ".opencode", "opencode.jsonc"))
+	}
+	if dir := deps.Getenv("OPENCODE_CONFIG_DIR"); dir != "" {
+		if !filepath.IsAbs(dir) && in.WorkingDir != "" {
+			dir = filepath.Join(in.WorkingDir, dir)
+		}
+		paths = append(paths, filepath.Join(dir, "opencode.json"), filepath.Join(dir, "opencode.jsonc"))
+	}
+	model := ""
+	merge := func(data []byte) {
+		var config struct {
+			Model *string `json:"model"`
+		}
+		if json.Unmarshal(opencodeConfigJSON(data), &config) == nil && config.Model != nil {
+			model = *config.Model
+		}
+	}
+	for _, path := range paths {
+		if data, err := authutil.ReadFile(ctx, deps, path); err == nil {
+			merge(data)
+		}
+	}
+	if content := deps.Getenv("OPENCODE_CONFIG_CONTENT"); content != "" {
+		merge([]byte(content))
+	}
+	return model
+}
+
+// OpenCode accepts JSONC. Strip only comments and trailing commas outside
+// strings, then let encoding/json validate the complete typed config.
+func opencodeConfigJSON(data []byte) []byte {
+	if len(data) > authutil.MaxFileSize {
+		return nil
+	}
+	out := append([]byte(nil), data...)
+	quoted := false
+	for i := 0; i < len(out); i++ {
+		if quoted {
+			if out[i] == '\\' {
+				i++
+				continue
+			}
+			if out[i] == '"' {
+				quoted = false
+			}
+			continue
+		}
+		if out[i] == '"' {
+			quoted = true
+			continue
+		}
+		if out[i] != '/' || i+1 >= len(out) {
+			continue
+		}
+		switch out[i+1] {
+		case '/':
+			for i < len(out) && out[i] != '\n' && out[i] != '\r' {
+				out[i] = ' '
+				i++
+			}
+		case '*':
+			out[i], out[i+1] = ' ', ' '
+			i += 2
+			for i+1 < len(out) && !(out[i] == '*' && out[i+1] == '/') {
+				out[i] = ' '
+				i++
+			}
+			if i+1 >= len(out) {
+				return nil
+			}
+			out[i], out[i+1] = ' ', ' '
+			i++
+		}
+	}
+	quoted = false
+	for i := 0; i < len(out); i++ {
+		if quoted {
+			if out[i] == '\\' {
+				i++
+				continue
+			}
+			if out[i] == '"' {
+				quoted = false
+			}
+			continue
+		}
+		if out[i] == '"' {
+			quoted = true
+			continue
+		}
+		if out[i] != ',' {
+			continue
+		}
+		j := i + 1
+		for j < len(out) && (out[j] == ' ' || out[j] == '\t' || out[j] == '\r' || out[j] == '\n') {
+			j++
+		}
+		if j < len(out) && (out[j] == '}' || out[j] == ']') {
+			out[i] = ' '
+		}
+	}
+	return out
 }
 
 type opencodeAuthOutput struct{ data []byte }
