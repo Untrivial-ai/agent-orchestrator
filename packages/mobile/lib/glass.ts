@@ -49,6 +49,11 @@ export function glassField(height: number) {
  * when the tap target is a *child* of the glass instead: an interactive material
  * takes the touch itself, and the control underneath only sees taps that land on
  * its own content, which is why the dock's filter menu opened intermittently.
+ *
+ * Prefer keeping it interactive and sizing the child to the whole shape: a
+ * control draws *over* the material, so a full-size label wins the hit test and
+ * the press response survives. Turning interactivity off is the fallback, and it
+ * costs the scale-and-brighten animation.
  */
 export function glassCircle(tint?: string, interactive = true) {
 	return glassEffect({

@@ -60,7 +60,7 @@ export const WorkerDock = memo(function WorkerDock({
 				{visibility.showControls ? <Group
 					modifiers={[
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
-						glassCircle(undefined, false),
+						glassCircle(),
 					]}
 				><Menu
 					// The label is the hit target for a plain control, so it is drawn at the
@@ -155,7 +155,7 @@ export const WorkerDock = memo(function WorkerDock({
 				{visibility.showSpawn ? <Group
 					modifiers={[
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
-						glassCircle(undefined, false),
+						glassCircle(),
 					]}
 				><Button
 					onPress={onSpawn}
