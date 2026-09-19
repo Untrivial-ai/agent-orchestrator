@@ -39,7 +39,7 @@ func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) 
 	if !overridden {
 		key = os.Getenv("KIRO_API_KEY")
 	}
-	if !check.Interactive && strings.TrimSpace(key) != "" {
+	if !check.Interactive && key != "" {
 		// Kiro documents ksk_ API keys. Malformed invocation evidence does
 		// not establish configuration or rejection of the effective key.
 		if !strings.HasPrefix(key, "ksk_") || len(key) == len("ksk_") || strings.IndexFunc(key, unicode.IsSpace) >= 0 {

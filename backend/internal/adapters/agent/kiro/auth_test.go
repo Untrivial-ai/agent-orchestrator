@@ -80,6 +80,7 @@ func TestKiroAuthStatusForScope(t *testing.T) {
 
 func TestKiroAuthStatusForMalformedAPIKey(t *testing.T) {
 	for _, tt := range []struct{ name, key string }{
+		{"whitespace only", " \t\n"},
 		{"wrong prefix", "key"},
 		{"empty suffix", "ksk_"},
 		{"whitespace suffix", "ksk_ "},
