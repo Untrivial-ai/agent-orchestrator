@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	ExecutionContextView,
 	TaskComposerView,
 	type TaskComposerAgentControl,
 	type TaskComposerModelCatalog,
@@ -23,6 +24,7 @@ import { useSettings } from "../hooks/useSettings";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
 import { useSandboxProviderStore } from "../stores/sandbox-provider-store";
+import { executionContextLabels, projectRepositories } from "../lib/execution-context";
 import { cloudSessionsQueryKey, useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import {
 	agentModelsQueryKey,
@@ -126,8 +128,8 @@ export function TaskComposer({
 	// offers more than one); omitted lets the control plane use its default.
 	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
 	const cloudProjects = useCloudProjectsQuery();
-	const isCloudProject =
-		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+	const cloudProject = (cloudProjects.data ?? []).find((project) => project.id === projectId);
+	const isCloudProject = Boolean(cloudProject);
 	const isStandalone = projectId === STANDALONE_WORKSPACE_ID;
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
@@ -330,6 +332,10 @@ export function TaskComposer({
 		selectedAgent !== "" &&
 		settings?.defaultSessionMode === "chat" &&
 		!settings.chatHarnesses.includes(selectedAgent);
+	const canSubmit =
+		Boolean(projectId) &&
+		(!isStandalone || selectedAgent !== "") &&
+		(isCloudProject || isStandalone || projectQuery.data !== undefined);
 	const refreshSelectedModels = useCallback(async () => {
 		const refreshed = await refreshAgentModels(selectedAgent, modelsProjectId);
 		queryClient.setQueryData(agentModelsQueryKey(selectedAgent, modelsProjectId), refreshed);
@@ -369,12 +375,28 @@ export function TaskComposer({
 	useEffect(() => () => onSubmittingChange?.(false), [onSubmittingChange]);
 	useEffect(() => () => clearAttachments(), [clearAttachments]);
 
+	const executionContext = projectId ? (
+		<ExecutionContextView
+			activeAgent={selectedAgentLabel || undefined}
+			activeRole="worker"
+			baseBranch={projectQuery.data?.defaultBranch ?? cloudProject?.defaultBranch}
+			error={projectQuery.isError ? (projectQuery.error instanceof Error ? projectQuery.error.message : t("newTask.configUnavailable")) : undefined}
+			labels={executionContextLabels(t)}
+			loading={!isCloudProject && !isStandalone && projectQuery.isPending}
+			orchestratorAgent={projectQuery.data?.config?.orchestrator?.agent ? selectedAgentLabelFor(projectQuery.data.config.orchestrator.agent, agentCatalog?.agents) : undefined}
+			path={projectQuery.data?.path}
+			projectName={projectQuery.data?.name ?? cloudProject?.displayName ?? projectId}
+			repositories={projectQuery.data ? projectRepositories(projectQuery.data) : cloudProject ? [cloudProject.repositoryUrl] : []}
+			workerAgent={projectWorkerAgent ? selectedAgentLabelFor(projectWorkerAgent, agentCatalog?.agents) : undefined}
+		/>
+	) : undefined;
+
 	const submitTask = async (
 		brief: string,
 		interfaceMode?: "tui",
 		approvalMode?: "bypass-permissions",
 	) => {
-		if (!projectId || isSubmitting) return;
+		if (!projectId || !canSubmit || isSubmitting) return;
 
 		const cleanModel = model.trim();
 		const cleanMode = mode.trim();
@@ -425,7 +447,8 @@ export function TaskComposer({
 	return (
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
-			canSubmit={Boolean(projectId) && (!isStandalone || selectedAgent !== "")}
+			canSubmit={canSubmit}
+			context={executionContext}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
@@ -508,6 +531,10 @@ export function TaskComposer({
 			)}
 		/>
 	);
+}
+
+function selectedAgentLabelFor(agent: string, catalog?: Array<{ id: string; label: string }>): string {
+	return catalog?.find((item) => item.id === agent)?.label ?? agent;
 }
 
 function DesktopAgentControl(control: TaskComposerAgentControl) {

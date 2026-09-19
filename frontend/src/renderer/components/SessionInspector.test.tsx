@@ -1625,6 +1625,19 @@ describe("SessionInspector Activity section", () => {
     }
   });
 
+  it("surfaces project, repository, branch, and active agent context in the summary", async () => {
+    renderWithQuery(<SessionInspector session={session([], { branch: "feature/session" })} />);
+
+    const context = await screen.findByTestId("execution-context");
+    await waitFor(() => expect(context).toHaveTextContent("feature/session"));
+    expect(within(context).getByText("Branch", { exact: true })).toBeInTheDocument();
+    expect(within(context).getByText("Default branch", { exact: true })).toBeInTheDocument();
+    expect(context).toHaveTextContent("main");
+    expect(context).toHaveTextContent("my-app");
+    expect(context).toHaveTextContent("/repo");
+    expect(context).toHaveTextContent("Claude");
+  });
+
   it("keeps workspace, PR, and SCM context rows in the Activity timeline", () => {
     renderWithQuery(
       <SessionInspector
