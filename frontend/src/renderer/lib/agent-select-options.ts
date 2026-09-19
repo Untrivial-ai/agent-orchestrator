@@ -2,7 +2,7 @@ import { isOrchestratorSession, type WorkspaceSession } from "../types/workspace
 
 export type AgentInfo = {
 	authentication: {
-		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		state: "authorized" | "unauthorized" | "unknown" | "configured" | "not_applicable";
 		freshness: "fresh" | "stale" | "checking";
 	};
 	effectiveReadiness: "ready" | "not_ready" | "unknown";
