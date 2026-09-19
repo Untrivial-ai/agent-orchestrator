@@ -5887,8 +5887,6 @@ func TestSpawn_ValidatesBinaryAfterEnvPrefix(t *testing.T) {
 	lookPath := func(name string) (string, error) {
 		lookedUp = append(lookedUp, name)
 		switch name {
-		case "tmux":
-			return "/bin/tmux", nil
 		case "opencode":
 			return "/usr/local/bin/opencode", nil
 		default:
@@ -5902,9 +5900,6 @@ func TestSpawn_ValidatesBinaryAfterEnvPrefix(t *testing.T) {
 		t.Fatalf("Spawn: %v", err)
 	}
 	wantLookups := []string{"opencode"}
-	if runtime.GOOS == "darwin" {
-		wantLookups = []string{"tmux", "opencode"}
-	}
 	if !reflect.DeepEqual(lookedUp, wantLookups) {
 		t.Fatalf("lookups = %#v, want %#v", lookedUp, wantLookups)
 	}
@@ -5924,9 +5919,6 @@ func TestSpawn_RejectsMissingBinaryAfterEnvPrefix(t *testing.T) {
 	lookedUp := []string{}
 	lookPath := func(name string) (string, error) {
 		lookedUp = append(lookedUp, name)
-		if name == "tmux" {
-			return "/bin/tmux", nil
-		}
 		return "", fmt.Errorf("exec: %q: not found", name)
 	}
 	agent := launchArgvAgent{argv: []string{"env", "OPENCODE_CONFIG=/tmp/ao/opencode.json", "opencode", "--agent", "ao-mer-1"}}
@@ -5937,9 +5929,6 @@ func TestSpawn_RejectsMissingBinaryAfterEnvPrefix(t *testing.T) {
 		t.Fatalf("err = %v, want ports.ErrAgentBinaryNotFound", err)
 	}
 	wantLookups := []string{"opencode"}
-	if runtime.GOOS == "darwin" {
-		wantLookups = []string{"tmux", "opencode"}
-	}
 	if !reflect.DeepEqual(lookedUp, wantLookups) {
 		t.Fatalf("lookups = %#v, want %#v", lookedUp, wantLookups)
 	}
@@ -5980,58 +5969,6 @@ func TestSpawn_RejectsEnvPrefixWithoutBinary(t *testing.T) {
 	}
 	if ws.destroyed != 1 {
 		t.Fatal("workspace must be torn down when env-prefixed argv has no binary")
-	}
-}
-
-func TestSpawn_RejectsMissingTmuxBeforeSessionRow(t *testing.T) {
-	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
-		t.Skip("Windows and Linux use native PTY host, not tmux")
-	}
-	t.Setenv("AO_TMUX_BINARY", "")
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
-	rt := &fakeRuntime{}
-	ws := &fakeWorkspace{}
-	lookPath := func(name string) (string, error) {
-		if name == "tmux" {
-			return "", fmt.Errorf("exec: %q: not found", name)
-		}
-		return "/bin/true", nil
-	}
-	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
-
-	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
-	if !errors.Is(err, ports.ErrRuntimePrerequisite) || !strings.Contains(err.Error(), "tmux required") {
-		t.Fatalf("err = %v, want missing tmux prerequisite", err)
-	}
-	if len(st.sessions) != 0 {
-		t.Fatalf("no session row should be created before runtime prerequisites pass, got %d", len(st.sessions))
-	}
-	if ws.lastCfg.SessionID != "" || ws.destroyed != 0 {
-		t.Fatal("workspace must not be created when tmux is missing")
-	}
-	if rt.created != 0 {
-		t.Fatal("runtime must not be created when tmux is missing")
-	}
-}
-
-func TestValidateRuntimePrerequisites_AllowsConfiguredBundledTmux(t *testing.T) {
-	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
-		t.Skip("Windows and Linux use native PTY host, not tmux")
-	}
-	bundled := filepath.Join(t.TempDir(), "resources", "tmux", "bin", "tmux")
-	t.Setenv("AO_TMUX_BINARY", bundled)
-	m := &Manager{
-		executable: func() (string, error) { return "", errors.New("unexpected executable lookup") },
-		lookPath: func(name string) (string, error) {
-			if name == bundled {
-				return bundled, nil
-			}
-			return "", fmt.Errorf("exec: %q: not found", name)
-		},
-	}
-	if err := m.validateRuntimePrerequisites(); err != nil {
-		t.Fatalf("validateRuntimePrerequisites() = %v, want configured bundled tmux accepted", err)
 	}
 }
 

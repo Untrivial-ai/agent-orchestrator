@@ -15,7 +15,7 @@ ao doctor
 ao doctor --json
 ```
 
-`ao doctor` checks daemon/config state, the data directory and database, Git, and tmux on macOS/Linux. It is not required for a normal desktop-only install.
+`ao doctor` checks daemon/config state, the data directory and database, Git, and — as advisory information — tmux on macOS/Linux. It is not required for a normal desktop-only install.
 
 ## Desktop And Daemon
 
@@ -44,7 +44,7 @@ ao doctor --json
 		Confirm the selected harness supports native Chat and its binary is authenticated. Chat currently supports Codex, Claude Code, OpenCode, and Droid. Choose Terminal UI when the harness lacks Chat support or preflight cannot connect.
 	</Accordion>
 	<Accordion title="A TUI session will not start on macOS or Linux">
-		Run `tmux -V` and install tmux if it is missing. On Windows, AO uses its native conpty host instead.
+		New sessions run on AO's native terminal host and do not need tmux. Check the agent harness first; install tmux only to reopen a session created before that host existed.
 	</Accordion>
 	<Accordion title="The session is blocked">
 		Open the session and answer the pending approval or permission prompt. AO deliberately does not inject lifecycle messages while a controller is blocked.

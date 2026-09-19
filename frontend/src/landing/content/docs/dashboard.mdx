@@ -38,7 +38,7 @@ The composer sends a provider turn through the daemon. A Chat session can also o
 
 ## Work In Terminal UI
 
-TUI sessions preserve the selected harness's native terminal experience. The desktop terminal connects through one daemon WebSocket mux: tmux-backed on macOS/Linux and conpty-backed on Windows.
+TUI sessions preserve the selected harness's native terminal experience. The desktop terminal connects through one daemon WebSocket mux backed by AO's native terminal host on every platform; tmux remains only for sessions started before that host existed.
 
 Use the terminal for native prompts and interactive tools. Use AO's message controls for routine follow-ups so lifecycle reactions can apply the correct delivery policy.
 

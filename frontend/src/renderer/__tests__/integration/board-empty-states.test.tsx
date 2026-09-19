@@ -100,7 +100,7 @@ function respondWith(
 					ready: true,
 					requirements: [
 						{ id: "git", label: "git", satisfied: true, required: true, detail: "/usr/bin/git" },
-						{ id: "tmux", label: "tmux", satisfied: true, required: true, detail: "/usr/bin/tmux" },
+						{ id: "tmux", label: "tmux", satisfied: true, required: false, detail: "/usr/bin/tmux" },
 						{ id: "harness", label: "agent harness", satisfied: true, required: true, detail: "Claude Code" },
 						...(githubCliSatisfied === null
 							? []

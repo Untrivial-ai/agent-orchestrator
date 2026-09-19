@@ -284,9 +284,9 @@ func TestSystemInstallController_ServiceError(t *testing.T) {
 	}, httpd.ControlDeps{}))
 	defer srv.Close()
 
-	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/system/install/tmux", "")
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/system/install/gh", "")
 	if status != http.StatusInternalServerError {
-		t.Fatalf("POST /system/install/tmux = %d, want %d, body=%s", status, http.StatusInternalServerError, body)
+		t.Fatalf("POST /system/install/gh = %d, want %d, body=%s", status, http.StatusInternalServerError, body)
 	}
 	for _, want := range []string{
 		`"error":"internal"`,

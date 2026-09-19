@@ -9,7 +9,7 @@ AO ships as a desktop application for macOS, Windows, and Linux. The core workfl
 	macos="full"
 	linux="full"
 	windows="full"
-	note={<>Terminal UI uses tmux on macOS/Linux and a native conpty host on Windows. Chat uses native provider controllers.</>}
+	note={<>Terminal UI runs on AO's native terminal host on every platform; tmux is only a legacy fallback on macOS/Linux. Chat uses native provider controllers.</>}
 />
 
 ## Desktop Downloads
@@ -25,27 +25,21 @@ Use the download selector on [Installation](/docs/installation) for the current 
 
 ## macOS
 
-Both Chat and Terminal UI are supported. Install tmux if you want to use native terminal sessions:
+Both Chat and Terminal UI are supported. New sessions run on AO's native terminal host, so tmux is not required. Install it only to reopen sessions created before that host existed:
 
 ```bash
 brew install tmux
 ```
 
-If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names this exact command to run.
-
 macOS packages include both a `.dmg` and `.zip`. The disk image is convenient for first installation; the zip is also part of the release because the desktop updater uses it for future updates.
 
 ## Linux
 
-Linux supports the desktop app, Chat, tmux-backed Terminal UI, and the in-app browser inspector. Install tmux with your distribution package manager when needed:
+Linux supports the desktop app, Chat, Terminal UI on AO's native terminal host, and the in-app browser inspector. tmux is only a legacy fallback; install it with your distribution package manager if you need it:
 
 ```bash
 sudo apt install tmux
 ```
-
-If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names the exact
-`sudo` command for whichever package manager it finds (`apt-get`, `dnf`, `pacman`, `zypper`, or `apk`). Run it
-yourself: AO never asks for your administrator password.
 
 Choose the AppImage for a portable launch, or the `.deb`/`.rpm` package that matches your distribution.
 

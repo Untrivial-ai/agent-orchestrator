@@ -68,7 +68,7 @@ func (rr *recordingReaper) reap(_ context.Context, pids []int, grace time.Durati
 
 func newTestRuntime(chunkSize int) (*Runtime, *fakeRunner) {
 	fr := &fakeRunner{}
-	r := New(Options{Binary: "tmux-test", Timeout: time.Second, Shell: "/bin/sh", ChunkSize: chunkSize})
+	r := New(Options{Binary: "tmux-test", Timeout: time.Second, ChunkSize: chunkSize})
 	r.runner = fr
 	r.enterDelay = 0                           // tests must not pay the real 300ms pre-Enter pause
 	r.reapSessions = (&recordingReaper{}).reap // never signal real processes from unit tests
@@ -89,22 +89,6 @@ func countCalls(fr *fakeRunner, subcommand string) int {
 }
 
 // -- Options / New tests --
-
-func TestNewDefaultsToPortableShell(t *testing.T) {
-	t.Setenv("SHELL", "")
-	r := New(Options{})
-	if got := r.shell; got != "/bin/sh" {
-		t.Fatalf("default shell = %q, want /bin/sh", got)
-	}
-}
-
-func TestNewPicksUpShellFromEnv(t *testing.T) {
-	t.Setenv("SHELL", "/bin/zsh")
-	r := New(Options{})
-	if got := r.shell; got != "/bin/zsh" {
-		t.Fatalf("shell = %q, want /bin/zsh", got)
-	}
-}
 
 func TestNewPrefersBundledTmuxFromEnv(t *testing.T) {
 	t.Setenv("AO_TMUX_BINARY", "/opt/ao/resources/tmux/bin/tmux")
@@ -231,11 +215,11 @@ func TestExecRunnerFallsBackWhenTempDirMissing(t *testing.T) {
 // -- command builder tests --
 
 func TestCommandBuilders(t *testing.T) {
-	if got, want := newSessionArgs("sess-1", "/tmp/ws", "/bin/sh", `echo hi; exec "${SHELL:-/bin/sh}" -i`),
+	if got, want := newSessionArgs("sess-1", "/tmp/ws", `echo hi; exec "${SHELL:-/bin/sh}" -i`),
 		[]string{"new-session", "-d", "-s", "sess-1", "-x", "220", "-y", "50", "-c", "/tmp/ws", "/bin/sh", "-c", `echo hi; exec "${SHELL:-/bin/sh}" -i`}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("newSessionArgs = %#v, want %#v", got, want)
 	}
-	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi"),
+	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "echo hi"),
 		[]string{"respawn-pane", "-k", "-t", "sess-1", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("respawnPaneArgs = %#v, want %#v", got, want)
 	}
@@ -419,7 +403,8 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// The launch command is the last argument to new-session (after shellPath -c).
+	// The launch command is the last argument to new-session (after the
+	// launcher shell's -c).
 	args := fr.calls[0].args
 	launchCmd := args[len(args)-1]
 	if !strings.Contains(launchCmd, `exec "${SHELL:-/bin/sh}" -i`) {
@@ -430,6 +415,27 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 	}
 	if !strings.Contains(launchCmd, "'myagent'") {
 		t.Fatalf("launch command missing quoted argv: %q", launchCmd)
+	}
+}
+
+// The launch prelude is POSIX, so it must never run under the user's $SHELL:
+// a non-POSIX shell (fish, nushell, tcsh) rejects `export VAR=VAL` and kills
+// the pane at creation (#3788).
+func TestCreateLaunchesPreludeUnderPOSIXShellRegardlessOfEnv(t *testing.T) {
+	t.Setenv("SHELL", "/usr/bin/fish")
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+
+	if _, err := r.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "sess-1",
+		WorkspacePath: "/tmp/ws",
+		Argv:          []string{"myagent"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	args := fr.calls[0].args
+	if got := args[len(args)-3]; got != "/bin/sh" {
+		t.Fatalf("launcher shell = %q, want /bin/sh", got)
 	}
 }
 
@@ -1244,7 +1250,7 @@ func (r *partialCreateFailureRunner) Run(_ context.Context, _ []string, _ string
 }
 
 func TestPartialCreateCleanupFailureExposesRuntimeEffectEvidence(t *testing.T) {
-	r := New(Options{Binary: "tmux-test", Shell: "/bin/sh", Timeout: time.Second})
+	r := New(Options{Binary: "tmux-test", Timeout: time.Second})
 	r.runner = &partialCreateFailureRunner{}
 	r.reapSessions = (&recordingReaper{}).reap
 

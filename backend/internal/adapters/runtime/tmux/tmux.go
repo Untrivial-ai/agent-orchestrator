@@ -54,7 +54,6 @@ type Options struct {
 	Binary       string        // default configured/bundled/system tmux resolution
 	LegacyBinary string        // default system tmux from PATH when SocketName is set; used only for pre-private-socket sessions
 	SocketName   string        // default $AO_TMUX_SOCKET_NAME; empty uses tmux's machine-wide default socket
-	Shell        string        // default $SHELL else /bin/sh
 	Timeout      time.Duration // default 5s
 	ChunkSize    int           // default 16*1024
 	EnterDelay   time.Duration // pause after pasting a non-empty message before pressing Enter; default defaultEnterDelay. Conpty already does this (ptyInputEnterDelay); tmux lacked it, so a large multiline paste could absorb the trailing Enter and leave the prompt unsubmitted (issue #2342).
@@ -67,7 +66,6 @@ type Runtime struct {
 	binary         string
 	legacyBinary   string
 	socketName     string
-	shell          string
 	timeout        time.Duration
 	chunkSize      int
 	enterDelay     time.Duration
@@ -267,8 +265,8 @@ func stableRunDir() string {
 }
 
 // New builds a tmux Runtime, filling unset Options with defaults: binary from
-// AO's configured/bundled/system resolver; shell from $SHELL (else /bin/sh); and the
-// default timeout and output chunk size.
+// AO's configured/bundled/system resolver, and the default timeout and output
+// chunk size.
 func New(opts Options) *Runtime {
 	binary := opts.Binary
 	if binary == "" {
@@ -286,13 +284,6 @@ func New(opts Options) *Runtime {
 	timeout := opts.Timeout
 	if timeout == 0 {
 		timeout = defaultTimeout
-	}
-	shellPath := opts.Shell
-	if shellPath == "" {
-		shellPath = getenv("SHELL")
-	}
-	if shellPath == "" {
-		shellPath = "/bin/sh"
 	}
 	chunkSize := opts.ChunkSize
 	if chunkSize <= 0 {
@@ -326,7 +317,6 @@ func New(opts Options) *Runtime {
 		binary:         binary,
 		legacyBinary:   legacyBinary,
 		socketName:     socketName,
-		shell:          shellPath,
 		timeout:        timeout,
 		chunkSize:      chunkSize,
 		enterDelay:     enterDelay,
@@ -355,7 +345,7 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 	}
 
 	launchCmd := buildLaunchCommand(cfg)
-	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
+	args := newSessionArgs(id, cfg.WorkspacePath, launchCmd)
 	if _, err := r.run(ctx, args...); err != nil {
 		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
 			fmt.Errorf("tmux runtime: create session %s: %w", id, err),
@@ -431,7 +421,7 @@ func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg p
 	}
 
 	launchCmd := buildLaunchCommand(cfg)
-	if _, err := r.runForSession(ctx, id, respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
+	if _, err := r.runForSession(ctx, id, respawnPaneArgs(id, cfg.WorkspacePath, launchCmd)...); err != nil {
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
 	}
 	alive, err := r.IsAlive(ctx, handle)

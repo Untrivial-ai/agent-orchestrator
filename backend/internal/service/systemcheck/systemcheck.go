@@ -173,28 +173,26 @@ func (s *Service) checkGit() Requirement {
 	return Requirement{ID: "git", Label: "git", Satisfied: true, Required: true, Detail: path}
 }
 
+// checkTmux reports the legacy terminal runtime. It is advisory: macOS/Linux
+// sessions run on the native PTY host, and tmux is only the fallback plus the
+// runtime for sessions created before that host existed.
 func (s *Service) checkTmux() Requirement {
 	if runtime.GOOS == "windows" {
-		// tmux is a macOS/Linux-only requirement: AO uses the built-in ConPTY
-		// terminal runtime on Windows instead, so this always passes there.
 		return Requirement{
-			ID: "tmux", Label: "tmux", Satisfied: true, Required: true,
-			Detail: "Not required on Windows — AO uses the built-in ConPTY terminal runtime instead of tmux.",
+			ID: "tmux", Label: "tmux", Satisfied: true,
+			Detail: "Not used on Windows — AO runs the built-in ConPTY terminal runtime instead.",
 		}
 	}
 	configured := strings.TrimSpace(os.Getenv("AO_TMUX_BINARY"))
 	resolution, err := tmuxbin.ResolveWith(configured, os.Executable, s.executables.LookPath)
 	if err != nil || resolution.Path == "" {
-		detail := "tmux was not found on PATH; it is required on macOS/Linux to start sessions."
+		detail := "tmux was not found on PATH; AO only needs it as a fallback runtime and for sessions started before the native terminal host."
 		if configured != "" {
 			detail = "AO's bundled tmux is missing or not executable: " + configured
 		}
-		return Requirement{
-			ID: "tmux", Label: "tmux", Required: true,
-			Detail: detail,
-		}
+		return Requirement{ID: "tmux", Label: "tmux", Detail: detail}
 	}
-	return Requirement{ID: "tmux", Label: "tmux", Satisfied: true, Required: true, Detail: resolution.Path}
+	return Requirement{ID: "tmux", Label: "tmux", Satisfied: true, Detail: resolution.Path}
 }
 
 func (s *Service) checkHarness(ctx context.Context) Requirement {

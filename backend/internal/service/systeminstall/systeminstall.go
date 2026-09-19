@@ -37,7 +37,6 @@ type Target string
 
 // The exhaustive set of installable targets. No other value is ever accepted.
 const (
-	TargetTmux       Target = "tmux"
 	TargetGH         Target = "gh"
 	TargetClaude     Target = "claude"
 	TargetClaudeCode Target = "claude-code"
@@ -93,7 +92,7 @@ var agentTargetSet = func() map[Target]bool {
 // systemTargetSet is the stable contract of the legacy /system/install route.
 // Agent-only targets use /agents/{agent}/install instead.
 var systemTargetSet = map[Target]bool{
-	TargetTmux: true, TargetGH: true, TargetClaude: true, TargetCloudflared: true,
+	TargetGH: true, TargetClaude: true, TargetCloudflared: true,
 	TargetCodex: true, TargetOpencode: true, TargetCopilot: true,
 }
 
@@ -126,7 +125,7 @@ func Valid(target Target) bool {
 //
 // This is the package's answer to "how is this installed here?" Keeping one
 // resolver lets the daemon expose a plan preview and lets the bootstrap CLI
-// print the same manual tmux remedy without either caller executing arbitrary
+// print the same manual remedy without either caller executing arbitrary
 // input. The caller supplies the PATH lookup boundary explicitly.
 func Resolve(goos string, lookPath func(string) (string, error), target Target) Plan {
 	if !Valid(target) {
@@ -151,7 +150,7 @@ func (f executableFinderFunc) LookPath(file string) (string, error) { return f(f
 // should test len(Command).
 type Plan struct {
 	Target              Target
-	Command             []string // argv, e.g. ["brew", "install", "tmux"]
+	Command             []string // argv, e.g. ["brew", "install", "gh"]
 	Script              *ports.InstallScriptCommand
 	Manager             string // resolving package manager ("brew", "apt-get", ...), empty when none applies
 	NeedsRoot           bool   // Command must run as root; the caller supplies the privilege
@@ -240,10 +239,10 @@ const defaultPersistenceTimeout = 2 * time.Second
 
 // Job is the tracked state of one install run for a Target.
 type Job struct {
-	Target              Target `json:"target" enum:"tmux,gh,claude,claude-code,codex,cursor,opencode,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,cloudflared" description:"Fixed install target this job ran (or is running) for."`
+	Target              Target `json:"target" enum:"gh,claude,claude-code,codex,cursor,opencode,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,cloudflared" description:"Fixed install target this job ran (or is running) for."`
 	Status              Status `json:"status" enum:"idle,running,installing,verifying,succeeded,failed,unsupported,interrupted" description:"Current lifecycle state of the job."`
 	Method              string `json:"method,omitempty" description:"Server-owned installation method selected for this harness job."`
-	Command             string `json:"command,omitempty" description:"Human-readable install command, e.g. \"brew install tmux\", for display even before/without output."`
+	Command             string `json:"command,omitempty" description:"Human-readable install command, e.g. \"brew install gh\", for display even before/without output."`
 	ExpectedDestination string `json:"expectedDestination,omitempty" description:"Expected or adapter-resolved executable destination."`
 	Output              string `json:"output,omitempty" description:"Combined stdout+stderr from the install command, tail-capped to the last ~4000 bytes."`
 	Error               string `json:"error,omitempty" description:"Set on failure or when the target is unsupported on this machine: the exec error, the Unsupported reason, or a timeout message."`
@@ -1103,8 +1102,6 @@ func (c *capturedOutput) String() string {
 // probing PATH via s.executables so tests can inject deterministic results.
 func (s *Service) planFor(target Target) Plan {
 	switch target {
-	case TargetTmux:
-		return s.planTmux()
 	case TargetGH:
 		return s.planGH()
 	case TargetClaude:
@@ -1119,22 +1116,6 @@ func (s *Service) planFor(target Target) Plan {
 		return s.planCloudflared()
 	default:
 		return Plan{Target: target, Unsupported: true, Reason: "unknown install target"}
-	}
-}
-
-func (s *Service) planTmux() Plan {
-	switch s.goos {
-	case "windows":
-		return Plan{
-			Target: TargetTmux, Unsupported: true,
-			Reason: "tmux is not required on Windows; AO uses the built-in ConPTY terminal runtime instead.",
-		}
-	case "darwin":
-		return s.planBrew(TargetTmux, "tmux")
-	case "linux":
-		return s.planLinuxPackage(TargetTmux, func(string) string { return "tmux" })
-	default:
-		return Plan{Target: TargetTmux, Unsupported: true, Reason: "tmux installation is not supported on this platform."}
 	}
 }
 

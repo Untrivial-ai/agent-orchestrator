@@ -107,13 +107,6 @@ ao project set-config <project-id> \
 
 Run `ao project set-config --help` for focused flags and `--clear`. Because replacement is atomic, inspect the existing project first when scripting updates.
 
-| Runtime   | Use when                                                                                        |
-| --------- | ----------------------------------------------------------------------------------------------- |
-| `tmux`    | You want persistent sessions that survive dashboard reloads and can be attached from a terminal |
-| `process` | You want a lighter direct process runtime and do not need tmux persistence                      |
-
-Most users should keep `tmux`.
-
 ## Choose The Workspace
 
 `workspace` controls how AO isolates each session's code.

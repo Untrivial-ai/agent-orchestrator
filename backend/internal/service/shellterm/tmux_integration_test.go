@@ -72,7 +72,7 @@ func TestTmuxUserShellExitReconciliation(t *testing.T) {
 				if !tc.noAnchor {
 					tmuxCommand("new-session", "-d", "-s", "anchor", "/bin/sh")
 				}
-				rt := tmux.New(tmux.Options{Binary: binary, LegacyBinary: binary, SocketName: tc.socket, Shell: "/bin/sh", Timeout: time.Second})
+				rt := tmux.New(tmux.Options{Binary: binary, LegacyBinary: binary, SocketName: tc.socket, Timeout: time.Second})
 				st := &fakeShellTerminalStore{}
 				workspace := t.TempDir()
 				svc := NewService(rt, st, nil, nil, workspace, "first-launch", testLogger())

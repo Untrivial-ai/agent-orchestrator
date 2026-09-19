@@ -348,8 +348,8 @@ func (c *commandContext) checkGit(ctx context.Context) doctorCheck {
 	return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: "git", Message: fmt.Sprintf("%s (version %s; supports worktrees)", path, version)}
 }
 
-// checkTerminalRuntime checks the runtime multiplexer used on this platform:
-// tmux on Darwin/Linux, ConPTY (built-in) on Windows.
+// checkTerminalRuntime checks the legacy terminal runtime. Sessions run on the
+// native PTY host (ConPTY on Windows), so a missing tmux is advisory only.
 func (c *commandContext) checkTerminalRuntime(ctx context.Context) doctorCheck {
 	if runtime.GOOS == "windows" {
 		return doctorCheck{
@@ -365,13 +365,13 @@ func (c *commandContext) checkTerminalRuntime(ctx context.Context) doctorCheck {
 func (c *commandContext) checkTmux(ctx context.Context) doctorCheck {
 	resolution, err := tmuxbin.ResolveWith(os.Getenv("AO_TMUX_BINARY"), c.deps.Executable, c.deps.LookPath)
 	if err != nil || resolution.Path == "" {
-		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: "tmux", Message: "no configured, bundled, or system tmux found for this ao process; required on macOS/Linux to start sessions"}
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: "tmux", Message: "no configured, bundled, or system tmux found for this ao process; AO only needs it as a fallback runtime and for sessions started before the native terminal host"}
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	out, err := c.deps.CommandOutput(reqCtx, resolution.Path, "-V")
 	if err != nil {
-		return doctorCheck{Level: doctorFail, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao process): %v", resolution.Path, resolution.Source, err)}
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: "tmux", Message: fmt.Sprintf("%s (%s for this ao process): %v", resolution.Path, resolution.Source, err)}
 	}
 	version := firstOutputLine(out)
 	if version == "" {

@@ -6902,16 +6902,15 @@ paths:
     get:
       operationId: getSystemInstallStatus
       parameters:
-      - description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-          copilot, or cloudflared.'
+      - description: 'Install target identifier: gh, claude, codex, opencode, copilot,
+          or cloudflared.'
         in: path
         name: target
         required: true
         schema:
-          description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-            copilot, or cloudflared.'
+          description: 'Install target identifier: gh, claude, codex, opencode, copilot,
+            or cloudflared.'
           enum:
-          - tmux
           - gh
           - claude
           - codex
@@ -6950,16 +6949,15 @@ paths:
     post:
       operationId: startSystemInstall
       parameters:
-      - description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-          copilot, or cloudflared.'
+      - description: 'Install target identifier: gh, claude, codex, opencode, copilot,
+          or cloudflared.'
         in: path
         name: target
         required: true
         schema:
-          description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-            copilot, or cloudflared.'
+          description: 'Install target identifier: gh, claude, codex, opencode, copilot,
+            or cloudflared.'
           enum:
-          - tmux
           - gh
           - claude
           - codex
@@ -7018,7 +7016,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Check local machine readiness (git, tmux, agent harness, gh)
+      summary: Check local machine readiness (git, agent harness, gh)
       tags:
       - system
   /api/v1/usage/sessions:
@@ -9721,7 +9719,7 @@ components:
     InstallJob:
       properties:
         command:
-          description: Human-readable install command, e.g. "brew install tmux", for
+          description: Human-readable install command, e.g. "brew install gh", for
             display even before/without output.
           type: string
         error:
@@ -9765,7 +9763,6 @@ components:
         target:
           description: Fixed install target this job ran (or is running) for.
           enum:
-          - tmux
           - gh
           - claude
           - claude-code

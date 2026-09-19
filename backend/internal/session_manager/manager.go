@@ -25,7 +25,6 @@ import (
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
-	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
 
 // Sentinel errors returned by the Session Manager; callers match them with
@@ -919,14 +918,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 	cfg.RequestedMode = mode
-
-	// A chat session runs no agent inside a terminal runtime, so the terminal
-	// prerequisites are not its concern.
-	if mode == domain.SessionModeTUI {
-		if err := m.validateRuntimePrerequisites(); err != nil {
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
-		}
-	}
 
 	prompt, systemPrompt, err := m.buildSpawnTexts(ctx, cfg)
 	if err != nil {
@@ -5113,16 +5104,6 @@ func (m *Manager) augmentRuntimePATHForLaunchBinary(ctx context.Context, env map
 // executable-environment augmentation.
 func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error), pinnedDir string) {
 	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, lookPath, pinnedDir)
-}
-
-func (m *Manager) validateRuntimePrerequisites() error {
-	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
-		return nil
-	}
-	if resolution, err := tmuxbin.ResolveWith(os.Getenv("AO_TMUX_BINARY"), m.executable, m.lookPath); err != nil || resolution.Path == "" {
-		return fmt.Errorf("%w: tmux required on macOS but AO's configured, bundled, or system tmux was not found", ports.ErrRuntimePrerequisite)
-	}
-	return nil
 }
 
 func (m *Manager) superviseAgentProcess(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string) ([]string, string, error) {
