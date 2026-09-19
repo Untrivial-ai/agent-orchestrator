@@ -1472,7 +1472,10 @@ function CloudProjectCard({
 				displayName: displayName.trim(),
 				repositoryUrl: repositoryUrl.trim(),
 				defaultBranch: defaultBranch.trim(),
-				config: { workerAgent: selection.workerAgent, orchestratorAgent: selection.orchestratorAgent },
+				config: {
+					worker: { agent: selection.workerAgent },
+					orchestrator: { agent: selection.orchestratorAgent },
+				},
 			});
 			await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
 			onCreated();
