@@ -82,8 +82,7 @@ type Config struct {
 	TerminalStreamEnabled bool
 	// TerminalRelayEnabled forwards terminal output to an attached browser
 	// directly from the worker stream, before the same frame is mirrored to
-	// durable replay storage. It remains opt-in until the hosted entrypoint is
-	// shard-aware across relay replicas.
+	// durable replay storage.
 	TerminalRelayEnabled bool
 
 	NodeOpsBaseURL       string

@@ -114,8 +114,8 @@ def healthy_service():
     task = "arn:task-definition:production:7"
     return (
         {
-            "desiredCount": 2,
-            "runningCount": 2,
+            "desiredCount": 1,
+            "runningCount": 1,
             "pendingCount": 0,
             "taskDefinition": task,
             "deployments": [
@@ -126,11 +126,8 @@ def healthy_service():
                 }
             ],
         },
-        [{"taskDefinitionArn": task}, {"taskDefinitionArn": task}],
-        [
-            {"TargetHealth": {"State": "healthy"}},
-            {"TargetHealth": {"State": "healthy"}},
-        ],
+        [{"taskDefinitionArn": task}],
+        [{"TargetHealth": {"State": "healthy"}}],
     )
 
 
@@ -364,10 +361,24 @@ class ServiceValidationTests(unittest.TestCase):
                 alarm_state="OK",
             )
 
-    def test_rejects_mixed_task_revisions(self):
+    def test_rejects_more_than_one_replica(self):
+        service, tasks, targets = healthy_service()
+        service["desiredCount"] = 2
+        service["runningCount"] = 2
+        tasks.append(copy.deepcopy(tasks[0]))
+        targets.append(copy.deepcopy(targets[0]))
+        with self.assertRaisesRegex(ValueError, "expected exactly 1"):
+            validate_service(
+                service=service,
+                tasks=tasks,
+                targets=targets,
+                alarm_state="OK",
+            )
+
+    def test_rejects_unexpected_task_revision(self):
         service, tasks, targets = healthy_service()
         changed = copy.deepcopy(tasks)
-        changed[1]["taskDefinitionArn"] = "arn:task-definition:production:6"
+        changed[0]["taskDefinitionArn"] = "arn:task-definition:production:6"
         with self.assertRaisesRegex(ValueError, "mixed"):
             validate_service(
                 service=service,

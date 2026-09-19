@@ -346,10 +346,10 @@ aws_cli ecs update-service \
 	--cluster "$CLUSTER" \
 	--service "$SERVICE" \
 	--task-definition "$api_task" \
-	--desired-count 2 \
+	--desired-count 1 \
 	--health-check-grace-period-seconds 60 \
 	--deployment-configuration \
-	"{\"maximumPercent\":200,\"minimumHealthyPercent\":100,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${ROLLBACK_ALARM}\"],\"enable\":true,\"rollback\":true}}" \
+	"{\"maximumPercent\":100,\"minimumHealthyPercent\":0,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${ROLLBACK_ALARM}\"],\"enable\":true,\"rollback\":true}}" \
 	>/dev/null
 aws_cli ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
 

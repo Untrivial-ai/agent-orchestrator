@@ -233,7 +233,7 @@ own users, organizations, projects, sessions, events, and credentials.
 - hostname: `api.aoagents.dev`
 - target group: `ao-cloud-production-public-cp`
 - CloudWatch log group: `/ao-cloud/production/control-plane` (90-day retention)
-- autoscaling: two to six replicas at 60% average CPU utilization
+- control plane: one fixed replica while terminal relay affinity is process-local
 - deployment alarms: `ao-cloud-production-target-5xx` and
   `ao-cloud-production-unhealthy-targets`
 

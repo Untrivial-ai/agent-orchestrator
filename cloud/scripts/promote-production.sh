@@ -422,7 +422,7 @@ target_group="$(
 		--query 'TargetGroups[0].TargetGroupArn' \
 		--output text
 )"
-deployment_configuration="{\"maximumPercent\":200,\"minimumHealthyPercent\":100,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${ROLLBACK_ALARM}\"],\"enable\":true,\"rollback\":true}}"
+deployment_configuration="{\"maximumPercent\":100,\"minimumHealthyPercent\":0,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${ROLLBACK_ALARM}\"],\"enable\":true,\"rollback\":true}}"
 service_status="$(
 	aws_cli ecs describe-services \
 		--cluster "$PRODUCTION_CLUSTER" \
@@ -435,7 +435,7 @@ if [[ "$service_status" == "ACTIVE" ]]; then
 		--cluster "$PRODUCTION_CLUSTER" \
 		--service "$PRODUCTION_SERVICE" \
 		--task-definition "$api_task" \
-		--desired-count 2 \
+		--desired-count 1 \
 		--health-check-grace-period-seconds 60 \
 		--deployment-configuration "$deployment_configuration" \
 		>/dev/null
@@ -444,7 +444,7 @@ else
 		--cluster "$PRODUCTION_CLUSTER" \
 		--service-name "$PRODUCTION_SERVICE" \
 		--task-definition "$api_task" \
-		--desired-count 2 \
+		--desired-count 1 \
 		--launch-type FARGATE \
 		--platform-version LATEST \
 		--network-configuration "$network_configuration" \
@@ -464,18 +464,15 @@ aws_cli application-autoscaling register-scalable-target \
 	--service-namespace ecs \
 	--scalable-dimension ecs:service:DesiredCount \
 	--resource-id "service/${PRODUCTION_CLUSTER}/${PRODUCTION_SERVICE}" \
-	--min-capacity 2 \
-	--max-capacity 6 \
+	--min-capacity 1 \
+	--max-capacity 1 \
 	>/dev/null
-aws_cli application-autoscaling put-scaling-policy \
+aws_cli application-autoscaling delete-scaling-policy \
 	--service-namespace ecs \
 	--scalable-dimension ecs:service:DesiredCount \
 	--resource-id "service/${PRODUCTION_CLUSTER}/${PRODUCTION_SERVICE}" \
 	--policy-name ao-cloud-production-cpu \
-	--policy-type TargetTrackingScaling \
-	--target-tracking-scaling-policy-configuration \
-		'TargetValue=60,PredefinedMetricSpecification={PredefinedMetricType=ECSServiceAverageCPUUtilization},ScaleOutCooldown=60,ScaleInCooldown=300' \
-	>/dev/null
+	>/dev/null 2>&1 || true
 
 aws_cli ecs wait services-stable \
 	--cluster "$PRODUCTION_CLUSTER" \
