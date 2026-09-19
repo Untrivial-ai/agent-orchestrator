@@ -3701,6 +3701,38 @@ func TestControllerStreamClosureReportsSessionExited(t *testing.T) {
 	t.Fatalf("controller stream ended without an exited lifecycle signal: %+v", h.activity.snapshot())
 }
 
+// TestControllerPlannedCloseDoesNotReportExited covers the planned side of the
+// same boundary: Service.StopAll (daemon shutdown) calls Controller.Close, which
+// is a deliberate relinquish of controller ownership, not proof the agent
+// durably exited. Unlike an unexpected stream loss (asserted above), a planned
+// Close must not publish ActivityExited — that would flash a false "session
+// died" reading through every ordinary desktop restart, immediately before the
+// replacement daemon's controller reconnects and reports the same session
+// active again.
+func TestControllerPlannedCloseDoesNotReportExited(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "go", ClientMessageID: "c1"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Turns) == 1 })
+
+	// Daemon shutdown: Service.StopAll closes every controller via Close, not
+	// Terminate. The provider stream ends as a direct result of that call.
+	if err := h.ctrl.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	h.ctrl.Wait()
+
+	for _, signal := range h.activity.snapshot() {
+		if signal.State == domain.ActivityExited {
+			t.Fatalf("planned Close reported ActivityExited, want the durable activity left untouched: %+v signal", signal)
+		}
+	}
+}
+
 func TestControllerReadyRunsBeforeStreamProjection(t *testing.T) {
 	st := openStore(t)
 	conv := newFakeConversation()

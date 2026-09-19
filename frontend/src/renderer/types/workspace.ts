@@ -265,23 +265,22 @@ function sessionNewer(a: WorkspaceSession, b: WorkspaceSession): boolean {
 	return a.id > b.id;
 }
 
-function sessionRecentlyUpdatedNewer(a: WorkspaceSession, b: WorkspaceSession): boolean {
-	const aUpdated = timestamp(a.updatedAt);
-	const bUpdated = timestamp(b.updatedAt);
-	if (aUpdated !== bUpdated) return aUpdated > bUpdated;
-	const aLastActive = sessionLastActiveTimestamp(a);
-	const bLastActive = sessionLastActiveTimestamp(b);
-	if (aLastActive !== bLastActive) return aLastActive > bLastActive;
+// Ordered by createdAt, newest first, with a stable id tiebreak.
+//
+// This deliberately excludes updatedAt/activity.lastActivityAt: those are
+// operational mutation timestamps that a controller bumps on every lifecycle
+// probe, reconnect, or generation change (see chat/controller.go's activity
+// reporting). Sorting by them made the sidebar reorder every time a session's
+// controller reconnected — most visibly when a daemon restart reconnects
+// several controllers in staggered waves, which moved rows around the
+// sidebar wave by wave for a reason with no user-facing meaning. createdAt is
+// set once at session creation and never changes afterward, so it orders the
+// list without being a side effect of unrelated activity/connectivity noise.
+function sessionCreatedOrderNewer(a: WorkspaceSession, b: WorkspaceSession): boolean {
+	const aCreated = timestamp(a.createdAt);
+	const bCreated = timestamp(b.createdAt);
+	if (aCreated !== bCreated) return aCreated > bCreated;
 	return a.id > b.id;
-}
-
-function sessionLastActiveTimestamp(session: WorkspaceSession): number {
-	return (
-		validTimestamp(session.activity?.lastActivityAt) ??
-		validTimestamp(session.updatedAt) ??
-		validTimestamp(session.createdAt) ??
-		0
-	);
 }
 
 function timestamp(value?: string): number {
@@ -298,10 +297,15 @@ export function workerSessions(sessions: WorkspaceSession[]): WorkspaceSession[]
 	return sessions.filter((s) => !isOrchestratorSession(s));
 }
 
-/** Worker sessions ordered by session update time, newest first. */
+/**
+ * Worker sessions in stable navigation order: newest-created first, with a
+ * tiebreak on the immutable session id. See {@link sessionCreatedOrderNewer}
+ * for why this intentionally ignores updatedAt/activity — those churn on
+ * every controller reconnect and must not reorder the sidebar.
+ */
 export function sortedWorkerSessions(sessions: WorkspaceSession[]): WorkspaceSession[] {
 	return workerSessions(sessions).sort((a, b) =>
-		sessionRecentlyUpdatedNewer(b, a) ? 1 : sessionRecentlyUpdatedNewer(a, b) ? -1 : 0,
+		sessionCreatedOrderNewer(b, a) ? 1 : sessionCreatedOrderNewer(a, b) ? -1 : 0,
 	);
 }
 
