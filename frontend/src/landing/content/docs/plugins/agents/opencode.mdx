@@ -16,7 +16,7 @@ AO offers the same approval choices in both surfaces. **Default approvals** leav
 
 These grants outrank `deny` rules in your global or user configuration, so a mode that allows a tool allows it. A policy committed to the repository is treated differently — see below.
 
-A repository policy wins over Accept edits and Auto. OpenCode reads the working directory and then walks up to the nearest Git directory, and AO reads the same range: in the Terminal UI it writes its rules to a config file OpenCode loads first, and in Chat it applies those repository rules over its own, key by key. Either way a mode grants only what the repository has not ruled on, and grants nothing at all against a blanket policy or one AO cannot parse — a `opencode.jsonc`, for instance, since comments are valid for OpenCode and not for AO's parser.
+A repository policy wins over Accept edits and Auto. OpenCode reads the working directory and then walks up to the nearest Git directory, loading a `.opencode` directory in each alongside the bare config file, and AO reads the same set: in the Terminal UI it writes its rules to a config file OpenCode loads first, and in Chat it applies those repository rules over its own, key by key. Either way a mode grants only what the repository has not ruled on, and grants nothing at all against a blanket policy or one AO cannot parse — a `opencode.jsonc`, for instance, since comments are valid for OpenCode and not for AO's parser.
 
 Bypass permissions is the exception on both surfaces. It rides the agent AO selects, which outranks every config layer, so it is full access as promised.
 

@@ -1156,3 +1156,40 @@ func TestProjectPermissionRulesTreatsUnreadablePolicyAsDeny(t *testing.T) {
 		t.Fatalf("auto tier = %#v, want no AO rules against an unreadable policy", got)
 	}
 }
+
+// OpenCode loads a `.opencode` directory alongside the bare config file in each
+// directory it walks, and applies it afterwards, so a policy committed there
+// binds AO's tiers too.
+func TestProjectPermissionRulesReadsDotOpenCodeDirectories(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "opencode.json"),
+		[]byte(`{"permission":{"bash":"allow","task":"deny"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".opencode", "opencode.json"),
+		[]byte(`{"permission":{"bash":"deny"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, ok := projectPermissionRules(root).(map[string]any)
+	if !ok {
+		t.Fatalf("rules = %#v, want a merged map", projectPermissionRules(root))
+	}
+	if rules["bash"] != "deny" {
+		t.Fatalf("bash = %#v, want .opencode to override the bare config", rules["bash"])
+	}
+	if rules["task"] != "deny" {
+		t.Fatalf("task = %#v, want the bare config's rule kept", rules["task"])
+	}
+	// And the composed tier carries both, so Auto cannot grant against them.
+	tier, ok := acpAgentPermission(ports.PermissionModeAuto, rules).(map[string]any)
+	if !ok || tier["bash"] != "deny" || tier["task"] != "deny" {
+		t.Fatalf("auto tier = %#v, want the repository's denies", tier)
+	}
+}

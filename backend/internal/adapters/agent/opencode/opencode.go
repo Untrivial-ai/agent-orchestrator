@@ -531,32 +531,18 @@ func acpAgentPermission(mode ports.PermissionMode, project any) any {
 }
 
 // projectPermissionRules collects the permission policy OpenCode will load for
-// this workspace. OpenCode looks in the working directory and then walks up to
-// the nearest Git directory, so AO reads the same range rather than the
-// workspace root alone; a nearer config overrides one further up.
+// this workspace. OpenCode reads the working directory and then walks up to the
+// nearest Git directory, and loads a `.opencode` directory in each alongside
+// the bare config file, so AO reads the same set rather than guessing at a
+// subset. Later sources override earlier ones, matching OpenCode's own order.
 //
 // A file AO cannot parse, and a blanket rule other than "allow", both answer
 // "deny": neither is a policy AO may grant against, and acpAgentPermission
 // contributes nothing when it sees one.
 func projectPermissionRules(workspacePath string) any {
-	if strings.TrimSpace(workspacePath) == "" {
-		return nil
-	}
-	dirs := []string{}
-	for dir := filepath.Clean(workspacePath); ; {
-		dirs = append(dirs, dir)
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
 	merged := map[string]any{}
-	for i := len(dirs) - 1; i >= 0; i-- {
-		rules, ok := directoryPermissionRules(dirs[i])
+	for _, path := range projectConfigPaths(workspacePath) {
+		rules, ok := readPermissionRules(path)
 		if !ok {
 			return "deny"
 		}
@@ -575,23 +561,54 @@ func projectPermissionRules(workspacePath string) any {
 	return merged
 }
 
-func directoryPermissionRules(dir string) (any, bool) {
-	for _, name := range []string{"opencode.json", "opencode.jsonc"} {
-		data, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		var config struct {
-			Permission any `json:"permission"`
-		}
-		if err := json.Unmarshal(data, &config); err != nil {
-			// Comments and trailing commas are valid for OpenCode and not for
-			// encoding/json. AO declines to grant rather than guess.
-			return nil, false
-		}
-		return config.Permission, true
+// projectConfigPaths lists every config OpenCode may load for this workspace,
+// in the order it applies them: the furthest ancestor first, and within one
+// directory the `.opencode` copy after the bare file.
+func projectConfigPaths(workspacePath string) []string {
+	if strings.TrimSpace(workspacePath) == "" {
+		return nil
 	}
-	return nil, true
+	dirs := []string{}
+	for dir := filepath.Clean(workspacePath); ; {
+		dirs = append(dirs, dir)
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	names := []string{
+		"opencode.json", "opencode.jsonc",
+		filepath.Join(".opencode", "opencode.json"), filepath.Join(".opencode", "opencode.jsonc"),
+	}
+	paths := make([]string, 0, len(dirs)*len(names))
+	for i := len(dirs) - 1; i >= 0; i-- {
+		for _, name := range names {
+			paths = append(paths, filepath.Join(dirs[i], name))
+		}
+	}
+	return paths
+}
+
+// readPermissionRules reports a config's permission policy. The second result
+// is false only when the file exists and AO cannot parse it.
+func readPermissionRules(path string) (any, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, true
+	}
+	var config struct {
+		Permission any `json:"permission"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		// Comments and trailing commas are valid for OpenCode and not for
+		// encoding/json. AO declines to grant rather than guess.
+		return nil, false
+	}
+	return config.Permission, true
 }
 
 // ACPAgentForPermissions is the agent a session starts on.
