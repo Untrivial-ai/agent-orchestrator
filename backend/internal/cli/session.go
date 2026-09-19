@@ -44,24 +44,31 @@ type sessionRenameRequest struct {
 }
 
 type sessionDTO struct {
-	ID           string          `json:"id"`
-	ProjectID    string          `json:"projectId"`
-	IssueID      string          `json:"issueId,omitempty"`
-	Kind         string          `json:"kind"`
-	Harness      string          `json:"harness,omitempty"`
-	DisplayName  string          `json:"displayName,omitempty"`
-	Activity     sessionActivity `json:"activity"`
-	IsTerminated bool            `json:"isTerminated"`
-	CreatedAt    time.Time       `json:"createdAt"`
-	UpdatedAt    time.Time       `json:"updatedAt"`
-	Status       string          `json:"status"`
-	Branch       string          `json:"branch,omitempty"`
-	PRs          []sessionPRDTO  `json:"prs"`
+	ID              string                  `json:"id"`
+	ProjectID       string                  `json:"projectId"`
+	IssueID         string                  `json:"issueId,omitempty"`
+	Kind            string                  `json:"kind"`
+	Harness         string                  `json:"harness,omitempty"`
+	DisplayName     string                  `json:"displayName,omitempty"`
+	Activity        sessionActivity         `json:"activity"`
+	IsTerminated    bool                    `json:"isTerminated"`
+	CreatedAt       time.Time               `json:"createdAt"`
+	UpdatedAt       time.Time               `json:"updatedAt"`
+	Status          string                  `json:"status"`
+	Branch          string                  `json:"branch,omitempty"`
+	PRs             []sessionPRDTO          `json:"prs"`
+	ContextPressure *sessionContextPressure `json:"contextPressure,omitempty"`
 }
 
 type sessionActivity struct {
 	State          string    `json:"state"`
 	LastActivityAt time.Time `json:"lastActivityAt"`
+}
+
+type sessionContextPressure struct {
+	ContextUsedPercent int       `json:"contextUsedPercent"`
+	Source             string    `json:"source"`
+	ObservedAt         time.Time `json:"observedAt"`
 }
 
 type sessionListResponse struct {
@@ -1017,6 +1024,15 @@ func writeSessionDetails(cmd *cobra.Command, sess sessionDTO) error {
 	}
 	if !sess.UpdatedAt.IsZero() {
 		if _, err := fmt.Fprintf(out, "updated: %s\n", sess.UpdatedAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	if p := sess.ContextPressure; p != nil {
+		detail := "source: " + p.Source
+		if !p.ObservedAt.IsZero() {
+			detail += ", observed " + p.ObservedAt.Format(time.RFC3339)
+		}
+		if _, err := fmt.Fprintf(out, "context: %d%% used (%s)\n", p.ContextUsedPercent, detail); err != nil {
 			return err
 		}
 	}

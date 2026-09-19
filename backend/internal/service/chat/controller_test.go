@@ -5924,6 +5924,54 @@ func TestUsageProjectionKeepsOnlyTheLatest(t *testing.T) {
 	}
 }
 
+func TestContextPressureForReportsLiveContextFullness(t *testing.T) {
+	h := newHarness(t)
+
+	if got := h.svc.ContextPressureFor(testSession); got != nil {
+		t.Fatalf("pressure before any report = %+v, want nil (unknown)", got)
+	}
+	if got := h.svc.ContextPressureFor("missing"); got != nil {
+		t.Fatalf("pressure for an unknown session = %+v, want nil", got)
+	}
+
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventUsage, Usage: &ports.ChatUsage{
+		ContextUsed: 92000, ContextWindow: 100000, ContextKnown: true,
+	}})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Usage != nil && s.Conversation.Usage.ContextUsed == 92000
+	})
+
+	got := h.svc.ContextPressureFor(testSession)
+	if got == nil {
+		t.Fatal("pressure after a report = nil, want a reading")
+	}
+	if got.ContextUsedPercent != 92 {
+		t.Errorf("percent = %d, want 92", got.ContextUsedPercent)
+	}
+	if got.Source != "chat-controller" {
+		t.Errorf("source = %q, want chat-controller", got.Source)
+	}
+	if got.ObservedAt.IsZero() {
+		t.Error("observedAt is zero for a reading reported live")
+	}
+}
+
+func TestContextPressureForClampsAtTheWindow(t *testing.T) {
+	h := newHarness(t)
+
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventUsage, Usage: &ports.ChatUsage{
+		ContextUsed: 104000, ContextWindow: 100000, ContextKnown: true,
+	}})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Usage != nil && s.Conversation.Usage.ContextUsed == 104000
+	})
+
+	got := h.svc.ContextPressureFor(testSession)
+	if got == nil || got.ContextUsedPercent != 100 {
+		t.Fatalf("pressure = %+v, want 100%% (clamped)", got)
+	}
+}
+
 // ACP reports context fullness and cumulative token totals in separate messages.
 // A later totals update must not erase the context window received just before it.
 func TestUsageProjectionMergesIndependentProviderUpdates(t *testing.T) {

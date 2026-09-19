@@ -504,6 +504,8 @@ func Run() error {
 		return fmt.Errorf("wire session service: %w", err)
 	}
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
+	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
+	sessionSvc.SetContextPressureSource(chatSvc.ContextPressureFor)
 	sessMgr = wiredSessMgr
 	if tunable, ok := sessMgr.(interface {
 		SetModelCatalog(interface {
