@@ -1518,14 +1518,15 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(cloudMocks.signIn).toHaveBeenCalledOnce();
 	});
 
-	it("shows Cloud first and groups the remaining project sources under Local", () => {
+	it("shows Cloud in a separate card above the local project sources", () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
 		const cloud = screen.getByRole("button", { name: "New cloud project" });
 		const local = screen.getByRole("button", { name: "Import an existing project" });
-		expect(screen.getByText("Local")).toBeInTheDocument();
+		expect(screen.queryByText("Local")).not.toBeInTheDocument();
+		expect(cloud.closest(".rounded-md")).not.toBe(local.closest(".rounded-md"));
 		expect(cloud.compareDocumentPosition(local) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 	});
 

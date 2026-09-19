@@ -1494,7 +1494,7 @@ function CloudProjectCard({
 			{dialog && onClose ? (
 				<button
 					type="button"
-					className="settings-close-button absolute right-3 top-3"
+					className="settings-close-button absolute right-3 top-3 z-10"
 					aria-label={t("createProject.closeDialog")}
 					disabled={isCreating}
 					onClick={onClose}
@@ -1503,7 +1503,7 @@ function CloudProjectCard({
 				</button>
 			) : null}
 
-			<div className={onboardingPanelBodyClass}>
+			<div className={cn(onboardingPanelBodyClass, dialog && onClose ? "pt-12" : "pt-4")}>
 				{/* Project name */}
 				<div className="space-y-2">
 					<Label htmlFor="cloudProjectName" className={onboardingFormLabelClass}>
@@ -1907,12 +1907,12 @@ function ImportSourcePicker({
 			) : (
 				<p className={onboardingPanelDescriptionClass}>{t("createProject.addCodeDescription")}</p>
 			)}
-			<div className="mx-4 mb-4 overflow-hidden rounded-md border border-border/50 bg-[var(--color-bg-import-modal)]">
-				<div className="flex flex-col">
-					{cloudEnabled && onCloudSelect ? (
+			<div className="mx-4 mb-4 flex flex-col gap-3">
+				{cloudEnabled && onCloudSelect ? (
+					<div className="overflow-hidden rounded-md border border-border/50 bg-[var(--color-bg-import-modal)]">
 						<button
 							type="button"
-							className="group flex min-h-[76px] items-center gap-3 border-b border-border/50 px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50"
+							className="group flex min-h-[76px] w-full items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50"
 							aria-label={t("createProject.cloudTitle")}
 							disabled={disabled}
 							onClick={onCloudSelect}
@@ -1925,38 +1925,37 @@ function ImportSourcePicker({
 								<span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.kindCloudHint")}</span>
 							</span>
 						</button>
-					) : null}
-					<div className="flex items-center gap-3 px-4 py-2">
-						<div className="h-px flex-1 bg-border/50" />
-						<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Local</span>
-						<div className="h-px flex-1 bg-border/50" />
 					</div>
-					{localSources.map(({ source, icon, label, description }) => (
-						<button
-							key={source}
-							type="button"
-							className="group flex min-h-[76px] items-center gap-3 border-b border-border/50 px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50 last:border-b-0"
-							aria-label={label}
-							disabled={disabled}
-							onClick={() => onSelect(source)}
-						>
-							<span className="grid w-9 shrink-0 place-items-center text-muted-foreground group-hover:text-foreground">
-								{icon}
-							</span>
-							<span className="min-w-0">
-								<span className="block text-[14px] font-medium text-foreground">{label}</span>
-								<span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{description}</span>
-							</span>
-						</button>
-					))}
-					{onCreateStandaloneAgent ? (
-						<button type="button" className="group flex min-h-[76px] items-center gap-3 border-b border-border/50 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={createStandaloneAgent}>
-							<span className="grid w-9 shrink-0 place-items-center text-muted-foreground group-hover:text-foreground">
-								<Bot className="size-5" aria-hidden="true" />
-							</span>
-							<span><span className="block text-sm font-medium">{t("home.newStandaloneAgent")}</span><span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.standaloneDesc")}</span></span>
-						</button>
-					) : null}
+				) : null}
+				<div className="overflow-hidden rounded-md border border-border/50 bg-[var(--color-bg-import-modal)]">
+					<div className="flex flex-col">
+						{localSources.map(({ source, icon, label, description }) => (
+							<button
+								key={source}
+								type="button"
+								className="group flex min-h-[76px] items-center gap-3 border-b border-border/50 px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50 last:border-b-0"
+								aria-label={label}
+								disabled={disabled}
+								onClick={() => onSelect(source)}
+							>
+								<span className="grid w-9 shrink-0 place-items-center text-muted-foreground group-hover:text-foreground">
+									{icon}
+								</span>
+								<span className="min-w-0">
+									<span className="block text-[14px] font-medium text-foreground">{label}</span>
+									<span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{description}</span>
+								</span>
+							</button>
+						))}
+						{onCreateStandaloneAgent ? (
+							<button type="button" className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={createStandaloneAgent}>
+								<span className="grid w-9 shrink-0 place-items-center text-muted-foreground group-hover:text-foreground">
+									<Bot className="size-5" aria-hidden="true" />
+								</span>
+								<span><span className="block text-sm font-medium">{t("home.newStandaloneAgent")}</span><span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.standaloneDesc")}</span></span>
+							</button>
+						) : null}
+					</div>
 				</div>
 			</div>
 			{dialog && onClose ? (
