@@ -28,7 +28,7 @@ export function cloudWorkspaceReviewSummaryQueryOptions(args: {
 		queryKey: [...cloudWorkspaceReviewQueryKey(baseUrl, orgId, sessionId), "summary"] as const,
 		queryFn: () => client.getWorkspaceReview(orgId, sessionId),
 		enabled: args.enabled ?? true,
-		refetchInterval: args.visible === false ? false : 5_000,
+		refetchInterval: args.visible === false ? false as const : 5_000,
 		retry: cloudWorkspaceReviewRetry,
 	};
 }
