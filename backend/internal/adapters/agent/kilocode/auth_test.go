@@ -21,17 +21,34 @@ func TestKiloLocalEvidenceIsConfigured(t *testing.T) {
 	for _, source := range []string{"environment", "auth file", "auth list", "injected auth"} {
 		t.Run(source, func(t *testing.T) {
 			p := kiloAuthFixture(t, "0 credentials\n", "")
+			var got ports.AgentAuthStatus
+			var err error
 			switch source {
 			case "environment":
 				t.Setenv("OPENAI_API_KEY", "secret")
 			case "auth file":
 				writeKiloAuthFile(t, "auth.json", "{\"openai\":{\"type\":\"api\",\"key\":\"secret\"}}")
 			case "auth list":
-				p = kiloAuthFixture(t, "OpenAI api\n1 credential\n", "")
+				deps := authutil.Dependencies{Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+					if name != "injected-kilo" {
+						t.Fatalf("unexpected executable %q", name)
+					}
+					if reflect.DeepEqual(args, []string{"db", "path"}) {
+						return nil, errors.New("database unavailable")
+					}
+					if reflect.DeepEqual(args, []string{"auth", "list"}) {
+						return []byte("OpenAI api\n1 credential\n"), nil
+					}
+					t.Fatalf("unexpected arguments %q", args)
+					return nil, errors.New("unexpected command")
+				}}
+				got, err = kilocodeAuthStatusFor(context.Background(), "injected-kilo", ports.AgentAuthCheck{}, deps)
 			case "injected auth":
 				t.Setenv("KILO_AUTH_CONTENT", "{\"openai\":{\"type\":\"api\",\"key\":\"secret\"}}")
 			}
-			got, err := p.AuthStatus(context.Background())
+			if source != "auth list" {
+				got, err = p.AuthStatus(context.Background())
+			}
 			if err != nil || got != ports.AgentAuthStatusConfigured {
 				t.Fatalf("AuthStatus = %q, %v; want configured", got, err)
 			}
@@ -179,6 +196,16 @@ func TestKiloDBPathCommandAndActiveAccount(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "official.db")
 			p := kiloAuthFixture(t, "0 credentials\n", path)
+			deps := authutil.Dependencies{Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name != p.resolvedBinary {
+					t.Fatalf("unexpected executable %q", name)
+				}
+				if reflect.DeepEqual(args, []string{"db", "path"}) {
+					return []byte(path + "\n"), nil
+				}
+				t.Fatalf("unexpected arguments %q", args)
+				return nil, errors.New("unexpected command")
+			}}
 			db, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
@@ -195,11 +222,17 @@ func TestKiloDBPathCommandAndActiveAccount(t *testing.T) {
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
-			got := kiloScopedStatus(t, p, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "kilo/anthropic/claude"}})
+			got, err := kilocodeAuthStatusFor(context.Background(), p.resolvedBinary, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "kilo/anthropic/claude"}}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if got != tc.want {
 				t.Fatalf("status = %q; want %q", got, tc.want)
 			}
-			got = kiloScopedStatus(t, p, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "openai/gpt-5"}})
+			got, err = kilocodeAuthStatusFor(context.Background(), p.resolvedBinary, ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "openai/gpt-5"}}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if got != ports.AgentAuthStatusUnknown {
 				t.Fatalf("unrelated account status = %q; want unknown", got)
 			}
