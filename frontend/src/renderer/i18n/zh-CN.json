@@ -1,4 +1,12 @@
 {
+	"agentRecovery.installAction": "安装代理",
+	"agentRecovery.loginAction": "登录",
+	"agentRecovery.reviewAction": "检查配置",
+	"agentRecovery.configureAction": "配置代理",
+	"agentRecovery.installDescription": "未安装 {{agent}}。请先安装它，然后再启动会话。",
+	"agentRecovery.loginDescription": "{{agent}} 需要完成身份验证才能启动。",
+	"agentRecovery.reviewDescription": "{{agent}} 已配置，但其设置需要检查。",
+	"agentRecovery.configureDescription": "AO 无法确认 {{agent}} 是否就绪。请在启动前检查其设置。",
 	"session.statusChecking": "正在检查…",
 	"session.statusUnavailable": "无法验证",
 	"session.retryStatus": "重新检查状态",

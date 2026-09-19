@@ -24,3 +24,17 @@ describe("sidebar visibility", () => {
 		expect(window.localStorage.getItem("ao.sidebar.open")).toBe("true");
 	});
 });
+
+describe("global settings deep links", () => {
+	it("stores an optional harness focus target without changing existing calls", () => {
+		useUiStore.getState().openGlobalSettings("harness", { focusAgentId: "codex" });
+		expect(useUiStore.getState().settingsModal).toEqual({
+			scope: "global",
+			section: "harness",
+			focusAgentId: "codex",
+		});
+
+		useUiStore.getState().openGlobalSettings("agents");
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "agents" });
+	});
+});

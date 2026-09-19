@@ -5,7 +5,7 @@ import {
 	type TaskComposerModelCatalog,
 	type TaskComposerModelControl,
 } from "@aoagents/product-ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
@@ -33,6 +33,7 @@ import {
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { AgentModelCombobox, type ModelEffortSelection } from "./settings/AgentModelCombobox";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
+import { AgentSelectorRecoveryAction } from "./AgentSelectorRecoveryAction";
 
 type Project = components["schemas"]["Project"];
 type DelegateAgent = components["schemas"]["DelegateTaskRequest"]["agent"];
@@ -491,7 +492,19 @@ export function TaskComposer({
 						: submitTask(brief, "tui")),
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
-			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
+			renderAgentControl={(control) => (
+				<DesktopAgentControl
+					{...control}
+					recoveryAction={!isCloudProject && (
+						<AgentSelectorRecoveryAction
+							agentId={selectedAgent}
+							agents={agentCatalog?.agents}
+							isLoading={agentsQuery.isFetching}
+							variant="compact"
+						/>
+					)}
+				/>
+			)}
 			renderModelControl={(control) => (
 				<TaskModelPicker {...control} onRefresh={refreshSelectedModels}
 					tuning={selectedAgent === "codex" && !requiresTuiFallback ? {
@@ -505,10 +518,11 @@ export function TaskComposer({
 	);
 }
 
-function DesktopAgentControl(control: TaskComposerAgentControl) {
+function DesktopAgentControl({ recoveryAction, ...control }: TaskComposerAgentControl & { recoveryAction?: ReactNode }) {
 	return (
 		<RequiredAgentField
 			{...control}
+			recoveryAction={recoveryAction}
 			variant="chip"
 			triggerClassName="composer-toolbar-option w-full justify-between"
 		/>

@@ -1,4 +1,12 @@
 {
+	"agentRecovery.installAction": "エージェントをインストール",
+	"agentRecovery.loginAction": "ログイン",
+	"agentRecovery.reviewAction": "設定を確認",
+	"agentRecovery.configureAction": "エージェントを設定",
+	"agentRecovery.installDescription": "{{agent}} はインストールされていません。セッションを開始する前にインストールしてください。",
+	"agentRecovery.loginDescription": "{{agent}} を開始するには認証が必要です。",
+	"agentRecovery.reviewDescription": "{{agent}} は設定済みですが、設定内容を確認する必要があります。",
+	"agentRecovery.configureDescription": "AO は {{agent}} の準備状態を確認できませんでした。開始する前に設定を確認してください。",
 	"session.statusChecking": "確認中…",
 	"session.statusUnavailable": "確認できません",
 	"session.retryStatus": "状態を再確認",

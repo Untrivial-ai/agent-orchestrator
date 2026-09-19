@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
@@ -7,6 +7,7 @@ import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { CreateProjectAgentSheet, RequiredAgentField } from "./CreateProjectAgentSheet";
 import { TooltipProvider } from "./ui/tooltip";
+import { useUiStore } from "../stores/ui-store";
 
 function renderSheet(
 	onSubmit = vi.fn().mockResolvedValue(undefined),
@@ -79,6 +80,97 @@ describe("CreateProjectAgentSheet", () => {
 		await userEvent.click(screen.getByLabelText("Agent"));
 
 		expect(await screen.findByRole("listbox")).toHaveClass("max-h-select-menu-max!");
+	});
+
+	it("renders explanatory recovery actions below stacked selectors and outside their dropdown", async () => {
+		render(
+			<RequiredAgentField
+				agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
+				id="agent"
+				label="Agent"
+				onChange={() => undefined}
+				placeholder="Project default"
+				recoveryAction={<button type="button">Log in to Codex</button>}
+				value="codex"
+			/>,
+		);
+
+		const trigger = screen.getByLabelText("Agent");
+		const action = screen.getByRole("button", { name: "Log in to Codex" });
+		expect(trigger.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+		await userEvent.click(trigger);
+		expect(await screen.findByRole("listbox")).not.toContainElement(action);
+	});
+
+	it("renders compact recovery actions beside chip selectors and outside their dropdown", async () => {
+		render(
+			<RequiredAgentField
+				agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
+				id="agent"
+				label="Agent"
+				onChange={() => undefined}
+				placeholder="Project default"
+				recoveryAction={<button type="button">Log in</button>}
+				value="codex"
+				variant="chip"
+			/>,
+		);
+
+		const trigger = screen.getByLabelText("Agent");
+		const action = screen.getByRole("button", { name: "Log in" });
+		expect(trigger.parentElement).toBe(action.parentElement);
+
+		await userEvent.click(trigger);
+		expect(await screen.findByRole("menu")).not.toContainElement(action);
+	});
+
+	it("keeps explanatory recovery actions below settings-row selectors", () => {
+		render(
+			<RequiredAgentField
+				agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
+				id="agent"
+				label="Agent"
+				onChange={() => undefined}
+				placeholder="Project default"
+				recoveryAction={<button type="button">Log in to Codex</button>}
+				value="codex"
+				variant="settings-row"
+			/>,
+		);
+
+		const trigger = screen.getByLabelText("Agent");
+		const action = screen.getByRole("button", { name: "Log in to Codex" });
+		expect(trigger.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+
+	it("offers recovery for a selected create-project agent without losing the selection", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(agentReadinessQueryKey, {
+			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+		});
+		renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
+		const worker = screen.getByRole("combobox", { name: "Worker agent" });
+		expect(worker).toHaveTextContent("Claude Code");
+		await chooseOption(worker, "Codex");
+
+		act(() => {
+			queryClient.setQueryData(agentReadinessQueryKey, {
+				agents: [
+					agentReadiness("claude-code", "Claude Code"),
+					agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+				],
+			});
+		});
+		await userEvent.click((await screen.findAllByRole("button", { name: "Log in" }))[0]);
+		expect(useUiStore.getState().settingsModal).toEqual({
+			scope: "global",
+			section: "harness",
+			focusAgentId: "codex",
+		});
+
+		act(() => useUiStore.getState().closeSettings());
+		expect(worker).toHaveTextContent("Codex");
 	});
 
 	it("creates without intake when the toggle is left off", async () => {

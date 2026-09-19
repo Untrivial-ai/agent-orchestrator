@@ -21,6 +21,7 @@ import {
 } from "../lib/agent-select-options";
 import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
+import { AgentSelectorRecoveryAction } from "./AgentSelectorRecoveryAction";
 import { FieldDefaultHint } from "./FieldDefaultHint";
 import { buildIntake, type IntakeForm, IntakeFields, intakeNeedsRule } from "./IntakeFields";
 import { AgentSelectMenuItem } from "./settings/AgentSelectMenuItem";
@@ -257,6 +258,14 @@ export function CreateProjectAgentSheet({
 									labelClassName="agents-sheet-label"
 									triggerClassName="agents-sheet-control"
 									contentClassName="agents-sheet-menu"
+									recoveryAction={
+										<AgentSelectorRecoveryAction
+											agentId={workerAgent}
+											agents={agentOptions}
+											isLoading={isLoadingAgents}
+											variant="explanatory"
+										/>
+									}
 									onChange={(value) => {
 										setWorkerAgent(value);
 										setWorkerAgentTouched(true);
@@ -274,6 +283,14 @@ export function CreateProjectAgentSheet({
 									labelClassName="agents-sheet-label"
 									triggerClassName="agents-sheet-control"
 									contentClassName="agents-sheet-menu"
+									recoveryAction={
+										<AgentSelectorRecoveryAction
+											agentId={orchestratorAgent}
+											agents={agentOptions}
+											isLoading={isLoadingAgents}
+											variant="explanatory"
+										/>
+									}
 									onChange={(value) => {
 										setOrchestratorAgent(value);
 										setOrchestratorAgentTouched(true);
@@ -383,6 +400,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	label,
 	onChange,
 	placeholder,
+	recoveryAction,
 	triggerClassName,
 	labelClassName,
 	contentClassName,
@@ -399,6 +417,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	label: string;
 	onChange: (value: string) => void;
 	placeholder: string;
+	recoveryAction?: ReactNode;
 	triggerClassName?: string;
 	labelClassName?: string;
 	contentClassName?: string;
@@ -421,6 +440,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 
 		return (
 			<SettingsRow icon={icon} label={label}>
+				<div className="flex min-w-0 flex-col items-end gap-1.5">
 				<SettingsOptionMenu
 					aria-label={label}
 					value={value}
@@ -452,6 +472,8 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 						);
 					}}
 				/>
+					{recoveryAction}
+				</div>
 			</SettingsRow>
 		);
 	}
@@ -471,6 +493,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 		}));
 
 		return (
+			<div className="flex min-w-0 items-center gap-1.5">
 			<SettingsOptionMenu
 				aria-label={label}
 				value={value}
@@ -510,6 +533,8 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					);
 				}}
 			/>
+				{recoveryAction}
+			</div>
 		);
 	}
 
@@ -566,6 +591,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					))}
 				</SelectContent>
 			</Select>
+			{recoveryAction}
 		</div>
 	);
 });

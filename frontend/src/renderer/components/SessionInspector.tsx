@@ -67,6 +67,7 @@ import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { SessionTerminationPopover } from "./SessionTerminationPopover";
 import { ReviewerSelect } from "./ReviewerSelect";
+import { AgentSelectorRecoveryAction } from "./AgentSelectorRecoveryAction";
 import { agentLabel } from "../lib/agent-options";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { Switch } from "./ui/switch";
@@ -1697,6 +1698,7 @@ function ReviewsSection({
 				reviewStates={reviewStates}
 				notice={reviewNotice}
 				agentCatalog={agentsQuery.data}
+				agentCatalogLoading={agentsQuery.isFetching}
 				reviewerOverride={reviewerOverride}
 				reviewerModel={reviewerModel}
 				reviewerMode={reviewerMode}
@@ -2169,6 +2171,7 @@ function ReviewPanel({
 	error,
 	notice,
 	agentCatalog,
+	agentCatalogLoading,
 	reviewerOverride,
 	reviewerModel,
 	reviewerMode,
@@ -2193,6 +2196,7 @@ function ReviewPanel({
 	error: unknown;
 	notice: string | null;
 	agentCatalog?: AgentCatalog;
+	agentCatalogLoading: boolean;
 	reviewerOverride: ReviewerHarness | "";
 	reviewerModel: string;
 	reviewerMode: string;
@@ -2323,6 +2327,14 @@ function ReviewPanel({
 							triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 max-w-[11rem] shrink-0 justify-end px-2 text-right text-xs"
 							value={reviewerOverride}
 							showDefaultOption
+							recoveryAction={
+								<AgentSelectorRecoveryAction
+									agentId={effectiveReviewerHarness}
+									agents={agentCatalog?.agents}
+									isLoading={agentCatalogLoading}
+									variant="compact"
+								/>
+							}
 						/>
 					</div>
 					<InspectorPolicyRow
