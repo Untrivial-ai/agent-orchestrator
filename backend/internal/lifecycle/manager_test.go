@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -5187,5 +5189,49 @@ func TestEmitTelemetryStampsRequestID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Each unresolved comment gets its own dedup slot. Sharing one key per PR made
+// every poll re-send whichever comments were not the most recent signature
+// written, and made them share the reviewMaxNudge budget so a PR with more
+// comments than that could never deliver the last of them.
+func TestPRObservation_ReviewCommentNudgesDedupPerComment(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	comments := make([]domain.PullRequestComment, 0, reviewMaxNudge+2)
+	for i := range reviewMaxNudge + 2 {
+		id := fmt.Sprintf("%d", i+1)
+		// Every comment shares one thread: the observer expands a thread into
+		// one row per comment, so this is the routine shape whenever a worker
+		// replies to a review comment without resolving it. Keying on the
+		// thread would collapse them all back into one dedup slot.
+		comments = append(comments, domain.PullRequestComment{
+			ID: id, ThreadID: "T1", Author: "alice", File: "foo.go", Line: i + 1,
+			Body: "finding " + id, AutoInjectReview: true,
+		})
+	}
+	st.comments["pr1"] = comments
+	o := ports.PRObservation{Fetched: true, URL: "pr1", Review: domain.ReviewChangesRequest}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != len(comments) {
+		t.Fatalf("first poll sent %d nudges, want one per comment (%d)", len(msg.msgs), len(comments))
+	}
+	for _, c := range comments {
+		if !slices.ContainsFunc(msg.msgs, func(m string) bool { return strings.Contains(m, "finding "+c.ID) }) {
+			t.Fatalf("comment %s never nudged; the attempt budget is shared", c.ID)
+		}
+	}
+
+	sent := len(msg.msgs)
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != sent {
+		t.Fatalf("second poll re-sent %d nudges for unchanged comments:\n%v",
+			len(msg.msgs)-sent, msg.msgs[sent:])
 	}
 }
