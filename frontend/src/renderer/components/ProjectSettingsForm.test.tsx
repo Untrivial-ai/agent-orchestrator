@@ -1360,7 +1360,7 @@ describe("ProjectSettingsForm", () => {
 		const copilot = (await screen.findAllByRole("menuitem")).find((option) =>
 			option.textContent?.includes("GitHub Copilot"),
 		);
-		expect(copilot).toHaveTextContent("Needs install");
+		expect(copilot).toHaveTextContent("Install CLI to use");
 		expect(copilot).toHaveAttribute("aria-disabled", "true");
 	});
 

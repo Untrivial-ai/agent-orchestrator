@@ -507,6 +507,7 @@ function ShellLayout() {
 			trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
 			asWorkspace?: boolean;
 			clonePreparationId?: string;
+			defaultBranch?: string;
 		}) => {
 			void addRendererExceptionStep("Project add requested", {
 				source: "project-add",

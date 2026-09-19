@@ -1564,8 +1564,8 @@ describe("Sidebar", () => {
 		const options = await screen.findAllByRole("option");
 		expect(options.map((option) => option.textContent)).toEqual([
 			"Claude Code",
-			"CursorNeeds auth",
-			"AiderNeeds install",
+			"CursorSign in to use",
+			"AiderInstall CLI to use",
 		]);
 		expect(options[1]).toHaveAttribute("aria-disabled", "true");
 		expect(options[2]).toHaveAttribute("aria-disabled", "true");
