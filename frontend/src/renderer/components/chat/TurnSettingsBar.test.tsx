@@ -1163,6 +1163,24 @@ describe("OpenCode's live permission tiers", () => {
 		],
 	};
 
+	it("returns from Plan Mode to the approval mode, not the bare agent mode", async () => {
+		const user = userEvent.setup();
+		const onChangeConfigOption = vi.fn();
+		render(
+			<TurnSettingsBar
+				harness="opencode"
+				models={[]}
+				settings={{ approvalMode: "auto" }}
+				configOptions={[{ ...OPENCODE_MODES, currentValue: "plan" }]}
+				onChangeConfigOption={onChangeConfigOption}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		await user.click(screen.getByRole("switch", { name: "Plan Mode" }));
+		expect(onChangeConfigOption).toHaveBeenCalledWith("mode", { value: "ao-auto" });
+	});
+
 	it("splits the catalog into a plan toggle and an approvals picker", async () => {
 		const user = userEvent.setup();
 		const onChangeConfigOption = vi.fn();
