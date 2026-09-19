@@ -1,0 +1,137 @@
+---
+title: Run multiple Claude Code agents in parallel
+description: Step-by-step guide to running several Claude Code workers in AO with isolated worktrees, Chat or Terminal UI, and screenshots.
+---
+
+AO is built for several coding agents on one repository without shared working trees. Each worker gets its own git worktree and branch, so Claude Code sessions can edit, test, and open pull requests side by side.
+
+If you have not finished a single session yet, start with the [Quickstart](/docs/quickstart). For how AO compares with other parallel-agent desktops, see [AO vs Conductor](/compare/ao-vs-conductor) and [AO vs Superset](/compare/ao-vs-superset).
+
+## Before you start
+
+1. Install the [desktop app](/docs/installation) and open it so the local daemon is running.
+2. Sign in to Claude Code on the machine (`claude` on your `PATH`).
+3. Authenticate `gh` if the project is on GitHub.
+4. Confirm Claude Code is ready in AO:
+
+```bash
+ao agent ls --refresh
+```
+
+Look for `claude-code` as installed and authenticated. `--agent` and `--harness` are aliases on `ao spawn`.
+
+## Step 1 — Add the repository
+
+In the desktop app, choose **Add project** and select a local git repository. AO registers it without moving your original checkout.
+
+From the CLI:
+
+```bash
+ao project add --path /absolute/path/to/repo --worker-agent claude-code
+```
+
+## Step 2 — Create the first Claude Code worker
+
+Choose the project, then **+ Task** / **New task**. Give the session a short display name (max 20 characters), a specific prompt, and select **Claude Code**.
+
+Pick the interface for this task:
+
+- **Chat** for structured conversation, approvals, plans, and durable history.
+- **Terminal UI** for the native Claude Code CLI in the session worktree.
+
+AO creates an isolated worktree and a branch of the form `ao/<session-id>/root` before the agent starts.
+
+![AO sessions board with several workers in Building, Validating, In review, and Ready](/docs/tutorials/sessions-board.png)
+
+*The sessions board keeps parallel work visible without mixing branches or pull requests.*
+
+## Step 3 — Start a second and third worker
+
+Repeat **New task** for each independent track. Keep prompts narrow so workers do not fight over the same files:
+
+- one auth route
+- one test suite
+- one docs update
+
+From the CLI, spawn one session per task:
+
+```bash
+ao spawn --project my-app --name auth-route \
+  --prompt "Build the GitHub OAuth callback route" \
+  --agent claude-code --mode chat
+
+ao spawn --project my-app --name auth-tests \
+  --prompt "Cover the OAuth callback with focused tests" \
+  --agent claude-code --mode chat
+
+ao spawn --project my-app --name auth-docs \
+  --prompt "Update setup docs for GitHub sign-in" \
+  --agent claude-code --mode tui
+```
+
+There is no `ao batch-spawn`. Invoke `ao spawn` once per task, or let an orchestrator session create workers. An orchestrator session can plan tracks and spawn workers the same way:
+
+![Orchestrator session spawning parallel workers into separate worktrees](/docs/tutorials/parallel-spawn-demo.png)
+
+![Claude Code worker terminal editing files in an isolated AO session](/docs/tutorials/claude-code-worker.png)
+
+*Each Claude Code session owns its terminal or Chat timeline and its own worktree.*
+
+## Step 4 — Follow the fleet
+
+Open a session from the sidebar or board. The main pane shows Chat or the live Claude Code terminal. The inspector keeps pull-request state, reviews, changed files, and browser preview close at hand.
+
+List sessions from the CLI:
+
+```bash
+ao session ls
+ao session ls --project my-app --json
+ao session get <session-id>
+```
+
+Send a follow-up to one worker without touching the others:
+
+```bash
+ao send --session <session-id> --message "Keep the change limited to the callback route."
+```
+
+Compatible Claude Code sessions can switch between **Open Chat** and **Open Terminal UI**. The AO session and worktree stay the same; only one controller is active at a time.
+
+## Step 5 — Preview, review, clean up
+
+For a web task, start the app in that session's worktree and select the URL:
+
+```bash
+ao preview http://127.0.0.1:5173
+```
+
+If the repo has `.ao/launch.json`, `ao preview start` can start a configured development server for the selected session only.
+
+When work is done:
+
+```bash
+ao session kill <session-id>
+ao session cleanup --dry-run
+ao session cleanup
+```
+
+Cleanup reclaims eligible workspaces for terminated sessions. Dirty registered worktrees are preserved and skipped.
+
+## What stays isolated vs shared
+
+| Resource | Parallel sessions |
+| --- | --- |
+| Files / branch | Separate worktree and `ao/<session-id>/root` branch |
+| Chat / Terminal UI | Session-scoped; one controller at a time |
+| Browser preview | Selected-session target and ephemeral profile |
+| Pushes, PRs, CI, reviews | Shared with the repository host |
+
+Managed worktrees live under `~/.ao/data/worktrees` by default (or under `AO_DATA_DIR` when set).
+
+## Related
+
+- [Parallel work guide](/docs/guides/parallel-issues)
+- [Claude Code adapter](/docs/plugins/agents/claude-code)
+- [Git worktrees for coding agents](/docs/tutorials/git-worktrees-for-coding-agents)
+- [What is an agent orchestrator](/docs/tutorials/what-is-an-agent-orchestrator)
+- [Quickstart](/docs/quickstart) · [AO vs Conductor](/compare/ao-vs-conductor)

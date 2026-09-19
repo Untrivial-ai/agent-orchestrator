@@ -1,5 +1,6 @@
 "use client";
 
+import { HashLink } from "../HashLink/HashLink";
 import { FeatureDemo } from "./components/FeatureDemo";
 import { DelegationDemo } from "./components/DelegationDemo/DelegationDemo";
 import { FeedbackLoopDemo } from "./components/FeedbackLoopDemo/FeedbackLoopDemo";
@@ -60,6 +61,18 @@ export function FeaturesSection() {
 									>
 										{feature.description}
 									</p>
+									{feature.learnMore ? (
+										<p
+											className={`max-w-[500px] text-sm ${isReversed ? "xl:ml-auto xl:text-right" : ""}`}
+										>
+											<HashLink
+												href={feature.learnMore.href}
+												className="text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
+											>
+												{feature.learnMore.label}
+											</HashLink>
+										</p>
+									) : null}
 								</div>
 
 								{/* Demo */}

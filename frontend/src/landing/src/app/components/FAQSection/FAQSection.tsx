@@ -3,6 +3,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 import { HiPlus } from "react-icons/hi2";
+import { HashLink } from "../HashLink/HashLink";
 import type { FAQItem } from "./constants";
 import { FAQ_ITEMS } from "./constants";
 
@@ -40,9 +41,21 @@ function FAQAccordionItem({
             transition={{ duration: 0.2, ease: "easeInOut" }}
             className="overflow-hidden"
           >
-            <p className="pb-6 text-base text-muted-foreground leading-relaxed pr-12">
-              {item.answer}
-            </p>
+            <div className="space-y-3 pb-6 pr-12">
+              <p className="text-base text-muted-foreground leading-relaxed">
+                {item.answer}
+              </p>
+              {item.related ? (
+                <p className="text-sm">
+                  <HashLink
+                    href={item.related.href}
+                    className="text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
+                  >
+                    {item.related.label}
+                  </HashLink>
+                </p>
+              ) : null}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

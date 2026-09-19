@@ -30,6 +30,7 @@ export function GET() {
     "",
     `- [Download](${baseUrl}/download/)`,
     `- [Documentation](${docsUrl}/)`,
+    `- [Tutorials](${docsUrl}/tutorials/)`,
     `- [GitHub](${COMPANY.GITHUB_URL})`,
     `- [Blog](${baseUrl}/blog/)`,
     `- [Changelog](${baseUrl}/changelog/)`,
@@ -44,6 +45,9 @@ export function GET() {
       `### ${item.question}`,
       "",
       item.answer,
+      ...(item.related
+        ? ["", `Related: [${item.related.label}](${baseUrl}${item.related.href})`]
+        : []),
       "",
     ]),
     "## Contact",

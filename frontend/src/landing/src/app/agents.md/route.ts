@@ -33,6 +33,7 @@ export function GET() {
     "## Learn more",
     "",
     `- [Docs](${docsUrl}/)`,
+    `- [Tutorials](${docsUrl}/tutorials/)`,
     `- [Quickstart](${docsUrl}/quickstart/)`,
     `- [CLI reference](${docsUrl}/cli/)`,
     `- [Download](${baseUrl}/download/)`,

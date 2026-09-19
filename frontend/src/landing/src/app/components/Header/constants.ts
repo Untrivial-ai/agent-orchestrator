@@ -27,6 +27,11 @@ export const RESOURCE_LINKS: NavLink[] = [
     description: "Guides, references, and integrations.",
   },
   {
+    href: "/docs/tutorials",
+    label: "Tutorials",
+    description: "Parallel Claude Code, worktrees, mobile, and provider policy.",
+  },
+  {
     href: COMPANY.GITHUB_URL,
     label: "GitHub",
     description: "Open source under Apache 2.0.",

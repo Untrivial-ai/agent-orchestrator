@@ -1,0 +1,89 @@
+---
+title: Run coding agents from your phone
+description: Pair the AO mobile app with Connect Mobile, use Tailscale away from home Wi-Fi, and learn what the phone can and cannot do.
+---
+
+AO's phone app is a native control surface over the same local daemon your desktop uses. It is not a cloud relay. The desktop keeps running the agents; the phone creates sessions, reads Chat or Terminal UI, and handles approvals when you are away from the keyboard.
+
+Install and run one desktop session first via the [Quickstart](/docs/quickstart). For how AO sits next to other parallel-agent tools, see [AO vs Conductor](/compare/ao-vs-conductor).
+
+## Security boundary (read this first)
+
+The primary daemon listener stays on `127.0.0.1` and is unauthenticated by design. Do **not** expose it with `HOST=0.0.0.0`, a public reverse proxy, or port forwarding.
+
+**Connect Mobile** creates a separate, opt-in LAN listener:
+
+- disabled until you enable it
+- binds only while enabled
+- requires a bearer connection password
+- serves app API routes without daemon-control routes such as `/shutdown`
+
+The mobile listener uses plaintext HTTP on purpose and is intended for a trusted home network or a private Tailscale network. Turn it off when you do not need it.
+
+## Pair on the same Wi-Fi
+
+1. Install the AO mobile app (App Store or Google Play) and join the same trusted Wi-Fi as the desktop.
+2. On the desktop, open **Settings → Connect Mobile**, or use **Connect Mobile** in the sidebar.
+3. Enable mobile access.
+4. In the mobile app, scan the pairing code so address, port, and connection password fill in automatically.
+5. If entering details manually, copy all three values from the desktop. The listener normally uses port `3011` and can fall back to another free port — always use the port the desktop displays.
+
+![Desktop sidebar showing the Connect Mobile entry point](/docs/tutorials/connect-mobile-entry.png)
+
+*Connect Mobile lives in the desktop sidebar and Settings; pairing never uses the unauthenticated loopback listener.*
+
+Disabling Connect Mobile closes the listener. Regenerating the password disconnects existing clients. Settings persist under `~/.ao/mobile/config.json` with mode `0600`.
+
+Reference: [Connect Mobile configuration](/docs/configuration/remote-access).
+
+## Away from home Wi-Fi: Tailscale
+
+1. Install Tailscale on the desktop and the phone; sign both into the same tailnet.
+2. Enable Connect Mobile on the desktop.
+3. Find the desktop's Tailscale IPv4 address (`100.x`) with `tailscale ip -4`.
+4. In the mobile app, enter that address, the displayed mobile port, and the connection password.
+5. Leave TLS disabled for this path.
+
+Do **not** use `tailscale serve` (or similar) to expose the primary loopback daemon. Point the native app at the authenticated mobile listener only.
+
+## What mobile supports
+
+The Expo/React Native app uses the same session model as desktop. New mobile sessions prefer Chat when a compatible installed harness is available; Terminal UI remains an explicit choice.
+
+Supported on mobile today:
+
+- structured Chat and Terminal UI
+- session creation and inspection
+- capability-gated Chat ↔ Terminal UI handoff (same rules as desktop)
+- approvals and structured input
+- changed files
+- model/provider controls where the harness exposes them
+- compaction and rollback
+- voice dictation and attachments
+- a session-scoped worktree shell
+
+<Callout type="info">
+	Chat and Terminal UI are two controllers for the same AO session. Switching does not create a new worktree. A first switch from Terminal UI to Chat does not reconstruct old terminal screen output as structured messages.
+</Callout>
+
+## What mobile is not
+
+- Not a substitute for the desktop daemon — the machine running AO must stay on.
+- Not a public internet deployment path.
+- Not a full desktop clone of every inspector surface; treat it as a companion for steering and checking work in flight.
+
+## Troubleshooting
+
+- Confirm Connect Mobile is still enabled and the password matches.
+- Confirm phone and desktop share the LAN or the same tailnet.
+- After regenerating the password, pair again.
+- If the port changed, update the mobile connection — do not assume `3011`.
+
+More detail: [Troubleshooting](/docs/troubleshooting) and [Platforms](/docs/platforms).
+
+## Related
+
+- [Connect Mobile](/docs/configuration/remote-access)
+- [What is an agent orchestrator](/docs/tutorials/what-is-an-agent-orchestrator)
+- [Run multiple Claude Code agents in parallel](/docs/tutorials/run-multiple-claude-code-agents-in-parallel)
+- [Quickstart](/docs/quickstart) · [AO vs Conductor](/compare/ao-vs-conductor)

@@ -70,10 +70,15 @@ export function Footer() {
             <FooterColumn
               title="Docs"
               links={[
-                { href: `${COMPANY.DOCS_URL}/`, label: "Overview", external: true },
-                { href: `${COMPANY.DOCS_URL}/architecture/`, label: "Architecture", external: true },
-                { href: `${COMPANY.DOCS_URL}/plugins/`, label: "Plugins", external: true },
-                { href: `${COMPANY.GITHUB_URL}/releases`, label: "Releases", external: true },
+                { href: "/docs/", label: "Overview" },
+                { href: "/docs/tutorials/", label: "Tutorials" },
+                {
+                  href: "/docs/tutorials/run-multiple-claude-code-agents-in-parallel/",
+                  label: "Parallel Claude Code",
+                },
+                { href: "/docs/quickstart/", label: "Quickstart" },
+                { href: "/docs/architecture/", label: "Architecture" },
+                { href: "/docs/plugins/", label: "Plugins" },
                 { href: "/privacy/", label: "Privacy" },
               ]}
             />

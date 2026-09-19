@@ -1,0 +1,73 @@
+---
+title: How AO handles provider policy changes
+description: Factual timeline of Anthropic's 2026 subscription and Agent SDK billing changes, and how AO's multi-harness support hedges provider policy risk.
+---
+
+Provider subscriptions and agent SDKs change on the provider's schedule. AO does not bill for model usage and does not sit in the API path: it launches the agent CLIs you already authenticated. When a provider tightens what a subscription covers, the hedge is architectural — keep sessions portable across harnesses — not a promise that any one vendor's rules stay still.
+
+This page summarizes publicly documented Anthropic changes in 2026 and how AO's catalog fits. It is not legal or billing advice; always confirm current terms with the provider. For product setup, see the [Quickstart](/docs/quickstart). For category context, see [What is an agent orchestrator](/docs/tutorials/what-is-an-agent-orchestrator) and [AO vs Conductor](/compare/ao-vs-conductor).
+
+## Timeline (Anthropic, 2026)
+
+### April 4 — subscription limits and third-party harnesses
+
+On April 4, 2026, Anthropic told Claude Pro/Max subscribers that subscription usage limits would no longer cover third-party harnesses such as OpenClaw, with pay-as-you-go "extra usage" or API keys as the alternative. Coverage for Anthropic's own Claude Code / Cowork surfaces was described separately from third-party harness access. Contemporary reporting includes [TechCrunch](https://techcrunch.com/2026/04/04/anthropic-says-claude-code-subscribers-will-need-to-pay-extra-for-openclaw-support/) and [VentureBeat](https://venturebeat.com/technology/anthropic-cuts-off-the-ability-to-use-claude-subscriptions-with-openclaw-and).
+
+### May 13 — Agent SDK monthly credit announcement
+
+On May 13, 2026, Anthropic announced that starting June 15, paid Claude plans could claim a dedicated monthly credit for programmatic usage (Claude Agent SDK, `claude -p`, Claude Code GitHub Actions, and third-party apps built on the Agent SDK), with interactive Claude Code / chat limits described as remaining for interactive use. The official help article that carried that plan (later updated) is [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan). The announcement was also posted via [@ClaudeDevs](https://x.com/ClaudeDevs/status/2054610152817619388) and mirrored on [r/ClaudeCode](https://www.reddit.com/r/ClaudeCode/comments/1tc6n8k/a_new_monthly_agent_sdk_credit_for_claude_plans/).
+
+Announced monthly credit amounts at that time included Pro `$20`, Max 5x `$100`, and Max 20x `$200`, with overage flowing to usage credits at API rates when enabled.
+
+### June 15 — planned change paused
+
+On June 15, 2026 — the day the credit split was scheduled to take effect — Anthropic paused it. The help center leads with an update that Agent SDK, `claude -p`, and third-party app usage continue to draw from normal subscription limits for now, that the previously announced monthly credit is not available to claim, and that Anthropic will share advance notice before any future change takes effect. See the June 15 update on [the same help article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+
+<Callout type="info" title="Policies move">
+	Treat the table below as a snapshot of announcements, not a live billing console. Re-read Anthropic's help center before you plan production automation on subscription limits.
+</Callout>
+
+| Date | What was announced | Status as of the June 15 update |
+| --- | --- | --- |
+| 2026-04-04 | Subscription limits no longer cover third-party harness usage the way interactive Claude Code does | Reported as in effect for third-party harness access; confirm in your account |
+| 2026-05-13 | Separate monthly Agent SDK credit from June 15 | Superseded by the pause |
+| 2026-06-15 | Pause of the Agent SDK credit split | In effect per help center: nothing changed for now |
+
+## What this means for AO users
+
+AO invokes your local `claude` (and other) executables. Whether a given workflow counts as interactive Claude Code, Agent SDK / `claude -p`, or a third-party harness is determined by **Anthropic's product and billing rules**, not by AO marketing labels.
+
+Practical posture:
+
+1. Prefer the harness and auth mode you have verified against current provider terms.
+2. Keep production automation on explicit API keys when you need predictable pay-as-you-go billing.
+3. Do not assume a paused policy change stays paused forever — Anthropic said it would give advance notice before a future revision.
+
+## Multi-harness support as the hedge
+
+AO compiles agent adapters into the daemon. The catalog currently advertises **27** worker harnesses (see `backend/internal/domain/harness.go` and [Agent adapters](/docs/plugins/agents)):
+
+```bash
+ao agent ls --refresh
+ao agent ls --refresh --json
+```
+
+Examples include `claude-code`, `codex`, `opencode`, `cursor`, `aider`, `droid`, and others listed on the adapters page. Structured Chat is available for a smaller installed subset (Codex, Claude Code, OpenCode, Droid); every advertised harness can use Terminal UI.
+
+You can set per-project defaults and override per spawn:
+
+```bash
+ao project set-config my-app --worker-agent codex
+ao spawn --project my-app --name auth-fix --agent claude-code --mode chat
+```
+
+Compatible sessions can also switch agents later with `ao session switch-agent` when the daemon allows the handoff. The AO session and worktree remain the coordination layer; the harness is replaceable.
+
+That is the product hedge: when one provider's subscription rules shift, you can keep using AO's board, worktrees, PR loop, and mobile companion while pointing workers at another installed CLI — subject to that CLI's own terms.
+
+## Related
+
+- [Agent adapters](/docs/plugins/agents)
+- [Claude Code adapter](/docs/plugins/agents/claude-code)
+- [FAQ](/docs/faq)
+- [Quickstart](/docs/quickstart) · [AO vs Conductor](/compare/ao-vs-conductor) · [AO vs Superset](/compare/ao-vs-superset)

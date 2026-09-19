@@ -1,0 +1,90 @@
+---
+title: Git worktrees for coding agents
+description: What git worktrees are, why Agent Orchestrator creates one per session, and common pitfalls with ports, env files, and cleanup.
+---
+
+A git worktree is a second checked-out working directory that shares one repository's object database. Each worktree can sit on a different branch at the same time. Coding agents need that isolation: without it, two agents editing the same checkout will overwrite each other's files, fight over the index, and confuse tools that assume a single working tree.
+
+AO creates a worktree (and branch) for every Git-backed session. Scratch projects use AO-managed directories instead. For the end-to-end product loop, see the [Quickstart](/docs/quickstart). For product comparisons that also center on worktrees, see [AO vs Conductor](/compare/ao-vs-conductor) and [AO vs Emdash](/compare/ao-vs-emdash).
+
+## What a worktree is
+
+```text
+~/Projects/my-app                 # your original checkout (untouched by sessions)
+~/.ao/data/worktrees/my-app/...   # AO-managed session checkouts
+```
+
+All worktrees for a repository share commits, remotes, and the object store. Checked-out files, the index, and the current branch are separate. AO defaults the new branch to `ao/<session-id>/root` unless you pass `--branch` on `ao spawn`.
+
+AO resolves the repository's Git default automatically instead of assuming `main`. It does not use whatever branch happens to be checked out in your original folder.
+
+## Why AO uses them
+
+| Without worktrees | With AO worktrees |
+| --- | --- |
+| Agents share one dirty working tree | Each session has its own files and branch |
+| Stashing or stopping one agent risks another | Sessions can run, fail, or idle independently |
+| Diff and PR ownership are ambiguous | Durable session identity maps to one worktree and PR |
+
+That is the core of [running multiple Claude Code agents in parallel](/docs/tutorials/run-multiple-claude-code-agents-in-parallel): isolation first, orchestration second.
+
+Register a project and spawn a session:
+
+```bash
+ao project add --path /absolute/path/to/repo --worker-agent claude-code
+ao spawn --project my-app --name fix-auth --prompt "Fix token refresh"
+```
+
+Inspect and reclaim workspaces later:
+
+```bash
+ao session ls
+ao session kill <session-id>
+ao session cleanup --dry-run
+ao session cleanup
+```
+
+AO never force-deletes a dirty registered worktree. Cleanup skips those workspaces so user work is preserved.
+
+## Pitfalls agents hit
+
+### Ports and local servers
+
+Two worktrees often try to bind the same development port (`3000`, `5173`, `8080`). Only one process wins. Prefer:
+
+- starting the server inside the session that owns the change
+- selecting that session's URL with `ao preview http://127.0.0.1:<port>`
+- or using `.ao/launch.json` with `ao preview start` so the preview is session-owned
+
+Do not assume AO invents a free port for every worker. Preview targets are explicit.
+
+### Environment files and secrets
+
+Worktrees do not automatically include ignored files such as `.env`. Configure project `symlinks` or `postCreate` so each workspace gets what it needs:
+
+```bash
+ao project set-config my-app \
+  --symlink .env \
+  --post-create "pnpm install"
+```
+
+Paths in `symlinks` must stay repository-relative. A failing `postCreate` command prevents the agent from starting, so keep setup deterministic. Details live in [project configuration](/docs/configuration/projects).
+
+### Tooling that assumes a single checkout
+
+Some scripts hard-code the original repository path, write absolute caches, or refuse to run outside the primary worktree. Prefer repo-relative paths, and test the same commands inside an AO session worktree before relying on them in automation.
+
+### Disk use and cleanup
+
+Worktrees are cheaper than full clones, but many long-lived dirty sessions still consume disk. Terminate finished sessions and run `ao session cleanup` after you have pushed or otherwise preserved work you need.
+
+### Overrides of the data directory
+
+All AO state defaults under `~/.ao`. If you launch with `AO_DATA_DIR` or `AO_RUN_FILE`, worktrees and the daemon database follow that override. Confirm you are looking at the expected AO home when diagnosing a missing worktree.
+
+## Related reference
+
+- [Git worktrees plugin docs](/docs/plugins/workspaces/worktree)
+- [Parallel work guide](/docs/guides/parallel-issues)
+- [What is an agent orchestrator](/docs/tutorials/what-is-an-agent-orchestrator)
+- [Quickstart](/docs/quickstart) · [AO vs Conductor](/compare/ao-vs-conductor)

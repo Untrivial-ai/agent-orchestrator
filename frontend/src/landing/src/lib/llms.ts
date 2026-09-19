@@ -64,6 +64,7 @@ export function buildDeveloperResourcesSection(
 		...(includeDocumentationLinks
 			? [
 					`- [Documentation](${docsUrl}/): product and workflow documentation`,
+					`- [Tutorials](${docsUrl}/tutorials/): parallel Claude Code, worktrees, mobile, and provider policy`,
 					`- [Quickstart](${docsUrl}/quickstart/): install and first-run guide`,
 					`- [CLI](${docsUrl}/cli/): local \`ao\` command reference`,
 				]
@@ -149,6 +150,9 @@ export function buildLlmsTxt(): string {
 			`### ${item.question}`,
 			"",
 			item.answer,
+			...(item.related
+				? ["", `Related: [${item.related.label}](${COMPANY.MARKETING_URL}${item.related.href})`]
+				: []),
 			"",
 		]),
 	];

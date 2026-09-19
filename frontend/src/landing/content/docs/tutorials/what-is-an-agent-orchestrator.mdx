@@ -1,0 +1,63 @@
+---
+title: What is an agent orchestrator
+description: An honest definition of the agent orchestrator category, where AO helps, and when a single coding agent is the better choice.
+---
+
+An **agent orchestrator** is software that supervises one or more coding agents as durable sessions: isolated workspaces, status, follow-ups, and usually the path from task to pull request. It is not the coding model itself. The agent still writes the code; the orchestrator keeps several agents from colliding and keeps their outcomes legible.
+
+Agent Orchestrator (**AO**) is a local desktop app plus a loopback daemon that fills that role. Agents remain your installed CLIs (Claude Code, Codex, Cursor, and others). AO does not proxy provider APIs and does not replace `gh` or your editor.
+
+New to the product? Use the [Quickstart](/docs/quickstart). For adjacent products in the same neighborhood, see [AO vs Conductor](/compare/ao-vs-conductor), [AO vs Superset](/compare/ao-vs-superset), and [AO vs Emdash](/compare/ao-vs-emdash).
+
+## What the category usually includes
+
+Most tools people call "agent orchestrators" or "agent fleets" converge on some mix of:
+
+1. **Isolation** — git worktrees or separate checkouts so parallel agents do not share one dirty tree ([why AO uses worktrees](/docs/tutorials/git-worktrees-for-coding-agents)).
+2. **Session identity** — a stable handle for each run (name, branch, terminal or chat, PR).
+3. **Control surface** — start, stop, message, and inspect many sessions from one UI or CLI.
+4. **Delivery loop** — optional wiring to issues, CI, review comments, and merge readiness.
+
+AO's loop looks like:
+
+```text
+add project -> start session -> isolated worktree -> pull request -> CI/review -> merge -> cleanup
+```
+
+## Where an orchestrator helps
+
+Reach for AO when:
+
+- Several independent tasks can proceed at once ([parallel Claude Code workers](/docs/tutorials/run-multiple-claude-code-agents-in-parallel)).
+- You need the board to show which session is blocked, fixing CI, waiting on review, or ready to merge.
+- CI failures or review comments should route back to the session that owns the branch.
+- You want Chat for some harnesses and Terminal UI for others, including switching Claude Code or Codex between them without changing the worktree.
+- You need the same sessions reachable from a phone on your LAN or Tailscale ([mobile tutorial](/docs/tutorials/run-coding-agents-from-your-phone)).
+
+AO is strongest when each worker has a clear, reviewable outcome: a focused bug, feature slice, test, docs change, or review follow-up.
+
+## Where a single agent is better
+
+Skip the fleet when:
+
+- The change is one tightly coupled edit that must stay in a single conversation.
+- You are still exploring the codebase and do not yet know how to split work.
+- Setup cost (project registration, harness auth, PR expectations) exceeds the value of isolation for a five-minute fix.
+- You only need an interactive terminal in one checkout and will not open parallel branches.
+
+In those cases, run Claude Code, Codex, or your preferred CLI directly. You can still use AO for a single session later if the task grows into a PR you want to track.
+
+## What AO is not
+
+- Not a hosted cloud agent platform.
+- Not a replacement for your provider subscription or API billing.
+- Not a guarantee that every historical plugin from older AO docs is active in the current Go daemon (GitHub is the shipped SCM observation path today).
+
+AO currently ships adapters for **27** worker harnesses in the daemon catalog (`ao agent ls --refresh`). Structured Chat is a smaller capability-gated subset (Codex, Claude Code, OpenCode, and Droid when installed). That breadth is deliberate: see [How AO handles provider policy changes](/docs/tutorials/how-ao-handles-provider-policy-changes).
+
+## Related
+
+- [Introduction](/docs/index)
+- [Architecture](/docs/architecture)
+- [Agent adapters](/docs/plugins/agents)
+- [Quickstart](/docs/quickstart) · [AO vs Conductor](/compare/ao-vs-conductor)

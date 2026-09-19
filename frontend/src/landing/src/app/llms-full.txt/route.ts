@@ -36,6 +36,9 @@ export async function GET() {
 			"# Documentation",
 			"",
 			`- **[Documentation overview](${docsUrl}/index.html.md)**`,
+			`- **[Tutorials](${docsUrl}/tutorials/index.html.md)**`,
+			`- **[Run multiple Claude Code agents in parallel](${docsUrl}/tutorials/run-multiple-claude-code-agents-in-parallel/index.html.md)**`,
+			`- **[What is an agent orchestrator](${docsUrl}/tutorials/what-is-an-agent-orchestrator/index.html.md)**`,
 			`- **[Quickstart guide](${docsUrl}/quickstart/index.html.md)**`,
 			`- **[Command-line interface (CLI) reference](${docsUrl}/cli/index.html.md)**`,
 		].join("\n"),
@@ -72,6 +75,12 @@ export async function GET() {
 				`## ${item.question}`,
 				"",
 				item.answer,
+				...(item.related
+					? [
+							"",
+							`Related: [${item.related.label}](${baseUrl}${item.related.href})`,
+						]
+					: []),
 				"",
 			]),
 		].join("\n"),
