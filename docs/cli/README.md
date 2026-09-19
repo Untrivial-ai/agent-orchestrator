@@ -63,7 +63,7 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao preview [url]`                  | `POST /api/v1/sessions/{id}/preview`           |
 | `ao preview start/status/stop`      | `POST/GET/DELETE /api/v1/sessions/{id}/preview/server` |
 | `ao browser ...`                    | `GET /api/v1/browser/status`, `POST /api/v1/browser/commands` |
-| `ao hooks <agent> <event>`          | `POST /api/v1/sessions/{id}/activity` (hidden) |
+| `ao hooks <agent> <event>`          | `POST /api/v1/sessions/{id}/activity`; successful Claude Code PR creation also uses `/pr/claim` (hidden) |
 
 `ao agent ls` asks the daemon to ensure display readiness, then prints the
 existing table or legacy JSON projection. The daemon alone decides whether a
