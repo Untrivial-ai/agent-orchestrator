@@ -217,7 +217,7 @@ func TestCrushMalformedConfigDoesNotExposeLowerPriorityCredentials(t *testing.T)
 	}
 }
 
-func TestCrushMalformedADCCanUseIndependentCredentialSource(t *testing.T) {
+func TestCrushMalformedExplicitADCDoesNotUseDefaultCredentials(t *testing.T) {
 	home := isolateCrushAuth(t)
 	path := filepath.Join(home, "malformed-adc.json")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
@@ -226,7 +226,7 @@ func TestCrushMalformedADCCanUseIndependentCredentialSource(t *testing.T) {
 	writeCrushAuthFile(t, path, `{`)
 	writeCrushAuthFile(t, filepath.Join(home, ".config/gcloud/application_default_credentials.json"), `{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"refresh"}`)
 	got, err := (&Plugin{resolvedBinary: "crush"}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "vertexai/gemini"}})
-	if err != nil || got != ports.AgentAuthStatusConfigured {
-		t.Fatalf("status = %q, %v; want configured", got, err)
+	if err != nil || got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, %v; want unknown", got, err)
 	}
 }

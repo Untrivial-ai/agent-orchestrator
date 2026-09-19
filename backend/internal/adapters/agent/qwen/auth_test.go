@@ -262,7 +262,7 @@ func TestQwenMalformedConfigDoesNotExposeLowerPriorityCredentials(t *testing.T) 
 	}
 }
 
-func TestQwenMalformedADCCanUseIndependentCredentialSource(t *testing.T) {
+func TestQwenMalformedExplicitADCDoesNotUseDefaultCredentials(t *testing.T) {
 	home := isolateQwenAuth(t)
 	path := filepath.Join(home, "malformed-adc.json")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
@@ -271,7 +271,7 @@ func TestQwenMalformedADCCanUseIndependentCredentialSource(t *testing.T) {
 	writeQwenAuthFile(t, path, `{`)
 	writeQwenAuthFile(t, filepath.Join(home, ".config/gcloud/application_default_credentials.json"), `{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"refresh"}`)
 	got, err := (&Plugin{resolvedBinary: "qwen"}).AuthStatus(context.Background())
-	if err != nil || got != ports.AgentAuthStatusConfigured {
-		t.Fatalf("status = %q, %v; want configured", got, err)
+	if err != nil || got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, %v; want unknown", got, err)
 	}
 }
