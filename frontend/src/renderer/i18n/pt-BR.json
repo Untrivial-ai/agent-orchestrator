@@ -1460,6 +1460,8 @@
 	"terminal.renameHintDoubleClick": "{{workingDir}} (clique duas vezes para renomear)",
 	"terminal.renameHintRightClick": "{{workingDir}} (clique com o botão direito para renomear)",
 	"terminal.reviewer": "Revisor",
+	"terminal.reviewCompleted": "Revisão concluída",
+	"terminal.reviewerCompleted": "Revisão concluída e publicada na solicitação de pull.",
 	"terminal.scrollTabsLeft": "Rolar abas para a esquerda",
 	"terminal.scrollTabsRight": "Rolar abas para a direita",
 	"terminal.search": "Buscar no terminal",
