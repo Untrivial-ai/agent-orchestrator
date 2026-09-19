@@ -151,7 +151,7 @@ func piNativeAuthStatus(ctx context.Context, binary, provider string, check port
 			cmd.WaitDelay = 100 * time.Millisecond
 			err := cmd.Run()
 			if output.exceeded {
-				return nil, errors.New("Pi auth output exceeds limit")
+				return nil, piBoundedOutputError{}
 			}
 			return output.data, err
 		}
@@ -161,6 +161,9 @@ func piNativeAuthStatus(ctx context.Context, binary, provider string, check port
 		return ports.AgentAuthStatusUnknown, false, ctx.Err()
 	}
 	if probeCtx.Err() != nil || len(out) > authutil.MaxFileSize {
+		return ports.AgentAuthStatusUnknown, false, nil
+	}
+	if piBoundedOutputExceeded(err) {
 		return ports.AgentAuthStatusUnknown, false, nil
 	}
 	output := strings.TrimSpace(string(out))
@@ -189,6 +192,19 @@ func piExitCode(err error) int {
 type piProbeOutput struct {
 	data     []byte
 	exceeded bool
+}
+
+type piBoundedOutputError struct{}
+
+func (piBoundedOutputError) Error() string               { return "Pi auth output exceeds limit" }
+func (piBoundedOutputError) BoundedOutputExceeded() bool { return true }
+
+func piBoundedOutputExceeded(err error) bool {
+	type boundedOutputError interface {
+		BoundedOutputExceeded() bool
+	}
+	var bounded boundedOutputError
+	return errors.As(err, &bounded) && bounded.BoundedOutputExceeded()
 }
 
 func (b *piProbeOutput) Write(p []byte) (int, error) {
@@ -468,16 +484,31 @@ func piModelsProviderValid(provider string, config piModelsProvider) bool {
 		if api == "" {
 			api = strings.TrimSpace(config.API)
 		}
-		if !builtIn && !piCustomAPI(api) {
+		if api == "" {
+			if builtIn {
+				continue
+			}
+			return false
+		}
+		if !piRegisteredAPI(api) {
 			return false
 		}
 	}
 	return true
 }
 
-func piCustomAPI(api string) bool {
+func piRegisteredAPI(api string) bool {
 	switch api {
-	case "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai":
+	case "openai-completions",
+		"mistral-conversations",
+		"openai-responses",
+		"azure-openai-responses",
+		"openai-codex-responses",
+		"anthropic-messages",
+		"bedrock-converse-stream",
+		"google-generative-ai",
+		"google-vertex",
+		"pi-messages":
 		return true
 	default:
 		return false

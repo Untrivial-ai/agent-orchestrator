@@ -237,6 +237,29 @@ func TestPiProviderScopedEvidence(t *testing.T) {
 	}
 }
 
+func TestPiCustomProviderAcceptsRegisteredAPIs(t *testing.T) {
+	apis := []string{
+		"openai-completions",
+		"mistral-conversations",
+		"openai-responses",
+		"azure-openai-responses",
+		"openai-codex-responses",
+		"anthropic-messages",
+		"bedrock-converse-stream",
+		"google-generative-ai",
+		"google-vertex",
+		"pi-messages",
+	}
+	for _, api := range apis {
+		t.Run(api, func(t *testing.T) {
+			models := `{"providers":{"custom":{"baseUrl":"http://127.0.0.1:8080/v1","api":"` + api + `","models":[{"id":"model"}]}}}`
+			if got := piTestStatus(t, "custom", map[string]string{"models.json": models}, nil, authutil.Dependencies{}); got != ports.AgentAuthStatusNotApplicable {
+				t.Fatalf("status = %q, want not_applicable", got)
+			}
+		})
+	}
+}
+
 func TestPiNativeProviderCheck(t *testing.T) {
 	tests := map[string]struct {
 		out     string
@@ -251,6 +274,9 @@ func TestPiNativeProviderCheck(t *testing.T) {
 		"mismatched exit":   {out: "not_ready\n", err: piTestExitError(2), want: ports.AgentAuthStatusUnknown},
 		"timeout":           {timeout: true, want: ports.AgentAuthStatusUnknown},
 		"oversized output":  {out: strings.Repeat("x", authutil.MaxFileSize+1), want: ports.AgentAuthStatusUnknown},
+		"bounded runner overflow": {
+			err: piTestBoundedOutputError{}, want: ports.AgentAuthStatusUnknown,
+		},
 		"transport absence": {err: errors.New("transport unavailable"), want: ports.AgentAuthStatusConfigured},
 	}
 	for name, tc := range tests {
@@ -443,3 +469,10 @@ func (e piTestExitError) ExitCode() int { return int(e) }
 
 var _ error = piTestExitError(1)
 var _ interface{ ExitCode() int } = piTestExitError(1)
+
+type piTestBoundedOutputError struct{}
+
+func (piTestBoundedOutputError) Error() string               { return "bounded output exceeded" }
+func (piTestBoundedOutputError) BoundedOutputExceeded() bool { return true }
+
+var _ error = piTestBoundedOutputError{}
