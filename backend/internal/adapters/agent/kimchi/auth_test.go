@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -44,7 +46,7 @@ func writeKimchiGlobalConfig(t *testing.T, home, content string) string {
 // kimchiConfigAuthStatus — pure config-file probe (no binary dependency)
 // ---------------------------------------------------------------------------
 
-func TestConfigAuthStatusAuthorizedFromAPIKey(t *testing.T) {
+func TestConfigAuthStatusConfiguredFromAPIKey(t *testing.T) {
 	home := withTempHome(t)
 	path := writeKimchiGlobalConfig(t, home, `{"apiKey":"test-key-123"}`)
 
@@ -52,12 +54,12 @@ func TestConfigAuthStatusAuthorizedFromAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 
-func TestConfigAuthStatusAuthorizedFromSnakeCase(t *testing.T) {
+func TestConfigAuthStatusConfiguredFromSnakeCase(t *testing.T) {
 	home := withTempHome(t)
 	path := writeKimchiGlobalConfig(t, home, `{"api_key":"legacy-key-456"}`)
 
@@ -65,8 +67,8 @@ func TestConfigAuthStatusAuthorizedFromSnakeCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -78,8 +80,8 @@ func TestConfigAuthStatusPrefersCamelCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -194,7 +196,7 @@ func TestExtractAPIKey(t *testing.T) {
 // Plugin.AuthStatus — integration of binary + env + config
 // ---------------------------------------------------------------------------
 
-func TestAuthStatusAuthorizedFromEnvVar(t *testing.T) {
+func TestAuthStatusConfiguredFromEnvVar(t *testing.T) {
 	clearKimchiAuthEnv(t)
 	withTempHome(t) // ensure no real config file is read
 	t.Setenv("KIMCHI_API_KEY", "env-key-789")
@@ -204,12 +206,12 @@ func TestAuthStatusAuthorizedFromEnvVar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 
-func TestAuthStatusAuthorizedFromConfig(t *testing.T) {
+func TestAuthStatusConfiguredFromConfig(t *testing.T) {
 	clearKimchiAuthEnv(t)
 	home := withTempHome(t)
 	writeKimchiGlobalConfig(t, home, `{"apiKey":"file-key-012"}`)
@@ -219,8 +221,8 @@ func TestAuthStatusAuthorizedFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusConfigured)
 	}
 }
 
@@ -264,8 +266,14 @@ func TestAuthStatusEnvVarPrecedenceOverConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusAuthorized)
+	if got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusConfigured)
+	}
+}
+
+func TestKimchiImplementsScopedAuthChecker(t *testing.T) {
+	if _, ok := any(&Plugin{resolvedBinary: "kimchi"}).(ports.AgentScopedAuthChecker); !ok {
+		t.Fatal("Kimchi must implement AgentScopedAuthChecker")
 	}
 }
 
@@ -297,5 +305,114 @@ func TestAuthStatusUnknownWhenBinaryNotFound(t *testing.T) {
 	}
 	if got != ports.AgentAuthStatusUnknown {
 		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestKimchiScopedAuthResolution(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	tests := map[string]struct {
+		model       string
+		global      string
+		project     string
+		auth        string
+		env         map[string]string
+		probeStatus ports.AgentAuthStatus
+		want        ports.AgentAuthStatus
+		wantProbe   bool
+		wantKey     string
+	}{
+		"project key overrides global key": {
+			global: `{"apiKey":"global-key"}`, project: `{"apiKey":"project-key"}`,
+			probeStatus: ports.AgentAuthStatusAuthorized, want: ports.AgentAuthStatusAuthorized, wantProbe: true, wantKey: "project-key",
+		},
+		"environment key overrides project key": {
+			project: `{"apiKey":"project-key"}`, env: map[string]string{"KIMCHI_API_KEY": "environment-key"},
+			probeStatus: ports.AgentAuthStatusAuthorized, want: ports.AgentAuthStatusAuthorized, wantProbe: true, wantKey: "environment-key",
+		},
+		"local API key is configured without a probe": {
+			global: `{"api_key":"service-key"}`, want: ports.AgentAuthStatusConfigured, wantKey: "service-key",
+		},
+		"Kimchi service key in harness auth is configured": {
+			auth: `{"kimchi-dev":{"type":"api_key","key":"service-key"}}`, want: ports.AgentAuthStatusConfigured,
+		},
+		"upstream subscription OAuth is configured": {
+			model: "openai-codex/gpt-5", auth: `{"openai-codex":{"type":"oauth","access":"access-token","refresh":"refresh-token","expires":1800003600000}}`,
+			want: ports.AgentAuthStatusConfigured,
+		},
+		"custom endpoint pairs with the effective key": {
+			global: `{"apiKey":"global-key"}`, project: `{"llmEndpoint":"https://proxy.example/v1"}`,
+			want: ports.AgentAuthStatusConfigured, wantKey: "global-key",
+		},
+		"malformed effective endpoint is unknown": {
+			global: `{"apiKey":"global-key"}`, project: `{"llmEndpoint":"file:///tmp/socket"}`,
+			want: ports.AgentAuthStatusUnknown,
+		},
+		"endpoint without its paired key is unknown": {
+			project: `{"llmEndpoint":"https://proxy.example/v1"}`,
+			want:    ports.AgentAuthStatusUnknown,
+		},
+		"unrelated provider credential does not leak": {
+			model: "openai-codex/gpt-5", auth: `{"anthropic":{"type":"oauth","access":"access-token","refresh":"refresh-token","expires":1800003600000}}`,
+			want: ports.AgentAuthStatusUnknown,
+		},
+		"official probe rejection is unauthorized": {
+			global: `{"apiKey":"revoked-key"}`, probeStatus: ports.AgentAuthStatusUnauthorized,
+			want: ports.AgentAuthStatusUnauthorized, wantProbe: true, wantKey: "revoked-key",
+		},
+		"absence is unknown": {want: ports.AgentAuthStatusUnknown},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			home, work := t.TempDir(), t.TempDir()
+			if tc.global != "" {
+				writeKimchiTestFile(t, filepath.Join(home, ".config", "kimchi", "config.json"), tc.global)
+			}
+			if tc.project != "" {
+				writeKimchiTestFile(t, filepath.Join(work, ".kimchi", "config.json"), tc.project)
+			}
+			if tc.auth != "" {
+				writeKimchiTestFile(t, filepath.Join(home, ".config", "kimchi", "harness", "auth.json"), tc.auth)
+			}
+			env := map[string]string{"HOME": home}
+			for key, value := range tc.env {
+				env[key] = value
+			}
+			deps := authutil.Dependencies{Getenv: func(key string) string { return env[key] }, Now: func() time.Time { return now }}
+			probeCalled := false
+			var probe kimchiAPIKeyProbe
+			if tc.probeStatus != "" {
+				probe = func(_ context.Context, key string) (ports.AgentAuthStatus, error) {
+					probeCalled = true
+					if key != tc.wantKey {
+						t.Fatalf("probe key = %q, want selected key", key)
+					}
+					return tc.probeStatus, nil
+				}
+			}
+			got, err := kimchiAuthStatus(context.Background(), ports.AgentAuthCheck{
+				WorkingDir: work,
+				Config:     ports.AgentConfig{Model: tc.model},
+			}, deps, probe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("status = %q, want %q", got, tc.want)
+			}
+			if probeCalled != tc.wantProbe {
+				t.Fatalf("probe called = %v, want %v", probeCalled, tc.wantProbe)
+			}
+		})
+	}
+}
+
+func writeKimchiTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
