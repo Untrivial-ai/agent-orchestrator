@@ -277,16 +277,24 @@ func (s *Store) ClearAllNotifications(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-// DeleteNotification deletes one notification and returns the removed row.
+// DeleteNotification hides one visible notification and returns its original
+// row while retaining open dedupe state until the underlying condition resolves.
 func (s *Store) DeleteNotification(ctx context.Context, id string) (domain.NotificationRecord, bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	row, err := s.qw.DeleteNotification(ctx, id)
+	row, err := s.qw.GetNotificationForDismissal(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.NotificationRecord{}, false, nil
 	}
 	if err != nil {
+		return domain.NotificationRecord{}, false, fmt.Errorf("read notification for delete %s: %w", id, err)
+	}
+	updated, err := s.qw.DismissNotification(ctx, id)
+	if err != nil {
 		return domain.NotificationRecord{}, false, fmt.Errorf("delete notification %s: %w", id, err)
+	}
+	if updated != 1 {
+		return domain.NotificationRecord{}, false, nil
 	}
 	return notificationFromGen(row), true, nil
 }
