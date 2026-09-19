@@ -397,3 +397,16 @@ export interface CloudCpProviderConnectionsResponse {
 export interface CloudCpProviderConnectionResponse {
 	providerConnection: CloudCpProviderConnection;
 }
+
+/** GET /me/github/repos */
+export interface CloudCpGitHubRepo {
+	name: string;
+	fullName: string;
+	private: boolean;
+	defaultBranch: string;
+	cloneUrl: string;
+}
+
+export interface CloudCpGitHubReposResponse {
+	repos: CloudCpGitHubRepo[];
+}

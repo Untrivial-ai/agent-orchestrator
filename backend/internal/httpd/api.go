@@ -57,9 +57,11 @@ type APIDeps struct {
 	HostID string
 	// Endpoints reports how this daemon can currently be reached, for the
 	// phone's endpoint-refresh route.
-	Endpoints         controllers.EndpointSource
-	Installer         controllers.Installer
-	AgentAuth         controllers.AgentAuthService
+	Endpoints controllers.EndpointSource
+	Installer controllers.Installer
+	AgentAuth controllers.AgentAuthService
+	// GitHub is the local GitHub PAT + repos surface.
+	GitHub            controllers.GitHubPATService
 	AgentSwitchPolicy AgentSwitchPolicyControl
 
 	// Presence tracks which mobile devices are currently running the app.
@@ -124,6 +126,7 @@ type API struct {
 	endpoints     *controllers.EndpointsController
 	systemInstall *controllers.SystemInstallController
 	agentAuth     *controllers.AgentAuthController
+	github        *controllers.GitHubController
 	events        *EventsController
 }
 
@@ -166,6 +169,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
 		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
 		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
+		github:        &controllers.GitHubController{Svc: deps.GitHub},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -205,6 +209,7 @@ func (a *API) Register(root chi.Router) {
 			a.endpoints.Register(r)
 			a.systemInstall.Register(r)
 			a.agentAuth.Register(r)
+			a.github.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
