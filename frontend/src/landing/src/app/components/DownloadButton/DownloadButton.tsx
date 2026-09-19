@@ -1,6 +1,11 @@
 "use client";
 
-import Link from "next/link";
+import {
+  DOWNLOAD_URL_LINUX,
+  DOWNLOAD_URL_MAC_ARM64,
+  DOWNLOAD_URL_MAC_X64,
+  DOWNLOAD_URL_WINDOWS,
+} from "@ao/shared/constants";
 import { track } from "../../../lib/analytics";
 import { isMacPlatform, Platform, usePlatform } from "../../hooks/useOS";
 
@@ -79,6 +84,14 @@ export function getDownloadIconKind(platform: Platform): DownloadIconKind {
   return getDownloadPlatform(platform);
 }
 
+export function getDownloadHref(platform: Platform): string {
+  if (platform === Platform.Windows) return DOWNLOAD_URL_WINDOWS;
+  if (platform === Platform.Linux) return DOWNLOAD_URL_LINUX;
+  if (platform === Platform.MacIntel) return DOWNLOAD_URL_MAC_X64;
+  if (isMacPlatform(platform)) return DOWNLOAD_URL_MAC_ARM64;
+  return "/download";
+}
+
 function MobileIcon() {
   return (
     <svg
@@ -113,6 +126,7 @@ export function DownloadButton({
   const downloadPlatform = getDownloadPlatform(platform);
   const iconKind = getDownloadIconKind(platform);
   const isMobile = iconKind === "mobile";
+  const href = getDownloadHref(platform);
   const sizeClasses =
     size === "sm"
       ? "h-8 px-3 text-sm"
@@ -120,8 +134,8 @@ export function DownloadButton({
   const buttonClasses = `bg-foreground text-background ${sizeClasses} rounded-2xl tracking-[-0.5px] font-semibold hover:opacity-90 transition-opacity flex items-center gap-2 whitespace-nowrap shrink-0 ${className}`;
 
   return (
-    <Link
-      href="/download"
+    <a
+      href={href}
       className={buttonClasses}
       onClick={() =>
         track("download_clicked", {
@@ -139,6 +153,6 @@ export function DownloadButton({
         <PlatformIcon platform={downloadPlatform} />
       </span>
       <span data-download-label>Download</span>
-    </Link>
+    </a>
   );
 }
