@@ -20,6 +20,7 @@ import { mobileReachablePreviewURL, restoreSession, resumeSessionAgent, type Das
 import { haptics } from "../haptics";
 import { deferRouteContent, resetHeaderRightForSwap } from "../headerRightSwap";
 import { openGitHub } from "../openGitHub";
+import { glassHeaderControl } from "../native-header-items";
 import { NativeHeaderButton } from "../native-header-button";
 import { useApp } from "../store";
 import {
@@ -78,7 +79,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const [contentReadySessionId, setContentReadySessionId] = useState<string>();
 	useLayoutEffect(
 		() => resetHeaderRightForSwap(
-			() => navigation.setOptions({ headerRight: undefined }),
+			() => navigation.setOptions(glassHeaderControl("right")),
 			() => setHeaderRightReady(true),
 		),
 		[navigation],
@@ -188,7 +189,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	}, [cardShowing, navigation]);
 	useLayoutEffect(() => {
 		if (!headerRightReady) {
-			navigation.setOptions({ headerRight: undefined });
+			navigation.setOptions(glassHeaderControl("right"));
 			return;
 		}
 		navigation.setOptions({
@@ -200,9 +201,9 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 					state={headerState}
 				/>
 			),
-			headerRight: () => (
+			...glassHeaderControl("right", (
 				<NativeHeaderButton icon="more" label="Conversation actions" onPress={() => { haptics.tap(); setMenuOpen(true); }} />
-			),
+			)),
 		});
 	}, [headerHarness, headerRightReady, headerState, navigation, projectName, title, t]);
 

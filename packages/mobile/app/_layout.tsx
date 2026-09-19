@@ -10,6 +10,7 @@ import { PushManager } from "../lib/PushManager";
 import { UpdatesManager } from "../lib/UpdatesManager";
 import { StoreUpdateManager } from "../lib/StoreUpdateManager";
 import { MinimalBackButton } from "../lib/MinimalBackButton";
+import { glassHeaderControl } from "../lib/native-header-items";
 import { LayoutGrid } from "../lib/layoutGrid";
 import { AppProvider } from "../lib/store";
 import { ThemeProvider, useTheme, useThemeState } from "../lib/ThemeProvider";
@@ -123,9 +124,9 @@ function Shell() {
 						contentStyle: { backgroundColor: t.bgBase },
 					}}
 				/>
-				<Stack.Screen name="session/[id]" options={{ title: "Session", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
-				<Stack.Screen name="shell/[handleId]" options={{ title: "Worktree shell", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
-				<Stack.Screen name="preview/[id]" options={{ title: "Preview", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
+				<Stack.Screen name="session/[id]" options={{ title: "Session", headerBackButtonDisplayMode: "minimal", ...glassHeaderControl("left", <MinimalBackButton />) }} />
+				<Stack.Screen name="shell/[handleId]" options={{ title: "Worktree shell", headerBackButtonDisplayMode: "minimal", ...glassHeaderControl("left", <MinimalBackButton />) }} />
+				<Stack.Screen name="preview/[id]" options={{ title: "Preview", headerBackButtonDisplayMode: "minimal", ...glassHeaderControl("left", <MinimalBackButton />) }} />
 				<Stack.Screen
 					name="spawn"
 					options={{

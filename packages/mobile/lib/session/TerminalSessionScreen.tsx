@@ -12,6 +12,7 @@ import { haptics } from "../haptics";
 import { resetHeaderRightForSwap } from "../headerRightSwap";
 import { MinimalBackButton } from "../MinimalBackButton";
 import { MuxClient, type MuxStatus } from "../mux";
+import { glassHeaderControl } from "../native-header-items";
 import { Composer } from "./Composer";
 import { dockInset, rootKeyboardPad } from "./keyboardInset";
 import { KeyRow } from "./KeyRow";
@@ -573,7 +574,7 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 	const [headerRightReady, setHeaderRightReady] = useState(false);
 	useLayoutEffect(
 		() => resetHeaderRightForSwap(
-			() => navigation.setOptions({ headerRight: undefined }),
+			() => navigation.setOptions(glassHeaderControl("right")),
 			() => setHeaderRightReady(true),
 		),
 		[navigation],
@@ -784,7 +785,7 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 			// Always render our own Back control so it works even when the app was
 			// cold-started directly on this route (reload/deep link) and the stack
 			// has no history for the default back button to use.
-			headerLeft: () => <MinimalBackButton onPress={leave} />,
+			...glassHeaderControl("left", <MinimalBackButton onPress={leave} />),
 		});
 	}, [navigation, id, leave, params.title, shellOnly]);
 
@@ -1162,7 +1163,7 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 	// would read it before initialisation.
 	useLayoutEffect(() => {
 		if (shellOnly || !headerRightReady) {
-			navigation.setOptions({ headerRight: undefined });
+			navigation.setOptions(glassHeaderControl("right"));
 			return;
 		}
 		navigation.setOptions({

@@ -18,8 +18,8 @@ describe("session header controls", () => {
 		expect(session).toContain('icon="more" label="Conversation actions"');
 	});
 
-	it("leaves no raw control inside headerRight", () => {
-		const start = session.indexOf("headerRight: () => (");
+	it("leaves no raw control in the actions slot", () => {
+		const start = session.indexOf('glassHeaderControl("right", (');
 		expect(start).toBeGreaterThan(-1);
 		expect(session.slice(start, start + 400)).not.toContain("Pressable");
 	});
