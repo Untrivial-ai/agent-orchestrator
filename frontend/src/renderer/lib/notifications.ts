@@ -37,6 +37,7 @@ type LiveNotificationEvent =
 	| { kind: "cleared"; clear: NotificationClear };
 
 const latestClearGeneration = new WeakMap<QueryClient, { epoch: string; sequence: number }>();
+const clearedNotificationSnapshots = new WeakMap<QueryClient, NotificationsCache>();
 const notificationReconcilers = new WeakMap<QueryClient, () => Promise<void>>();
 
 export function reconcileNotifications(queryClient: QueryClient): Promise<void> {
@@ -423,7 +424,17 @@ export function applyNotificationsCleared(queryClient: QueryClient, clear: Notif
 			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
 		});
 	}
+	const recentSnapshot = queryClient.getQueryData<NotificationsCache>(recentNotificationsQueryKey);
+	if (recentSnapshot) clearedNotificationSnapshots.set(queryClient, recentSnapshot);
 	return true;
+}
+
+// A failed background refresh may keep the exact cache installed by a
+// confirmed clear. Only that snapshot should render as confirmed empty; an
+// unrelated cached empty page must still show the load error.
+export function isNotificationsCacheFromClear(queryClient: QueryClient): boolean {
+	const cleared = clearedNotificationSnapshots.get(queryClient);
+	return Boolean(cleared) && queryClient.getQueryData(recentNotificationsQueryKey) === cleared;
 }
 
 export function getCachedNotifications(cache: NotificationsCache | undefined): NotificationDTO[] {

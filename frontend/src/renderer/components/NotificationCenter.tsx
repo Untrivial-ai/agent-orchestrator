@@ -33,6 +33,7 @@ import {
 	createNotificationsTransport,
 	getCachedNotifications,
 	getCachedUnreadCount,
+	isNotificationsCacheFromClear,
 	keepLatestNotificationsPage,
 	type NotificationDTO,
 	type NotificationsCache,
@@ -216,6 +217,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const restoreSession = useRestoreSession();
 	const notifications = useMemo(() => getCachedNotifications(allQuery.data), [allQuery.data]);
 	const unreadCount = getCachedUnreadCount(unreadQuery.data);
+	const confirmedClearSnapshot = isNotificationsCacheFromClear(queryClient);
 	const { openSession } = useNotificationTargetNavigation();
 	const markAllMutate = markAllRead.mutateAsync;
 
@@ -415,7 +417,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 						</button>
 					</div>
 				) : null}
-				{allQuery.isError && !allQuery.data ? (
+				{allQuery.isError && isEmpty && !confirmedClearSnapshot ? (
 					<NotificationEmpty icon={CircleAlert} message={t("notify.loadFailed")} />
 				) : allQuery.isLoading && isEmpty ? (
 					<NotificationEmpty icon={Inbox} message={t("notify.loading")} />

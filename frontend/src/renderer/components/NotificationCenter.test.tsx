@@ -3,7 +3,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../lib/bridge";
-import type { NotificationDTO, NotificationListStatus } from "../lib/notifications";
+import {
+	applyNotificationsCleared,
+	type NotificationDTO,
+	type NotificationListStatus,
+} from "../lib/notifications";
 import { useUiStore } from "../stores/ui-store";
 import { NotificationCenter, NotificationRuntime } from "./NotificationCenter";
 import { TooltipProvider } from "./ui/tooltip";
@@ -113,8 +117,9 @@ vi.mock("../lib/notifications", async (importOriginal) => ({
 	},
 }));
 
-function renderNotificationCenter() {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderNotificationCenter(
+	queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
 	return render(
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
@@ -570,12 +575,30 @@ describe("NotificationCenter", () => {
 		expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
 	});
 
-	it("keeps the confirmed empty state when a background refresh fails after clear", async () => {
+	it("surfaces a failed refresh over an unrelated cached empty page", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
 			...notificationQueryResult(status, { isError: status === "all" }),
 			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
 		}));
 		renderNotificationCenter();
+		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
+
+		expect(await screen.findByText("Could not load notifications.")).toBeInTheDocument();
+		expect(screen.queryByText("No notifications yet.")).not.toBeInTheDocument();
+	});
+
+	it("keeps the confirmed empty state when a background refresh fails after clear", async () => {
+		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
+			...notificationQueryResult(status, { isError: status === "all" }),
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
+		}));
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		applyNotificationsCleared(queryClient, {
+			clearId: "clear-1",
+			clearEpoch: "epoch-1",
+			clearSequence: 1,
+		});
+		renderNotificationCenter(queryClient);
 		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
 
 		expect(await screen.findByText("No notifications yet.")).toBeInTheDocument();

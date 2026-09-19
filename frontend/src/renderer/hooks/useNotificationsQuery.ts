@@ -76,6 +76,6 @@ export function useClearNotificationMutation() {
 		onError: (_error, notification) => {
 			rollbackOptimisticNotificationDelete(queryClient, notification.id);
 		},
-		onSettled: () => queryClient.invalidateQueries({ queryKey: ["notifications", "history"] }),
+		onSettled: () => reconcileNotifications(queryClient),
 	});
 }

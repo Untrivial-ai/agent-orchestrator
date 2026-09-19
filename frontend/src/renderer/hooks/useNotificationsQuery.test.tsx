@@ -86,6 +86,7 @@ describe("useClearNotificationMutation", () => {
 		applyNotificationDeletedMock.mockReset();
 		applyOptimisticNotificationDeleteMock.mockReset();
 		deleteNotificationMock.mockReset();
+		reconcileNotificationsMock.mockReset().mockResolvedValue(undefined);
 		rollbackOptimisticNotificationDeleteMock.mockReset();
 	});
 
@@ -99,7 +100,6 @@ describe("useClearNotificationMutation", () => {
 	it("removes optimistically, confirms after canceling stale fetches, and reconciles", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		const cancelSpy = vi.spyOn(queryClient, "cancelQueries");
-		const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 		deleteNotificationMock.mockResolvedValue(notification);
 		const { result } = renderMutation(queryClient);
 
@@ -111,12 +111,11 @@ describe("useClearNotificationMutation", () => {
 		expect(applyOptimisticNotificationDeleteMock).toHaveBeenCalledWith(queryClient, notification);
 		expect(applyNotificationDeletedMock).toHaveBeenCalledWith(queryClient, notification);
 		expect(cancelSpy).toHaveBeenCalledTimes(2);
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["notifications", "history"] });
+		expect(reconcileNotificationsMock).toHaveBeenCalledWith(queryClient);
 	});
 
 	it("rolls back a failed request before reconciling", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-		const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 		deleteNotificationMock.mockRejectedValue(new Error("delete failed"));
 		const { result } = renderMutation(queryClient);
 
@@ -126,6 +125,6 @@ describe("useClearNotificationMutation", () => {
 
 		expect(rollbackOptimisticNotificationDeleteMock).toHaveBeenCalledWith(queryClient, "ntf_1");
 		expect(applyNotificationDeletedMock).not.toHaveBeenCalled();
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["notifications", "history"] });
+		expect(reconcileNotificationsMock).toHaveBeenCalledWith(queryClient);
 	});
 });

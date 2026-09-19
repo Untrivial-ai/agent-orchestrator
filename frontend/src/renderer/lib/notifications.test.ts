@@ -48,6 +48,7 @@ import {
 	fetchNotificationsPage,
 	getCachedNotifications,
 	getCachedUnreadCount,
+	isNotificationsCacheFromClear,
 	keepLatestNotificationsPage,
 	markAllCachedNotificationsRead,
 	mergeUnreadNotification,
@@ -688,6 +689,57 @@ describe("createNotificationsTransport", () => {
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([
 			expect.objectContaining({ id: "during-refresh" }),
 		]);
+	});
+
+	it("buffers live creates while a per-item delete reconciles snapshots", async () => {
+		const qc = queryClient();
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+		let finishRefresh: (() => void) | undefined;
+		const refresh = new Promise<void>((resolve) => {
+			finishRefresh = resolve;
+		});
+		invalidateSpy.mockReturnValue(refresh);
+		createNotificationsTransport(qc).connect();
+		const source = EventSourceStub.instances[0];
+		const deleted = notification({ id: "deleted" });
+		source.dispatch("notification_created", deleted);
+		applyOptimisticNotificationDelete(qc, deleted);
+		applyNotificationDeleted(qc, deleted);
+
+		const reconciliation = reconcileNotifications(qc);
+		source.dispatch("notification_created", notification({ id: "during-delete-refresh" }));
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			qc.setQueryData<NotificationsCache>(queryKey, {
+				pageParams: [""],
+				pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+			});
+		}
+
+		finishRefresh?.();
+		await reconciliation;
+
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(queryKey))).toEqual([
+				expect.objectContaining({ id: "during-delete-refresh" }),
+			]);
+		}
+	});
+
+	it("identifies only the cache snapshot installed by clear-all", () => {
+		const qc = queryClient();
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+		});
+		expect(isNotificationsCacheFromClear(qc)).toBe(false);
+
+		applyNotificationsCleared(qc, { clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1 });
+		expect(isNotificationsCacheFromClear(qc)).toBe(true);
+
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, (current) =>
+			current ? { ...current, pageParams: ["fresh"] } : current,
+		);
+		expect(isNotificationsCacheFromClear(qc)).toBe(false);
 	});
 
 	it("cancels an in-flight history fetch before applying a clear and later create", async () => {
