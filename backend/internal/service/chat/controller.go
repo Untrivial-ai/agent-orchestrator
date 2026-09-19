@@ -2091,8 +2091,25 @@ func (c *Controller) Interrupt(ctx context.Context) error {
 			return fmt.Errorf("check running turns: %w", err)
 		}
 		if len(providerTurnIDs) == 0 {
+			// Nothing is in flight, but a turn that failed holds its queue rather
+			// than cascading it into the same outage (#5188), and no completion is
+			// coming to release it. Stop is what clears it; refusing would leave a
+			// queue the user cannot cancel.
+			if _, queuedErr := c.store.NextQueuedTurn(ctx, c.conversation.ID); queuedErr != nil {
+				c.sendMu.Unlock()
+				if errors.Is(queuedErr, domain.ErrNoQueuedTurn) {
+					return ErrNoActiveTurn
+				}
+				return fmt.Errorf("check queued turns: %w", queuedErr)
+			}
+			c.mu.Lock()
+			c.cancelQueuedAt = cutoff
+			c.mu.Unlock()
+			// The cutoff makes this cancel the pre-Stop queue; anything sent after
+			// Stop still dispatches, exactly as it does with a turn in flight.
+			c.drainLocked(ctx, false)
 			c.sendMu.Unlock()
-			return ErrNoActiveTurn
+			return nil
 		}
 		// The list uses the snapshot's visibility and ordering rules, so its first
 		// row is the same running turn whose Working bar the user pressed Stop on.
