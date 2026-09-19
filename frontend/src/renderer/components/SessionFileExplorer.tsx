@@ -59,7 +59,7 @@ export function SessionFileExplorer({
 
 	const filesQuery = useQuery({
 		...sessionWorkspaceFilesQueryOptions(sessionId, t("files.error.loadWorkspace")),
-		refetchInterval: workspaceFilesRefetchInterval(connectionState),
+		refetchInterval: (query) => workspaceFilesRefetchInterval(connectionState, Boolean(query.state.data?.degraded)),
 	});
 	const changedOnlyData = useMemo(
 		() => (filesQuery.data ? buildChangedOnlyTree(filesQuery.data.files) : []),

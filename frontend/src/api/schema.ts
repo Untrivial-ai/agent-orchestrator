@@ -3526,6 +3526,8 @@ export interface components {
             compareBaseSha?: string;
             /** @enum {string} */
             compareMode?: "base" | "head_fallback";
+            degraded: boolean;
+            degradedCode?: string;
             files: components["schemas"]["WorkspaceFileSummary"][];
             sections: components["schemas"]["WorkspaceFileSections"];
             sessionId: string;

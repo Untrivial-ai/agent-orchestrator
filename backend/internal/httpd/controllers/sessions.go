@@ -2078,6 +2078,8 @@ func workspaceFilesResponse(files sessionsvc.WorkspaceFiles) ListWorkspaceFilesR
 		Sections:         workspaceFileSectionsResponse(files.Sections),
 		Commits:          workspaceCommitsResponse(files.Commits),
 		Summary:          WorkspaceSummary(files.Summary),
+		Degraded:         files.Degraded,
+		DegradedCode:     files.DegradedCode,
 		Ahead:            files.Ahead,
 		Behind:           files.Behind,
 	}
