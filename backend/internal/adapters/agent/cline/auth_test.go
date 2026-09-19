@@ -173,7 +173,12 @@ func TestClineSelectedProviderEnvironmentKeysAndAliases(t *testing.T) {
 		{name: "anthropic apiKeyEnv", provider: "anthropic", stored: "anthropic", env: map[string]string{"ANTHROPIC_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
 		{name: "openai alias", provider: "openai", stored: "openai-compatible", env: map[string]string{"OPENAI_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
 		{name: "together alias", provider: "togetherai", stored: "together", env: map[string]string{"TOGETHER_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
-		{name: "SAP alias", provider: "sap-ai-core", stored: "sapaicore", env: map[string]string{"AICORE_SERVICE_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "SAP alias", provider: "sap-ai-core", stored: "sapaicore", env: map[string]string{"AICORE_SERVICE_KEY": `{"clientid":"client","clientsecret":"secret","url":"https://auth.example.test","serviceurls":{"AI_API_URL":"https://api.example.test"}}`}, want: ports.AgentAuthStatusConfigured},
+		{name: "Fireworks apiKeyEnv", provider: "fireworks", stored: "fireworks", env: map[string]string{"FIREWORKS_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "MiniMax apiKeyEnv", provider: "minimax", stored: "minimax", env: map[string]string{"MINIMAX_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "Mistral apiKeyEnv", provider: "mistral", stored: "mistral", env: map[string]string{"MISTRAL_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "Moonshot apiKeyEnv", provider: "moonshot", stored: "moonshot", env: map[string]string{"MOONSHOT_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "Requesty apiKeyEnv", provider: "requesty", stored: "requesty", env: map[string]string{"REQUESTY_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
 		{name: "unrelated environment", provider: "openai", stored: "openai-compatible", env: map[string]string{"ANTHROPIC_API_KEY": "unrelated"}, want: ports.AgentAuthStatusUnknown},
 	}
 	for _, tt := range tests {
@@ -222,6 +227,10 @@ func TestClineRejectsInvalidNativeProviderFileSchema(t *testing.T) {
 		{name: "invalid AWS authentication", file: clineProviders("bedrock", `"bedrock":{"settings":{"provider":"bedrock","aws":{"authentication":"magic"}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`), env: map[string]string{"AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test"}},
 		{name: "invalid SAP API", file: clineProviders("sapaicore", `"sapaicore":{"settings":{"provider":"sapaicore","sap":{"clientId":"client","clientSecret":"secret","tokenUrl":"https://auth.example.test/token","api":"magic"}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
 		{name: "invalid protocol", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key","protocol":"magic"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "invalid auth account", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"accountId":42}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "invalid auth organization metadata", file: clineProviders("cline", `"cline":{"settings":{"provider":"cline","apiKey":"test-key","auth":{"organizationId":{},"organizationName":[],"memberId":false,"metadata":[]}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "invalid OCA prompt cache", file: clineProviders("oca", `"oca":{"settings":{"provider":"oca","apiKey":"test-key","oca":{"usePromptCache":"yes"}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "invalid routing provider id", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key","routingProviderId":"bad/provider"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,6 +241,35 @@ func TestClineRejectsInvalidNativeProviderFileSchema(t *testing.T) {
 			writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), tt.file)
 			if got := scopedClineStatus(t, ports.AgentAuthCheck{}); got != ports.AgentAuthStatusUnknown {
 				t.Fatalf("status = %q, want unknown", got)
+			}
+		})
+	}
+}
+
+func TestClineSAPEnvironmentRequiresStructuredCredentials(t *testing.T) {
+	validServiceKey := `{"clientid":"client","clientsecret":"secret","url":"https://auth.example.test","serviceurls":{"AI_API_URL":"https://api.example.test"}}`
+	tests := []struct {
+		name string
+		env  map[string]string
+		want ports.AgentAuthStatus
+	}{
+		{name: "valid service key", env: map[string]string{"AICORE_SERVICE_KEY": validServiceKey}, want: ports.AgentAuthStatusConfigured},
+		{name: "malformed service key", env: map[string]string{"AICORE_SERVICE_KEY": "test-key"}, want: ports.AgentAuthStatusUnknown},
+		{name: "incomplete service key", env: map[string]string{"AICORE_SERVICE_KEY": `{"clientid":"client","clientsecret":"secret","url":"https://auth.example.test"}`}, want: ports.AgentAuthStatusUnknown},
+		{name: "valid VCAP services", env: map[string]string{"VCAP_SERVICES": `{"aicore":[{"credentials":` + validServiceKey + `}]}`}, want: ports.AgentAuthStatusConfigured},
+		{name: "empty VCAP binding", env: map[string]string{"VCAP_SERVICES": `{"aicore":[]}`}, want: ports.AgentAuthStatusUnknown},
+		{name: "malformed service key blocks VCAP fallback", env: map[string]string{"AICORE_SERVICE_KEY": "not-json", "VCAP_SERVICES": `{"aicore":[{"credentials":` + validServiceKey + `}]}`}, want: ports.AgentAuthStatusUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateClineAuth(t)
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			entry := `"sapaicore":{"settings":{"provider":"sapaicore"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`
+			writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), clineProviders("sapaicore", entry))
+			if got := scopedClineStatus(t, ports.AgentAuthCheck{}); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
 			}
 		})
 	}

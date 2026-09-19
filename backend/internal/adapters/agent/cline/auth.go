@@ -68,10 +68,15 @@ type clineProviderSettings struct {
 }
 
 type clineProviderAuth struct {
-	APIKey       string `json:"apiKey"`
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-	ExpiresAt    *int64 `json:"expiresAt"`
+	APIKey           string         `json:"apiKey"`
+	AccessToken      string         `json:"accessToken"`
+	RefreshToken     string         `json:"refreshToken"`
+	ExpiresAt        *int64         `json:"expiresAt"`
+	AccountID        string         `json:"accountId"`
+	OrganizationID   string         `json:"organizationId"`
+	OrganizationName string         `json:"organizationName"`
+	MemberID         string         `json:"memberId"`
+	Metadata         map[string]any `json:"metadata"`
 }
 
 type clineAWSSettings struct {
@@ -110,7 +115,21 @@ type clineSAPSettings struct {
 }
 
 type clineOCASettings struct {
-	Mode string `json:"mode"`
+	Mode           string `json:"mode"`
+	UsePromptCache *bool  `json:"usePromptCache"`
+}
+
+type clineSAPServiceKey struct {
+	ClientID     string `json:"clientid"`
+	ClientSecret string `json:"clientsecret"`
+	URL          string `json:"url"`
+	ServiceURLs  struct {
+		AIAPIURL string `json:"AI_API_URL"`
+	} `json:"serviceurls"`
+}
+
+type clineSAPVCAPBinding struct {
+	Credentials json.RawMessage `json:"credentials"`
 }
 
 type clineReasoningSettings struct {
@@ -212,6 +231,9 @@ func (f clineProvidersFile) valid() bool {
 
 func (s clineProviderSettings) valid() bool {
 	if s.BaseURL != "" && !clineValidURL(s.BaseURL) {
+		return false
+	}
+	if s.RoutingProviderID != "" && !clineValidProviderID(s.RoutingProviderID) {
 		return false
 	}
 	if s.Auth != nil && s.Auth.ExpiresAt != nil && *s.Auth.ExpiresAt <= 0 {
@@ -358,6 +380,15 @@ func clineProviderEvidence(ctx context.Context, d authutil.Dependencies, setting
 		if settings.SAP != nil && strings.TrimSpace(settings.SAP.ClientID) != "" && strings.TrimSpace(settings.SAP.ClientSecret) != "" && clineValidURL(settings.SAP.TokenURL) {
 			return ports.AgentAuthStatusConfigured
 		}
+		if serviceKey := strings.TrimSpace(d.Getenv("AICORE_SERVICE_KEY")); serviceKey != "" {
+			if clineValidSAPServiceKey([]byte(serviceKey)) {
+				return ports.AgentAuthStatusConfigured
+			}
+			return ports.AgentAuthStatusUnknown
+		}
+		if clineValidSAPVCAPServices([]byte(d.Getenv("VCAP_SERVICES"))) {
+			return ports.AgentAuthStatusConfigured
+		}
 	}
 	return ports.AgentAuthStatusUnknown
 }
@@ -374,6 +405,7 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"dify":              {"DIFY_API_KEY"},
 	"doubao":            {"DOUBAO_API_KEY"},
 	"elevenlabs":        {"ELEVENLABS_API_KEY"},
+	"fireworks":         {"FIREWORKS_API_KEY"},
 	"gemini":            {"GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"},
 	"groq":              {"GROQ_API_KEY"},
 	"hicap":             {"HICAP_API_KEY"},
@@ -381,6 +413,9 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"kilo":              {"KILO_GATEWAY_API_KEY"},
 	"litellm":           {"LITELLM_API_KEY"},
 	"lmstudio":          {"LMSTUDIO_API_KEY"},
+	"minimax":           {"MINIMAX_API_KEY"},
+	"mistral":           {"MISTRAL_API_KEY"},
+	"moonshot":          {"MOONSHOT_API_KEY"},
 	"nousResearch":      {"NOUS_RESEARCH_API_KEY", "NOUSRESEARCH_API_KEY"},
 	"oca":               {"OCA_API_KEY"},
 	"ollama":            {"OLLAMA_API_KEY"},
@@ -388,14 +423,43 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"openai-native":     {"OPENAI_API_KEY"},
 	"openrouter":        {"OPENROUTER_API_KEY"},
 	"qwen":              {"QWEN_API_KEY"},
+	"requesty":          {"REQUESTY_API_KEY"},
 	"sambanova":         {"SAMBANOVA_API_KEY"},
-	"sapaicore":         {"AICORE_SERVICE_KEY", "VCAP_SERVICES"},
 	"together":          {"TOGETHER_API_KEY"},
 	"v0":                {"V0_API_KEY"},
 	"vercel-ai-gateway": {"AI_GATEWAY_API_KEY"},
 	"xai":               {"XAI_API_KEY"},
 	"zai":               {"ZHIPU_API_KEY"},
 	"zai-coding-plan":   {"ZHIPU_API_KEY"},
+}
+
+func clineValidSAPServiceKey(data []byte) bool {
+	var serviceKey clineSAPServiceKey
+	return json.Unmarshal(data, &serviceKey) == nil &&
+		strings.TrimSpace(serviceKey.ClientID) != "" &&
+		strings.TrimSpace(serviceKey.ClientSecret) != "" &&
+		clineValidURL(serviceKey.URL) &&
+		clineValidURL(serviceKey.ServiceURLs.AIAPIURL)
+}
+
+func clineValidSAPVCAPServices(data []byte) bool {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return false
+	}
+	var services map[string]json.RawMessage
+	if json.Unmarshal(data, &services) != nil || services == nil {
+		return false
+	}
+	var bindings []clineSAPVCAPBinding
+	if json.Unmarshal(services["aicore"], &bindings) != nil {
+		return false
+	}
+	for _, binding := range bindings {
+		if clineValidSAPServiceKey(binding.Credentials) {
+			return true
+		}
+	}
+	return false
 }
 
 func clineNormalizeProviderID(provider string) string {
