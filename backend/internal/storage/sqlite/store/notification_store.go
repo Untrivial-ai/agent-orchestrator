@@ -265,6 +265,18 @@ func (s *Store) MarkAllNotificationsRead(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// ClearAllNotifications hides every visible notification while retaining open
+// rows for dedupe until their underlying condition resolves.
+func (s *Store) ClearAllNotifications(ctx context.Context) (int64, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	count, err := s.qw.ClearAllNotifications(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("clear all notifications: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) getOpenNotificationByDedupe(ctx context.Context, rec domain.NotificationRecord) (domain.NotificationRecord, bool, error) {
 	row, err := s.qw.GetOpenNotificationByDedupe(ctx, gen.GetOpenNotificationByDedupeParams{
 		SessionID: rec.SessionID,

@@ -8,6 +8,8 @@ export type NotificationDTO = components["schemas"]["NotificationResponse"];
 export type NotificationsPage = components["schemas"]["ListNotificationsResponse"];
 export type NotificationsCache = InfiniteData<NotificationsPage>;
 export type NotificationListStatus = "unread" | "all";
+export type ClearNotificationsResult = components["schemas"]["ClearNotificationsResponse"];
+export type NotificationClear = Pick<ClearNotificationsResult, "clearId" | "clearEpoch" | "clearSequence">;
 
 export const unreadNotificationsQueryKey = ["notifications", "history", "unread"] as const;
 export const recentNotificationsQueryKey = ["notifications", "history", "all"] as const;
@@ -25,6 +27,23 @@ const UNRESOLVABLE_TYPES = new Set(["needs_input", "ready_to_merge"]);
 
 type NotificationsQueryKey = typeof unreadNotificationsQueryKey | typeof recentNotificationsQueryKey;
 
+type LiveNotificationEvent =
+	| { kind: "created"; notification: NotificationDTO }
+	| { kind: "resolved"; notification: NotificationDTO }
+	| { kind: "cleared"; clear: NotificationClear };
+
+const latestClearGeneration = new WeakMap<QueryClient, { epoch: string; sequence: number }>();
+const notificationReconcilers = new WeakMap<QueryClient, () => Promise<void>>();
+
+export function reconcileNotifications(queryClient: QueryClient): Promise<void> {
+	const reconcile = notificationReconcilers.get(queryClient);
+	if (reconcile) return reconcile();
+	return Promise.all([
+		queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey }),
+		queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey }),
+	]).then(() => undefined);
+}
+
 export function notificationsQueryKey(status: NotificationListStatus): NotificationsQueryKey {
 	return status === "unread" ? unreadNotificationsQueryKey : recentNotificationsQueryKey;
 }
@@ -33,8 +52,13 @@ function isUnresolved(notification: NotificationDTO): boolean {
 	return UNRESOLVABLE_TYPES.has(notification.type) && !notification.resolvedAt;
 }
 
-export async function fetchNotificationsPage(status: NotificationListStatus, cursor = ""): Promise<NotificationsPage> {
+export async function fetchNotificationsPage(
+	status: NotificationListStatus,
+	cursor = "",
+	signal?: AbortSignal,
+): Promise<NotificationsPage> {
 	const { data, error } = await apiClient.GET("/api/v1/notifications", {
+		signal,
 		params: {
 			query: {
 				status,
@@ -68,6 +92,12 @@ export async function markAllNotificationsRead(ids: string[]): Promise<number> {
 	return data?.updatedCount ?? 0;
 }
 
+export async function clearAllNotifications(): Promise<ClearNotificationsResult> {
+	const { data, error } = await apiClient.DELETE("/api/v1/notifications");
+	if (error || !data) throw new Error(apiErrorMessage(error, "Could not clear notifications"));
+	return data;
+}
+
 export function mergeUnreadNotification(queryClient: QueryClient, notification: NotificationDTO): boolean {
 	if (notification.status !== "unread") return false;
 	const inserted = mergeNotificationIntoCache(queryClient, unreadNotificationsQueryKey, notification);
@@ -85,20 +115,28 @@ function mergeRecentNotification(queryClient: QueryClient, notification: Notific
  * AO resolved the issue behind a notification. Update the row in unread/all
  * caches; the seen state is a separate axis and is deliberately left untouched.
  */
-export function applyResolvedNotification(queryClient: QueryClient, notification: NotificationDTO): void {
+export function applyResolvedNotification(queryClient: QueryClient, notification: NotificationDTO): boolean {
+	let foundInEveryCache = true;
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+		let found = false;
 		queryClient.setQueryData<NotificationsCache>(queryKey, (current) => {
 			if (!current) return current;
+			const existing = getCachedNotifications(current).find((item) => item.id === notification.id);
+			if (!existing) return current;
+			found = true;
+			const unresolvedDelta = Number(isUnresolved(notification)) - Number(isUnresolved(existing));
 			return {
 				...current,
 				pages: current.pages.map((page) => ({
 					...page,
 					notifications: page.notifications.map((item) => (item.id === notification.id ? notification : item)),
-					unresolvedCount: Math.max(0, page.unresolvedCount - 1),
+					unresolvedCount: Math.max(0, page.unresolvedCount + unresolvedDelta),
 				})),
 			};
 		});
+		if (!found) foundInEveryCache = false;
 	}
+	return foundInEveryCache;
 }
 
 function mergeNotificationIntoCache(
@@ -224,6 +262,22 @@ export function markAllCachedNotificationsRead(
 	}
 }
 
+// The DELETE response and SSE event share a daemon epoch and monotonic sequence.
+// Ignoring older generations prevents an earlier clear response from erasing a
+// notification that arrived after a later clear event.
+export function applyNotificationsCleared(queryClient: QueryClient, clear: NotificationClear): boolean {
+	const latest = latestClearGeneration.get(queryClient);
+	if (latest?.epoch === clear.clearEpoch && latest.sequence >= clear.clearSequence) return false;
+	latestClearGeneration.set(queryClient, { epoch: clear.clearEpoch, sequence: clear.clearSequence });
+	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+		queryClient.setQueryData<NotificationsCache>(queryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+		});
+	}
+	return true;
+}
+
 export function getCachedNotifications(cache: NotificationsCache | undefined): NotificationDTO[] {
 	if (!cache) return [];
 	const byID = new Map<string, NotificationDTO>();
@@ -290,11 +344,109 @@ export function createNotificationsTransport(
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
+			let snapshotRefresh:
+				| {
+						dirty: boolean;
+						events: LiveNotificationEvent[];
+						done: Promise<void>;
+						resolve: () => void;
+				  }
+				| undefined;
+			let pendingLiveEvents: Promise<void> | undefined;
 
-			const invalidateNotifications = () => {
-				void queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey });
-				void queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey });
+			const applyLiveNotificationEvent = (event: LiveNotificationEvent): Promise<void> | void => {
+				if (event.kind === "cleared") {
+					return queryClient
+						.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false })
+						.catch(() => undefined)
+						.then(() => {
+							applyNotificationsCleared(queryClient, event.clear);
+						});
+				}
+				if (event.kind === "resolved") {
+					if (!applyResolvedNotification(queryClient, event.notification)) {
+						void invalidateNotifications();
+					}
+					return;
+				}
+				const inserted = mergeUnreadNotification(queryClient, event.notification);
+				mergeRecentNotification(queryClient, event.notification);
+				if (inserted && !suppressToastForWatchedSession(event.notification, getVisibleAgentSessionId())) {
+					void aoBridge.notifications.show({
+						id: event.notification.id,
+						title: event.notification.title,
+						body: event.notification.body || undefined,
+						type: event.notification.type,
+					});
+				}
 			};
+
+			const enqueueLiveNotificationEvent = (event: LiveNotificationEvent): Promise<void> | undefined => {
+				if (!pendingLiveEvents && event.kind !== "cleared") {
+					applyLiveNotificationEvent(event);
+					return undefined;
+				}
+				const applied = (pendingLiveEvents ?? Promise.resolve()).then(
+					() => applyLiveNotificationEvent(event),
+					() => applyLiveNotificationEvent(event),
+				);
+				const settled = applied.then(
+					() => undefined,
+					() => undefined,
+				);
+				pendingLiveEvents = settled;
+				void settled.then(() => {
+					if (pendingLiveEvents === settled) pendingLiveEvents = undefined;
+				});
+				return settled;
+			};
+
+			const receiveLiveNotificationEvent = (event: LiveNotificationEvent) => {
+				if (snapshotRefresh) {
+					snapshotRefresh.events.push(event);
+					// The snapshot may already contain a post-clear row whose create
+					// event was dropped. Reconcile once after replaying the clear so the
+					// buffered reset cannot erase that row permanently.
+					if (event.kind === "cleared") snapshotRefresh.dirty = true;
+					return;
+				}
+				enqueueLiveNotificationEvent(event);
+			};
+
+			const invalidateNotifications = (): Promise<void> => {
+				if (snapshotRefresh) {
+					snapshotRefresh.dirty = true;
+					return snapshotRefresh.done;
+				}
+				let resolveRefresh!: () => void;
+				const done = new Promise<void>((resolve) => {
+					resolveRefresh = resolve;
+				});
+				const refresh = {
+					dirty: false,
+					events: [] as LiveNotificationEvent[],
+					done,
+					resolve: resolveRefresh,
+				};
+				snapshotRefresh = refresh;
+				const finish = async () => {
+					try {
+						if (snapshotRefresh !== refresh) return;
+						snapshotRefresh = undefined;
+						for (const event of refresh.events) enqueueLiveNotificationEvent(event);
+						await pendingLiveEvents;
+						if (refresh.dirty) await invalidateNotifications();
+					} finally {
+						refresh.resolve();
+					}
+				};
+				void Promise.all([
+					queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey }),
+					queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey }),
+				]).then(finish, finish);
+				return refresh.done;
+			};
+			notificationReconcilers.set(queryClient, invalidateNotifications);
 
 			// Consecutive scheduled rebuilds since the stream last opened; paces
 			// the retry instead of knocking on a flat cadence forever (#4323).
@@ -331,16 +483,7 @@ export function createNotificationsTransport(
 					source.addEventListener("notification_created", (event) => {
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
-						const inserted = mergeUnreadNotification(queryClient, notification);
-						mergeRecentNotification(queryClient, notification);
-						if (inserted && !suppressToastForWatchedSession(notification, getVisibleAgentSessionId())) {
-							void aoBridge.notifications.show({
-								id: notification.id,
-								title: notification.title,
-								body: notification.body || undefined,
-								type: notification.type,
-							});
-						}
+						receiveLiveNotificationEvent({ kind: "created", notification });
 					});
 					// AO closed the underlying issue (the session got its input, the
 					// PR stopped waiting on a merge). Patch the row live so an open
@@ -348,7 +491,11 @@ export function createNotificationsTransport(
 					source.addEventListener("notification_resolved", (event) => {
 						const notification = parseNotificationEvent(event);
 						if (!notification) return;
-						applyResolvedNotification(queryClient, notification);
+						receiveLiveNotificationEvent({ kind: "resolved", notification });
+					});
+					source.addEventListener("notification_cleared", (event) => {
+						const clear = parseNotificationClearEvent(event);
+						if (clear) receiveLiveNotificationEvent({ kind: "cleared", clear });
 					});
 				} catch {
 					source = undefined;
@@ -367,12 +514,45 @@ export function createNotificationsTransport(
 
 			return () => {
 				if (retryTimer) clearTimeout(retryTimer);
+				if (notificationReconcilers.get(queryClient) === invalidateNotifications) {
+					notificationReconcilers.delete(queryClient);
+				}
 				removeDaemonListener();
 				removeBaseUrlListener();
 				source?.close();
 			};
 		},
 	};
+}
+
+function parseNotificationClearEvent(event: Event): NotificationClear | null {
+	const data = (event as MessageEvent<string>).data;
+	if (typeof data !== "string" || data === "") return null;
+	try {
+		const decoded = JSON.parse(data) as {
+			clearId?: unknown;
+			clearEpoch?: unknown;
+			clearSequence?: unknown;
+		};
+		if (
+			typeof decoded.clearId !== "string" ||
+			!decoded.clearId ||
+			typeof decoded.clearEpoch !== "string" ||
+			!decoded.clearEpoch ||
+			typeof decoded.clearSequence !== "number" ||
+			!Number.isSafeInteger(decoded.clearSequence) ||
+			decoded.clearSequence <= 0
+		) {
+			return null;
+		}
+		return {
+			clearId: decoded.clearId,
+			clearEpoch: decoded.clearEpoch,
+			clearSequence: decoded.clearSequence,
+		};
+	} catch {
+		return null;
+	}
 }
 
 function parseNotificationEvent(event: Event): NotificationDTO | null {

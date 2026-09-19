@@ -1,9 +1,12 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+	applyNotificationsCleared,
+	clearAllNotifications,
 	fetchNotificationsPage,
 	markAllCachedNotificationsRead,
 	markAllNotificationsRead,
 	notificationsQueryKey,
+	reconcileNotifications,
 	type NotificationListStatus,
 	unreadNotificationsQueryKey,
 } from "../lib/notifications";
@@ -11,7 +14,7 @@ import {
 export function useNotificationsQuery(status: NotificationListStatus, enabled = true) {
 	return useInfiniteQuery({
 		queryKey: notificationsQueryKey(status),
-		queryFn: ({ pageParam }) => fetchNotificationsPage(status, pageParam),
+		queryFn: ({ pageParam, signal }) => fetchNotificationsPage(status, pageParam, signal),
 		initialPageParam: "",
 		getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
 		enabled,
@@ -36,6 +39,19 @@ export function useMarkAllNotificationsReadMutation() {
 			if (ids.length === 0) {
 				void queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey });
 			}
+		},
+	});
+}
+
+export function useClearAllNotificationsMutation() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: clearAllNotifications,
+		onMutate: () => queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false }),
+		onSuccess: async (result) => {
+			await queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
+			applyNotificationsCleared(queryClient, result);
+			await reconcileNotifications(queryClient);
 		},
 	});
 }

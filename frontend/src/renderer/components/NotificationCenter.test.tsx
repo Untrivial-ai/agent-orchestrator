@@ -9,6 +9,7 @@ import { NotificationCenter, NotificationRuntime } from "./NotificationCenter";
 import { TooltipProvider } from "./ui/tooltip";
 
 const {
+	clearAllMock,
 	connectMock,
 	fetchNextPageMock,
 	markAllMock,
@@ -18,6 +19,7 @@ const {
 	restoreSessionMock,
 	workspaceQueryMock,
 } = vi.hoisted(() => ({
+	clearAllMock: vi.fn(),
 	connectMock: vi.fn(),
 	fetchNextPageMock: vi.fn(),
 	markAllMock: vi.fn(),
@@ -86,6 +88,7 @@ const unreadNotifications = allNotifications.filter((item) => item.status === "u
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigateMock, useParams: () => paramsMock() }));
 
 vi.mock("../hooks/useNotificationsQuery", () => ({
+	useClearAllNotificationsMutation: () => ({ isPending: false, mutateAsync: clearAllMock }),
 	useMarkAllNotificationsReadMutation: () => ({ isPending: false, mutateAsync: markAllMock }),
 	useNotificationsQuery: (status: NotificationListStatus, enabled?: boolean) => notificationQueryMock(status, enabled),
 }));
@@ -163,6 +166,9 @@ const stableUnreadQuery = notificationQueryResult("unread");
 const stableAllQuery = notificationQueryResult("all");
 
 beforeEach(() => {
+	clearAllMock
+		.mockReset()
+		.mockResolvedValue({ clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1, clearedCount: 4 });
 	connectMock.mockReset();
 	paramsMock.mockReset().mockReturnValue({});
 	useUiStore.setState({ visibleTerminalKindBySession: {} });
@@ -310,6 +316,26 @@ describe("NotificationCenter", () => {
 			expect.stringContaining("Docs sweep needs input"),
 			expect.stringContaining("PR #9 merged"),
 		]);
+	});
+
+	it("clears notification history from the panel header", async () => {
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+		expect(clearAllMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the panel contents when clear-all fails", async () => {
+		clearAllMock.mockRejectedValueOnce(new Error("clear failed"));
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+		expect(await screen.findByText("clear failed")).toBeInTheDocument();
+		expect(screen.getByText("Checkout flow needs input")).toBeInTheDocument();
 	});
 
 	// Opening acknowledges loaded unread ids only, so later unread pages stay
@@ -484,6 +510,7 @@ describe("NotificationCenter", () => {
 		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
 
 		expect(await screen.findByText("No notifications yet.")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
 	});
 
 	it("navigates to the session from anywhere on the row, including the body text", async () => {

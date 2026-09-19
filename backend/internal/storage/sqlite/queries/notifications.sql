@@ -8,6 +8,7 @@ RETURNING *;
 SELECT *
 FROM notifications
 WHERE status = 'unread'
+  AND dismissed_at IS NULL
   AND (
     CAST(sqlc.arg(before_id) AS TEXT) = ''
     OR created_at < sqlc.arg(before_created_at)
@@ -23,6 +24,7 @@ LIMIT sqlc.arg(page_limit);
 SELECT *
 FROM notifications
 WHERE resolved_at IS NULL
+  AND dismissed_at IS NULL
   AND type IN ('needs_input', 'ready_to_merge')
   AND (
     CAST(sqlc.arg(before_id) AS TEXT) = ''
@@ -35,7 +37,8 @@ LIMIT sqlc.arg(page_limit);
 -- name: ListNotificationsPage :many
 SELECT *
 FROM notifications
-WHERE (
+WHERE dismissed_at IS NULL
+  AND (
     CAST(sqlc.arg(before_id) AS TEXT) = ''
     OR created_at < sqlc.arg(before_created_at)
     OR (created_at = sqlc.arg(before_created_at) AND id < CAST(sqlc.arg(before_id) AS TEXT))
@@ -46,24 +49,29 @@ LIMIT sqlc.arg(page_limit);
 -- name: CountUnreadNotifications :one
 SELECT COUNT(*)
 FROM notifications
-WHERE status = 'unread';
+WHERE status = 'unread'
+  AND dismissed_at IS NULL;
 
 -- name: CountUnresolvedNotifications :one
 SELECT COUNT(*)
 FROM notifications
 WHERE resolved_at IS NULL
+  AND dismissed_at IS NULL
   AND type IN ('needs_input', 'ready_to_merge');
 
 -- name: MarkNotificationRead :one
 UPDATE notifications
 SET status = 'read'
-WHERE id = ? AND status = 'unread'
+WHERE id = ?
+  AND status = 'unread'
+  AND dismissed_at IS NULL
 RETURNING *;
 
 -- name: MarkAllNotificationsRead :execrows
 UPDATE notifications
 SET status = 'read'
-WHERE status = 'unread';
+WHERE status = 'unread'
+  AND dismissed_at IS NULL;
 
 -- name: ResolveSessionNotificationsByType :many
 UPDATE notifications
@@ -114,3 +122,9 @@ WHERE session_id = ?
   AND pr_url = ?
   AND (status = 'unread' OR resolved_at IS NULL)
 LIMIT 1;
+
+-- name: ClearAllNotifications :execrows
+UPDATE notifications
+SET dismissed_at = CURRENT_TIMESTAMP,
+    status = 'read'
+WHERE dismissed_at IS NULL;
