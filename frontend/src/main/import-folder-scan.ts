@@ -48,7 +48,15 @@ type ScanOptions = {
 };
 
 async function gitOutput(cwd: string, args: string[], options: ScanOptions = {}): Promise<string> {
-	const { stdout } = await execFileAsync("git", args, { cwd, env: options.env, timeout: 5000 });
+	// git is a console-subsystem binary: without windowsHide every scan call
+	// pops a console window on Windows (the Electron main process has no
+	// console for the child to inherit). No-op on macOS/Linux.
+	const { stdout } = await execFileAsync("git", args, {
+		cwd,
+		env: options.env,
+		timeout: 5000,
+		windowsHide: true,
+	});
 	return String(stdout).trim();
 }
 
