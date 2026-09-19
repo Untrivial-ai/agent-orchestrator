@@ -1,6 +1,7 @@
 package workertransport
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +20,212 @@ import (
 )
 
 const maxWorkspaceReviewFiles = 10_000
+
+var (
+	ErrWorkspaceSnapshotStale  = errors.New("workspace snapshot is stale")
+	ErrWorkspaceCommitNotFound = errors.New("workspace review commit was not found")
+)
+
+// ReviewDiffs returns a bounded unified patch for one workspace snapshot.
+func (w *workspace) ReviewDiffs(ctx context.Context, input worker.WorkspaceReviewDiffsRequest) (worker.WorkspaceReviewDiffsResponse, error) {
+	review, err := w.ReviewSummary(ctx)
+	if err != nil {
+		return worker.WorkspaceReviewDiffsResponse{}, err
+	}
+	if input.WorkspaceVersion != "" && input.WorkspaceVersion != review.WorkspaceVersion {
+		return worker.WorkspaceReviewDiffsResponse{}, ErrWorkspaceSnapshotStale
+	}
+	scope, err := normalizeReviewScope(input.Scope)
+	if err != nil {
+		return worker.WorkspaceReviewDiffsResponse{}, err
+	}
+	if len(input.Paths) == 0 || len(input.Paths) > 100 {
+		return worker.WorkspaceReviewDiffsResponse{}, errors.New("workspace review requires between 1 and 100 paths")
+	}
+	if input.ContextLines < 0 || input.ContextLines > 20 {
+		return worker.WorkspaceReviewDiffsResponse{}, errors.New("workspace review context lines must be between 0 and 20")
+	}
+	if input.CommitSHA != "" && !reviewContainsCommit(review, input.CommitSHA) {
+		return worker.WorkspaceReviewDiffsResponse{}, ErrWorkspaceCommitNotFound
+	}
+
+	paths := make([]string, 0, len(input.Paths))
+	deferred := make([]worker.WorkspaceReviewDiffDeferred, 0)
+	for _, requested := range input.Paths {
+		path, pathErr := cleanWorkspacePath(requested, false)
+		if pathErr != nil {
+			return worker.WorkspaceReviewDiffsResponse{}, pathErr
+		}
+		wire := wirePath(path)
+		if summary, ok := reviewFileForScope(review, scope, input.CommitSHA, wire); ok {
+			switch {
+			case summary.Binary:
+				deferred = append(deferred, worker.WorkspaceReviewDiffDeferred{Path: wire, Reason: "binary"})
+				continue
+			case summary.Size > maxDiffOutput:
+				deferred = append(deferred, worker.WorkspaceReviewDiffDeferred{Path: wire, Reason: "oversized"})
+				continue
+			}
+		}
+		paths = append(paths, wire)
+	}
+
+	var patch string
+	var truncated bool
+	if scope == worker.WorkspaceReviewUntracked {
+		var builder strings.Builder
+		for _, path := range paths {
+			content, readErr := w.readReviewFile(path, maxDiffOutput)
+			if readErr != nil {
+				return worker.WorkspaceReviewDiffsResponse{}, readErr
+			}
+			builder.WriteString(syntheticAddedFileDiff(path, string(content)))
+		}
+		patch, truncated = truncateDiff(builder.String(), maxDiffOutput)
+	} else if len(paths) > 0 {
+		args := reviewDiffArgs(review.CompareBaseSHA, scope, input.CommitSHA, input.ContextLines, input.IgnoreWhitespace)
+		args = append(args, "--")
+		args = append(args, paths...)
+		patch, truncated, err = w.git(ctx, args...)
+		if err != nil {
+			return worker.WorkspaceReviewDiffsResponse{}, err
+		}
+	}
+	group := worker.WorkspaceReviewDiffGroup{
+		Patch: patch, Truncated: truncated, IncludedPaths: paths,
+		Deferred: deferred, Errors: []worker.WorkspaceReviewDiffError{},
+	}
+	return worker.WorkspaceReviewDiffsResponse{
+		WorkspaceVersion: review.WorkspaceVersion,
+		Groups:           []worker.WorkspaceReviewDiffGroup{group},
+	}, nil
+}
+
+// ReviewFile returns one scoped file detail. Commit-specific requests read the
+// immutable commit snapshot rather than the current worktree.
+func (w *workspace) ReviewFile(ctx context.Context, input worker.WorkspaceReviewFileRequest) (worker.WorkspaceReviewFileResponse, error) {
+	path, err := cleanWorkspacePath(input.Path, false)
+	if err != nil {
+		return worker.WorkspaceReviewFileResponse{}, err
+	}
+	wire := wirePath(path)
+	review, err := w.ReviewSummary(ctx)
+	if err != nil {
+		return worker.WorkspaceReviewFileResponse{}, err
+	}
+	scope, err := normalizeReviewScope(input.Scope)
+	if err != nil {
+		return worker.WorkspaceReviewFileResponse{}, err
+	}
+	if input.CommitSHA != "" && !reviewContainsCommit(review, input.CommitSHA) {
+		return worker.WorkspaceReviewFileResponse{}, ErrWorkspaceCommitNotFound
+	}
+	summary, ok := reviewFileForScope(review, scope, input.CommitSHA, wire)
+	if !ok {
+		for _, candidate := range review.Files {
+			if candidate.Path == wire {
+				summary, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return worker.WorkspaceReviewFileResponse{}, os.ErrNotExist
+	}
+	diffs, err := w.ReviewDiffs(ctx, worker.WorkspaceReviewDiffsRequest{
+		Scope: scope, Paths: []string{wire}, ContextLines: 3,
+		WorkspaceVersion: review.WorkspaceVersion, CommitSHA: input.CommitSHA,
+	})
+	if err != nil {
+		return worker.WorkspaceReviewFileResponse{}, err
+	}
+	response := worker.WorkspaceReviewFileResponse{
+		WorkspaceReviewFileSummary: summary,
+		Deleted:                    summary.Status == worker.WorkspaceReviewDeleted,
+		CompareBaseSHA:             review.CompareBaseSHA,
+		CompareBaseRef:             review.CompareBaseRef,
+		CompareMode:                review.CompareMode,
+		WorkspaceVersion:           review.WorkspaceVersion,
+		Historical:                 input.CommitSHA != "",
+	}
+	if len(diffs.Groups) > 0 {
+		response.Diff = diffs.Groups[0].Patch
+		response.DiffTruncated = diffs.Groups[0].Truncated
+	}
+	if !response.Deleted {
+		var data []byte
+		if input.CommitSHA != "" {
+			data, _, err = w.gitBytes(ctx, input.CommitSHA+":"+wire, maxWorkspaceFile)
+		} else {
+			data, err = w.readReviewFile(wire, maxWorkspaceFile)
+		}
+		if err != nil {
+			return worker.WorkspaceReviewFileResponse{}, err
+		}
+		response.ContentTruncated = len(data) > maxWorkspaceFile
+		if !response.ContentTruncated && !summary.Binary && utf8.Valid(data) {
+			response.Content = string(data)
+		}
+	}
+	return response, nil
+}
+
+// ReviewRevision returns one side of a scoped comparison without mutating the
+// checkout or index.
+func (w *workspace) ReviewRevision(ctx context.Context, input worker.WorkspaceReviewRevisionRequest) (worker.WorkspaceReviewRevisionResponse, error) {
+	path, err := cleanWorkspacePath(input.Path, false)
+	if err != nil {
+		return worker.WorkspaceReviewRevisionResponse{}, err
+	}
+	wire := wirePath(path)
+	review, err := w.ReviewSummary(ctx)
+	if err != nil {
+		return worker.WorkspaceReviewRevisionResponse{}, err
+	}
+	if input.WorkspaceVersion != "" && input.WorkspaceVersion != review.WorkspaceVersion {
+		return worker.WorkspaceReviewRevisionResponse{}, ErrWorkspaceSnapshotStale
+	}
+	scope, err := normalizeReviewScope(input.Scope)
+	if err != nil {
+		return worker.WorkspaceReviewRevisionResponse{}, err
+	}
+	side := input.Side
+	if side == "" {
+		side = worker.WorkspaceReviewAfter
+	}
+	if side != worker.WorkspaceReviewBefore && side != worker.WorkspaceReviewAfter {
+		return worker.WorkspaceReviewRevisionResponse{}, errors.New("workspace review side must be before or after")
+	}
+	if input.CommitSHA != "" && !reviewContainsCommit(review, input.CommitSHA) {
+		return worker.WorkspaceReviewRevisionResponse{}, ErrWorkspaceCommitNotFound
+	}
+	summary, _ := reviewFileForScope(review, scope, input.CommitSHA, wire)
+	readPath := wire
+	if side == worker.WorkspaceReviewBefore && summary.PreviousPath != "" {
+		readPath = summary.PreviousPath
+	}
+	data, exists, revision, err := w.readReviewRevision(ctx, review, scope, side, input.CommitSHA, readPath)
+	if err != nil {
+		return worker.WorkspaceReviewRevisionResponse{}, err
+	}
+	response := worker.WorkspaceReviewRevisionResponse{
+		Path: wire, Side: side, Revision: revision,
+		WorkspaceVersion: review.WorkspaceVersion, Size: int64(len(data)), Exists: exists,
+	}
+	if !exists {
+		return response, nil
+	}
+	response.Truncated = len(data) > maxDiffOutput
+	if response.Truncated {
+		data = data[:maxDiffOutput]
+	}
+	response.Binary = !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0
+	if !response.Binary {
+		response.Encoding = "utf-8"
+		response.Content = string(data)
+	}
+	return response, nil
+}
 
 // ReviewTree lists one repository directory level from Git's tracked and
 // untracked-but-not-ignored inventory.
@@ -460,6 +668,160 @@ func reviewFingerprint(file worker.WorkspaceReviewFileSummary, data []byte) stri
 	_, _ = io.WriteString(hash, file.Path+"\x00"+file.PreviousPath+"\x00"+string(file.Status)+"\x00")
 	_, _ = hash.Write(data)
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func normalizeReviewScope(scope worker.WorkspaceReviewScope) (worker.WorkspaceReviewScope, error) {
+	if scope == "" {
+		return worker.WorkspaceReviewCombined, nil
+	}
+	switch scope {
+	case worker.WorkspaceReviewCombined, worker.WorkspaceReviewCommitted, worker.WorkspaceReviewStaged,
+		worker.WorkspaceReviewUnstaged, worker.WorkspaceReviewUntracked:
+		return scope, nil
+	default:
+		return "", errors.New("workspace review scope is invalid")
+	}
+}
+
+func reviewContainsCommit(review worker.WorkspaceReviewResponse, sha string) bool {
+	for _, commit := range review.Commits {
+		if commit.SHA == sha {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewFileForScope(review worker.WorkspaceReviewResponse, scope worker.WorkspaceReviewScope, commitSHA, path string) (worker.WorkspaceReviewFileSummary, bool) {
+	var files []worker.WorkspaceReviewFileSummary
+	if commitSHA != "" {
+		for _, commit := range review.Commits {
+			if commit.SHA == commitSHA {
+				files = commit.Files
+				break
+			}
+		}
+	} else {
+		switch scope {
+		case worker.WorkspaceReviewStaged:
+			files = review.Sections.Staged
+		case worker.WorkspaceReviewUnstaged:
+			files = review.Sections.Unstaged
+		case worker.WorkspaceReviewUntracked:
+			files = review.Sections.Untracked
+		case worker.WorkspaceReviewCommitted:
+			files = review.Sections.Committed
+		default:
+			files = review.Files
+		}
+	}
+	for _, file := range files {
+		if file.Path == path {
+			return file, true
+		}
+	}
+	return worker.WorkspaceReviewFileSummary{}, false
+}
+
+func reviewDiffArgs(baseSHA string, scope worker.WorkspaceReviewScope, commitSHA string, contextLines int, ignoreWhitespace bool) []string {
+	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--find-renames", fmt.Sprintf("--unified=%d", contextLines)}
+	if ignoreWhitespace {
+		args = append(args, "--ignore-all-space")
+	}
+	switch scope {
+	case worker.WorkspaceReviewCommitted:
+		if commitSHA != "" {
+			args = append(args, commitSHA+"^", commitSHA)
+		} else {
+			args = append(args, baseSHA, "HEAD")
+		}
+	case worker.WorkspaceReviewStaged:
+		args = append(args, "--cached", "HEAD")
+	case worker.WorkspaceReviewUnstaged:
+		// The default Git diff compares the index with the worktree.
+	default:
+		args = append(args, baseSHA)
+	}
+	return args
+}
+
+func (w *workspace) gitBytes(ctx context.Context, spec string, limit int) ([]byte, bool, error) {
+	output, truncated, err := w.git(ctx, "show", "--format=", "--no-textconv", spec)
+	if err != nil {
+		return nil, false, err
+	}
+	data := []byte(output)
+	if len(data) > limit {
+		data = data[:limit+1]
+		truncated = true
+	}
+	return data, truncated, nil
+}
+
+func (w *workspace) readReviewRevision(ctx context.Context, review worker.WorkspaceReviewResponse, scope worker.WorkspaceReviewScope, side worker.WorkspaceReviewSide, commitSHA, path string) ([]byte, bool, string, error) {
+	readWorktree := func() ([]byte, bool, error) {
+		data, err := w.readReviewFile(path, maxDiffOutput)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return data, err == nil, err
+	}
+	readGit := func(spec string) ([]byte, bool, error) {
+		data, _, err := w.gitBytes(ctx, spec, maxDiffOutput)
+		if err != nil {
+			return nil, false, nil
+		}
+		return data, true, nil
+	}
+
+	var data []byte
+	var exists bool
+	var err error
+	switch scope {
+	case worker.WorkspaceReviewStaged:
+		if side == worker.WorkspaceReviewBefore {
+			data, exists, err = readGit("HEAD:" + path)
+		} else {
+			data, exists, err = readGit(":" + path)
+		}
+	case worker.WorkspaceReviewUnstaged:
+		if side == worker.WorkspaceReviewBefore {
+			data, exists, err = readGit(":" + path)
+		} else {
+			data, exists, err = readWorktree()
+		}
+	case worker.WorkspaceReviewUntracked:
+		if side == worker.WorkspaceReviewAfter {
+			data, exists, err = readWorktree()
+		}
+	case worker.WorkspaceReviewCommitted:
+		commit := commitSHA
+		if commit == "" {
+			commit = "HEAD"
+		}
+		if side == worker.WorkspaceReviewBefore {
+			if commitSHA == "" {
+				data, exists, err = readGit(review.CompareBaseSHA + ":" + path)
+			} else {
+				data, exists, err = readGit(commit + "^:" + path)
+			}
+		} else {
+			data, exists, err = readGit(commit + ":" + path)
+		}
+	default:
+		if side == worker.WorkspaceReviewBefore {
+			data, exists, err = readGit(review.CompareBaseSHA + ":" + path)
+		} else {
+			data, exists, err = readWorktree()
+		}
+	}
+	if err != nil {
+		return nil, false, "", err
+	}
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, string(side)+"\x00"+path+"\x00"+strconv.FormatBool(exists)+"\x00")
+	_, _ = hash.Write(data)
+	return data, exists, hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func nonEmptyLines(value string) []string {

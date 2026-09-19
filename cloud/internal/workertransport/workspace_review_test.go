@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -199,6 +201,109 @@ func TestWorkspaceSearchMatchesPathsAndBoundedText(t *testing.T) {
 	}
 }
 
+func TestWorkspaceReviewDiffsHonorEveryScopeAndCommit(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeWorkspaceFile(t, repo, "README.md", "base\n")
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+	writeWorkspaceFile(t, repo, "README.md", "committed\n")
+	gitWorkspace(t, repo, "commit", "-am", "commit one")
+	commit := gitWorkspaceOutput(t, repo, "rev-parse", "HEAD")
+	writeWorkspaceFile(t, repo, "README.md", "working\n")
+	writeWorkspaceFile(t, repo, "staged.txt", "staged\n")
+	gitWorkspace(t, repo, "add", "staged.txt")
+	writeWorkspaceFile(t, repo, "notes.txt", "note\n")
+
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	review, err := workspace.ReviewSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		request    worker.WorkspaceReviewDiffsRequest
+		contains   string
+		notContain string
+	}{
+		{"combined", worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewCombined, Paths: []string{"README.md"}, ContextLines: 3, WorkspaceVersion: review.WorkspaceVersion}, "+working", ""},
+		{"committed", worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewCommitted, CommitSHA: commit, Paths: []string{"README.md"}, ContextLines: 3, WorkspaceVersion: review.WorkspaceVersion}, "+committed", "+working"},
+		{"staged", worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewStaged, Paths: []string{"staged.txt"}, ContextLines: 3, WorkspaceVersion: review.WorkspaceVersion}, "+staged", ""},
+		{"unstaged", worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewUnstaged, Paths: []string{"README.md"}, ContextLines: 3, WorkspaceVersion: review.WorkspaceVersion}, "+working", ""},
+		{"untracked", worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewUntracked, Paths: []string{"notes.txt"}, ContextLines: 3, WorkspaceVersion: review.WorkspaceVersion}, "+note", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response, diffErr := workspace.ReviewDiffs(context.Background(), tc.request)
+			if diffErr != nil {
+				t.Fatal(diffErr)
+			}
+			if len(response.Groups) != 1 || !strings.Contains(response.Groups[0].Patch, tc.contains) {
+				t.Fatalf("response = %+v", response)
+			}
+			if tc.notContain != "" && strings.Contains(response.Groups[0].Patch, tc.notContain) {
+				t.Fatalf("patch unexpectedly contains %q: %s", tc.notContain, response.Groups[0].Patch)
+			}
+		})
+	}
+	_, err = workspace.ReviewDiffs(context.Background(), worker.WorkspaceReviewDiffsRequest{
+		Scope: worker.WorkspaceReviewCombined, Paths: []string{"README.md"}, WorkspaceVersion: "stale",
+	})
+	if !errors.Is(err, ErrWorkspaceSnapshotStale) {
+		t.Fatalf("stale error = %v", err)
+	}
+}
+
+func TestWorkspaceReviewFileAndRevisionsReturnSelectedStates(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeWorkspaceFile(t, repo, "README.md", "base\n")
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+	writeWorkspaceFile(t, repo, "README.md", "committed\n")
+	gitWorkspace(t, repo, "commit", "-am", "commit one")
+	commit := gitWorkspaceOutput(t, repo, "rev-parse", "HEAD")
+	writeWorkspaceFile(t, repo, "README.md", "working\n")
+
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	detail, err := workspace.ReviewFile(context.Background(), worker.WorkspaceReviewFileRequest{
+		Path: "README.md", Scope: worker.WorkspaceReviewCommitted, CommitSHA: commit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Content != "committed\n" || !detail.Historical || !strings.Contains(detail.Diff, "+committed") {
+		t.Fatalf("commit detail = %+v", detail)
+	}
+	review, err := workspace.ReviewSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := workspace.ReviewRevision(context.Background(), worker.WorkspaceReviewRevisionRequest{
+		Path: "README.md", Scope: worker.WorkspaceReviewCombined, Side: worker.WorkspaceReviewBefore, WorkspaceVersion: review.WorkspaceVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := workspace.ReviewRevision(context.Background(), worker.WorkspaceReviewRevisionRequest{
+		Path: "README.md", Scope: worker.WorkspaceReviewCombined, Side: worker.WorkspaceReviewAfter, WorkspaceVersion: review.WorkspaceVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Content != "base\n" || after.Content != "working\n" || before.Revision == after.Revision {
+		t.Fatalf("before=%+v after=%+v", before, after)
+	}
+}
+
 func containsReviewPath(files []worker.WorkspaceReviewFileSummary, path string) bool {
 	for _, file := range files {
 		if file.Path == path {
@@ -234,4 +339,14 @@ func writeReviewBytes(t *testing.T, repo, name string, content []byte) {
 	if err := os.WriteFile(filepath.Join(repo, name), content, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func gitWorkspaceOutput(t *testing.T, workspacePath string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", workspacePath}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
