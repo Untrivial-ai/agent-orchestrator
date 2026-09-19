@@ -1081,9 +1081,20 @@ func contains(values []string, needle string) bool {
 // enforces explicit denies, so the rule rides the agent, which outranks both.
 func TestGetLaunchCommandBypassesEvenAWorktreePolicy(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "opencode"}
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An explicit deny, which the flag alone would still enforce: OpenCode
+	// treats --dangerously-skip-permissions as an alias of --auto, and a denied
+	// tool never becomes a request to auto-approve.
+	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
+		[]byte(`{"permission":{"bash":"deny"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	promptFile := filepath.Join(t.TempDir(), "system.md")
 	if _, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
-		SessionID: "sess-1", SystemPromptFile: promptFile,
+		SessionID: "sess-1", WorkspacePath: workspace, SystemPromptFile: promptFile,
 		Permissions: ports.PermissionModeBypassPermissions,
 	}); err != nil {
 		t.Fatal(err)
@@ -1096,6 +1107,7 @@ func TestGetLaunchCommandBypassesEvenAWorktreePolicy(t *testing.T) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		t.Fatal(err)
 	}
+	// Agent rules outrank every config layer, so the deny above cannot survive.
 	if got := config.Agent["ao-sess-1"].Permission; got != "allow" {
 		t.Fatalf("agent permission = %#v, want OpenCode's scalar full access", got)
 	}
