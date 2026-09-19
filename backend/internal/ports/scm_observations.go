@@ -63,6 +63,11 @@ type SCMObservation struct {
 	Provider string
 	// Host is the SCM host that served this observation.
 	Host string
+	// AuthenticatedLogin is the account used by AO to observe and act on this
+	// provider/host. It is transient polling context, not a persisted PR fact.
+	// Lifecycle uses it to avoid delivering a worker's own review replies back
+	// to that worker as new review feedback.
+	AuthenticatedLogin string
 	// Repo is the full repository name shown to AO users, usually "owner/name".
 	Repo string
 

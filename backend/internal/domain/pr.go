@@ -111,16 +111,20 @@ type PullRequestCheck struct {
 
 // PullRequestComment is one normalized review comment for a pull request.
 type PullRequestComment struct {
-	ThreadID         string
-	ReviewID         string
-	ID               string
-	Author           string
-	File             string
-	Line             int
-	Body             string
-	URL              string
-	Resolved         bool
-	IsBot            bool
+	ThreadID string
+	ReviewID string
+	ID       string
+	Author   string
+	File     string
+	Line     int
+	Body     string
+	URL      string
+	Resolved bool
+	IsBot    bool
+	// IsSelfAuthored reports that AO observed this comment from its own
+	// authenticated SCM account. It stays visible in the UI but is not review
+	// work sent back to the worker.
+	IsSelfAuthored   bool
 	CreatedAt        time.Time
 	AutoInjectReview bool
 }

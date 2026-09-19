@@ -676,6 +676,8 @@
 	"notify.retryUnresolved": "Ungelöste Benachrichtigungen erneut laden",
 	"notify.workspaceLoadFailed": "Sitzungen konnten nicht geladen werden. Wiederherstellen und Öffnen sind möglicherweise nicht verfügbar.",
 	"pr.botSuffix": "{{name}}-Bot",
+	"pr.aoReply": "AO-Antwort von {{name}} · wird nicht als Arbeit gesendet",
+	"pr.aoReplyTitle": "Diese Antwort wird als Kontext angezeigt und nicht als Review-Arbeit an den Worker gesendet.",
 	"pr.card.changesRequested": "Änderungen angefordert",
 	"pr.card.checksFailing": "Checks fehlgeschlagen",
 	"pr.card.checksLoading": "Merge-Bereitschaft wird geprüft",

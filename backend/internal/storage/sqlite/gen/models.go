@@ -444,6 +444,7 @@ type PRComment struct {
 	IsBot            int64
 	AutoInjectReview bool
 	ReviewID         string
+	IsSelfAuthored   int64
 }
 
 type PRReview struct {

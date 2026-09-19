@@ -405,6 +405,35 @@ func TestDomainFromObservationSnapshotsReviewInjectionPolicy(t *testing.T) {
 	}
 }
 
+func TestDomainFromObservationMarksSelfAuthoredReviewComments(t *testing.T) {
+	obs := testObs(1)
+	obs.AuthenticatedLogin = " AgentWrapper "
+	obs.Review.Threads = []ports.SCMReviewThreadObservation{{
+		ID: "t1",
+		Comments: []ports.SCMReviewCommentObservation{
+			{ID: "self", Author: "agentwrapper", Body: "I am checking this"},
+			{ID: "external", Author: "reviewer", Body: "please add coverage"},
+		},
+	}}
+
+	_, _, _, _, comments := domainFromObservation("p-1", domain.SessionRecord{}, obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())
+	if len(comments) != 2 || !comments[0].IsSelfAuthored || comments[1].IsSelfAuthored {
+		t.Fatalf("comment self-author flags = %+v, want only the authenticated account marked", comments)
+	}
+}
+
+func TestReviewObservationSemanticHashRefreshesWhenAuthenticatedLoginArrives(t *testing.T) {
+	obs := testObs(1)
+	withoutIdentity := reviewObservationSemanticHash(obs)
+	if withoutIdentity != reviewSemanticHash(obs.Review) {
+		t.Fatalf("empty authenticated login changed review hash")
+	}
+	obs.AuthenticatedLogin = "agentwrapper"
+	if got := reviewObservationSemanticHash(obs); got == withoutIdentity {
+		t.Fatal("authenticated login must refresh the review snapshot")
+	}
+}
+
 func TestRepoForTrackedPRMatchesLegacyRepoOnlyRows(t *testing.T) {
 	pr := knownPR(1)
 	pr.Provider = ""
@@ -660,6 +689,9 @@ func TestPoll_RepoETag200DiscoversPRAndRefreshesSamePoll(t *testing.T) {
 	}
 	if got := store.writes[0].pr.Author; got != "alice" {
 		t.Fatalf("discovered author = %q, want alice", got)
+	}
+	if got := lc.observed[0].AuthenticatedLogin; got != "alice" {
+		t.Fatalf("lifecycle authenticated login = %q, want alice", got)
 	}
 }
 
@@ -1305,8 +1337,9 @@ func TestPoll_PartialReviewRefreshUsesMergeMode(t *testing.T) {
 	if store.writes[0].reviewMode != ports.ReviewWriteMerge {
 		t.Fatalf("review mode = %v, want merge", store.writes[0].reviewMode)
 	}
-	if store.writes[0].pr.ReviewHash != reviewSemanticHash(review) {
-		t.Fatalf("review hash = %q, want partial hash %q", store.writes[0].pr.ReviewHash, reviewSemanticHash(review))
+	wantHash := reviewSemanticHashWithAuthenticatedLogin(review, "alice")
+	if store.writes[0].pr.ReviewHash != wantHash {
+		t.Fatalf("review hash = %q, want partial hash %q", store.writes[0].pr.ReviewHash, wantHash)
 	}
 }
 

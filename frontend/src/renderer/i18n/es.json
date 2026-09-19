@@ -678,6 +678,8 @@
 	"notify.retryUnresolved": "Reintentar carga de notificaciones sin resolver",
 	"notify.workspaceLoadFailed": "No se pudieron cargar las sesiones. Restaurar y abrir pueden no estar disponibles.",
 	"pr.botSuffix": "bot {{name}}",
+	"pr.aoReply": "Respuesta de AO de {{name}} · no se envía como trabajo",
+	"pr.aoReplyTitle": "Esta respuesta se muestra como contexto y no se envía al trabajador como trabajo de revisión.",
 	"pr.card.changesRequested": "Cambios solicitados",
 	"pr.card.checksFailing": "Comprobaciones fallidas",
 	"pr.card.checksLoading": "Comprobando si se puede fusionar",

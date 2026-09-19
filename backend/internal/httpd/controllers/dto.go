@@ -971,11 +971,12 @@ type SessionPRReviewEntry struct {
 
 // SessionPRUnresolvedReviewer groups review comments by reviewer.
 type SessionPRUnresolvedReviewer struct {
-	ReviewerID string                       `json:"reviewerId"`
-	Count      int                          `json:"count"`
-	Links      []SessionPRReviewCommentLink `json:"links"`
-	ReviewURL  string                       `json:"reviewUrl,omitempty"`
-	IsBot      bool                         `json:"isBot,omitempty"`
+	ReviewerID     string                       `json:"reviewerId"`
+	Count          int                          `json:"count"`
+	Links          []SessionPRReviewCommentLink `json:"links"`
+	ReviewURL      string                       `json:"reviewUrl,omitempty"`
+	IsBot          bool                         `json:"isBot,omitempty"`
+	IsSelfAuthored bool                         `json:"isSelfAuthored,omitempty"`
 }
 
 // SessionPRReviewCommentLink points to one review comment.
@@ -1085,7 +1086,7 @@ func newSessionPRCommentReviewers(in []sessionsvc.PRUnresolvedReviewer) []Sessio
 		for _, link := range reviewer.Links {
 			links = append(links, SessionPRReviewCommentLink{URL: link.URL, ReviewID: link.ReviewID, File: link.File, Line: link.Line, Body: link.Body, AutoInjectReview: link.AutoInjectReview})
 		}
-		reviewers = append(reviewers, SessionPRUnresolvedReviewer{ReviewerID: reviewer.ReviewerID, Count: reviewer.Count, Links: links, ReviewURL: reviewer.ReviewURL, IsBot: reviewer.IsBot})
+		reviewers = append(reviewers, SessionPRUnresolvedReviewer{ReviewerID: reviewer.ReviewerID, Count: reviewer.Count, Links: links, ReviewURL: reviewer.ReviewURL, IsBot: reviewer.IsBot, IsSelfAuthored: reviewer.IsSelfAuthored})
 	}
 	return reviewers
 }

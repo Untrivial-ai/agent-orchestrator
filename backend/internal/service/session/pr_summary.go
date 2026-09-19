@@ -183,9 +183,11 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 	links := map[string][]PRReviewCommentLink{}
 	resolvedLinks := map[string][]PRReviewCommentLink{}
 	isBot := map[string]bool{}
+	isSelfAuthored := map[string]bool{}
 	resolvedIsBot := map[string]bool{}
+	resolvedIsSelfAuthored := map[string]bool{}
 	for _, c := range comments {
-		if c.IsBot {
+		if c.IsBot && !c.IsSelfAuthored {
 			continue
 		}
 		reviewer := strings.TrimSpace(c.Author)
@@ -206,6 +208,7 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 			}
 			resolvedByReviewer[reviewer]++
 			resolvedIsBot[reviewer] = c.IsBot
+			resolvedIsSelfAuthored[reviewer] = resolvedIsSelfAuthored[reviewer] || c.IsSelfAuthored
 			resolvedLinks[reviewer] = append(resolvedLinks[reviewer], link)
 			continue
 		}
@@ -214,6 +217,7 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 		}
 		byReviewer[reviewer]++
 		isBot[reviewer] = c.IsBot
+		isSelfAuthored[reviewer] = isSelfAuthored[reviewer] || c.IsSelfAuthored
 		links[reviewer] = append(links[reviewer], link)
 	}
 	latestReviews := latestChangesRequestedReviews(reviews)
@@ -243,21 +247,23 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 	sort.Strings(order)
 	for _, reviewer := range order {
 		out.UnresolvedBy = append(out.UnresolvedBy, PRUnresolvedReviewer{
-			ReviewerID: reviewer,
-			Count:      byReviewer[reviewer],
-			Links:      links[reviewer],
-			ReviewURL:  reviewURLByAuthor[reviewer],
-			IsBot:      isBot[reviewer],
+			ReviewerID:     reviewer,
+			Count:          byReviewer[reviewer],
+			Links:          links[reviewer],
+			ReviewURL:      reviewURLByAuthor[reviewer],
+			IsBot:          isBot[reviewer],
+			IsSelfAuthored: isSelfAuthored[reviewer],
 		})
 	}
 	sort.Strings(resolvedOrder)
 	for _, reviewer := range resolvedOrder {
 		out.ResolvedBy = append(out.ResolvedBy, PRUnresolvedReviewer{
-			ReviewerID: reviewer,
-			Count:      resolvedByReviewer[reviewer],
-			Links:      resolvedLinks[reviewer],
-			ReviewURL:  reviewURLByAuthor[reviewer],
-			IsBot:      resolvedIsBot[reviewer],
+			ReviewerID:     reviewer,
+			Count:          resolvedByReviewer[reviewer],
+			Links:          resolvedLinks[reviewer],
+			ReviewURL:      reviewURLByAuthor[reviewer],
+			IsBot:          resolvedIsBot[reviewer],
+			IsSelfAuthored: resolvedIsSelfAuthored[reviewer],
 		})
 	}
 	for _, reviewer := range out.UnresolvedBy {

@@ -658,6 +658,8 @@
 	"notify.unreadCount": "{{count}} 条未读通知",
 	"notify.workspaceLoadFailed": "无法加载会话。恢复与打开可能暂不可用。",
 	"pr.botSuffix": "{{name}} 机器人",
+	"pr.aoReply": "来自 {{name}} 的 AO 回复 · 不会作为工作发送",
+	"pr.aoReplyTitle": "此回复仅供参考显示，不会作为审查工作发送给工作代理。",
 	"pr.card.changesRequested": "请求修改",
 	"pr.card.checksFailing": "检查失败",
 	"pr.card.checksLoading": "正在检查合并状态",
