@@ -30,16 +30,24 @@ import {
 	getChatDraftBoundary,
 } from "../../lib/chat-draft-boundary";
 import { TooltipProvider } from "../ui/tooltip";
+import { createTestQueryClient } from "../../test/query-client";
+import { QueryClientProvider } from "@tanstack/react-query";
 
 const renameSessionMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("../../lib/rename-session", () => ({ renameSession: renameSessionMock }));
 
 function render(ui: ReactElement) {
-	const result = rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+	const queryClient = createTestQueryClient();
+	const wrap = (node: ReactElement) => (
+		<QueryClientProvider client={queryClient}>
+			<TooltipProvider>{node}</TooltipProvider>
+		</QueryClientProvider>
+	);
+	const result = rtlRender(wrap(ui));
 	return {
 		...result,
-		rerender: (nextUi: ReactElement) => result.rerender(<TooltipProvider>{nextUi}</TooltipProvider>),
+		rerender: (nextUi: ReactElement) => result.rerender(wrap(nextUi)),
 	};
 }
 

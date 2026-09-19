@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchWorkspaceFilePath } from "./workspace-file-path";
+import { matchWorkspaceFilePath, qualifyTurnDiffPath } from "./workspace-file-path";
 
 describe("matchWorkspaceFilePath", () => {
 	const files = [
@@ -35,5 +35,51 @@ describe("matchWorkspaceFilePath", () => {
 		];
 		expect(matchWorkspaceFilePath("frontend/index.ts", duplicateFiles)).toBe("frontend/index.ts");
 		expect(matchWorkspaceFilePath("backend/index.ts", duplicateFiles)).toBe("backend/index.ts");
+	});
+
+});
+
+describe("qualifyTurnDiffPath", () => {
+	const file = (path: string) => ({
+		path,
+		status: "added" as const,
+		additions: 1,
+		deletions: 0,
+		binary: false,
+		size: 12,
+	});
+
+	it("qualifies a bare row when exactly one changed file matches", () => {
+		expect(qualifyTurnDiffPath("workspace-test.txt", [file("alpha/workspace-test.txt")])).toBe(
+			"alpha/workspace-test.txt",
+		);
+	});
+
+	it("keeps an already-qualified row unchanged", () => {
+		expect(
+			qualifyTurnDiffPath("alpha/workspace-test.txt", [file("alpha/workspace-test.txt")]),
+		).toBe("alpha/workspace-test.txt");
+	});
+
+	// The core #5366 case the frontend cannot fix: two repos change a same-named file,
+	// the daemon emits the bare basename for both, so the honest answer is the bare
+	// path rather than guessing a repo.
+	it("keeps the bare path when two repos share the basename", () => {
+		expect(
+			qualifyTurnDiffPath("workspace-test.txt", [
+				file("alpha/workspace-test.txt"),
+				file("beta/workspace-test.txt"),
+			]),
+		).toBe("workspace-test.txt");
+	});
+
+	it("keeps the bare path when nothing in the change set matches", () => {
+		expect(qualifyTurnDiffPath("workspace-test.txt", [file("alpha/other.txt")])).toBe(
+			"workspace-test.txt",
+		);
+	});
+
+	it("returns the raw path when it normalizes to empty", () => {
+		expect(qualifyTurnDiffPath("./", [file("alpha/workspace-test.txt")])).toBe("./");
 	});
 });

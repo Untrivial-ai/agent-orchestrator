@@ -256,3 +256,27 @@ export function useSessionWorkspaceFilesChangedCount(sessionId: string | undefin
 	}, [queryClient, sessionId]);
 	return sessionId ? query.data : undefined;
 }
+
+const EMPTY_WORKSPACE_FILES: WorkspaceFileSummary[] = [];
+
+// The session's changed files, read passively from the warm summary query that the
+// inspector's changed-count keeps alive. `enabled: false` means this never starts
+// its own fetch or opens the file-watcher stream, so rendering a turn changed-files
+// card cannot re-enable the workspace query for a session that opted out of it
+// (browser-only sessions pass `undefined` to the changed-count above for exactly
+// that reason). It only reflects data already in cache and falls back to an empty
+// list otherwise, so callers keep the raw row path until the inspector has loaded.
+//
+// Filtered to changed files (like the changed-count) rather than the whole tracked
+// tree: a turn's rows are changes, so matching against the change set avoids
+// resolving a row onto an unrelated unchanged file that merely shares a basename.
+export function useSessionWorkspaceChangedFiles(
+	sessionId: string | undefined,
+): WorkspaceFileSummary[] {
+	const query = useQuery({
+		...sessionWorkspaceFilesQueryOptions(sessionId ?? ""),
+		enabled: false,
+		select: (data: WorkspaceFilesResponse) => data.files.filter(isChangedWorkspaceFile),
+	});
+	return query.data ?? EMPTY_WORKSPACE_FILES;
+}
