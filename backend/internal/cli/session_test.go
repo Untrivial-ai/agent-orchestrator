@@ -100,6 +100,8 @@ func sessionCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 				return
 			}
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","displayName":`+jsonQuote(req.DisplayName)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-pressure":
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-pressure","projectId":"demo","kind":"worker","status":"working","activity":{"state":"active","lastActivityAt":"2026-06-02T12:00:00Z"},"isTerminated":false,"createdAt":"2026-06-02T11:00:00Z","updatedAt":"2026-06-02T12:00:00Z","contextPressure":{"contextUsedPercent":73,"source":"chat-controller","observedAt":"2026-06-02T12:00:00Z"}}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -415,6 +417,59 @@ func TestSessionGet_JSONOutputDecodes(t *testing.T) {
 	}
 	if got.Session.ID != "demo-1" || got.Session.ProjectID != "demo" || got.Session.Status != "working" {
 		t.Fatalf("unexpected session JSON: %#v", got.Session)
+	}
+}
+
+func TestSessionGet_ShowsContextPressureWhenReported(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "get", "demo-pressure", "-p", "demo")
+	if err != nil {
+		t.Fatalf("session get failed: %v\nstderr=%s", err, errOut)
+	}
+	want := "context: 73% used (source: chat-controller, observed 2026-06-02T12:00:00Z)"
+	if !strings.Contains(out, want) {
+		t.Fatalf("output missing %q:\n%s", want, out)
+	}
+}
+
+func TestSessionGet_OmitsContextPressureWhenUnknown(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "get", "demo-1", "-p", "demo")
+	if err != nil {
+		t.Fatalf("session get failed: %v\nstderr=%s", err, errOut)
+	}
+	if strings.Contains(out, "context:") {
+		t.Fatalf("unknown pressure must not print a context line:\n%s", out)
+	}
+}
+
+func TestSessionGet_JSONIncludesContextPressure(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionCommandServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "get", "demo-pressure", "--project", "demo", "--json")
+	if err != nil {
+		t.Fatalf("session get --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got sessionResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not decodable: %v\noutput=%s", err, out)
+	}
+	if got.Session.ContextPressure == nil || got.Session.ContextPressure.ContextUsedPercent != 73 {
+		t.Fatalf("contextPressure = %#v, want 73%% used", got.Session.ContextPressure)
 	}
 }
 

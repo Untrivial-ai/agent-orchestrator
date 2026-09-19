@@ -45,3 +45,11 @@ type Activity struct {
 	State          ActivityState `json:"state"`
 	LastActivityAt time.Time     `json:"lastActivityAt"`
 }
+
+// ContextPressure is a harness-reported reading of how full an agent's context
+// window is. It is best-effort; a nil *ContextPressure means unknown.
+type ContextPressure struct {
+	ContextUsedPercent int       `json:"contextUsedPercent"`
+	Source             string    `json:"source"`
+	ObservedAt         time.Time `json:"observedAt"`
+}
