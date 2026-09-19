@@ -118,14 +118,14 @@ func TestGooseCustomProviderMetadata(t *testing.T) {
 		env            map[string]string
 		want           ports.AgentAuthStatus
 	}{
-		{"declared env", `{"name":"custom_team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusConfigured},
-		{"unrelated env", `{"name":"custom_team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","models":[]}`, map[string]string{"OPENAI_API_KEY": "fixture"}, ports.AgentAuthStatusUnknown},
-		{"command config not execution", `{"name":"custom_team","engine":"openai","base_url":"https://models.example/v1","auth":{"command":"credential-helper","args":["--secret"]},"models":[]}`, nil, ports.AgentAuthStatusConfigured},
-		{"command and key conflict", `{"name":"custom_team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","auth":{"command":"helper"},"models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusUnknown},
-		{"explicit no auth", `{"name":"custom_team","engine":"openai","base_url":"http://localhost:9000/v1","requires_auth":false,"models":[]}`, nil, ports.AgentAuthStatusNotApplicable},
-		{"required nonsecret metadata", `{"name":"custom_team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","env_vars":[{"name":"TEAM_PROJECT","required":true}],"models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusUnknown},
-		{"required metadata present", `{"name":"custom_team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","env_vars":[{"name":"TEAM_PROJECT","required":true}],"models":[]}`, map[string]string{"TEAM_AUTH": "fixture", "TEAM_PROJECT": "test"}, ports.AgentAuthStatusConfigured},
-		{"mismatched identity", `{"name":"custom_other","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusUnknown},
+		{"declared env", `{"name":"custom_team","display_name":"Team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusConfigured},
+		{"unrelated env", `{"name":"custom_team","display_name":"Team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","models":[]}`, map[string]string{"OPENAI_API_KEY": "fixture"}, ports.AgentAuthStatusUnknown},
+		{"command config not execution", `{"name":"custom_team","display_name":"Team","engine":"openai","base_url":"https://models.example/v1","auth":{"command":"credential-helper","args":["--secret"]},"models":[]}`, nil, ports.AgentAuthStatusConfigured},
+		{"command and key conflict", `{"name":"custom_team","display_name":"Team","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","auth":{"command":"helper"},"models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusUnknown},
+		{"explicit no auth", `{"name":"custom_team","display_name":"Team","engine":"openai","base_url":"http://localhost:9000/v1","requires_auth":false,"models":[]}`, nil, ports.AgentAuthStatusNotApplicable},
+		{"required nonsecret metadata", `{"name":"custom_team","display_name":"Team","engine":"openai","base_url":"https://models.example/v1/${TEAM_PROJECT}","api_key_env":"TEAM_AUTH","env_vars":[{"name":"TEAM_PROJECT","required":true}],"models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusUnknown},
+		{"required metadata present", `{"name":"custom_team","display_name":"Team","engine":"openai","base_url":"https://models.example/v1/${TEAM_PROJECT}","api_key_env":"TEAM_AUTH","env_vars":[{"name":"TEAM_PROJECT","required":true}],"models":[]}`, map[string]string{"TEAM_AUTH": "fixture", "TEAM_PROJECT": "test"}, ports.AgentAuthStatusConfigured},
+		{"mismatched identity", `{"name":"custom_other","display_name":"Other","engine":"openai","base_url":"https://models.example/v1","api_key_env":"TEAM_AUTH","models":[]}`, map[string]string{"TEAM_AUTH": "fixture"}, ports.AgentAuthStatusUnknown},
 		{"bad metadata", `{"name":"custom_team","api_key_env":42}`, nil, ports.AgentAuthStatusUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"gopkg.in/yaml.v3"
 )
 
@@ -58,21 +61,139 @@ var gooseProviderKeys = map[string]string{
 }
 
 type gooseProviderMetadata struct {
-	Name         string `json:"name"`
-	Engine       string `json:"engine"`
-	BaseURL      string `json:"base_url"`
-	APIKeyEnv    string `json:"api_key_env"`
-	RequiresAuth *bool  `json:"requires_auth"`
-	Auth         *struct {
-		Command string   `json:"command"`
-		Args    []string `json:"args"`
+	Name         string  `json:"name"`
+	DisplayName  *string `json:"display_name"`
+	Engine       string  `json:"engine"`
+	BaseURL      string  `json:"base_url"`
+	Description  *string `json:"description"`
+	APIKeyEnv    string  `json:"api_key_env"`
+	RequiresAuth *bool   `json:"requires_auth"`
+	Models       *[]struct {
+		Name                       *string                    `json:"name"`
+		ResolvedModel              *string                    `json:"resolved_model"`
+		ContextLimit               *uint64                    `json:"context_limit"`
+		InputTokenCost             *float64                   `json:"input_token_cost"`
+		OutputTokenCost            *float64                   `json:"output_token_cost"`
+		Currency                   *string                    `json:"currency"`
+		SupportsCacheControl       *bool                      `json:"supports_cache_control"`
+		Reasoning                  bool                       `json:"reasoning"`
+		ThinkingPreservationFormat *string                    `json:"thinking_preservation_format"`
+		RequestParams              map[string]json.RawMessage `json:"request_params"`
+	} `json:"models"`
+	Headers                 map[string]*string `json:"headers"`
+	TimeoutSeconds          *uint64            `json:"timeout_seconds"`
+	SupportsStreaming       *bool              `json:"supports_streaming"`
+	DynamicModels           *bool              `json:"dynamic_models"`
+	SessionIDHeaderOverride *string            `json:"session_id_header_override"`
+	CatalogProviderID       *string            `json:"catalog_provider_id"`
+	BasePath                *string            `json:"base_path"`
+	ModelDocLink            *string            `json:"model_doc_link"`
+	SetupSteps              []*string          `json:"setup_steps"`
+	SkipCanonicalFiltering  bool               `json:"skip_canonical_filtering"`
+	ToolShim                bool               `json:"toolshim"`
+	PreservesThinking       bool               `json:"preserves_thinking"`
+	EmitClearThinking       bool               `json:"emit_clear_thinking"`
+	Auth                    *struct {
+		Command         string    `json:"command"`
+		Args            []*string `json:"args"`
+		RefreshInterval *uint64   `json:"refresh_interval"`
+		TimeoutSeconds  *uint64   `json:"timeout_seconds"`
+		Cwd             *string   `json:"cwd"`
 	} `json:"auth"`
 	EnvVars []struct {
-		Name     string `json:"name"`
-		Required bool   `json:"required"`
-		Secret   bool   `json:"secret"`
-		Default  string `json:"default"`
+		Name        *string `json:"name"`
+		Required    bool    `json:"required"`
+		Secret      bool    `json:"secret"`
+		Default     *string `json:"default"`
+		Primary     *bool   `json:"primary"`
+		Description *string `json:"description"`
 	} `json:"env_vars"`
+}
+
+// Match serde's required fields and scalar types. Go's decoder otherwise
+// accepts null for strings/numbers and cannot distinguish an absent slice
+// from an explicitly null array. Only these declared schema fields are read.
+func (m *gooseProviderMetadata) UnmarshalJSON(data []byte) error {
+	type wire gooseProviderMetadata
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return errors.New("invalid provider metadata")
+	}
+	if value.DisplayName == nil || value.Models == nil {
+		return errors.New("missing provider metadata")
+	}
+	for _, model := range *value.Models {
+		if model.Name == nil {
+			return errors.New("missing model name")
+		}
+	}
+	for _, header := range value.Headers {
+		if header == nil {
+			return errors.New("invalid provider header")
+		}
+	}
+	for _, step := range value.SetupSteps {
+		if step == nil {
+			return errors.New("invalid provider setup step")
+		}
+	}
+	for _, field := range value.EnvVars {
+		if field.Name == nil {
+			return errors.New("missing provider environment name")
+		}
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return errors.New("invalid provider metadata")
+	}
+	if gooseHasNullField(fields, "api_key_env", "requires_auth", "setup_steps", "skip_canonical_filtering", "toolshim", "preserves_thinking", "emit_clear_thinking") {
+		return errors.New("invalid null provider field")
+	}
+	for _, group := range []struct {
+		name     string
+		booleans []string
+	}{
+		{"models", []string{"reasoning"}},
+		{"env_vars", []string{"required", "secret"}},
+	} {
+		if len(fields[group.name]) == 0 {
+			continue
+		}
+		var entries []map[string]json.RawMessage
+		if json.Unmarshal(fields[group.name], &entries) != nil {
+			return errors.New("invalid provider metadata list")
+		}
+		for _, entry := range entries {
+			if gooseHasNullField(entry, group.booleans...) {
+				return errors.New("invalid null provider boolean")
+			}
+		}
+	}
+	if value.Auth != nil {
+		var auth map[string]json.RawMessage
+		if json.Unmarshal(fields["auth"], &auth) != nil || gooseHasNullField(auth, "command", "args", "refresh_interval") {
+			return errors.New("invalid command credential metadata")
+		}
+		if _, exists := auth["command"]; !exists {
+			return errors.New("missing credential command")
+		}
+		for _, arg := range value.Auth.Args {
+			if arg == nil {
+				return errors.New("invalid command credential argument")
+			}
+		}
+	}
+	*m = gooseProviderMetadata(value)
+	return nil
+}
+
+func gooseHasNullField(fields map[string]json.RawMessage, names ...string) bool {
+	for _, name := range names {
+		if strings.TrimSpace(string(fields[name])) == "null" {
+			return true
+		}
+	}
+	return false
 }
 
 var gooseProviderID = regexp.MustCompile(`^[a-z0-9_][a-z0-9_-]*$`)
@@ -156,7 +277,9 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 				disabled = disabled || node.Value == "true" || node.Value == "1"
 			}
 			if !disabled {
-				if raw, err := authutil.GenericPassword(ctx, d, "goose", "secrets"); err == nil {
+				raw, fallback := gooseKeyringResult(ctx, d)
+				disabled = fallback
+				if !fallback {
 					// The keyring stores JSON; the file fallback stores YAML.
 					var values map[string]json.RawMessage
 					if json.Unmarshal(raw, &values) == nil {
@@ -169,7 +292,7 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 					}
 				}
 			}
-			if len(stored) == 0 && dir != "" {
+			if disabled && dir != "" {
 				_ = authutil.ReadYAML(ctx, d, filepath.Join(dir, "secrets.yaml"), &stored)
 			}
 		}
@@ -184,8 +307,7 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 	// must match the filename, and the id cannot traverse out of custom_providers.
 	var metadata gooseProviderMetadata
 	if dir != "" && authutil.ReadJSON(ctx, d, filepath.Join(dir, "custom_providers", provider+".json"), &metadata) == nil {
-		endpoint, err := url.Parse(metadata.BaseURL)
-		if metadata.Name != provider || err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.User != nil {
+		if metadata.Name != provider {
 			return ports.AgentAuthStatusUnknown, nil
 		}
 		switch metadata.Engine {
@@ -197,16 +319,27 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 			return ports.AgentAuthStatusUnknown, nil
 		}
 		for _, field := range metadata.EnvVars {
-			if !field.Required {
+			placeholder := "${" + *field.Name + "}"
+			if !strings.Contains(metadata.BaseURL, placeholder) {
 				continue
 			}
-			value := param(field.Name)
+			value := param(*field.Name)
 			if field.Secret {
-				value = secret(field.Name)
+				value = secret(*field.Name)
 			}
-			if value == "" && strings.TrimSpace(field.Default) == "" {
+			if value == "" && field.Default != nil {
+				value = *field.Default
+			}
+			if value == "" && field.Required && field.Default == nil {
 				return ports.AgentAuthStatusUnknown, nil
 			}
+			if value != "" || field.Default != nil {
+				metadata.BaseURL = strings.ReplaceAll(metadata.BaseURL, placeholder, value)
+			}
+		}
+		endpoint, err := url.Parse(metadata.BaseURL)
+		if strings.Contains(metadata.BaseURL, "${") || err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.User != nil {
+			return ports.AgentAuthStatusUnknown, nil
 		}
 		if metadata.RequiresAuth != nil && !*metadata.RequiresAuth {
 			return ports.AgentAuthStatusNotApplicable, nil
@@ -258,7 +391,7 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 			hash := sha256.Sum256([]byte(host + "databricks-cli" + "all-apis,offline_access"))
 			var token gooseOAuthToken
 			path := filepath.Join(dir, "databricks", "oauth", hex.EncodeToString(hash[:])+".json")
-			if authutil.ReadJSON(ctx, d, path, &token) == nil && strings.TrimSpace(token.Access) != "" && strings.TrimSpace(token.Refresh) != "" {
+			if authutil.ReadJSON(ctx, d, path, &token) == nil && strings.TrimSpace(token.Access) != "" && token.Refresh != nil && strings.TrimSpace(*token.Refresh) != "" {
 				if token.Expires == "" {
 					return ports.AgentAuthStatusConfigured, nil
 				}
@@ -283,6 +416,69 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 		return ports.AgentAuthStatusConfigured, nil
 	}
 	return ports.AgentAuthStatusUnknown, ctx.Err()
+}
+
+// gooseKeyringResult separates a selected keyring (including an empty or
+// malformed record) from the native missing/unavailable fallback conditions.
+// The shared helper intentionally erases command errors, so retain only the
+// numeric OS outcome before sanitization; never expose output/error text.
+func gooseKeyringResult(ctx context.Context, d authutil.Dependencies) ([]byte, bool) {
+	goos := d.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos != "darwin" {
+		return nil, true
+	}
+	run := d.Run
+	if run == nil {
+		run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			cmd := aoprocess.CommandContext(ctx, name, args...)
+			output := &gooseKeyringOutput{}
+			cmd.Stdout, cmd.Stderr = output, io.Discard
+			cmd.WaitDelay = 100 * time.Millisecond
+			err := cmd.Run()
+			if output.exceeded {
+				return nil, errors.New("credential output exceeds limit")
+			}
+			return output.data, err
+		}
+	}
+	fallback := false
+	d.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := run(ctx, name, args...)
+		var exit interface{ ExitCode() int }
+		if errors.As(err, &exit) {
+			// security exits with OSStatus modulo 256: errSecItemNotFound
+			// (-25300) and errSecNotAvailable (-25291), respectively.
+			fallback = exit.ExitCode() == 44 || exit.ExitCode() == 37
+		}
+		return out, err
+	}
+	out, err := authutil.GenericPassword(ctx, d, "goose", "secrets")
+	if err == nil {
+		return out, false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, false
+	}
+	return nil, fallback
+}
+
+type gooseKeyringOutput struct {
+	data     []byte
+	exceeded bool
+}
+
+func (b *gooseKeyringOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := authutil.MaxFileSize - len(b.data); n > remaining {
+		b.data = append(b.data, p[:remaining]...)
+		b.exceeded = true
+	} else {
+		b.data = append(b.data, p...)
+	}
+	return n, nil
 }
 
 func gooseConfigDir(d authutil.Dependencies) string {
@@ -314,9 +510,9 @@ func gooseConfigDir(d authutil.Dependencies) string {
 }
 
 type gooseOAuthToken struct {
-	Access  string `json:"access_token"`
-	Refresh string `json:"refresh_token"`
-	Expires string `json:"expires_at"`
+	Access  string  `json:"access_token"`
+	Refresh *string `json:"refresh_token"`
+	Expires string  `json:"expires_at"`
 }
 
 func gooseOAuthStatus(ctx context.Context, d authutil.Dependencies, dir, provider, host string) ports.AgentAuthStatus {
@@ -376,12 +572,15 @@ func gooseOAuthStatus(ctx context.Context, d authutil.Dependencies, dir, provide
 			return ports.AgentAuthStatusUnknown
 		}
 	}
-	if strings.TrimSpace(token.Access) == "" {
+	// These providers require a string refresh_token in their native schema.
+	// Missing/null is malformed; an explicitly empty string is a valid record
+	// with no refresh path. Databricks handles its optional field separately.
+	if strings.TrimSpace(token.Access) == "" || token.Refresh == nil {
 		return ports.AgentAuthStatusUnknown
 	}
 	expiry, err := time.Parse(time.RFC3339, token.Expires)
 	if err != nil {
 		return ports.AgentAuthStatusUnknown
 	}
-	return authutil.ExpiryEvidence(expiry, strings.TrimSpace(token.Refresh) != "", now).Status
+	return authutil.ExpiryEvidence(expiry, strings.TrimSpace(*token.Refresh) != "", now).Status
 }
