@@ -28,6 +28,8 @@ export type SettingsCatalogItem = {
 	icon: LucideIcon;
 	label: (t: TFunction) => string;
 	visible?: (context: CatalogContext) => boolean;
+	/** Rendered in the settings nav but greyed out and non-interactive. */
+	disabled?: boolean;
 	render: (t: TFunction, titleHidden: boolean) => ReactNode;
 };
 
@@ -77,6 +79,7 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		id: "mobile",
 		icon: Smartphone,
 		label: (t) => t("settings.mobile"),
+		disabled: true,
 		render: (t, titleHidden) => (
 			<SettingsSection titleHidden={titleHidden} title={t("settings.mobile")}>
 				<div className="rounded-md bg-[var(--color-bg-settings-row)] pb-4 pt-0">

@@ -343,7 +343,6 @@ function useSelection() {
 	});
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
-	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
 	const goSettings = useCallback((projectId: string) => openProjectSettings(projectId), [openProjectSettings]);
 	const goProject = useCallback(
 		(projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
@@ -370,11 +369,10 @@ function useSelection() {
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings,
-		goConnectMobile,
 		goSettings,
 		goProject,
 		goSession,
-	}), [goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
+	}), [goGlobalSettings, goHome, goProject, goSession, goSettings, params.projectId, params.sessionId, pathname]);
 }
 
 // Colour tracks the session's board section, preserving SCM state while the
@@ -859,9 +857,10 @@ export function Sidebar({
 			</SidebarContent>
 
 			{/* Footer — Settings opens the global settings page directly.
-			    Footer rows share NAV_ROW height so Settings, Connect mobile,
-			    and account actions line up. Bottom spacing stays inside the
-			    footer so there is no empty strip beneath the final action. */}
+			    Footer rows share NAV_ROW height so Settings, the disabled
+			    Connect mobile row, and account actions line up. Bottom spacing
+			    stays inside the footer so there is no empty strip beneath the
+			    final action. */}
 			<SidebarFooter
 				className="relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-20 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:overflow-visible group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-2 group-data-[collapsible=icon]:!pt-1.5"
 			>
@@ -893,12 +892,15 @@ export function Sidebar({
 					/>
 					<button
 						aria-label={t("settings.connectMobile")}
-						className={FOOTER_NAV_BUTTON_CLASS}
-						onClick={() => selection.goConnectMobile()}
+						className={cn(
+							FOOTER_NAV_BUTTON_CLASS,
+							"disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-muted-foreground",
+						)}
+						disabled
 						tabIndex={isCollapsed ? -1 : 0}
 						type="button"
 					>
-						<NavRowHighlight />
+						<NavRowHighlight disabled />
 						<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5 [&_svg]:size-icon-md [&_svg]:shrink-0">
 							<Smartphone aria-hidden="true" />
 							<span className="tracking-tight">{t("settings.connectMobile")}</span>
@@ -934,12 +936,15 @@ export function Sidebar({
 						<TooltipTrigger asChild>
 							<button
 								aria-label={t("settings.connectMobile")}
-								className={FOOTER_RAIL_BUTTON_CLASS}
-								onClick={() => selection.goConnectMobile()}
+								className={cn(
+									FOOTER_RAIL_BUTTON_CLASS,
+									"disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-muted-foreground",
+								)}
+								disabled
 								tabIndex={isCollapsed ? 0 : -1}
 								type="button"
 							>
-								<NavRowHighlight />
+								<NavRowHighlight disabled />
 								<span className="relative z-[1] grid place-items-center [&_svg]:size-icon-base">
 									<Smartphone aria-hidden="true" />
 								</span>

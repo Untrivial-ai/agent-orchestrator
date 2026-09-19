@@ -137,9 +137,10 @@ export function SettingsDialog() {
 											onClick={() => setActiveProjectSection(id)}
 										/>
 									))
-								: globalSections.map(({ id, label, icon }) => (
+								: globalSections.map(({ disabled, id, label, icon }) => (
 										<SettingsNavItem
 											active={activeSection === id}
+											disabled={disabled}
 											icon={icon}
 											key={id}
 											label={label(t)}
