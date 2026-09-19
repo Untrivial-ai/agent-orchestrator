@@ -883,6 +883,80 @@ describe("terminal restore", () => {
 		}
 	});
 
+	// The agent process died but the session row did not. Recovery here is
+	// resume-agent (keeps worktree + native conversation), never restore.
+	describe("agent exited while the session row is alive", () => {
+		const exited = {
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+			isTerminated: false,
+			terminalHandleId: "term-1",
+		} as const;
+
+		it.each([
+			["worker", worker],
+			["orchestrator", orchestrator],
+		])("posts resume-agent from the strip for a %s", async (_kind, session) => {
+			terminalState.value = "exited";
+			const view = renderPane({ ...session, ...exited });
+			try {
+				await userEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+				await waitFor(() =>
+					expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
+						params: { path: { sessionId: session.id } },
+					}),
+				);
+			} finally {
+				view.restore();
+			}
+		});
+
+		// An agent can exit while its pane survives on a keep-alive, so the mux
+		// never reports "exited". Without sessionAgentExited in showEndedState the
+		// whole strip stays hidden and the only recovery control goes with it.
+		it("shows the strip even when the mux never reported an exit", () => {
+			terminalState.value = "attached";
+			const view = renderPane({ ...orchestrator, ...exited });
+			try {
+				expect(screen.getByRole("button", { name: "Resume agent" })).toBeInTheDocument();
+			} finally {
+				view.restore();
+			}
+		});
+
+		// Cloud sessions recover through the control plane; the local daemon has
+		// never heard of them, so this button must not appear for one.
+		it("does not offer resume for a cloud session", () => {
+			terminalState.value = "exited";
+			const view = renderPane({
+				...worker,
+				...exited,
+				cloud: { orgId: "org-1" },
+			});
+			try {
+				expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+			} finally {
+				view.restore();
+			}
+		});
+
+		it("offers restore and not resume once the row is terminated", () => {
+			terminalState.value = "exited";
+			const view = renderPane({
+				...worker,
+				activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+				isTerminated: true,
+				status: "terminated",
+				terminalHandleId: "term-1",
+			});
+			try {
+				expect(screen.getByRole("button", { name: "Restore session" })).toBeInTheDocument();
+				expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+			} finally {
+				view.restore();
+			}
+		});
+	});
+
 	it("offers restore when a merged session is terminated", () => {
 		const view = renderPane({
 			...worker,

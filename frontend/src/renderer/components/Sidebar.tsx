@@ -58,6 +58,7 @@ import { IS_DEV } from "../lib/is-dev";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
+	sessionAgentExited,
 	openPRs,
 	type WorkspaceSession,
 	type WorkspaceSummary,
@@ -74,7 +75,7 @@ import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { cloudSessionsQueryKey, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { usePinSession, useUnpinSession } from "../hooks/usePinSession";
 import { spawnCloudOrchestrator } from "../lib/cloud-orchestrator";
-import { spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { resumeOrchestrator, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { formatTimeCompact, formatTimeTerse } from "../lib/format-time";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useResizable } from "../hooks/useResizable";
@@ -1127,6 +1128,18 @@ const ProjectItem = memo(function ProjectItem({
 		if (isProjectProvisioning || isProjectRestarting) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
+			// Mirrors useProjectOrchestratorAction; both launchers must stay in step.
+			if (sessionAgentExited(orchestrator) && workspace.kind !== "cloud") {
+				setIsSpawning(true);
+				try {
+					await resumeOrchestrator(orchestrator.id);
+					await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+				} catch (err) {
+					console.error("Failed to resume orchestrator:", err);
+				} finally {
+					setIsSpawning(false);
+				}
+			}
 			selection.goSession(workspace.id, orchestrator.id);
 			return;
 		}

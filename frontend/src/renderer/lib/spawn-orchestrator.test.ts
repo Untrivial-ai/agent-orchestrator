@@ -3,6 +3,7 @@ import {
 	canBypassOrchestratorApprovals,
 	isChatPreflightError,
 	OrchestratorSpawnError,
+	resumeOrchestrator,
 	spawnOrchestrator,
 } from "./spawn-orchestrator";
 import { apiClient } from "./api-client";
@@ -190,5 +191,37 @@ describe("spawnOrchestrator", () => {
 				allowedApprovalModes: ["accept-edits"],
 			}),
 		).toBe(false);
+	});
+});
+
+describe("resumeOrchestrator", () => {
+	const postMock = vi.mocked(apiClient.POST);
+
+	it("posts resume-agent for the session", async () => {
+		postMock.mockResolvedValue({ data: {}, error: undefined, response: { status: 200 } } as never);
+		await resumeOrchestrator("proj-1-orch");
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
+			params: { path: { sessionId: "proj-1-orch" } },
+		});
+	});
+
+	// The caller asked for a working orchestrator; one that is already running
+	// satisfies that, so the 409 must not surface as a failure.
+	it("treats AGENT_NOT_EXITED as success", async () => {
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "AGENT_NOT_EXITED", message: "still running" },
+			response: { status: 409 },
+		} as never);
+		await expect(resumeOrchestrator("proj-1-orch")).resolves.toBeUndefined();
+	});
+
+	it("throws on any other error", async () => {
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "SESSION_NOT_FOUND", message: "Unknown session" },
+			response: { status: 404 },
+		} as never);
+		await expect(resumeOrchestrator("proj-1-orch")).rejects.toThrow(/Unknown session/);
 	});
 });

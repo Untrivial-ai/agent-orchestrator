@@ -44,6 +44,7 @@ import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
 import { OrchestratorChildrenSection } from "./OrchestratorChildrenSection";
 import { ProductExternalLink } from "./ProductExternalLink";
+import { ResumeAgentControl } from "./ResumeAgentControl";
 import {
 	sessionScmSummaryQueryKey,
 	useSessionScmSummary,
@@ -59,7 +60,6 @@ import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { findProjectOrchestrator, sortedPRs, STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
-import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
@@ -322,7 +322,9 @@ const SummaryView = memo(function SummaryView({
 			activity={
 				<>
 					<ActivityTimeline prs={prSummaries} session={session} />
-					<ResumeAgentControl session={session} />
+					<div className="mt-3 border-t border-(--color-border-settings-input) pt-3">
+						<ResumeAgentControl className="w-full" session={session} />
+					</div>
 				</>
 			}
 			activityTitle={t("inspector.activity")}
@@ -1036,59 +1038,6 @@ function formatModelName(modelID: string): string {
 		formatted.push(normalized === "gpt" || normalized === "glm" ? normalized.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`);
 	}
 	return formatted.join(" ") || modelID;
-}
-
-function ResumeAgentControl({ session }: { session: WorkspaceSession }) {
-	const { t } = useTranslation();
-	const queryClient = useQueryClient();
-	const resume = useMutation({
-		mutationFn: async () => {
-			if (usePreviewData) return;
-			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
-				params: { path: { sessionId: session.id } },
-			});
-			if (error) throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
-			return data;
-		},
-		onSuccess: async (data) => {
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			if (data?.resumeMode === "saved_prompt") {
-				void aoBridge.notifications
-					.show({
-						id: `resume-agent-fallback:${session.id}:${Date.now()}`,
-						title: t("inspector.startedFromPrompt"),
-						body: t("inspector.resumeFallbackBody"),
-					})
-					.catch((err) => {
-						console.warn("Unable to show resume fallback notification", err);
-					});
-			}
-		},
-	});
-
-	if (session.isTerminated === true || session.activity?.state !== "exited" || session.activeAgentSwitch) return null;
-
-	const error = resume.error instanceof Error ? resume.error.message : null;
-	return (
-		<div className="mt-3 border-t border-(--color-border-settings-input) pt-3">
-			<Button
-				className="w-full"
-				disabled={resume.isPending}
-				onClick={() => resume.mutate()}
-				size="sm"
-				type="button"
-				variant="outline"
-			>
-				<Play className="size-icon-sm" aria-hidden="true" />
-				{resume.isPending ? t("inspector.resumingAgent") : t("inspector.resumeAgent")}
-			</Button>
-			{error ? (
-				<p className="mt-2 text-2xs leading-normal text-error" role="status">
-					{error}
-				</p>
-			) : null}
-		</div>
-	);
 }
 
 function SessionControls({ session }: { session: WorkspaceSession }) {
