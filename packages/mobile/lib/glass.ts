@@ -24,9 +24,9 @@ import { radius } from "./tokens";
  */
 
 /** A rounded-rect panel: composer bars, docked search, grouped controls. */
-export function glassPanel(cornerRadius: number = radius.lg, tint?: string) {
+export function glassPanel(cornerRadius: number = radius.lg, tint?: string, interactive = true) {
 	return glassEffect({
-		glass: { variant: "regular", interactive: true, ...(tint ? { tint } : {}) },
+		glass: { variant: "regular", interactive, ...(tint ? { tint } : {}) },
 		shape: "roundedRectangle",
 		cornerRadius,
 	});

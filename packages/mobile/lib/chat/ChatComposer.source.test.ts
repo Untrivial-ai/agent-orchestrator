@@ -20,10 +20,22 @@ describe("chat composer pill", () => {
 	// that commits. A border plus a fill made it read as a box with buttons in it.
 	it("draws a single borderless capsule", () => {
 		const pill = styleRule("composer");
-		expect(pill).toContain("borderRadius: 28");
+		expect(pill).toContain("borderRadius: COMPOSER_RADIUS");
+		expect(composer).toContain("const COMPOSER_RADIUS = 28");
 		expect(pill).not.toContain("borderWidth");
 		expect(pill).not.toContain("borderColor");
-		expect(pill).toContain("backgroundColor: t.bgElevated");
+		// No fill under the glass: an opaque pill under a material is the one
+		// arrangement that turns it grey. Android, which has no material, keeps the
+		// elevated fill.
+		expect(pill).toContain('backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated');
+	});
+
+	it("lays the glass behind the row, sized to the pill", () => {
+		expect(composer).toContain("<ComposerGlass height={pillHeight} radius={COMPOSER_RADIUS} />");
+		// `false`: the material must not take the touch. The field is inside this
+		// pill, and an interactive material only passes taps that land on its own
+		// content — typing would stop working.
+		expect(source("./composer-glass.ios.tsx")).toContain("glassPanel(radius, undefined, false)");
 	});
 
 	// Two discs side by side have no hierarchy; the send button is the only shape

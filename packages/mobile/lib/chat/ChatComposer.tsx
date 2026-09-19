@@ -20,6 +20,7 @@ import {
 } from "./composerSuggestions";
 import { chatSheetRoute } from "./chatSheetRegistry";
 import { ChatAttachmentMenu } from "./ChatAttachmentMenu";
+import { ComposerGlass, composerGlassSupported } from "./composer-glass";
 import { ChatTurnSettingsControl } from "./ChatTurnSettingsControl";
 import { composerDeliveryPresentation, composerDeliveryRoute, composerPrimaryAction, type ComposerDeliveryIntent } from "./composerDeliveryModel";
 import { contextMeterModel } from "./contextMeter";
@@ -33,6 +34,9 @@ type Attachment =
 	| { id: string; kind: "resource"; name: string; bytes: number; resource: ChatResource };
 
 const MAX_EMBEDDED_FILE_BYTES = 500_000;
+
+/** The pill's corner, and so also the radius of the glass drawn behind it. */
+const COMPOSER_RADIUS = 28;
 const MAX_ATTACHMENTS = 8;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_BYTES_TOTAL = 25 * 1024 * 1024;
@@ -110,6 +114,9 @@ export function ChatComposer({
 	const [text, setText] = useState("");
 	const [cursor, setCursor] = useState(0);
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
+	// Measured, because the pill grows with the message and the glass behind it has
+	// to grow with it.
+	const [pillHeight, setPillHeight] = useState(COMPOSER_RADIUS * 2);
 	const [localError, setLocalError] = useState<string>();
 	const [submitting, setSubmitting] = useState(false);
 	const [promotingQueuedTurnId, setPromotingQueuedTurnId] = useState<string>();
@@ -346,7 +353,16 @@ export function ChatComposer({
 				<Text numberOfLines={1} maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.restoreText}>{request.title}</Text>
 				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.restoreAction}>Answer</Text>
 			</Pressable> : null}
-			{requestCard ?? <View style={[styles.composer, stopped && { opacity: 0.55 }]}>
+			{requestCard ?? <View
+				style={[styles.composer, stopped && { opacity: 0.55 }]}
+				// The glass follows the pill, so a message that wraps to three lines
+				// grows one rounded panel rather than leaving the material behind.
+				onLayout={(event) => {
+					const { height } = event.nativeEvent.layout;
+					setPillHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+				}}
+			>
+				<ComposerGlass height={pillHeight} radius={COMPOSER_RADIUS} />
 				<ChatAttachmentMenu disabled={stopped} canAttachFile={Boolean(canEmbedFiles)} onChoosePhoto={() => void addImage()} onChooseFile={() => void addFile()} />
 				<TextInput
 					accessibilityLabel="Message the agent"
@@ -375,7 +391,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	// control that commits. The pill's radius is half its resting height, so a
 	// single line reads as a capsule and a long message grows a rounded panel —
 	// no second border, no second surface.
-	composer: { minHeight: 56, maxHeight: 164, flexDirection: "row", alignItems: "flex-end", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: t.bgElevated, borderRadius: 28, borderCurve: "continuous" },
+	//
+	// The fill goes transparent where the glass layer is drawing behind it: an
+	// opaque pill under a material is the one arrangement that turns glass grey.
+	composer: { minHeight: 56, maxHeight: 164, flexDirection: "row", alignItems: "flex-end", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
 	// 44pt of box around a 20pt line, so one line sits centred in the pill rather
 	// than riding its bottom edge.
 	input: { flex: 1, minHeight: 44, maxHeight: 152, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, paddingVertical: space.md, textAlignVertical: "top" },
