@@ -223,6 +223,10 @@ const (
 	// EnvBrowserRuntimeTokenStdin is the daemon-only token handoff marker and
 	// must be cleared before a worker process is spawned.
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
+	// EnvCLIPath is the absolute AO executable agents must use for AO-managed
+	// commands. A nested login shell may reorder PATH and select a stale global
+	// ao instead, so the managed skill never relies on a bare `ao` lookup.
+	EnvCLIPath = "AO_CLI_PATH"
 )
 
 // hookBinaryName is the executable name the workspace hook commands invoke:
@@ -4284,13 +4288,20 @@ func (m *Manager) aoSkillPointer() string {
 	commandsGlob := filepath.ToSlash(filepath.Join(dir, "commands", "*.md"))
 	browserFile := filepath.ToSlash(filepath.Join(dir, "commands", "browser.md"))
 	previewFile := filepath.ToSlash(filepath.Join(dir, "commands", "preview.md"))
+	command := "ao"
+	if executable, err := m.executable(); err == nil && strings.TrimSpace(executable) != "" {
+		if _, absErr := filepath.Abs(executable); absErr == nil {
+			command = `"$` + EnvCLIPath + `"`
+		}
+	}
 	return "\n\n" + "## Using the ao CLI\n\n" +
-		"When using `ao`, read `" + skillFile + "` and only the relevant file under `" + commandsGlob + "`; do not load unrelated command guides.\n\n" +
+		"Use `" + command + "` for AO commands, never bare `ao`: login shells may choose an incompatible install.\n\n" +
+		"Read `" + skillFile + "` and only the relevant guide under `" + commandsGlob + "`.\n\n" +
 		"## AO desktop Browser panel\n\n" +
-		"For frontend work, read `" + previewFile + "` before previewing or starting an app. Static file targets passed to `ao preview` are relative to the session workspace root, regardless of the shell's current directory: use `ao preview README.md`, not `../README.md`. AO serves workspace files through its existing confined loopback preview; do not use `file://` or start a server just to display static files. Never create or modify `package.json` or install dependencies solely to display static files. Do not create `.ao/launch.json` unless the user asks. Automatically open the primary requested browser-displayable artifact immediately after creating or materially updating it, but do not replace an active application preview with a supporting asset. " +
-		"For page inspection or interaction, read `" + browserFile + "` and use `ao browser` from this AO session. Browser network capture is optional and off by default; follow that guide and never enable it for routine browser actions. " +
+		"For frontend work, read `" + previewFile + "` before previewing or starting an app. Static file targets passed to `" + command + " preview` are relative to the session workspace root, regardless of the shell's current directory: use `" + command + " preview README.md`, not `../README.md`. AO serves workspace files through its existing confined loopback preview; do not use `file://` or start a server just to display static files. Never create or modify `package.json` or install dependencies solely to display static files. Do not create `.ao/launch.json` unless the user asks. Automatically open the primary requested browser-displayable artifact immediately after creating or materially updating it, but do not replace an active application preview with a supporting asset. " +
+		"For page inspection or interaction, read `" + browserFile + "` and use `" + command + " browser` from this AO session. Browser network capture is optional and off by default; follow that guide and never enable it for routine browser actions. " +
 		"Do not use Codex/host in-app browser connectors, `agent.browsers.get(\"iab\")`, or a browser MCP for the AO Browser panel: those are separate browser runtimes and cannot see or control AO's session-owned page. " +
-		"`ao browser` operates the same live page the user sees in that panel."
+		"`" + command + " browser` operates the same live page the user sees in that panel."
 }
 
 func (m *Manager) workspaceProjectPrompt(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID) (string, error) {
@@ -4472,6 +4483,15 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
+	if executable, err := m.executable(); err == nil && strings.TrimSpace(executable) != "" {
+		if absolute, absErr := filepath.Abs(executable); absErr == nil {
+			setProtectedEnv(env, EnvCLIPath, absolute, caseInsensitive)
+		} else {
+			m.logger.Warn("session AO CLI path could not be made absolute; managed AO commands may resolve through PATH", "session", id, "error", absErr)
+		}
+	} else if err != nil {
+		m.logger.Warn("session AO CLI path unavailable; managed AO commands may resolve through PATH", "session", id, "error", err)
+	}
 	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",

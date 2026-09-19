@@ -84,3 +84,28 @@ func TestConfiguredPATHWindowsUsesExactProtectedSpelling(t *testing.T) {
 		t.Fatalf("case-insensitive configured PATH = %q, want project", got)
 	}
 }
+
+// A login shell may prepend a stale global AO directory after the daemon has
+// launched the worker. Managed commands use the canonical environment value,
+// so that PATH rewrite cannot select the foreign executable.
+func TestCanonicalCLIPathSurvivesPATHRewrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell execution; Windows uses the explicit executable value directly")
+	}
+	canonicalDir, foreignDir := t.TempDir(), t.TempDir()
+	canonical := filepath.Join(canonicalDir, "ao")
+	for path, output := range map[string]string{
+		canonical:                       "CANONICAL",
+		filepath.Join(foreignDir, "ao"): "FOREIGN",
+	} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho '"+output+"'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", `PATH="$FOREIGN_AO:$PATH"; "$AO_CLI_PATH"`)
+	cmd.Env = append(os.Environ(), "AO_CLI_PATH="+canonical, "FOREIGN_AO="+foreignDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil || string(output) != "CANONICAL\n" {
+		t.Fatalf("canonical AO after PATH rewrite: %v: %q", err, output)
+	}
+}

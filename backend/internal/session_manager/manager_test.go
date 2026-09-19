@@ -4818,7 +4818,7 @@ func TestSpawnOrchestrator_UsesCoordinatorPrompt(t *testing.T) {
 		"Browser network capture is optional and off by default",
 		"never enable it for routine browser actions",
 		"relative to the session workspace root",
-		"use `ao preview README.md`, not `../README.md`",
+		"use `\"$AO_CLI_PATH\" preview README.md`, not `../README.md`",
 		"existing confined loopback preview",
 	} {
 		if !strings.Contains(systemPrompt, want) {
@@ -4975,9 +4975,11 @@ func TestSystemPrompt_AppendsConfidentialityGuard(t *testing.T) {
 			if !strings.Contains(sp, "AO desktop Browser panel") || !strings.Contains(sp, "agent.browsers.get(\"iab\")") {
 				t.Fatalf("%s: system prompt missing AO browser routing guidance:\n%s", tc.name, sp)
 			}
-			if !strings.Contains(sp, "Static file targets passed to `ao preview`") ||
+			if !strings.Contains(sp, "Use `\"$AO_CLI_PATH\"` for AO commands, never bare `ao`") ||
+				!strings.Contains(sp, "login shells may choose an incompatible install") ||
+				!strings.Contains(sp, "Static file targets passed to `\"$AO_CLI_PATH\" preview`") ||
 				!strings.Contains(sp, "relative to the session workspace root") ||
-				!strings.Contains(sp, "use `ao preview README.md`, not `../README.md`") ||
+				!strings.Contains(sp, "use `\"$AO_CLI_PATH\" preview README.md`, not `../README.md`") ||
 				!strings.Contains(sp, "Never create or modify `package.json`") ||
 				!strings.Contains(sp, "Do not create `.ao/launch.json` unless the user asks") {
 				t.Fatalf("%s: system prompt missing static-first preview safeguards:\n%s", tc.name, sp)
@@ -6115,6 +6117,9 @@ func TestSpawnAndRestore_PinHookPATHToDaemonBinary(t *testing.T) {
 			}
 			if got := rt.lastCfg.Env["PATH"]; got != want {
 				t.Fatalf("runtime env PATH = %q, want %q", got, want)
+			}
+			if got := rt.lastCfg.Env[EnvCLIPath]; got != daemonExe {
+				t.Fatalf("runtime env %s = %q, want canonical daemon executable %q", EnvCLIPath, got, daemonExe)
 			}
 		})
 	}

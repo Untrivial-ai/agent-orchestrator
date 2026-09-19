@@ -19,15 +19,15 @@ If the task first requires choosing, starting, or opening a preview target,
 read [preview.md](preview.md) and follow its static-file/project-runtime
 decision.
 
-Use the ordinary AO commands below. AO binds its browser engine to the current
+Use the ordinary AO commands below, replacing `ao` with `"$AO_CLI_PATH"`. AO binds its browser engine to the current
 worker's visible Browser panel automatically; there is no separate native
 command, connection flag, profile, or setup step:
 
 ```bash
-ao browser open http://localhost:5173
-ao browser act "the submit button"
-ao browser wait --text "Saved"
-ao browser errors
+"$AO_CLI_PATH" browser open http://localhost:5173
+"$AO_CLI_PATH" browser act "the submit button"
+"$AO_CLI_PATH" browser wait --text "Saved"
+"$AO_CLI_PATH" browser errors
 ```
 
 For "click/fill/etc. this element," reach for `ao browser act "<description>"`
@@ -41,9 +41,9 @@ cover yet — `drag` and `select` always need a manual snapshot first, since
 matching two targets or an option's own text is out of scope for `act`.
 
 ```bash
-ao browser fill e2 "hello"
-ao browser click e3
-ao browser snapshot --interactive
+"$AO_CLI_PATH" browser fill e2 "hello"
+"$AO_CLI_PATH" browser click e3
+"$AO_CLI_PATH" browser snapshot --interactive
 ```
 
 Element references such as `e1` are short-lived. After navigation or a substantial DOM replacement, take another snapshot. A stale reference fails explicitly and never falls through to another session or page.
