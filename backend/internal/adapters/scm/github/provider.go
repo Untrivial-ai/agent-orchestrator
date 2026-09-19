@@ -151,10 +151,11 @@ func (p *Provider) Observe(ctx context.Context, prURL string) (ports.PRObservati
 		return out, scmObserveError(err)
 	}
 
-	out.CI = ciSummaryFromGraphQL(gq)
+	ci := githubCIProjectionFromGraphQL(gq)
+	out.CI = ci.summary()
 	out.Review = reviewDecisionFromGraphQL(gq)
 	out.Mergeability = mergeabilityFromGraphQL(gq, rest, out.CI, out.Review)
-	out.Checks = checksFromGraphQL(gq, rest.Head.SHA)
+	out.Checks = ci.prChecks(rest.Head.SHA)
 	out.Comments = commentsFromGraphQL(gq)
 
 	// Log-tail enrichment is best-effort: a job-log fetch failure must not
@@ -164,7 +165,7 @@ func (p *Provider) Observe(ctx context.Context, prURL string) (ports.PRObservati
 		if !isFailingCheckStatus(out.Checks[i].Status) {
 			continue
 		}
-		jobID := jobIDForCheck(gq, out.Checks[i].Name)
+		jobID := ci.jobID(out.Checks[i].Name)
 		if jobID == 0 {
 			continue
 		}
@@ -259,7 +260,10 @@ const prObservationQuery = `query($owner:String!,$repo:String!,$number:Int!){
           contexts(first:CONTEXT_LIMIT){
             nodes{
               __typename
-              ... on CheckRun  { name status conclusion detailsUrl url databaseId }
+              ... on CheckRun  {
+                name status conclusion detailsUrl url databaseId
+                checkSuite{ workflowRun{ runNumber runAttempt workflow{ databaseId } } }
+              }
               ... on StatusContext { context state targetUrl }
             }
             pageInfo{ hasNextPage }
@@ -313,52 +317,6 @@ func (p *Provider) fetchJobLogTail(ctx context.Context, owner, repo string, jobI
 // ---------------------------------------------------------------------------
 // Projection helpers
 // ---------------------------------------------------------------------------
-
-// ciSummaryFromGraphQL maps the per-PR status rollup onto domain.CIState.
-// If ANY visible context concluded failure-class we return CIFailing.
-// Otherwise any pending context wins over passing. An empty rollup is
-// CIUnknown. When the rollup is paginated (pageInfo.hasNextPage=true)
-// the verdict is conservative: a known failure is still safe — failures
-// don't get un-failed by more pages — but passing/pending/unknown
-// verdicts could hide a failing context on the next page, so we degrade
-// them all to CIUnknown rather than risk reporting a broken PR as ready.
-func ciSummaryFromGraphQL(pr map[string]any) domain.CIState {
-	roll := statusRollup(pr)
-	if roll == nil {
-		return domain.CIUnknown
-	}
-	contexts, _ := roll["contexts"].(map[string]any)
-	rawNodes := nodes(contexts["nodes"])
-	if len(rawNodes) == 0 {
-		// GitHub returns a top-level "state" on the rollup even when the
-		// nodes list is empty (e.g. SUCCESS / FAILURE / PENDING). Honor it
-		// rather than returning CIUnknown for an otherwise-decided PR.
-		return mapRollupState(str(roll["state"]))
-	}
-	pending, passing := false, false
-	for _, n := range rawNodes {
-		st := checkStatusFromGraphQL(n)
-		switch st {
-		case domain.PRCheckFailed, domain.PRCheckCancelled:
-			return domain.CIFailing
-		case domain.PRCheckQueued, domain.PRCheckInProgress:
-			pending = true
-		case domain.PRCheckPassed:
-			passing = true
-		}
-	}
-	if pageInfoHasMore(contexts) {
-		return domain.CIUnknown
-	}
-	switch {
-	case pending:
-		return domain.CIPending
-	case passing:
-		return domain.CIPassing
-	default:
-		return domain.CIUnknown
-	}
-}
 
 // pageInfoHasMore reports whether the rollup contexts have a next page
 // the current request didn't fetch. We treat a missing pageInfo block
@@ -461,43 +419,6 @@ func mergeabilityFromGraphQL(pr map[string]any, rest restPull, ci domain.CIState
 	return domain.MergeUnknown
 }
 
-// checksFromGraphQL projects each context node into a PRCheckObservation.
-// StatusContext (commit-status) and CheckRun (Actions) are both flattened
-// into the same slice because downstream consumers don't distinguish.
-func checksFromGraphQL(pr map[string]any, headSHA string) []ports.PRCheckObservation {
-	roll := statusRollup(pr)
-	contexts, _ := roll["contexts"].(map[string]any)
-	rawNodes := nodes(contexts["nodes"])
-	if len(rawNodes) == 0 {
-		return nil
-	}
-	out := make([]ports.PRCheckObservation, 0, len(rawNodes))
-	for _, n := range rawNodes {
-		typ := str(n["__typename"])
-		var name, urlOut string
-		switch typ {
-		case "CheckRun":
-			name = str(n["name"])
-			urlOut = firstNonEmpty(str(n["detailsUrl"]), str(n["url"]))
-		case "StatusContext":
-			name = str(n["context"])
-			urlOut = str(n["targetUrl"])
-		default:
-			continue
-		}
-		if name == "" {
-			continue
-		}
-		out = append(out, ports.PRCheckObservation{
-			Name:       name,
-			CommitHash: headSHA,
-			Status:     checkStatusFromGraphQL(n),
-			URL:        urlOut,
-		})
-	}
-	return out
-}
-
 // commentsFromGraphQL flattens unresolved review threads into one comment
 // per node, dropping bot authors entirely (the spec keeps Resolved=false
 // always since we filter resolved threads out client-side).
@@ -549,25 +470,6 @@ func isBotAuthor(author map[string]any) bool {
 	return false
 }
 
-// jobIDForCheck looks up the Actions job ID for a check by name, so we
-// can call /actions/jobs/{job_id}/logs. StatusContext rows have no job
-// ID (they're commit statuses, not Actions runs); those return 0 and
-// the log fetch is skipped for them.
-func jobIDForCheck(pr map[string]any, name string) int64 {
-	roll := statusRollup(pr)
-	contexts, _ := roll["contexts"].(map[string]any)
-	for _, n := range nodes(contexts["nodes"]) {
-		if str(n["__typename"]) != "CheckRun" {
-			continue
-		}
-		if str(n["name"]) != name {
-			continue
-		}
-		return int64(num(n["databaseId"]))
-	}
-	return 0
-}
-
 // statusRollup extracts the commits[0].commit.statusCheckRollup blob
 // from the GraphQL pullRequest payload. Nil when the PR has no commits
 // or GitHub hasn't computed the rollup yet.
@@ -581,6 +483,200 @@ func statusRollup(pr map[string]any) map[string]any {
 		}
 	}
 	return nil
+}
+
+// effectiveCheckNodes removes older occurrences of the same GitHub Actions
+// job when GitHub retains multiple workflow runs for one commit. A cancellation
+// is still actionable when it belongs to the newest run (or when GitHub does
+// not provide workflow metadata), but a newer rerun of the same workflow/job
+// supersedes it.
+type workflowRunVersion struct {
+	number  int64
+	attempt int64
+}
+
+// githubCIProjection is the single normalized view of one GitHub rollup. Its
+// nodes have already had superseded workflow occurrences removed, so every
+// consumer (aggregate state, stored checks, actionable failures, and log-job
+// lookup) reasons about the same set.
+type githubCIProjection struct {
+	rollup   map[string]any
+	contexts map[string]any
+	nodes    []map[string]any
+}
+
+func githubCIProjectionFromGraphQL(pr map[string]any) githubCIProjection {
+	rollup := statusRollup(pr)
+	if rollup == nil {
+		return githubCIProjection{}
+	}
+	contexts, _ := rollup["contexts"].(map[string]any)
+	return githubCIProjection{
+		rollup:   rollup,
+		contexts: contexts,
+		nodes:    effectiveCheckNodes(contexts),
+	}
+}
+
+// summary maps the per-PR status rollup onto domain.CIState. A paginated
+// context list is intentionally conservative: visible nodes may not represent
+// the complete check set.
+func (p githubCIProjection) summary() domain.CIState {
+	if p.rollup == nil {
+		return domain.CIUnknown
+	}
+	if len(p.nodes) == 0 {
+		return mapRollupState(str(p.rollup["state"]))
+	}
+	pending, passing := false, false
+	for _, n := range p.nodes {
+		switch checkStatusFromGraphQL(n) {
+		case domain.PRCheckFailed, domain.PRCheckCancelled:
+			return domain.CIFailing
+		case domain.PRCheckQueued, domain.PRCheckInProgress:
+			pending = true
+		case domain.PRCheckPassed:
+			passing = true
+		}
+	}
+	if pageInfoHasMore(p.contexts) {
+		return domain.CIUnknown
+	}
+	switch {
+	case pending:
+		return domain.CIPending
+	case passing:
+		return domain.CIPassing
+	default:
+		return domain.CIUnknown
+	}
+}
+
+// summaryWithRollupFallback preserves the batch observer's behavior while a
+// paginated list is being completed: only a complete visible list may replace
+// GitHub's aggregate rollup state.
+func (p githubCIProjection) summaryWithRollupFallback() domain.CIState {
+	if p.rollup == nil {
+		return domain.CIUnknown
+	}
+	if len(nodes(p.contexts["nodes"])) > 0 && !pageInfoHasMore(p.contexts) {
+		return p.summary()
+	}
+	return mapRollupState(str(p.rollup["state"]))
+}
+
+// prChecks projects the normalized nodes into legacy PRCheckObservation rows.
+func (p githubCIProjection) prChecks(headSHA string) []ports.PRCheckObservation {
+	out := make([]ports.PRCheckObservation, 0, len(p.nodes))
+	for _, n := range p.nodes {
+		typ := str(n["__typename"])
+		var name, urlOut string
+		switch typ {
+		case "CheckRun":
+			name = str(n["name"])
+			urlOut = firstNonEmpty(str(n["detailsUrl"]), str(n["url"]))
+		case "StatusContext":
+			name = str(n["context"])
+			urlOut = str(n["targetUrl"])
+		default:
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		out = append(out, ports.PRCheckObservation{Name: name, CommitHash: headSHA, Status: checkStatusFromGraphQL(n), URL: urlOut})
+	}
+	return out
+}
+
+func (p githubCIProjection) scmChecks() []ports.SCMCheckObservation {
+	out := make([]ports.SCMCheckObservation, 0, len(p.nodes))
+	for _, n := range p.nodes {
+		typ := str(n["__typename"])
+		var ch ports.SCMCheckObservation
+		switch typ {
+		case "CheckRun":
+			ch.Name = str(n["name"])
+			ch.Status = string(checkStatusFromGraphQL(n))
+			ch.Conclusion = strings.ToLower(str(n["conclusion"]))
+			ch.URL = firstNonEmpty(str(n["detailsUrl"]), str(n["url"]))
+			if id := int64(num(n["databaseId"])); id > 0 {
+				ch.ProviderID = strconv.FormatInt(id, 10)
+			}
+		case "StatusContext":
+			ch.Name = str(n["context"])
+			ch.Status = string(checkStatusFromGraphQL(n))
+			ch.Conclusion = strings.ToLower(str(n["state"]))
+			ch.URL = str(n["targetUrl"])
+		default:
+			continue
+		}
+		if ch.Name != "" {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+func (p githubCIProjection) failedSCMChecks() []ports.SCMCheckObservation {
+	return failedSCMChecks(p.scmChecks())
+}
+
+// jobID looks up an Actions job ID for log enrichment. Status contexts do not
+// have an Actions job ID, so they return zero and the log fetch is skipped.
+func (p githubCIProjection) jobID(name string) int64 {
+	for _, n := range p.nodes {
+		if str(n["__typename"]) == "CheckRun" && str(n["name"]) == name {
+			return int64(num(n["databaseId"]))
+		}
+	}
+	return 0
+}
+
+func effectiveCheckNodes(contexts map[string]any) []map[string]any {
+	raw := nodes(contexts["nodes"])
+	latest := make(map[string]workflowRunVersion)
+	for _, node := range raw {
+		key, version, ok := checkRunVersion(node)
+		if !ok {
+			continue
+		}
+		if current, exists := latest[key]; !exists || newerRunVersion(version, current) {
+			latest[key] = version
+		}
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, node := range raw {
+		key, version, ok := checkRunVersion(node)
+		if ok && version != latest[key] {
+			continue
+		}
+		out = append(out, node)
+	}
+	return out
+}
+
+func checkRunVersion(node map[string]any) (string, workflowRunVersion, bool) {
+	var version workflowRunVersion
+	if str(node["__typename"]) != "CheckRun" {
+		return "", version, false
+	}
+	name := strings.TrimSpace(str(node["name"]))
+	suite, _ := node["checkSuite"].(map[string]any)
+	run, _ := suite["workflowRun"].(map[string]any)
+	workflow, _ := run["workflow"].(map[string]any)
+	workflowID := int64(num(workflow["databaseId"]))
+	version.number = int64(num(run["runNumber"]))
+	version.attempt = int64(num(run["runAttempt"]))
+	if name == "" || workflowID == 0 || version.number == 0 {
+		return "", version, false
+	}
+	return strconv.FormatInt(workflowID, 10) + "\x00" + name, version, true
+}
+
+func newerRunVersion(candidate, current workflowRunVersion) bool {
+	return candidate.number > current.number ||
+		(candidate.number == current.number && candidate.attempt > current.attempt)
 }
 
 // checkStatusFromGraphQL maps the (status, conclusion) tuple of one node
