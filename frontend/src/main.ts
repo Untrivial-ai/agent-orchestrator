@@ -35,6 +35,7 @@ import {
 	returnToHome,
 	type UpdateCheckOptions,
 } from "./main/auto-updater";
+import { consumeUpdateRelaunchFailure } from "./main/linux-update-watchdog";
 import { listFeatureBuilds, getActiveFeatureBuild } from "./main/feature-builds";
 import { initMainSentry, sanitizeRendererCapture } from "./main/sentry-main";
 import { TelemetryPolicyAuthority, resolveDesktopDataDir } from "./main/telemetry-policy-file";
@@ -2828,6 +2829,31 @@ app.whenReady().then(async () => {
 	await createWindow();
 	void startDaemon();
 	initAutoUpdates();
+
+	// A prior Linux quit-to-update that never produced a running app retired the
+	// update state and left a one-shot marker (see linux-update-watchdog.ts).
+	// Surface it now that a window exists; the marker is consumed on read, so it
+	// shows at most once.
+	if (process.platform === "linux" && app.isPackaged) {
+		const runFile = runFilePath();
+		if (runFile) {
+			const failure = await consumeUpdateRelaunchFailure({ stateDir: path.dirname(runFile) });
+			if (failure) {
+				console.warn("prior Linux update relaunch failed:", failure.error);
+				void dialog
+					.showMessageBox({
+						type: "warning",
+						title: "Update relaunch failed",
+						message: failure.version
+							? `The app closed to install update ${failure.version}, but the new build did not start.`
+							: "The app closed to install an update, but the new build did not start.",
+						detail: failure.error,
+						noLink: true,
+					})
+					.catch((error) => console.error("failed to show update relaunch failure dialog:", error));
+			}
+		}
+	}
 
 	// Windows/Linux: on first launch, the deep-link URL may arrive as a
 	// process.argv entry (e.g. ao-app://callback?token=...).
