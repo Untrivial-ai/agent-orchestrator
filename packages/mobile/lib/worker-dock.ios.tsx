@@ -67,6 +67,10 @@ export function WorkerDock({
 					modifiers={[
 						buttonStyle("plain"),
 						controlSize("large"),
+						// A plain control is tappable only where its content is, so the padding is
+						// what makes the whole circle respond — without it the menu opened only
+						// when the tap landed on the glyph.
+						padding({ horizontal: 13, vertical: 13 }),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 						labelStyle("iconOnly"),
 						tint(projectFiltered ? t.accent : t.textSecondary),
@@ -155,6 +159,7 @@ export function WorkerDock({
 					modifiers={[
 						buttonStyle("plain"),
 						controlSize("large"),
+						padding({ horizontal: 13, vertical: 13 }),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 						labelStyle("iconOnly"),
 						tint(t.textPrimary),

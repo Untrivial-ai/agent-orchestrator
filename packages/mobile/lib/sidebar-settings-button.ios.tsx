@@ -5,6 +5,7 @@ import {
 	accessibilityLabel,
 	buttonStyle,
 	frame,
+	padding,
 } from "@expo/ui/swift-ui/modifiers";
 import { glassCircle } from "./glass";
 import { GLASS_CIRCLE_SIZE } from "./native-header-button.ios";
@@ -24,6 +25,7 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 					onPress={onPress}
 					modifiers={[
 						buttonStyle("plain"),
+						padding({ horizontal: 13, vertical: 13 }),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 						accessibilityLabel("Settings"),
 						accessibilityIdentifier("sidebar-settings"),
