@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"fmt"
 	"testing"
 	"time"
 )
@@ -64,7 +63,7 @@ func TestMigration0087BackfillsConversationBranchesAndTimelineRows(t *testing.T)
 		"conversation_turns", "conversation_messages", "conversation_activities", "conversation_provider_events",
 	} {
 		var branchID string
-		if err := db.QueryRow(fmt.Sprintf(`SELECT branch_id FROM %s LIMIT 1`, table)).Scan(&branchID); err != nil {
+		if err := db.QueryRow(selectBranchIDQuery(t, table)).Scan(&branchID); err != nil {
 			t.Fatalf("read %s branch: %v", table, err)
 		}
 		if branchID != activeBranchID {
@@ -109,11 +108,33 @@ func TestMigration0087AssignsNewTimelineRowsToActiveBranch(t *testing.T) {
 		"conversation_turns", "conversation_messages", "conversation_activities", "conversation_provider_events",
 	} {
 		var branchID string
-		if err := db.QueryRow(fmt.Sprintf(`SELECT branch_id FROM %s LIMIT 1`, table)).Scan(&branchID); err != nil {
+		if err := db.QueryRow(selectBranchIDQuery(t, table)).Scan(&branchID); err != nil {
 			t.Fatalf("read %s branch: %v", table, err)
 		}
 		if branchID != "branch-child" {
 			t.Errorf("%s branch = %q, want branch-child", table, branchID)
 		}
+	}
+}
+
+var validTimelineBranchTables = map[string]string{
+	"conversation_turns":           `SELECT branch_id FROM conversation_turns LIMIT 1`,
+	"conversation_messages":        `SELECT branch_id FROM conversation_messages LIMIT 1`,
+	"conversation_activities":      `SELECT branch_id FROM conversation_activities LIMIT 1`,
+	"conversation_provider_events": `SELECT branch_id FROM conversation_provider_events LIMIT 1`,
+}
+
+func selectBranchIDQuery(t *testing.T, table string) string {
+	t.Helper()
+	query, ok := validTimelineBranchTables[table]
+	if !ok {
+		t.Fatalf("invalid table name: %s", table)
+	}
+	return query
+}
+
+func TestSelectBranchIDQueryRejectsUnknownTable(t *testing.T) {
+	if _, ok := validTimelineBranchTables["sessions; DROP TABLE sessions;--"]; ok {
+		t.Fatal("unexpected table name present in allowlist")
 	}
 }
