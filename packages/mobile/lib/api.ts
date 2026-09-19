@@ -91,6 +91,12 @@ export type DashboardSession = {
 	isTerminated?: boolean;
 	isPinned?: boolean;
 	pinnedAt?: string | null;
+	/**
+	 * Whether the daemon reviews this session's PRs by itself. It has always
+	 * ridden along on the board poll (ControllersSessionView.autoReviewEnabled);
+	 * the Reviews screen shows it rather than asking for it again.
+	 */
+	autoReviewEnabled?: boolean;
 };
 
 export type OrchestratorLink = {
@@ -187,6 +193,7 @@ type WireSession = {
 	previewUrl?: string;
 	isPinned?: boolean;
 	pinnedAt?: string | null;
+	autoReviewEnabled?: boolean;
 	prs?: WirePR[];
 };
 
@@ -272,6 +279,7 @@ function mapSession(s: WireSession): DashboardSession {
 		previewUrl: s.previewUrl ?? null,
 		isTerminated: !!s.isTerminated,
 		isPinned: !!s.isPinned,
+		autoReviewEnabled: s.autoReviewEnabled === true,
 		pinnedAt: s.pinnedAt ?? null,
 	};
 }
@@ -689,7 +697,41 @@ export async function markAllNotificationsRead(cfg: ServerConfig): Promise<void>
 
 export type PRFailingCheck = { name: string; status?: string; conclusion?: string; url?: string };
 export type PRConflictFile = { path: string; url?: string };
-export type PRUnresolvedReviewer = { reviewerId: string; count: number; reviewUrl?: string; isBot?: boolean };
+
+/** One inline review comment: where it is and what it says. */
+export type PRReviewCommentLink = {
+	url?: string;
+	reviewId?: string;
+	file?: string;
+	line?: number;
+	body?: string;
+};
+
+/**
+ * Review comments grouped by the reviewer who left them.
+ *
+ * `links` carries the comments themselves — file, line and body. The daemon has
+ * always sent them (SessionPRUnresolvedReviewer in dto.go); this type used to
+ * stop at `count`, so the phone could say a PR had unresolved comments but
+ * could not show a single one.
+ */
+export type PRUnresolvedReviewer = {
+	reviewerId: string;
+	count: number;
+	reviewUrl?: string;
+	isBot?: boolean;
+	links?: PRReviewCommentLink[];
+};
+
+/** One submitted review: a reviewer's verdict and the summary they wrote with it. */
+export type PRReviewEntry = {
+	reviewerId: string;
+	verdict: "none" | "approved" | "changes_requested" | "review_required";
+	body?: string;
+	reviewUrl?: string;
+	submittedAt?: string;
+	isBot?: boolean;
+};
 
 export type SessionPRSummary = {
 	url: string;
@@ -709,6 +751,9 @@ export type SessionPRSummary = {
 		decision: "none" | "approved" | "changes_requested" | "review_required";
 		hasUnresolvedHumanComments: boolean;
 		unresolvedBy: PRUnresolvedReviewer[];
+		// Both omitted by the daemon when empty, so both are optional here.
+		resolvedBy?: PRUnresolvedReviewer[];
+		reviews?: PRReviewEntry[];
 	};
 	mergeability: {
 		state: "unknown" | "mergeable" | "conflicting" | "blocked" | "unstable";
@@ -718,6 +763,103 @@ export type SessionPRSummary = {
 	};
 	updatedAt?: string;
 };
+
+// ---- AO's own reviewer ------------------------------------------------------
+
+// GET /sessions/{id}/reviews is the daemon's per-PR review *state* — what the
+// AO reviewer agent has and has not looked at. It is separate from the review
+// bodies on GET /sessions/{id}/pr, which are what humans and bots wrote on the
+// provider. The controls need this one: it says whether a pass is running and
+// whether the latest commit has been reviewed.
+// Shape mirrors PRReviewState in backend/internal/review/planner.go.
+
+export type ReviewRun = {
+	id: string;
+	harness?: string;
+	status?: string;
+	verdict?: string;
+	body?: string;
+	createdAt?: string;
+	triggerSource?: "manual" | "auto";
+};
+
+export type PRReviewState = {
+	prUrl: string;
+	prNumber: number;
+	title?: string;
+	targetSha?: string;
+	status: "needs_review" | "running" | "up_to_date" | "changes_requested" | "ineligible";
+	latestRun?: ReviewRun;
+	previousRun?: ReviewRun;
+};
+
+export type SessionReviews = {
+	reviewerHandleId: string;
+	reviewerHarness?: string;
+	reviews: PRReviewState[];
+};
+
+function asSessionReviews(data: unknown): SessionReviews {
+	const d = (data ?? {}) as Partial<SessionReviews>;
+	return {
+		reviewerHandleId: typeof d.reviewerHandleId === "string" ? d.reviewerHandleId : "",
+		reviewerHarness: typeof d.reviewerHarness === "string" ? d.reviewerHarness : undefined,
+		reviews: Array.isArray(d.reviews) ? d.reviews : [],
+	};
+}
+
+export async function getSessionReviews(cfg: ServerConfig, sessionId: string): Promise<SessionReviews> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews`);
+	return asSessionReviews(await res.json());
+}
+
+/**
+ * Start a review pass. The daemon answers 201 when it started one and 200 when
+ * it reused the pass already recorded for this commit — the phone has to say
+ * which, or a tap that legitimately did nothing reads as a dropped tap.
+ */
+export async function triggerReview(cfg: ServerConfig, sessionId: string): Promise<{ created: boolean; reviews: PRReviewState[] }> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/trigger`, { method: "POST" });
+	const data = await res.json().catch(() => ({}));
+	return { created: res.status === 201, reviews: Array.isArray(data?.reviews) ? data.reviews : [] };
+}
+
+export async function cancelReview(cfg: ServerConfig, sessionId: string): Promise<PRReviewState[]> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/cancel`, { method: "POST" });
+	const data = await res.json().catch(() => ({}));
+	return Array.isArray(data?.reviews) ? data.reviews : [];
+}
+
+export async function setAutoReview(cfg: ServerConfig, sessionId: string, enabled: boolean): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/auto-review`, {
+		method: "PUT",
+		body: JSON.stringify({ enabled }),
+	});
+}
+
+/** Resolve one provider review thread. `commentUrl` is the link the daemon sent with the comment. */
+export async function resolveReviewComment(
+	cfg: ServerConfig,
+	sessionId: string,
+	input: { pullRequestUrl?: string; commentUrl: string },
+): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/comments/resolve`, {
+		method: "POST",
+		body: JSON.stringify({ pullRequestUrl: input.pullRequestUrl, commentUrl: input.commentUrl }),
+	});
+}
+
+/** Ask a reviewer for another look after pushing a fix. */
+export async function requestRereview(
+	cfg: ServerConfig,
+	sessionId: string,
+	input: { pullRequestUrl?: string; reviewerId: string },
+): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/rerequest`, {
+		method: "POST",
+		body: JSON.stringify({ pullRequestUrl: input.pullRequestUrl, reviewerId: input.reviewerId }),
+	});
+}
 
 export async function getSessionPR(cfg: ServerConfig, sessionId: string): Promise<SessionPRSummary[]> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/pr`);
