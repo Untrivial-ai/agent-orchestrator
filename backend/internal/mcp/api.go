@@ -137,10 +137,10 @@ type killSessionResponse struct {
 }
 
 type conversationSnapshot struct {
-	SessionID  string                `json:"sessionId"`
-	Mode       string                `json:"mode"`
-	Controller string                `json:"controller"`
-	Messages   []conversationMessage `json:"messages"`
+	SessionID  string                 `json:"sessionId"`
+	Mode       string                 `json:"mode"`
+	Controller string                 `json:"controller"`
+	Messages   []conversationMessage  `json:"messages"`
 	Activities []conversationActivity `json:"activities"`
 }
 
@@ -173,7 +173,7 @@ func apiPath(base string, params url.Values) string {
 	return base + "?" + params.Encode()
 }
 
-func resolveSpawnHarness(api DaemonAPI, ctx context.Context, explicit, projectID string, standalone bool) (string, error) {
+func resolveSpawnHarness(ctx context.Context, api DaemonAPI, explicit, projectID string, standalone bool) (string, error) {
 	explicit = strings.TrimSpace(explicit)
 	if explicit != "" {
 		return explicit, nil

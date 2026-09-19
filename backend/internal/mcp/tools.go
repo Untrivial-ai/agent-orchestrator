@@ -21,22 +21,22 @@ func toolResultJSON(v any) (*mcpsdk.CallToolResult, error) {
 	}, nil
 }
 
-func toolError(err error) (*mcpsdk.CallToolResult, error) {
+func toolError(err error) *mcpsdk.CallToolResult {
 	if err == nil {
-		return nil, nil
+		return nil
 	}
 	return &mcpsdk.CallToolResult{
 		IsError: true,
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: err.Error()}},
-	}, nil
+	}
 }
 
 type listProjectsInput struct{}
 
 type listSessionsInput struct {
-	ProjectID         string `json:"project_id,omitempty" jsonschema:"Filter by project id"`
-	IncludeTerminated bool   `json:"include_terminated,omitempty" jsonschema:"Include terminated sessions"`
-	IncludeOrchestrators bool `json:"include_orchestrators,omitempty" jsonschema:"Include orchestrator sessions"`
+	ProjectID            string `json:"project_id,omitempty" jsonschema:"Filter by project id"`
+	IncludeTerminated    bool   `json:"include_terminated,omitempty" jsonschema:"Include terminated sessions"`
+	IncludeOrchestrators bool   `json:"include_orchestrators,omitempty" jsonschema:"Include orchestrator sessions"`
 }
 
 type spawnWorkerInput struct {
@@ -75,8 +75,7 @@ func registerTools(server *mcpsdk.Server, api DaemonAPI) {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ listProjectsInput) (*mcpsdk.CallToolResult, any, error) {
 		res, err := listProjects(ctx, api)
 		if err != nil {
-			out, toolErr := toolError(err)
-			return out, nil, toolErr
+			return toolError(err), nil, nil
 		}
 		out, err := toolResultJSON(res)
 		return out, nil, err
@@ -88,8 +87,7 @@ func registerTools(server *mcpsdk.Server, api DaemonAPI) {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listSessionsInput) (*mcpsdk.CallToolResult, any, error) {
 		res, err := listSessions(ctx, api, in)
 		if err != nil {
-			out, toolErr := toolError(err)
-			return out, nil, toolErr
+			return toolError(err), nil, nil
 		}
 		out, err := toolResultJSON(res)
 		return out, nil, err
@@ -101,8 +99,7 @@ func registerTools(server *mcpsdk.Server, api DaemonAPI) {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in spawnWorkerInput) (*mcpsdk.CallToolResult, any, error) {
 		res, err := spawnWorker(ctx, api, in)
 		if err != nil {
-			out, toolErr := toolError(err)
-			return out, nil, toolErr
+			return toolError(err), nil, nil
 		}
 		out, err := toolResultJSON(res)
 		return out, nil, err
@@ -114,8 +111,7 @@ func registerTools(server *mcpsdk.Server, api DaemonAPI) {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sendMessageInput) (*mcpsdk.CallToolResult, any, error) {
 		res, err := sendMessage(ctx, api, in)
 		if err != nil {
-			out, toolErr := toolError(err)
-			return out, nil, toolErr
+			return toolError(err), nil, nil
 		}
 		out, err := toolResultJSON(res)
 		return out, nil, err
@@ -127,8 +123,7 @@ func registerTools(server *mcpsdk.Server, api DaemonAPI) {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in readSessionOutputInput) (*mcpsdk.CallToolResult, any, error) {
 		res, err := readSessionOutput(ctx, api, in)
 		if err != nil {
-			out, toolErr := toolError(err)
-			return out, nil, toolErr
+			return toolError(err), nil, nil
 		}
 		out, err := toolResultJSON(res)
 		return out, nil, err
@@ -140,8 +135,7 @@ func registerTools(server *mcpsdk.Server, api DaemonAPI) {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in getPRStatusInput) (*mcpsdk.CallToolResult, any, error) {
 		res, err := getPRStatus(ctx, api, in)
 		if err != nil {
-			out, toolErr := toolError(err)
-			return out, nil, toolErr
+			return toolError(err), nil, nil
 		}
 		out, err := toolResultJSON(res)
 		return out, nil, err
@@ -153,8 +147,7 @@ func registerTools(server *mcpsdk.Server, api DaemonAPI) {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in killSessionInput) (*mcpsdk.CallToolResult, any, error) {
 		res, err := killSession(ctx, api, in)
 		if err != nil {
-			out, toolErr := toolError(err)
-			return out, nil, toolErr
+			return toolError(err), nil, nil
 		}
 		out, err := toolResultJSON(res)
 		return out, nil, err
@@ -251,7 +244,7 @@ func spawnWorker(ctx context.Context, api DaemonAPI, in spawnWorkerInput) (any, 
 		return nil, fmt.Errorf("standalone sessions do not support branch")
 	}
 
-	harness, err := resolveSpawnHarness(api, ctx, in.Agent, projectID, standalone)
+	harness, err := resolveSpawnHarness(ctx, api, in.Agent, projectID, standalone)
 	if err != nil {
 		return nil, err
 	}
@@ -361,22 +354,16 @@ func getPRStatus(ctx context.Context, api DaemonAPI, in getPRStatusInput) (any, 
 	if err := api.GetJSON(ctx, "sessions/"+url.PathEscape(sessionID), &sess); err != nil {
 		return nil, err
 	}
+	prs := any(sess.Session.PRs)
 	var summary sessionPRSummaryResponse
-	if err := api.GetJSON(ctx, "sessions/"+url.PathEscape(sessionID)+"/pr", &summary); err != nil {
-		// Fall back to the session list's aggregate PR facts when the rich
-		// summary endpoint is unavailable.
-		return map[string]any{
-			"sessionId": sessionID,
-			"status":    sess.Session.Status,
-			"branch":    sess.Session.Branch,
-			"prs":       sess.Session.PRs,
-		}, nil
+	if err := api.GetJSON(ctx, "sessions/"+url.PathEscape(sessionID)+"/pr", &summary); err == nil {
+		prs = summary.PRs
 	}
 	return map[string]any{
 		"sessionId": sessionID,
 		"status":    sess.Session.Status,
 		"branch":    sess.Session.Branch,
-		"prs":       summary.PRs,
+		"prs":       prs,
 	}, nil
 }
 

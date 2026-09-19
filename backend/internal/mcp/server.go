@@ -2,11 +2,13 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -59,8 +61,9 @@ func Run(ctx context.Context, api DaemonAPI, opts Options) error {
 	}, &mcpsdk.StreamableHTTPOptions{Stateless: true})
 
 	httpServer := &http.Server{
-		Addr:    addr,
-		Handler: handler,
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(net.Listener) context.Context {
 			return ctx
 		},
@@ -83,12 +86,12 @@ func Run(ctx context.Context, api DaemonAPI, opts Options) error {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 		err := <-errCh
-		if err == http.ErrServerClosed {
+		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
 	case err := <-errCh:
-		if err == http.ErrServerClosed {
+		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
