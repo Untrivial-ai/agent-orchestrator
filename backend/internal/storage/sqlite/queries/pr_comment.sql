@@ -1,6 +1,6 @@
 -- name: UpsertPRComment :exec
-INSERT INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot, auto_inject_review)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot, is_self_authored, auto_inject_review)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (pr_url, comment_id) DO UPDATE SET
     author = excluded.author,
     file = excluded.file,
@@ -11,7 +11,8 @@ ON CONFLICT (pr_url, comment_id) DO UPDATE SET
     thread_id = excluded.thread_id,
     review_id = excluded.review_id,
     url = excluded.url,
-    is_bot = excluded.is_bot;
+    is_bot = excluded.is_bot,
+    is_self_authored = MAX(pr_comment.is_self_authored, excluded.is_self_authored);
 
 -- name: InsertLegacyPRComment :exec
 INSERT OR IGNORE INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot)
@@ -32,5 +33,5 @@ SET resolved = TRUE
 WHERE pr_url = ? AND thread_id = ? AND resolved = FALSE;
 
 -- name: ListPRComments :many
-SELECT pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot, auto_inject_review, review_id
+SELECT pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot, is_self_authored, auto_inject_review, review_id
 FROM pr_comment WHERE pr_url = ? ORDER BY created_at, comment_id;

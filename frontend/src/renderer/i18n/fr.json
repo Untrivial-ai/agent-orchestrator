@@ -682,6 +682,8 @@
 	"notify.retryUnresolved": "Réessayer le chargement des notifications non résolues",
 	"notify.workspaceLoadFailed": "Impossible de charger les sessions. La restauration et l'ouverture peuvent être indisponibles.",
 	"pr.botSuffix": "bot {{name}}",
+	"pr.aoReply": "Réponse d’AO de {{name}} · non envoyée comme tâche",
+	"pr.aoReplyTitle": "Cette réponse est affichée à titre de contexte et n'est pas envoyée au worker comme tâche de révision.",
 	"pr.card.changesRequested": "Modifications demandées",
 	"pr.card.checksFailing": "Vérifications en échec",
 	"pr.card.checksLoading": "Vérification de la possibilité de fusion",

@@ -4467,6 +4467,7 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	}
 	stList.comments[prURL] = []domain.PullRequestComment{
 		{Author: "reviewer-a", ReviewID: "4876751117", File: "main.go", Line: 12, Body: "raw body must stay private", URL: "https://github.com/acme/repo/pull/7#discussion_r1", AutoInjectReview: false},
+		{Author: "agentwrapper", File: "main.go", Line: 15, Body: "AO reply", URL: "https://github.com/acme/repo/pull/7#discussion_r5", IsBot: true, IsSelfAuthored: true},
 		{Author: "ci-bot", File: "main.go", Line: 13, Body: "bot body", URL: "https://github.com/acme/repo/pull/7#discussion_r2", IsBot: true},
 		{Author: "reviewer-a", File: "main.go", Line: 14, Body: "resolved body", URL: "https://github.com/acme/repo/pull/7#discussion_r4", Resolved: true},
 		{Author: "reviewer-a", File: "test.go", Line: 22, Body: "another raw body", URL: "https://github.com/acme/repo/pull/7#discussion_r3", AutoInjectReview: true},
@@ -4495,10 +4496,13 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	if len(pr.CI.FailingChecks) != 1 || pr.CI.FailingChecks[0].Name != "unit" || pr.CI.FailingChecks[0].URL == "" {
 		t.Fatalf("failing checks = %+v", pr.CI.FailingChecks)
 	}
-	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || pr.Review.UnresolvedThreadCount == nil || *pr.Review.UnresolvedThreadCount != 2 || len(pr.Review.UnresolvedBy) != 1 {
+	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || pr.Review.UnresolvedThreadCount == nil || *pr.Review.UnresolvedThreadCount != 2 || len(pr.Review.UnresolvedBy) != 2 {
 		t.Fatalf("review = %+v", pr.Review)
 	}
-	if reviewer := pr.Review.UnresolvedBy[0]; reviewer.ReviewerID != "reviewer-a" || reviewer.Count != 2 || len(reviewer.Links) != 2 {
+	if reviewer := pr.Review.UnresolvedBy[0]; reviewer.ReviewerID != "agentwrapper" || reviewer.Count != 1 || !reviewer.IsBot || !reviewer.IsSelfAuthored {
+		t.Fatalf("self-authored reviewer = %+v", reviewer)
+	}
+	if reviewer := pr.Review.UnresolvedBy[1]; reviewer.ReviewerID != "reviewer-a" || reviewer.Count != 2 || len(reviewer.Links) != 2 {
 		t.Fatalf("reviewer = %+v", reviewer)
 	} else if reviewer.ReviewURL != "https://github.com/acme/repo/pull/7#pullrequestreview-1" {
 		t.Fatalf("review url = %q", reviewer.ReviewURL)

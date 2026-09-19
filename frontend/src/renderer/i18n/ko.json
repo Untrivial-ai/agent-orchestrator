@@ -679,6 +679,8 @@
 	"notify.retryUnresolved": "미해결 알림 다시 불러오기",
 	"notify.workspaceLoadFailed": "세션을 불러올 수 없습니다. 복원 및 열기가 불가능할 수 있습니다.",
 	"pr.botSuffix": "{{name}} bot",
+	"pr.aoReply": "{{name}}의 AO 답변 · 작업으로 전송되지 않음",
+	"pr.aoReplyTitle": "이 답변은 참고용으로 표시되며 검토 작업으로 워커에게 전송되지 않습니다.",
 	"pr.card.changesRequested": "변경 요청됨",
 	"pr.card.checksFailing": "검사 실패",
 	"pr.card.checksLoading": "병합 가능 여부 확인 중",

@@ -4043,6 +4043,7 @@ export interface components {
         SessionPRUnresolvedReviewer: {
             count: number;
             isBot?: boolean;
+            isSelfAuthored?: boolean;
             links: components["schemas"]["SessionPRReviewCommentLink"][];
             reviewUrl?: string;
             reviewerId: string;

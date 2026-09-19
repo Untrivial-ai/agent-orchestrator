@@ -875,6 +875,30 @@ describe("prSummaryParts", () => {
 		});
 	});
 
+	it("labels AO-authored replies as context that is not sent back for work", () => {
+		const parts = prSummaryParts(
+			summary({
+				review: {
+					decision: "changes_requested",
+					hasUnresolvedHumanComments: true,
+					unresolvedBy: [
+						{
+							reviewerId: "AgentWrapper",
+							count: 1,
+							isSelfAuthored: true,
+							links: [{ url: "https://github.com/acme/repo/pull/7#discussion_r1", autoInjectReview: true }],
+						},
+					],
+				},
+			}),
+		);
+
+		expect(parts.find((part) => part.key === "review")?.links[0]).toMatchObject({
+			label: "AO reply from AgentWrapper · not sent for work",
+			title: "This reply is shown for context and is not sent to the worker as review work.",
+		});
+	});
+
 	it("links merge conflicts to GitHub's conflict resolution page", () => {
 		const parts = prSummaryParts(
 			summary({

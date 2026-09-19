@@ -682,6 +682,8 @@
 	"notify.retryUnresolved": "Tentar carregar notificações não resolvidas novamente",
 	"notify.workspaceLoadFailed": "Não foi possível carregar as sessões. Restaurar e abrir podem estar indisponíveis.",
 	"pr.botSuffix": "bot {{name}}",
+	"pr.aoReply": "Resposta do AO de {{name}} · não enviada como trabalho",
+	"pr.aoReplyTitle": "Esta resposta é exibida como contexto e não é enviada ao worker como trabalho de revisão.",
 	"pr.card.changesRequested": "Alterações solicitadas",
 	"pr.card.checksFailing": "Verificações falhando",
 	"pr.card.checksLoading": "Verificando se está pronto para merge",

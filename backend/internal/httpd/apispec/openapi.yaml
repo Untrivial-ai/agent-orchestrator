@@ -11406,6 +11406,8 @@ components:
           type: integer
         isBot:
           type: boolean
+        isSelfAuthored:
+          type: boolean
         links:
           items:
             $ref: '#/components/schemas/SessionPRReviewCommentLink'
