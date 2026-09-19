@@ -102,8 +102,21 @@ func qwenAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil.
 	paths = append(paths, system)
 	cfg := qwenAuthSettings{Env: map[string]string{}}
 	for _, path := range paths {
-		if data, err := authutil.ReadFile(ctx, d, path); err == nil {
-			cfg.readJSON(data)
+		data, err := authutil.ReadFile(ctx, d, path)
+		if err != nil {
+			stat := d.Lstat
+			if stat == nil {
+				stat = os.Lstat
+			}
+			if _, statErr := stat(path); !os.IsNotExist(statErr) {
+				return ports.AgentAuthStatusUnknown, ctx.Err()
+			}
+			continue
+		}
+		if !cfg.readJSON(data) {
+			// An invalid settings layer leaves the effective provider and
+			// credentials ambiguous, even if a lower layer contains a key.
+			return ports.AgentAuthStatusUnknown, ctx.Err()
 		}
 	}
 
@@ -124,11 +137,18 @@ func qwenAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil.
 	for _, path := range dotenvPaths {
 		data, err := authutil.ReadFile(ctx, d, path)
 		if err != nil {
+			stat := d.Lstat
+			if stat == nil {
+				stat = os.Lstat
+			}
+			if _, statErr := stat(path); !os.IsNotExist(statErr) {
+				return ports.AgentAuthStatusUnknown, ctx.Err()
+			}
 			continue
 		}
 		values, err := authutil.ParseDotenv(data)
 		if err != nil {
-			continue
+			return ports.AgentAuthStatusUnknown, ctx.Err()
 		}
 		for key, value := range values {
 			if fileEnv[key] == "" {
@@ -173,7 +193,7 @@ func qwenSystemAuthPaths(goos string, env func(string) string) (string, string) 
 	return system, defaults
 }
 
-func (c *qwenAuthSettings) readJSON(data []byte) {
+func (c *qwenAuthSettings) readJSON(data []byte) bool {
 	// Only schema-owned fields are decoded. Model-provider and protocol maps
 	// replace their whole lower-priority map, matching Qwen's merge strategy.
 	var layer struct {
@@ -183,62 +203,68 @@ func (c *qwenAuthSettings) readJSON(data []byte) {
 		ProviderProtocol json.RawMessage `json:"providerProtocol"`
 		Env              map[string]string
 	}
-	if json.Unmarshal(data, &layer) != nil {
-		return
+	if !bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) || json.Unmarshal(data, &layer) != nil {
+		return false
 	}
 	if len(layer.Security) > 0 {
 		value := c.Security
-		if json.Unmarshal(layer.Security, &value) == nil {
-			c.Security = value
+		if json.Unmarshal(layer.Security, &value) != nil {
+			return false
 		}
+		c.Security = value
 	}
 	if len(layer.Model) > 0 {
 		value := c.Model
-		if json.Unmarshal(layer.Model, &value) == nil {
-			c.Model = value
+		if json.Unmarshal(layer.Model, &value) != nil {
+			return false
 		}
+		c.Model = value
 	}
 	if len(layer.ModelProviders) > 0 {
 		var entries map[string]json.RawMessage
-		if json.Unmarshal(layer.ModelProviders, &entries) == nil {
-			c.ModelProviders = make(map[string][]qwenAuthModel)
-			c.providerOrder = nil
-			// Preserve JSON declaration order: Qwen uses the first matching
-			// route when no persisted endpoint disambiguates duplicate IDs.
-			decoder := json.NewDecoder(bytes.NewReader(layer.ModelProviders))
-			if _, err := decoder.Token(); err != nil {
-				return
+		if json.Unmarshal(layer.ModelProviders, &entries) != nil {
+			return false
+		}
+		c.ModelProviders = make(map[string][]qwenAuthModel)
+		c.providerOrder = nil
+		// Preserve JSON declaration order: Qwen uses the first matching
+		// route when no persisted endpoint disambiguates duplicate IDs.
+		decoder := json.NewDecoder(bytes.NewReader(layer.ModelProviders))
+		if _, err := decoder.Token(); err != nil {
+			return false
+		}
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return false
 			}
-			for decoder.More() {
-				token, err := decoder.Token()
-				if err != nil {
-					return
-				}
-				id, ok := token.(string)
-				if !ok {
-					return
-				}
-				var raw json.RawMessage
-				if decoder.Decode(&raw) != nil {
-					return
-				}
-				var models []qwenAuthModel
-				if json.Unmarshal(raw, &models) == nil {
-					c.ModelProviders[id] = models
-					c.providerOrder = append(c.providerOrder, id)
-				}
+			id, ok := token.(string)
+			if !ok {
+				return false
 			}
+			var raw json.RawMessage
+			if decoder.Decode(&raw) != nil {
+				return false
+			}
+			var models []qwenAuthModel
+			if json.Unmarshal(raw, &models) != nil {
+				return false
+			}
+			c.ModelProviders[id] = models
+			c.providerOrder = append(c.providerOrder, id)
 		}
 	}
 	if len(layer.ProviderProtocol) > 0 {
 		var protocols map[string]string
-		if json.Unmarshal(layer.ProviderProtocol, &protocols) == nil {
-			c.ProviderProtocol = protocols
+		if json.Unmarshal(layer.ProviderProtocol, &protocols) != nil {
+			return false
 		}
+		c.ProviderProtocol = protocols
 	}
 	for key, value := range layer.Env {
 		c.Env[key] = value
 	}
+	return true
 }
 
 type qwenProtocolEnv struct {

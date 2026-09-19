@@ -89,6 +89,13 @@ func crushAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil
 	for _, path := range crushAuthPaths(scope, d) {
 		data, err := authutil.ReadFile(ctx, d, path)
 		if err != nil {
+			stat := d.Lstat
+			if stat == nil {
+				stat = os.Lstat
+			}
+			if _, statErr := stat(path); !os.IsNotExist(statErr) {
+				return ports.AgentAuthStatusUnknown, ctx.Err()
+			}
 			continue
 		}
 		if name := filepath.Base(path); name == "crushrc" || name == ".crushrc" {
@@ -97,8 +104,10 @@ func crushAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil
 			if !cfg.readLiteralRC(string(data)) {
 				return ports.AgentAuthStatusUnknown, ctx.Err()
 			}
-		} else {
-			cfg.readJSON(data)
+		} else if !cfg.readJSON(data) {
+			// A present config may change provider selection or credential
+			// precedence. Do not expose lower-priority evidence if it is invalid.
+			return ports.AgentAuthStatusUnknown, ctx.Err()
 		}
 	}
 	// Crush applies top-level env before configuring providers, overwriting
@@ -260,31 +269,26 @@ func crushAuthPaths(scope ports.AgentAuthCheck, d authutil.Dependencies) []strin
 				paths = append(paths, filepath.Join(dirs[i], name))
 			}
 		}
-		workspaceData := scope.DataDir
-		if workspaceData == "" {
-			workspaceData = filepath.Join(scope.WorkingDir, ".crush")
-		}
-		if !filepath.IsAbs(workspaceData) {
-			workspaceData = filepath.Join(scope.WorkingDir, workspaceData)
-		}
-		paths = append(paths, filepath.Join(workspaceData, "crush.json"))
+		// AgentAuthCheck.DataDir belongs to AO. Crush's native workspace
+		// configuration lives inside the workspace's .crush directory.
+		paths = append(paths, filepath.Join(scope.WorkingDir, ".crush", "crush.json"))
 	}
 	return paths
 }
 
-func (c *crushAuthConfig) readJSON(data []byte) {
+func (c *crushAuthConfig) readJSON(data []byte) bool {
 	var layer struct {
 		Providers map[string]json.RawMessage
 		Models    map[string]json.RawMessage
 		Env       map[string]string
 	}
-	if json.Unmarshal(data, &layer) != nil {
-		return
+	if !strings.HasPrefix(strings.TrimSpace(string(data)), "{") || json.Unmarshal(data, &layer) != nil {
+		return false
 	}
 	for id, raw := range layer.Providers {
 		var p crushAuthProvider
 		if json.Unmarshal(raw, &p) != nil {
-			continue
+			return false
 		}
 		p = c.Providers[id]
 		if json.Unmarshal(raw, &p) == nil {
@@ -294,7 +298,7 @@ func (c *crushAuthConfig) readJSON(data []byte) {
 	for id, raw := range layer.Models {
 		var m crushAuthModel
 		if json.Unmarshal(raw, &m) != nil {
-			continue
+			return false
 		}
 		m = c.Models[id]
 		if json.Unmarshal(raw, &m) == nil {
@@ -304,6 +308,7 @@ func (c *crushAuthConfig) readJSON(data []byte) {
 	for key, value := range layer.Env {
 		c.Env[key] = value
 	}
+	return true
 }
 
 func crushValue(value string, env func(string) string) string {

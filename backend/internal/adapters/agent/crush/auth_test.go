@@ -90,7 +90,7 @@ func TestCrushAuthSources(t *testing.T) {
 		{name: "malformed ADC", model: "vertexai/gemini", env: map[string]string{"VERTEXAI_PROJECT": "project", "VERTEXAI_LOCATION": "us-east1"}, files: map[string]string{".config/gcloud/application_default_credentials.json": `{"type":"service_account"}`}, want: ports.AgentAuthStatusUnknown},
 		{name: "Azure Entra", model: "azure/gpt", env: map[string]string{"AZURE_TENANT_ID": "tenant", "AZURE_CLIENT_ID": "client", "AZURE_CLIENT_SECRET": "secret"}, want: ports.AgentAuthStatusConfigured},
 		{name: "provider catalog ignored", files: map[string]string{".local/share/crush/providers.json": `{"providers":{"openai":{"api_key":"test"}}}`}, want: ports.AgentAuthStatusUnknown},
-		{name: "malformed config fallback", config: `{`, env: map[string]string{"OPENAI_API_KEY": "test"}, want: ports.AgentAuthStatusConfigured},
+		{name: "malformed config blocks fallback", config: `{`, env: map[string]string{"OPENAI_API_KEY": "test"}, want: ports.AgentAuthStatusUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,5 +157,67 @@ func TestCrushDynamicShellConfigStaysUnknown(t *testing.T) {
 	got, err := (&Plugin{resolvedBinary: "crush"}).AuthStatus(context.Background())
 	if err != nil || got != ports.AgentAuthStatusUnknown {
 		t.Fatalf("status = %q, %v; want unknown", got, err)
+	}
+}
+
+func TestCrushWorkspaceDataIsIndependentOfAOData(t *testing.T) {
+	for _, tc := range []struct {
+		name, workspaceConfig, aoConfig string
+		want                            ports.AgentAuthStatus
+	}{
+		{"AO credential is not native evidence", `{}`, `{"providers":{"openai":{"api_key":"ao-only-key"}}}`, ports.AgentAuthStatusUnknown},
+		{"native credential survives malformed AO file", `{"providers":{"openai":{"api_key":"native-key"}}}`, `{`, ports.AgentAuthStatusConfigured},
+		{"native selection overrides AO credential", `{"models":{"large":{"provider":"anthropic","model":"claude"}}}`, `{"providers":{"openai":{"api_key":"ao-only-key"}}}`, ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateCrushAuth(t)
+			workspace, aoData := filepath.Join(home, "workspace"), filepath.Join(home, "ao-data")
+			writeCrushAuthFile(t, filepath.Join(workspace, ".crush", "crush.json"), tc.workspaceConfig)
+			writeCrushAuthFile(t, filepath.Join(aoData, "crush.json"), tc.aoConfig)
+			got, err := (&Plugin{resolvedBinary: "crush"}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{WorkingDir: workspace, DataDir: aoData})
+			if err != nil || got != tc.want {
+				t.Fatalf("status = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCrushMalformedConfigDoesNotExposeLowerPriorityCredentials(t *testing.T) {
+	for _, tc := range []struct{ name, path, content string }{
+		{"project syntax", "workspace/.crush.json", `{"models":`},
+		{"project selection schema", "workspace/.crush.json", `{"models":{"large":{"provider":42}}}`},
+		{"project provider schema", "workspace/.crush.json", `{"providers":{"openai":{"disable":"yes"}}}`},
+		{"native workspace data", "workspace/.crush/crush.json", `{`},
+		{"explicit global config", "explicit-config/crush.json", `{`},
+		{"explicit global data", "explicit-data/crush.json", `{`},
+		{"null root", "workspace/.crush.json", `null`},
+		{"oversized project", "workspace/.crush.json", strings.Repeat(" ", (1<<20)+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateCrushAuth(t)
+			t.Setenv("CRUSH_GLOBAL_CONFIG", filepath.Join(home, "explicit-config"))
+			t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(home, "explicit-data"))
+			t.Setenv("OPENAI_API_KEY", "lower-key")
+			writeCrushAuthFile(t, filepath.Join(home, "explicit-config/crush.json"), `{"models":{"large":{"provider":"openai","model":"gpt"}}}`)
+			writeCrushAuthFile(t, filepath.Join(home, tc.path), tc.content)
+			got, err := (&Plugin{resolvedBinary: "crush"}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{WorkingDir: filepath.Join(home, "workspace")})
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestCrushMalformedADCCanUseIndependentCredentialSource(t *testing.T) {
+	home := isolateCrushAuth(t)
+	path := filepath.Join(home, "malformed-adc.json")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	t.Setenv("VERTEXAI_PROJECT", "project")
+	t.Setenv("VERTEXAI_LOCATION", "us-east1")
+	writeCrushAuthFile(t, path, `{`)
+	writeCrushAuthFile(t, filepath.Join(home, ".config/gcloud/application_default_credentials.json"), `{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"refresh"}`)
+	got, err := (&Plugin{resolvedBinary: "crush"}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{Config: ports.AgentConfig{Model: "vertexai/gemini"}})
+	if err != nil || got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, %v; want configured", got, err)
 	}
 }

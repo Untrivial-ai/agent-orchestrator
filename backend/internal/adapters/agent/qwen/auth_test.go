@@ -81,7 +81,7 @@ func TestQwenScopedAuth(t *testing.T) {
 		{name: "unrelated recursive key", settings: `{"mcpServers":{"secret":{"apiKey":"ignored"}},"tools":{"envKey":"OPENAI_API_KEY"}}`, want: ports.AgentAuthStatusUnknown},
 		{name: "old provider object ignored", settings: `{"modelProviders":{"openai":{"apiKey":"ignored","baseUrl":"https://api.openai.com/v1"}},"model":{"name":"gpt"}}`, want: ports.AgentAuthStatusUnknown},
 		{name: "config env", settings: `{"env":{"GEMINI_API_KEY":"test","GEMINI_MODEL":"gemini"}}`, want: ports.AgentAuthStatusConfigured},
-		{name: "malformed settings fallback", settings: `{`, env: map[string]string{"GEMINI_API_KEY": "test", "GEMINI_MODEL": "gemini"}, want: ports.AgentAuthStatusConfigured},
+		{name: "malformed settings blocks fallback", settings: `{`, env: map[string]string{"GEMINI_API_KEY": "test", "GEMINI_MODEL": "gemini"}, want: ports.AgentAuthStatusUnknown},
 		{name: "CLI scope", args: []string{"qwen", "--auth-type", "openai", "--model", "gpt", "--openai-api-key", "test", "--openai-base-url=https://api.openai.com/v1"}, want: ports.AgentAuthStatusConfigured},
 		{name: "AO model scope", model: "gpt", args: []string{"--auth-type=openai"}, env: map[string]string{"OPENAI_API_KEY": "test", "OPENAI_BASE_URL": "https://api.openai.com/v1"}, want: ports.AgentAuthStatusConfigured},
 		{name: "CLI endpoint overrides broken environment", args: []string{"--auth-type=openai", "--model=gpt", "--openai-api-key=test", "--openai-base-url=https://api.openai.com/v1"}, env: map[string]string{"OPENAI_BASE_URL": "broken"}, want: ports.AgentAuthStatusConfigured},
@@ -216,5 +216,50 @@ func TestQwenGlobalCheckIgnoresWorkingDirectory(t *testing.T) {
 	got, err := (&Plugin{resolvedBinary: "qwen"}).AuthStatus(context.Background())
 	if err != nil || got != ports.AgentAuthStatusUnknown {
 		t.Fatalf("status = %q, %v; want unknown", got, err)
+	}
+}
+
+func TestQwenMalformedConfigDoesNotExposeLowerPriorityCredentials(t *testing.T) {
+	for _, tc := range []struct{ name, path, content string }{
+		{"project syntax", "workspace/.qwen/settings.json", `{"security":`},
+		{"project selection schema", "workspace/.qwen/settings.json", `{"security":{"auth":{"selectedType":42}}}`},
+		{"project model schema", "workspace/.qwen/settings.json", `{"model":{"name":42}}`},
+		{"project provider schema", "workspace/.qwen/settings.json", `{"modelProviders":{"gemini":[{"id":42}]}}`},
+		{"project protocol schema", "workspace/.qwen/settings.json", `{"providerProtocol":{"company":42}}`},
+		{"system override syntax", "system/settings.json", `{`},
+		{"system defaults override syntax", "defaults/settings.json", `{`},
+		{"explicit QWEN_HOME syntax", "custom-qwen/settings.json", `{`},
+		{"project dotenv", "workspace/.qwen/.env", "GOOGLE_MODEL='unfinished\n"},
+		{"null root", "workspace/.qwen/settings.json", `null`},
+		{"oversized project", "workspace/.qwen/settings.json", strings.Repeat(" ", (1<<20)+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateQwenAuth(t)
+			t.Setenv("GEMINI_API_KEY", "lower-key")
+			t.Setenv("GEMINI_MODEL", "gemini")
+			if strings.HasPrefix(tc.path, "custom-qwen/") {
+				t.Setenv("QWEN_HOME", filepath.Join(home, "custom-qwen"))
+			}
+			writeQwenAuthFile(t, filepath.Join(home, ".qwen/settings.json"), `{"security":{"auth":{"selectedType":"gemini"}},"model":{"name":"gemini"}}`)
+			writeQwenAuthFile(t, filepath.Join(home, tc.path), tc.content)
+			got, err := (&Plugin{resolvedBinary: "qwen"}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{WorkingDir: filepath.Join(home, "workspace")})
+			if err != nil || got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, %v; want unknown", got, err)
+			}
+		})
+	}
+}
+
+func TestQwenMalformedADCCanUseIndependentCredentialSource(t *testing.T) {
+	home := isolateQwenAuth(t)
+	path := filepath.Join(home, "malformed-adc.json")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "project")
+	t.Setenv("GOOGLE_MODEL", "gemini")
+	writeQwenAuthFile(t, path, `{`)
+	writeQwenAuthFile(t, filepath.Join(home, ".config/gcloud/application_default_credentials.json"), `{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"refresh"}`)
+	got, err := (&Plugin{resolvedBinary: "qwen"}).AuthStatus(context.Background())
+	if err != nil || got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, %v; want configured", got, err)
 	}
 }
