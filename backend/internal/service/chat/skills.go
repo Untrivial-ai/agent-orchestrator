@@ -48,7 +48,10 @@ func (s *Service) Skills(ctx context.Context, id domain.SessionID) ([]ports.Chat
 	// A provider that genuinely has none wrote an empty list, so this stays empty.
 	record, err := s.store.ConversationForSession(ctx, id)
 	if err != nil {
-		return skills, nil
+		// Reported rather than swallowed into an empty list: "AO could not read its
+		// own row" and "this agent has no skills" render identically, and only one
+		// of them is worth retrying.
+		return nil, err
 	}
 	return persistedSkills(record), nil
 }

@@ -85,7 +85,7 @@ func TestSkillsSurviveARestartThroughTheStoredCatalog(t *testing.T) {
 	h := newHarnessWithConversation(t, conv)
 	ctx := context.Background()
 
-	conv.fakeConversation.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
 	waitForStoredSkills(t, h, 1)
 
 	// The provider now answers empty, which is what a reattached ACP conversation
@@ -113,9 +113,9 @@ func TestAnEmptyPushClearsTheStoredCatalog(t *testing.T) {
 	}
 	h := newHarnessWithConversation(t, conv)
 
-	conv.fakeConversation.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
 	waitForStoredSkills(t, h, 1)
-	conv.fakeConversation.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: nil})
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: nil})
 	waitForStoredSkills(t, h, 0)
 
 	conv.skills = nil
