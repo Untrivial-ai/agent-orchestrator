@@ -59,6 +59,8 @@ type Store interface {
 	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
+	TerminateSession(ctx context.Context, principal domain.Principal, orgID, sessionID string) error
+	RestoreSession(ctx context.Context, principal domain.Principal, orgID, sessionID string) error
 	ResumeSession(context.Context, domain.Principal, string, string) (domain.SandboxLifecycle, error)
 	WakePausedSessions(context.Context, domain.Principal, string) (int64, error)
 	RedeemWorkerBootstrapTicket(context.Context, string) (domain.AccessTicket, error)
@@ -93,6 +95,7 @@ type Store interface {
 	QueueTerminalResize(context.Context, domain.TerminalSession, uint16, uint16) error
 	CloseTerminal(context.Context, domain.TerminalSession) error
 	AppendTerminalOutput(context.Context, string, string, string, string, int64, []byte) (int64, error)
+	AppendTerminalOutputAt(context.Context, string, string, string, string, int64, int64, []byte) (int64, error)
 	ClaimTerminalInput(context.Context, string, string, string, int64, string, time.Duration) (domain.WorkerRequest, bool, error)
 	MarkTerminalExited(context.Context, string, string, string, string, int64, int) error
 	EnsureWorkerAgentTerminal(context.Context, string, string, string, int64, time.Duration) (domain.TerminalSession, error)
@@ -130,6 +133,7 @@ type CheckoutBroker interface {
 
 type Server struct {
 	store            Store
+	transcripts      TranscriptStore
 	workos           auth.WorkOSVerifier
 	localAuthEnabled bool
 	localSessionTTL  time.Duration
@@ -159,8 +163,10 @@ type Server struct {
 	environmentControlToken string
 	secretCipher            *secrets.Cipher
 	credentialValidator     credentialValidator
+	repositoryProbeClient   *http.Client
 	webhookMaxBody          int64
 	terminalStreamEnabled   bool
+	terminalRelayEnabled    bool
 	terminalStreams         *terminalStreams
 	workWaiters             *workWaiters
 	// workerBinariesBySHA serves the content-addressed worker/helper binaries
@@ -171,6 +177,7 @@ type Server struct {
 
 type Options struct {
 	Store                     Store
+	Transcripts               TranscriptStore
 	WorkOS                    auth.WorkOSVerifier
 	LocalAuthEnabled          bool
 	LocalSessionTTL           time.Duration
@@ -193,8 +200,10 @@ type Options struct {
 	EnvironmentControlToken   string
 	SecretCipher              *secrets.Cipher
 	CredentialValidator       credentialValidator
+	RepositoryProbeClient     *http.Client
 	WebhookMaxBody            int64
 	TerminalStreamEnabled     bool
+	TerminalRelayEnabled      bool
 }
 
 func New(options Options) *Server {
@@ -240,6 +249,7 @@ func New(options Options) *Server {
 	}
 	server := &Server{
 		store:                     options.Store,
+		transcripts:               options.Transcripts,
 		workos:                    options.WorkOS,
 		localAuthEnabled:          options.LocalAuthEnabled,
 		localSessionTTL:           options.LocalSessionTTL,
@@ -262,14 +272,19 @@ func New(options Options) *Server {
 		environmentControlToken:   options.EnvironmentControlToken,
 		secretCipher:              options.SecretCipher,
 		credentialValidator:       options.CredentialValidator,
+		repositoryProbeClient:     options.RepositoryProbeClient,
 		webhookMaxBody:            webhookMaxBody,
 		terminalStreamEnabled:     options.TerminalStreamEnabled,
+		terminalRelayEnabled:      options.TerminalRelayEnabled,
 		terminalStreams:           newTerminalStreams(),
 		workWaiters:               newWorkWaiters(),
 	}
 	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
 		server.credentialValidator = newAgentCredentialValidator(nil)
+	}
+	if server.repositoryProbeClient == nil {
+		server.repositoryProbeClient = &http.Client{Timeout: 5 * time.Second}
 	}
 	if server.checkoutBroker == nil && options.GitHub != nil {
 		server.checkoutBroker = options.GitHub
@@ -317,6 +332,7 @@ func New(options Options) *Server {
 		router.With(server.authenticate).Delete("/me/providers/{agent}", server.deleteUserAgentConnection)
 		router.With(server.authenticate).Put("/me/github-pat", server.putGitHubPAT)
 		router.With(server.authenticate).Delete("/me/github-pat", server.deleteGitHubPAT)
+		router.With(server.authenticate).Post("/me/github-pat/validate-saved-repository", server.validateSavedRepository)
 		router.With(server.authenticate).Post("/share-links/redeem", server.redeemProjectShareLink)
 		router.With(server.authenticate).Get("/shared/projects", server.listSharedProjects)
 		if server.github != nil {
@@ -357,6 +373,8 @@ func New(options Options) *Server {
 			router.Post("/worker/children/{sessionId}/messages", server.sendWorkerChildMessage)
 			router.Delete("/worker/children/{sessionId}", server.deleteWorkerChild)
 			router.Post("/worker/parent/messages", server.reportToParent)
+			router.Put("/worker/transcript", server.workerPutTranscript)
+			router.Get("/worker/transcript", server.workerGetTranscript)
 			router.Post("/worker/transport/claim", server.workerClaimTransport)
 			// The worker blocks here (long-poll) instead of busy-polling the
 			// claim routes; the control plane wakes it the instant a turn or
@@ -402,6 +420,7 @@ func New(options Options) *Server {
 			router.Get("/sessions/{sessionId}", server.getSession)
 			router.Post("/sessions/wake", server.wakePausedSessions)
 			router.Post("/sessions/{sessionId}/resume", server.resumeSession)
+			router.Post("/sessions/{sessionId}/restore", server.restoreSession)
 			router.Get("/sessions/{sessionId}/children", server.listSessionChildren)
 			router.Delete("/sessions/{sessionId}", server.deleteSession)
 			router.Post("/sessions/{sessionId}/messages", server.sendMessage)

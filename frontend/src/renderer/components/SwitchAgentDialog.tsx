@@ -322,7 +322,6 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 										value={targetHarness}
 									/>
 								</div>
-								<span className="composer-toolbar-divider" aria-hidden="true" />
 								<div className="composer-toolbar-slot">
 									<AgentModelPicker
 										agentId={targetHarness}

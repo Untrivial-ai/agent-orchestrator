@@ -37,12 +37,15 @@ import type {
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
 	CloudCpResumeSessionResponse,
+	CloudCpRestoreSessionResponse,
 	CloudCpSessionResponse,
 	CloudCpWorkspaceDiff,
 	CloudCpWorkspaceDiffFileDetail,
 	CloudCpTerminalTicketRequest,
 	CloudCpTerminalTicketResponse,
 	CloudCpUpdateProjectRequest,
+	CloudCpValidateRepositoryAccessRequest,
+	CloudCpValidateRepositoryAccessResponse,
 } from "./types";
 
 const API_PREFIX = "/api/cloud/v1";
@@ -147,6 +150,12 @@ export interface CloudCpClient {
 		path: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpWorkspaceDiffFileDetail>;
+	/** Re-provision a deleted session, keeping its conversation and work intact. */
+	restoreSession(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpRestoreSessionResponse>;
 
 	sendSessionMessage(
 		orgId: string,
@@ -194,6 +203,10 @@ export interface CloudCpClient {
 	deleteAgentConnection(orgId: string, agent: CloudCpAgentProvider, options?: CloudCpRequestOptions): Promise<void>;
 	putGitHubPAT(body: CloudCpPutGitHubPATRequest, options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionResponse>;
 	deleteGitHubPAT(options?: CloudCpRequestOptions): Promise<void>;
+	validateSavedRepositoryAccess(
+		body: CloudCpValidateRepositoryAccessRequest,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpValidateRepositoryAccessResponse>;
 }
 
 type QueryParams = Record<string, string | number | undefined>;
@@ -408,6 +421,10 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				query: { path },
 				signal: o?.signal,
 			}),
+		restoreSession: (orgId, sessionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/restore`, {
+				signal: o?.signal,
+			}),
 
 		sendSessionMessage: (orgId, sessionId, body, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/messages`, {
@@ -446,5 +463,7 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		putGitHubPAT: (body, o) => requestJson("PUT", "/me/github-pat", { body, signal: o?.signal }),
 		deleteGitHubPAT: (o) => requestVoid("DELETE", "/me/github-pat", { signal: o?.signal }),
+		validateSavedRepositoryAccess: (body, o) =>
+			requestJson("POST", "/me/github-pat/validate-saved-repository", { body, signal: o?.signal }),
 	};
 }

@@ -201,6 +201,14 @@ export interface CloudCpSession {
 	runtimeState?: string;
 	runtimeError?: string;
 	isTerminated: boolean;
+	/**
+	 * Highest worker epoch the session has minted for its agent terminal. It
+	 * advances on every fresh worker connection (resume from idle-pause,
+	 * restore, re-provision), so the terminal can key on it and re-attach to the
+	 * live agent instead of the dead epoch's exited terminal. Absent/0 when no
+	 * worker has connected yet.
+	 */
+	workerEpoch?: number;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -293,6 +301,18 @@ export interface CloudCpResumeSessionResponse {
 	};
 }
 
+/**
+ * POST /orgs/{orgId}/sessions/{sessionId}/restore responds 202: a deleted
+ * session is re-provisioned with its conversation and work intact, and the
+ * reconciler owns bringing it back — the response only echoes the new intent.
+ */
+export interface CloudCpRestoreSessionResponse {
+	session: {
+		id: string;
+		desiredState: string;
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Chat events (`event_handlers.go`)
 // ---------------------------------------------------------------------------
@@ -364,7 +384,8 @@ export type CloudCpAgentProvider = "claude-code" | "codex" | "cursor";
 /**
  * Credential types by provider (`validAgentCredentialType`):
  * claude-code accepts "api_key" | "oauth_token"; codex accepts
- * "api_key" | "access_token"; cursor accepts "api_key".
+ * "api_key" | "access_token" | "auth_json" (the opaque result of a
+ * ChatGPT subscription login); cursor accepts "api_key".
  */
 export interface CloudCpPutAgentConnectionRequest {
 	credentialType: string;
@@ -376,6 +397,15 @@ export interface CloudCpPutAgentConnectionRequest {
 export interface CloudCpPutGitHubPATRequest {
 	/** Raw GitHub personal access token; stored encrypted and never echoed. */
 	secret: string;
+}
+
+/** POST /me/github-pat/validate-saved-repository */
+export interface CloudCpValidateRepositoryAccessRequest {
+	repositoryUrl: string;
+}
+
+export interface CloudCpValidateRepositoryAccessResponse {
+	writeAccess: boolean;
 }
 
 export interface CloudCpProviderConnection {

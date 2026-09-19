@@ -40,6 +40,9 @@ export AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION="true"
 # the control plane, which forwards it to worker containers. Unset keeps the
 # fully polled transport under test.
 export AO_CLOUD_TERMINAL_STREAM="${AO_CLOUD_TERMINAL_STREAM:-}"
+# The relay is independently opt-in so the smoke suite can exercise either
+# the existing durable stream or the live-forward + durable-mirror path.
+export AO_CLOUD_TERMINAL_RELAY="${AO_CLOUD_TERMINAL_RELAY:-}"
 export COMPOSE_PROJECT_NAME="$project_name"
 
 compose() {

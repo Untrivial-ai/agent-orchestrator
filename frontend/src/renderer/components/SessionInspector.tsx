@@ -27,7 +27,6 @@ import {
 	ArrowUpRight,
 	ChevronDown,
 	ChevronRight,
-	Files as FilesIcon,
 	GitPullRequest,
 	GitMerge,
 	Info,
@@ -56,10 +55,10 @@ import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
 import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
-import { prBrowserUrl, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
+import { prBrowserUrl, prCanMerge, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { findProjectOrchestrator, sortedPRs } from "../types/workspace";
+import { findProjectOrchestrator, sortedPRs, STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
@@ -130,7 +129,21 @@ const VIEW_DEFS: {
 	{
 		id: "files",
 		labelKey: "inspector.files",
-		icon: <FilesIcon aria-hidden="true" />,
+		icon: (
+			<svg
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="1.7"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				aria-hidden="true"
+				data-testid="files-viewer-icon"
+			>
+				<path d="M3.5 7.5V5.75A1.75 1.75 0 0 1 5.25 4h4l2 2h7.5a1.75 1.75 0 0 1 1.75 1.75V18a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7.5Z" />
+				<path d="M7 10h10M7 13.5h8M7 17h6" />
+			</svg>
+		),
 	},
 ];
 
@@ -145,6 +158,7 @@ const prStateLabelKeys: Record<SessionPRSummary["state"], MessageKey> = {
  * Tabbed inspector rail beside the terminal (Summary · Reviews · Browser · Files).
  */
 export const SessionInspector = memo(function SessionInspector({
+	browserOnly = false,
 	session,
 	onOpenReviewerTerminal,
 	browserPoppedOut = false,
@@ -158,12 +172,13 @@ export const SessionInspector = memo(function SessionInspector({
 	view: viewProp,
 	onViewChange,
 }: {
+	browserOnly?: boolean;
 	session?: WorkspaceSession;
 	onOpenReviewerTerminal?: OpenReviewerTerminal;
 	browserPoppedOut?: boolean;
 	browserAnnotationQueue?: BrowserAnnotationQueueModel;
 	isInspectorVisible?: boolean;
-	onToggleBrowserPopOut?: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
+	onToggleBrowserPopOut?: (next: boolean) => void;
 	onOpenFiles?: () => void;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 	filesView?: ReactNode;
@@ -174,12 +189,13 @@ export const SessionInspector = memo(function SessionInspector({
 }) {
 	const { t } = useTranslation();
 	const [internalView, setInternalView] = useState<InspectorView>("summary");
+	const [browserTopbarHost, setBrowserTopbarHost] = useState<HTMLDivElement | null>(null);
 	const requestedView = viewProp ?? internalView;
 	// Badge the Browser tab when a preview target arrived without us opening it.
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
-	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(session?.id);
+	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
 	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
 	const cloudOrgId = session?.cloud?.orgId;
 	const cloudDiff = useQuery({
@@ -198,10 +214,10 @@ export const SessionInspector = memo(function SessionInspector({
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
 	const reviewsAvailable = reviewsTabVisible(session);
-	const availableViewDefs = reviewsAvailable
+	const availableViewDefs = browserOnly ? VIEW_DEFS.filter((entry) => entry.id === "browser") : reviewsAvailable
 		? VIEW_DEFS
 		: VIEW_DEFS.filter((entry) => entry.id !== "reviews");
-	const view: InspectorView = availableViewDefs.some((entry) => entry.id === requestedView) ? requestedView : "summary";
+	const view: InspectorView = browserOnly ? "browser" : availableViewDefs.some((entry) => entry.id === requestedView) ? requestedView : "summary";
 	useEffect(() => {
 		if (view === requestedView) return;
 		setInternalView(view);
@@ -240,11 +256,21 @@ export const SessionInspector = memo(function SessionInspector({
 							isActive={isInspectorVisible && !browserPoppedOut}
 							onTogglePopOut={onToggleBrowserPopOut}
 							session={session}
+							topbarHost={browserTopbarHost}
 						/>
 					) : undefined
 				}
 				filesView={session ? <FilesView filesView={filesView} onOpenFiles={onOpenFiles} /> : undefined}
-				headerActions={<span aria-hidden="true" className="session-inspector-actions-spacer" />}
+						headerActions={
+							view === "browser" && !browserPoppedOut ? (
+								<>
+									<div className="browser-panel__topbar-host min-w-0 flex-1" ref={setBrowserTopbarHost} />
+									<span aria-hidden="true" className="session-inspector-actions-spacer" />
+								</>
+							) : (
+								<span aria-hidden="true" className="session-inspector-actions-spacer" />
+							)
+						}
 				isVisible={isInspectorVisible}
 				loadingText={session ? undefined : t("inspector.loadingSession")}
 				onViewChange={setView}
@@ -1107,6 +1133,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	});
 	const policyError = policy.error instanceof Error ? policy.error.message : null;
 	const canTerminateNow = session.status === "merged";
+	const isStandaloneSession = session.workspaceId === STANDALONE_WORKSPACE_ID;
 
 	const confirmTermination = () => {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
@@ -1120,42 +1147,59 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 			});
 			return;
 		}
+		if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
+			void navigate({ to: "/" });
+			return;
+		}
 		void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 	};
 
 	if (session.isTerminated === true) return null;
+
+	const terminateAction = (
+		<div className="flex items-center justify-between gap-3 py-1">
+			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span className="inline-flex">
+						<SessionTerminationPopover
+							onConfirm={confirmTermination}
+							onOpenChange={setConfirmOpen}
+							open={confirmOpen}
+							session={session}
+							trigger={
+								<button
+									aria-label={t("inspector.terminate")}
+									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+									onClick={() => {
+										clearTerminateSessionState(queryClient, session.id);
+										// Force the confirm open instead of toggling it, so repeated
+										// trash taps keep the dialog up rather than dismissing it.
+										setConfirmOpen(true);
+									}}
+									type="button"
+								>
+									<Trash2 className="size-icon-sm" aria-hidden="true" />
+								</button>
+							}
+						/>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
+			</Tooltip>
+		</div>
+	);
+
+	if (isStandaloneSession) {
+		return <Section title={t("inspector.sessionControls")}>{terminateAction}</Section>;
+	}
 
 	return (
 		<Section title={t("inspector.sessionControls")}>
 			<AutoInjectCIPolicyControl session={session} />
 			<AutoInjectReviewPolicyControl session={session} />
 			{session.kind === "orchestrator" ? null : canTerminateNow ? (
-				<div className="flex items-center justify-between gap-3 py-1">
-					<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<span className="inline-flex">
-								<SessionTerminationPopover
-									onConfirm={confirmTermination}
-									onOpenChange={setConfirmOpen}
-									open={confirmOpen}
-									session={session}
-									trigger={
-										<button
-											aria-label={t("inspector.terminate")}
-											className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-											onClick={() => clearTerminateSessionState(queryClient, session.id)}
-											type="button"
-										>
-											<Trash2 className="size-icon-sm" aria-hidden="true" />
-										</button>
-									}
-								/>
-							</span>
-						</TooltipTrigger>
-						<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
-					</Tooltip>
-				</div>
+				terminateAction
 			) : (
 				<>
 					<InspectorPolicyRow
@@ -1206,12 +1250,7 @@ function PRSummaryCard({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const presentation = prCardPresentation(pr);
-	const canMerge =
-		pr.state === "open" &&
-		pr.ci.state === "passing" &&
-		pr.review.decision === "approved" &&
-		pr.mergeability.state === "mergeable" &&
-		Boolean(pr.url && pr.headSha);
+	const canMerge = prCanMerge(pr) && Boolean(pr.url && pr.headSha);
 	const mergePr = useMutation({
 		mutationFn: async () => {
 			if (usePreviewData) return;
@@ -2475,13 +2514,15 @@ function BrowserView({
 	browserAnnotationQueue,
 	onTogglePopOut,
 	browserView,
+	topbarHost,
 }: {
 	session: WorkspaceSession;
 	isActive: boolean;
 	browserPoppedOut: boolean;
 	browserAnnotationQueue?: BrowserAnnotationQueueModel;
-	onTogglePopOut?: (next: boolean, sourceRect?: DOMRectReadOnly) => void;
+	onTogglePopOut?: (next: boolean) => void;
 	browserView?: BrowserViewModel;
+	topbarHost?: HTMLElement | null;
 }) {
 	// While maximized, the browser is a full-window overlay that covers the rail,
 	// so the inspector's Browser tab has nothing to show (and must not mount a
@@ -2510,9 +2551,10 @@ function BrowserView({
 			active={isActive}
 			annotationQueue={browserAnnotationQueue}
 			browserView={browserView}
-			onTogglePopOut={(next, sourceRect) => onTogglePopOut?.(next, sourceRect)}
+			onTogglePopOut={(next) => onTogglePopOut?.(next)}
 			poppedOut={false}
 			session={session}
+			topbarHost={topbarHost}
 		/>
 	);
 }

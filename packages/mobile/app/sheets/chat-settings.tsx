@@ -51,3 +51,5 @@ function Unavailable({ onClose }: { onClose(): void }) {
 	useEffect(() => { const timer = setTimeout(onClose, 0); return () => clearTimeout(timer); }, [onClose]);
 	return null;
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

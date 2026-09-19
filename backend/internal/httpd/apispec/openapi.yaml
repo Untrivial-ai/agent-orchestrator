@@ -413,9 +413,9 @@ paths:
       summary: Start a global AO Codex account switch
       tags:
       - agents
-  /api/v1/agents/codex/account-switches/{switchId}/recover:
-    post:
-      operationId: recoverCodexAccountSwitch
+  /api/v1/agents/codex/account-switches/{switchId}:
+    get:
+      operationId: getCodexAccountSwitch
       parameters:
       - description: Durable Codex account switch identifier.
         in: path
@@ -437,13 +437,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Found
-        "409":
+        "501":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIError'
-          description: Conflict
-      summary: Retry incomplete restarts for one Codex account switch
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Read one durable Codex account switch
       tags:
       - agents
   /api/v1/agents/codex/accounts:
@@ -1346,6 +1352,50 @@ paths:
       summary: Validate a selected folder for project import onboarding
       tags:
       - import
+  /api/v1/link-preview:
+    get:
+      operationId: getLinkPreview
+      parameters:
+      - description: Absolute http(s) URL of the page to preview.
+        in: query
+        name: url
+        schema:
+          description: Absolute http(s) URL of the page to preview.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkPreviewResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+      summary: Fetch link-preview metadata (Open Graph) for an external URL
+      tags:
+      - link-preview
   /api/v1/mobile/devices:
     get:
       operationId: listMobileDevices
@@ -3960,6 +4010,63 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Send guidance into the in-flight turn of a chat session
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/steer-or-send:
+    post:
+      operationId: steerOrSendSessionConversationTurn
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SteerConversationRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SteerOrSendConversationResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Steer the active turn or send a new turn when idle
       tags:
       - conversations
   /api/v1/sessions/{sessionId}/conversation/title:
@@ -7162,6 +7269,8 @@ components:
       type: object
     AgentConfig:
       properties:
+        effort:
+          type: string
         mode:
           type: string
         model:
@@ -7312,6 +7421,12 @@ components:
       type: object
     AgentModelInfo:
       properties:
+        defaultEffort:
+          type: string
+        efforts:
+          items:
+            type: string
+          type: array
         id:
           type: string
         isDefault:
@@ -7782,7 +7897,7 @@ components:
           - pending
           - verifying
           - unauthorized
-          - unverified
+          - retryable
           - completed
           - cancelled
           - failed
@@ -7861,8 +7976,6 @@ components:
       type: object
     CodexAccountSwitchResponse:
       properties:
-        canRecover:
-          type: boolean
         completedAt:
           format: date-time
           type:
@@ -7883,22 +7996,19 @@ components:
         phase:
           enum:
           - requested
-          - stopping_sessions
-          - sessions_stopped
           - checkpointing_source
           - activating_target
-          - verifying_target
-          - restarting_sessions
-          - rollback_required
           - recovery_required
           - completed
           - failed
           type: string
-        sessions:
-          items:
-            $ref: '#/components/schemas/CodexAccountSwitchSessionResponse'
-          type: array
         sourceAccountId:
+          type: string
+        sourceKind:
+          enum:
+          - managed
+          - device
+          - none
           type: string
         targetAccountId:
           type: string
@@ -7907,47 +8017,11 @@ components:
           type: string
       required:
       - id
-      - sourceAccountId
+      - sourceKind
       - targetAccountId
       - phase
-      - sessions
-      - canRecover
       - createdAt
       - updatedAt
-      type: object
-    CodexAccountSwitchSessionResponse:
-      properties:
-        errorCode:
-          type: string
-        interfaceMode:
-          enum:
-          - tui
-          - chat
-          type: string
-        restartState:
-          type: string
-        restartedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        sessionId:
-          type: string
-        stopState:
-          type: string
-        stoppedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        wasRunning:
-          type: boolean
-      required:
-      - sessionId
-      - interfaceMode
-      - wasRunning
-      - stopState
-      - restartState
       type: object
     CodexAccountUsageSummaryResponse:
       properties:
@@ -8002,12 +8076,13 @@ components:
           $ref: '#/components/schemas/CodexAccountCapabilitiesResponse'
         currentSwitch:
           $ref: '#/components/schemas/CodexAccountSwitchResponse'
-        unmanagedGlobalAccount:
-          $ref: '#/components/schemas/CodexUnmanagedGlobalAccountResponse'
+        deviceReconciliation:
+          $ref: '#/components/schemas/CodexDeviceReconciliationResponse'
       required:
       - accountRevision
       - accounts
       - capabilities
+      - deviceReconciliation
       type: object
     CodexActiveLoginResponse:
       properties:
@@ -8029,7 +8104,7 @@ components:
           - pending
           - verifying
           - unauthorized
-          - unverified
+          - retryable
           - completed
           - cancelled
           - failed
@@ -8135,6 +8210,43 @@ components:
       required:
       - usedPercent
       type: object
+    CodexDeviceReconciliationResponse:
+      properties:
+        activeAccountVerified:
+          type: boolean
+        attemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        nextRetryAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        reasonCode:
+          type: string
+        retryable:
+          type: boolean
+        status:
+          enum:
+          - not_checked
+          - checking
+          - verified
+          - temporarily_unavailable
+          - blocked
+          type: string
+        verifiedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - status
+      - activeAccountVerified
+      - reasonCode
+      - retryable
+      type: object
     CodexResetCreditsSummaryResponse:
       properties:
         availableCount:
@@ -8148,31 +8260,6 @@ components:
           - string
       required:
       - availableCount
-      type: object
-    CodexUnmanagedGlobalAccountResponse:
-      properties:
-        accountEmail:
-          type:
-          - "null"
-          - string
-        authMethod:
-          enum:
-          - chatgpt
-          - api_key
-          - other
-          - unknown
-          type: string
-        label:
-          type: string
-        reason:
-          type: string
-        reasonCode:
-          type: string
-      required:
-      - label
-      - authMethod
-      - reasonCode
-      - reason
       type: object
     CompactConversationResponse:
       properties:
@@ -8434,6 +8521,12 @@ components:
           - terminated
           - no_signal
           type: string
+        statusReadiness:
+          enum:
+          - checking
+          - ready
+          - unavailable
+          type: string
         terminalGeneration:
           type: string
         terminalHandleId:
@@ -8445,7 +8538,6 @@ components:
           type: string
       required:
       - id
-      - projectId
       - kind
       - autoReviewEnabled
       - mode
@@ -8457,6 +8549,7 @@ components:
       - createdAt
       - updatedAt
       - isPinned
+      - statusReadiness
       - chatProviderPreserved
       - status
       - kanbanColumn
@@ -9192,6 +9285,11 @@ components:
         brief:
           maxLength: 16384
           type: string
+        effort:
+          maxLength: 64
+          type:
+          - "null"
+          - string
         mode:
           enum:
           - tui
@@ -9393,6 +9491,10 @@ components:
           items:
             type: string
           type: array
+        forceAuthentication:
+          type: boolean
+        forceDeviceReconciliation:
+          type: boolean
         includeUsage:
           type: boolean
       type: object
@@ -9778,6 +9880,23 @@ components:
       required:
       - ok
       - sessionId
+      type: object
+    LinkPreviewResponse:
+      properties:
+        description:
+          type: string
+        faviconUrl:
+          type: string
+        imageUrl:
+          type: string
+        siteName:
+          type: string
+        title:
+          type: string
+        url:
+          type: string
+      required:
+      - url
       type: object
     ListAgentAuthPlansResponse:
       properties:
@@ -10919,6 +11038,11 @@ components:
           type: string
         errorDetail:
           type: string
+        historyPolicy:
+          enum:
+          - strict
+          - provider_history
+          type: string
         id:
           type: string
         noticeAcknowledgedAt:
@@ -10966,6 +11090,7 @@ components:
       - sourceMode
       - targetMode
       - policy
+      - historyPolicy
       - phase
       - createdAt
       - updatedAt
@@ -11335,6 +11460,12 @@ components:
         agentSessionId:
           description: Native agent session identifier used to resume its transcript.
           type: string
+        conversationCheckpointOrigin:
+          description: Whether the main-turn boundary came from a human or AO coordination.
+          enum:
+          - human
+          - coordination
+          type: string
         event:
           description: AO hook sub-command that produced this state (e.g. post-tool-use).
           type: string
@@ -11349,6 +11480,14 @@ components:
         launchId:
           description: AO process generation that produced the signal.
           type: string
+        observedAt:
+          description: Time the local hook process observed the event, before delivery
+            to the daemon.
+          format: date-time
+          type: string
+        providerTurnId:
+          description: Native main-turn identity reported by the hook, when supported.
+          type: string
         state:
           description: Agent activity state reported by an agent hook. Optional for
             metadata-only hooks.
@@ -11358,6 +11497,10 @@ components:
           - waiting_input
           - blocked
           - exited
+          type: string
+        submissionId:
+          description: AO prompt-hook context correlation UUID, when supported.
+          maxLength: 36
           type: string
         toolName:
           description: Native tool name, for tool-use hook events.
@@ -11627,6 +11770,13 @@ components:
       type: object
     SpawnOrchestratorRequest:
       properties:
+        approvalMode:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
+          type: string
         clean:
           type: boolean
         mode:
@@ -11702,6 +11852,8 @@ components:
         model:
           maxLength: 256
           type: string
+        parentSessionId:
+          type: string
         projectId:
           type: string
         prompt:
@@ -11712,8 +11864,6 @@ components:
           - github
           - gitlab
           type: string
-      required:
-      - projectId
       type: object
     SpawnSessionResponse:
       properties:
@@ -11782,9 +11932,11 @@ components:
     StartCodexAccountSwitchRequest:
       properties:
         expectedAccountRevision:
-          format: int64
+          deprecated: true
           minimum: 0
-          type: integer
+          type:
+          - "null"
+          - integer
         idempotencyKey:
           minLength: 1
           type: string
@@ -11793,7 +11945,6 @@ components:
           type: string
       required:
       - targetAccountId
-      - expectedAccountRevision
       - idempotencyKey
       type: object
     StartPreviewServerRequest:
@@ -11805,6 +11956,11 @@ components:
       type: object
     StartSessionInterfaceTransitionRequest:
       properties:
+        historyPolicy:
+          enum:
+          - strict
+          - provider_history
+          type: string
         policy:
           enum:
           - drain
@@ -11855,6 +12011,34 @@ components:
           type: string
       required:
       - providerTurnId
+      type: object
+    SteerOrSendConversationResponse:
+      properties:
+        activityId:
+          type: string
+        duplicate:
+          type: boolean
+        outcome:
+          enum:
+          - steered
+          - sent
+          type: string
+        providerTurnId:
+          type: string
+        state:
+          enum:
+          - queued
+          - running
+          - completed
+          - recovered
+          - interrupted
+          - failed
+          type: string
+        turnId:
+          type: string
+      required:
+      - outcome
+      - duplicate
       type: object
     SubmitAgentHandoffRequest:
       properties:
@@ -12621,3 +12805,5 @@ tags:
 - description: Local machine readiness checks the desktop app runs before showing
     the board
   name: system
+- description: Server-side unfurl of external links for the CSP-locked renderer
+  name: link-preview

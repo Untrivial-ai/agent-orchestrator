@@ -5,6 +5,7 @@ import type { Theme } from "../theme";
 import { haptics } from "../haptics";
 import type { VoiceMode, VoiceState } from "./types";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
+import { MicGlass } from "./mic-glass";
 
 // The dictation control, with two gestures:
 //
@@ -17,14 +18,11 @@ import { useTheme, useThemedStyles } from "../ThemeProvider";
 // talk to an agent from a phone, and as one more outlined grey pill in the key
 // row it was indistinguishable from `zoom-out`.
 //
-// Tonal rather than solid, though. Two identical solid-blue buttons side by side
-// have no hierarchy — the eye can't tell which one commits. Mic is tinted, send
-// is filled; the mic only goes solid (red) while it is actually recording, which
-// is the one moment it should outrank everything on screen.
+// Glass rather than solid, though. Two identical solid buttons side by side have
+// no hierarchy — the eye can't tell which one commits. Mic is glass, send is
+// filled; the mic only goes solid (red) while it is actually recording, which is
+// the one moment it should outrank everything on screen.
 //
-// Rounded square, not a circle: the field is radius 11 and the keys radius 7, so
-// two circles were the only round things in the dock.
-
 /** Matches the send button so the two controls are the same size. */
 export const MIC_SIZE = 40;
 const MIC_RADIUS = 12;
@@ -34,11 +32,15 @@ export function MicKey({
 	mode,
 	onPressIn,
 	onPressOut,
+	circular = false,
+	size = MIC_SIZE,
 }: {
 	state: VoiceState;
 	mode: VoiceMode;
 	onPressIn(): void;
 	onPressOut(): void;
+	circular?: boolean;
+	size?: number;
 }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
@@ -49,6 +51,7 @@ export function MicKey({
 	// remove the control from the row entirely, reflowing everything beside it.
 	const unavailable = state === "unavailable";
 	const disabled = unavailable || denied;
+	const controlShape = { width: size, height: size, borderRadius: circular ? size / 2 : MIC_RADIUS };
 
 	// A breathing ring behind the circle while the mic is open — the same
 	// Animated loop `Dot` uses, rather than a new animation dependency.
@@ -68,16 +71,21 @@ export function MicKey({
 		return () => loop.stop();
 	}, [live, pulse]);
 
-	const fill = live ? t.red : denied ? t.tintRed : unavailable ? t.bgElevated : t.tintBlue;
-	const ink = live ? t.textPrimary : denied ? t.red : unavailable ? t.textFaint : t.blue;
+	// Idle is the only glass state: recording, denied and unavailable each keep a
+	// fill that says something the material would soften.
+	const glass = !live && !denied && !unavailable;
+	const fill = live ? t.red : denied ? t.tintRed : unavailable ? t.bgElevated : "transparent";
+	const ink = live ? t.textPrimary : denied ? t.red : unavailable ? t.textFaint : t.textPrimary;
+	const radius = circular ? size / 2 : MIC_RADIUS;
 
 	return (
-		<View style={styles.slot}>
+		<View style={[styles.slot, { width: size, height: size }]}>
 			{live ? (
 				<Animated.View
 					pointerEvents="none"
 					style={[
 						styles.ring,
+						controlShape,
 						{
 							opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] }),
 							transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.45] }) }],
@@ -85,6 +93,7 @@ export function MicKey({
 					]}
 				/>
 			) : null}
+			{glass ? <MicGlass size={size} radius={radius} /> : null}
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel={
@@ -98,7 +107,9 @@ export function MicKey({
 				disabled={disabled}
 				style={({ pressed }) => [
 					styles.mic,
+					controlShape,
 					{ backgroundColor: fill },
+					circular && !glass && styles.circular,
 					latched && styles.latched,
 					unavailable && styles.unavailable,
 					pressed && !disabled && { opacity: 0.85 },
@@ -121,19 +132,14 @@ export function MicKey({
 
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
-	slot: { width: MIC_SIZE, height: MIC_SIZE, alignItems: "center", justifyContent: "center" },
+	slot: { alignItems: "center", justifyContent: "center" },
 	mic: {
-		width: MIC_SIZE,
-		height: MIC_SIZE,
-		borderRadius: MIC_RADIUS,
 		alignItems: "center",
 		justifyContent: "center",
 	},
+	circular: { borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
 	ring: {
 		position: "absolute",
-		width: MIC_SIZE,
-		height: MIC_SIZE,
-		borderRadius: MIC_RADIUS,
 		backgroundColor: t.red,
 	},
 	// Latched holds the mic open with no finger on it, so it gets an outline the

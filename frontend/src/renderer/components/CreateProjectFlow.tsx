@@ -1,41 +1,60 @@
 import { AppLink } from "./AppLink";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import {
 	CheckCircle2,
 	CircleDashed,
+	ChevronLeft,
 	ChevronRight,
 	Cloud,
+	Bot,
 	Folder,
 	FolderClosed,
 	Folders,
 	GitBranch,
 	GitFork,
 	Globe,
+	KeyRound,
 	Link2,
 	LoaderCircle,
 	Lock,
 	X,
 	XCircle,
 } from "lucide-react";
-import { useEffect, useReducer, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { components } from "../../api/schema";
 import type { ImportFolderScan } from "../../preload";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudGate } from "../hooks/useCloudGate";
 import { useCloudOrg } from "../hooks/useCloudOrg";
 import { usePreparedClone } from "../hooks/usePreparedClone";
+import { useProviderConnections } from "../hooks/useProviderConnections";
 import { cloudProjectsQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { agentLabel } from "../lib/agent-options";
+import type { AgentInfo } from "../lib/agent-select-options";
 import { aoBridge } from "../lib/bridge";
+import { CloudCpAuthError, CloudCpError, type CloudCpProviderConnection } from "../lib/cloud-cp";
 import { useCloudSession } from "../lib/cloud-session";
+import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { useUiStore } from "../stores/ui-store";
+import {
+	onboardingAlertErrorClass,
+	onboardingFooterActionsClass,
+	onboardingFooterActionsEndClass,
+	onboardingFormLabelClass,
+	onboardingPanelBodyClass,
+	onboardingPanelClass,
+	onboardingPanelDescriptionClass,
+	onboardingPanelTitleClass,
+} from "../lib/onboarding-ui";
 import { cn } from "../lib/utils";
 import type { ProjectKind } from "../types/workspace";
-import { CreateProjectAgentSheet, type CreateProjectAgentSelection } from "./CreateProjectAgentSheet";
+import { CreateProjectAgentSheet, RequiredAgentField, type CreateProjectAgentSelection } from "./CreateProjectAgentSheet";
 import CloneRepositoryDialog, { type CloneRepositoryDetails, type CloneRepositorySelection } from "./CloneRepositoryDialog";
+import { GitHubTokenField } from "./onboarding/GitHubTokenField";
 import { PathRow } from "./PathRow";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -43,7 +62,6 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Switch } from "./ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 export type CreateProjectInput = {
 	path: string;
@@ -56,6 +74,7 @@ export type CloneProjectInput = Pick<CloneRepositorySelection, "remoteUrl" | "de
 
 const LAST_CLONE_DESTINATION_KEY = "ao.clone.lastDestinationParent";
 const LAST_IMPORT_REMOTE_URL_KEY = "ao.import.lastRemoteUrl";
+const GITHUB_TOKEN_SETTINGS_URL = "https://github.com/settings/personal-access-tokens/new";
 const GIT_PREPARATION_ACTIONS = ["git_init", "git_commit", "create_remote_repository", "set_remote"] as const;
 const GIT_ACTION_LABELS: Record<string, string> = {
 	git_init: "Git initialization", git_commit: "Initial commit", create_remote_repository: "Create remote repository", set_remote: "Remote setup",
@@ -132,6 +151,7 @@ export function CreateProjectFlow({
 	mode = "single_repo",
 	onCreateProject,
 	onInitializeProject,
+	onCreateStandaloneAgent,
 	onOpenExistingProject,
 	openSignal,
 	sourceSignal,
@@ -151,6 +171,7 @@ export function CreateProjectFlow({
 	onCloneProject: (input: CloneProjectInput) => Promise<void>;
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
+	onCreateStandaloneAgent?: () => void;
 	onOpenExistingProject?: (path: string) => void | Promise<void>;
 	// Monotonic counter: each new value opens the flow programmatically (the ⌘N
 	// "no project in scope" fallback). Lets the shortcut reuse the sidebar's own
@@ -191,11 +212,8 @@ export function CreateProjectFlow({
 	// Workspace vs Project. Consumed exactly once by openFolderStep.
 	const [pendingDropPath, setPendingDropPath] = useState<string | null>(null);
 
-	// The Local | Cloud choice renders whenever this deployment offers cloud
-	// (cloudEnabled). Actually creating a cloud project also needs the user
-	// signed in (cloudAvailable); when they aren't, the Cloud tab shows a
-	// sign-in prompt instead of the create form so the option is always
-	// discoverable rather than silently absent.
+	// Cloud is exposed as another project source. Creating one still requires
+	// authentication, but discovery stays alongside clone/folder/workspace.
 	const { cloudEnabled } = useCloudGate();
 	const { status: cloudSessionStatus, signIn: cloudSignIn } = useCloudSession();
 	const cloudAvailable = cloudEnabled && cloudSessionStatus === "authenticated";
@@ -724,17 +742,14 @@ export function CreateProjectFlow({
 			<CreateProjectFlowBackdrop open={modePickerOpen || cloneDialogOpen || folderDialogOpen || selectedPath !== null || createProgress.open || childTransitioning || projectImportOpen} />
 			{hasModePicker && embedded && !modePickerOpen && !cloneDialogOpen && selectedPath === null && (
 				<div className="flex w-full flex-col items-center gap-3">
-					{cloudEnabled && (
-						<ProjectOfferingTabs disabled={isBusy} offering={offering} onOfferingChange={setOffering} />
-					)}
 					{cloudEnabled && offering === "cloud" ? (
 						cloudAvailable ? (
-							<CloudProjectCard onCreated={onCloudProjectCreated} />
+							<CloudProjectCard onAuthRequired={cloudSignIn} onBack={() => setOffering("local")} onCreated={onCloudProjectCreated} />
 						) : (
-							<CloudSignInPanel disabled={isBusy} onSignIn={cloudSignIn} />
+							<CloudSignInPanel disabled={isBusy} onBack={() => setOffering("local")} onSignIn={cloudSignIn} />
 						)
 					) : (
-						<ImportSourcePicker disabled={isBusy} onSelect={selectSource} />
+						<ImportSourcePicker cloudEnabled={cloudEnabled} disabled={isBusy} onCloudSelect={() => setOffering("cloud")} onSelect={selectSource} onCreateStandaloneAgent={onCreateStandaloneAgent} />
 					)}
 					{error && !folderPickerOpen && selectedPath === null && (
 						<p className="text-caption leading-body text-error" role="status">
@@ -752,10 +767,12 @@ export function CreateProjectFlow({
 						disabled={isBusy}
 						offering={offering}
 						onCloudCreated={onCloudProjectCreated}
-						onOfferingChange={setOffering}
+						onCloudSelect={() => setOffering("cloud")}
+						onCloudBack={() => setOffering("local")}
 						onSignIn={cloudSignIn}
+						onCreateStandaloneAgent={onCreateStandaloneAgent}
 						open={modePickerOpen}
-					onOpenChange={(open) => {
+						onOpenChange={(open) => {
 							if (isBusy) return;
 							setModePickerOpen(open);
 							// Dismissed without picking a kind — don't let a stale dropped
@@ -1097,9 +1114,11 @@ function CreateProjectSourceDialog({
 	disabled,
 	offering,
 	onCloudCreated,
-	onOfferingChange,
+	onCloudSelect,
+	onCloudBack,
 	onSignIn,
 	onOpenChange,
+	onCreateStandaloneAgent,
 	onSelect,
 	open,
 }: {
@@ -1109,9 +1128,11 @@ function CreateProjectSourceDialog({
 	disabled: boolean;
 	offering: ProjectOffering;
 	onCloudCreated: () => void;
-	onOfferingChange: (offering: ProjectOffering) => void;
 	onSignIn: () => void;
+	onCloudSelect: () => void;
+	onCloudBack: () => void;
 	onOpenChange: (open: boolean) => void;
+	onCreateStandaloneAgent?: () => void;
 	onSelect: (source: ProjectSource) => void;
 	open: boolean;
 }) {
@@ -1131,58 +1152,19 @@ function CreateProjectSourceDialog({
 					<Dialog.Title className="sr-only">{t("createProject.addCodeTitle")}</Dialog.Title>
 					<Dialog.Description className="sr-only">{t("createProject.addCodeDescription")}</Dialog.Description>
 					<div className="flex w-full flex-col items-center gap-3">
-						{cloudEnabled && (
-							<ProjectOfferingTabs disabled={disabled} offering={offering} onOfferingChange={onOfferingChange} />
-						)}
 						{cloudEnabled && offering === "cloud" ? (
 							cloudAvailable ? (
-								<CloudProjectCard dialog onClose={() => onOpenChange(false)} onCreated={onCloudCreated} />
+								<CloudProjectCard dialog onAuthRequired={onSignIn} onBack={onCloudBack} onClose={() => onOpenChange(false)} onCreated={onCloudCreated} />
 							) : (
-								<CloudSignInPanel dialog disabled={disabled} onSignIn={onSignIn} />
+								<CloudSignInPanel dialog disabled={disabled} onBack={onCloudBack} onSignIn={onSignIn} />
 							)
 						) : (
-							<ImportSourcePicker disabled={disabled} onClose={() => onOpenChange(false)} onSelect={onSelect} dialog />
+							<ImportSourcePicker cloudEnabled={cloudEnabled} disabled={disabled} onCloudSelect={onCloudSelect} onClose={() => onOpenChange(false)} onSelect={onSelect} onCreateStandaloneAgent={onCreateStandaloneAgent} dialog />
 						)}
 					</div>
 				</Dialog.Content>
 			</Dialog.Portal>
 		</Dialog.Root>
-	);
-}
-
-/**
- * Local | Cloud segmented choice, shown whenever this deployment offers cloud.
- * A caption below spells out what each choice means (sessions on this machine
- * vs. each session in its own cloud sandbox) so the decision is explicit rather
- * than a subtle toggle that is easy to miss.
- */
-function ProjectOfferingTabs({
-	disabled,
-	offering,
-	onOfferingChange,
-}: {
-	disabled: boolean;
-	offering: ProjectOffering;
-	onOfferingChange: (offering: ProjectOffering) => void;
-}) {
-	const { t } = useTranslation();
-	return (
-		<div className="flex w-full flex-col items-center gap-1.5">
-			<Tabs value={offering} onValueChange={(value) => onOfferingChange(value === "cloud" ? "cloud" : "local")}>
-				<TabsList aria-label={t("createProject.kindChoice")}>
-					<TabsTrigger disabled={disabled} value="local">
-						{t("createProject.kindLocal")}
-					</TabsTrigger>
-					<TabsTrigger disabled={disabled} value="cloud">
-						<Cloud className="size-3.5" aria-hidden="true" />
-						{t("createProject.kindCloud")}
-					</TabsTrigger>
-				</TabsList>
-			</Tabs>
-			<p className="text-caption leading-body text-secondary text-center" role="status">
-				{offering === "cloud" ? t("createProject.kindCloudHint") : t("createProject.kindLocalHint")}
-			</p>
-		</div>
 	);
 }
 
@@ -1193,20 +1175,23 @@ function ProjectOfferingTabs({
  */
 function CloudSignInPanel({
 	disabled,
+	onBack,
 	onSignIn,
 }: {
 	dialog?: boolean;
 	disabled: boolean;
+	onBack: () => void;
 	onSignIn: () => void;
 }) {
 	const { t } = useTranslation();
 	return (
-		<div className="flex w-full max-w-(--size-import-modal-max) flex-col items-center gap-4 rounded-welcome-panel border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] p-(--size-import-modal-padding) text-center shadow-[var(--shadow-import-modal)]">
-			<Cloud className="size-6 text-[var(--color-text-import-title)]" aria-hidden="true" />
-			<p className="text-[13px] leading-5 text-[var(--color-text-import-subtitle)]">
-				{t("createProject.cloudSignInPrompt")}
-			</p>
-			<Button disabled={disabled} onClick={onSignIn} type="button">
+		<div className={cn(onboardingPanelClass, "flex flex-col items-center gap-4 px-4 py-6 text-center")}>
+			<Button type="button" variant="outline" size="icon" className="absolute left-3 top-3" aria-label={t("createProject.backToSource")} onClick={onBack}>
+				<ChevronRight className="size-4 rotate-180" aria-hidden="true" />
+			</Button>
+			<Cloud className="size-6 text-foreground" aria-hidden="true" />
+			<p className="text-[13px] leading-5 text-muted-foreground">{t("createProject.cloudSignInPrompt")}</p>
+			<Button disabled={disabled} onClick={onSignIn} type="button" variant="primary">
 				{t("shell.signInToAOCloud")}
 			</Button>
 		</div>
@@ -1225,12 +1210,144 @@ function isHttpsRepositoryUrl(raw: string): boolean {
 // Cloud project creation goes straight to the control plane
 // (client.createProject) instead of the daemon POST the local flow uses; the
 // repository is cloned in a cloud sandbox, so no folder picker or agent sheet.
+/** Coding agents a cloud sandbox can actually run — the same three the
+ * control plane's `validAgentProvider` accepts (cloud/internal/httpapi/
+ * provider_handlers.go). Unlike local's full AGENT_OPTIONS list, cloud has no
+ * "install" step, so every unlisted agent would just be a dead end. */
+const CLOUD_AGENT_PROVIDERS = ["claude-code", "codex", "cursor"] as const;
+
+/** Maps the org's cloud provider connections onto the same AgentInfo shape
+ * local readiness uses, so the cloud agent picker is the identical
+ * component local's agent sheet already ships (RequiredAgentField,
+ * AgentSelectMenuItem, buildRankedAgentOptions) — a missing or invalid
+ * connection reads as "Needs auth" and is unselectable, exactly like a local
+ * agent nobody has logged into, not a bespoke cloud-only status pill. */
+function cloudAgentInfos(connections: CloudCpProviderConnection[] | undefined): AgentInfo[] {
+	const byProvider = new Map((connections ?? []).map((connection) => [connection.provider, connection]));
+	return CLOUD_AGENT_PROVIDERS.map((id) => {
+		const authorized = byProvider.get(id)?.validationState === "valid";
+		return {
+			id,
+			label: agentLabel(id),
+			installation: { state: "installed", freshness: "fresh" },
+			authentication: { state: authorized ? "authorized" : "unauthorized", freshness: "fresh" },
+			effectiveReadiness: authorized ? "ready" : "not_ready",
+			usageCount: 0,
+			lastUsedAt: null,
+		};
+	});
+}
+
+/** Second half of cloud project creation: which agent runs the worker and
+ * which plans as orchestrator. Reuses the exact field local's own agent
+ * sheet uses (RequiredAgentField) against cloud provider-connection state
+ * instead of daemon agent readiness — same component, different source of
+ * truth, per the onboarding design. */
+function CloudAgentSetupStep({
+	orgId,
+	repositoryUrl,
+	displayName,
+	defaultBranch,
+	onBack,
+	onCreate,
+	isCreating,
+	createError,
+}: {
+	orgId: string;
+	repositoryUrl: string;
+	displayName: string;
+	defaultBranch: string;
+	onBack: () => void;
+	onCreate: (selection: { workerAgent: string; orchestratorAgent: string }) => void;
+	isCreating: boolean;
+	createError: string | null;
+}) {
+	const { t } = useTranslation();
+	const connections = useProviderConnections(orgId);
+	const openCredentialDialog = useCredentialDialogStore((state) => state.openDialog);
+	const cloudAgents = useMemo(() => cloudAgentInfos(connections.data), [connections.data]);
+	const readyAgentId = cloudAgents.find((agent) => agent.authentication.state === "authorized")?.id ?? "";
+	const [workerAgent, setWorkerAgent] = useState(readyAgentId);
+	const [orchestratorAgent, setOrchestratorAgent] = useState(readyAgentId);
+
+	// A key added from the "Add a credential" link below lands here once the
+	// connections list refetches — fill the still-empty selects with it
+	// rather than forcing the user to reopen this step.
+	useEffect(() => {
+		if (readyAgentId === "") return;
+		setWorkerAgent((current) => (current === "" ? readyAgentId : current));
+		setOrchestratorAgent((current) => (current === "" ? readyAgentId : current));
+	}, [readyAgentId]);
+
+	const anyAgentReady = cloudAgents.some((agent) => agent.authentication.state === "authorized");
+	const canCreate = !isCreating && workerAgent !== "" && orchestratorAgent !== "";
+
+	return (
+		<div className="flex flex-col gap-5">
+			<div className="flex flex-col gap-1 rounded-lg border border-border/50 bg-[var(--color-bg-import-card)] px-4 py-3">
+				<span className="truncate text-[13px] font-medium text-[var(--color-text-import-title)]">{displayName}</span>
+				<span className="truncate font-mono text-[11.5px] text-muted-foreground">
+					{repositoryUrl} · {defaultBranch}
+				</span>
+			</div>
+			{createError ? (
+				<div className={onboardingAlertErrorClass} role="alert">
+					{createError}
+				</div>
+			) : null}
+			<RequiredAgentField
+				id="cloudWorkerAgent"
+				label={t("createProject.workerAgent", { defaultValue: "Worker" })}
+				placeholder={t("createProject.chooseAgent", { defaultValue: "Choose an agent" })}
+				agents={cloudAgents}
+				value={workerAgent}
+				onChange={setWorkerAgent}
+			/>
+			<RequiredAgentField
+				id="cloudOrchestratorAgent"
+				label={t("createProject.orchestratorAgent", { defaultValue: "Orchestrator" })}
+				placeholder={t("createProject.chooseAgent", { defaultValue: "Choose an agent" })}
+				agents={cloudAgents}
+				value={orchestratorAgent}
+				onChange={setOrchestratorAgent}
+			/>
+			{!anyAgentReady ? (
+				<button
+					type="button"
+					className="flex items-center gap-1.5 self-start text-[12px] font-medium text-[var(--color-accent-import,#4d8dff)] hover:underline"
+					onClick={openCredentialDialog}
+				>
+					<KeyRound className="size-3.5" aria-hidden="true" />
+					{t("createProject.addAgentCredential", { defaultValue: "Add a coding agent credential →" })}
+				</button>
+			) : null}
+			<div className={onboardingFooterActionsClass}>
+				<Button type="button" variant="outline" onClick={onBack} disabled={isCreating}>
+					{t("createProject.back", { defaultValue: "Back" })}
+				</Button>
+				<Button
+					type="button"
+					variant="primary"
+					disabled={!canCreate}
+					onClick={() => onCreate({ workerAgent, orchestratorAgent })}
+				>
+					{isCreating ? t("createProject.creating") : t("createProject.cloudCreate")}
+				</Button>
+			</div>
+		</div>
+	);
+}
+
 function CloudProjectCard({
 	dialog = false,
+	onAuthRequired,
+	onBack,
 	onClose,
 	onCreated,
 }: {
 	dialog?: boolean;
+	onAuthRequired: () => void;
+	onBack: () => void;
 	onClose?: () => void;
 	onCreated: () => void;
 }) {
@@ -1238,23 +1355,116 @@ function CloudProjectCard({
 	const { client } = useCloudCp();
 	const { org, error: orgError } = useCloudOrg();
 	const queryClient = useQueryClient();
+	const [step, setStep] = useState<"github_token" | "repository" | "agents">("repository");
 	const [repositoryUrl, setRepositoryUrl] = useState("");
 	const [displayName, setDisplayName] = useState("");
 	const [defaultBranch, setDefaultBranch] = useState("main");
 	const [submitted, setSubmitted] = useState(false);
+	const [isValidating, setIsValidating] = useState(false);
 	const [isCreating, setIsCreating] = useState(false);
 	const [submitError, setSubmitError] = useState<string | null>(null);
+	const [submitIsUnreachable, setSubmitIsUnreachable] = useState(false);
+	const [submitIsUnavailable, setSubmitIsUnavailable] = useState(false);
+	const [readOnlyWarning, setReadOnlyWarning] = useState(false);
+
+	const userProviders = useQuery({
+		queryKey: ["cloud-user-providers"],
+		enabled: client !== undefined,
+		staleTime: 0,
+		refetchOnMount: "always",
+		queryFn: async () => {
+			const { providerConnections } = await client.listUserProviderConnections();
+			return providerConnections;
+		},
+	});
+
+	useEffect(() => {
+		// Wait until data is confirmed fresh — don't redirect while still loading,
+		// which would cause a flash of the repository step before the check completes.
+		if (userProviders.isPending || !userProviders.data) return;
+		const hasGithubPat = userProviders.data.some((c) => c.provider === "github");
+		if (!hasGithubPat && step === "repository") {
+			setStep("github_token");
+		}
+	}, [userProviders.isPending, userProviders.data, step]);
+	const [githubToken, setGithubToken] = useState("");
+	const [githubTokenBusy, setGithubTokenBusy] = useState(false);
+	const [githubTokenError, setGithubTokenError] = useState<string | null>(null);
+	// Remembered so "Save and retry" can re-attempt with the same agents
+	// instead of bouncing the user back to the agent step a second time.
+	const lastAgentSelectionRef = useRef<{ workerAgent: string; orchestratorAgent: string } | null>(null);
 
 	const urlError = submitted && !isHttpsRepositoryUrl(repositoryUrl) ? t("createProject.cloudInvalidUrl") : null;
 	const nameError = submitted && displayName.trim() === "" ? t("createProject.cloudDisplayNameRequired") : null;
 	const branchError = submitted && defaultBranch.trim() === "" ? t("createProject.cloudDefaultBranchRequired") : null;
-	const orgFailure = orgError ? (orgError instanceof Error ? orgError.message : String(orgError)) : null;
+	const saveGitHubTokenAndContinue = async () => {
+		const secret = githubToken.trim();
+		if (secret === "" || githubTokenBusy) return;
+		setGithubTokenBusy(true);
+		setGithubTokenError(null);
+		try {
+			await client.putGitHubPAT({ secret });
+			await queryClient.invalidateQueries({ queryKey: ["cloud-user-providers"] });
+			await queryClient.invalidateQueries({ queryKey: ["cloud-user-provider-connections"] });
+			await queryClient.invalidateQueries({ queryKey: ["cloud-provider-connections"] });
+			setGithubToken("");
+			// Clear any warnings from the previous attempt so the user starts fresh.
+			setSubmitError(null);
+			setSubmitIsUnreachable(false);
+			setSubmitIsUnavailable(false);
+			setStep("repository");
+		} catch (err) {
+			if (err instanceof CloudCpAuthError) {
+				setGithubTokenError("Your AO Cloud session expired. Sign in again, then continue.");
+				onAuthRequired();
+			} else {
+				setGithubTokenError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
+			}
+		} finally {
+			setGithubTokenBusy(false);
+		}
+	};
 
-	const submit = async (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
+	const validateAndProceed = async () => {
 		setSubmitted(true);
-		if (isCreating || org === undefined) return;
+		if (org === undefined) return;
 		if (!isHttpsRepositoryUrl(repositoryUrl) || displayName.trim() === "" || defaultBranch.trim() === "") return;
+		setSubmitError(null);
+		setSubmitIsUnreachable(false);
+		setSubmitIsUnavailable(false);
+		setReadOnlyWarning(false);
+		setIsValidating(true);
+		try {
+			const result = await client.validateSavedRepositoryAccess({
+				repositoryUrl: repositoryUrl.trim(),
+			});
+			if (!result.writeAccess) {
+				setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
+				setReadOnlyWarning(true);
+			} else {
+				setStep("agents");
+			}
+		} catch (err) {
+			if (err instanceof CloudCpError && err.code === "token_missing") {
+				setStep("github_token");
+			} else {
+				setSubmitError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
+				setSubmitIsUnreachable(err instanceof CloudCpError && (err.code === "repository_unreachable" || err.code === "read_only_token"));
+				setSubmitIsUnavailable(err instanceof CloudCpError && err.code === "provider_unavailable");
+			}
+		} finally {
+			setIsValidating(false);
+		}
+	};
+
+	const goToValidationStep = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		await validateAndProceed();
+	};
+
+	const createProject = async (selection: { workerAgent: string; orchestratorAgent: string }) => {
+		if (isCreating || org === undefined) return;
+		lastAgentSelectionRef.current = selection;
 		setSubmitError(null);
 		setIsCreating(true);
 		try {
@@ -1262,38 +1472,52 @@ function CloudProjectCard({
 				displayName: displayName.trim(),
 				repositoryUrl: repositoryUrl.trim(),
 				defaultBranch: defaultBranch.trim(),
+				config: { workerAgent: selection.workerAgent, orchestratorAgent: selection.orchestratorAgent },
 			});
 			await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
 			onCreated();
 		} catch (err) {
 			setSubmitError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
+			if (err instanceof CloudCpError && (err.code === "repository_unreachable" || err.code === "read_only_token")) {
+				setStep("repository");
+				setSubmitIsUnreachable(true);
+			} else if (err instanceof CloudCpError && err.code === "provider_unavailable") {
+				setStep("repository");
+				setSubmitIsUnavailable(true);
+			}
 		} finally {
 			setIsCreating(false);
 		}
 	};
 
-	const title = <h2 className="import-title text-balance">{t("createProject.cloudTitle")}</h2>;
-	const description = <p className="import-description text-pretty">{t("createProject.cloudDescription")}</p>;
-
+	const title = (
+		<span className="text-balance">
+			{step === "github_token"
+				? t("createProject.githubAccessKeyTitle", { defaultValue: "GitHub access key" })
+				: t("createProject.cloudTitle")}
+		</span>
+	);
 	return (
-		<div className="relative isolate flex w-full max-w-(--size-import-modal-max) flex-col items-stretch gap-6 rounded-welcome-panel border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] p-(--size-import-modal-padding) shadow-[var(--shadow-import-modal)]">
-			<div className={cn("flex flex-col items-start gap-1", dialog && onClose && "pr-10")}>
+		<div className={onboardingPanelClass}>
+			<div className={cn("relative flex items-start gap-3 px-4 pt-3", dialog && onClose && "pr-12")}>
+				<Button type="button" variant="outline" size="icon" aria-label={t("createProject.backToSource")} onClick={step === "repository" || step === "github_token" ? onBack : () => setStep("repository")} disabled={isCreating || githubTokenBusy || isValidating}>
+					<ChevronLeft className="size-4" aria-hidden="true" />
+				</Button>
+				<div className="min-w-0 flex-1">
 				{dialog ? (
 					<>
-						<Dialog.Title asChild>{title}</Dialog.Title>
-						<Dialog.Description asChild>{description}</Dialog.Description>
+						<Dialog.Title className="text-[18px] font-semibold text-[var(--color-text-import-title)]">{title}</Dialog.Title>
+						<Dialog.Description className="sr-only">{t("createProject.cloudDescription")}</Dialog.Description>
 					</>
 				) : (
-					<>
-						{title}
-						{description}
-					</>
+					<h2 className="text-[18px] font-semibold text-[var(--color-text-import-title)]">{title}</h2>
 				)}
+				</div>
 			</div>
 			{dialog && onClose ? (
 				<button
 					type="button"
-					className="settings-close-button absolute right-4 top-4"
+					className="settings-close-button absolute right-3 top-3"
 					aria-label={t("createProject.closeDialog")}
 					disabled={isCreating}
 					onClick={onClose}
@@ -1301,142 +1525,232 @@ function CloudProjectCard({
 					<X className="size-4" aria-hidden="true" />
 				</button>
 			) : null}
-			<form className="flex flex-col gap-5" onSubmit={(event) => void submit(event)}>
-				{(submitError ?? orgFailure) ? (
-					<div
-						className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-pretty text-[12px] leading-5 text-destructive"
-						role="alert"
+			<div className={cn(onboardingPanelBodyClass, "pt-4")}>
+			{step === "github_token" ? (
+				<form
+					className="flex flex-col gap-4"
+					onSubmit={(event) => {
+						event.preventDefault();
+						void saveGitHubTokenAndContinue();
+					}}
+				>
+					<ol className="space-y-3 text-[13px] leading-5 text-foreground">
+						<li className="flex gap-3">
+							<span className="font-mono text-muted-foreground">1</span>
+							<span>{t("createProject.githubToken.step1", { defaultValue: "Open GitHub token settings." })}</span>
+						</li>
+						<li className="flex gap-3">
+							<span className="font-mono text-muted-foreground">2</span>
+							<span>{t("createProject.githubToken.step2", { defaultValue: "Create a fine-grained token and choose the repositories AO can use." })}</span>
+						</li>
+						<li className="flex gap-3">
+							<span className="font-mono text-muted-foreground">3</span>
+							<span>{t("createProject.githubToken.step3", { defaultValue: "Set repository Contents permission to Read and write." })}</span>
+						</li>
+					</ol>
+					<Button
+						type="button"
+						variant="outline"
+						className="self-start"
+						onClick={() => void aoBridge.app.openExternal(GITHUB_TOKEN_SETTINGS_URL)}
 					>
-						{submitError ?? orgFailure}
+						{t("createProject.githubToken.openSettings", { defaultValue: "Open GitHub token settings" })}
+					</Button>
+					<GitHubTokenField
+						id="cloudGithubTokenSetup"
+						label="Paste access token"
+						value={githubToken}
+						disabled={githubTokenBusy}
+						error={githubTokenError}
+						submitLabel={t("createProject.continue", { defaultValue: "Continue" })}
+						showSubmitButton={false}
+						bare
+						onChange={setGithubToken}
+						onSubmit={() => void saveGitHubTokenAndContinue()}
+					/>
+					<div className={onboardingFooterActionsClass}>
+						<Button type="button" variant="outline" onClick={() => setStep("repository")} disabled={githubTokenBusy}>
+							{t("createProject.back", { defaultValue: "Back" })}
+						</Button>
+						<Button type="submit" variant="primary" disabled={githubTokenBusy || githubToken.trim() === ""}>
+							{githubTokenBusy
+								? t("createProject.creating", { defaultValue: "Connecting..." })
+								: t("createProject.continue", { defaultValue: "Continue" })}
+						</Button>
 					</div>
-				) : null}
-				<div className="space-y-2">
-					<Label
-						htmlFor="cloudRepositoryUrl"
-						className="text-[13px] font-semibold text-[var(--color-text-import-title)]"
-					>
-						{t("createProject.cloneRepositoryUrl")}
-					</Label>
-					<div className="relative">
-						<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
-							<Link2 className="size-4" aria-hidden="true" />
-						</span>
-						<Input
-							id="cloudRepositoryUrl"
-							autoFocus
-							autoCapitalize="none"
-							autoComplete="off"
-							aria-describedby={urlError ? "cloudRepositoryUrlError" : undefined}
-							aria-invalid={urlError ? true : undefined}
-							className="bg-[var(--color-bg-import-card)] pl-10 font-mono text-[13px]"
-							disabled={isCreating}
-							placeholder={t("createProject.cloneRepositoryUrlPlaceholder")}
-							spellCheck={false}
-							value={repositoryUrl}
-							onChange={(event) => setRepositoryUrl(event.target.value)}
-						/>
-					</div>
-					{urlError ? (
-						<p id="cloudRepositoryUrlError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
-							{urlError}
-						</p>
-					) : null}
-				</div>
-				<div className="grid gap-5 sm:grid-cols-2">
-					<div className="space-y-2">
-						<Label
-							htmlFor="cloudDisplayName"
-							className="text-[13px] font-semibold text-[var(--color-text-import-title)]"
-						>
-							{t("createProject.cloudDisplayName")}
-						</Label>
-						<div className="relative">
-							<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
-								<Folder className="size-4" aria-hidden="true" />
-							</span>
-							<Input
-								id="cloudDisplayName"
-								autoComplete="off"
-								aria-describedby={nameError ? "cloudDisplayNameError" : undefined}
-								aria-invalid={nameError ? true : undefined}
-								className="bg-[var(--color-bg-import-card)] pl-10 text-[13px]"
-								disabled={isCreating}
-								placeholder="web-app"
-								spellCheck={false}
-								value={displayName}
-								onChange={(event) => setDisplayName(event.target.value)}
-							/>
+				</form>
+			) : step === "agents" && org !== undefined ? (
+				<CloudAgentSetupStep
+					orgId={org.id}
+					repositoryUrl={repositoryUrl.trim()}
+					displayName={displayName.trim()}
+					defaultBranch={defaultBranch.trim()}
+					onBack={() => setStep("repository")}
+					onCreate={(selection) => void createProject(selection)}
+					isCreating={isCreating}
+					createError={submitError}
+				/>
+			) : (
+		<form className="flex flex-col gap-5" onSubmit={goToValidationStep}>
+					{submitError ? (
+						<div className={onboardingAlertErrorClass} role="alert">
+							<p>{submitError}</p>
+							{submitIsUnreachable ? (
+								<div className="mt-2 flex">
+									<Button type="button" variant="outline" size="sm" onClick={() => setStep("github_token")}>
+										{t("createProject.githubToken.updateToken", { defaultValue: "Update Token" })}
+									</Button>
+								</div>
+							) : readOnlyWarning ? (
+								<div className="mt-2 flex gap-2">
+									<Button type="button" variant="outline" size="sm" onClick={() => setStep("github_token")}>
+										{t("createProject.githubToken.updateToken", { defaultValue: "Update Token" })}
+									</Button>
+									<Button type="button" variant="secondary" size="sm" onClick={() => { setReadOnlyWarning(false); setStep("agents"); }}>
+										{t("createProject.continueAnyway", { defaultValue: "Continue anyway" })}
+									</Button>
+								</div>
+							) : submitIsUnavailable ? (
+								<div className="mt-2 flex">
+									<Button type="button" variant="outline" size="sm" onClick={() => void validateAndProceed()}>
+										{t("createProject.githubToken.retry", { defaultValue: "Retry" })}
+									</Button>
+								</div>
+							) : null}
 						</div>
-						{nameError ? (
-							<p id="cloudDisplayNameError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
-								{nameError}
-							</p>
-						) : null}
-					</div>
+					) : null}
 					<div className="space-y-2">
-						<Label
-							htmlFor="cloudDefaultBranch"
-							className="text-[13px] font-semibold text-[var(--color-text-import-title)]"
-						>
-							{t("createProject.cloudDefaultBranch")}
+						<Label htmlFor="cloudRepositoryUrl" className={onboardingFormLabelClass}>
+							{t("createProject.cloneRepositoryUrl")}
 						</Label>
 						<div className="relative">
 							<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
-								<GitBranch className="size-4" aria-hidden="true" />
+								<Link2 className="size-4" aria-hidden="true" />
 							</span>
 							<Input
-								id="cloudDefaultBranch"
+								id="cloudRepositoryUrl"
+								autoFocus
 								autoCapitalize="none"
 								autoComplete="off"
-								aria-describedby={branchError ? "cloudDefaultBranchError" : undefined}
-								aria-invalid={branchError ? true : undefined}
+								aria-describedby={urlError ? "cloudRepositoryUrlError" : undefined}
+								aria-invalid={urlError ? true : undefined}
 								className="bg-[var(--color-bg-import-card)] pl-10 font-mono text-[13px]"
-								disabled={isCreating}
-								placeholder="main"
+								disabled={isCreating || isValidating}
+								placeholder={t("createProject.cloneRepositoryUrlPlaceholder")}
 								spellCheck={false}
-								value={defaultBranch}
-								onChange={(event) => setDefaultBranch(event.target.value)}
+								value={repositoryUrl}
+								onChange={(event) => {
+									setRepositoryUrl(event.target.value);
+								}}
 							/>
 						</div>
-						{branchError ? (
-							<p
-								id="cloudDefaultBranchError"
-								className="text-pretty text-[12px] leading-5 text-destructive"
-								role="alert"
-							>
-								{branchError}
+						{urlError ? (
+							<p id="cloudRepositoryUrlError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
+								{urlError}
 							</p>
 						) : null}
 					</div>
-				</div>
-				<div className="flex items-center justify-end gap-3">
-					{org === undefined && orgFailure === null ? (
-						<p className="mr-auto text-pretty text-[12px] leading-5 text-[var(--color-text-import-muted)]" role="status">
-							{t("createProject.cloudWorkspaceConnecting")}
-						</p>
-					) : null}
-					<Button type="submit" variant="footer-primary" disabled={isCreating || org === undefined}>
-						{isCreating ? t("createProject.creating") : t("createProject.cloudCreate")}
-					</Button>
-				</div>
-			</form>
+					<div className="grid gap-5 sm:grid-cols-2">
+						<div className="space-y-2">
+							<Label htmlFor="cloudDisplayName" className={onboardingFormLabelClass}>
+								{t("createProject.cloudDisplayName")}
+							</Label>
+							<div className="relative">
+								<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
+									<Folder className="size-4" aria-hidden="true" />
+								</span>
+								<Input
+									id="cloudDisplayName"
+									autoComplete="off"
+									aria-describedby={nameError ? "cloudDisplayNameError" : undefined}
+									aria-invalid={nameError ? true : undefined}
+									className="bg-[var(--color-bg-import-card)] pl-10 text-[13px]"
+									disabled={isCreating || isValidating}
+									placeholder="web-app"
+									spellCheck={false}
+									value={displayName}
+									onChange={(event) => setDisplayName(event.target.value)}
+								/>
+							</div>
+							{nameError ? (
+								<p id="cloudDisplayNameError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
+									{nameError}
+								</p>
+							) : null}
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="cloudDefaultBranch" className={onboardingFormLabelClass}>
+								{t("createProject.cloudDefaultBranch")}
+							</Label>
+							<div className="relative">
+								<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
+									<GitBranch className="size-4" aria-hidden="true" />
+								</span>
+								<Input
+									id="cloudDefaultBranch"
+									autoCapitalize="none"
+									autoComplete="off"
+									aria-describedby={branchError ? "cloudDefaultBranchError" : undefined}
+									aria-invalid={branchError ? true : undefined}
+									className="bg-[var(--color-bg-import-card)] pl-10 font-mono text-[13px]"
+									disabled={isCreating || isValidating}
+									placeholder="main"
+									spellCheck={false}
+									value={defaultBranch}
+									onChange={(event) => setDefaultBranch(event.target.value)}
+								/>
+							</div>
+							{branchError ? (
+								<p
+									id="cloudDefaultBranchError"
+									className="text-pretty text-[12px] leading-5 text-destructive"
+									role="alert"
+								>
+									{branchError}
+								</p>
+							) : null}
+						</div>
+					</div>
+					<div className={onboardingFooterActionsEndClass}>
+						{org === undefined && !orgError ? (
+							<p className="mr-auto text-pretty text-[12px] leading-5 text-muted-foreground" role="status">
+								{t("createProject.cloudWorkspaceConnecting")}
+							</p>
+						) : null}
+						<Button type="submit" variant="primary" disabled={isCreating || isValidating || org === undefined}>
+							{isValidating ? t("createProject.creating", { defaultValue: "Validating..." }) : t("createProject.next", { defaultValue: "Next" })}
+						</Button>
+					</div>
+				</form>
+			)}
+			</div>
 		</div>
 	);
 }
 
 /** Shared source chooser for first-run and subsequent project creation. */
 function ImportSourcePicker({
+	cloudEnabled = false,
 	dialog = false,
 	disabled,
+	onCloudSelect,
 	onClose,
+	onCreateStandaloneAgent,
 	onSelect,
 }: {
+	cloudEnabled?: boolean;
 	dialog?: boolean;
 	disabled: boolean;
+	onCloudSelect?: () => void;
 	onClose?: () => void;
+	onCreateStandaloneAgent?: () => void;
 	onSelect: (source: ProjectSource) => void;
 }) {
 	const { t } = useTranslation();
+	const createStandaloneAgent = () => {
+		onClose?.();
+		onCreateStandaloneAgent?.();
+	};
 	const sources: Array<{ source: ProjectSource; icon: ReactNode; label: string; description: string }> = [
 		{
 			source: "clone",
@@ -1458,20 +1772,18 @@ function ImportSourcePicker({
 		},
 	];
 	return (
-		<div className="relative w-full max-w-[520px] overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-xl">
+		<div className={onboardingPanelClass}>
 			{dialog ? (
-				<Dialog.Title className="settings-dialog-title px-4 pt-3">{t("createProject.addCodeTitle")}</Dialog.Title>
+				<Dialog.Title className={onboardingPanelTitleClass}>{t("createProject.addCodeTitle")}</Dialog.Title>
 			) : (
-				<h2 className="settings-dialog-title px-4 pt-3">{t("createProject.addCodeTitle")}</h2>
+				<h2 className={onboardingPanelTitleClass}>{t("createProject.addCodeTitle")}</h2>
 			)}
 			{dialog ? (
-				<Dialog.Description className="px-4 pb-3 pt-1 text-[13px] leading-5 text-muted-foreground">
+				<Dialog.Description className={onboardingPanelDescriptionClass}>
 					{t("createProject.addCodeDescription")}
 				</Dialog.Description>
 			) : (
-				<p className="px-4 pb-3 pt-1 text-[13px] leading-5 text-muted-foreground">
-					{t("createProject.addCodeDescription")}
-				</p>
+				<p className={onboardingPanelDescriptionClass}>{t("createProject.addCodeDescription")}</p>
 			)}
 			<div className="mx-4 mb-4 overflow-hidden rounded-md border border-border/50 bg-[var(--color-bg-import-modal)]">
 				<div className="flex flex-col divide-y divide-border/50">
@@ -1493,6 +1805,31 @@ function ImportSourcePicker({
 						</span>
 					</button>
 				))}
+				{onCreateStandaloneAgent ? (
+					<button type="button" className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={createStandaloneAgent}>
+						<span className="grid w-9 shrink-0 place-items-center text-muted-foreground group-hover:text-foreground">
+							<Bot className="size-5" aria-hidden="true" />
+						</span>
+						<span><span className="block text-sm font-medium">{t("home.newStandaloneAgent")}</span><span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.standaloneDesc")}</span></span>
+					</button>
+				) : null}
+					{cloudEnabled && onCloudSelect ? (
+						<button
+							type="button"
+							className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50"
+							aria-label={t("createProject.cloudTitle")}
+							disabled={disabled}
+							onClick={onCloudSelect}
+						>
+							<span className="grid w-9 shrink-0 place-items-center text-muted-foreground group-hover:text-foreground">
+								<Cloud className="size-5" aria-hidden="true" strokeWidth={1.8} />
+							</span>
+							<span className="min-w-0">
+								<span className="block text-[14px] font-medium text-foreground">{t("createProject.cloudTitle")}</span>
+								<span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.kindCloudHint")}</span>
+							</span>
+						</button>
+					) : null}
 				</div>
 			</div>
 			{dialog && onClose ? (

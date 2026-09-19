@@ -199,6 +199,21 @@ docker pull "$worker_image" >/dev/null
 scan_image "$CONTROL_REPOSITORY" "$control_image_digest"
 scan_image "$WORKER_REPOSITORY" "$worker_image_digest"
 
+# Coder bakes ao-worker into its workspace image, so a release that changes the
+# worker must rebake that image or every spawn and resume falls back to the slow
+# PTY upload (internal/sandbox/coder/client.go preinstalledCheck). Rebuild and
+# publish it here, before the rollout, from the exact control-plane digest so the
+# baked binaries are byte-identical to what the reconciler advertises
+# (AO_WORKER_EXPECTED_SHA256). The nodeops path is unaffected: its template is
+# published out of band by scripts/publish-nodeops-template.sh.
+if [[ "$SANDBOX_PROVIDER" == "coder" ]]; then
+	AWS_REGION="$REGION" \
+		AO_CLOUD_CP_IMAGE="$control_image" \
+		AO_CLOUD_CODER_SECRET_ID="$CODER_SECRET_ID" \
+		AO_CLOUD_CODER_WORKSPACE_IMAGE_TAG="${IMAGE_TAG}" \
+		./scripts/publish-coder-workspace.sh
+fi
+
 register_task_definition() {
 	local family="$1"
 	local container_name="$2"
@@ -218,7 +233,8 @@ register_task_definition() {
 		render_args+=(
 			--worker-image "$worker_image"
 			--set-environment "AO_CLOUD_PUBLIC_URL=${AO_CLOUD_PUBLIC_URL:-https://staging-api.aoagents.dev}"
-			--set-environment "AO_CLOUD_TERMINAL_STREAM=${AO_CLOUD_TERMINAL_STREAM:-}"
+			--set-environment AO_CLOUD_TERMINAL_STREAM=1
+			--set-environment AO_CLOUD_TERMINAL_RELAY=1
 			--set-environment AO_CLOUD_REPOSITORY_BROKER_URL=https://api.aoagents.dev
 			--set-environment AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT=true
 			--set-secret "AO_CLOUD_PROVIDER_SECRET_KEY=${provider_secret_arn}"

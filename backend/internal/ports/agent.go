@@ -8,12 +8,25 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+var (
+	// ErrUnsupportedEffort reports a value the selected model did not advertise.
+	ErrUnsupportedEffort = errors.New("unsupported model effort")
+	// ErrModelCapabilitiesUnavailable reports tuning that cannot be validated safely.
+	ErrModelCapabilitiesUnavailable = errors.New("model capabilities unavailable")
+)
+
 // ErrAgentBinaryNotFound is returned by agent adapters when neither PATH nor
 // any well-known install location holds the agent's binary. The session
 // manager surfaces this BEFORE creating the runtime so a missing CLI doesn't
 // silently launch into an empty tmux pane that the reaper later mistakes
 // for a live session.
 var ErrAgentBinaryNotFound = errors.New("agent: binary not found on PATH")
+
+// ErrAgentBinaryIdentityUnknown is returned by a startup-only presence check
+// when a name-matching executable exists but the adapter's identity probe has
+// not confirmed it. It is deliberately distinct from ErrAgentBinaryNotFound:
+// callers must not present an unverified name-only match as installed.
+var ErrAgentBinaryIdentityUnknown = errors.New("agent: binary identity unknown")
 
 // AgentAuthStatus describes the result of a short local auth probe for an
 // installed agent. It is advisory only: credentials, quota, selected model
@@ -71,10 +84,20 @@ type AgentBinaryResolver interface {
 	ResolveBinary(ctx context.Context) (path string, err error)
 }
 
+// AgentBinaryResolutionInvalidator is an optional capability for adapters that
+// cache the executable path. Install and reinstall flows use it to make the
+// next readiness, model-discovery, or launch operation resolve the current
+// local installation again.
+type AgentBinaryResolutionInvalidator interface {
+	InvalidateBinaryResolution()
+}
+
 // AgentBinaryPresenceResolver is an optional startup-only refinement for an
 // adapter whose normal binary resolution performs additional validation. It
 // must only inspect local executable paths; it must not start the agent CLI.
-// AO uses it for the first-render prerequisite gate, where existence is enough.
+// AO uses it for the first-render prerequisite gate. Identity-sensitive
+// adapters may return ErrAgentBinaryIdentityUnknown when existence alone is
+// insufficient; that result remains unknown until a normal identity probe.
 type AgentBinaryPresenceResolver interface {
 	ResolveBinaryPresence(ctx context.Context) (path string, err error)
 }
@@ -153,10 +176,12 @@ const (
 
 // AgentModelInfo is one model or mode that an adapter reports as selectable.
 type AgentModelInfo struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	Provider  string `json:"provider,omitempty"`
-	IsDefault bool   `json:"isDefault,omitempty"`
+	ID            string   `json:"id"`
+	Label         string   `json:"label"`
+	Provider      string   `json:"provider,omitempty"`
+	IsDefault     bool     `json:"isDefault,omitempty"`
+	Efforts       []string `json:"efforts,omitempty"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }
 
 // AgentModelCatalog is AO's normalized model-picker response.

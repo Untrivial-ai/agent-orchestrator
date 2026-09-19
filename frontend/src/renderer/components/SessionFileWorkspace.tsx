@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { FileContentPane } from "./FileContentPane";
-import { FileAnnotationComposer, type FileAnnotationModel } from "./WorkspaceDiffView";
+import type { FileAnnotationModel } from "./WorkspaceDiffView";
 import type { FileViewMode } from "./FileContentPane";
 import type { WorkspaceDiffScope } from "../hooks/useSessionWorkspaceFiles";
 
@@ -29,7 +29,6 @@ export function SessionFileWorkspace({
 	split: boolean;
 	scope?: WorkspaceDiffScope;
 }) {
-	const fileFeedbackActive = annotation.target?.path === path && annotation.target.side === "file";
 	const handleDirtyChange = useCallback(
 		(dirty: boolean) => onDirtyChange?.(path, dirty),
 		[onDirtyChange, path],
@@ -42,13 +41,6 @@ export function SessionFileWorkspace({
 	);
 	return (
 		<section className="relative flex h-full min-h-0 flex-col bg-background" data-testid="session-file-workspace">
-			{fileFeedbackActive ? (
-				<div className="pointer-events-none absolute inset-x-4 top-4 z-30 flex justify-center">
-					<div className="pointer-events-auto w-full max-w-xl">
-						<FileAnnotationComposer annotation={annotation} />
-					</div>
-				</div>
-			) : null}
 			<div className="board-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
 				<FileContentPane
 					annotation={annotation}

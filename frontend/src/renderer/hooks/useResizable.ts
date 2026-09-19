@@ -34,6 +34,15 @@ interface UseResizableOptions {
  * Persists the width to localStorage and applies it via a CSS custom property
  * to the nearest consuming layout elements. Keeping a high-frequency custom
  * property off :root avoids invalidating unrelated renderer subtrees.
+ *
+ * Single owner of clamped width (do not regress):
+ * - `apply` is write-only: clamp with `min`/`max` only. Callers (esp. inspector)
+ *   must pass a live `max` callback — never cache a loose placeholder like
+ *   `defaultWidth * 2` as the drag ceiling.
+ * - On pointerdown, seed from the painted box when it disagrees with the var
+ *   (CSS max-width can hold paint below the custom property).
+ * - Drag applies synchronously so ResizeHandle can follow the painted border 1:1.
+ * - Dragging never auto-collapses: clamp at `min`; collapse stays on explicit UI.
  */
 export function useResizable({
 	cssVar,
@@ -51,6 +60,7 @@ export function useResizable({
 	const frameRef = useRef<number | null>(null);
 	const pendingWidthRef = useRef<number | null>(null);
 	const appliedTargetsRef = useRef(new Set<HTMLElement>());
+	const activeDragCleanupRef = useRef<(() => void) | null>(null);
 	const minValue = useCallback(() => (typeof min === "function" ? min() : min), [min]);
 	const maxValue = useCallback(() => (typeof max === "function" ? max() : max), [max]);
 	const cssTargets = useCallback(
@@ -65,7 +75,8 @@ export function useResizable({
 		(next: number) => {
 			const clamped = Math.min(maxValue(), Math.max(minValue(), next));
 			widthRef.current = clamped;
-			for (const target of cssTargets()) {
+			const targets = cssTargets();
+			for (const target of targets) {
 				target.style.setProperty(cssVar, `${clamped}px`);
 				appliedTargetsRef.current.add(target);
 			}
@@ -104,6 +115,7 @@ export function useResizable({
 		const restored = Number.isFinite(saved) && saved > 0 ? saved : defaultWidth;
 		apply(restoreMin === undefined ? restored : Math.max(restoreMin, restored));
 		return () => {
+			activeDragCleanupRef.current?.();
 			if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
 			for (const target of appliedTargetsRef.current) target.style.removeProperty(cssVar);
 			appliedTargetsRef.current.clear();
@@ -112,43 +124,75 @@ export function useResizable({
 
 	const onPointerDown = useCallback(
 		(event: React.PointerEvent<HTMLElement>) => {
+			activeDragCleanupRef.current?.();
 			event.preventDefault();
+			const pointerId = event.pointerId;
+			const captureTarget = event.currentTarget;
+			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
+			// Seed from the painted box when CSS max-width holds width below the var.
+			const visualWidth = cssTargets()
+				.map((target) => target.getBoundingClientRect().width)
+				.find((width) => width > 0);
+			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
+				apply(visualWidth);
+			}
 			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
 			const sign = edge === "right" ? 1 : -1;
 			document.body.classList.add("is-resizing-x");
 
-			const onUp = () => {
+			const finish = () => {
 				window.removeEventListener("pointermove", onMove);
-				window.removeEventListener("pointerup", onUp);
+				window.removeEventListener("pointerup", onEnd);
+				window.removeEventListener("pointercancel", onEnd);
+				window.removeEventListener("blur", finish);
 				flushPending();
 				document.body.classList.remove("is-resizing-x");
+				if (captureTarget.hasPointerCapture?.(pointerId)) captureTarget.releasePointerCapture(pointerId);
 				window.localStorage.setItem(storageKey, String(widthRef.current));
+				if (activeDragCleanupRef.current === finish) activeDragCleanupRef.current = null;
 			};
-			// Dragging never collapses the panel: `apply` clamps at `min`, so the
-			// drag simply stops at the floor. Collapse stays on explicit controls.
+			const onEnd = (e: PointerEvent) => {
+				if (e.pointerId === pointerId) finish();
+			};
+			// Sync apply during drag so the grip (following the painted border) stays 1:1.
+			// Collapse stays on explicit controls — `apply` clamps at `min`.
 			const onMove = (e: PointerEvent) => {
-				applyOnFrame(startWidth + sign * (e.clientX - startX));
+				apply(startWidth + sign * (e.clientX - startX));
 			};
 			window.addEventListener("pointermove", onMove);
-			window.addEventListener("pointerup", onUp);
+			window.addEventListener("pointerup", onEnd);
+			window.addEventListener("pointercancel", onEnd);
+			window.addEventListener("blur", finish);
+			activeDragCleanupRef.current = finish;
 		},
-		[applyOnFrame, edge, flushPending, maxValue, minValue, storageKey],
+		[apply, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
 	);
 
 	const onCollapsedPointerDown = useCallback(
 		(event: React.PointerEvent<HTMLElement>) => {
+			activeDragCleanupRef.current?.();
+			const pointerId = event.pointerId;
+			const captureTarget = event.currentTarget;
+			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
 			const sign = edge === "right" ? 1 : -1;
 			let expanded = false;
 			document.body.classList.add("is-resizing-x");
 
-			const onUp = () => {
+			const finish = () => {
 				window.removeEventListener("pointermove", onMove);
-				window.removeEventListener("pointerup", onUp);
+				window.removeEventListener("pointerup", onEnd);
+				window.removeEventListener("pointercancel", onEnd);
+				window.removeEventListener("blur", finish);
 				flushPending();
 				document.body.classList.remove("is-resizing-x");
+				if (captureTarget.hasPointerCapture?.(pointerId)) captureTarget.releasePointerCapture(pointerId);
 				if (expanded) window.localStorage.setItem(storageKey, String(widthRef.current));
+				if (activeDragCleanupRef.current === finish) activeDragCleanupRef.current = null;
+			};
+			const onEnd = (e: PointerEvent) => {
+				if (e.pointerId === pointerId) finish();
 			};
 			const onMove = (e: PointerEvent) => {
 				const delta = sign * (e.clientX - startX);
@@ -160,7 +204,10 @@ export function useResizable({
 				applyOnFrame(minValue() + delta);
 			};
 			window.addEventListener("pointermove", onMove);
-			window.addEventListener("pointerup", onUp);
+			window.addEventListener("pointerup", onEnd);
+			window.addEventListener("pointercancel", onEnd);
+			window.addEventListener("blur", finish);
+			activeDragCleanupRef.current = finish;
 		},
 		[applyOnFrame, edge, expandDragThreshold, flushPending, minValue, onExpand, storageKey],
 	);

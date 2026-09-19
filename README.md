@@ -86,7 +86,7 @@ Each card keeps the task, agent, branch, activity, pull request, and status toge
 
 1. **Start at the right level.** Give a clear task directly to a worker, or develop a larger outcome with the project orchestrator and let it shape the plan.
 2. **Delegate focused work.** Start workers yourself or have the orchestrator create them with the context and ownership they need.
-3. **Build in isolation.** Every Git-backed worker gets its own branch and worktree; Scratch workers get AO-managed branchless directories.
+3. **Build in isolation.** Every Git-backed worker gets its own branch and worktree; standalone agents get AO-managed branchless directories without requiring a project or repository.
 4. **Supervise live state.** AO follows agent activity, pull requests, CI, review feedback, and merge conflicts, then reflects those facts on the Kanban.
 5. **Close the feedback loop.** Inspect any worker directly, make project-level decisions with the orchestrator, and return actionable failures or review comments to the agent that owns the work.
 
@@ -234,7 +234,11 @@ Join [Discord](https://discord.com/invite/UZv7JjxbwG) for help and contributor d
 
 ## Anonymous telemetry
 
-AO uses privacy-preserving product usage and reliability metrics designed to exclude PII and project content. These metrics help us understand adoption and improve the product. To understand which teams and developers get the most value from AO, we also record the GitHub organization or account that owns a project (the owner segment only, never the repository, path, or URL); for a personal repository this is the owner's own username, so that single field is not anonymous. We use it to prioritize improvements and reach out for feedback. [Learn more about telemetry and privacy](docs/telemetry.md).
+AO uses privacy-preserving product usage and reliability metrics designed to exclude PII and project content. These metrics help us understand adoption and improve the product. To understand which teams and developers get the most value from AO, we also record the GitHub organization or account that owns a project (the owner segment only, never the repository, path, or URL); for a personal repository this is the owner's own username, so that single field is not anonymous. We use it to prioritize improvements and reach out for feedback.
+
+AO also shares the GitHub username signed in to its GitHub integration on session-start events, so we can see which developers are most active and reach out for feedback. AO only sends a personal (human) account, never an organization or a bot token, and sends nothing if no GitHub token is available. The handle is part of product telemetry and has no separate control; turning telemetry off stops it along with everything else.
+
+AO leaves PostHog's IP-based location derivation enabled, so coarse geography (country, and where available region and city) is available in aggregate to understand which areas AO is used in. AO never resolves or sends precise location and does not store your IP address; this is not tied to your GitHub handle, and turning telemetry off stops it with everything else. [Learn more about telemetry and privacy](docs/telemetry.md).
 
 ## License
 

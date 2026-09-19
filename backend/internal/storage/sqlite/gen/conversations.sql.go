@@ -735,7 +735,7 @@ VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
 type InsertConversationParams struct {
 	ID               string
 	Scope            domain.ConversationScope
-	ProjectID        domain.ProjectID
+	ProjectID        *domain.ProjectID
 	SessionID        *domain.SessionID
 	CurrentSessionID *domain.SessionID
 	ActiveBranchID   string
@@ -810,13 +810,13 @@ INSERT INTO conversation_branches (
     id, conversation_id, session_id, provider_conversation_id,
     parent_branch_id, fork_after_turn_id, replaced_turn_id,
     replacement_turn_id, fork_after_sequence, strategy, replay_cutoff_sequence,
-    replay_truncated, provider_scope_id, created_at
+    replay_truncated, provider_scope_id, provider_ids_scoped, created_at
 ) VALUES (
     ?1, ?2, ?3,
     ?4, ?5,
     ?6, ?7,
     ?8, ?9, ?10,
-    ?11, ?12, ?13, ?14
+    ?11, ?12, ?13, ?14, ?15
 )
 `
 
@@ -834,6 +834,7 @@ type InsertConversationBranchParams struct {
 	ReplayCutoffSequence   int64
 	ReplayTruncated        int64
 	ProviderScopeID        string
+	ProviderIdsScoped      int64
 	CreatedAt              time.Time
 }
 
@@ -852,6 +853,7 @@ func (q *Queries) InsertConversationBranch(ctx context.Context, arg InsertConver
 		arg.ReplayCutoffSequence,
 		arg.ReplayTruncated,
 		arg.ProviderScopeID,
+		arg.ProviderIdsScoped,
 		arg.CreatedAt,
 	)
 	return err
@@ -1692,7 +1694,7 @@ WITH RECURSIVE lineage(id, parent_branch_id, replaced_turn_id, provider_scope_id
     JOIN conversation_branches AS parent ON parent.id = lineage.parent_branch_id
     WHERE parent.conversation_id = ?1
 )
-SELECT b.id, b.conversation_id, b.session_id, b.provider_conversation_id, b.parent_branch_id, b.fork_after_turn_id, b.replaced_turn_id, b.replacement_turn_id, b.fork_after_sequence, b.created_at, b.strategy, b.replay_cutoff_sequence, b.replay_truncated, b.provider_scope_id, b.id = c.active_branch_id AS active,
+SELECT b.id, b.conversation_id, b.session_id, b.provider_conversation_id, b.parent_branch_id, b.fork_after_turn_id, b.replaced_turn_id, b.replacement_turn_id, b.fork_after_sequence, b.created_at, b.strategy, b.replay_cutoff_sequence, b.replay_truncated, b.provider_scope_id, b.provider_ids_scoped, b.id = c.active_branch_id AS active,
        CAST(COALESCE((
            SELECT lineage.provider_scope_id
            FROM lineage
@@ -1737,6 +1739,7 @@ type SelectConversationBranchRow struct {
 	ReplayCutoffSequence     int64
 	ReplayTruncated          int64
 	ProviderScopeID          string
+	ProviderIdsScoped        int64
 	Active                   bool
 	EffectiveProviderScopeID string
 	ProviderBindingID        string
@@ -1760,6 +1763,7 @@ func (q *Queries) SelectConversationBranch(ctx context.Context, arg SelectConver
 		&i.ReplayCutoffSequence,
 		&i.ReplayTruncated,
 		&i.ProviderScopeID,
+		&i.ProviderIdsScoped,
 		&i.Active,
 		&i.EffectiveProviderScopeID,
 		&i.ProviderBindingID,
@@ -1780,7 +1784,7 @@ WITH RECURSIVE lineages(branch_id, id, parent_branch_id, replaced_turn_id, provi
     JOIN conversation_branches AS parent ON parent.id = lineage.parent_branch_id
     WHERE parent.conversation_id = ?1
 )
-SELECT b.id, b.conversation_id, b.session_id, b.provider_conversation_id, b.parent_branch_id, b.fork_after_turn_id, b.replaced_turn_id, b.replacement_turn_id, b.fork_after_sequence, b.created_at, b.strategy, b.replay_cutoff_sequence, b.replay_truncated, b.provider_scope_id, b.id = c.active_branch_id AS active,
+SELECT b.id, b.conversation_id, b.session_id, b.provider_conversation_id, b.parent_branch_id, b.fork_after_turn_id, b.replaced_turn_id, b.replacement_turn_id, b.fork_after_sequence, b.created_at, b.strategy, b.replay_cutoff_sequence, b.replay_truncated, b.provider_scope_id, b.provider_ids_scoped, b.id = c.active_branch_id AS active,
        CAST(COALESCE((
            SELECT lineage.provider_scope_id
            FROM lineages AS lineage
@@ -1820,6 +1824,7 @@ type SelectConversationBranchesRow struct {
 	ReplayCutoffSequence     int64
 	ReplayTruncated          int64
 	ProviderScopeID          string
+	ProviderIdsScoped        int64
 	Active                   bool
 	EffectiveProviderScopeID string
 	ProviderBindingID        string
@@ -1849,6 +1854,7 @@ func (q *Queries) SelectConversationBranches(ctx context.Context, conversationID
 			&i.ReplayCutoffSequence,
 			&i.ReplayTruncated,
 			&i.ProviderScopeID,
+			&i.ProviderIdsScoped,
 			&i.Active,
 			&i.EffectiveProviderScopeID,
 			&i.ProviderBindingID,
@@ -2010,7 +2016,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence, depth) AS (
     ORDER BY path.depth
     LIMIT 1
 ), active_branch AS (
-    SELECT branch.id, branch.conversation_id, branch.session_id, branch.provider_conversation_id, branch.parent_branch_id, branch.fork_after_turn_id, branch.replaced_turn_id, branch.replacement_turn_id, branch.fork_after_sequence, branch.created_at, branch.strategy, branch.replay_cutoff_sequence, branch.replay_truncated, branch.provider_scope_id
+    SELECT branch.id, branch.conversation_id, branch.session_id, branch.provider_conversation_id, branch.parent_branch_id, branch.fork_after_turn_id, branch.replaced_turn_id, branch.replacement_turn_id, branch.fork_after_sequence, branch.created_at, branch.strategy, branch.replay_cutoff_sequence, branch.replay_truncated, branch.provider_scope_id, branch.provider_ids_scoped
     FROM conversations AS conversation
     JOIN conversation_branches AS branch ON branch.id = conversation.active_branch_id
     WHERE conversation.id = ?1
@@ -2982,7 +2988,7 @@ const selectProjectConversation = `-- name: SelectProjectConversation :one
 SELECT id, scope, project_id, session_id, current_session_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id, opencode_mode FROM conversations WHERE project_id = ? AND scope = 'project' LIMIT 1
 `
 
-func (q *Queries) SelectProjectConversation(ctx context.Context, projectID domain.ProjectID) (Conversation, error) {
+func (q *Queries) SelectProjectConversation(ctx context.Context, projectID *domain.ProjectID) (Conversation, error) {
 	row := q.db.QueryRowContext(ctx, selectProjectConversation, projectID)
 	var i Conversation
 	err := row.Scan(

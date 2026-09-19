@@ -663,7 +663,7 @@ func createSessionTx(
 		FROM generated
 		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
 			mode, denied_commands, activity_state, is_terminated,
-			false, '', '', '', '', '', created_at, updated_at`,
+			false, '', '', '', '', '', 0, created_at, updated_at`,
 		orgID,
 		input.ProjectID,
 		input.Kind,
@@ -937,6 +937,13 @@ const sessionSelect = `
 		COALESCE(sandbox.observed_state, ''),
 		COALESCE(sandbox.observed_state, ''),
 		COALESCE(sandbox.last_error, ''),
+		COALESCE((
+			SELECT MAX(terminal.worker_epoch)
+			FROM ao_terminal_sessions terminal
+			WHERE terminal.org_id = session.org_id
+				AND terminal.session_id = session.id
+				AND terminal.kind = 'agent'
+		), 0),
 		session.created_at, session.updated_at
 	FROM ao_sessions session
 	LEFT JOIN ao_sandboxes sandbox
@@ -1000,6 +1007,7 @@ func scanSession(row scanner, session *domain.Session) error {
 		&session.ObservedState,
 		&session.RuntimeState,
 		&session.RuntimeError,
+		&session.WorkerEpoch,
 		&session.CreatedAt,
 		&session.UpdatedAt,
 	)

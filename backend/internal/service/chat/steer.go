@@ -70,6 +70,15 @@ type SteerResult struct {
 	ActivityID string
 }
 
+// SteerOrSendResult identifies whether one atomic request joined an active turn
+// or opened a normal turn while the conversation was idle.
+type SteerOrSendResult struct {
+	Steered   bool
+	Duplicate bool
+	Steer     SteerResult
+	Turn      domain.ConversationTurn
+}
+
 // PromoteQueuedTurnResult attributes a durable queue item to the running turn
 // that absorbed it.
 type PromoteQueuedTurnResult struct {
@@ -123,6 +132,30 @@ func (s *Service) RecoverSteer(ctx context.Context, id domain.SessionID, clientM
 		return SteerResult{}, ErrSteerDeliveryUncertain
 	}
 	return replaySteerDelivery(delivery, delivery.RequestJSON)
+}
+
+// SteerOrSend routes one idempotent request through the session's live Chat
+// controller without exposing a state-check race to the caller.
+func (s *Service) SteerOrSend(
+	ctx context.Context,
+	id domain.SessionID,
+	msg ports.ChatUserMessage,
+	recoverOnly bool,
+) (SteerOrSendResult, error) {
+	if strings.TrimSpace(msg.Text) == "" && !recoverOnly {
+		return SteerOrSendResult{}, ErrSteerTextRequired
+	}
+	if msg.ClientMessageID == "" {
+		return SteerOrSendResult{}, ErrSteerDeliveryUncertain
+	}
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return SteerOrSendResult{}, err
+	}
+	controller, err := s.Controller(id)
+	if err != nil {
+		return SteerOrSendResult{}, err
+	}
+	return controller.SteerOrSend(ctx, msg, recoverOnly)
 }
 
 // PromoteQueuedTurn delivers one already queued turn into the active turn. The
@@ -304,6 +337,10 @@ func (c *Controller) rejectSteerBeforeDispatch(
 func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (SteerResult, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	return c.steerLocked(ctx, msg)
+}
+
+func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage) (SteerResult, error) {
 
 	requestJSON, err := encodeSteerDeliveryRequest(msg)
 	if err != nil {
@@ -411,6 +448,70 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 		return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, err)
 	}
 	return SteerResult{ProviderTurnID: landed, ActivityID: activityID}, nil
+}
+
+// SteerOrSend selects and persists one delivery outcome while holding the same
+// lock used by ordinary sends and steering.
+func (c *Controller) SteerOrSend(
+	ctx context.Context,
+	msg ports.ChatUserMessage,
+	recoverOnly bool,
+) (SteerOrSendResult, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	if existing, found, err := c.store.ConversationMessageByClientID(
+		ctx, c.conversation.ID, msg.ClientMessageID,
+	); err != nil {
+		return SteerOrSendResult{}, fmt.Errorf("recover sent message: %w", err)
+	} else if found {
+		turn, err := c.store.TurnByID(ctx, existing.TurnID)
+		if err != nil {
+			return SteerOrSendResult{}, fmt.Errorf("recover sent turn: %w", err)
+		}
+		return SteerOrSendResult{Duplicate: true, Turn: turn}, nil
+	}
+
+	requestJSON, err := encodeSteerDeliveryRequest(msg)
+	if err != nil {
+		return SteerOrSendResult{}, err
+	}
+	if delivery, found, err := c.store.SteerDelivery(
+		ctx, c.conversation.ID, msg.ClientMessageID,
+	); err != nil {
+		return SteerOrSendResult{}, fmt.Errorf("%w: load prior result: %w", ErrSteerDeliveryUncertain, err)
+	} else if found {
+		replayRequest := requestJSON
+		if recoverOnly {
+			replayRequest = delivery.RequestJSON
+		}
+		steered, replayErr := replaySteerDelivery(delivery, replayRequest)
+		if replayErr == nil {
+			return SteerOrSendResult{Steered: true, Duplicate: true, Steer: steered}, nil
+		}
+		if !errors.Is(replayErr, ErrNoActiveTurn) || recoverOnly {
+			return SteerOrSendResult{}, replayErr
+		}
+	}
+	if recoverOnly {
+		return SteerOrSendResult{}, ErrSteerDeliveryUncertain
+	}
+
+	if _, active := c.awaitAcknowledgedTurn(ctx); active {
+		steered, err := c.steerLocked(ctx, msg)
+		if err == nil {
+			return SteerOrSendResult{Steered: true, Steer: steered}, nil
+		}
+		if !errors.Is(err, ErrNoActiveTurn) {
+			return SteerOrSendResult{}, err
+		}
+	}
+
+	turn, err := c.sendLocked(ctx, msg, false)
+	if err != nil {
+		return SteerOrSendResult{}, err
+	}
+	return SteerOrSendResult{Turn: turn}, nil
 }
 
 type steerDeliveryRequest struct {

@@ -178,6 +178,10 @@ vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({ client: {}, ready: false, baseUrl: "" }),
 }));
 
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: undefined, isLoading: false, error: undefined, ready: false }),
+}));
+
 // The shell layout opens standalone terminals; this suite only covers the
 // shortcut subscriptions, so the mutation is stubbed rather than driven.
 vi.mock("../hooks/useShellTerminals", () => ({
@@ -502,6 +506,20 @@ describe("shell workspace startup", () => {
 		expect(document.querySelector(".center-panel-shell--session > .center-panel-surface")).toBeInTheDocument();
 	});
 
+	it("reveals the shell while session recovery remains pending", async () => {
+		const checking: WorkspaceSummary[] = workspaces.map((workspace) => ({ ...workspace,
+			sessions: workspace.sessions.map((session) => ({ ...session, statusReadiness: "checking" })),
+		}));
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+		shellMocks.state.workspaceQuery = { data: checking, dataUpdatedAt: 100, isError: false, isSuccess: true };
+		shellMocks.queryClient.getQueryState.mockReturnValue({ dataUpdatedAt: 100 });
+		shellMocks.queryClient.fetchQuery.mockResolvedValueOnce(checking);
+		await renderShell();
+		await waitFor(() => expect(shellMocks.state.shellValue?.workspaceStartupState).toBe("ready"));
+		expect(screen.queryByTestId("daemon-startup-loader")).not.toBeInTheDocument();
+		expect(screen.getByTestId("sidebar-provider")).toBeInTheDocument();
+	});
+
 	it("forces a confirmed fetch and preserves a collapsed sidebar preference", async () => {
 		let resolveFetch: ((value: WorkspaceSummary[]) => void) | undefined;
 		useUiStore.setState({ isSidebarOpen: false });
@@ -750,13 +768,13 @@ describe("shell new-session shortcut subscription", () => {
 		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "proj-1");
 	});
 
-	it("opens the create-project flow when no project is in scope", async () => {
+	it("opens the standalone new-task flow when no project is in scope", async () => {
 		await renderShell();
 
 		emitShortcut();
 
-		expect(screen.getByTestId("create-project-flow")).toBeInTheDocument();
-		expect(screen.queryByTestId("new-task-flow")).not.toBeInTheDocument();
+		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "__standalone__");
+		expect(screen.queryByTestId("create-project-flow")).not.toBeInTheDocument();
 	});
 });
 
@@ -791,6 +809,35 @@ describe("shell application shortcut subscriptions", () => {
 		expect(shellMocks.navigate).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "sess-3" },
+		});
+	});
+
+	it("moves between standalone sessions without constructing a project route", async () => {
+		const standalone = {
+			id: "__standalone__",
+			name: "Standalone agents",
+			kind: "standalone",
+			path: "",
+			sessions: [
+				{ id: "standalone-1", workspaceId: "", status: "working" },
+				{ id: "standalone-2", workspaceId: "", status: "idle" },
+			],
+		} as unknown as WorkspaceSummary;
+		shellMocks.state.routeParams = { sessionId: "standalone-1" };
+		shellMocks.state.workspaces = [...workspaces, standalone];
+		shellMocks.state.workspaceQuery = {
+			data: shellMocks.state.workspaces,
+			dataUpdatedAt: 0,
+			isError: false,
+			isSuccess: true,
+		};
+		await renderShell();
+
+		act(() => shellMocks.state.nextSessionListener?.());
+
+		expect(shellMocks.navigate).toHaveBeenCalledWith({
+			to: "/sessions/$sessionId",
+			params: { sessionId: "standalone-2" },
 		});
 	});
 

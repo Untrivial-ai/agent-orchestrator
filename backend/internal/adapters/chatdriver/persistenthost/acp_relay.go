@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 const (
@@ -227,6 +228,7 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 	envelope["id"] = providerID
 	if method == "session/prompt" {
 		r.state.ActivePrompt = true
+		r.state.ActiveCompaction = isCompactionPrompt(envelope["params"])
 		r.state.PendingResultEventID = ""
 		r.cancelRequested = false
 		if err := r.promptJournal.reset(ctx); err != nil {
@@ -358,6 +360,7 @@ func (r *acpRelay) providerFrame(
 
 	if request.method == "session/prompt" {
 		r.state.ActivePrompt = false
+		r.state.ActiveCompaction = false
 		r.cancelRequested = false
 		eventID := r.newEventID()
 		injectResultMeta(envelope, ACPEventIDMetaKey, eventID)
@@ -560,4 +563,25 @@ func marshalFrame(envelope map[string]json.RawMessage, fallback []byte) []byte {
 		return fallback
 	}
 	return append(encoded, '\n')
+}
+
+func isCompactionPrompt(params json.RawMessage) bool {
+	if len(params) == 0 {
+		return false
+	}
+	var req struct {
+		Prompt []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"prompt"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return false
+	}
+	for _, block := range req.Prompt {
+		if block.Type == "text" && strings.TrimSpace(block.Text) == "/compact" {
+			return true
+		}
+	}
+	return false
 }

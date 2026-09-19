@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: go-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -47,10 +51,10 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        # The SQLite migration package already runs close to Go's default
-        # 10-minute per-package limit under the race detector. Keep deadlock
-        # protection while leaving enough headroom for migration coverage.
-        run: go test -race -timeout=15m ./...
+        # The complete SQLite migration suite exceeded 15m under the race
+        # detector on the shared runner. Keep a bounded per-package timeout
+        # with headroom for the full upgrade matrix; no tests are excluded.
+        run: go test -race -timeout=20m ./...
 
   # The suite above only ever runs on Linux, so the packages whose behaviour is
   # genuinely platform-specific have never been exercised on Windows: worktree
@@ -88,6 +92,12 @@ jobs:
         run: go test -race -run '^TestBackgroundCommandHasNoConsole$' ./internal/adapters/agent/pi ./internal/adapters/agent/omp ./internal/adapters/agent/primeagent
       - name: Test Windows mobile tunnel subprocesses
         run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
+
+      - name: Test native Goose identity
+        run: go test -race -count=1 -timeout=10m ./internal/adapters/agent/binaryutil ./internal/adapters/agent/goose
+
+      - name: Test Goose readiness and inventory
+        run: go test -race -count=1 -timeout=10m -run '^Test(FindInstalledBinary|WarmReadinessAndFindInstalled|PresslyGoose|Refresh|Probe|ReadinessCoordinator)' ./internal/service/agent
 
   cloud-build-test:
     runs-on: ubuntu-latest

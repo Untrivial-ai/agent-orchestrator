@@ -55,6 +55,8 @@ export type TaskComposerModelOption = {
 	isDefault?: boolean;
 	label: string;
 	provider?: string;
+	efforts?: string[];
+	defaultEffort?: string;
 };
 
 export type TaskComposerModelCatalog = {
@@ -380,7 +382,6 @@ export function TaskComposerView({
 					<div className="composer-toolbar-slot">
 						{renderAgentControl({ ...agent, id: agentId })}
 					</div>
-					<span className="composer-toolbar-divider" aria-hidden="true" />
 					<div className="composer-toolbar-slot">
 						{renderModelControl({ ...model, id: modelId })}
 					</div>

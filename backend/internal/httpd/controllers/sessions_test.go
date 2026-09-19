@@ -67,6 +67,7 @@ type fakeSessionService struct {
 	spawnErr                   error
 	lastSpawn                  ports.SpawnConfig
 	orchestratorMode           domain.SessionMode
+	orchestratorApproval       domain.PermissionMode
 	claimErr                   error
 	listPRErr                  error
 	workspaceErr               error
@@ -88,6 +89,10 @@ type fakeInterfaceTransitionSessionService struct {
 	transition             domain.SessionInterfaceTransition
 	acknowledgedSessionID  domain.SessionID
 	acknowledgedTransition string
+	startedSessionID       domain.SessionID
+	startedTarget          domain.SessionMode
+	startedPolicy          domain.SessionInterfaceTransitionPolicy
+	startedHistoryPolicy   domain.SessionInterfaceTransitionHistoryPolicy
 }
 
 func (f *fakeInterfaceTransitionSessionService) InterfaceTransitionStatus(
@@ -98,11 +103,16 @@ func (f *fakeInterfaceTransitionSessionService) InterfaceTransitionStatus(
 }
 
 func (f *fakeInterfaceTransitionSessionService) StartInterfaceTransition(
-	context.Context,
-	domain.SessionID,
-	domain.SessionMode,
-	domain.SessionInterfaceTransitionPolicy,
+	_ context.Context,
+	sessionID domain.SessionID,
+	target domain.SessionMode,
+	policy domain.SessionInterfaceTransitionPolicy,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (domain.SessionInterfaceTransition, error) {
+	f.startedSessionID = sessionID
+	f.startedTarget = target
+	f.startedPolicy = policy
+	f.startedHistoryPolicy = historyPolicy
 	return f.transition, nil
 }
 
@@ -217,8 +227,9 @@ func (f *fakeSessionService) Spawn(_ context.Context, cfg ports.SpawnConfig) (do
 	return s, len(cfg.Prompt), 0, nil
 }
 
-func (f *fakeSessionService) SpawnOrchestrator(ctx context.Context, projectID domain.ProjectID, clean bool, requestedMode domain.SessionMode) (domain.Session, error) {
+func (f *fakeSessionService) SpawnOrchestrator(ctx context.Context, projectID domain.ProjectID, clean bool, requestedMode domain.SessionMode, approval domain.PermissionMode) (domain.Session, error) {
 	f.orchestratorMode = requestedMode
+	f.orchestratorApproval = approval
 	if clean {
 		active := true
 		existing, err := f.List(ctx, sessionsvc.ListFilter{ProjectID: projectID, Active: &active, OrchestratorOnly: true})
@@ -1042,6 +1053,75 @@ func TestSessionsAPI_AcknowledgeInterfaceTransitionNotice(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_StartInterfaceTransitionCarriesExplicitHistoryPolicy(t *testing.T) {
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	svc := &fakeInterfaceTransitionSessionService{
+		fakeSessionService: newFakeSessionService(),
+		transition: domain.SessionInterfaceTransition{
+			ID: "transition-provider-history", SessionID: "ao-1",
+			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+			Policy:        domain.SessionInterfaceTransitionDrain,
+			HistoryPolicy: domain.SessionInterfaceTransitionHistoryProvider,
+			Phase:         domain.SessionInterfaceTransitionRequested, CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost,
+		"/api/v1/sessions/ao-1/interface-transition",
+		`{"targetMode":"chat","policy":"drain","historyPolicy":"provider_history"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("start transition = %d, want 202; body=%s", status, body)
+	}
+	if svc.startedSessionID != "ao-1" || svc.startedTarget != domain.SessionModeChat ||
+		svc.startedPolicy != domain.SessionInterfaceTransitionDrain ||
+		svc.startedHistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider {
+		t.Fatalf("start input = session:%q target:%q policy:%q history:%q", svc.startedSessionID,
+			svc.startedTarget, svc.startedPolicy, svc.startedHistoryPolicy)
+	}
+	var response controllers.StartSessionInterfaceTransitionResponse
+	mustJSON(t, body, &response)
+	if response.Transition.HistoryPolicy != domain.SessionInterfaceTransitionHistoryProvider {
+		t.Fatalf("response history policy = %q", response.Transition.HistoryPolicy)
+	}
+}
+
+func TestSessionsAPI_StartInterfaceTransitionDefaultsOmittedHistoryPolicyToStrict(t *testing.T) {
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	svc := &fakeInterfaceTransitionSessionService{
+		fakeSessionService: newFakeSessionService(),
+		transition: domain.SessionInterfaceTransition{
+			ID: "transition-strict", SessionID: "ao-1",
+			SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeChat,
+			Policy: domain.SessionInterfaceTransitionDrain, Phase: domain.SessionInterfaceTransitionRequested,
+			CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost,
+		"/api/v1/sessions/ao-1/interface-transition", `{"targetMode":"chat","policy":"drain"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("start transition = %d, want 202; body=%s", status, body)
+	}
+	if svc.startedHistoryPolicy != domain.SessionInterfaceTransitionHistoryStrict {
+		t.Fatalf("omitted history policy = %q, want strict", svc.startedHistoryPolicy)
+	}
+	var response controllers.StartSessionInterfaceTransitionResponse
+	mustJSON(t, body, &response)
+	if response.Transition.HistoryPolicy != domain.SessionInterfaceTransitionHistoryStrict {
+		t.Fatalf("response history policy = %q, want strict", response.Transition.HistoryPolicy)
+	}
+}
+
 func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	svc := newFakeSessionService()
 	s := svc.sessions["ao-1"]
@@ -1389,6 +1469,34 @@ func TestSessionsAPI_SpawnsOMPChat(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnsStandaloneWorkerWithoutProjectID(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"kind":"worker","harness":"codex","prompt":"research","displayName":"Research"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn standalone = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.ProjectID != "" || svc.lastSpawn.Kind != domain.KindWorker || svc.lastSpawn.Harness != domain.HarnessCodex {
+		t.Fatalf("spawn config = %#v, want projectless codex worker", svc.lastSpawn)
+	}
+}
+
+func TestSessionsAPI_SpawnsQwenChat(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"projectId":"ao","harness":"qwen","mode":"chat","prompt":"fix"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn Qwen Chat = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.Harness != domain.HarnessQwen || svc.lastSpawn.RequestedMode != domain.SessionModeChat {
+		t.Fatalf("spawn config = %#v, want Qwen Chat", svc.lastSpawn)
+	}
+}
+
 func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -1400,6 +1508,20 @@ func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	}
 	if svc.lastSpawn.AgentConfig.Model != "sonnet" {
 		t.Fatalf("service AgentConfig.Model = %q, want sonnet", svc.lastSpawn.AgentConfig.Model)
+	}
+}
+
+func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
+		`{"projectId":"ao","kind":"worker","harness":"claude-code","parentSessionId":"ao-1","prompt":"fix"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.ParentSessionID != "ao-1" {
+		t.Fatalf("service ParentSessionID = %q, want ao-1", svc.lastSpawn.ParentSessionID)
 	}
 }
 
@@ -1424,6 +1546,29 @@ func TestSessionsAPI_OrchestratorRejectsUnknownExplicitMode(t *testing.T) {
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators",
 		`{"projectId":"ao","mode":"chatt"}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "SESSION_MODE_INVALID")
+}
+
+func TestSessionsAPI_OrchestratorAcceptsApprovalOverride(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators",
+		`{"projectId":"ao","mode":"chat","approvalMode":"bypass-permissions"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", status, body)
+	}
+	if svc.orchestratorApproval != domain.PermissionModeBypassPermissions {
+		t.Fatalf("approval = %q, want bypass-permissions", svc.orchestratorApproval)
+	}
+}
+
+func TestSessionsAPI_OrchestratorRejectsUnknownApprovalMode(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators",
+		`{"projectId":"ao","approvalMode":"sometimes"}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_APPROVAL_MODE")
 }
 
 func TestSessionsAPI_PreviewDiscoversAndServesStaticIndex(t *testing.T) {
@@ -2791,7 +2936,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","mode":"chat","approvalMode":"bypass-permissions","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
 	if status != http.StatusAccepted {
 		t.Fatalf("delegate = %d, want 202; body=%s", status, body)
 	}
@@ -2804,7 +2949,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	if !got.OK || got.WorkerID != "ao-worker" || got.OrchestratorID != "ao-orch" {
 		t.Fatalf("response = %#v", got)
 	}
-	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions {
+	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions {
 		t.Fatalf("delegation input = %#v", svc.delegationInput)
 	}
 	if len(svc.delegationInput.Attachments) != 1 {
@@ -2873,6 +3018,20 @@ func TestSessionsAPI_DelegatesOMPChat(t *testing.T) {
 	}
 	if svc.delegationInput.RequestedAgent != domain.HarnessOMP || svc.delegationInput.RequestedMode != domain.SessionModeChat {
 		t.Fatalf("delegation input = %#v, want OMP Chat", svc.delegationInput)
+	}
+}
+
+func TestSessionsAPI_DelegatesQwenChat(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/orchestrators/delegate",
+		`{"projectId":"ao","brief":"Fix it","agent":"qwen","mode":"chat"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("delegate Qwen Chat = %d, want 202; body=%s", status, body)
+	}
+	if svc.delegationInput.RequestedAgent != domain.HarnessQwen || svc.delegationInput.RequestedMode != domain.SessionModeChat {
+		t.Fatalf("delegation input = %#v, want Qwen Chat", svc.delegationInput)
 	}
 }
 
@@ -3204,11 +3363,14 @@ func TestSessionsAPI_ClaimPRErrors(t *testing.T) {
 			body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/pr/claim", tc.body)
 			assertErrorCode(t, body, status, tc.code, tc.want)
 			if tc.want == "PR_PROJECT_MISMATCH" {
-				for _, hint := range []string{"canonicalRepoURL", "--canonical-repo-url", "--config-json", "Git remotes"} {
+				for _, hint := range []string{"registered workspace child origin", "ao project get", "full PR/MR URL", "valid root origin", "For single-repo forks", "canonicalRepoURL", "--canonical-repo-url", "--config-json", "Git remotes"} {
 					if !strings.Contains(string(body), hint) {
 						t.Fatalf("mismatch missing %q guidance: %s", hint, body)
 					}
 				}
+			}
+			if tc.want == "INVALID_PR_REF" && !strings.Contains(string(body), "For a workspace child repository, pass its full PR/MR URL") {
+				t.Fatalf("invalid ref missing workspace guidance: %s", body)
 			}
 		})
 	}
