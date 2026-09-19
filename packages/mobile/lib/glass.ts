@@ -41,10 +41,18 @@ export function glassField(height: number) {
 	});
 }
 
-/** An icon button: fully round, and interactive because the finger lands on it. */
-export function glassCircle(tint?: string) {
+/**
+ * A round glass surface.
+ *
+ * `interactive` gives the material its own press response — right when the
+ * gesture sits on the same view as the glass (the header buttons). Pass `false`
+ * when the tap target is a *child* of the glass instead: an interactive material
+ * takes the touch itself, and the control underneath only sees taps that land on
+ * its own content, which is why the dock's filter menu opened intermittently.
+ */
+export function glassCircle(tint?: string, interactive = true) {
 	return glassEffect({
-		glass: { variant: "regular", interactive: true, ...(tint ? { tint } : {}) },
+		glass: { variant: "regular", interactive, ...(tint ? { tint } : {}) },
 		shape: "circle",
 	});
 }

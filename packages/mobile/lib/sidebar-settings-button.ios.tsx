@@ -25,13 +25,17 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 					onPress={onPress}
 					modifiers={[
 						buttonStyle("plain"),
-						padding({ horizontal: 13, vertical: 13 }),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 						accessibilityLabel("Settings"),
 						accessibilityIdentifier("sidebar-settings"),
 					]}
 				>
-					<Image systemName="gearshape" size={iconSize.lg} color={active ? t.accent : t.textSecondary} />
+					<Image
+						systemName="gearshape"
+						size={iconSize.lg}
+						color={active ? t.accent : t.textSecondary}
+						modifiers={[frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE })]}
+					/>
 				</Button>
 			</Group>
 		</Host>

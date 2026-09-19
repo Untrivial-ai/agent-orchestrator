@@ -25,13 +25,17 @@ export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 					onPress={onPress}
 					modifiers={[
 						buttonStyle("plain"),
-						padding({ horizontal: 13, vertical: 13 }),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 						accessibilityLabel("Spawn worker"),
 						accessibilityIdentifier("sidebar-spawn-worker"),
 					]}
 				>
-					<Image systemName="plus" size={iconSize.lg} color={t.textSecondary} />
+					<Image
+						systemName="plus"
+						size={iconSize.lg}
+						color={t.textSecondary}
+						modifiers={[frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE })]}
+					/>
 				</Button>
 			</Group>
 		</Host>

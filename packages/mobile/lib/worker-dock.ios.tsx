@@ -1,7 +1,8 @@
 import { Host } from "@expo/ui";
-import { Button, GlassEffectContainer, Group, HStack, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
+import { Button, GlassEffectContainer, Group, HStack, Image, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
 import {
 	accessibilityIdentifier,
+	accessibilityLabel,
 	Animation,
 	animation,
 	buttonBorderShape,
@@ -59,21 +60,25 @@ export const WorkerDock = memo(function WorkerDock({
 				{visibility.showControls ? <Group
 					modifiers={[
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
-						glassCircle(),
+						glassCircle(undefined, false),
 					]}
 				><Menu
-					label="Worker options"
-					systemImage="line.3.horizontal.decrease"
+					// The label is the hit target for a plain control, so it is drawn at the
+					// circle's full size with the glyph centred inside it. Sized any smaller,
+					// only taps that landed on the glyph opened the menu.
+					label={
+						<Image
+							systemName="line.3.horizontal.decrease"
+							size={18}
+							color={projectFiltered ? t.accent : t.textSecondary}
+							modifiers={[frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE })]}
+						/>
+					}
 					modifiers={[
 						buttonStyle("plain"),
 						controlSize("large"),
-						// A plain control is tappable only where its content is, so the padding is
-						// what makes the whole circle respond — without it the menu opened only
-						// when the tap landed on the glyph.
-						padding({ horizontal: 13, vertical: 13 }),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
-						labelStyle("iconOnly"),
-						tint(projectFiltered ? t.accent : t.textSecondary),
+						accessibilityLabel("Worker options"),
 						accessibilityIdentifier("worker-controls"),
 					]}
 				>
@@ -150,22 +155,25 @@ export const WorkerDock = memo(function WorkerDock({
 				{visibility.showSpawn ? <Group
 					modifiers={[
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
-						glassCircle(),
+						glassCircle(undefined, false),
 					]}
 				><Button
-					label="Spawn worker"
-					systemImage="plus"
 					onPress={onSpawn}
 					modifiers={[
 						buttonStyle("plain"),
 						controlSize("large"),
-						padding({ horizontal: 13, vertical: 13 }),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
-						labelStyle("iconOnly"),
-						tint(t.textPrimary),
+						accessibilityLabel("Spawn worker"),
 						accessibilityIdentifier("spawn-worker"),
 					]}
-				/></Group> : null}
+				>
+					<Image
+						systemName="plus"
+						size={18}
+						color={t.textPrimary}
+						modifiers={[frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE })]}
+					/>
+				</Button></Group> : null}
 			</HStack>
 			</GlassEffectContainer>
 		</Host>
