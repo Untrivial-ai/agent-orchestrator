@@ -206,6 +206,10 @@ func TestClineGeneratedProviderAPIKeyEnvironmentCoverage(t *testing.T) {
 		{provider: "poolside", envKey: "POOLSIDE_API_KEY"},
 		{provider: "wandb", envKey: "WANDB_API_KEY"},
 		{provider: "xiaomi", envKey: "XIAOMI_API_KEY"},
+		{provider: "gemini", envKey: "GOOGLE_GENERATIVE_AI_API_KEY"},
+		{provider: "gemini", envKey: "GEMINI_API_KEY"},
+		{provider: "nousResearch", envKey: "NOUS_RESEARCH_API_KEY"},
+		{provider: "nousResearch", envKey: "NOUSRESEARCH_API_KEY"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
@@ -214,6 +218,49 @@ func TestClineGeneratedProviderAPIKeyEnvironmentCoverage(t *testing.T) {
 			writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), clineProviders(tt.provider, entry))
 			if got := scopedClineStatus(t, ports.AgentAuthCheck{Env: map[string]string{tt.envKey: "test-key"}}); got != ports.AgentAuthStatusConfigured {
 				t.Fatalf("status = %q, want configured", got)
+			}
+		})
+	}
+}
+
+func TestClineProviderEnvironmentRequiresCredentialEvidence(t *testing.T) {
+	providers := []struct {
+		provider, credential, configuration, value string
+	}{
+		{"cloudflare-workers-ai", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "account-id"},
+		{"databricks", "DATABRICKS_TOKEN", "DATABRICKS_HOST", "example.cloud.databricks.com"},
+		{"infomaniak", "INFOMANIAK_API_KEY", "INFOMANIAK_PRODUCT_ID", "product-id"},
+		{"neon", "NEON_AI_GATEWAY_TOKEN", "NEON_AI_GATEWAY_BASE_URL", "https://gateway.example.test"},
+		{"privatemode-ai", "PRIVATEMODE_API_KEY", "PRIVATEMODE_ENDPOINT", "http://localhost:8080/v1"},
+		{"snowflake-cortex", "SNOWFLAKE_CORTEX_PAT", "SNOWFLAKE_ACCOUNT", "account-id"},
+	}
+	for _, provider := range providers {
+		t.Run(provider.provider, func(t *testing.T) {
+			tests := []struct {
+				name      string
+				env       map[string]string
+				inherited bool
+				want      ports.AgentAuthStatus
+			}{
+				{name: "configuration alone", env: map[string]string{provider.configuration: provider.value}, want: ports.AgentAuthStatusUnknown},
+				{name: "credential alone", env: map[string]string{provider.credential: "test-key"}, want: ports.AgentAuthStatusConfigured},
+				{name: "credential and configuration", env: map[string]string{provider.credential: "test-key", provider.configuration: provider.value}, want: ports.AgentAuthStatusConfigured},
+				{name: "blank credential", env: map[string]string{provider.credential: " \t", provider.configuration: provider.value}, want: ports.AgentAuthStatusUnknown},
+				{name: "scoped credential removal", inherited: true, env: map[string]string{provider.credential: "", provider.configuration: provider.value}, want: ports.AgentAuthStatusUnknown},
+				{name: "unrelated credential", env: map[string]string{"ANTHROPIC_API_KEY": "unrelated", provider.configuration: provider.value}, want: ports.AgentAuthStatusUnknown},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					home := isolateClineAuth(t)
+					if tt.inherited {
+						t.Setenv(provider.credential, "inherited-key")
+					}
+					entry := `"` + provider.provider + `":{"settings":{"provider":"` + provider.provider + `"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`
+					writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), clineProviders(provider.provider, entry))
+					if got := scopedClineStatus(t, ports.AgentAuthCheck{Env: tt.env}); got != tt.want {
+						t.Fatalf("status = %q, want %q", got, tt.want)
+					}
+				})
 			}
 		})
 	}

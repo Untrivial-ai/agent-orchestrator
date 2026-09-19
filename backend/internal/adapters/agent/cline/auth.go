@@ -442,6 +442,10 @@ func clineProviderEvidence(ctx context.Context, d authutil.Dependencies, setting
 	return ports.AgentAuthStatusUnknown
 }
 
+// Generic environment evidence uses credential alternatives, not the complete
+// upstream apiKeyEnv inventories: account/product IDs and endpoints are not
+// credentials. Structured cloud providers bypass these lists and validate their
+// native credential evidence separately.
 var clineProviderAPIKeyEnv = map[string][]string{
 	"302ai":                  {"302AI_API_KEY"},
 	"abacus":                 {"ABACUS_API_KEY"},
@@ -481,14 +485,14 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"cline":                  {"CLINE_API_KEY"},
 	"cline-pass":             {"CLINE_API_KEY"},
 	"cloudferro-sherlock":    {"CLOUDFERRO_SHERLOCK_API_KEY"},
-	"cloudflare-workers-ai":  {"CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_KEY"},
+	"cloudflare-workers-ai":  {"CLOUDFLARE_API_KEY"},
 	"coralbricks":            {"CORAL_API_KEY"},
 	"cortecs":                {"CORTECS_API_KEY"},
 	"crof":                   {"CROF_API_KEY"},
 	"crossmodel":             {"CROSSMODEL_API_KEY"},
 	"crusoe":                 {"CRUSOE_API_KEY"},
 	"daoxe":                  {"DAOXE_API_KEY"},
-	"databricks":             {"DATABRICKS_HOST", "DATABRICKS_TOKEN"},
+	"databricks":             {"DATABRICKS_TOKEN"},
 	"deepseek":               {"DEEPSEEK_API_KEY"},
 	"dify":                   {"DIFY_API_KEY"},
 	"digitalocean":           {"DIGITALOCEAN_ACCESS_TOKEN"},
@@ -525,7 +529,7 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"infer":                  {"INFER_API_KEY"},
 	"inference":              {"INFERENCE_API_KEY"},
 	"inferx":                 {"INFERX_API_KEY"},
-	"infomaniak":             {"INFOMANIAK_API_KEY", "INFOMANIAK_PRODUCT_ID"},
+	"infomaniak":             {"INFOMANIAK_API_KEY"},
 	"io-net":                 {"IOINTELLIGENCE_API_KEY"},
 	"iteracompute":           {"ITERACOMPUTE_API_KEY"},
 	"jalapeno":               {"JALAPENO_API_KEY"},
@@ -568,7 +572,7 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"nano-gpt":               {"NANO_GPT_API_KEY"},
 	"nearai":                 {"NEARAI_API_KEY"},
 	"nebius":                 {"NEBIUS_API_KEY"},
-	"neon":                   {"NEON_AI_GATEWAY_BASE_URL", "NEON_AI_GATEWAY_TOKEN"},
+	"neon":                   {"NEON_AI_GATEWAY_TOKEN"},
 	"neosmith":               {"NEOSMITH_API_KEY"},
 	"neuralwatt":             {"NEURALWATT_API_KEY"},
 	"nousResearch":           {"NOUS_RESEARCH_API_KEY", "NOUSRESEARCH_API_KEY"},
@@ -592,7 +596,7 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"pioneer":                {"PIONEER_API_KEY"},
 	"poe":                    {"POE_API_KEY"},
 	"poolside":               {"POOLSIDE_API_KEY"},
-	"privatemode-ai":         {"PRIVATEMODE_API_KEY", "PRIVATEMODE_ENDPOINT"},
+	"privatemode-ai":         {"PRIVATEMODE_API_KEY"},
 	"qihang-ai":              {"QIHANG_API_KEY"},
 	"qiniu-ai":               {"QINIU_API_KEY"},
 	"qwen":                   {"QWEN_API_KEY"},
@@ -610,7 +614,7 @@ var clineProviderAPIKeyEnv = map[string][]string{
 	"sensenova":              {"SENSENOVA_API_KEY"},
 	"siliconflow":            {"SILICONFLOW_API_KEY"},
 	"siliconflow-cn":         {"SILICONFLOW_CN_API_KEY"},
-	"snowflake-cortex":       {"SNOWFLAKE_ACCOUNT", "SNOWFLAKE_CORTEX_PAT"},
+	"snowflake-cortex":       {"SNOWFLAKE_CORTEX_PAT"},
 	"stackit":                {"STACKIT_API_KEY"},
 	"standardcompute":        {"STANDARDCOMPUTE_API_KEY"},
 	"stepfun":                {"STEPFUN_API_KEY"},
