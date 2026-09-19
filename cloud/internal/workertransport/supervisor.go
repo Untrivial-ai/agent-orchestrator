@@ -59,6 +59,7 @@ const (
 type Supervisor struct {
 	Control         Control
 	Workspace       string
+	CompareBase     string
 	Shell           string
 	AgentCommand    workerexec.Command
 	AgentTerminalID string
@@ -128,6 +129,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	workspace.compareBase = s.CompareBase
 	defer workspace.Close()
 	defer s.closeAllTerminals()
 	if s.AgentTerminalID != "" {

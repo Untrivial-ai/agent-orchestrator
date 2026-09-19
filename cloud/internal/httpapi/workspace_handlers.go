@@ -10,7 +10,6 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
-	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/go-chi/chi/v5"
 )
@@ -81,9 +80,7 @@ func (s *Server) readWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, file)
 }
 
-// readWorkspaceDiffFile exposes the Docker worker's per-file review model.
-// It is intentionally provider-gated: NodeOps and Coder have different
-// workspace execution paths and must opt in with their own implementations.
+// readWorkspaceDiffFile exposes the worker's per-file review model.
 func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 	orgID, sessionID, ok := workspaceRoute(w, r)
 	if !ok {
@@ -101,12 +98,6 @@ func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if session.SandboxProvider != sandbox.ProviderDocker {
-		s.logger.Warn("workspace diff-file request unsupported", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
-		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_FILE_UNSUPPORTED", "Per-file diffs are currently available only for Docker cloud sessions.")
-		return
-	}
-
 	s.logger.Info("workspace diff-file request started", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
 	payload, _ := json.Marshal(worker.WorkspaceDiffFileRequest{Path: path})
 	result, ok := s.runWorkspaceRequest(w, r, orgID, sessionID, "workspace.diff-file", payload)
@@ -169,11 +160,6 @@ func (s *Server) getWorkspaceDiff(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Warn("workspace diff request rejected", "org_id", orgID, "session_id", sessionID, "error", err)
 		s.writeStoreError(w, r, err)
-		return
-	}
-	if session.SandboxProvider != sandbox.ProviderDocker {
-		s.logger.Warn("workspace diff request unsupported", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
-		writeError(w, r, http.StatusNotImplemented, "WORKSPACE_DIFF_UNSUPPORTED", "Workspace diffs are currently available only for Docker cloud sessions.")
 		return
 	}
 	s.logger.Info("workspace diff request started", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)

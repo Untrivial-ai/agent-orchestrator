@@ -13,6 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 type CloudWorkspaceDiffProps = {
 	session: WorkspaceSession;
 	isMaximized?: boolean;
+	onOpenFile?: (path: string) => void;
 	onToggleMaximized?: (next: boolean) => void;
 };
 
@@ -39,18 +40,17 @@ const statusTone: Record<CloudCpWorkspaceDiffFile["status"], string> = {
 };
 
 /**
- * Cloud Files tab for Docker sandboxes. Cloud workspaces are remote, so they
- * cannot use the daemon-only file explorer; this deliberately consumes the
- * control-plane review endpoints instead. NodeOps and Coder never mount it.
+ * Cloud Files tab. Cloud workspaces are remote, so they cannot use the
+ * daemon-only file explorer; this deliberately consumes the control-plane
+ * review endpoints shared by every cloud provider.
  */
-export function CloudWorkspaceDiff({ session, isMaximized = false, onToggleMaximized }: CloudWorkspaceDiffProps) {
+export function CloudWorkspaceDiff({ session, isMaximized = false, onOpenFile, onToggleMaximized }: CloudWorkspaceDiffProps) {
 	const { t } = useTranslation();
 	const { client, ready, baseUrl } = useCloudCp();
 	const cloud = session.cloud;
-	const docker = cloud?.sandboxProvider === "docker";
 	const orgId = cloud?.orgId;
 	const [selectedPath, setSelectedPath] = useState<string | undefined>();
-	const enabled = ready && docker && orgId !== undefined;
+	const enabled = ready && orgId !== undefined;
 	const diffQuery = useQuery({
 		queryKey: ["cloud-workspace-diff", baseUrl, orgId ?? "", session.id],
 		enabled,
@@ -76,18 +76,16 @@ export function CloudWorkspaceDiff({ session, isMaximized = false, onToggleMaxim
 		if (selectedPath !== undefined && !files.some((file) => file.path === selectedPath)) setSelectedPath(undefined);
 	}, [files, selectedPath]);
 
-	if (!docker) {
-		return <PanelMessage>{t("files.noneChanged")}</PanelMessage>;
-	}
-
 	return (
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
 			<header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
 				<span className="min-w-0 flex-1 truncate text-sm font-medium">{t("files.reviewChanges")}</span>
-				<span aria-label="Cloud diff summary" className="shrink-0 font-mono text-2xs text-passive">
-					{files.length} {files.length === 1 ? "file" : "files"} · <span className="text-success">+{summary.additions}</span>{" "}
-					<span className="text-error">-{summary.deletions}</span>
-				</span>
+				{enabled && diffQuery.data ? (
+					<span aria-label="Cloud diff summary" className="shrink-0 font-mono text-2xs text-passive">
+						{files.length} {files.length === 1 ? "file" : "files"} · <span className="text-success">+{summary.additions}</span>{" "}
+						<span className="text-error">-{summary.deletions}</span>
+					</span>
+				) : null}
 				{onToggleMaximized ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -122,7 +120,10 @@ export function CloudWorkspaceDiff({ session, isMaximized = false, onToggleMaxim
 									selectedPath === file.path && "bg-muted",
 								)}
 								key={file.path}
-								onClick={() => setSelectedPath(file.path)}
+								onClick={() => {
+									setSelectedPath(file.path);
+									if (!isMaximized) onOpenFile?.(file.path);
+								}}
 								type="button"
 							>
 								<span className={cn("w-3 shrink-0 font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
@@ -135,6 +136,81 @@ export function CloudWorkspaceDiff({ session, isMaximized = false, onToggleMaxim
 					{isMaximized ? <CloudDiffDetail detailQuery={detailQuery} /> : null}
 				</div>
 			)}
+		</section>
+	);
+}
+
+/**
+ * Read-only cloud equivalent of the local center file pane. It intentionally
+ * uses only the control-plane diff-file contract: cloud sessions must never
+ * fall through to the local daemon's workspace-file endpoints.
+ */
+export function CloudFileContentPane({ path, session }: { path: string; session: WorkspaceSession }) {
+	const { t } = useTranslation();
+	const { client, ready, baseUrl } = useCloudCp();
+	const cloud = session.cloud;
+	const orgId = cloud?.orgId;
+	const [mode, setMode] = useState<"diff" | "file">("file");
+	const detailQuery = useQuery({
+		queryKey: ["cloud-workspace-diff-file", baseUrl, orgId ?? "", session.id, path],
+		enabled: ready && orgId !== undefined,
+		queryFn: () => client.readWorkspaceDiffFile(orgId!, session.id, path),
+	});
+
+	useEffect(() => setMode("file"), [path, session.id]);
+
+	if (detailQuery.isPending) return <PanelMessage>{t("files.loadingDiff")}</PanelMessage>;
+	if (detailQuery.isError) {
+		return <PanelMessage action={<RetryButton onClick={() => void detailQuery.refetch()} />}>{detailQuery.error.message}</PanelMessage>;
+	}
+	if (!detailQuery.data) return <PanelMessage>{t("files.error.loadFile")}</PanelMessage>;
+
+	const detail = detailQuery.data;
+	const canShowDiff = detail.status !== "unmodified";
+	const content = detail.binary
+		? <PanelMessage>{t("files.binaryUnavailable")}</PanelMessage>
+		: detail.deleted
+			? <PanelMessage>No current text content is available for this deleted file.</PanelMessage>
+			: detail.contentTruncated
+				? <PanelMessage>File content is too large to display.</PanelMessage>
+				: <pre className="board-scrollbar min-h-0 overflow-auto whitespace-pre bg-background p-3 font-mono text-xs leading-5">{detail.content}</pre>;
+	const diff = detail.binary
+		? <PanelMessage>{t("files.binaryUnavailable")}</PanelMessage>
+		: <pre className="board-scrollbar min-h-0 overflow-auto whitespace-pre bg-background p-3 font-mono text-xs leading-5">{detail.diff || "No text diff is available for this file."}</pre>;
+
+	return (
+		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="cloud-file-content-pane">
+			<header className="flex min-h-9 shrink-0 items-center gap-2 border-b border-border bg-surface px-2 py-1">
+				{canShowDiff ? (
+					<div aria-label={t("files.fileDisplayMode")} className="flex items-center" role="tablist">
+						<Button
+							aria-selected={mode === "diff"}
+							className="h-6 rounded px-2 text-2xs"
+							onClick={() => setMode("diff")}
+							role="tab"
+							size="sm"
+							type="button"
+							variant={mode === "diff" ? "secondary" : "ghost"}
+						>
+							{t("files.diff")}
+						</Button>
+						<Button
+							aria-selected={mode === "file"}
+							className="h-6 rounded px-2 text-2xs"
+							onClick={() => setMode("file")}
+							role="tab"
+							size="sm"
+							type="button"
+							variant={mode === "file" ? "secondary" : "ghost"}
+						>
+							{t("files.fileView")}
+						</Button>
+					</div>
+				) : (
+					<span className="min-w-0 truncate px-2 text-xs text-foreground" title={path}>{path.split("/").pop() || path}</span>
+				)}
+			</header>
+			<div className="min-h-0 flex-1 overflow-auto">{mode === "diff" && canShowDiff ? diff : content}</div>
 		</section>
 	);
 }

@@ -703,10 +703,7 @@ paths:
     get:
       operationId: readWorkspaceDiffFile
       tags: [Workspace]
-      description: >-
-        Read one Docker-backed workspace file with its bounded unified diff.
-        NodeOps and Coder sessions intentionally return not implemented until
-        their provider-specific paths support this operation.
+      description: Read one cloud workspace file with its bounded unified diff.
       parameters:
         - name: path
           in: query
@@ -732,10 +729,7 @@ paths:
     get:
       operationId: getWorkspaceDiff
       tags: [Workspace]
-      description: >-
-        Docker-only changed-file summary and line counts relative to the session
-        compare base. NodeOps and Coder sessions return not implemented until their
-        provider-specific paths support this operation.
+      description: Changed-file summary and line counts relative to the session compare base.
       responses:
         "200":
           description: Workspace changes relative to the session compare base.

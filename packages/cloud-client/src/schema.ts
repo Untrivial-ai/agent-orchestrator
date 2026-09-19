@@ -507,7 +507,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Read one Docker-backed workspace file with its bounded unified diff. NodeOps and Coder sessions intentionally return not implemented until their provider-specific paths support this operation. */
+        /** @description Read one cloud workspace file with its bounded unified diff. */
         get: operations["readWorkspaceDiffFile"];
         put?: never;
         post?: never;
@@ -527,7 +527,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Docker-only changed-file summary and line counts relative to the session compare base. NodeOps and Coder sessions return not implemented until their provider-specific paths support this operation. */
+        /** @description Changed-file summary and line counts relative to the session compare base. */
         get: operations["getWorkspaceDiff"];
         put?: never;
         post?: never;

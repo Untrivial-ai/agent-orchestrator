@@ -119,6 +119,43 @@ func TestWorkspaceDiffIncludesPerFileLineCounts(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDiffIncludesCommittedChangesAgainstCompareBase(t *testing.T) {
+	workspacePath := newGitWorkspace(t)
+	writeWorkspaceFile(t, workspacePath, "README.md", "before\n")
+	gitWorkspace(t, workspacePath, "add", "README.md")
+	gitWorkspace(t, workspacePath, "commit", "-m", "base")
+	gitWorkspace(t, workspacePath, "branch", "-M", "main")
+	gitWorkspace(t, workspacePath, "update-ref", "refs/remotes/origin/main", "HEAD")
+	gitWorkspace(t, workspacePath, "switch", "-c", "ao/work")
+	writeWorkspaceFile(t, workspacePath, "README.md", "after\n")
+	gitWorkspace(t, workspacePath, "add", "README.md")
+	gitWorkspace(t, workspacePath, "commit", "-m", "agent change")
+
+	workspace, err := openWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	defer workspace.Close()
+	workspace.compareBase = "origin/main"
+
+	diff, err := workspace.Diff(context.Background())
+	if err != nil {
+		t.Fatalf("workspace diff: %v", err)
+	}
+	files := diff["files"].([]map[string]any)
+	if len(files) != 1 || files[0]["path"] != "README.md" || files[0]["status"] != "modified" {
+		t.Fatalf("files = %#v, want committed README.md modification", files)
+	}
+
+	file, err := workspace.DiffFile(context.Background(), worker.WorkspaceDiffFileRequest{Path: "README.md"})
+	if err != nil {
+		t.Fatalf("read committed diff file: %v", err)
+	}
+	if file.Status != "modified" || !strings.Contains(file.Diff, "+after") || !strings.Contains(file.Diff, "-before") {
+		t.Fatalf("committed detail = %+v", file)
+	}
+}
+
 func newGitWorkspace(t *testing.T) string {
 	t.Helper()
 	workspacePath := t.TempDir()
