@@ -228,6 +228,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersBrowserCommandResponse":                   "BrowserCommandResponse",
 	"ControllersSetSessionMergePolicyRequest":             "SetSessionMergePolicyRequest",
 	"ControllersSetSessionMergePolicyResponse":            "SetSessionMergePolicyResponse",
+	"ControllersSetSessionWorkflowModeRequest":            "SetSessionWorkflowModeRequest",
+	"ControllersSetSessionWorkflowModeResponse":           "SetSessionWorkflowModeResponse",
 	"ControllersSetSessionAutoInjectReviewRequest":        "SetSessionAutoInjectReviewRequest",
 	"ControllersSetSessionAutoInjectReviewResponse":       "SetSessionAutoInjectReviewResponse",
 	"ControllersSetSessionAutoInjectCIRequest":            "SetSessionAutoInjectCIRequest",
@@ -2079,6 +2081,19 @@ func sessionOperations() []operation {
 			reqBody:    controllers.SetSessionMergePolicyRequest{},
 			resps: []respUnit{
 				{http.StatusOK, controllers.SetSessionMergePolicyResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/sessions/{sessionId}/workflow-mode", id: "setSessionWorkflowMode", tag: "sessions",
+			summary:    "Move a session between planning and building",
+			pathParams: []any{controllers.SessionIDParam{}},
+			reqBody:    controllers.SetSessionWorkflowModeRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SetSessionWorkflowModeResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

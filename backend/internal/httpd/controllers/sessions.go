@@ -86,6 +86,7 @@ type SessionService interface {
 	Rename(ctx context.Context, id domain.SessionID, displayName string) error
 	SetPreview(ctx context.Context, id domain.SessionID, previewURL string) (domain.Session, error)
 	SetTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool) (domain.Session, error)
+	SetWorkflowMode(ctx context.Context, id domain.SessionID, mode domain.WorkflowMode) (domain.Session, error)
 	SetAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool) (domain.Session, error)
 	SetAutoInjectCI(ctx context.Context, id domain.SessionID, autoInject bool) (domain.Session, error)
 	SetReviewerHarness(ctx context.Context, id domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (domain.Session, error)
@@ -177,6 +178,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/pr/claim", c.claimPR)
 	r.Patch("/sessions/{sessionId}", c.rename)
 	r.Patch("/sessions/{sessionId}/merge-policy", c.setMergePolicy)
+	r.Patch("/sessions/{sessionId}/workflow-mode", c.setWorkflowMode)
 	r.Patch("/sessions/{sessionId}/auto-inject-review", c.setAutoInjectReviewPolicy)
 	r.Patch("/sessions/{sessionId}/auto-inject-ci", c.setAutoInjectCIPolicy)
 	r.Put("/sessions/{sessionId}/reviewer", c.setReviewer)
@@ -1128,6 +1130,29 @@ func (c *SessionsController) setMergePolicy(w http.ResponseWriter, r *http.Reque
 		SessionID:          sessionID(r),
 		TerminateOnPRMerge: in.TerminateOnPRMerge,
 		Session:            sessionView(sess),
+	})
+}
+
+func (c *SessionsController) setWorkflowMode(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "PATCH", "/api/v1/sessions/{sessionId}/workflow-mode")
+		return
+	}
+	var in SetSessionWorkflowModeRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	sess, err := c.Svc.SetWorkflowMode(r.Context(), sessionID(r), in.WorkflowMode)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SetSessionWorkflowModeResponse{
+		OK:           true,
+		SessionID:    sessionID(r),
+		WorkflowMode: in.WorkflowMode,
+		Session:      sessionView(sess),
 	})
 }
 

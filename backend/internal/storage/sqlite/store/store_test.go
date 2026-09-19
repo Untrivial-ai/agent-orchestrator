@@ -807,6 +807,55 @@ func TestSessionTerminateOnPRMergePolicyRoundTripAndCDC(t *testing.T) {
 	}
 }
 
+func TestSessionWorkflowModeRoundTripAndCDC(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "wf")
+	r, _ := s.CreateSession(ctx, sampleRecord("wf"))
+
+	got, found, err := s.GetSession(ctx, r.ID)
+	if err != nil || !found {
+		t.Fatalf("get new session: found=%v err=%v", found, err)
+	}
+	if got.WorkflowMode != domain.WorkflowModePlanning {
+		t.Fatalf("persisted workflow mode = %q, want planning", got.WorkflowMode)
+	}
+
+	base, _ := s.LatestSeq(ctx)
+	updatedAt := r.UpdatedAt.Add(time.Minute)
+	ok, err := s.SetSessionWorkflowMode(ctx, r.ID, domain.WorkflowModeBuilding, updatedAt)
+	if err != nil || !ok {
+		t.Fatalf("set workflow mode building: ok=%v err=%v", ok, err)
+	}
+	got, found, err = s.GetSession(ctx, r.ID)
+	if err != nil || !found {
+		t.Fatalf("get session: found=%v err=%v", found, err)
+	}
+	if got.WorkflowMode != domain.WorkflowModeBuilding || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("workflow mode not persisted: %+v", got)
+	}
+
+	evs, err := s.EventsAfter(ctx, base, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || string(evs[0].Type) != "session_updated" {
+		t.Fatalf("workflow change events = %+v, want one session_updated", evs)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if mode, ok := payload["workflowMode"].(string); !ok || mode != string(domain.WorkflowModeBuilding) {
+		t.Fatalf("workflowMode payload = %#v, want %q", payload["workflowMode"], domain.WorkflowModeBuilding)
+	}
+
+	ok, err = s.SetSessionWorkflowMode(ctx, "wf-missing", domain.WorkflowModeBuilding, updatedAt)
+	if err != nil || ok {
+		t.Fatalf("missing workflow mode update: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSessionAutoInjectReviewPolicyRoundTripAndCDC(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1890,6 +1939,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.WorkflowMode = domain.NormalizeWorkflowMode(row.WorkflowMode)
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.Metadata.Permissions = tc.want
 		if tc.saved == "" {

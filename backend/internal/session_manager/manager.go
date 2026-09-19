@@ -753,6 +753,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 		cfg.AgentConfig.Permissions = permissions
 	}
+	// A worker inherits its starting delivery stage from the orchestrator that
+	// requested it: a build-mode orchestrator drops the task straight into the
+	// board's Building lane, while every other spawn starts in Planning.
+	workflowMode := domain.DefaultWorkflowMode
+	if cfg.ParentSessionID != "" {
+		workflowMode = m.inheritedSpawnWorkflowMode(ctx, cfg.ProjectID, cfg.ParentSessionID)
+	}
 	// A per-project role override picks the harness when the spawn names none,
 	// so a project can default workers to one agent and orchestrators to another.
 	cfg.Harness = effectiveHarness(cfg.Harness, cfg.Kind, project.Config)
@@ -834,7 +841,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	promptBytes := len(prompt)
 	systemPromptBytes := len(systemPrompt)
 
-	rec, err := m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock()))
+	rec, err := m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock(), workflowMode))
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
 	}
@@ -1056,6 +1063,27 @@ func (m *Manager) inheritedSpawnPermissions(ctx context.Context, projectID domai
 		return "", fmt.Errorf("load parent conversation %s: %w", parentID, err)
 	}
 	return conversation.Settings.ApprovalMode, nil
+}
+
+// inheritedSpawnWorkflowMode derives a worker's starting delivery stage from its
+// requesting orchestrator. A worker spawned by an orchestrator that has been
+// toggled into building starts in building too, so `ao spawn` from a build-mode
+// orchestrator drops the task straight into the board's Building lane. Any other
+// parent — a worker, a missing session, or an orchestrator still planning — keeps
+// the planning default. Unlike the permission policy this is a board placement,
+// not a security boundary, so a read failure logs and falls back rather than
+// aborting the spawn.
+func (m *Manager) inheritedSpawnWorkflowMode(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) domain.WorkflowMode {
+	parent, ok, err := m.store.GetSession(ctx, parentID)
+	if err != nil {
+		m.logger.Warn("spawn: load parent for workflow-mode inheritance",
+			"parent", parentID, "error", err)
+		return domain.DefaultWorkflowMode
+	}
+	if !ok || parent.ProjectID != projectID || parent.Kind != domain.KindOrchestrator {
+		return domain.DefaultWorkflowMode
+	}
+	return domain.NormalizeWorkflowMode(parent.WorkflowMode)
 }
 
 // loadProject loads the project record so spawn can resolve its per-project
@@ -3801,7 +3829,7 @@ func (m *Manager) cleanupRecords(ctx context.Context, project domain.ProjectID) 
 
 // ---- helpers ----
 
-func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now time.Time) domain.SessionRecord {
+func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now time.Time, workflowMode domain.WorkflowMode) domain.SessionRecord {
 	return domain.SessionRecord{
 		ProjectID:   cfg.ProjectID,
 		IssueID:     cfg.IssueID,
@@ -3821,6 +3849,9 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		// New sessions default to tearing themselves down once their PR set
 		// completes through a merge. Users can opt out per session.
 		TerminateOnPRMerge: true,
+		// Planning is the default delivery stage; a build-mode orchestrator
+		// passes building so its task lands directly in the Building lane.
+		WorkflowMode: domain.NormalizeWorkflowMode(workflowMode),
 	}
 }
 

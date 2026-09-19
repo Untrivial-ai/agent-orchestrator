@@ -1839,6 +1839,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/workflow-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Move a session between planning and building */
+        patch: operations["setSessionWorkflowMode"];
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workspace/diffs": {
         parameters: {
             query?: never;
@@ -2496,6 +2513,8 @@ export interface components {
             terminateOnPrMerge: boolean;
             /** Format: date-time */
             updatedAt: string;
+            /** @enum {string} */
+            workflowMode: "planning" | "building";
         };
         ControllersSetSecurePairingRequest: {
             enabled: boolean;
@@ -3673,6 +3692,17 @@ export interface components {
             agentConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */
             harness?: "opencode";
+        };
+        SetSessionWorkflowModeRequest: {
+            /** @enum {string} */
+            workflowMode: "planning" | "building";
+        };
+        SetSessionWorkflowModeResponse: {
+            ok: boolean;
+            session: components["schemas"]["ControllersSessionView"];
+            sessionId: string;
+            /** @enum {string} */
+            workflowMode: "planning" | "building";
         };
         SettingsResponse: {
             chatHarnesses: string[];
@@ -10834,6 +10864,69 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    setSessionWorkflowMode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSessionWorkflowModeRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetSessionWorkflowModeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

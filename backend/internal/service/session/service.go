@@ -25,6 +25,7 @@ type Store interface {
 	RenameSession(ctx context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error)
 	SetSessionPreviewURL(ctx context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error)
 	SetSessionTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool, updatedAt time.Time) (bool, error)
+	SetSessionWorkflowMode(ctx context.Context, id domain.SessionID, mode domain.WorkflowMode, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectCI(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
 	SetSessionPinned(ctx context.Context, id domain.SessionID, isPinned bool, pinnedAt *time.Time, updatedAt time.Time) (bool, error)
@@ -673,6 +674,23 @@ func (s *Service) SetTerminateOnPRMerge(ctx context.Context, id domain.SessionID
 	updated, err := s.store.SetSessionTerminateOnPRMerge(ctx, id, terminate, time.Now().UTC())
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("set terminate-on-pr-merge %s: %w", id, err)
+	}
+	if !updated {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	return s.Get(ctx, id)
+}
+
+// SetWorkflowMode moves a session between its delivery stages and returns the
+// refreshed read model. The board's Planning/Building lanes derive from this.
+func (s *Service) SetWorkflowMode(ctx context.Context, id domain.SessionID, mode domain.WorkflowMode) (domain.Session, error) {
+	if !mode.Valid() {
+		return domain.Session{}, apierr.Invalid("INVALID_WORKFLOW_MODE",
+			fmt.Sprintf("workflow mode must be %q or %q", domain.WorkflowModePlanning, domain.WorkflowModeBuilding), nil)
+	}
+	updated, err := s.store.SetSessionWorkflowMode(ctx, id, mode, time.Now().UTC())
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("set workflow mode %s: %w", id, err)
 	}
 	if !updated {
 		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")

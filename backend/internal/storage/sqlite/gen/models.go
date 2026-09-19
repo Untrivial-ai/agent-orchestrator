@@ -464,6 +464,7 @@ type Session struct {
 	NativeCheckpointEvidence         string
 	LatestAssistantUpdateAt          sql.NullTime
 	NativeIdentityObservedAt         sql.NullTime
+	WorkflowMode                     string
 }
 
 type SessionCleanupFact struct {

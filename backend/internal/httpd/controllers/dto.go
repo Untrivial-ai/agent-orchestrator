@@ -631,6 +631,19 @@ type SetSessionMergePolicyResponse struct {
 	Session            SessionView      `json:"session"`
 }
 
+// SetSessionWorkflowModeRequest is the body of PATCH /api/v1/sessions/{sessionId}/workflow-mode.
+type SetSessionWorkflowModeRequest struct {
+	WorkflowMode domain.WorkflowMode `json:"workflowMode" enum:"planning,building"`
+}
+
+// SetSessionWorkflowModeResponse is the body of PATCH /api/v1/sessions/{sessionId}/workflow-mode.
+type SetSessionWorkflowModeResponse struct {
+	OK           bool                `json:"ok"`
+	SessionID    domain.SessionID    `json:"sessionId"`
+	WorkflowMode domain.WorkflowMode `json:"workflowMode" enum:"planning,building"`
+	Session      SessionView         `json:"session"`
+}
+
 // SetSessionAutoInjectReviewRequest is the body of PATCH /api/v1/sessions/{sessionId}/auto-inject-review.
 type SetSessionAutoInjectReviewRequest struct {
 	AutoInjectReview bool `json:"autoInjectReview"`

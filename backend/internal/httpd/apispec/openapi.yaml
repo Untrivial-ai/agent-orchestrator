@@ -5339,6 +5339,57 @@ paths:
       summary: Send a message to a running session's agent
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/workflow-mode:
+    patch:
+      operationId: setSessionWorkflowMode
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetSessionWorkflowModeRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetSessionWorkflowModeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Move a session between planning and building
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/diffs:
     post:
       operationId: getSessionWorkspaceDiffs
@@ -7230,6 +7281,11 @@ components:
         updatedAt:
           format: date-time
           type: string
+        workflowMode:
+          enum:
+          - planning
+          - building
+          type: string
       required:
       - id
       - kind
@@ -7238,6 +7294,7 @@ components:
       - activity
       - isTerminated
       - terminateOnPrMerge
+      - workflowMode
       - autoInjectReview
       - autoInjectCI
       - createdAt
@@ -10281,6 +10338,35 @@ components:
           enum:
           - opencode
           type: string
+      type: object
+    SetSessionWorkflowModeRequest:
+      properties:
+        workflowMode:
+          enum:
+          - planning
+          - building
+          type: string
+      required:
+      - workflowMode
+      type: object
+    SetSessionWorkflowModeResponse:
+      properties:
+        ok:
+          type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+        sessionId:
+          type: string
+        workflowMode:
+          enum:
+          - planning
+          - building
+          type: string
+      required:
+      - ok
+      - sessionId
+      - workflowMode
+      - session
       type: object
     SettingsResponse:
       properties:

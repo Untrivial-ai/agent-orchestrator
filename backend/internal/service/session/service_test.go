@@ -240,6 +240,17 @@ func (f *fakeStore) SetSessionTerminateOnPRMerge(_ context.Context, id domain.Se
 	return true, nil
 }
 
+func (f *fakeStore) SetSessionWorkflowMode(_ context.Context, id domain.SessionID, mode domain.WorkflowMode, updatedAt time.Time) (bool, error) {
+	r, ok := f.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	r.WorkflowMode = mode
+	r.UpdatedAt = updatedAt
+	f.sessions[id] = r
+	return true, nil
+}
+
 func (f *fakeStore) SetSessionAutoInjectReview(_ context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error) {
 	r, ok := f.sessions[id]
 	if !ok {
@@ -492,6 +503,37 @@ func TestSessionSetTerminateOnPRMergePersistsPolicy(t *testing.T) {
 func TestSessionSetTerminateOnPRMergeUnknownSession(t *testing.T) {
 	if _, err := (&Service{store: newFakeStore()}).SetTerminateOnPRMerge(context.Background(), "ghost-1", true); err == nil {
 		t.Fatal("expected missing session error")
+	}
+}
+
+func TestSessionSetWorkflowModePersistsMode(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, WorkflowMode: domain.WorkflowModePlanning}
+
+	sess, err := (&Service{store: st}).SetWorkflowMode(context.Background(), "mer-1", domain.WorkflowModeBuilding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.WorkflowMode != domain.WorkflowModeBuilding || st.sessions["mer-1"].WorkflowMode != domain.WorkflowModeBuilding {
+		t.Fatalf("workflow mode was not persisted: session=%+v stored=%+v", sess, st.sessions["mer-1"])
+	}
+}
+
+func TestSessionSetWorkflowModeUnknownSession(t *testing.T) {
+	if _, err := (&Service{store: newFakeStore()}).SetWorkflowMode(context.Background(), "ghost-1", domain.WorkflowModeBuilding); err == nil {
+		t.Fatal("expected missing session error")
+	}
+}
+
+func TestSessionSetWorkflowModeRejectsUnknownMode(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+
+	if _, err := (&Service{store: st}).SetWorkflowMode(context.Background(), "mer-1", domain.WorkflowMode("review")); err == nil {
+		t.Fatal("expected invalid workflow mode error")
+	}
+	if st.sessions["mer-1"].WorkflowMode == domain.WorkflowMode("review") {
+		t.Fatal("invalid workflow mode reached the store")
 	}
 }
 

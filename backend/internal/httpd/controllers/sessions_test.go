@@ -268,6 +268,16 @@ func (f *fakeSessionService) SetTerminateOnPRMerge(_ context.Context, id domain.
 	return s, nil
 }
 
+func (f *fakeSessionService) SetWorkflowMode(_ context.Context, id domain.SessionID, mode domain.WorkflowMode) (domain.Session, error) {
+	s, ok := f.sessions[id]
+	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	s.WorkflowMode = mode
+	f.sessions[id] = s
+	return s, nil
+}
+
 func (f *fakeSessionService) SetAutoInjectReview(_ context.Context, id domain.SessionID, autoInject bool) (domain.Session, error) {
 	s, ok := f.sessions[id]
 	if !ok {
@@ -1007,6 +1017,26 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 	if !svc.sessions["ao-2"].TerminateOnPRMerge {
 		t.Fatalf("session merge policy not updated: %+v", svc.sessions["ao-2"])
+	}
+
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-2/workflow-mode", `{"workflowMode":"building"}`)
+	if status != http.StatusOK {
+		t.Fatalf("workflow mode = %d, want 200; body=%s", status, body)
+	}
+	var workflow struct {
+		OK           bool                `json:"ok"`
+		SessionID    string              `json:"sessionId"`
+		WorkflowMode domain.WorkflowMode `json:"workflowMode"`
+		Session      struct {
+			WorkflowMode domain.WorkflowMode `json:"workflowMode"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &workflow)
+	if !workflow.OK || workflow.SessionID != "ao-2" || workflow.WorkflowMode != domain.WorkflowModeBuilding {
+		t.Fatalf("workflow mode response = %#v", workflow)
+	}
+	if workflow.Session.WorkflowMode != domain.WorkflowModeBuilding || svc.sessions["ao-2"].WorkflowMode != domain.WorkflowModeBuilding {
+		t.Fatalf("session workflow mode not updated: response=%+v stored=%+v", workflow, svc.sessions["ao-2"])
 	}
 
 	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/sessions/ao-2/auto-review", `{"enabled":true}`)

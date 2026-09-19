@@ -154,6 +154,7 @@ var shippedMigrations = map[int64]string{
 	147: "0147_native_history_provenance.sql",
 	148: "0148_allow_opencode_usage.sql",
 	149: "0149_drop_agent_switching.sql",
+	150: "0150_add_session_workflow_mode.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

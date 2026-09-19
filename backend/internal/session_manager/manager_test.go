@@ -1390,6 +1390,51 @@ func (g *rejectingHarnessUseGate) TryBeginHarnessUse(harness domain.AgentHarness
 	return nil, false
 }
 
+func TestSpawn_DefaultsWorkerToPlanning(t *testing.T) {
+	m, _, _, _ := newManager()
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.WorkflowMode != domain.WorkflowModePlanning {
+		t.Fatalf("worker workflow mode = %q, want planning", rec.WorkflowMode)
+	}
+}
+
+func TestSpawn_InheritsBuildingFromOrchestrator(t *testing.T) {
+	m, st, _, _ := newManager()
+	st.sessions["mer-0"] = domain.SessionRecord{
+		ID: "mer-0", ProjectID: "mer", Kind: domain.KindOrchestrator,
+		WorkflowMode: domain.WorkflowModeBuilding,
+	}
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.WorkflowMode != domain.WorkflowModeBuilding {
+		t.Fatalf("worker workflow mode = %q, want inherited building", rec.WorkflowMode)
+	}
+}
+
+func TestSpawn_PlanningOrchestratorSpawnsPlanning(t *testing.T) {
+	m, st, _, _ := newManager()
+	st.sessions["mer-0"] = domain.SessionRecord{
+		ID: "mer-0", ProjectID: "mer", Kind: domain.KindOrchestrator,
+		WorkflowMode: domain.WorkflowModePlanning,
+	}
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: "mer-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.WorkflowMode != domain.WorkflowModePlanning {
+		t.Fatalf("worker workflow mode = %q, want planning", rec.WorkflowMode)
+	}
+}
+
 func TestSpawnGatesResolvedProjectDefaultHarness(t *testing.T) {
 	m, st, rt, _ := newManager()
 	project := st.projects["mer"]

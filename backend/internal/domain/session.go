@@ -178,10 +178,15 @@ type SessionRecord struct {
 	IsTerminated  bool      `json:"isTerminated"`
 	// TerminateOnPRMerge is a user-controlled lifecycle policy. When enabled,
 	// completing the session's PR set through a merge tears down the session.
-	TerminateOnPRMerge bool            `json:"terminateOnPrMerge"`
-	AutoInjectReview   bool            `json:"autoInjectReview"`
-	AutoInjectCI       bool            `json:"autoInjectCI"`
-	Metadata           SessionMetadata `json:"-"`
+	TerminateOnPRMerge bool `json:"terminateOnPrMerge"`
+	// WorkflowMode is the user-controlled delivery stage. New sessions default
+	// to planning; the toggle-modes shortcut (or a build-mode orchestrator
+	// spawning a task) moves work into building. The board's Planning/Building
+	// lanes derive from this field.
+	WorkflowMode     WorkflowMode    `json:"workflowMode" enum:"planning,building"`
+	AutoInjectReview bool            `json:"autoInjectReview"`
+	AutoInjectCI     bool            `json:"autoInjectCI"`
+	Metadata         SessionMetadata `json:"-"`
 	// CleanupGeneration is a monotonic counter bumped each time the session is
 	// un-terminated (spawn/restore). The terminal-resource reconciler stamps its
 	// durable cleanup facts with the generation they were written for so a

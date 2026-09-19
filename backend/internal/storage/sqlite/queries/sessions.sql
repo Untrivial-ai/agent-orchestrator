@@ -19,9 +19,9 @@ INSERT INTO sessions (
     native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
-    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
+    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci, workflow_mode
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
@@ -37,7 +37,7 @@ UPDATE sessions SET
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
+    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?, workflow_mode = ?
 WHERE id = ?;
 
 -- name: UpdateBrowserCapabilityVerifier :execrows
@@ -167,7 +167,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref, workflow_mode,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -182,7 +182,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref, workflow_mode,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -197,7 +197,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref, workflow_mode,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -218,6 +218,11 @@ UPDATE sessions SET preview_url = ?, preview_revision = preview_revision + 1, up
 
 -- name: SetSessionTerminateOnPRMerge :execrows
 UPDATE sessions SET terminate_on_pr_merge = ?, updated_at = ? WHERE id = ?;
+
+-- name: SetSessionWorkflowMode :execrows
+-- SetSessionWorkflowMode moves a session between its delivery stages
+-- ("planning" and "building"). It returns ok=false when the id does not exist.
+UPDATE sessions SET workflow_mode = ?, updated_at = ? WHERE id = ?;
 
 -- name: SetSessionAutoInjectReview :execrows
 UPDATE sessions SET auto_inject_review = ?, updated_at = ? WHERE id = ?;
