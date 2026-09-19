@@ -492,6 +492,83 @@ var acpAgentPermissions = map[string]ports.PermissionMode{
 	ACPAgentBypass:      ports.PermissionModeBypassPermissions,
 }
 
+// An agent's permission ruleset, which unlike the Terminal UI's config file may
+// also be OpenCode's scalar full-access form.
+type opencodeACPAgent struct {
+	Mode       string `json:"mode,omitempty"`
+	Prompt     string `json:"prompt,omitempty"`
+	Permission any    `json:"permission,omitempty"`
+}
+
+// acpAgentPermission composes one tier's ruleset for the inline overlay.
+//
+// The overlay is OpenCode's last config layer and an agent's rules outrank the
+// merged config, so an unqualified grant here would silently override a policy
+// the repository committed. Project rules are therefore applied over AO's, key
+// by key: AO grants what the repository has not ruled on, and never relaxes
+// what it has. When the project states a blanket rule, or states one AO cannot
+// read, AO contributes nothing and the repository's policy governs alone.
+//
+// Bypass is the documented exception, and uses the scalar form rather than a
+// wildcard rule so a more specific deny elsewhere cannot leave it blocked.
+func acpAgentPermission(mode ports.PermissionMode, project any, projectReadable bool) any {
+	if ports.NormalizePermissionMode(mode) == ports.PermissionModeBypassPermissions {
+		return "allow"
+	}
+	tier := opencodePermissionConfig(mode)
+	if len(tier) == 0 {
+		return nil
+	}
+	if !projectReadable {
+		return nil
+	}
+	switch rules := project.(type) {
+	case string:
+		if rules != "allow" {
+			return nil
+		}
+	case map[string]any:
+		out := make(map[string]any, len(tier)+len(rules))
+		for key, action := range tier {
+			out[key] = action
+		}
+		for key, action := range rules {
+			out[key] = action
+		}
+		return out
+	}
+	out := make(map[string]any, len(tier))
+	for key, action := range tier {
+		out[key] = action
+	}
+	return out
+}
+
+// projectPermissionRules reads the permission policy a repository commits to
+// its worktree. The second result reports whether AO knows the answer: a config
+// it cannot parse is treated as one it must not override.
+func projectPermissionRules(workspacePath string) (any, bool) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return nil, true
+	}
+	for _, name := range []string{"opencode.json", "opencode.jsonc"} {
+		data, err := os.ReadFile(filepath.Join(workspacePath, name))
+		if err != nil {
+			continue
+		}
+		var config struct {
+			Permission any `json:"permission"`
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			// Comments and trailing commas are valid for OpenCode and not for
+			// encoding/json. AO declines to grant rather than guess.
+			return nil, false
+		}
+		return config.Permission, true
+	}
+	return nil, true
+}
+
 // ACPAgentForPermissions is the agent a session starts on.
 func ACPAgentForPermissions(permissions ports.PermissionMode) string {
 	switch ports.NormalizePermissionMode(permissions) {
@@ -511,9 +588,10 @@ func ACPAgentForPermissions(permissions ports.PermissionMode) string {
 // remains untouched, preserving its normal global, custom, project, provider,
 // and credential configuration.
 func PrepareACPConfigContent(
-	existing, systemPrompt string,
+	existing, systemPrompt, workspacePath string,
 	permissions ports.PermissionMode,
 ) (string, error) {
+	project, projectReadable := projectPermissionRules(workspacePath)
 	config := map[string]any{}
 	if strings.TrimSpace(existing) != "" {
 		if err := json.Unmarshal([]byte(existing), &config); err != nil {
@@ -531,8 +609,9 @@ func PrepareACPConfigContent(
 		agents = map[string]any{}
 	}
 	for name, mode := range acpAgentPermissions {
-		agents[name] = opencodeAgentSettings{
-			Mode: "primary", Prompt: systemPrompt, Permission: opencodePermissionConfig(mode),
+		agents[name] = opencodeACPAgent{
+			Mode: "primary", Prompt: systemPrompt,
+			Permission: acpAgentPermission(mode, project, projectReadable),
 		}
 	}
 	config["agent"] = agents

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -135,8 +137,8 @@ func TestConfigureInjectsThePermissionTiersOpenCodeEnforces(t *testing.T) {
 			var config struct {
 				DefaultAgent string `json:"default_agent"`
 				Agent        map[string]struct {
-					Prompt     string            `json:"prompt"`
-					Permission map[string]string `json:"permission"`
+					Prompt     string `json:"prompt"`
+					Permission any    `json:"permission"`
 				} `json:"agent"`
 			}
 			if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
@@ -155,20 +157,26 @@ func TestConfigureInjectsThePermissionTiersOpenCodeEnforces(t *testing.T) {
 				if agent.Prompt != "Follow AO worker rules." {
 					t.Fatalf("tier %q prompt = %q", tier, agent.Prompt)
 				}
-				if _, reads := agent.Permission["read"]; reads {
-					t.Fatalf("tier %q overrides read; OpenCode's own .env deny must survive", tier)
+				if rules, ok := agent.Permission.(map[string]any); ok {
+					if _, reads := rules["read"]; reads {
+						t.Fatalf("tier %q overrides read; OpenCode's own .env deny must survive", tier)
+					}
 				}
 			}
 			if config.Agent["ao-default"].Permission != nil {
 				t.Fatalf("default tier = %#v, want the user's own rules", config.Agent["ao-default"].Permission)
 			}
-			if got := config.Agent["ao-accept-edits"].Permission; got["edit"] != "allow" || got["bash"] != "ask" {
-				t.Fatalf("accept-edits tier = %#v", got)
+			acceptEdits, _ := config.Agent["ao-accept-edits"].Permission.(map[string]any)
+			if acceptEdits["edit"] != "allow" || acceptEdits["bash"] != "ask" {
+				t.Fatalf("accept-edits tier = %#v", acceptEdits)
 			}
-			if got := config.Agent["ao-auto"].Permission; got["bash"] != "allow" || got["external_directory"] != "allow" {
-				t.Fatalf("auto tier = %#v", got)
+			auto, _ := config.Agent["ao-auto"].Permission.(map[string]any)
+			if auto["bash"] != "allow" || auto["external_directory"] != "allow" {
+				t.Fatalf("auto tier = %#v", auto)
 			}
-			if got := config.Agent["ao-bypass"].Permission; got["*"] != "allow" {
+			// OpenCode's scalar full-access form: a wildcard rule can still lose
+			// to a more specific deny contributed by another config layer.
+			if got := config.Agent["ao-bypass"].Permission; got != "allow" {
 				t.Fatalf("bypass tier = %#v", got)
 			}
 		})
@@ -196,4 +204,73 @@ func TestConfigureKeepsTheUsersOwnInlineConfig(t *testing.T) {
 	if config.Provider["local"] == nil || config.Agent["mine"] == nil || config.Permission["bash"] != "deny" {
 		t.Fatalf("user config was not preserved: %#v", config)
 	}
+}
+
+func TestConfigureNeverRelaxesAWorktreePolicy(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
+		[]byte(`{"permission":{"bash":"deny","edit":{"*":"allow","infra/**":"deny"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agents := configuredAgents(t, acpdriver.LaunchConfig{
+		WorkspacePath: workspace, Permissions: ports.PermissionModeAuto,
+	})
+	// AO grants what the repository has not ruled on, and keeps its rules for
+	// what it has — including a nested pattern map, which survives whole.
+	for _, tier := range []string{"ao-accept-edits", "ao-auto"} {
+		permission, ok := agents[tier]["permission"].(map[string]any)
+		if !ok {
+			t.Fatalf("tier %q permission = %#v", tier, agents[tier]["permission"])
+		}
+		if permission["bash"] != "deny" {
+			t.Fatalf("tier %q bash = %#v, want the worktree's deny", tier, permission["bash"])
+		}
+		edit, ok := permission["edit"].(map[string]any)
+		if !ok || edit["infra/**"] != "deny" {
+			t.Fatalf("tier %q edit = %#v, want the worktree's pattern rules", tier, permission["edit"])
+		}
+		if permission["webfetch"] == nil {
+			t.Fatalf("tier %q dropped a rule the worktree does not mention: %#v", tier, permission)
+		}
+	}
+	// Bypass is the documented exception and stays full access.
+	if got := agents["ao-bypass"]["permission"]; got != "allow" {
+		t.Fatalf("bypass permission = %#v, want OpenCode's scalar full access", got)
+	}
+}
+
+func TestConfigureDeclinesToGrantAgainstAnUnreadablePolicy(t *testing.T) {
+	workspace := t.TempDir()
+	// Comments are valid for OpenCode and not for encoding/json. A policy AO
+	// cannot read is one it must not override.
+	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
+		[]byte("{\n  // repo policy\n  \"permission\": {\"bash\": \"deny\"}\n}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agents := configuredAgents(t, acpdriver.LaunchConfig{
+		WorkspacePath: workspace, Permissions: ports.PermissionModeAuto,
+	})
+	for _, tier := range []string{"ao-accept-edits", "ao-auto"} {
+		if got := agents[tier]["permission"]; got != nil {
+			t.Fatalf("tier %q permission = %#v, want no AO rules", tier, got)
+		}
+	}
+	if got := agents["ao-bypass"]["permission"]; got != "allow" {
+		t.Fatalf("bypass permission = %#v, want OpenCode's scalar full access", got)
+	}
+}
+
+func configuredAgents(t *testing.T, cfg acpdriver.LaunchConfig) map[string]map[string]any {
+	t.Helper()
+	_, env, err := configure(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	var config struct {
+		Agent map[string]map[string]any `json:"agent"`
+	}
+	if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	return config.Agent
 }

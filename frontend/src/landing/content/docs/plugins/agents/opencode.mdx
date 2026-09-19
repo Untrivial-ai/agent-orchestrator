@@ -14,8 +14,10 @@ OpenCode can run as its native Terminal UI or through its native ACP interface i
 
 AO offers the same approval choices in both surfaces. **Default approvals** leaves your OpenCode configuration untouched. **Accept edits** lets file changes run while shell commands, network access, and subagents ask. **Auto-approve** runs those too, including the out-of-worktree and repeat-loop guards OpenCode asks about by default. **Bypass permissions** allows every tool. `read` is never overridden, so OpenCode's default deny on `.env` files survives every mode except Bypass.
 
-Auto-approve and Bypass permissions grant tools outright, which overrides your own `deny` rules for those tools; Default approvals and Accept edits leave explicit rules intact.
+These grants outrank `deny` rules in your global or user configuration, so a mode that allows a tool allows it. A policy committed to the session worktree is treated differently — see below.
 
-The two surfaces apply the choice differently. In the Terminal UI, AO writes the rules to a config file referenced by `OPENCODE_CONFIG`, so an `opencode.json` in the session worktree is loaded afterwards and its repository policy wins. Bypass there uses OpenCode's native all-access flag, which still honours explicit `deny` rules. In Chat, AO injects one agent per mode and the picker switches between them, so OpenCode enforces the selected mode and changing it applies immediately in either direction, including back to a stricter mode.
+A repository policy always wins over AO. In the Terminal UI, AO writes its rules to a config file referenced by `OPENCODE_CONFIG`, which OpenCode loads before a worktree `opencode.json`. In Chat, AO injects one agent per mode into the inline runtime layer, so it applies that worktree policy over its own rules key by key — Accept edits and Auto grant only what the repository has not ruled on, and contribute nothing at all when the repository states a blanket policy or one AO cannot parse. Bypass permissions is the exception on both surfaces: it is OpenCode's own full-access setting.
+
+The Chat picker switches between those agents, so OpenCode enforces the selected mode and a change applies immediately in either direction, including back to a stricter mode.
 
 OpenCode is also a shipped reviewer harness. Reviewer configuration is independent from the worker harness; inspect project settings and `ao review --help` for the current review workflow.
