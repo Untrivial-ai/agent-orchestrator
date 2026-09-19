@@ -229,7 +229,7 @@ func TestDelegateEndpointSpawnsOrchestrator(t *testing.T) {
 	}
 }
 
-func TestMergedPRUsesSessionManagerOnlyWhenOptedIn(t *testing.T) {
+func TestMergedPRTearsDownByDefaultUnlessOptedOut(t *testing.T) {
 	ctx := context.Background()
 	st := newStack(t)
 	sess, _, _, err := st.sm.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Branch: "b", Prompt: "do it"})
@@ -237,33 +237,36 @@ func TestMergedPRUsesSessionManagerOnlyWhenOptedIn(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// New sessions default to terminate-on-merge, so a merged PR tears the
+	// session down without any explicit opt-in.
 	if err := st.prm.ApplyObservation(ctx, sess.ID, ports.PRObservation{Fetched: true, URL: "pr1", Number: 1, Merged: true}); err != nil {
 		t.Fatal(err)
 	}
-	if st.rt.destroyed != 0 || st.ws.destroyed != 0 {
-		t.Fatalf("default policy tore down resources: runtime=%d workspace=%d", st.rt.destroyed, st.ws.destroyed)
+	if st.rt.destroyed != 1 || st.ws.destroyed != 1 {
+		t.Fatalf("default policy did not tear down resources: runtime=%d workspace=%d, want 1/1", st.rt.destroyed, st.ws.destroyed)
 	}
 	rec, _, _ := st.store.GetSession(ctx, sess.ID)
-	if rec.IsTerminated {
-		t.Fatalf("default policy terminated merged session: %+v", rec)
+	if !rec.IsTerminated {
+		t.Fatalf("default policy did not terminate merged session: %+v", rec)
 	}
 
+	// Opting out keeps the session alive after its PR merges.
 	sess2, _, _, err := st.sm.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Branch: "c", Prompt: "do more"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := st.store.SetSessionTerminateOnPRMerge(ctx, sess2.ID, true, time.Now().UTC()); err != nil || !ok {
-		t.Fatalf("enable terminate-on-merge: ok=%v err=%v", ok, err)
+	if ok, err := st.store.SetSessionTerminateOnPRMerge(ctx, sess2.ID, false, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("disable terminate-on-merge: ok=%v err=%v", ok, err)
 	}
 	if err := st.prm.ApplyObservation(ctx, sess2.ID, ports.PRObservation{Fetched: true, URL: "pr2", Number: 2, Merged: true}); err != nil {
 		t.Fatal(err)
 	}
 	if st.rt.destroyed != 1 || st.ws.destroyed != 1 {
-		t.Fatalf("opted-in merge teardown: runtime=%d workspace=%d, want 1/1", st.rt.destroyed, st.ws.destroyed)
+		t.Fatalf("opted-out merge tore down resources: runtime=%d workspace=%d, want 1/1", st.rt.destroyed, st.ws.destroyed)
 	}
 	rec, _, _ = st.store.GetSession(ctx, sess2.ID)
-	if !rec.IsTerminated {
-		t.Fatalf("opted-in merged session remained live: %+v", rec)
+	if rec.IsTerminated {
+		t.Fatalf("opted-out merged session was terminated: %+v", rec)
 	}
 }
 
