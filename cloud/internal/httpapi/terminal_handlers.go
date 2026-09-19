@@ -170,6 +170,7 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	attachedAt := time.Now()
 	readResult := make(chan error, 1)
 	var writeMu sync.Mutex
 	go func() {
@@ -184,14 +185,32 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 		pingResult <- keepTerminalAlive(ctx, connection)
 	}()
 
+	// closeSource records which stream ended the socket. A browser terminal that
+	// drops seconds after attach and reconnects (a blank flash to the user) leaves
+	// its fingerprint here: read means the client sent a frame we rejected, write
+	// means the output pump failed, ping means keepalive timed out, ctx means the
+	// request was cancelled. Kept at Info because it is one line per socket close.
+	var closeSource string
 	select {
 	case err = <-readResult:
+		closeSource = "read"
 	case err = <-writeResult:
+		closeSource = "write"
 	case err = <-pingResult:
+		closeSource = "ping"
 	case <-ctx.Done():
 		err = ctx.Err()
+		closeSource = "ctx"
 	}
 	cancel()
+	if s.logger != nil {
+		s.logger.Info("browser terminal stream closed",
+			"session_id", terminal.SessionID, "terminal_id", terminal.ID,
+			"kind", terminal.Kind, "worker_epoch", terminal.WorkerEpoch,
+			"close_source", closeSource, "error", err,
+			"ws_close_status", int(websocket.CloseStatus(err)),
+			"connected_ms", time.Since(attachedAt).Milliseconds())
+	}
 	if err != nil && !errors.Is(err, context.Canceled) &&
 		websocket.CloseStatus(err) == -1 {
 		s.logger.Warn("terminal stream ended unexpectedly", "error", err, "terminal_id", terminal.ID)
@@ -304,7 +323,20 @@ func (s *Server) readTerminalInput(
 		if json.Unmarshal(data, &message) == nil {
 			if message.Type == "resize" {
 				if message.Columns == 0 || message.Rows == 0 {
-					return connection.Close(websocket.StatusPolicyViolation, "invalid terminal size")
+					// A zero-dimension resize carries no size to apply and must NOT
+					// tear the socket down. A pane that fits while its element is not
+					// yet laid out (hidden behind a connecting cover, mounted before
+					// layout) proposes a 0x0 grid; closing on it made the client
+					// reconnect, which replays from sequence 0 with a screen reset,
+					// which shows as a blank flash, whereupon the pane fits at 0x0
+					// again: an endless reconnect+flash loop. Ignore the frame and
+					// keep the socket; the next real fit sends valid dimensions and
+					// the PTY keeps whatever size it already had until then.
+					if s.logger != nil {
+						s.logger.Debug("ignoring zero-dimension terminal resize",
+							"terminal_id", terminal.ID)
+					}
+					continue
 				}
 				if err := retryTerminalRequest(ctx, func() error {
 					return s.store.QueueTerminalResize(
