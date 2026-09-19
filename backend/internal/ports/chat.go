@@ -871,6 +871,10 @@ const (
 	// conversation can reach, which is what explains a tool call that failed for a
 	// reason the agent had no part in.
 	ChatEventMCPServers ChatEventKind = "mcp.servers"
+	// ChatEventSkills reports the catalog of named skills the provider will accept.
+	// Emitted whenever the provider pushes a new one, which is the only way AO ever
+	// learns it: no driver protocol here offers a request that asks.
+	ChatEventSkills ChatEventKind = "skills"
 )
 
 // ChatControllerState is the health of the driver's connection to the provider.
@@ -1003,6 +1007,9 @@ type ChatEvent struct {
 	// the provider reports servers one at a time, so a consumer merges by name
 	// rather than replacing its whole list.
 	MCPServers []ChatMCPServer
+	// Skills is set on skills. The provider replaces its whole catalog on every
+	// push, so this is the complete list and not an addition to the last one.
+	Skills []ChatSkill
 
 	// Err carries display text and optional typed causes. Its presence does not
 	// imply the conversation is over; check Kind and ControllerState.

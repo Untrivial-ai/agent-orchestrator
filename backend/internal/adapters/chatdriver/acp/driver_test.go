@@ -3113,6 +3113,60 @@ func TestACPDriverExposesDynamicAvailableCommandsAsSkills(t *testing.T) {
 	}
 }
 
+// The catalog has to leave the driver as an event, not only as in-memory state:
+// ACP never re-sends it to a controller that reattached to a surviving provider,
+// so an unpersisted catalog is lost for the rest of the session at the next
+// restart.
+func TestACPDriverEmitsTheCommandCatalogAsAnEvent(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{Command: "fake"}, nil
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+
+	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		SessionId: acpsdk.SessionId(conv.ProviderConversationID()),
+		Update: acpsdk.SessionUpdate{AvailableCommandsUpdate: &acpsdk.SessionAvailableCommandsUpdate{
+			SessionUpdate: "available_commands_update",
+			AvailableCommands: []acpsdk.AvailableCommand{
+				{Name: "ship", Description: "Open a PR"},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("SessionUpdate: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event, ok := <-conv.Events():
+			if !ok {
+				t.Fatal("event stream closed before the catalog arrived")
+			}
+			if event.Kind != ports.ChatEventSkills {
+				continue
+			}
+			if len(event.Skills) != 1 || event.Skills[0].Name != "ship" {
+				t.Fatalf("event skills = %#v", event.Skills)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no skills event")
+		}
+	}
+}
+
 func awaitSkillCount(t *testing.T, lister ports.ChatSkillLister, want int) []ports.ChatSkill {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
