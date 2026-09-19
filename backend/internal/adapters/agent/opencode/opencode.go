@@ -525,7 +525,7 @@ func acpAgentPermission(mode ports.PermissionMode, project any) any {
 			return nil
 		}
 	case map[string]any:
-		maps.Copy(out, rules)
+		mergePermissionRules(out, rules)
 	}
 	return out
 }
@@ -552,7 +552,7 @@ func projectPermissionRules(workspacePath string) any {
 				return policy
 			}
 		case map[string]any:
-			maps.Copy(merged, policy)
+			mergePermissionRules(merged, policy)
 		}
 	}
 	if len(merged) == 0 {
@@ -580,17 +580,40 @@ func projectConfigPaths(workspacePath string) []string {
 		}
 		dir = parent
 	}
-	names := []string{
-		"opencode.json", "opencode.jsonc",
-		filepath.Join(".opencode", "opencode.json"), filepath.Join(".opencode", "opencode.jsonc"),
-	}
-	paths := make([]string, 0, len(dirs)*len(names))
+	paths := make([]string, 0, len(dirs)*4)
+	// Bare project files: OpenCode reverses the upward walk, so the furthest
+	// ancestor merges first and the nearest wins. It looks for .jsonc before
+	// .json, so within one directory .json merges last.
 	for i := len(dirs) - 1; i >= 0; i-- {
-		for _, name := range names {
-			paths = append(paths, filepath.Join(dirs[i], name))
-		}
+		paths = append(paths,
+			filepath.Join(dirs[i], "opencode.jsonc"), filepath.Join(dirs[i], "opencode.json"))
+	}
+	// Every .opencode directory merges after every bare file, and in walk order
+	// rather than reversed — so the furthest wins, the opposite direction. See
+	// ConfigPaths.files and ConfigPaths.directories upstream.
+	for _, dir := range dirs {
+		paths = append(paths,
+			filepath.Join(dir, ".opencode", "opencode.json"),
+			filepath.Join(dir, ".opencode", "opencode.jsonc"))
 	}
 	return paths
+}
+
+// mergePermissionRules merges one config's rules over another the way OpenCode
+// does, with remeda's mergeDeep: a nested rule map merges key by key, so a
+// pattern one config denies survives another config's rules for the same tool.
+func mergePermissionRules(dst, src map[string]any) {
+	for key, value := range src {
+		nested, isMap := value.(map[string]any)
+		current, wasMap := dst[key].(map[string]any)
+		if !isMap || !wasMap {
+			dst[key] = value
+			continue
+		}
+		merged := maps.Clone(current)
+		mergePermissionRules(merged, nested)
+		dst[key] = merged
+	}
 }
 
 // readPermissionRules reports a config's permission policy. The second result

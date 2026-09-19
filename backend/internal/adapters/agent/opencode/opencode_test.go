@@ -1205,3 +1205,64 @@ func TestProjectPermissionRulesReadsDotOpenCodeDirectories(t *testing.T) {
 		t.Fatalf("auto tier = %#v, want the repository's denies", tier)
 	}
 }
+
+// OpenCode merges configs with remeda's mergeDeep, so a nested rule map merges
+// pattern by pattern. A shallow merge would drop the root's `rm *` deny.
+func TestProjectPermissionRulesMergesNestedPatternsDeeply(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "api")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "opencode.json"),
+		[]byte(`{"permission":{"bash":{"*":"allow","rm *":"deny"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "opencode.json"),
+		[]byte(`{"permission":{"bash":{"curl *":"deny"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, _ := projectPermissionRules(nested).(map[string]any)
+	bash, ok := rules["bash"].(map[string]any)
+	if !ok {
+		t.Fatalf("bash = %#v, want a merged pattern map", rules["bash"])
+	}
+	if bash["rm *"] != "deny" || bash["curl *"] != "deny" || bash["*"] != "allow" {
+		t.Fatalf("bash = %#v, want every pattern kept", bash)
+	}
+	// And the composed tier keeps them, rather than replacing bash wholesale.
+	tier, _ := acpAgentPermission(ports.PermissionModeAuto, rules).(map[string]any)
+	tierBash, ok := tier["bash"].(map[string]any)
+	if !ok || tierBash["rm *"] != "deny" {
+		t.Fatalf("auto tier bash = %#v, want the repository's pattern denies", tier["bash"])
+	}
+}
+
+// Upstream reverses the walk for bare project files but not for .opencode
+// directories, and merges every .opencode after every bare file. A root
+// .opencode therefore outranks a nearer opencode.json.
+func TestProjectPermissionRulesFollowsUpstreamSourceOrder(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{".git", ".opencode", "api"} {
+		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".opencode", "opencode.json"),
+		[]byte(`{"permission":{"bash":"deny"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "api", "opencode.json"),
+		[]byte(`{"permission":{"bash":"allow"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, _ := projectPermissionRules(filepath.Join(root, "api")).(map[string]any)
+	if rules["bash"] != "deny" {
+		t.Fatalf("bash = %#v, want the root .opencode to merge last", rules["bash"])
+	}
+}
