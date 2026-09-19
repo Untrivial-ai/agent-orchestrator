@@ -907,3 +907,41 @@ func TestReadinessCoordinatorRejectsInvalidPurposeAndUnknownAgent(t *testing.T) 
 		}
 	}
 }
+
+func TestReadinessCoordinatorAuthUnknownDoesNotPreserveStaleAuthorized(t *testing.T) {
+	t.Parallel()
+	var authReturnAuthorized atomic.Bool
+	agent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/codex", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			if authReturnAuthorized.Load() {
+				return ports.AgentAuthStatusAuthorized, nil
+			}
+			return ports.AgentAuthStatusUnknown, nil
+		},
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("codex", "Codex", agent)},
+	})
+
+	// First check: return authorized.
+	authReturnAuthorized.Store(true)
+	items, err := coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("initial auth state = %q, want authorized", items[0].Authentication.State)
+	}
+
+	// Second check: invalidate and return unknown.
+	coordinator.Invalidate("codex", readinessInvalidateAuthentication)
+	authReturnAuthorized.Store(false)
+	items, err = coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].Authentication.State != domain.AgentAuthenticationUnknown {
+		t.Fatalf("auth state after unknown re-check = %q, want unknown", items[0].Authentication.State)
+	}
+}

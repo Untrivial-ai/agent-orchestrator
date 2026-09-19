@@ -21,7 +21,7 @@ func TestClineProviderAuthStatusAuthorizedWithOAuth(t *testing.T) {
 					"provider": "cline",
 					"auth": {
 						"accessToken": "token",
-						"refreshToken": "refresh",
+						"refreshToken": "refresh_token_valid",
 						"expiresAt": `+futureMillis(t)+`
 					}
 				}
@@ -109,6 +109,32 @@ func TestClineProviderAuthStatusUnknownWhenMissing(t *testing.T) {
 	}
 	if ok || status != ports.AgentAuthStatusUnknown {
 		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestClineProviderAuthStatusUnknownWithShortRefreshToken(t *testing.T) {
+	writeClineProvidersFile(t, `{
+		"version": 1,
+		"lastUsedProvider": "cline",
+		"providers": {
+			"cline": {
+				"settings": {
+					"provider": "cline",
+					"auth": {
+						"accessToken": "",
+						"refreshToken": "short"
+					}
+				}
+			}
+		}
+	}`)
+
+	status, ok, err := clineProviderAuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false) for short refresh token", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 
