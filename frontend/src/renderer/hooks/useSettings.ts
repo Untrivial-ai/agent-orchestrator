@@ -35,9 +35,10 @@ export function useSettings() {
 		// Settings gate the cloud sign-in UI, so this query must recover from a
 		// transient startup failure. The daemon can still be booting on first
 		// fetch ("AO daemon is starting"); without a refetch the whole cloud
-		// offering stays hidden until a manual reload. Poll like the workspace
-		// query so it self-heals once the daemon is ready.
-		refetchInterval: 15_000,
+		// offering stays hidden until a manual reload. Poll only while we still
+		// lack a successful snapshot — once loaded, mutations invalidate and
+		// CDC/focus refreshes cover later changes without a permanent 15s loop.
+		refetchInterval: (query) => (query.state.data ? false : 2_000),
 		retry: 5,
 		queryFn: async (): Promise<Settings> => {
 			const { data, error } = await apiClient.GET("/api/v1/settings");

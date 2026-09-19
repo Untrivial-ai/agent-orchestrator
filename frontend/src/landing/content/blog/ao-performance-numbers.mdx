@@ -1,0 +1,76 @@
+---
+title: "AO performance numbers (measured on one machine)"
+description: "Cold start, daemon memory under multi-session terminal load, and terminal input-to-echo latency for Agent Orchestrator — with citations to competitors' own reported figures, not AO-run benchmarks of those apps."
+date: "2026-09-19"
+author: "ao"
+category: "Engineering"
+keywords:
+  - "Agent Orchestrator performance"
+  - "Electron orchestrator memory"
+  - "terminal latency"
+  - "cmux"
+  - "Superset"
+relatedSlugs: []
+---
+
+The loudest attack on desktop coding orchestrators is simple: **Electron apps are slow and heavy**. cmux's launch pitch says exactly that. Superset users report multi-gigabyte renderer growth and terminal freezes. This post publishes **AO's measured numbers on one Mac**, and only cites **competitors' own public reports** for theirs. We did not install or benchmark those apps here.
+
+## How we measured AO
+
+Script: `scripts/desktop-perf-bench.mjs` (docs in [`docs/performance/desktop`](https://github.com/aoagents/agent-orchestrator/tree/main/docs/performance/desktop)).
+
+- **Machine:** Apple M4, 10 CPUs, 16 GiB RAM, macOS 26.5.
+- **Daemon cold start → interactive:** process spawn → `/readyz` → first `GET /api/v1/projects`.
+- **Memory @ 1 / 5 / 10:** RSS of the AO daemon after N **mux-attached shell terminals** (same PTY path as session terminals; no model spend).
+- **Terminal input→echo:** WebSocket mux round-trip — write a unique marker into the PTY, time until it returns in a data frame. Predictive local echo is excluded on purpose.
+
+Raw JSON from the runs lives next to the doc. Host memory pressure made cold-start wall times noisy; memory and latency are the stable columns.
+
+## AO numbers (this machine)
+
+| Measurement | AO (after contained idle/buffer fixes) |
+| --- | ---: |
+| Daemon cold start → interactive | ~2–5 s typical on this host (8 s under swap pressure) |
+| Daemon RSS @ 1 / 5 / 10 attached shells | ~30–43 MiB |
+| Terminal input→echo p50 | ~51 ms |
+| Terminal input→echo p95 | ~53–58 ms |
+
+Daemon RSS did **not** climb toward gigabytes as shell count went from 1 → 10. The mux already back-pressures PTY output per connection. We also stopped two idle polling loops (settings every 15s forever; workspace backup every 15s) and capped pending terminal input queues that could grow without bound during attach/reconnect.
+
+Electron renderer RSS and full desktop cold start need a quiet machine and `node scripts/desktop-perf-bench.mjs --electron`. We are not publishing scavenged Helper processes from other apps as AO figures.
+
+## What competitors have reported (their words, not our benchmarks)
+
+### cmux
+
+cmux positions itself as a native Swift/AppKit terminal because Electron/Tauri orchestrators felt too slow. From their Show HN launch post:
+
+> I tried a few coding orchestrators but most of them were Electron/Tauri apps and the performance bugged me.
+
+Their product page emphasizes native + libghostty ("Lightweight: native Swift + AppKit, no Electron"). **We are not claiming cmux's millisecond startup or megabyte RSS here** — those figures appear in third-party writeups, not in cmux's own launch materials we cited. The claim we answer is the qualitative one: Electron orchestrators are assumed heavy by default.
+
+### Superset
+
+Superset's own GitHub issues document the class of failure people mean by "2GB memory" and "terminal freezes":
+
+- [#3049](https://github.com/superset-sh/superset/issues/3049) — renderer RSS growing from hundreds of MB to **~2.2–3.2 GB** over ~60 minutes idle, with GC/CPU death spiral. Root-cause notes in that thread include **60fps chat display polling** (~125 IPC serializations/sec) and unbounded terminal event queues.
+- [#3409](https://github.com/superset-sh/superset/issues/3409) — users reporting **~2 GB baseline** with only a few workspaces.
+- [#4993](https://github.com/superset-sh/superset/issues/4993) — terminal panes **hard-freezing** under heavy concurrent agent output (PTY back-pressure / renderer not draining).
+- [#4868](https://github.com/superset-sh/superset/issues/4868) — host-service V8 OOM with RSS climbing toward **~5 GB** under active terminal use.
+
+Those are Superset's reports of Superset. AO's daemon stayed near **tens of megabytes** for 10 attached shells on this Mac in a short bench — a different workload and a different process — but it is the right order-of-magnitude contrast to "gigabytes while idle."
+
+## What this does *not* say
+
+- It does not say AO wins every benchmark on every machine.
+- It does not say we measured cmux or Superset ourselves.
+- It does not replace long-soak leak testing; the idle-poll and queue caps are aimed at the failure modes those issue threads describe.
+- Chat/provider inference latency is out of scope (see also AO's separate chat-responsiveness notes under `docs/performance/`).
+
+## Try it
+
+```sh
+node scripts/desktop-perf-bench.mjs --label local --out docs/performance/desktop
+```
+
+If the "Electron is slow" line is the objection, ask for numbers — and publish yours the same way.

@@ -256,8 +256,12 @@ export const workspaceQueryOptions = {
 	queryFn: fetchWorkspaces,
 	retry: 1,
 	staleTime: 10_000,
+	// Fast poll only while statuses are still settling. Otherwise rely on CDC
+	// invalidation and keep a slow backup so a missed event cannot leave the
+	// board stale forever — 60s is enough for that safety net without a 15s
+	// identity-churn re-render loop on an idle board.
 	refetchInterval: (query: Query<WorkspaceSummary[]>) =>
-		workspaceStatusesChecking(query.state.data) ? 300 : 15_000,
+		workspaceStatusesChecking(query.state.data) ? 300 : 60_000,
 };
 
 // Cloud projects are a separate query so a control-plane failure can never
