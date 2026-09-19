@@ -667,6 +667,17 @@ describe("prSummaryParts", () => {
 		expect(prSummaryParts(summary()).map((part) => part.label)).toEqual(["CI", "Merge", "Review"]);
 	});
 
+	it.each([
+		["closed", "Pull request closed"],
+		["merged", "Pull request merged"],
+	] as const)("uses the %s lifecycle label instead of Checking for terminal mergeability", (state, label) => {
+		const merge = prSummaryParts(summary({ state, mergeability: { state: "unknown", reasons: [], prUrl: "" } }))
+			.find((part) => part.key === "merge");
+
+		expect(merge).toMatchObject({ status: label });
+		expect(merge?.status).not.toBe("Checking");
+	});
+
 	it("details active CI, merge, and review blockers under their parts", () => {
 		const parts = prSummaryParts(
 			summary({
