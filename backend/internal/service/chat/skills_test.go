@@ -3,10 +3,10 @@ package chat_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 // skillfulConversation is a provider double that can enumerate skills.
@@ -86,7 +86,7 @@ func TestSkillsSurviveARestartThroughTheStoredCatalog(t *testing.T) {
 	ctx := context.Background()
 
 	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
-	waitForStoredSkills(t, h, 1)
+	awaitStoredSkills(t, h, 1)
 
 	// The provider now answers empty, which is what a reattached ACP conversation
 	// does for the whole life of the controller.
@@ -114,9 +114,9 @@ func TestAnEmptyPushClearsTheStoredCatalog(t *testing.T) {
 	h := newHarnessWithConversation(t, conv)
 
 	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
-	waitForStoredSkills(t, h, 1)
+	awaitStoredSkills(t, h, 1)
 	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: nil})
-	waitForStoredSkills(t, h, 0)
+	awaitStoredSkills(t, h, 0)
 
 	conv.skills = nil
 	skills, err := h.svc.Skills(context.Background(), testSession)
@@ -128,22 +128,8 @@ func TestAnEmptyPushClearsTheStoredCatalog(t *testing.T) {
 	}
 }
 
-// waitForStoredSkills waits for the projection goroutine to record a push.
-func waitForStoredSkills(t *testing.T, h *harness, want int) {
+// awaitStoredSkills waits for the projection goroutine to record a push.
+func awaitStoredSkills(t *testing.T, h *harness, want int) {
 	t.Helper()
-	ctx := context.Background()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		record, err := h.st.ConversationForSession(ctx, testSession)
-		if err != nil {
-			t.Fatalf("ConversationForSession: %v", err)
-		}
-		if len(record.Skills) == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("stored skills = %d, want %d", len(record.Skills), want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Conversation.Skills) == want })
 }

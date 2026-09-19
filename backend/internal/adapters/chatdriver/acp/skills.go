@@ -55,10 +55,8 @@ func (c *conversation) replaceAvailableCommands(commands []acpsdk.AvailableComma
 	}
 	c.mu.Unlock()
 
-	// Emitted so the catalog outlives this process. ACP pushes it on session/new and
-	// on commands_changed and never again -- in particular not when AO reattaches to
-	// a surviving provider -- so a restart that did not write this down left the
-	// conversation permanently unable to answer what skills it has.
+	// Emitted so the catalog outlives this process: nothing re-sends it when AO
+	// reattaches to a surviving provider (migration 0148).
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: cloneSkills(skills)})
 }
 

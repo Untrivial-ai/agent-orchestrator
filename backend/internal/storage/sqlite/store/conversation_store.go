@@ -1565,11 +1565,8 @@ func (s *Store) RecordMCPServers(
 
 // RecordSkills stores the catalog of named skills the provider last pushed.
 //
-// The whole catalog is written because every push replaces it: the provider sends
-// the complete list on each change rather than a delta. An empty list is stored as
-// an empty array rather than NULL, for the reason RecordMCPServers does it -- "the
-// provider says there are none" has to stay distinguishable from "the provider has
-// never said", and only the first should leave the composer without a menu.
+// Whole-catalog write and an empty array rather than NULL, both for the reasons
+// RecordMCPServers does it.
 func (s *Store) RecordSkills(
 	ctx context.Context,
 	conversationID string,

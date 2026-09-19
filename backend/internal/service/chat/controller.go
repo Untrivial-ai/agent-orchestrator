@@ -2521,7 +2521,6 @@ func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (b
 		"account":                event.Account,
 		"threadState":            event.ThreadState,
 		"mcpServers":             event.MCPServers,
-		"skills":                 event.Skills,
 	}
 	if c.harness == domain.HarnessCodex {
 		// Codex account identity and subscription capacity are daemon-memory
@@ -3266,9 +3265,6 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 func (c *Controller) applySkills(ctx context.Context, skills []ports.ChatSkill) error {
 	stored := make([]domain.ConversationSkill, 0, len(skills))
 	for _, skill := range skills {
-		if skill.Name == "" {
-			continue
-		}
 		stored = append(stored, domain.ConversationSkill{
 			Name:        skill.Name,
 			DisplayName: skill.DisplayName,

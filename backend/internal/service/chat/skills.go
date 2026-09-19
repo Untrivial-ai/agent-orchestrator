@@ -39,13 +39,10 @@ func (s *Service) Skills(ctx context.Context, id domain.SessionID) ([]ports.Chat
 	if len(skills) > 0 {
 		return skills, nil
 	}
-	// Empty means one of two things and the live conversation cannot tell them
-	// apart: the provider said "none", or it has not said anything yet. ACP only
-	// ever pushes its catalog -- on session/new and on commands_changed, never on
-	// reattach -- so a controller that took over a surviving provider answers empty
-	// for the rest of the session with no way to ask again. The last catalog AO
-	// wrote down is the better answer, superseded the moment the provider pushes.
-	// A provider that genuinely has none wrote an empty list, so this stays empty.
+	// A reattached ACP conversation answers empty for the rest of its life: the
+	// catalog only ever arrives by push, and nothing re-sends it (migration 0148).
+	// The stored catalog is the better answer, and a provider that genuinely has
+	// none stored an empty list, so this stays empty for it.
 	record, err := s.store.ConversationForSession(ctx, id)
 	if err != nil {
 		// Reported rather than swallowed into an empty list: "AO could not read its
