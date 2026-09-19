@@ -24,8 +24,8 @@ export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 
 const styles = StyleSheet.create({
 	button: {
-		width: 48,
-		height: 48,
+		width: 44,
+		height: 44,
 		borderRadius: radius.pill, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",

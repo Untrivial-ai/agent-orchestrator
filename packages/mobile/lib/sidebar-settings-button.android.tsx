@@ -27,8 +27,8 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 
 const styles = StyleSheet.create({
 	button: {
-		width: 48,
-		height: 48,
+		width: 44,
+		height: 44,
 		borderRadius: 20, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",

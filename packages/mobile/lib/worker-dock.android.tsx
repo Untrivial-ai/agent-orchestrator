@@ -113,8 +113,8 @@ const styles = StyleSheet.create({
 	},
 	searchClose: { width: 44, height: 44, borderRadius: radius.pill, borderCurve: "continuous", alignItems: "center", justifyContent: "center", marginRight: space.xxs },
 	action: {
-		width: 52,
-		height: 52,
+		width: 44,
+		height: 44,
 		borderRadius: radius.pill, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",

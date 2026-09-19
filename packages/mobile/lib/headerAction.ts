@@ -2,7 +2,9 @@ import type { TextStyle, ViewStyle } from "react-native";
 import { radius } from "./tokens";
 
 export const headerActionStyle: ViewStyle = {
-	width: 38,
+	// 44, matching every other glass circle in the app — this used to be 38×44,
+	// which made the Android header button an oval next to round ones.
+	width: 44,
 	height: 44,
 	aspectRatio: 1,
 	// Half the 44pt height, expressed as the pill value so the target stays a

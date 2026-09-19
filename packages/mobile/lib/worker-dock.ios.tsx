@@ -60,8 +60,9 @@ export function WorkerDock({
 					systemImage="line.3.horizontal.decrease"
 					modifiers={[
 						buttonStyle("glass"),
-						controlSize("extraLarge"),
+						controlSize("large"),
 						buttonBorderShape("circle"),
+						frame({ width: 44, height: 44 }),
 						labelStyle("iconOnly"),
 						tint(projectFiltered ? t.accent : t.textSecondary),
 						accessibilityIdentifier("worker-controls"),
@@ -143,8 +144,9 @@ export function WorkerDock({
 					onPress={onSpawn}
 					modifiers={[
 						buttonStyle("glass"),
-						controlSize("extraLarge"),
+						controlSize("large"),
 						buttonBorderShape("circle"),
+						frame({ width: 44, height: 44 }),
 						labelStyle("iconOnly"),
 						tint(t.textPrimary),
 						accessibilityIdentifier("spawn-worker"),

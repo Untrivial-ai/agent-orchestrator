@@ -6,7 +6,7 @@ import { radius } from "./tokens";
 describe("minimal mobile navigation", () => {
 	it("uses an icon-only native header target", () => {
 		expect(minimalBackButtonStyle).toMatchObject({
-			width: 38,
+			width: 44,
 			height: 44,
 			aspectRatio: 1,
 			borderRadius: radius.pill,

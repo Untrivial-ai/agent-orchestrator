@@ -15,11 +15,11 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 	const { scheme } = useThemeState();
 
 	return (
-		<Host style={{ width: 48, height: 48 }} colorScheme={scheme}>
+		<Host style={{ width: 44, height: 44 }} colorScheme={scheme}>
 			<Button
 				onPress={onPress}
 				modifiers={[
-					frame({ width: 48, height: 48 }),
+					frame({ width: 44, height: 44 }),
 					glassCircle(active ? t.accentTint : undefined),
 					tint(active ? t.accent : t.textSecondary),
 					accessibilityLabel("Settings"),
