@@ -7213,6 +7213,7 @@ components:
           - authorized
           - unauthorized
           - unknown
+          - configured
           - not_applicable
           type: string
       required:
@@ -7237,12 +7238,17 @@ components:
     AgentInfo:
       properties:
         authStatus:
-          description: Advisory local auth probe result. authorized means a recent
-            local probe passed; spawn remains the authoritative validation point.
+          description: Advisory authentication result. authorized means a provider
+            or native probe accepted the effective credential; configured means local
+            credentials exist without authoritative validation; not_applicable means
+            the selected provider requires no authentication; spawn remains the authoritative
+            validation point.
           enum:
           - authorized
           - unauthorized
           - unknown
+          - configured
+          - not_applicable
           type: string
         id:
           type: string

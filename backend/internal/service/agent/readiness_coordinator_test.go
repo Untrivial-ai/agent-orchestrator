@@ -161,6 +161,59 @@ func TestReadinessCoordinatorEnsureNormalizesInstalledAndAuthorized(t *testing.T
 	}
 }
 
+func TestReadinessCoordinatorEnsureNormalizesAuthenticationNotApplicable(t *testing.T) {
+	t.Parallel()
+	status := ports.AgentAuthStatusNotApplicable
+	testAgent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/opencode", nil },
+		auth:    func(context.Context) (ports.AgentAuthStatus, error) { return status, nil },
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("opencode", "OpenCode", testAgent)},
+		Factory: func() []agentregistry.HarnessAgent {
+			return []agentregistry.HarnessAgent{readinessHarness("opencode", "OpenCode", testAgent)}
+		},
+	})
+
+	got, err := coordinator.Ensure(context.Background(), []string{"opencode"}, domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Authentication.State != domain.AgentAuthenticationNotApplicable {
+		t.Fatalf("authentication state = %q, want not_applicable", got[0].Authentication.State)
+	}
+	if got[0].EffectiveReadiness != domain.AgentReadinessReady {
+		t.Fatalf("effective readiness = %q, want ready", got[0].EffectiveReadiness)
+	}
+}
+
+func TestReadinessCoordinatorEnsureKeepsConfiguredAuthenticationUnverified(t *testing.T) {
+	t.Parallel()
+	testAgent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/opencode", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusConfigured, nil
+		},
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("opencode", "OpenCode", testAgent)},
+		Factory: func() []agentregistry.HarnessAgent {
+			return []agentregistry.HarnessAgent{readinessHarness("opencode", "OpenCode", testAgent)}
+		},
+	})
+
+	got, err := coordinator.Ensure(context.Background(), []string{"opencode"}, domain.AgentReadinessPurposeLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Authentication.State != domain.AgentAuthenticationConfigured {
+		t.Fatalf("authentication state = %q, want configured", got[0].Authentication.State)
+	}
+	if got[0].EffectiveReadiness != domain.AgentReadinessUnknown {
+		t.Fatalf("effective readiness = %q, want unknown", got[0].EffectiveReadiness)
+	}
+}
+
 func TestReadinessCoordinatorSingleFlightAndCallerCancellation(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})

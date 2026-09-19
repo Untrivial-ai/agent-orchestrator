@@ -24,6 +24,9 @@ const (
 	AgentAuthenticationUnauthorized AgentAuthenticationState = "unauthorized"
 	// AgentAuthenticationUnknown means authentication could not be determined.
 	AgentAuthenticationUnknown AgentAuthenticationState = "unknown"
+	// AgentAuthenticationConfigured means local credentials are present, but
+	// the harness has not confirmed them with its provider.
+	AgentAuthenticationConfigured AgentAuthenticationState = "configured"
 	// AgentAuthenticationNotApplicable means the harness requires no auth check.
 	AgentAuthenticationNotApplicable AgentAuthenticationState = "not_applicable"
 )
@@ -80,6 +83,7 @@ const (
 	AgentReadinessReasonInstallCheckFailed      = "install_check_failed"
 	AgentReadinessReasonAuthorized              = "authorized"
 	AgentReadinessReasonUnauthorized            = "unauthorized"
+	AgentReadinessReasonConfigured              = "configured"
 	AgentReadinessReasonAuthNotApplicable       = "auth_not_applicable"
 	AgentReadinessReasonAuthCheckUnsupported    = "auth_check_unsupported"
 	AgentReadinessReasonAuthCheckInconclusive   = "auth_check_inconclusive"
@@ -100,7 +104,7 @@ type AgentInstallationObservation struct {
 
 // AgentAuthenticationObservation records the latest normalized authentication check.
 type AgentAuthenticationObservation struct {
-	State       AgentAuthenticationState `json:"state" enum:"authorized,unauthorized,unknown,not_applicable"`
+	State       AgentAuthenticationState `json:"state" enum:"authorized,unauthorized,unknown,configured,not_applicable"`
 	Freshness   AgentReadinessFreshness  `json:"freshness" enum:"fresh,stale,checking"`
 	CheckedAt   *time.Time               `json:"checkedAt" format:"date-time"`
 	AttemptedAt *time.Time               `json:"attemptedAt" format:"date-time"`

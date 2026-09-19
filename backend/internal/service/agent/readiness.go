@@ -28,7 +28,7 @@ type ProbeResult struct {
 type Info struct {
 	ID         string                `json:"id"`
 	Label      string                `json:"label"`
-	AuthStatus ports.AgentAuthStatus `json:"authStatus,omitempty" enum:"authorized,unauthorized,unknown" description:"Advisory local auth probe result. authorized means a recent local probe passed; spawn remains the authoritative validation point."`
+	AuthStatus ports.AgentAuthStatus `json:"authStatus,omitempty" enum:"authorized,unauthorized,unknown,configured,not_applicable" description:"Advisory authentication result. authorized means a provider or native probe accepted the effective credential; configured means local credentials exist without authoritative validation; not_applicable means the selected provider requires no authentication; spawn remains the authoritative validation point."`
 	UsageCount int                   `json:"usageCount,omitempty" description:"Number of retained sessions currently attributed to this agent."`
 	LastUsedAt *time.Time            `json:"lastUsedAt,omitempty" format:"date-time" description:"Creation time of the newest retained session currently attributed to this agent."`
 }
@@ -251,10 +251,14 @@ func sortInfosByUsage(infos []Info) {
 func readinessInfo(snapshot domain.AgentReadinessSnapshot) Info {
 	status := ports.AgentAuthStatusUnknown
 	switch snapshot.Authentication.State {
-	case domain.AgentAuthenticationAuthorized, domain.AgentAuthenticationNotApplicable:
+	case domain.AgentAuthenticationAuthorized:
 		status = ports.AgentAuthStatusAuthorized
 	case domain.AgentAuthenticationUnauthorized:
 		status = ports.AgentAuthStatusUnauthorized
+	case domain.AgentAuthenticationConfigured:
+		status = ports.AgentAuthStatusConfigured
+	case domain.AgentAuthenticationNotApplicable:
+		status = ports.AgentAuthStatusNotApplicable
 	}
 	return Info{
 		ID: snapshot.ID, Label: snapshot.Label, AuthStatus: status,
