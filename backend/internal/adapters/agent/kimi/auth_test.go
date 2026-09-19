@@ -130,6 +130,45 @@ func TestKimiVertexADC(t *testing.T) {
 	}
 }
 
+func TestKimiScopedVertexADCPaths(t *testing.T) {
+	for _, tt := range []struct {
+		name, variable       string
+		absolute, daemonOnly bool
+		want                 ports.AgentAuthStatus
+	}{
+		{"relative ADC in workspace", "GOOGLE_APPLICATION_CREDENTIALS", false, false, ports.AgentAuthStatusConfigured},
+		{"relative ADC ignores daemon credential", "GOOGLE_APPLICATION_CREDENTIALS", false, true, ports.AgentAuthStatusUnknown},
+		{"absolute ADC preserved", "GOOGLE_APPLICATION_CREDENTIALS", true, false, ports.AgentAuthStatusConfigured},
+		{"relative Cloud SDK config in workspace", "CLOUDSDK_CONFIG", false, false, ports.AgentAuthStatusConfigured},
+		{"relative Cloud SDK config ignores daemon credential", "CLOUDSDK_CONFIG", false, true, ports.AgentAuthStatusUnknown},
+		{"absolute Cloud SDK config preserved", "CLOUDSDK_CONFIG", true, false, ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home, _ := kimiTestHomes(t)
+			writeKimiFile(t, filepath.Join(home, "config.toml"), kimiSelectedConfig("type='vertexai'\n[providers.active.env]\nGOOGLE_CLOUD_PROJECT='project'\nGOOGLE_CLOUD_LOCATION='us-central1'"))
+			workspace, daemonDir := t.TempDir(), t.TempDir()
+			t.Chdir(daemonDir)
+			envPath, filePath := "adc.json", "adc.json"
+			if tt.variable == "CLOUDSDK_CONFIG" {
+				envPath, filePath = "gcloud", filepath.Join("gcloud", "application_default_credentials.json")
+			}
+			credentialDir := workspace
+			if tt.daemonOnly {
+				credentialDir = daemonDir
+			}
+			if tt.absolute {
+				credentialDir = t.TempDir()
+				envPath = filepath.Join(credentialDir, envPath)
+			}
+			writeKimiFile(t, filepath.Join(credentialDir, filePath), `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"refresh"}`)
+			status, err := kimiAuthStatus(context.Background(), ports.AgentAuthCheck{WorkingDir: workspace, Env: map[string]string{tt.variable: envPath}})
+			if err != nil || status != tt.want {
+				t.Fatalf("scoped ADC = %q, %v; want %q", status, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestKimiOAuthReference(t *testing.T) {
 	for _, tt := range []struct {
 		name, ref, credentials string
@@ -209,7 +248,7 @@ func TestKimiLegacyKeyring(t *testing.T) {
 				return []byte(tt.payload), nil
 			}}
 			provider := kimiCredentialSource{Type: "kimi", OAuth: &kimiOAuthRef{Storage: "keyring", Key: tt.key}}
-			status := kimiProviderAuthStatus(context.Background(), d, t.TempDir(), provider, tt.legacy)
+			status := kimiProviderAuthStatus(context.Background(), d, t.TempDir(), "", provider, tt.legacy)
 			if status != tt.want || calls != tt.wantCalls {
 				t.Fatalf("status=%q calls=%d, want %q calls=%d", status, calls, tt.want, tt.wantCalls)
 			}

@@ -130,13 +130,13 @@ func kimiAuthStatus(ctx context.Context, check ports.AgentAuthCheck) (ports.Agen
 			if !exists {
 				return ports.AgentAuthStatusUnknown, ctx.Err()
 			}
-			return kimiProviderAuthStatus(ctx, d, home, provider, i == 1), ctx.Err()
+			return kimiProviderAuthStatus(ctx, d, home, check.WorkingDir, provider, i == 1), ctx.Err()
 		}
 	}
 	return ports.AgentAuthStatusUnknown, ctx.Err()
 }
 
-func kimiProviderAuthStatus(ctx context.Context, d authutil.Dependencies, home string, provider kimiCredentialSource, legacy bool) ports.AgentAuthStatus {
+func kimiProviderAuthStatus(ctx context.Context, d authutil.Dependencies, home, workingDir string, provider kimiCredentialSource, legacy bool) ports.AgentAuthStatus {
 	var envKeys []string
 	switch provider.Type {
 	case "kimi":
@@ -219,7 +219,17 @@ func kimiProviderAuthStatus(ctx context.Context, d authutil.Dependencies, home s
 		}
 	}
 	if provider.Type == "vertexai" && strings.TrimSpace(provider.Env["GOOGLE_CLOUD_PROJECT"]) != "" && strings.TrimSpace(provider.Env["GOOGLE_CLOUD_LOCATION"]) != "" {
-		if evidence := authutil.GoogleADCEvidence(ctx, d); evidence.Status == ports.AgentAuthStatusConfigured {
+		cloud := d
+		cloud.Getenv = func(name string) string {
+			value := d.Getenv(name)
+			// Native Google credential paths are relative to the session's cwd,
+			// which can differ from the daemon performing this scoped check.
+			if (name == "GOOGLE_APPLICATION_CREDENTIALS" || name == "CLOUDSDK_CONFIG") && value != "" && !filepath.IsAbs(value) && filepath.IsAbs(workingDir) {
+				return filepath.Join(workingDir, value)
+			}
+			return value
+		}
+		if evidence := authutil.GoogleADCEvidence(ctx, cloud); evidence.Status == ports.AgentAuthStatusConfigured {
 			return evidence.Status
 		}
 	}
