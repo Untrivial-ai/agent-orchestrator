@@ -2474,6 +2474,10 @@ func (f *fakeCommander) StageAttachments(
 	return nil, nil
 }
 
+func (f *fakeCommander) ReleaseAttachments(context.Context, domain.SessionID, []string) error {
+	return nil
+}
+
 // TestCleanupMapsManagerResult: the service forwards both reclaimed and
 // skipped sessions, with non-nil slices so the wire shape stays stable.
 func TestCleanupMapsManagerResult(t *testing.T) {

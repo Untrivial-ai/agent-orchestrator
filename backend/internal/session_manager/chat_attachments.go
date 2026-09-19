@@ -72,6 +72,16 @@ func (m *Manager) StageAttachments(
 		if name == "" {
 			return nil, fmt.Errorf("write attachment %d: could not allocate a unique name", i+1)
 		}
+		// Lease the freshly written file as an uncommitted draft attachment. A
+		// message that goes on to name this path commits the lease (see sendChat);
+		// an unsent draft that is discarded, or one nobody ever sends, is reclaimed
+		// by GCExpiredLeases instead of surviving until the whole session is deleted.
+		// Best-effort: a failure here leaves the file un-tracked but still usable,
+		// matching the git-exclude step below rather than failing a write that
+		// already succeeded.
+		if err := m.attachments.Lease(ctx, id, name, rec.Metadata.WorkspacePath, attachmentstore.DefaultLeaseTTL); err != nil {
+			m.logger.Warn("stage attachments: lease", "sessionID", id, "error", err)
+		}
 		refs = append(refs, attachmentsDir+"/"+name)
 	}
 
@@ -82,6 +92,36 @@ func (m *Manager) StageAttachments(
 		m.logger.Warn("stage attachments: exclude attachments dir", "sessionID", id, "error", err)
 	}
 	return refs, nil
+}
+
+// ReleaseAttachments discards staged draft attachments that were never sent —
+// an explicit chip removal, or a draft the caller is throwing away outright.
+//
+// It only ever deletes an uncommitted lease. A ref whose lease was already
+// committed (its message was accepted) is left alone even if this call names
+// it, which is what keeps a release racing a concurrent send from being able
+// to delete history: whichever of Commit or Release the store applies first
+// wins, and Release backs off once Commit has already run.
+func (m *Manager) ReleaseAttachments(ctx context.Context, id domain.SessionID, refs []string) error {
+	names := attachmentNamesFromRefs(refs)
+	if len(names) == 0 {
+		return nil
+	}
+	return m.attachments.Release(ctx, id, names)
+}
+
+// attachmentNamesFromRefs recovers the durable attachment names behind a set of
+// worktree-relative references, silently dropping anything that is not a
+// direct file in the attachment projection (the same rule NameFromWorkspacePath
+// already applies to the HTTP asset-serving path).
+func attachmentNamesFromRefs(refs []string) []string {
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if name, ok := attachmentstore.NameFromWorkspacePath(ref); ok {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // randomSuffix is a collision-resistant name part used in user-visible paths.
