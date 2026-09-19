@@ -3,6 +3,7 @@ import * as Clipboard from "expo-clipboard";
 import { createContext, Fragment, memo, useContext, useState, type ReactNode } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from "react-native";
 import { haptics } from "../haptics";
+import { openGitHub } from "../openGitHub";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { HighlightedCodeText } from "./HighlightedCodeText";
@@ -11,6 +12,24 @@ import { parseBlocks } from "./markdownBlocks";
 // The conversation screen decides how a tapped link opens (it knows the AO host
 // that the agent's localhost links map onto); the renderer only reports the tap.
 const OpenChatLink = createContext<((url: string) => void) | null>(null);
+
+/**
+ * What a tapped link does when the renderer is used outside a provider.
+ *
+ * `openGitHub` is already the whole rule for a web page — GitHub app when it has
+ * a screen for it, in-app browser otherwise — so the only thing a caller loses
+ * without a provider is the localhost-to-AO-host rewrite, which only the
+ * conversation needs.
+ *
+ * This used to throw instead. `ChatMarkdown` is the app's only Markdown
+ * renderer, so every new surface that shows agent or reviewer prose reaches for
+ * it; a required provider turns forgetting one into a crash on the first body
+ * that happens to contain a URL, which is both intermittent and invisible to
+ * tsc. A default that still keeps the user inside the app is the safer contract.
+ */
+function defaultOpenChatLink(url: string): void {
+	void openGitHub(url);
+}
 
 export function ChatLinkProvider({ onLinkOpen, children }: { onLinkOpen: (url: string) => void; children: ReactNode }) {
 	return <OpenChatLink.Provider value={onLinkOpen}>{children}</OpenChatLink.Provider>;
@@ -116,8 +135,7 @@ function CodeBlock({ text, language, streaming }: { text: string; language?: str
 }
 
 function MarkdownLink({ url, label, style }: { url: string; label: string; style: StyleProp<TextStyle> }) {
-	const open = useContext(OpenChatLink);
-	if (!open) throw new Error("ChatMarkdown must be used within <ChatLinkProvider>");
+	const open = useContext(OpenChatLink) ?? defaultOpenChatLink;
 	return <Text accessibilityRole="link" style={style} onPress={() => { haptics.tap(); open(url); }}>{label}</Text>;
 }
 
