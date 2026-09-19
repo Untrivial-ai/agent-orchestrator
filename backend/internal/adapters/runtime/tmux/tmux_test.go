@@ -897,6 +897,36 @@ func TestIsAliveReportsMissingLegacyClientAsProbeInconclusive(t *testing.T) {
 	}
 }
 
+// Regression for the #4721 review finding: a bundled-tmux-only install (no
+// system tmux on PATH, so legacyBinary is empty) hits socketForSession's
+// no-legacy-fallback branch on every reboot, same as
+// TestIsAliveReportsMissingLegacyClientAsProbeInconclusive above. But when the
+// primary socket's *server* is what's gone - not just this one session - that
+// is server-level evidence with nothing further to check regardless of
+// legacy-socket ambiguity, so it must resolve as ErrRuntimeUnavailable (like
+// the ordinary serverSocketAbsentOutput case) instead of getting stuck as
+// merely inconclusive forever. Before this fix, reconcileLivePass could never
+// detect this class of installation as dead after a real reboot.
+func TestIsAliveReportsAbsentSocketWithNoLegacyClientAsRuntimeUnavailable(t *testing.T) {
+	r := New(Options{Binary: "bundled-tmux-test", SocketName: "ao", Timeout: time.Second})
+	r.legacyBinary = ""
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{out: []byte("error connecting to /tmp/tmux-1000/ao (No such file or directory)"), err: &exec.ExitError{}},
+	}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false")
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("calls = %d, want only the private-socket probe (no legacy binary to fall back to)", len(fr.calls))
+	}
+}
+
 func TestIsAliveReportsIncompatibleLegacyClientAsProbeInconclusive(t *testing.T) {
 	r := New(Options{
 		Binary:       "bundled-tmux-test",
@@ -1020,6 +1050,28 @@ func TestDestroyIsIdempotentWhenBothMigrationSocketsAbsent(t *testing.T) {
 	}
 	if !sawKill {
 		t.Fatal("Destroy never reached kill-session")
+	}
+}
+
+// Regression for the #4721 review finding: RetireForReplacement's runtime.Destroy
+// call (the orchestrator resume-before-cold-fallback path) must stay
+// idempotent even on a bundled-tmux-only install with no system tmux on PATH.
+// Before this fix, socketForSession's no-legacy-binary branch returned a bare
+// ErrRuntimeProbeInconclusive with no raw *exec.ExitError for Destroy's
+// killSessionMissingOutput classifier to inspect, so Destroy surfaced a hard
+// error instead of treating an already-gone server as done - which made
+// RetireForReplacement fail outright and never reach RestoreWithMode at all.
+func TestDestroyIsIdempotentWhenSocketAbsentWithNoLegacyClient(t *testing.T) {
+	r := New(Options{Binary: "bundled-tmux-test", SocketName: "ao", Timeout: time.Second})
+	r.legacyBinary = ""
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{out: []byte("error connecting to /tmp/tmux-1000/ao (No such file or directory)"), err: &exec.ExitError{}},
+	}}
+	r.runner = fr
+	r.reapSessions = (&recordingReaper{}).reap
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy socket-absent, no legacy client: %v", err)
 	}
 }
 

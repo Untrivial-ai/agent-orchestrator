@@ -523,6 +523,16 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 			r.forgetSessionSocket(id)
 			return nil
 		}
+		// socketForSession never even reached a real kill-session invocation
+		// here (no raw *exec.ExitError to classify): the primary socket's
+		// server is conclusively absent and there is no legacy tmux binary to
+		// check the pre-AO default socket either. There is nothing left this
+		// call could destroy, so - like any other already-gone session -
+		// treat it as done (see errNoLegacySocketProbe's doc comment).
+		if errors.Is(err, errNoLegacySocketProbe) {
+			r.forgetSessionSocket(id)
+			return nil
+		}
 		return fmt.Errorf("tmux runtime: destroy session %s: %w", id, err)
 	}
 	r.forgetSessionSocket(id)
@@ -579,6 +589,18 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
 					id, ports.ErrRuntimeProbeInconclusive, strings.TrimSpace(string(out)))
 			}
+		}
+		// socketForSession resolved this itself without a raw *exec.ExitError to
+		// classify above: the primary socket's server is conclusively absent
+		// and there is no legacy tmux binary to check the pre-AO default socket
+		// either. That is the same server-level evidence as the
+		// serverSocketAbsentOutput case above, just discovered a step earlier
+		// (see errNoLegacySocketProbe's doc comment) - report it the same way
+		// so boot reconciliation can still revive the session on an
+		// installation with no system tmux on PATH.
+		if errors.Is(err, errNoLegacySocketProbe) {
+			return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
+				id, ports.ErrRuntimeUnavailable, err.Error())
 		}
 		return false, fmt.Errorf("tmux runtime: probe session %s: %w", id, err)
 	}
@@ -975,6 +997,23 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 		return r.socketName, nil
 	}
 	if r.legacyBinary == "" {
+		if serverNotRunningOutput(string(out)) || serverSocketAbsentOutput(string(out)) {
+			// The primary socket's server is conclusively gone, not merely this
+			// one session (a real host reboot on a bundled-tmux-only install,
+			// where no system tmux is on PATH to check the legacy default
+			// socket, is exactly this case). That is server-level evidence
+			// regardless of which socket era a session belongs to, so unlike
+			// the generic "cannot inspect legacy socket" case below,
+			// errNoLegacySocketProbe lets IsAlive and Destroy resolve it
+			// definitively instead of leaving it stuck as merely inconclusive:
+			// IsAlive treats it as ErrRuntimeUnavailable so recovery may
+			// recreate the runtime (#4641), and Destroy treats it as
+			// already-gone so a caller like RetireForReplacement can still
+			// complete idempotently. Every other caller routed through
+			// runForSession still just sees an ordinary inconclusive-flavored
+			// error, unchanged from before.
+			return "", fmt.Errorf("%w: %w", ports.ErrRuntimeProbeInconclusive, errNoLegacySocketProbe)
+		}
 		return "", fmt.Errorf(
 			"%w: cannot inspect legacy default-socket session %s because system tmux is unavailable",
 			ports.ErrRuntimeProbeInconclusive,
@@ -1216,6 +1255,17 @@ func sessionMissingOutput(out string) bool {
 	return strings.Contains(s, "can't find session") ||
 		strings.Contains(s, "session not found")
 }
+
+// errNoLegacySocketProbe marks socketForSession's specific case where the
+// primary private socket's server is conclusively absent (serverNotRunningOutput
+// or serverSocketAbsentOutput) and there is no legacy tmux binary available to
+// also check the pre-AO default socket a session predating AO's private socket
+// might still live on. Every other caller routed through runForSession sees
+// this wrapped in ports.ErrRuntimeProbeInconclusive like any other ambiguous
+// probe (unchanged behavior); IsAlive and Destroy specifically recognize it via
+// errors.Is to resolve it instead of leaving reboot recovery stuck forever on
+// an installation with no system tmux on PATH (see their doc comments).
+var errNoLegacySocketProbe = errors.New("tmux runtime: primary socket's server is absent and no legacy tmux binary is available to check the default socket")
 
 // serverUnreachableOutput reports whether a non-zero tmux exit means the
 // server itself could not be reached, which is inconclusive for any single

@@ -121,6 +121,18 @@ func (a *attachment) run(ctx context.Context) {
 			return
 		}
 		if err != nil {
+			// ErrRuntimeUnavailable means the runtime infrastructure itself is
+			// conclusively gone (e.g. the tmux server died in a reboot) — not a
+			// transient probe hiccup that a retry could resolve. Racing this
+			// against the frontend's own ~3s open timeout (which tears down and
+			// re-opens the attachment, resetting `failures` to 0) turned this
+			// into an infinite "reattaching" loop that never reached the
+			// failure cap below (#4641). Treat it as a clean exit immediately so
+			// the caller reaches its dead-session recovery path instead.
+			if errors.Is(err, ports.ErrRuntimeUnavailable) {
+				a.markExited()
+				return
+			}
 			failures++
 			if failures > a.maxReattach {
 				a.fail("liveness probe: " + err.Error())
