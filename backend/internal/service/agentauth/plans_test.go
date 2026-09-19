@@ -26,7 +26,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"aider", "Set up Aider", "", "Configure provider credentials using Aider's documented environment or configuration-file options", "https://aider.chat/docs/config/api-keys.html", "", ActionSetup, nil},
 		{"copilot", "Log in to GitHub Copilot", "copilot", "Native GitHub device/browser flow", "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli", "", ActionLogin, []string{"copilot", "login"}},
 		{"grok", "Log in to Grok", "grok", "Native login; device-auth remains available inside the CLI", "https://docs.x.ai/build/overview", "", ActionLogin, []string{"grok", "login"}},
-		{"kimi", "Log in to Kimi", "kimi", "Native browser flow", "https://moonshotai.github.io/kimi-code/en/", "", ActionLogin, []string{"kimi", "login"}},
+		{"kimi", "Log in to Kimi", "kimi", "Select Open login after Kimi finishes starting", "https://moonshotai.github.io/kimi-code/en/", "/login\r", ActionLogin, []string{"kimi"}},
 		{"pi", "Log in to Pi", "pi", "Select Open login after Pi finishes starting", "https://github.com/earendil-works/pi", "/login\r", ActionLogin, []string{"pi"}},
 		{"amp", "Log in to Amp", "amp", "Native browser flow", "https://ampcode.com/manual", "", ActionLogin, []string{"amp", "login"}},
 		{"auggie", "Log in to Auggie", "auggie", "Native browser flow", "https://docs.augmentcode.com/cli/overview", "", ActionLogin, []string{"auggie", "login"}},

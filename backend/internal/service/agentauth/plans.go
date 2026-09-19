@@ -1,6 +1,10 @@
 package agentauth
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimi"
+)
 
 // plans is the code-reviewed authentication allowlist in stable Harness
 // settings order. Commands must be added here, never supplied by clients.
@@ -17,7 +21,7 @@ var plans = []Plan{
 	documentationPlan("aider", ActionSetup, "Set up Aider", "Configure provider credentials using Aider's documented environment or configuration-file options", "https://aider.chat/docs/config/api-keys.html"),
 	plan("copilot", ActionLogin, "Log in to GitHub Copilot", []string{"copilot", "login"}, "Native GitHub device/browser flow", "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli"),
 	plan("grok", ActionLogin, "Log in to Grok", []string{"grok", "login"}, "Native login; device-auth remains available inside the CLI", "https://docs.x.ai/build/overview"),
-	plan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi", "login"}, "Native browser flow", "https://moonshotai.github.io/kimi-code/en/"),
+	kimiLoginPlan(),
 	terminalInputPlan("pi", ActionLogin, "Log in to Pi", []string{"pi"}, "/login\r", "Select Open login after Pi finishes starting", "https://github.com/earendil-works/pi"),
 	plan("amp", ActionLogin, "Log in to Amp", []string{"amp", "login"}, "Native browser flow", "https://ampcode.com/manual"),
 	plan("auggie", ActionLogin, "Log in to Auggie", []string{"auggie", "login"}, "Native browser flow", "https://docs.augmentcode.com/cli/overview"),
@@ -42,6 +46,17 @@ var plans = []Plan{
 func terminalInputPlan(agentID string, action Action, title string, command []string, terminalInput, guidance, docs string) Plan {
 	p := plan(agentID, action, title, command, guidance, docs)
 	p.terminalInput = terminalInput
+	return p
+}
+
+// kimiLoginPlan opens Kimi's TUI and injects /login so the native platform
+// picker (Kimi Code browser login and Kimi Platform API keys) is offered;
+// the bare `kimi login` subcommand only runs the device-code flow. Kimi's
+// first-run "Trust this folder?" dialog would swallow that input in AO's
+// private auth workspace, so the workspace trust record is seeded first.
+func kimiLoginPlan() Plan {
+	p := terminalInputPlan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi"}, "/login\r", "Select Open login after Kimi finishes starting", "https://moonshotai.github.io/kimi-code/en/")
+	p.prepareWorkspace = kimi.EnsureWorkspaceTrusted
 	return p
 }
 
