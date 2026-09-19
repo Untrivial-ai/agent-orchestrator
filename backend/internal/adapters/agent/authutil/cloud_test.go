@@ -250,6 +250,102 @@ func TestGoogleADCDefaultPathsAndFallback(t *testing.T) {
 	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-chain")
 }
 
+func TestGoogleADCAWSExternalAccount(t *testing.T) {
+	for _, tt := range []struct {
+		name, verificationURL string
+		status                ports.AgentAuthStatus
+	}{
+		{"documented region template", "https://sts.{region}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15", "configured"},
+		{"default verification URL", "", "configured"},
+		{"concrete regional URL", "https://sts.us-east-1.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15", "configured"},
+		{"unknown template placeholder", "https://sts.{account}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15", "unknown"},
+		{"malformed URL", "://fixture-invalid", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := map[string]any{
+				"environment_id": "aws1",
+				"region_url":     "http://169.254.169.254/latest/meta-data/placement/availability-zone",
+				"url":            "http://169.254.169.254/latest/meta-data/iam/security-credentials",
+			}
+			if tt.verificationURL != "" {
+				source["regional_cred_verification_url"] = tt.verificationURL
+			}
+			credential := map[string]any{
+				"type":               "external_account",
+				"audience":           "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws",
+				"subject_token_type": "urn:ietf:params:aws:token-type:aws4_request",
+				"token_url":          "https://sts.googleapis.com/v1/token",
+				"credential_source":  source,
+			}
+			body, err := json.Marshal(credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "adc.json")
+			writeFixture(t, path, string(body))
+			label := ""
+			if tt.status == "configured" {
+				label = "google-adc-file"
+			}
+			assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), tt.status, label)
+		})
+	}
+}
+
+func TestGoogleADCSubjectTokenFileFormats(t *testing.T) {
+	for _, tt := range []struct {
+		name, format, tokenFile string
+		status                  ports.AgentAuthStatus
+	}{
+		{"default text", "", "fixture-token", "configured"},
+		{"explicit text", "{\"type\":\"text\"}", "fixture-token", "configured"},
+		{"named JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":\"fixture-token\"}", "configured"},
+		{"custom JSON field", "{\"type\":\"json\",\"subject_token_field_name\":\"id_token\"}", "{\"id_token\":\"fixture-token\"}", "configured"},
+		{"malformed JSON token file", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":", "unknown"},
+		{"missing JSON token field", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"other\":\"fixture-token\"}", "unknown"},
+		{"empty JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":\"\"}", "unknown"},
+		{"whitespace JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":\"   \"}", "unknown"},
+		{"non-string JSON token", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"token\":42}", "unknown"},
+		{"nested JSON token is not the named field", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "{\"other\":{\"token\":\"fixture-token\"}}", "unknown"},
+		{"JSON array is not token object", "{\"type\":\"json\",\"subject_token_field_name\":\"token\"}", "[\"fixture-token\"]", "unknown"},
+		{"JSON format requires field name", "{\"type\":\"json\"}", "{\"token\":\"fixture-token\"}", "unknown"},
+		{"JSON format rejects blank field name", "{\"type\":\"json\",\"subject_token_field_name\":\" \"}", "{\" \":\"fixture-token\"}", "unknown"},
+		{"unsupported format", "{\"type\":\"yaml\"}", "token: fixture-token", "unknown"},
+		{"format requires type", "{}", "fixture-token", "unknown"},
+		{"null format is incomplete", "null", "fixture-token", "unknown"},
+		{"malformed format object", "\"json\"", "fixture-token", "unknown"},
+		{"malformed format type", "{\"type\":7}", "fixture-token", "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			tokenPath := filepath.Join(root, "subject-token")
+			writeFixture(t, tokenPath, tt.tokenFile)
+			source := map[string]any{"file": tokenPath}
+			if tt.format != "" {
+				source["format"] = json.RawMessage(tt.format)
+			}
+			credential := map[string]any{
+				"type":               "external_account",
+				"audience":           "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/oidc",
+				"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+				"token_url":          "https://sts.googleapis.com/v1/token",
+				"credential_source":  source,
+			}
+			body, err := json.Marshal(credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "adc.json")
+			writeFixture(t, path, string(body))
+			label := ""
+			if tt.status == "configured" {
+				label = "google-adc-file"
+			}
+			assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), tt.status, label)
+		})
+	}
+}
+
 func TestAzureEnvironmentAndIdentity(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

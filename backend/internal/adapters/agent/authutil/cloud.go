@@ -249,6 +249,7 @@ func validADC(ctx context.Context, d Dependencies, path string) bool {
 		CredentialSource struct {
 			File                    string
 			URL                     string
+			Format                  json.RawMessage
 			EnvironmentID           string `json:"environment_id"`
 			RegionalVerificationURL string `json:"regional_cred_verification_url"`
 			RegionURL               string `json:"region_url"`
@@ -267,11 +268,43 @@ func validADC(ctx context.Context, d Dependencies, path string) bool {
 			return false
 		}
 		source := credential.CredentialSource
+		var format struct {
+			Type                  string
+			SubjectTokenFieldName string `json:"subject_token_field_name"`
+		}
+		if len(source.Format) == 0 {
+			format.Type = "text"
+		} else if json.Unmarshal(source.Format, &format) != nil {
+			return false
+		}
+		if format.Type != "text" && format.Type != "json" {
+			return false
+		}
+		if format.Type == "json" && !hasValues(format.SubjectTokenFieldName) {
+			return false
+		}
 		if source.File != "" {
-			return nonemptyFile(ctx, d, source.File)
+			if format.Type == "text" {
+				return nonemptyFile(ctx, d, source.File)
+			}
+			var content map[string]any
+			if ReadJSON(ctx, d, source.File, &content) != nil {
+				return false
+			}
+			token, ok := content[format.SubjectTokenFieldName].(string)
+			return ok && hasValues(token)
 		}
 		if source.EnvironmentID != "" {
-			return source.EnvironmentID == "aws1" && validURL(source.URL) && validURL(source.RegionURL) && validURL(source.RegionalVerificationURL)
+			verificationURL := source.RegionalVerificationURL
+			if verificationURL == "" {
+				verificationURL = "https://sts.{region}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15"
+			}
+			// Google's AWS source uses a region placeholder, which URL parsing
+			// rejects in hostnames. Substitute only that documented placeholder
+			// for syntax validation; no endpoint is contacted here.
+			verificationURL = strings.ReplaceAll(verificationURL, "{region}", "us-east-1")
+			return source.EnvironmentID == "aws1" && validURL(source.URL) && validURL(source.RegionURL) &&
+				!strings.ContainsAny(verificationURL, "{}") && validURL(verificationURL)
 		}
 		return validURL(source.URL)
 	}
