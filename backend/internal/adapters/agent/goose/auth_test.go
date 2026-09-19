@@ -282,11 +282,11 @@ func TestGooseDatabricksAndCopilotCredentialSelection(t *testing.T) {
 
 func gooseTestHome(t *testing.T) string {
 	t.Helper()
+	home := t.TempDir()
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		t.Setenv(key, "")
 	}
-	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -296,7 +296,8 @@ func gooseTestHome(t *testing.T) string {
 
 func gooseTestConfigDir(t *testing.T) string {
 	t.Helper()
-	gooseTestHome(t)
+	home := gooseTestHome(t)
+	t.Setenv("GOOSE_PATH_ROOT", home)
 	dir := gooseConfigDir(authutil.Dependencies{Getenv: os.Getenv})
 	if dir == "" {
 		t.Fatal("Goose config directory is empty")
