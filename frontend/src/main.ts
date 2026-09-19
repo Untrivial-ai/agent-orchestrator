@@ -119,6 +119,7 @@ import { bundledTmuxBinaryPath, stableBundledTmuxBinaryPath } from "./shared/bun
 import {
 	handleCloudDeepLink,
 	installCloudIPC,
+	getCloudAccessToken,
 	registerCloudProtocol,
 	showCloudSignInFailure,
 } from "./main/cloud-auth";
@@ -757,6 +758,7 @@ async function createWindowInternal(): Promise<void> {
 		}),
 		clearBrowserProfileData: clearElectronBrowserProfileData,
 		clipboard,
+		getCloudAccessToken: () => getCloudAccessToken(cloudDataDir()),
 	});
 	browserProfileImporter = profileImporter;
 	browserProfileIpc = registerBrowserProfileIpc({

@@ -12,6 +12,7 @@ import {
 	type WorkspaceDiffScope,
 	type WorkspaceFileDetail,
 } from "../hooks/useSessionWorkspaceFiles";
+import type { CloudInspectorTarget } from "../lib/cloud-inspector-target";
 import { usePierreFileHighlightReady } from "../hooks/usePierreFileHighlight";
 import { cn } from "../lib/utils";
 import { statusLabel, statusTone } from "../lib/workspace-file-status";
@@ -41,6 +42,7 @@ function canRenderMarkdown(path: string, detail: WorkspaceFileDetail): boolean {
 
 export function FileContentPane({
 	annotation,
+	cloud,
 	initialEditing = false,
 	initialMode = "diff",
 	initialRequestKey = 0,
@@ -52,6 +54,7 @@ export function FileContentPane({
 	scope = "combined",
 }: {
 	annotation: FileAnnotationModel;
+	cloud?: CloudInspectorTarget;
 	initialEditing?: boolean;
 	initialMode?: FileViewMode;
 	initialRequestKey?: number;
@@ -74,7 +77,7 @@ export function FileContentPane({
 	// an active native text selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
 	const query = useQuery({
-		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha),
+		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha, cloud),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
 	const hasUnsavedChanges = Boolean(editing && query.data && draft !== query.data.content);
@@ -98,12 +101,13 @@ export function FileContentPane({
 		setSaveError("");
 		try {
 			const saved = await updateSessionWorkspaceFile({
+				cloud,
 				content: draft,
 				expectedFileFingerprint: detail.fileFingerprint,
 				path,
 				sessionId,
 			});
-			queryClient.setQueryData(sessionWorkspaceFileQueryKey(sessionId, path, scope, commitSha), saved);
+			queryClient.setQueryData(sessionWorkspaceFileQueryKey(sessionId, path, scope, commitSha, cloud?.orgId), saved);
 			await queryClient.invalidateQueries({
 				predicate: ({ queryKey }) => [
 					"session-workspace-files",
@@ -120,7 +124,7 @@ export function FileContentPane({
 		} finally {
 			setSaving(false);
 		}
-	}, [commitSha, draft, path, query.data, queryClient, saving, scope, sessionId, t]);
+	}, [cloud, commitSha, draft, path, query.data, queryClient, saving, scope, sessionId, t]);
 	useEffect(() => {
 		if (!editing) return;
 		const onSaveShortcut = (event: KeyboardEvent) => {
@@ -171,6 +175,7 @@ export function FileContentPane({
 	const fileView = sourceHighlightReady ? (
 		<CompleteFileView
 			annotation={annotation}
+			cloud={cloud}
 			detail={detail}
 			editing={editing && effectiveMode === "file"}
 			onEditChange={setDraft}
@@ -321,10 +326,36 @@ export function FileContentPane({
 	);
 }
 
-function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange, scope, sessionId }: { annotation: FileAnnotationModel; commitSha?: string; detail: WorkspaceFileDetail; editing: boolean; onEditChange: (content: string) => void; scope: WorkspaceDiffScope; sessionId: string }) {
+function CompleteFileView({
+	annotation,
+	cloud,
+	commitSha,
+	detail,
+	editing,
+	onEditChange,
+	scope,
+	sessionId,
+}: {
+	annotation: FileAnnotationModel;
+	cloud?: CloudInspectorTarget;
+	commitSha?: string;
+	detail: WorkspaceFileDetail;
+	editing: boolean;
+	onEditChange: (content: string) => void;
+	scope: WorkspaceDiffScope;
+	sessionId: string;
+}) {
 	const { t } = useTranslation();
 	const revision = useQuery({
-		...sessionWorkspaceFileRevisionQueryOptions({ commitSha, path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", workspaceVersion: detail.workspaceVersion }),
+		...sessionWorkspaceFileRevisionQueryOptions({
+			cloud,
+			commitSha,
+			path: detail.path,
+			scope,
+			sessionId,
+			side: detail.deleted ? "before" : "after",
+			workspaceVersion: detail.workspaceVersion,
+		}),
 		enabled: detail.deleted || detail.contentTruncated,
 	});
 	if (revision.isPending && revision.isFetching) return <PanelMessage>{t("files.loading")}</PanelMessage>;

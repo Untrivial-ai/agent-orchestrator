@@ -13,6 +13,7 @@ import {
 	useWorkspaceFileConnectionState,
 	workspaceFilesRefetchInterval,
 } from "../hooks/useSessionWorkspaceFiles";
+import type { CloudInspectorTarget } from "../lib/cloud-inspector-target";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { buildChangedOnlyTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
@@ -28,6 +29,8 @@ import { WorkspaceReviewPane } from "./diffs/WorkspaceReviewPane";
 
 type SessionFileExplorerProps = {
 	sessionId: string;
+	/** When set, Files/Diff read the cloud control plane instead of the local daemon. */
+	cloud?: CloudInspectorTarget;
 	isMaximized?: boolean;
 	onOpenFile?: (path: string, options?: FileOpenOptions) => void;
 	onSplitChange?: (split: boolean) => void;
@@ -38,6 +41,7 @@ type SessionFileExplorerProps = {
 
 export function SessionFileExplorer({
 	sessionId,
+	cloud,
 	isMaximized = false,
 	onOpenFile,
 	onSplitChange,
@@ -58,8 +62,8 @@ export function SessionFileExplorer({
 	const setFilesChangedOnly = useUiStore((state) => state.setFilesChangedOnly);
 
 	const filesQuery = useQuery({
-		...sessionWorkspaceFilesQueryOptions(sessionId, t("files.error.loadWorkspace")),
-		refetchInterval: workspaceFilesRefetchInterval(connectionState),
+		...sessionWorkspaceFilesQueryOptions(sessionId, t("files.error.loadWorkspace"), cloud),
+		refetchInterval: workspaceFilesRefetchInterval(connectionState, cloud),
 	});
 	const changedOnlyData = useMemo(
 		() => (filesQuery.data ? buildChangedOnlyTree(filesQuery.data.files) : []),
@@ -73,7 +77,10 @@ export function SessionFileExplorer({
 		setFilter("");
 	}, [sessionId]);
 
-	useEffect(() => subscribeWorkspaceFileChanges(sessionId, queryClient), [queryClient, sessionId]);
+	useEffect(() => {
+		if (cloud) return;
+		return subscribeWorkspaceFileChanges(sessionId, queryClient);
+	}, [cloud, queryClient, sessionId]);
 	useEffect(() => {
 		window.localStorage.setItem("ao.files.diffStyle", split ? "split" : "unified");
 	}, [split]);
@@ -195,6 +202,7 @@ export function SessionFileExplorer({
 				) : filesQuery.data ? (
 					<WorkspaceReviewPane
 						annotation={annotation}
+						cloud={cloud}
 						data={filesQuery.data}
 						filter={filter}
 						onBrowseAll={() => handleViewChange(false)}
@@ -211,6 +219,7 @@ export function SessionFileExplorer({
 						<FileTree
 							changedOnly={false}
 							changedOnlyData={changedOnlyData}
+							cloud={cloud}
 							filterText={filter}
 							onSelectPath={handleSelectPath}
 							selectedPath={treeSelectedPath}
@@ -220,7 +229,7 @@ export function SessionFileExplorer({
 					<ResizableHandle />
 					<ResizablePanel defaultSize="74%" minSize="40%">
 						<ContentScrollArea>
-							<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} />
+							<FileContentPane annotation={annotation} cloud={cloud} path={selectedPath} sessionId={sessionId} split={split} />
 						</ContentScrollArea>
 					</ResizablePanel>
 				</ResizablePanelGroup>
@@ -230,6 +239,7 @@ export function SessionFileExplorer({
 				<FileTree
 					changedOnly={false}
 					changedOnlyData={changedOnlyData}
+					cloud={cloud}
 					filterText={filter}
 					onSelectPath={handleSelectPath}
 					selectedPath={treeSelectedPath}

@@ -3,9 +3,11 @@ import { FileContentPane } from "./FileContentPane";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
 import type { FileViewMode } from "./FileContentPane";
 import type { WorkspaceDiffScope } from "../hooks/useSessionWorkspaceFiles";
+import type { CloudInspectorTarget } from "../lib/cloud-inspector-target";
 
 export function SessionFileWorkspace({
 	annotation,
+	cloud,
 	commitSha,
 	initialEditing = false,
 	initialMode = "file",
@@ -18,6 +20,7 @@ export function SessionFileWorkspace({
 	scope = "combined",
 }: {
 	annotation: FileAnnotationModel;
+	cloud?: CloudInspectorTarget;
 	commitSha?: string;
 	initialEditing?: boolean;
 	initialMode?: FileViewMode;
@@ -44,6 +47,7 @@ export function SessionFileWorkspace({
 			<div className="board-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
 				<FileContentPane
 					annotation={annotation}
+					cloud={cloud}
 					commitSha={commitSha}
 					initialEditing={initialEditing}
 					initialMode={initialMode}

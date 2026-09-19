@@ -329,6 +329,11 @@ export type BrowserViewHostOptions = {
 	browserDownloadManager?: BrowserDownloadManager;
 	clearBrowserProfileData?: (partition: string) => Promise<void>;
 	clipboard?: Pick<Clipboard, "writeImage">;
+	/**
+	 * Optional cloud access-token resolver used to authorize BrowserView requests
+	 * against the control-plane browser proxy (`/api/cloud/v1/.../browser/...`).
+	 */
+	getCloudAccessToken?: () => Promise<string | null>;
 };
 
 export type BrowserViewHost = {
@@ -935,6 +940,22 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			return owner;
 		};
 		const filter = { urls: ["*://*/*"] };
+		if (options.getCloudAccessToken && typeof electronSession.webRequest.onBeforeSendHeaders === "function") {
+			electronSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+				const url = details.url ?? "";
+				if (!url.includes("/api/cloud/v1/") || !url.includes("/browser/")) {
+					callback({ requestHeaders: details.requestHeaders });
+					return;
+				}
+				void options.getCloudAccessToken!()
+					.then((token) => {
+						const headers = { ...details.requestHeaders };
+						if (token) headers.Authorization = `Bearer ${token}`;
+						callback({ requestHeaders: headers });
+					})
+					.catch(() => callback({ requestHeaders: details.requestHeaders }));
+			});
+		}
 		electronSession.webRequest.onCompleted(filter, (details) => {
 			if (details.resourceType !== "xhr" || details.statusCode < 400) return;
 			const owner = ownerFor(details.webContentsId);
@@ -965,6 +986,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (watcher.viewIds.size > 0) return;
 		watcher.webRequest.onCompleted(null);
 		watcher.webRequest.onErrorOccurred(null);
+		watcher.webRequest.onBeforeSendHeaders?.(null);
 		signalWatchers.delete(electronSession);
 	};
 

@@ -12,6 +12,7 @@ import {
 	type WorkspaceFilesResponse,
 	type WorkspaceFileSummary,
 } from "../../hooks/useSessionWorkspaceFiles";
+import type { CloudInspectorTarget } from "../../lib/cloud-inspector-target";
 import { cn } from "../../lib/utils";
 import { statusLabel, statusTone } from "../../lib/workspace-file-status";
 import { useUiStore } from "../../stores/ui-store";
@@ -121,6 +122,7 @@ function useViewedFiles(sessionId: string, selectionKey: string, files: readonly
 
 export function WorkspaceReviewPane({
 	annotation,
+	cloud,
 	data,
 	filter,
 	onBrowseAll,
@@ -129,6 +131,7 @@ export function WorkspaceReviewPane({
 	split,
 }: {
 	annotation: FileAnnotationModel;
+	cloud?: CloudInspectorTarget;
 	data: WorkspaceFilesResponse;
 	filter: string;
 	onBrowseAll: () => void;
@@ -199,6 +202,7 @@ export function WorkspaceReviewPane({
 	const patchQueries = useQueries({
 		queries: batches.map((paths, index) => ({
 			...sessionWorkspaceDiffsQueryOptions({
+				cloud,
 				errorMessage: t("files.error.loadWorkspace"),
 				paths,
 				scope,
@@ -289,15 +293,31 @@ export function WorkspaceReviewPane({
 			const file = files.find((candidate) => candidate.path === metadata.name);
 			if (!file) throw new Error(t("files.error.loadFile"));
 			const [before, after] = await Promise.all([
-				fetchWorkspaceFileRevision({ commitSha: selectedCommit?.sha, sessionId, path: file.path, scope, side: "before", workspaceVersion: data.workspaceVersion }),
-				fetchWorkspaceFileRevision({ commitSha: selectedCommit?.sha, sessionId, path: file.path, scope, side: "after", workspaceVersion: data.workspaceVersion }),
+				fetchWorkspaceFileRevision({
+					cloud,
+					commitSha: selectedCommit?.sha,
+					sessionId,
+					path: file.path,
+					scope,
+					side: "before",
+					workspaceVersion: data.workspaceVersion,
+				}),
+				fetchWorkspaceFileRevision({
+					cloud,
+					commitSha: selectedCommit?.sha,
+					sessionId,
+					path: file.path,
+					scope,
+					side: "after",
+					workspaceVersion: data.workspaceVersion,
+				}),
 			]);
 			if (before.binary || after.binary || before.truncated || after.truncated) throw new Error(t("files.error.loadFile"));
 			const newFile = { name: file.path, contents: after.content, cacheKey: after.revision };
 			if (metadata.type === "rename-pure") return { oldFile: null, newFile };
 			return { oldFile: { name: file.previousPath || file.path, contents: before.content, cacheKey: before.revision }, newFile };
 		},
-		[data.workspaceVersion, files, scope, selectedCommit?.sha, sessionId, t],
+		[cloud, data.workspaceVersion, files, scope, selectedCommit?.sha, sessionId, t],
 	);
 
 	const beginLineAnnotation = useCallback((itemId: string, lineNumber: number, side: "deletions" | "additions") => {

@@ -2,7 +2,7 @@ import { AppLink } from "./AppLink";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
-import { memo, useCallback, useEffect, useId, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -51,6 +51,8 @@ import {
 } from "../hooks/useSessionScmSummary";
 import { useSessionUsage, type SessionUsage } from "../hooks/useSessionUsage";
 import { useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
+import { useCloudCp } from "../hooks/useCloudCp";
+import type { CloudInspectorTarget } from "../lib/cloud-inspector-target";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
 import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
@@ -187,6 +189,12 @@ export const SessionInspector = memo(function SessionInspector({
 	onViewChange?: (view: InspectorView) => void;
 }) {
 	const { t } = useTranslation();
+	const { baseUrl: cloudCpBaseUrl } = useCloudCp();
+	const cloudTarget = useMemo<CloudInspectorTarget | undefined>(() => {
+		const orgId = session?.cloud?.orgId;
+		if (!orgId || !cloudCpBaseUrl) return undefined;
+		return { orgId, baseUrl: cloudCpBaseUrl };
+	}, [cloudCpBaseUrl, session?.cloud?.orgId]);
 	const [internalView, setInternalView] = useState<InspectorView>("summary");
 	const [browserTopbarHost, setBrowserTopbarHost] = useState<HTMLDivElement | null>(null);
 	const requestedView = viewProp ?? internalView;
@@ -194,7 +202,11 @@ export const SessionInspector = memo(function SessionInspector({
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
-	const filesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const filesChangedCount = useSessionWorkspaceFilesChangedCount(
+		browserOnly ? undefined : session?.id,
+		cloudTarget,
+	);
+	const scmForTabs = useSessionScmSummary(session?.id, cloudTarget);
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);
@@ -203,7 +215,8 @@ export const SessionInspector = memo(function SessionInspector({
 	const openReviews = useCallback(() => setView("reviews"), [setView]);
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
-	const reviewsAvailable = reviewsTabVisible(session);
+	// Cloud sessions map with prs:[] on the board model; fall back to the CP SCM query.
+	const reviewsAvailable = reviewsTabVisible(session, scmForTabs.data);
 	const availableViewDefs = browserOnly ? VIEW_DEFS.filter((entry) => entry.id === "browser") : reviewsAvailable
 		? VIEW_DEFS
 		: VIEW_DEFS.filter((entry) => entry.id !== "reviews");
@@ -276,9 +289,10 @@ export const SessionInspector = memo(function SessionInspector({
 	);
 });
 
-function reviewsTabVisible(session: WorkspaceSession | undefined): boolean {
+function reviewsTabVisible(session: WorkspaceSession | undefined, scmPrs?: SessionPRSummary[]): boolean {
 	if (!session) return true;
-	return sortedPRs(session).some((pr) => pr.state === "open" || pr.state === "draft");
+	if (sortedPRs(session).some((pr) => pr.state === "open" || pr.state === "draft")) return true;
+	return Boolean(scmPrs?.some((pr) => pr.state === "open" || pr.state === "draft"));
 }
 
 function externalReviewActorMatchesPRAuthor(actor: string | undefined, author: string | undefined): boolean {
@@ -301,7 +315,13 @@ const SummaryView = memo(function SummaryView({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
-	const query = useSessionScmSummary(session.id);
+	const { baseUrl: cloudCpBaseUrl } = useCloudCp();
+	const cloudTarget = useMemo<CloudInspectorTarget | undefined>(() => {
+		const orgId = session.cloud?.orgId;
+		if (!orgId || !cloudCpBaseUrl) return undefined;
+		return { orgId, baseUrl: cloudCpBaseUrl };
+	}, [cloudCpBaseUrl, session.cloud?.orgId]);
+	const query = useSessionScmSummary(session.id, cloudTarget);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
 	const showUsage =
@@ -1658,7 +1678,13 @@ function ReviewsSection({
 	});
 	const reviewStates = reviewsQuery.data?.reviews ?? [];
 	const autoReviewEnabled = session.autoReviewEnabled === true;
-	const scmSummary = useSessionScmSummary(session.id);
+	const { baseUrl: cloudCpBaseUrl } = useCloudCp();
+	const cloudTarget = useMemo<CloudInspectorTarget | undefined>(() => {
+		const orgId = session.cloud?.orgId;
+		if (!orgId || !cloudCpBaseUrl) return undefined;
+		return { orgId, baseUrl: cloudCpBaseUrl };
+	}, [cloudCpBaseUrl, session.cloud?.orgId]);
+	const scmSummary = useSessionScmSummary(session.id, cloudTarget);
 	const prSummaries = sessionPRDisplaySummaries(session, scmSummary.data);
 	const githubReviews = prSummaries.filter(
 		(pr) =>

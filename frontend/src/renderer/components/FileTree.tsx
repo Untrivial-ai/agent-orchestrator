@@ -13,6 +13,7 @@ import {
 	type WorkspaceTreeEntry,
 } from "../hooks/useSessionWorkspaceTree";
 import { sessionWorkspaceSearchQueryOptions } from "../hooks/useSessionWorkspaceFiles";
+import type { CloudInspectorTarget } from "../lib/cloud-inspector-target";
 
 const ROW_HEIGHT = 28;
 const INDENT = 14;
@@ -75,6 +76,7 @@ function useContainerSize(): [RefObject<HTMLDivElement | null>, { width: number;
 export function FileTree({
 	filterText,
 	sessionId,
+	cloud,
 	changedOnly,
 	changedOnlyData,
 	selectedPath,
@@ -82,6 +84,7 @@ export function FileTree({
 }: {
 	filterText: string;
 	sessionId: string;
+	cloud?: CloudInspectorTarget;
 	changedOnly: boolean;
 	changedOnlyData: TreeNode[];
 	selectedPath: string | null;
@@ -95,16 +98,19 @@ export function FileTree({
 	const [containerRef, size] = useContainerSize();
 	const normalizedFilter = filterText.trim();
 
-	const rootQuery = useQuery({ ...sessionWorkspaceTreeQueryOptions(sessionId, ""), enabled: !changedOnly && normalizedFilter.length === 0 });
+	const rootQuery = useQuery({
+		...sessionWorkspaceTreeQueryOptions(sessionId, "", "Unable to load workspace tree", cloud),
+		enabled: !changedOnly && normalizedFilter.length === 0,
+	});
 	const searchQuery = useQuery({
-		...sessionWorkspaceSearchQueryOptions(sessionId, normalizedFilter, t("files.error.searchWorkspace")),
+		...sessionWorkspaceSearchQueryOptions(sessionId, normalizedFilter, t("files.error.searchWorkspace"), cloud),
 		enabled: !changedOnly && normalizedFilter.length > 0,
 	});
 
 	useEffect(() => {
 		setLazyData([]);
 		loadedDirsRef.current = new Set();
-	}, [sessionId]);
+	}, [sessionId, cloud?.orgId]);
 
 	useEffect(() => {
 		if (changedOnly || !rootQuery.data) return;
@@ -118,7 +124,7 @@ export function FileTree({
 			loadedDirsRef.current.add(dir);
 			try {
 				const result = await queryClient.fetchQuery(
-					sessionWorkspaceTreeQueryOptions(sessionId, dir, t("files.error.loadWorkspaceTree")),
+					sessionWorkspaceTreeQueryOptions(sessionId, dir, t("files.error.loadWorkspaceTree"), cloud),
 				);
 				setLazyData((current) => withChildrenAt(current, dir, result.entries.map(entryToNode)));
 			} catch {
@@ -127,7 +133,7 @@ export function FileTree({
 				loadedDirsRef.current.delete(dir);
 			}
 		},
-		[queryClient, sessionId, t],
+		[cloud, queryClient, sessionId, t],
 	);
 
 	const handleToggle = useCallback(

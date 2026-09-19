@@ -542,9 +542,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[queryClient],
 	);
 	const workspaceQuery = useWorkspaceSession(sessionId);
-	const { client: cloudCpClient } = useCloudCp();
+	const { client: cloudCpClient, baseUrl: cloudCpBaseUrl } = useCloudCp();
 	const theme = useResolvedTheme();
 	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
+	const cloudInspectorTarget = useMemo(() => {
+		const orgId = workspaceQuery.data?.cloud?.orgId;
+		if (!orgId || !cloudCpBaseUrl) return undefined;
+		return { orgId, baseUrl: cloudCpBaseUrl };
+	}, [cloudCpBaseUrl, workspaceQuery.data?.cloud?.orgId]);
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
 	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[sessionId]?.view ?? "summary");
 	const browserUnseen = useUiStore((state) => Boolean(state.inspectorSessions[sessionId]?.browserUnseen));
@@ -1457,6 +1462,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		terminated,
 		previewUrl,
 		previewRevision,
+		cloud: cloudInspectorTarget,
 	});
 	const browserAnnotationQueue = useBrowserAnnotationQueue({
 		sessionId: session?.id,
@@ -1990,6 +1996,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								<div className="absolute inset-0">
 									<SessionFileWorkspace
 										annotation={fileAnnotation}
+										cloud={cloudInspectorTarget}
 										commitSha={activeCenterFileRequest?.commitSha}
 										initialEditing={activeCenterFileInitialEditing}
 										initialMode={activeCenterFileRequest?.mode ?? "file"}
@@ -2060,6 +2067,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							filesView={
 								inspectorView === "files" && session ? (
 									<SessionFileExplorer
+										cloud={cloudInspectorTarget}
 										onOpenFile={openCenterFile}
 										onSplitChange={setFilesSplit}
 										onToggleMaximized={handleToggleFilesPopOut}
@@ -2158,6 +2166,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							)}
 						>
 							<SessionFileExplorer
+								cloud={cloudInspectorTarget}
 								isMaximized
 								onSplitChange={setFilesSplit}
 								onToggleMaximized={handleToggleFilesPopOut}

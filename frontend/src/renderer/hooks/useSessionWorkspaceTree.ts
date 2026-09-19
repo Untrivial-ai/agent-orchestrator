@@ -1,14 +1,16 @@
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import type { CloudInspectorTarget } from "../lib/cloud-inspector-target";
+import { createRendererCloudCpClient } from "./useCloudCp";
 import { isChangedWorkspaceFile, type WorkspaceFileSummary } from "./useSessionWorkspaceFiles";
 
 export type WorkspaceTreeEntry = components["schemas"]["WorkspaceTreeEntry"];
 export type WorkspaceTreeResponse = components["schemas"]["ListWorkspaceTreeResponse"];
 
-export const sessionWorkspaceTreeQueryKey = (sessionId: string, dir: string) =>
-	["session-workspace-tree", sessionId, dir] as const;
+export const sessionWorkspaceTreeQueryKey = (sessionId: string, dir: string, cloudOrgId?: string) =>
+	["session-workspace-tree", sessionId, cloudOrgId ?? "local", dir] as const;
 
-async function fetchSessionWorkspaceTree(sessionId: string, dir: string, errorMessage: string): Promise<WorkspaceTreeResponse> {
+async function fetchLocalSessionWorkspaceTree(sessionId: string, dir: string, errorMessage: string): Promise<WorkspaceTreeResponse> {
 	const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/workspace/tree", {
 		params: { path: { sessionId }, query: dir ? { path: dir } : {} },
 	});
@@ -16,15 +18,52 @@ async function fetchSessionWorkspaceTree(sessionId: string, dir: string, errorMe
 	return (data ?? { sessionId, path: dir, entries: [], truncated: false }) as WorkspaceTreeResponse;
 }
 
+async function fetchCloudSessionWorkspaceTree(
+	sessionId: string,
+	dir: string,
+	cloud: CloudInspectorTarget,
+	_errorMessage: string,
+): Promise<WorkspaceTreeResponse> {
+	const client = createRendererCloudCpClient(cloud.baseUrl);
+	const page = await client.listWorkspaceFiles(cloud.orgId, sessionId, { path: dir, limit: 100 });
+	const entries: WorkspaceTreeEntry[] = (page.items ?? []).map((item) => ({
+		name: item.name,
+		path: item.path,
+		type: item.isDir ? "dir" : "file",
+		size: item.size,
+	}));
+	return {
+		sessionId,
+		path: page.path || dir,
+		entries,
+		truncated: Boolean(page.page?.hasMore),
+	};
+}
+
+async function fetchSessionWorkspaceTree(
+	sessionId: string,
+	dir: string,
+	errorMessage: string,
+	cloud?: CloudInspectorTarget,
+): Promise<WorkspaceTreeResponse> {
+	if (cloud) return fetchCloudSessionWorkspaceTree(sessionId, dir, cloud, errorMessage);
+	return fetchLocalSessionWorkspaceTree(sessionId, dir, errorMessage);
+}
+
 // dir is a directory path relative to the workspace root, "" for the root.
 // Unlike the changed-files list this isn't polled: the daemon only pushes a
 // coarse "something changed" signal (see workspace-file-events.ts), which
 // invalidates every mounted directory query by key prefix — a directory the
 // user isn't currently looking at just stays stale until they revisit it.
-export function sessionWorkspaceTreeQueryOptions(sessionId: string, dir: string, errorMessage = "Unable to load workspace tree") {
+export function sessionWorkspaceTreeQueryOptions(
+	sessionId: string,
+	dir: string,
+	errorMessage = "Unable to load workspace tree",
+	cloud?: CloudInspectorTarget,
+) {
 	return {
-		queryKey: sessionWorkspaceTreeQueryKey(sessionId, dir),
-		queryFn: () => fetchSessionWorkspaceTree(sessionId, dir, errorMessage),
+		queryKey: sessionWorkspaceTreeQueryKey(sessionId, dir, cloud?.orgId),
+		queryFn: () => fetchSessionWorkspaceTree(sessionId, dir, errorMessage, cloud),
 	};
 }
 

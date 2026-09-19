@@ -237,6 +237,113 @@ export interface CloudCpSessionPullRequest {
 	updatedAt: string;
 }
 
+/** Rich PR summary from GET .../sessions/{id}/pull-requests. */
+export interface CloudCpPullRequestSummary {
+	url: string;
+	htmlUrl?: string;
+	number: number;
+	title: string;
+	state: "draft" | "open" | "merged" | "closed";
+	provider: string;
+	repository: string;
+	author: string;
+	sourceBranch: string;
+	targetBranch: string;
+	headSha: string;
+	additions: number;
+	deletions: number;
+	changedFiles: number;
+	ci: {
+		state: string;
+		failingChecks: Array<{ name: string; status: string; conclusion: string; url: string }>;
+	};
+	review: {
+		decision: string;
+		hasUnresolvedHumanComments: boolean;
+		unresolvedBy: unknown[];
+		reviews: unknown[];
+	};
+	mergeability: {
+		state: string;
+		reasons: string[];
+		pullRequestUrl: string;
+		conflictFiles: Array<{ path: string; url?: string }>;
+	};
+	stateChangedAt?: string;
+	createdAt?: string;
+	updatedAt: string;
+	observedAt: string;
+	ciObservedAt: string;
+	reviewObservedAt: string;
+}
+
+export interface CloudCpSessionPullRequestsResponse {
+	sessionId: string;
+	pullRequests: CloudCpPullRequestSummary[];
+}
+
+export interface CloudCpWorkspaceEntry {
+	name: string;
+	path: string;
+	isDir: boolean;
+	size: number;
+	mode: string;
+	modTime: string;
+}
+
+export interface CloudCpWorkspaceEntryPage {
+	path: string;
+	items: CloudCpWorkspaceEntry[];
+	page: CloudCpPageInfo;
+}
+
+export interface CloudCpWorkspaceFile {
+	path: string;
+	content: string;
+	size: number;
+}
+
+export interface CloudCpWorkspaceFileWriteInput {
+	path: string;
+	content: string;
+}
+
+export type CloudCpWorkspaceFileStatus =
+	| "unmodified"
+	| "modified"
+	| "added"
+	| "deleted"
+	| "renamed"
+	| "untracked"
+	| "copied"
+	| "changed";
+
+export interface CloudCpWorkspaceDiffFile {
+	path: string;
+	oldPath?: string;
+	status: CloudCpWorkspaceFileStatus;
+	staged?: string;
+	unstaged?: string;
+	additions: number;
+	deletions: number;
+	binary: boolean;
+}
+
+export interface CloudCpWorkspaceDiff {
+	status: string;
+	unstaged: string;
+	staged: string;
+	combined: string;
+	diffBaseRef: string;
+	diffBaseSha?: string;
+	files: CloudCpWorkspaceDiffFile[];
+	untrackedFiles: string[];
+	truncated: {
+		combined: boolean;
+		stats: boolean;
+	};
+}
+
 /** A child session as listed under its orchestrator, with its pull requests. */
 export interface CloudCpSessionChild extends CloudCpSession {
 	prs: CloudCpSessionPullRequest[];

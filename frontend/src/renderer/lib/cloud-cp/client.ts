@@ -44,6 +44,11 @@ import type {
 	CloudCpUpdateProjectRequest,
 	CloudCpValidateRepositoryAccessRequest,
 	CloudCpValidateRepositoryAccessResponse,
+	CloudCpSessionPullRequestsResponse,
+	CloudCpWorkspaceDiff,
+	CloudCpWorkspaceEntryPage,
+	CloudCpWorkspaceFile,
+	CloudCpWorkspaceFileWriteInput,
 } from "./types";
 
 const API_PREFIX = "/api/cloud/v1";
@@ -196,6 +201,36 @@ export interface CloudCpClient {
 		body: CloudCpValidateRepositoryAccessRequest,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpValidateRepositoryAccessResponse>;
+
+	listSessionPullRequests(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionPullRequestsResponse>;
+
+	listWorkspaceFiles(
+		orgId: string,
+		sessionId: string,
+		query?: { path?: string; cursor?: string; limit?: number },
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpWorkspaceEntryPage>;
+	readWorkspaceFile(
+		orgId: string,
+		sessionId: string,
+		path: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpWorkspaceFile>;
+	writeWorkspaceFile(
+		orgId: string,
+		sessionId: string,
+		body: CloudCpWorkspaceFileWriteInput,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpWorkspaceFile>;
+	getWorkspaceDiff(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpWorkspaceDiff>;
 }
 
 type QueryParams = Record<string, string | number | undefined>;
@@ -445,5 +480,30 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 		deleteGitHubPAT: (o) => requestVoid("DELETE", "/me/github-pat", { signal: o?.signal }),
 		validateSavedRepositoryAccess: (body, o) =>
 			requestJson("POST", "/me/github-pat/validate-saved-repository", { body, signal: o?.signal }),
+
+		listSessionPullRequests: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/pull-requests`, {
+				signal: o?.signal,
+			}),
+
+		listWorkspaceFiles: (orgId, sessionId, query, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/files`, {
+				query: { path: query?.path, cursor: query?.cursor, limit: query?.limit },
+				signal: o?.signal,
+			}),
+		readWorkspaceFile: (orgId, sessionId, path, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/file`, {
+				query: { path },
+				signal: o?.signal,
+			}),
+		writeWorkspaceFile: (orgId, sessionId, body, o) =>
+			requestJson("PUT", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/file`, {
+				body,
+				signal: o?.signal,
+			}),
+		getWorkspaceDiff: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/diff`, {
+				signal: o?.signal,
+			}),
 	};
 }

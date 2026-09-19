@@ -57,4 +57,43 @@ describe("cloud control-plane session lifecycle", () => {
 			expect.objectContaining({ method: "POST" }),
 		);
 	});
+
+	it("loads workspace diff and session pull requests", async () => {
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url.endsWith("/workspace/diff")) {
+				return new Response(JSON.stringify({
+					status: "",
+					unstaged: "",
+					staged: "",
+					combined: "",
+					diffBaseRef: "HEAD",
+					files: [],
+					untrackedFiles: [],
+					truncated: { combined: false, stats: false },
+				}), { status: 200, headers: { "Content-Type": "application/json" } });
+			}
+			return new Response(JSON.stringify({ sessionId: "session/1", pullRequests: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		const client = createCloudCpClient({
+			baseUrl: "https://cloud.example.test/",
+			getToken: async () => "token",
+			fetchImpl: fetchMock as typeof fetch,
+		});
+
+		await client.getWorkspaceDiff("org/1", "session/1");
+		await client.listSessionPullRequests("org/1", "session/1");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/diff",
+			expect.objectContaining({ method: "GET" }),
+		);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/pull-requests",
+			expect.objectContaining({ method: "GET" }),
+		);
+	});
 });

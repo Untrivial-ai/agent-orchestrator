@@ -16,6 +16,7 @@ import type {
 } from "../../shared/browser-annotations";
 import type { BrowserProfileViewState } from "../../shared/browser-profiles";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
+import { isCloudBrowserProxyUrl, toCloudBrowserProxyUrl } from "../lib/cloud-browser-proxy";
 
 export type { BrowserNavState };
 
@@ -72,6 +73,14 @@ type UseBrowserViewOptions = {
 	 * unrelated session update, which leave it unchanged, are ignored).
 	 */
 	previewRevision?: number;
+	/**
+	 * When set, http(s) navigations are rewritten through the cloud control-plane
+	 * browser proxy so sandbox-local URLs load from the VM rather than the laptop.
+	 */
+	cloud?: {
+		orgId: string;
+		baseUrl: string;
+	};
 };
 
 export type BrowserViewModel = {
@@ -222,6 +231,7 @@ export function useBrowserView({
 	terminated,
 	previewUrl,
 	previewRevision,
+	cloud,
 }: UseBrowserViewOptions): BrowserViewModel {
 	const [viewId, setViewId] = useState("");
 	const [navState, setNavState] = useState<BrowserNavState>(EMPTY_NAV_STATE);
@@ -760,6 +770,10 @@ export function useBrowserView({
 	const openTab = useCallback(
 		async (url?: string) => {
 			if (!hasNativeBrowser) return;
+			const target =
+				url && cloud && !isCloudBrowserProxyUrl(url, cloud.orgId, sessionId)
+					? toCloudBrowserProxyUrl(cloud.baseUrl, cloud.orgId, sessionId, url)
+					: url;
 			let viewId = viewIdRef.current;
 			if (!viewId) {
 				const ensured = await window.ao!.browser.ensure(sessionId);
@@ -768,14 +782,18 @@ export function useBrowserView({
 				setViewId(viewId);
 				setNavState(ensured);
 			}
-			const state = await window.ao!.browser.openTab({ viewId, url });
+			const state = await window.ao!.browser.openTab({ viewId, url: target });
 			if (viewIdRef.current === state.viewId) setTabsState(state);
 		},
-		[hasNativeBrowser, sessionId],
+		[cloud, hasNativeBrowser, sessionId],
 	);
 	const openLink = useCallback(
 		async (url: string) => {
 			if (!hasNativeBrowser) return;
+			const target =
+				cloud && !isCloudBrowserProxyUrl(url, cloud.orgId, sessionId)
+					? toCloudBrowserProxyUrl(cloud.baseUrl, cloud.orgId, sessionId, url)
+					: url;
 			let id = viewIdRef.current;
 			if (!id) {
 				const ensured = await window.ao!.browser.ensure(sessionId);
@@ -796,20 +814,20 @@ export function useBrowserView({
 				// Keep the last known tabs as a fallback if the native host is briefly
 				// unavailable; opening the link remains better than dropping the click.
 			}
-			const existingTab = tabs.find((tab) => !isBlankTabUrl(tab.url) && sameBrowserURL(tab.url, url));
+			const existingTab = tabs.find((tab) => !isBlankTabUrl(tab.url) && sameBrowserURL(tab.url, target));
 			if (existingTab) {
 				await selectTab(existingTab.id);
 				return;
 			}
 			const activeTab = tabs.find((tab) => tab.active);
 			if (activeTab && isBlankTabUrl(activeTab.url)) {
-				const state = await window.ao!.browser.navigate({ viewId: id, url });
+				const state = await window.ao!.browser.navigate({ viewId: id, url: target });
 				if (viewIdRef.current === state.viewId) setNavState(state);
 				return;
 			}
-			await openTab(url);
+			await openTab(target);
 		},
-		[hasNativeBrowser, openTab, selectTab, sessionId],
+		[cloud, hasNativeBrowser, openTab, selectTab, sessionId],
 	);
 
 	const reopenClosedTab = useCallback(
@@ -881,8 +899,12 @@ export function useBrowserView({
 
 	const navigate = useCallback(
 		(url: string) => {
+			const target =
+				cloud && !isCloudBrowserProxyUrl(url, cloud.orgId, sessionId)
+					? toCloudBrowserProxyUrl(cloud.baseUrl, cloud.orgId, sessionId, url)
+					: url;
 			if (!hasNativeBrowser) {
-				const normalized = url.trim();
+				const normalized = target.trim();
 				setNavState((current) => ({
 					...current,
 					url: normalized,
@@ -891,9 +913,9 @@ export function useBrowserView({
 				}));
 				return Promise.resolve();
 			}
-			return withView((id) => window.ao!.browser.navigate({ viewId: id, url }));
+			return withView((id) => window.ao!.browser.navigate({ viewId: id, url: target }));
 		},
-		[hasNativeBrowser, withView],
+		[cloud, hasNativeBrowser, sessionId, withView],
 	);
 
 	const clear = useCallback(() => {
