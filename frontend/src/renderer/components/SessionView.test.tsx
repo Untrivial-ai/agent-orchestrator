@@ -3004,6 +3004,64 @@ describe("SessionView", () => {
 		expect(useUiStore.getState().inspectorSessions["sess-orch"]?.view).toBe("browser");
 	});
 
+	it("keeps project summary available when the orchestrator has a Browser inspector", () => {
+		render(<SessionView sessionId="sess-orch" />);
+
+		expect(screen.getByRole("button", { name: "Open Browser" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open project summary" })).toBeInTheDocument();
+	});
+
+	it("hides project summary for an unsupported orchestrator", () => {
+		workerSession("sess-orch").provider = "grok";
+		render(<SessionView sessionId="sess-orch" />);
+
+		expect(screen.getByRole("button", { name: "Open Browser" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open project summary" })).not.toBeInTheDocument();
+		expect(screen.queryByTestId("project-summary-panel")).not.toBeInTheDocument();
+	});
+
+	it("switches from Browser to Project Summary and toggles Summary closed", async () => {
+		act(() => useUiStore.getState().setInspectorOpen("sess-orch", true));
+		render(<SessionView sessionId="sess-orch" />);
+		expect(screen.getByTestId("panel-inspector")).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "Open project summary" }));
+		expect(screen.queryByTestId("panel-inspector")).not.toBeInTheDocument();
+		expect(screen.getByTestId("project-summary-panel")).toBeInTheDocument();
+		expect(inspectorOpen("sess-orch")).toBe(false);
+
+		fireEvent.click(screen.getByRole("button", { name: "Close project summary" }));
+		expect(screen.queryByTestId("project-summary-panel")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open project summary" })).toHaveAttribute("aria-pressed", "false");
+	});
+
+	it("overlays the project summary attention count on its icon", async () => {
+		reviewGetMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/projects/{id}/summary") {
+				return {
+					data: {
+						summary: {
+							projectId: "proj-1",
+							narrative: "A decision is pending.",
+							activeWorkers: 1,
+							completedWorkers: 0,
+							needsAttention: [{ sessionId: "sess-1", sessionName: "Worker", question: "Choose one." }],
+							sourceWatermark: "watermark",
+							generatedAt: "2026-09-19T00:00:00Z",
+						},
+					},
+					error: undefined,
+				};
+			}
+			return { data: { reviewerHandleId: "", reviews: [], runs: [] }, error: undefined };
+		});
+		render(<SessionView sessionId="sess-orch" />);
+
+		const badge = await screen.findByTestId("project-summary-attention-badge");
+		expect(badge).toHaveTextContent("1");
+		expect(badge).toHaveClass("absolute", "rounded-full");
+	});
+
 	it("opens orchestrator chat files in the center without revealing Browser", async () => {
 		workerSession("sess-orch").mode = "chat";
 		render(<SessionView sessionId="sess-orch" />);

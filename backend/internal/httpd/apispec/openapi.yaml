@@ -2247,6 +2247,60 @@ paths:
       summary: Remember project permissions for future sessions
       tags:
       - projects
+  /api/v1/projects/{id}/summary:
+    get:
+      operationId: getProjectSummary
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSummaryResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Read the durable project briefing, generating it when missing
+      tags:
+      - projects
+  /api/v1/projects/{id}/summary/refresh:
+    post:
+      operationId: refreshProjectSummary
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSummaryResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Refresh the project briefing when its source watermark changed
+      tags:
+      - projects
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -2580,6 +2634,87 @@ paths:
       summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
+  /api/v1/reports:
+    get:
+      operationId: listReports
+      parameters:
+      - description: Stable project identifier.
+        in: query
+        name: projectId
+        required: true
+        schema:
+          description: Stable project identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListReportsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List persisted project reports without changing delivery state
+      tags:
+      - reports
+    post:
+      operationId: createReport
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReportRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateReportResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Persist a worker report for later orchestrator delivery
+      tags:
+      - reports
   /api/v1/reviews/{reviewSessionID}/activity:
     post:
       operationId: setReviewActivity
@@ -9215,6 +9350,37 @@ components:
       - cachedTokens
       - totalTokens
       type: object
+    CreateReportRequest:
+      properties:
+        message:
+          maxLength: 1000
+          type: string
+        note:
+          maxLength: 1000
+          type: string
+        outputs:
+          items:
+            $ref: '#/components/schemas/ReportOutputRequest'
+          type: array
+        sessionId:
+          type: string
+        state:
+          enum:
+          - checkpoint
+          - needs_input
+          - stuck
+          - done
+          type: string
+      required:
+      - sessionId
+      type: object
+    CreateReportResponse:
+      properties:
+        id:
+          type: string
+      required:
+      - id
+      type: object
     DegradedProject:
       properties:
         id:
@@ -9976,6 +10142,15 @@ components:
       required:
       - projects
       type: object
+    ListReportsResponse:
+      properties:
+        reports:
+          items:
+            $ref: '#/components/schemas/ReportResponse'
+          type: array
+      required:
+      - reports
+      type: object
     ListReviewsResponse:
       properties:
         reviewerActivityState:
@@ -10509,6 +10684,19 @@ components:
       - defaultBranch
       - folderMissing
       type: object
+    ProjectAttentionItem:
+      properties:
+        question:
+          type: string
+        sessionId:
+          type: string
+        sessionName:
+          type: string
+      required:
+      - sessionId
+      - sessionName
+      - question
+      type: object
     ProjectClonePreparationCleanupInput:
       properties:
         path:
@@ -10618,6 +10806,43 @@ components:
       - kind
       - sessionPrefix
       - folderMissing
+      type: object
+    ProjectSummaryResponse:
+      properties:
+        summary:
+          $ref: '#/components/schemas/ProjectSummaryView'
+      required:
+      - summary
+      type: object
+    ProjectSummaryView:
+      properties:
+        activeWorkers:
+          type: integer
+        completedWorkers:
+          type: integer
+        generatedAt:
+          format: date-time
+          type: string
+        generationError:
+          type: string
+        narrative:
+          type: string
+        needsAttention:
+          items:
+            $ref: '#/components/schemas/ProjectAttentionItem'
+          type: array
+        projectId:
+          type: string
+        sourceWatermark:
+          type: string
+      required:
+      - projectId
+      - narrative
+      - activeWorkers
+      - completedWorkers
+      - needsAttention
+      - sourceWatermark
+      - generatedAt
       type: object
     PromoteQueuedTurnResponse:
       properties:
@@ -10758,6 +10983,66 @@ components:
       - needsGitInit
       - requiredActions
       - blockingErrors
+      type: object
+    ReportOutputRequest:
+      properties:
+        kind:
+          enum:
+          - artifact
+          - pr_created
+          - pr_reviewed
+          type: string
+        label:
+          type: string
+        reference:
+          minLength: 1
+          type: string
+      required:
+      - kind
+      - reference
+      type: object
+    ReportOutputResponse:
+      properties:
+        kind:
+          type: string
+        label:
+          type: string
+        reference:
+          type: string
+      required:
+      - kind
+      - reference
+      type: object
+    ReportResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        message:
+          type: string
+        note:
+          type: string
+        outputs:
+          items:
+            $ref: '#/components/schemas/ReportOutputResponse'
+          type: array
+        projectId:
+          type: string
+        repeatCount:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+        state:
+          type: string
+      required:
+      - id
+      - sessionId
+      - projectId
+      - createdAt
+      - repeatCount
       type: object
     ResolveCommentsResponse:
       properties:
@@ -11465,6 +11750,10 @@ components:
           enum:
           - human
           - coordination
+          type: string
+        coordinationId:
+          description: Opaque identity of an AO-authored semantic prompt accepted
+            by the native agent.
           type: string
         event:
           description: AO hook sub-command that produced this state (e.g. post-tool-use).
@@ -12788,6 +13077,8 @@ tags:
   name: reviews
 - description: Durable dashboard notifications
   name: notifications
+- description: Durable worker reports
+  name: reports
 - description: Token usage telemetry for AO sessions
   name: usage
 - description: Mobile push-device registration for OS push notifications

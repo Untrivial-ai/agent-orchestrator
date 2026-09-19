@@ -8945,6 +8945,10 @@ type signalingAgent struct{ fakeAgent }
 func (signalingAgent) EmitsSubmitActivity() bool  { return true }
 func (signalingAgent) EmitsBlockedActivity() bool { return true }
 
+type semanticSignalingAgent struct{ signalingAgent }
+
+func (semanticSignalingAgent) EmitsSemanticMessageAcceptance() bool { return true }
+
 type startupReadySignalingAgent struct{ fakeAgent }
 
 func (startupReadySignalingAgent) FirstSignalProvesInputReady() bool { return true }
@@ -9010,6 +9014,83 @@ func TestSend_SkipsConfirmForHooklessHarness(t *testing.T) {
 	// Hookless path returns within milliseconds (no 2s+ confirmation wait).
 	if dt := time.Since(start); dt > 250*time.Millisecond {
 		t.Fatalf("Send took %s for a hookless harness; confirmActive should have been skipped", dt)
+	}
+}
+
+func TestSendSemanticTUIRequiresCorrelatedPromptAcceptance(t *testing.T) {
+	const deliveryID = "report-batch:abc123"
+	st := newFakeStore()
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{
+		ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityIdle},
+		Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+	})
+	msg := &fakeMessenger{onSend: func(id domain.SessionID, message string) {
+		if message == "" {
+			return
+		}
+		if got, ok := domain.ReportDeliveryID(message); !ok || got != deliveryID {
+			t.Fatalf("delivery envelope = %q, %v", got, ok)
+		}
+		rec := st.sessions[id]
+		rec.Activity.State = domain.ActivityActive
+		rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointCoordination
+		rec.Metadata.ConversationCheckpointGeneration = "launch-1"
+		rec.Metadata.ConversationCheckpointTurnID = deliveryID
+		st.sessions[id] = rec
+	}}
+	m := newSendTestManager(t, semanticSignalingAgent{}, msg, st)
+
+	if err := m.SendSemantic(context.Background(), "s1", "Reports since your previous turn:", deliveryID); err != nil {
+		t.Fatalf("SendSemantic: %v", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("pane writes = %d, want 1", len(msg.msgs))
+	}
+	if err := m.SendSemantic(context.Background(), "s1", "retry", deliveryID); err != nil {
+		t.Fatalf("idempotent SendSemantic: %v", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("retry pane writes = %d, want 1", len(msg.msgs))
+	}
+}
+
+func TestSendSemanticTUIDoesNotAcceptPaneWrite(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{
+		ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+	})
+	msg := &fakeMessenger{}
+	m := newSendTestManager(t, semanticSignalingAgent{}, msg, st)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	err := m.SendSemantic(ctx, "s1", "report", "report-batch:unaccepted")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SendSemantic error = %v, want context deadline", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("pane writes = %d, want 1", len(msg.msgs))
+	}
+}
+
+func TestSendSemanticTUIRejectsAdapterWithoutAcceptanceSignal(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{
+		ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityIdle},
+	})
+	msg := &fakeMessenger{}
+	m := newSendTestManager(t, signalingAgent{}, msg, st)
+
+	err := m.SendSemantic(context.Background(), "s1", "report", "report-batch:unsupported")
+	if !errors.Is(err, ErrSemanticAcceptanceUnsupported) {
+		t.Fatalf("SendSemantic error = %v", err)
+	}
+	if len(msg.msgs) != 0 {
+		t.Fatalf("pane writes = %d, want 0", len(msg.msgs))
 	}
 }
 

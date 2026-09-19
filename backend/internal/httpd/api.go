@@ -33,6 +33,7 @@ type APIDeps struct {
 	PRs                prsvc.ActionManager
 	Reviews            reviewsvc.Manager
 	Notifications      controllers.NotificationService
+	Reports            controllers.ReportService
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
@@ -61,6 +62,7 @@ type APIDeps struct {
 	Installer         controllers.Installer
 	AgentAuth         controllers.AgentAuthService
 	AgentSwitchPolicy AgentSwitchPolicyControl
+	ProjectSummaries  controllers.ProjectSummaryService
 	// LinkPreview unfurls external URLs for the renderer's hover cards; nil
 	// leaves the route answering 501.
 	LinkPreview controllers.LinkPreviewService
@@ -104,31 +106,33 @@ func normalizeAPIDeps(deps APIDeps, log *slog.Logger) APIDeps {
 // API owns one controller per resource and is the single Register call the
 // router invokes to mount the /api/v1 surface.
 type API struct {
-	cfg           config.Config
-	deps          APIDeps
-	agents        *controllers.AgentsController
-	codexAccounts *controllers.CodexAccountsController
-	projects      *controllers.ProjectsController
-	sessions      *controllers.SessionsController
-	desktop       *controllers.DesktopWorkspaceController
-	usage         *controllers.UsageController
-	prs           *controllers.PRsController
-	reviews       *controllers.ReviewsController
-	notifications *controllers.NotificationsController
-	push          *controllers.PushController
-	imports       *controllers.ImportController
-	shellTerms    *controllers.ShellTerminalsController
-	conversations *controllers.ConversationsController
-	settings      *controllers.SettingsController
-	dev           *controllers.DevController
-	browser       *controllers.BrowserController
-	system        *controllers.SystemController
-	identity      *controllers.IdentityController
-	endpoints     *controllers.EndpointsController
-	systemInstall *controllers.SystemInstallController
-	agentAuth     *controllers.AgentAuthController
-	linkPreview   *controllers.LinkPreviewController
-	events        *EventsController
+	cfg              config.Config
+	deps             APIDeps
+	agents           *controllers.AgentsController
+	codexAccounts    *controllers.CodexAccountsController
+	projects         *controllers.ProjectsController
+	projectSummaries *controllers.ProjectSummariesController
+	sessions         *controllers.SessionsController
+	desktop          *controllers.DesktopWorkspaceController
+	usage            *controllers.UsageController
+	prs              *controllers.PRsController
+	reviews          *controllers.ReviewsController
+	notifications    *controllers.NotificationsController
+	reports          *controllers.ReportsController
+	push             *controllers.PushController
+	imports          *controllers.ImportController
+	shellTerms       *controllers.ShellTerminalsController
+	conversations    *controllers.ConversationsController
+	settings         *controllers.SettingsController
+	dev              *controllers.DevController
+	browser          *controllers.BrowserController
+	system           *controllers.SystemController
+	identity         *controllers.IdentityController
+	endpoints        *controllers.EndpointsController
+	systemInstall    *controllers.SystemInstallController
+	agentAuth        *controllers.AgentAuthController
+	linkPreview      *controllers.LinkPreviewController
+	events           *EventsController
 }
 
 // NewAPI constructs the API surface from its dependencies. cfg carries the
@@ -145,6 +149,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
+		projectSummaries: &controllers.ProjectSummariesController{Svc: deps.ProjectSummaries},
 		sessions: &controllers.SessionsController{
 			Svc:           deps.Sessions,
 			Activity:      deps.Activity,
@@ -158,6 +163,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		prs:           &controllers.PRsController{Svc: deps.PRs},
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
+		reports:       &controllers.ReportsController{Svc: deps.Reports},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
@@ -192,12 +198,14 @@ func (a *API) Register(root chi.Router) {
 			a.agents.Register(r)
 			a.codexAccounts.Register(r)
 			a.projects.Register(r)
+			a.projectSummaries.Register(r)
 			a.sessions.Register(r)
 			a.desktop.Register(r)
 			a.usage.Register(r)
 			a.prs.Register(r)
 			a.reviews.Register(r)
 			a.notifications.Register(r)
+			a.reports.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
 			a.shellTerms.Register(r)
