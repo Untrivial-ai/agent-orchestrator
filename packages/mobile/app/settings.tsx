@@ -16,6 +16,7 @@ import { classifyConnectionFailure, describeConnectionFailure } from "../lib/con
 import { discordFeatureRequestURL } from "../lib/discord";
 import { forgetServer } from "../lib/disconnect";
 import { haptics } from "../lib/haptics";
+import { toggleLayoutGrid, useLayoutGrid } from "../lib/layoutGrid";
 import { checkStore, openOrStartUpdate } from "../lib/inAppUpdates";
 import { describePrompt } from "../lib/storeUpdate";
 import { NativeHeaderButton } from "../lib/native-header-button";
@@ -112,6 +113,14 @@ export default function SettingsScreen() {
 						<FeatureRequestRow />
 					</SettingsCard>
 				</SettingsSection>
+
+				{__DEV__ ? (
+					<SettingsSection title="Developer" footer="Layout grid draws the app's 4pt steps, with the 44pt control lines emphasised.">
+						<SettingsCard>
+							<LayoutGridRow />
+						</SettingsCard>
+					</SettingsSection>
+				) : null}
 
 				<DisconnectRow
 					onForget={async () => {
@@ -254,6 +263,21 @@ function ConnectionTestRow({ cfg, paired }: { cfg: ServerConfig; paired: boolean
 			disabled={!paired}
 			loading={testing}
 			onPress={paired ? test : undefined}
+		/>
+	);
+}
+
+function LayoutGridRow() {
+	const active = useLayoutGrid();
+	return (
+		<CardRow
+			icon="grid"
+			label="Layout grid"
+			value={active ? "On" : "Off"}
+			onPress={() => {
+				haptics.select();
+				toggleLayoutGrid();
+			}}
 		/>
 	);
 }

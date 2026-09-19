@@ -10,6 +10,7 @@ import { PushManager } from "../lib/PushManager";
 import { UpdatesManager } from "../lib/UpdatesManager";
 import { StoreUpdateManager } from "../lib/StoreUpdateManager";
 import { MinimalBackButton } from "../lib/MinimalBackButton";
+import { LayoutGrid } from "../lib/layoutGrid";
 import { AppProvider } from "../lib/store";
 import { ThemeProvider, useTheme, useThemeState } from "../lib/ThemeProvider";
 
@@ -183,6 +184,8 @@ function Shell() {
 					options={{ ...CONNECT_SHEET_OPTIONS, contentStyle: { backgroundColor: t.bgSurface } }}
 				/>
 			</Stack>
+			{/* Dev-only measurement overlay; renders nothing in a release build. */}
+			<LayoutGrid />
 		</>
 	);
 }

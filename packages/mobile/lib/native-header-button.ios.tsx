@@ -5,6 +5,7 @@ import {
 	buttonBorderShape,
 	buttonStyle,
 	controlSize,
+	font,
 	frame,
 	labelStyle,
 	tint,
@@ -48,6 +49,10 @@ export function NativeHeaderButton({
 					// the hamburger, and an intrinsic-size circle grew with it — so the
 					// notifications button drew visibly bigger than the menu button.
 					frame({ width: 44, height: 44 }),
+					// One symbol size for every header glyph. Left to the control, the bell
+					// draws optically heavier than the three-line menu icon even inside an
+					// identical circle.
+					font({ size: 17, weight: "semibold" }),
 					labelStyle("iconOnly"),
 					tint(t.textSecondary),
 					accessibilityIdentifier(`header-${icon}`),
