@@ -108,6 +108,7 @@ export type BrowserProfileImportOptions = {
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
 	now?: () => Date;
+	sqliteTimeoutMs?: number;
 	sourceLstat?: typeof lstat;
 };
 
@@ -434,7 +435,7 @@ async function readSafariProfileNames(root: string, relativeDatabase: string, st
 		const databaseFile = await findDatabase(root, [relativeDatabase]);
 		if (!databaseFile) return names;
 		await mkdir(staging, { recursive: true, mode: 0o700 });
-		const snapshot = await snapshotSQLite(databaseFile, root, staging, new SourceBudget());
+		const snapshot = await snapshotSQLite(databaseFile, root, staging, new SourceBudget(), "Safari");
 		withReadOnlyDatabase(snapshot, (database) => {
 			if (!hasTable(database, "bookmarks")) return;
 			const rows = database.prepare(`
@@ -635,7 +636,19 @@ export class BrowserProfileImportService {
 			for (const [index, profile] of selected.entries()) {
 				throwIfImportAborted(signal);
 				onProgress({ requestId: request.requestId, phase: "reading", completed: index, total: selected.length });
-				readData.push(await readProfileData(source, profile, request, staging, budget, decryptor, this.now()));
+				readData.push(await readProfileData(
+					source,
+					profile,
+					request,
+					staging,
+					budget,
+					decryptor,
+					this.now(),
+					{
+						sqliteTimeoutMs: this.options.sqliteTimeoutMs,
+						signal,
+					},
+				));
 				throwIfImportAborted(signal);
 				onProgress({ requestId: request.requestId, phase: "reading", completed: index + 1, total: selected.length });
 			}
@@ -808,6 +821,7 @@ async function readProfileData(
 	budget: SourceBudget,
 	decryptor: ChromiumCookieDecryptor | null,
 	now: Date,
+	options?: SnapshotOptions,
 ): Promise<ReadProfileData> {
 	const warnings: BrowserImportWarning[] = [];
 	let cookies: ImportedCookie[] = [];
@@ -825,8 +839,8 @@ async function readProfileData(
 			const outcome = source.descriptor.family === "safari"
 				? readSafariCookies(await readFile(await snapshotFile(cookieDatabase, profile.root, staging, budget)), now)
 				: source.descriptor.family === "chromium"
-					? readChromiumCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget), decryptor, now)
-					: readFirefoxCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget), now);
+					? readChromiumCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget, source.public.name, options), decryptor, now)
+					: readFirefoxCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget, source.public.name, options), now);
 			if (!outcome) {
 				warnings.push({ code: "cookie-database-missing" });
 			} else {
@@ -843,7 +857,7 @@ async function readProfileData(
 		if (!historyDatabase) {
 			warnings.push({ code: "history-database-missing" });
 		} else {
-			const snapshot = await snapshotSQLite(historyDatabase, profile.root, staging, budget);
+			const snapshot = await snapshotSQLite(historyDatabase, profile.root, staging, budget, source.public.name, options);
 			const outcome = source.descriptor.family === "chromium"
 				? readChromiumHistory(snapshot)
 				: source.descriptor.family === "firefox"
@@ -904,41 +918,119 @@ async function findDatabase(profileRoot: string, relatives: string[], throwAcces
 	return null;
 }
 
+type SnapshotOptions = {
+	sqliteTimeoutMs?: number;
+	signal?: AbortSignal;
+};
+
+const SQLITE_PREFLIGHT_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
+
+function isSqliteLockError(error: unknown): boolean {
+	if (!error) return false;
+	const err = error as { code?: string; message?: string };
+	if (err.code === "SQLITE_BUSY" || err.code === "SQLITE_LOCKED" || err.code === "EBUSY") {
+		return true;
+	}
+	if (typeof err.message === "string" && /database is locked|resource busy|sqlite_busy|sqlite_locked/i.test(err.message)) {
+		return true;
+	}
+	return false;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			return reject(new Error("Browser import was canceled because the app is closing."));
+		}
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const onAbort = () => {
+			if (timer !== null) clearTimeout(timer);
+			reject(new Error("Browser import was canceled because the app is closing."));
+		};
+		timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 async function snapshotSQLite(
 	database: string,
 	profileRoot: string,
 	staging: string,
 	budget: SourceBudget,
+	browserName = "browser",
+	options?: SnapshotOptions,
 ): Promise<string> {
 	const destination = path.join(staging, `${randomUUID()}-${path.basename(database)}`);
 	const canonical = await preflightContainedFile(database, profileRoot, SOURCE_FILE_MAX_BYTES, budget);
-	for (const suffix of ["-wal", "-shm"]) {
+	for (const suffix of SQLITE_PREFLIGHT_SIDECAR_SUFFIXES) {
 		try {
 			await preflightContainedFile(`${database}${suffix}`, profileRoot, SOURCE_SIDECAR_MAX_BYTES, budget);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
-	const source = new Database(canonical, { readonly: true, fileMustExist: true, timeout: 5_000 });
+
+	const canonicalStat = await stat(canonical);
+	const timeoutMs = options?.sqliteTimeoutMs ?? 5_000;
+	const deadline = Date.now() + timeoutMs;
+
 	try {
-		source.pragma("query_only = ON");
-		await source.backup(destination);
-		const output = await stat(destination).catch((error) => {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				throw new Error("AO's temporary browser data snapshot disappeared before it could be read. Restart AO and retry the import.");
+		while (true) {
+			if (options?.signal) throwIfImportAborted(options.signal);
+			await rm(destination, { force: true }).catch(() => undefined);
+
+			const attemptTimeout = Math.max(0, Math.min(100, deadline - Date.now()));
+			let backedUp = false;
+
+			try {
+				const source = new Database(canonical, { readonly: true, fileMustExist: true, timeout: attemptTimeout });
+				try {
+					source.pragma("query_only = ON");
+					const progress = await source.backup(destination);
+					const output = await stat(destination).catch(() => null);
+					if (output && output.size > SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
+						throw new Error("Browser source database exceeds the snapshot size limit.");
+					}
+					if (canonicalStat.size === 0) {
+						if (output?.isFile()) {
+							backedUp = true;
+						}
+					} else if (progress && progress.totalPages > 0 && output?.isFile() && output.size > 0) {
+						backedUp = true;
+					}
+				} finally {
+					source.close();
+				}
+			} catch (error) {
+				if (isSqliteLockError(error)) {
+					// Transient lock error: will be retried if time remains
+				} else {
+					throw error;
+				}
 			}
-			throw error;
-		});
-		if (!output.isFile() || output.size > SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
-			throw new Error("Browser source database exceeds the snapshot size limit.");
+
+			if (backedUp) {
+				await chmod(destination, 0o600);
+				return destination;
+			}
+
+			if (options?.signal) throwIfImportAborted(options.signal);
+
+			if (Date.now() >= deadline) {
+				throw new Error(
+					`Browser source database is locked by ${browserName}. Close ${browserName} and retry the import.`,
+				);
+			}
+
+			const sleepMs = Math.min(25, Math.max(1, deadline - Date.now()));
+			await sleep(sleepMs, options?.signal);
 		}
-		await chmod(destination, 0o600);
-		return destination;
 	} catch (error) {
 		await rm(destination, { force: true }).catch(() => undefined);
 		throw error;
-	} finally {
-		source.close();
 	}
 }
 
