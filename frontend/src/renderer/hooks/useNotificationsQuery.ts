@@ -6,6 +6,7 @@ import {
 	markAllCachedNotificationsRead,
 	markAllNotificationsRead,
 	notificationsQueryKey,
+	reconcileNotifications,
 	type NotificationListStatus,
 	unreadNotificationsQueryKey,
 } from "../lib/notifications";
@@ -50,7 +51,7 @@ export function useClearAllNotificationsMutation() {
 		onSuccess: async (result) => {
 			await queryClient.cancelQueries({ queryKey: ["notifications", "history"] }, { revert: false });
 			applyNotificationsCleared(queryClient, result);
-			await queryClient.invalidateQueries({ queryKey: ["notifications", "history"] });
+			await reconcileNotifications(queryClient);
 		},
 	});
 }

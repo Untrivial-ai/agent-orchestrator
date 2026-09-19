@@ -33,6 +33,16 @@ type LiveNotificationEvent =
 	| { kind: "cleared"; clear: NotificationClear };
 
 const latestClearGeneration = new WeakMap<QueryClient, { epoch: string; sequence: number }>();
+const notificationReconcilers = new WeakMap<QueryClient, () => Promise<void>>();
+
+export function reconcileNotifications(queryClient: QueryClient): Promise<void> {
+	const reconcile = notificationReconcilers.get(queryClient);
+	if (reconcile) return reconcile();
+	return Promise.all([
+		queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey }),
+		queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey }),
+	]).then(() => undefined);
+}
 
 export function notificationsQueryKey(status: NotificationListStatus): NotificationsQueryKey {
 	return status === "unread" ? unreadNotificationsQueryKey : recentNotificationsQueryKey;
@@ -105,12 +115,15 @@ function mergeRecentNotification(queryClient: QueryClient, notification: Notific
  * AO resolved the issue behind a notification. Update the row in unread/all
  * caches; the seen state is a separate axis and is deliberately left untouched.
  */
-export function applyResolvedNotification(queryClient: QueryClient, notification: NotificationDTO): void {
+export function applyResolvedNotification(queryClient: QueryClient, notification: NotificationDTO): boolean {
+	let foundInEveryCache = true;
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+		let found = false;
 		queryClient.setQueryData<NotificationsCache>(queryKey, (current) => {
 			if (!current) return current;
 			const existing = getCachedNotifications(current).find((item) => item.id === notification.id);
 			if (!existing) return current;
+			found = true;
 			const unresolvedDelta = Number(isUnresolved(notification)) - Number(isUnresolved(existing));
 			return {
 				...current,
@@ -121,7 +134,9 @@ export function applyResolvedNotification(queryClient: QueryClient, notification
 				})),
 			};
 		});
+		if (!found) foundInEveryCache = false;
 	}
+	return foundInEveryCache;
 }
 
 function mergeNotificationIntoCache(
@@ -329,7 +344,14 @@ export function createNotificationsTransport(
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
-			let snapshotRefresh: { dirty: boolean; events: LiveNotificationEvent[] } | undefined;
+			let snapshotRefresh:
+				| {
+						dirty: boolean;
+						events: LiveNotificationEvent[];
+						done: Promise<void>;
+						resolve: () => void;
+				  }
+				| undefined;
 			let pendingLiveEvents: Promise<void> | undefined;
 
 			const applyLiveNotificationEvent = (event: LiveNotificationEvent): Promise<void> | void => {
@@ -342,7 +364,9 @@ export function createNotificationsTransport(
 						});
 				}
 				if (event.kind === "resolved") {
-					applyResolvedNotification(queryClient, event.notification);
+					if (!applyResolvedNotification(queryClient, event.notification)) {
+						void invalidateNotifications();
+					}
 					return;
 				}
 				const inserted = mergeUnreadNotification(queryClient, event.notification);
@@ -389,25 +413,40 @@ export function createNotificationsTransport(
 				enqueueLiveNotificationEvent(event);
 			};
 
-			const invalidateNotifications = () => {
+			const invalidateNotifications = (): Promise<void> => {
 				if (snapshotRefresh) {
 					snapshotRefresh.dirty = true;
-					return;
+					return snapshotRefresh.done;
 				}
-				const refresh = { dirty: false, events: [] as LiveNotificationEvent[] };
+				let resolveRefresh!: () => void;
+				const done = new Promise<void>((resolve) => {
+					resolveRefresh = resolve;
+				});
+				const refresh = {
+					dirty: false,
+					events: [] as LiveNotificationEvent[],
+					done,
+					resolve: resolveRefresh,
+				};
 				snapshotRefresh = refresh;
 				const finish = async () => {
-					if (snapshotRefresh !== refresh) return;
-					snapshotRefresh = undefined;
-					for (const event of refresh.events) enqueueLiveNotificationEvent(event);
-					await pendingLiveEvents;
-					if (refresh.dirty) invalidateNotifications();
+					try {
+						if (snapshotRefresh !== refresh) return;
+						snapshotRefresh = undefined;
+						for (const event of refresh.events) enqueueLiveNotificationEvent(event);
+						await pendingLiveEvents;
+						if (refresh.dirty) await invalidateNotifications();
+					} finally {
+						refresh.resolve();
+					}
 				};
 				void Promise.all([
 					queryClient.invalidateQueries({ queryKey: unreadNotificationsQueryKey }),
 					queryClient.invalidateQueries({ queryKey: recentNotificationsQueryKey }),
 				]).then(finish, finish);
+				return refresh.done;
 			};
+			notificationReconcilers.set(queryClient, invalidateNotifications);
 
 			// Consecutive scheduled rebuilds since the stream last opened; paces
 			// the retry instead of knocking on a flat cadence forever (#4323).
@@ -475,6 +514,9 @@ export function createNotificationsTransport(
 
 			return () => {
 				if (retryTimer) clearTimeout(retryTimer);
+				if (notificationReconcilers.get(queryClient) === invalidateNotifications) {
+					notificationReconcilers.delete(queryClient);
+				}
 				removeDaemonListener();
 				removeBaseUrlListener();
 				source?.close();

@@ -1,9 +1,12 @@
 package notification
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +44,7 @@ type capturePublisher struct {
 	events  []domain.NotificationEvent
 	barrier *recordingLocker
 	t       *testing.T
+	err     error
 }
 
 func (p *capturePublisher) Publish(_ context.Context, event domain.NotificationEvent) error {
@@ -48,7 +52,7 @@ func (p *capturePublisher) Publish(_ context.Context, event domain.NotificationE
 		p.t.Fatal("notification event published outside clear barrier")
 	}
 	p.events = append(p.events, event)
-	return nil
+	return p.err
 }
 
 func (f *fakeStore) CreateNotification(context.Context, domain.NotificationRecord) (domain.NotificationRecord, bool, error) {
@@ -238,5 +242,26 @@ func TestClearAllPublishesMatchingOrderedGenerationInsideBarrier(t *testing.T) {
 		publisher.events[0].ClearSequence != first.ClearSequence || publisher.events[1].ClearID != second.ClearID ||
 		publisher.events[1].ClearEpoch != second.ClearEpoch || publisher.events[1].ClearSequence != second.ClearSequence {
 		t.Fatalf("events = %+v", publisher.events)
+	}
+}
+
+func TestClearAllReturnsCommittedResultWhenPublishFails(t *testing.T) {
+	var logs bytes.Buffer
+	st := &fakeStore{clearAllCount: 4}
+	publisher := &capturePublisher{err: errors.New("subscriber failed")}
+	mgr := New(Deps{
+		Store: st, Publisher: publisher, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		ClearEpoch: "epoch-1", NewClearID: func() string { return "clear-1" },
+	})
+
+	got, err := mgr.ClearAll(context.Background())
+	if err != nil {
+		t.Fatalf("ClearAll: %v", err)
+	}
+	if got.ClearedCount != 4 || got.ClearID != "clear-1" || !st.clearedAll {
+		t.Fatalf("result=%+v cleared=%v", got, st.clearedAll)
+	}
+	if !strings.Contains(logs.String(), "notification clear event publish failed") {
+		t.Fatalf("logs = %q", logs.String())
 	}
 }

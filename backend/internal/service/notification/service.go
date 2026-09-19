@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +27,7 @@ type Manager struct {
 	store         Store
 	publisher     Publisher
 	barrier       sync.Locker
+	logger        *slog.Logger
 	newClearID    func() string
 	clearEpoch    string
 	clearSequence int64
@@ -50,6 +51,7 @@ type Deps struct {
 	Store      Store
 	Publisher  Publisher
 	Barrier    sync.Locker
+	Logger     *slog.Logger
 	NewClearID func() string
 	ClearEpoch string
 }
@@ -58,10 +60,13 @@ type Deps struct {
 func New(d Deps) *Manager {
 	m := &Manager{
 		store: d.Store, publisher: d.Publisher, barrier: d.Barrier,
-		newClearID: d.NewClearID, clearEpoch: d.ClearEpoch,
+		logger: d.Logger, newClearID: d.NewClearID, clearEpoch: d.ClearEpoch,
 	}
 	if m.barrier == nil {
 		m.barrier = &sync.Mutex{}
+	}
+	if m.logger == nil {
+		m.logger = slog.New(slog.DiscardHandler)
 	}
 	if m.newClearID == nil {
 		m.newClearID = func() string { return "ntf_clear_" + uuid.NewString() }
@@ -180,7 +185,7 @@ func (m *Manager) ClearAll(ctx context.Context) (ClearResult, error) {
 			ClearSequence: result.ClearSequence,
 		}
 		if err := m.publisher.Publish(ctx, event); err != nil {
-			return ClearResult{}, fmt.Errorf("notification: publish clear-all: %w", err)
+			m.logger.WarnContext(ctx, "notification clear event publish failed", "error", err)
 		}
 	}
 	return result, nil

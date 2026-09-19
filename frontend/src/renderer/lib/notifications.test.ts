@@ -50,6 +50,7 @@ import {
 	mergeUnreadNotification,
 	NOTIFICATION_PAGE_SIZE,
 	recentNotificationsQueryKey,
+	reconcileNotifications,
 	unreadNotificationsQueryKey,
 } from "./notifications";
 
@@ -365,7 +366,7 @@ describe("notification cache helpers", () => {
 			pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1 }],
 		});
 
-		applyResolvedNotification(qc, notification({ resolvedAt: "2026-06-16T11:00:00Z" }));
+		expect(applyResolvedNotification(qc, notification({ resolvedAt: "2026-06-16T11:00:00Z" }))).toBe(true);
 
 		const unread = qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey);
 		expect(getCachedNotifications(unread)).toEqual([
@@ -490,6 +491,26 @@ describe("createNotificationsTransport", () => {
 		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(0);
 	});
 
+	it("reconciles counts when a resolved notification is outside the loaded pages", async () => {
+		const qc = queryClient();
+		const other = notification({ id: "other" });
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			qc.setQueryData<NotificationsCache>(queryKey, {
+				pageParams: [""],
+				pages: [{ notifications: [other], unreadCount: 2, unresolvedCount: 2 }],
+			});
+		}
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+		createNotificationsTransport(qc).connect();
+
+		EventSourceStub.instances[0].dispatch(
+			"notification_resolved",
+			notification({ id: "not-loaded", resolvedAt: "2026-06-16T11:00:00Z" }),
+		);
+
+		await vi.waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(2));
+	});
+
 	it("replays clear and create events then reconciles once after a reconnect snapshot", async () => {
 		const qc = queryClient();
 		mergeUnreadNotification(qc, notification({ id: "before-clear" }));
@@ -516,6 +537,38 @@ describe("createNotificationsTransport", () => {
 			]),
 		);
 		await vi.waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(4));
+	});
+
+	it("buffers live creates while an explicit reconciliation refreshes snapshots", async () => {
+		const qc = queryClient();
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+		let finishRefresh: (() => void) | undefined;
+		const refresh = new Promise<void>((resolve) => {
+			finishRefresh = resolve;
+		});
+		invalidateSpy.mockReturnValue(refresh);
+		createNotificationsTransport(qc).connect();
+		const source = EventSourceStub.instances[0];
+
+		const reconciliation = reconcileNotifications(qc);
+		source.dispatch("notification_created", notification({ id: "during-refresh" }));
+		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
+			qc.setQueryData<NotificationsCache>(queryKey, {
+				pageParams: [""],
+				pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+			});
+		}
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([]);
+
+		finishRefresh?.();
+		await reconciliation;
+
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
+			expect.objectContaining({ id: "during-refresh" }),
+		]);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([
+			expect.objectContaining({ id: "during-refresh" }),
+		]);
 	});
 
 	it("cancels an in-flight history fetch before applying a clear and later create", async () => {
