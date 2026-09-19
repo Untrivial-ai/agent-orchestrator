@@ -36,6 +36,10 @@ const (
 	// daemon validates it at startup, but worker/orchestrator spawns resolve from
 	// explicit requests or project role config instead of falling back to it.
 	DefaultAgent = "claude-code"
+	// DefaultMaxConcurrentSessions prevents an unattended worker fan-out from
+	// exhausting a typical developer machine. Operators can explicitly set
+	// AO_MAX_CONCURRENT_SESSIONS=0 to opt out.
+	DefaultMaxConcurrentSessions = 4
 	// DefaultTelemetryPostHogHost is the default PostHog ingestion host when
 	// remote telemetry is enabled and AO_TELEMETRY_POSTHOG_HOST is unset.
 	DefaultTelemetryPostHogHost = "https://us.i.posthog.com"
@@ -155,6 +159,11 @@ type Config struct {
 	// GitLab carries the self-managed GitLab host allowlist and per-host
 	// token overrides, loaded once at boot from environment variables.
 	GitLab GitLabConfig
+	// MaxConcurrentSessions caps the daemon-wide number of non-terminated
+	// sessions considered before admitting another worker runtime. Orchestrator
+	// sessions are exempt from admission so recovery remains possible. Zero
+	// explicitly disables the global cap.
+	MaxConcurrentSessions int
 	// Client identifies which client this deployment serves (AO_CLIENT). Empty
 	// means no client identity, which keeps client-gated offerings off.
 	Client string
@@ -191,6 +200,7 @@ func (c Config) Addr() string {
 //	AO_RUN_FILE          running.json path   (default ~/.ao/running.json)
 //	AO_DATA_DIR          durable state dir   (default ~/.ao/data)
 //	AO_AGENT             compatibility agent id (default claude-code)
+//	AO_MAX_CONCURRENT_SESSIONS global worker admission cap (default 4; 0 = unlimited)
 //	AO_APP_RUN_ID        desktop-app launch id, set by the Electron supervisor
 //	                     (default: a fresh id minted per daemon boot)
 //	AO_ALLOWED_ORIGINS   CORS origins, comma-separated (default DefaultAllowedOrigins)
@@ -209,12 +219,13 @@ func (c Config) Addr() string {
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
 	cfg := Config{
-		Host:            LoopbackHost,
-		Port:            DefaultPort,
-		RequestTimeout:  DefaultRequestTimeout,
-		ShutdownTimeout: DefaultShutdownTimeout,
-		Agent:           DefaultAgent,
-		AllowedOrigins:  DefaultAllowedOrigins,
+		Host:                  LoopbackHost,
+		Port:                  DefaultPort,
+		RequestTimeout:        DefaultRequestTimeout,
+		ShutdownTimeout:       DefaultShutdownTimeout,
+		Agent:                 DefaultAgent,
+		MaxConcurrentSessions: DefaultMaxConcurrentSessions,
+		AllowedOrigins:        DefaultAllowedOrigins,
 		Telemetry: TelemetryConfig{
 			Remote:      TelemetryRemoteOff,
 			PostHogHost: DefaultTelemetryPostHogHost,
@@ -251,6 +262,17 @@ func Load() (Config, error) {
 
 	if raw := os.Getenv("AO_AGENT"); raw != "" {
 		cfg.Agent = raw
+	}
+
+	if raw, ok := os.LookupEnv("AO_MAX_CONCURRENT_SESSIONS"); ok && strings.TrimSpace(raw) != "" {
+		limit, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid AO_MAX_CONCURRENT_SESSIONS %q: %w", raw, err)
+		}
+		if limit < 0 {
+			return Config{}, fmt.Errorf("invalid AO_MAX_CONCURRENT_SESSIONS %d: must be >= 0 (0 = unlimited)", limit)
+		}
+		cfg.MaxConcurrentSessions = limit
 	}
 
 	// A missing AO_APP_RUN_ID means nothing is supervising this daemon, so this

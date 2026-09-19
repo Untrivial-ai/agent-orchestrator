@@ -1175,6 +1175,8 @@ func mapSessionError(err error) error {
 	case errors.Is(err, sessionmanager.ErrNotResumable):
 		return apierr.Conflict("SESSION_NOT_RESUMABLE",
 			"This session has no saved agent session or prompt to resume from", nil)
+	case errors.Is(err, sessionmanager.ErrConcurrencyLimit):
+		return apierr.Conflict("SESSION_CONCURRENCY_LIMIT", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrProjectNotResolvable):
 		return apierr.Invalid("PROJECT_NOT_RESOLVABLE", "Project is not registered or has no repo. Register it with `ao project add`", nil)
 	case errors.Is(err, sessionmanager.ErrUnknownHarness):

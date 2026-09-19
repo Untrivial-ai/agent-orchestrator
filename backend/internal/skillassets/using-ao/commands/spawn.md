@@ -38,3 +38,14 @@ ao spawn --project agent-orchestrator --issue 142 --name "fix-session-leak" --pr
 # Spawn a worker and immediately claim an open PR
 ao spawn --project agent-orchestrator --name "review-pr-88" --claim-pr 88 --harness claude-code
 ```
+
+## Concurrency
+
+Keep the number of concurrently running workers small — each agent harness uses
+roughly 1.5-2 GB of RAM, so 3-4 concurrent workers is a sane ceiling on an 8 GB
+machine. Wait for a worker to finish before spawning the next batch.
+
+When AO is configured with a concurrency cap (`AO_MAX_CONCURRENT_SESSIONS` or
+the project's `maxConcurrentSessions` config), a spawn over the cap fails with
+`SESSION_CONCURRENCY_LIMIT`. That is not an error to work around: wait for a
+running worker to finish (or kill one that is stuck) and retry the spawn.

@@ -142,6 +142,9 @@ var (
 	// ErrResumeInProgress prevents concurrent resume requests from replacing the
 	// same runtime twice.
 	ErrResumeInProgress = errors.New("session: agent resume already in progress")
+	// ErrConcurrencyLimit means a worker start was refused before allocating
+	// resources because its daemon-wide or project-wide admission cap is full.
+	ErrConcurrencyLimit = errors.New("session: concurrent session limit reached")
 	// ErrAwaitingDecision means the session is paused on a pending
 	// permission/approval dialog. Send refuses to paste into it: the runtime
 	// appends Enter after every paste, and an Enter into a decision dialog
@@ -428,10 +431,17 @@ type Manager struct {
 	statusRecoveryRevision         uint64
 	statusRecoveries               map[domain.SessionID]statusRecovery
 	statusVerificationLimit        time.Duration
-	agentOpMu                      sync.Mutex
-	agentOperations                map[domain.SessionID]agentOperationKind
-	interfaceRecoveryMu            sync.Mutex
-	deferredInterfaceRecovery      map[domain.SessionID]string
+	// admissionReservations covers worker starts that passed the count check but
+	// have not yet become non-terminated durable rows. Counting reservations
+	// closes the check/start race without holding a mutex across slow workspace
+	// or runtime operations.
+	maxConcurrentSessions     int
+	admissionMu               sync.Mutex
+	admissionReservations     map[domain.ProjectID]int
+	agentOpMu                 sync.Mutex
+	agentOperations           map[domain.SessionID]agentOperationKind
+	interfaceRecoveryMu       sync.Mutex
+	deferredInterfaceRecovery map[domain.SessionID]string
 	// switchDecisionInput opens a narrow human-only terminal lane while the
 	// source is blocked on permission during a mandatory switch.
 	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
@@ -727,6 +737,9 @@ type Deps struct {
 	// BackgroundContext owns work admitted by request-scoped methods. Nil keeps
 	// focused tests and embedders compatible by defaulting to Background.
 	BackgroundContext context.Context
+	// MaxConcurrentSessions is the daemon-wide worker start cap. Zero disables
+	// the global cap; a project may still define its own cap.
+	MaxConcurrentSessions int
 	// Logger receives spawn-time diagnostics (e.g. when the session PATH
 	// cannot be pinned to the daemon binary). Nil defaults to slog.Default().
 	Logger *slog.Logger
@@ -761,6 +774,8 @@ func New(d Deps) *Manager {
 		newLaunchID:                    d.NewLaunchID,
 		codexOperationGate:             defaultCodexOperationGate(d.CodexOperationGate),
 		backgroundContext:              d.BackgroundContext,
+		maxConcurrentSessions:          d.MaxConcurrentSessions,
+		admissionReservations:          make(map[domain.ProjectID]int),
 		startupBackgroundReconcileDone: make(chan struct{}),
 		agentOperations:                make(map[domain.SessionID]agentOperationKind),
 		switchDecisionInput:            make(map[domain.SessionID]domain.AgentSwitchID),
@@ -935,8 +950,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	promptBytes := len(prompt)
 	systemPromptBytes := len(systemPrompt)
 
-	rec, err := m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock()))
+	rec, err := m.createSessionWithinCap(ctx, cfg, project)
 	if err != nil {
+		if errors.Is(err, ErrConcurrencyLimit) {
+			return domain.SessionRecord{}, 0, 0, err
+		}
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
 	}
 	m.markFreshSessionStatusReady(rec.ID)
@@ -1125,6 +1143,81 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, err
 	}
 	return rec, promptBytes, systemPromptBytes, nil
+}
+
+// createSessionWithinCap reserves worker capacity before creating the seed row.
+// Once CreateSession succeeds the durable non-terminated row itself occupies
+// the slot, so the transient reservation can be released.
+func (m *Manager) createSessionWithinCap(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectRecord) (domain.SessionRecord, error) {
+	release, err := m.beginWorkerAdmission(ctx, cfg.Kind, cfg.ProjectID, project.Config.MaxConcurrentSessions)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	defer release()
+	return m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock()))
+}
+
+// beginWorkerAdmission atomically evaluates durable live sessions plus starts
+// already admitted by this process. Only workers consume admission slots;
+// orchestrators remain startable for recovery even when the cap is full.
+func (m *Manager) beginWorkerAdmission(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID, projectCap int) (func(), error) {
+	if kind != domain.KindWorker {
+		return func() {}, nil
+	}
+	m.admissionMu.Lock()
+	defer m.admissionMu.Unlock()
+
+	globalCap := m.maxConcurrentSessions
+	if globalCap <= 0 && projectCap <= 0 {
+		return func() {}, nil
+	}
+	reservedGlobal := 0
+	for _, count := range m.admissionReservations {
+		reservedGlobal += count
+	}
+	if globalCap > 0 {
+		all, err := m.store.ListAllSessions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("concurrency check: %w", err)
+		}
+		globalActive := countNonTerminated(all)
+		if globalActive+reservedGlobal >= globalCap {
+			return nil, fmt.Errorf("%w: %d active or starting sessions at AO_MAX_CONCURRENT_SESSIONS=%d; wait for a session to finish (or kill one) and retry", ErrConcurrencyLimit, globalActive+reservedGlobal, globalCap)
+		}
+	}
+	if projectCap > 0 {
+		projectSessions, err := m.store.ListSessions(ctx, projectID)
+		if err != nil {
+			return nil, fmt.Errorf("concurrency check: %w", err)
+		}
+		projectActive := countNonTerminated(projectSessions) + m.admissionReservations[projectID]
+		if projectActive >= projectCap {
+			return nil, fmt.Errorf("%w: project %s has %d active or starting sessions at maxConcurrentSessions=%d; wait for a session to finish (or kill one) and retry", ErrConcurrencyLimit, projectID, projectActive, projectCap)
+		}
+	}
+	m.admissionReservations[projectID]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.admissionMu.Lock()
+			defer m.admissionMu.Unlock()
+			if m.admissionReservations[projectID] <= 1 {
+				delete(m.admissionReservations, projectID)
+				return
+			}
+			m.admissionReservations[projectID]--
+		})
+	}, nil
+}
+
+func countNonTerminated(recs []domain.SessionRecord) int {
+	active := 0
+	for _, rec := range recs {
+		if !rec.IsTerminated {
+			active++
+		}
+	}
+	return active
 }
 
 func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
@@ -2178,6 +2271,11 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
 	}
+	releaseAdmission, err := m.beginWorkerAdmission(ctx, rec.Kind, rec.ProjectID, project.Config.MaxConcurrentSessions)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
+	}
+	defer releaseAdmission()
 	// Mirror Kill's incomplete-handle guard: a session whose spawn failed before
 	// the workspace landed has neither WorkspacePath nor Branch, and there is
 	// nothing meaningful to restore from. Surface this as a typed 409 instead of
@@ -3186,19 +3284,28 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 			}
 		}
 
-		// Step 3: relaunch the agent in the restored workspace.
-		if _, err := m.relaunchRestoredSession(ctx, rec, project, ws); err != nil {
+		// Step 3: reserve capacity immediately before starting the runtime. This
+		// applies both daemon-wide and project caps to boot restoration without
+		// holding admission while git reconstructs the workspace.
+		releaseAdmission, admissionErr := m.beginWorkerAdmission(ctx, rec.Kind, rec.ProjectID, project.Config.MaxConcurrentSessions)
+		if admissionErr != nil {
+			m.logger.Warn("restore-all: concurrency cap reached; leaving session terminated with its restore marker intact", "sessionID", rec.ID, "error", admissionErr)
+			continue
+		}
+		_, relaunchErr := m.relaunchRestoredSession(ctx, rec, project, ws)
+		releaseAdmission()
+		if relaunchErr != nil {
 			switch {
-			case errors.Is(err, ErrNotResumable):
+			case errors.Is(relaunchErr, ErrNotResumable):
 				// A promptless, unresumable worker is intentionally left terminated:
 				// expected, not an operational failure, so log it quietly.
 				m.logger.Warn("restore-all: session left terminated (nothing to resume)", "sessionID", rec.ID)
-			case errors.Is(err, ErrNotFound):
+			case errors.Is(relaunchErr, ErrNotFound):
 				// The row was reaped between listing and relaunch (a stale id during
 				// reconciliation): skip it and keep restoring the rest.
 				m.logger.Warn("restore-all: session vanished before relaunch, skipping", "sessionID", rec.ID)
 			default:
-				m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
+				m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", relaunchErr)
 			}
 			continue
 		}
