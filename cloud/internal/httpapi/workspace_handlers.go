@@ -243,6 +243,8 @@ func (s *Server) runWorkspaceRequest(
 				status := http.StatusUnprocessableEntity
 				if current.ErrorCode == "TRANSPORT_TIMEOUT" {
 					status = http.StatusGatewayTimeout
+				} else if current.ErrorCode == "WORKSPACE_SNAPSHOT_STALE" || current.ErrorCode == "WORKSPACE_FILE_STALE" {
+					status = http.StatusConflict
 				}
 				writeError(w, r, status, current.ErrorCode, current.ErrorMessage)
 				return nil, false
