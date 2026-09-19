@@ -63,6 +63,46 @@ describe("cloud control-plane session lifecycle", () => {
 		);
 	});
 
+	it("calls the complete provider-neutral workspace review contract", async () => {
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
+		const client = createCloudCpClient({
+			baseUrl: "https://cloud.example.test",
+			getToken: async () => "token",
+			fetchImpl: fetchMock as typeof fetch,
+		});
+
+		await client.getWorkspaceReview("org/1", "session/1");
+		await client.getWorkspaceReviewTree("org/1", "session/1", "src/lib");
+		await client.searchWorkspaceReview("org/1", "session/1", { query: "app", cursor: "next", limit: 20 });
+		await client.getWorkspaceReviewFile("org/1", "session/1", { path: "src/App.tsx", scope: "committed", commitSha: "abc" });
+		await client.getWorkspaceReviewDiffs("org/1", "session/1", {
+			scope: "staged", paths: ["src/App.tsx"], contextLines: 5, ignoreWhitespace: true, workspaceVersion: "v1",
+		});
+		await client.getWorkspaceReviewRevision("org/1", "session/1", {
+			path: "src/App.tsx", scope: "unstaged", side: "before", workspaceVersion: "v1", expectedRevision: "r1",
+		});
+		await client.updateWorkspaceReviewFile("org/1", "session/1", {
+			path: "src/App.tsx", content: "updated\n", expectedFileFingerprint: "fp1",
+		});
+
+		const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+		expect(calls.map(([request]) => request)).toEqual([
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/review",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/tree?path=src%2Flib",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/search?query=app&cursor=next&limit=20",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/review/file?path=src%2FApp.tsx&scope=committed&commitSha=abc",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/review/diffs",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/review/revision?path=src%2FApp.tsx&scope=unstaged&side=before&workspaceVersion=v1&expectedRevision=r1",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/workspace/review/file",
+		]);
+		expect(fetchMock).toHaveBeenNthCalledWith(5, expect.any(String), expect.objectContaining({ method: "POST", body: JSON.stringify({
+			scope: "staged", paths: ["src/App.tsx"], contextLines: 5, ignoreWhitespace: true, workspaceVersion: "v1",
+		}) }));
+		expect(fetchMock).toHaveBeenNthCalledWith(7, expect.any(String), expect.objectContaining({ method: "PUT", body: JSON.stringify({
+			path: "src/App.tsx", content: "updated\n", expectedFileFingerprint: "fp1",
+		}) }));
+	});
+
 	it("posts restore intent for one deleted, encoded session", async () => {
 		const fetchMock = vi.fn(async () =>
 			new Response(
