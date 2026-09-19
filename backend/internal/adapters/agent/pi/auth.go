@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -490,29 +491,23 @@ func piModelsProviderValid(provider string, config piModelsProvider) bool {
 			}
 			return false
 		}
-		if !piRegisteredAPI(api) {
+		if !piAPIIdentifier(api) {
 			return false
 		}
 	}
 	return true
 }
 
-func piRegisteredAPI(api string) bool {
-	switch api {
-	case "openai-completions",
-		"mistral-conversations",
-		"openai-responses",
-		"azure-openai-responses",
-		"openai-codex-responses",
-		"anthropic-messages",
-		"bedrock-converse-stream",
-		"google-generative-ai",
-		"google-vertex",
-		"pi-messages":
-		return true
-	default:
+func piAPIIdentifier(api string) bool {
+	if api == "" {
 		return false
 	}
+	for _, character := range api {
+		if unicode.IsSpace(character) || unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
 
 func piRemoteURL(value string) (*url.URL, bool) {

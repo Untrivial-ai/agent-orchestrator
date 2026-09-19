@@ -219,8 +219,8 @@ func TestPiProviderScopedEvidence(t *testing.T) {
 			provider: "ollama", models: `{"providers":{"ollama":{"baseUrl":"http://127.0.0.1:11434/v1","models":[{"id":"model","api":"anthropic-messages"}]}}}`,
 			want: ports.AgentAuthStatusNotApplicable,
 		},
-		"custom loopback provider rejects an unsupported API": {
-			provider: "ollama", models: `{"providers":{"ollama":{"baseUrl":"http://127.0.0.1:11434/v1","api":"unknown-api","models":[{"id":"model"}]}}}`,
+		"custom loopback provider rejects an empty API": {
+			provider: "ollama", models: `{"providers":{"ollama":{"baseUrl":"http://127.0.0.1:11434/v1","api":"","models":[{"id":"model"}]}}}`,
 			want: ports.AgentAuthStatusUnknown,
 		},
 		"built in llama.cpp needs no auth": {provider: "llama.cpp", want: ports.AgentAuthStatusNotApplicable},
@@ -249,12 +249,28 @@ func TestPiCustomProviderAcceptsRegisteredAPIs(t *testing.T) {
 		"google-generative-ai",
 		"google-vertex",
 		"pi-messages",
+		"vendor-extension-stream-v2",
 	}
 	for _, api := range apis {
 		t.Run(api, func(t *testing.T) {
 			models := `{"providers":{"custom":{"baseUrl":"http://127.0.0.1:8080/v1","api":"` + api + `","models":[{"id":"model"}]}}}`
 			if got := piTestStatus(t, "custom", map[string]string{"models.json": models}, nil, authutil.Dependencies{}); got != ports.AgentAuthStatusNotApplicable {
 				t.Fatalf("status = %q, want not_applicable", got)
+			}
+		})
+	}
+}
+
+func TestPiCustomProviderRejectsMalformedAPIs(t *testing.T) {
+	tests := map[string]string{
+		"whitespace string": `{"providers":{"custom":{"baseUrl":"http://127.0.0.1:8080/v1","api":"   ","models":[{"id":"model"}]}}}`,
+		"numeric value":     `{"providers":{"custom":{"baseUrl":"http://127.0.0.1:8080/v1","api":42,"models":[{"id":"model"}]}}}`,
+		"object value":      `{"providers":{"custom":{"baseUrl":"http://127.0.0.1:8080/v1","api":{},"models":[{"id":"model"}]}}}`,
+	}
+	for name, models := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := piTestStatus(t, "custom", map[string]string{"models.json": models}, nil, authutil.Dependencies{}); got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, want unknown", got)
 			}
 		})
 	}
