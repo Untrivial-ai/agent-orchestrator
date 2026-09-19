@@ -137,6 +137,25 @@ type Discoverer struct {
 	ClineOptions ClineConfigOptionListFunc
 }
 
+// RunsAgentCommand reports whether Discover executes the agent for this id.
+//
+// Claude Code and Muse return a static catalog and Discover never spawns for
+// them. Codex answers through its app-server, which does start the agent. The
+// command-backed adapters run their CLI by definition. Config-derived catalogs
+// only read files, so they are not reported here: under-reporting merely leaves
+// today's behavior in place, while over-reporting would let a caller suppress a
+// catalog that costs nothing to produce.
+func (Discoverer) RunsAgentCommand(agentID string) bool {
+	switch agentID {
+	case "claude-code", "muse":
+		return false
+	case "codex":
+		return true
+	}
+	_, ok := commandSpecs[agentID]
+	return ok
+}
+
 // CodexModelListFunc obtains Codex's account-scoped app-server catalog without
 // opening a provider thread.
 type CodexModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error)

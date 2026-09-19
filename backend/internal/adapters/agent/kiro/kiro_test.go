@@ -976,11 +976,22 @@ func containsSubsequence(values []string, needle []string) bool {
 	return false
 }
 
+// stubKiroAuthRunner intercepts the auth probe. Kiro runs `whoami` through the
+// env-aware runner so the probe observes the same environment the gated command
+// would, so both entry points are stubbed — leaving either live would let a test
+// shell out to the real Kiro CLI.
 func stubKiroAuthRunner(t *testing.T, runner func(context.Context, string, ...string) ([]byte, error)) func() {
 	t.Helper()
 	previous := authprobe.CmdRunner
+	previousEnv := authprobe.CmdRunnerEnv
 	authprobe.CmdRunner = runner
-	return func() { authprobe.CmdRunner = previous }
+	authprobe.CmdRunnerEnv = func(ctx context.Context, _ map[string]string, name string, arg ...string) ([]byte, error) {
+		return runner(ctx, name, arg...)
+	}
+	return func() {
+		authprobe.CmdRunner = previous
+		authprobe.CmdRunnerEnv = previousEnv
+	}
 }
 
 func countKiroHookCommand(entries []kiroHookEntry, command string) int {
