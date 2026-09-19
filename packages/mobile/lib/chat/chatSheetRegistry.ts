@@ -17,6 +17,7 @@ export type ConversationActionsEntry = {
 	interfaceSwitching: boolean;
 	canPin: boolean;
 	pinned: boolean;
+	canDelete: boolean;
 	onMap(): void;
 	onOpenShell(): void;
 	onPreview(): void;
@@ -28,6 +29,7 @@ export type ConversationActionsEntry = {
 	onRename(): void;
 	onTogglePin(): void;
 	onRefresh(): void;
+	onDelete(): void;
 };
 
 export type ConversationRenameEntry = {

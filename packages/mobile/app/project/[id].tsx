@@ -1,91 +1,119 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useMemo } from "react";
-import { Platform, SectionList, StyleSheet, View } from "react-native";
-import { collectPRs, comparePRs } from "../../lib/prView";
-import { PRCard } from "../../lib/PRCard";
-import { ProjectSummaryCard } from "../../lib/project-summary-card";
-import { projectSummaries, projectWorkers } from "../../lib/projects-view";
-import { SessionCard } from "../../lib/SessionCard";
+import { useCallback, useMemo, useState } from "react";
+import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { haptics } from "../../lib/haptics";
+import { orchestratorProjectSections, projectDetailSessions, projectPageStats } from "../../lib/orchestratorView";
+import { ProjectPageHeader } from "../../lib/project-card";
+import { StaleBanner } from "../../lib/StaleBanner";
 import { useApp } from "../../lib/store";
-import { MINUTE_MS, useNow } from "../../lib/useNow";
-import type { DashboardPR, DashboardSession } from "../../lib/api";
 import type { Theme } from "../../lib/theme";
-import { useTheme, useThemedStyles, useThemeState } from "../../lib/ThemeProvider";
-import { Button, EmptyState, SectionHeader } from "../../lib/ui";
-import { Host, Button as NativeButton } from "@expo/ui";
+import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
+import { useOrchestratorLauncher } from "../../lib/useOrchestratorLauncher";
+import { Button, EmptyState, HeaderIconButton, ListSectionHeader, ScreenHeader } from "../../lib/ui";
+import { WorkerBoardList } from "../../lib/worker-board-list";
 
-type OverviewItem =
-	| { kind: "worker"; session: DashboardSession }
-	| { kind: "pr"; pr: DashboardPR; session: DashboardSession };
+export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
-export default function ProjectOverviewScreen() {
-	const { id } = useLocalSearchParams<{ id: string }>();
-	const router = useRouter();
+/**
+ * One project: its orchestrator on top, and below it that project's workers
+ * exactly as the Workers board shows them — same sections, same row actions,
+ * archive included — so nothing here has to be relearned.
+ */
+export default function ProjectScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	const { scheme } = useThemeState();
-	const now = useNow(MINUTE_MS);
-	const { projects, sessions } = useApp();
-	const summary = useMemo(
-		() => projectSummaries(projects, sessions).find((candidate) => candidate.project.id === id),
-		[projects, sessions, id],
+	const router = useRouter();
+	const insets = useSafeAreaInsets();
+	const { id } = useLocalSearchParams<{ id: string }>();
+	const { loading, error, refresh, projects, sessions, orchestrators } = useApp();
+	const { busyProjects, openOrchestrator } = useOrchestratorLauncher();
+	const [refreshing, setRefreshing] = useState(false);
+
+	const row = useMemo(
+		() =>
+			orchestratorProjectSections(projects, sessions, orchestrators)
+				.flatMap((section) => section.data)
+				.find((candidate) => candidate.project.id === id),
+		[projects, sessions, orchestrators, id],
 	);
+	const projectSessions = useMemo(() => projectDetailSessions(id ?? "", sessions), [id, sessions]);
+	const stats = useMemo(() => projectPageStats(projectSessions, row?.link), [projectSessions, row?.link]);
 
-	if (!summary) {
-		return (
-			<View style={styles.screen}>
-				<EmptyState
-					icon="folder"
-					title="Project not found"
-					message="This project is no longer available on the connected AO host."
-					action={<Button title="Back to Projects" onPress={() => router.replace("/projects")} />}
-				/>
-			</View>
-		);
-	}
+	const onRefresh = useCallback(async () => {
+		haptics.tap();
+		setRefreshing(true);
+		try {
+			await refresh();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [refresh]);
 
-	const workers = projectWorkers(summary.project.id, sessions);
-	const prs = collectPRs(sessions.filter((session) => session.projectId === summary.project.id))
-		.sort((a, b) => comparePRs(a.pr, b.pr));
-	const sections = [
-		{ title: "Active workers", color: t.orange, data: workers.map((session) => ({ kind: "worker" as const, session })) },
-		{ title: "Pull requests", color: t.green, data: prs.map(({ pr, session }) => ({ kind: "pr" as const, pr, session })) },
-	].filter((section) => section.data.length > 0);
+	const startTask = () => {
+		haptics.tap();
+		router.push({ pathname: "/spawn", params: { projectId: id } });
+	};
 
 	return (
 		<View style={styles.screen}>
-			<SectionList<OverviewItem>
-				sections={sections}
-				keyExtractor={(item) => item.kind === "worker" ? `worker:${item.session.id}` : `pr:${item.session.projectId}:${item.pr.number}`}
-				contentContainerStyle={styles.content}
-				stickySectionHeadersEnabled={false}
-				ListHeaderComponent={<ProjectSummaryCard summary={summary} />}
-				renderSectionHeader={({ section }) => <SectionHeader label={section.title} color={section.color} count={section.data.length} />}
-				renderItem={({ item }) => item.kind === "worker" ? <SessionCard session={item.session} now={now} /> : <PRCard pr={item.pr} session={item.session} />}
-				ListEmptyComponent={<EmptyState icon="moon" title="No project activity" message="Spawn a worker to start work in this project." />}
+			<View style={{ height: insets.top }} />
+			<ScreenHeader
+				title={row?.project.name ?? "Project"}
+				left={
+					<HeaderIconButton
+						icon="back"
+						label="Back"
+						// A deep link can open this page as the only screen in the stack, with
+						// nothing beneath it to go back to. Land on Projects instead.
+						onPress={() => (router.canGoBack() ? router.back() : router.replace("/projects"))}
+					/>
+				}
 			/>
-			<View style={styles.spawnDock}>
-				{Platform.OS === "android" ? (
-					<Button title="Spawn worker" onPress={() => router.push({ pathname: "/spawn", params: { projectId: summary.project.id } })} />
+			<StaleBanner error={!!error} onRetry={onRefresh} />
+
+			{!row ? (
+				loading ? (
+					<View style={styles.center}>
+						<ActivityIndicator color={t.blue} />
+					</View>
 				) : (
-					<Host style={styles.spawnHost} colorScheme={scheme} seedColor={t.blue}>
-						<NativeButton
-							label="Spawn worker"
-							onPress={() => router.push({ pathname: "/spawn", params: { projectId: summary.project.id } })}
-							style={{ height: 50, borderRadius: 17 }}
+					<EmptyState icon="folder" title="Project not found" message="It may have been removed from AO." />
+				)
+			) : (
+				<WorkerBoardList
+					sessions={projectSessions}
+					showProject={false}
+					contentBottomInset={insets.bottom + 32}
+					refreshing={refreshing}
+					onRefresh={onRefresh}
+					ListHeaderComponent={
+						<ProjectPageHeader
+							row={row}
+							stats={stats}
+							busy={busyProjects.has(row.project.id)}
+							onPress={openOrchestrator}
 						/>
-					</Host>
-				)}
-			</View>
+					}
+					ListEmptyComponent={
+						<View>
+							<ListSectionHeader label="Workers" count={0} />
+							<EmptyState
+								icon="moon"
+								title="No workers yet"
+								message="Start a task to put this project to work."
+								action={<Button title="Start task" icon="plus" onPress={startTask} />}
+							/>
+						</View>
+					}
+				/>
+			)}
 		</View>
 	);
 }
 
-const makeStyles = (t: Theme) => StyleSheet.create({
-	screen: { flex: 1, backgroundColor: t.bgBase },
-	content: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 94, flexGrow: 1 },
-	spawnDock: { position: "absolute", left: 16, right: 16, bottom: 16 },
-	spawnHost: { width: "100%", height: 50 },
-});
-
-export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
+const makeStyles = (t: Theme) =>
+	StyleSheet.create({
+		screen: { flex: 1, backgroundColor: t.bgBase },
+		center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
+	});

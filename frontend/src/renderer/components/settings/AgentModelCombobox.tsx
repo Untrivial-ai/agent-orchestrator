@@ -71,6 +71,7 @@ export function AgentModelCombobox({
 	renderTrigger,
 	recentScope,
 	compact = false,
+	requireSelection = false,
 	tuning,
 	disabled = false,
 	"aria-label": ariaLabel,
@@ -85,6 +86,8 @@ export function AgentModelCombobox({
 	onCustom: (value: string) => void;
 	/** Names what happens with no override, e.g. "Use codex's default". */
 	emptyLabel?: string;
+	/** Hide the empty "agent default" row so a concrete model must stay selected. */
+	requireSelection?: boolean;
 	triggerLabel?: string;
 	triggerClassName?: string;
 	menuAlign?: "start" | "center" | "end";
@@ -250,7 +253,7 @@ export function AgentModelCombobox({
 						className="model-menu-scroll min-h-0 overflow-y-auto overscroll-contain"
 						onScroll={updateScrollCue}
 					>
-						{normalizedSearch === "" && (
+						{normalizedSearch === "" && !requireSelection && (
 							<DropdownMenuItem onSelect={() => onChange("")} className={modelItemClass(value === "")} aria-current={tuning && value === "" ? true : undefined}>
 								{noOverrideLabel}
 								{tuning && value === "" && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}

@@ -1,7 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { useState } from "react";
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AgentLogo } from "./AgentLogo";
 import { useTheme } from "./ThemeProvider";
 import type { Theme } from "./theme";
@@ -42,6 +41,22 @@ export function SpawnComposerControls({
 		setOpenMenu(null);
 	};
 
+	// Choices replace the controls inside Spawn's own sheet. They used to open a
+	// second sheet on top of it, so picking a project, agent and model stacked
+	// three sheets deep.
+	if (openMenu) {
+		return (
+			<OptionList
+				title={menuTitle}
+				options={options}
+				selectedValue={selectedValue}
+				showAgentLogos={openMenu === "harness"}
+				onSelect={selectOption}
+				onBack={() => setOpenMenu(null)}
+			/>
+		);
+	}
+
 	return (
 		<View style={styles.stack}>
 			<SelectorButton label={projectLabel} icon="folder" onPress={() => setOpenMenu("project")} style={styles.projectButton} />
@@ -64,7 +79,7 @@ export function SpawnComposerControls({
 
 			<Pressable
 				accessibilityRole="button"
-				accessibilityLabel={busy ? "Spawning worker" : "Spawn worker"}
+				accessibilityLabel={busy ? "Starting task" : "Start task"}
 				accessibilityState={{ disabled }}
 				testID="spawn-submit"
 				disabled={disabled}
@@ -73,18 +88,9 @@ export function SpawnComposerControls({
 				style={[styles.spawn, { opacity: disabled ? 0.68 : 1 }]}
 			>
 				{busy ? <ActivityIndicator size="small" color={t.onAccent} /> : null}
-				<Text style={styles.spawnLabel}>{busy ? "Spawning…" : "Spawn"}</Text>
+				<Text style={styles.spawnLabel}>{busy ? "Starting…" : "Start task"}</Text>
 			</Pressable>
 
-			<OptionSheet
-				open={openMenu !== null}
-				title={menuTitle}
-				options={options}
-				selectedValue={selectedValue}
-				showAgentLogos={openMenu === "harness"}
-				onSelect={selectOption}
-				onDismiss={() => setOpenMenu(null)}
-			/>
 		</View>
 	);
 }
@@ -113,60 +119,48 @@ function SelectorButton({ label, icon, harness, onPress, style }: {
 	);
 }
 
-function OptionSheet({ open, title, options, selectedValue, showAgentLogos, onSelect, onDismiss }: {
-	open: boolean;
+function OptionList({ title, options, selectedValue, showAgentLogos, onSelect, onBack }: {
 	title: string;
 	options: readonly SpawnComposerOption[];
 	selectedValue: string;
 	showAgentLogos?: boolean;
 	onSelect: (value: string) => void;
-	onDismiss: () => void;
+	onBack: () => void;
 }) {
 	const t = useTheme();
 	const styles = makeStyles(t);
-	const insets = useSafeAreaInsets();
 	return (
-		<Modal
-			visible={open}
-			transparent
-			animationType="fade"
-			presentationStyle="overFullScreen"
-			statusBarTranslucent
-			navigationBarTranslucent
-			onRequestClose={onDismiss}
-		>
-			<View style={styles.modalRoot}>
-				<Pressable accessibilityRole="button" accessibilityLabel="Close options" onPress={onDismiss} style={StyleSheet.absoluteFill} />
-				<View style={[styles.optionSheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-					<View style={styles.grabber} />
-					<View style={styles.optionHeader}>
-						<Text style={styles.optionTitle}>{title}</Text>
-						<Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onDismiss} hitSlop={12}>
-							<Feather name="x" size={22} color={t.textSecondary} />
+		<View style={styles.stack}>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel="Back"
+				android_ripple={{ color: t.tintBlue }}
+				onPress={onBack}
+				style={styles.optionHeader}
+			>
+				<Feather name="chevron-left" size={20} color={t.textSecondary} />
+				<Text style={styles.optionTitle}>{title}</Text>
+			</Pressable>
+			<ScrollView style={styles.optionList} showsVerticalScrollIndicator={false}>
+				{options.map((option, index) => {
+					const selected = option.id === selectedValue;
+					return (
+						<Pressable
+							key={option.id}
+							accessibilityRole="button"
+							accessibilityState={{ selected }}
+							android_ripple={{ color: t.tintBlue }}
+							onPress={() => onSelect(option.id)}
+							style={[styles.optionRow, index > 0 && styles.optionBorder, selected && styles.optionSelected]}
+						>
+							{showAgentLogos ? <AgentLogo harness={option.id} size={24} /> : null}
+							<Text numberOfLines={2} style={[styles.optionLabel, selected && styles.optionLabelSelected]}>{option.label}</Text>
+							{selected ? <Feather name="check" size={20} color={t.blue} /> : null}
 						</Pressable>
-					</View>
-					<ScrollView style={styles.optionList} showsVerticalScrollIndicator={false}>
-						{options.map((option, index) => {
-							const selected = option.id === selectedValue;
-							return (
-								<Pressable
-									key={option.id}
-									accessibilityRole="button"
-									accessibilityState={{ selected }}
-									android_ripple={{ color: t.tintBlue }}
-									onPress={() => onSelect(option.id)}
-									style={[styles.optionRow, index > 0 && styles.optionBorder, selected && styles.optionSelected]}
-								>
-									{showAgentLogos ? <AgentLogo harness={option.id} size={24} /> : null}
-									<Text numberOfLines={2} style={[styles.optionLabel, selected && styles.optionLabelSelected]}>{option.label}</Text>
-									{selected ? <Feather name="check" size={20} color={t.blue} /> : null}
-								</Pressable>
-							);
-						})}
-					</ScrollView>
-				</View>
-			</View>
-		</Modal>
+					);
+				})}
+			</ScrollView>
+		</View>
 	);
 }
 
@@ -192,19 +186,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	selectorLabel: { flexShrink: 1, color: t.textPrimary, fontSize: 14, lineHeight: 19, fontWeight: "600" },
 	spawn: { height: 44, flexDirection: "row", gap: 8, borderRadius: 16, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: t.blue },
 	spawnLabel: { color: t.onAccent, fontSize: 15, lineHeight: 20, fontWeight: "700" },
-	modalRoot: { flex: 1, justifyContent: "flex-end", backgroundColor: t.scrim },
-	optionSheet: {
-		maxHeight: "70%",
-		paddingTop: 8,
-		paddingHorizontal: 16,
-		borderTopLeftRadius: 26,
-		borderTopRightRadius: 26,
-		backgroundColor: t.bgSurface,
-	},
-	grabber: { alignSelf: "center", width: 40, height: 4, borderRadius: 2, backgroundColor: t.borderStrong, marginBottom: 8 },
-	optionHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 4 },
-	optionTitle: { color: t.textPrimary, fontSize: 20, lineHeight: 26, fontWeight: "700" },
-	optionList: { maxHeight: 420, borderRadius: 16, backgroundColor: t.bgElevated, overflow: "hidden" },
+	optionHeader: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 12, overflow: "hidden" },
+	optionTitle: { color: t.textPrimary, fontSize: 18, lineHeight: 24, fontWeight: "700" },
+	optionList: { maxHeight: 340, borderRadius: 16, backgroundColor: t.bgElevated, overflow: "hidden" },
 	optionRow: { minHeight: 54, paddingHorizontal: 16, paddingVertical: 12, flexDirection: "row", alignItems: "center", gap: 12 },
 	optionBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
 	optionSelected: { backgroundColor: t.tintBlue },

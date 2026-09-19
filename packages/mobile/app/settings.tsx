@@ -1,24 +1,27 @@
 import { Host, Picker, Switch } from "@expo/ui";
 import { Feather } from "@expo/vector-icons";
 import * as Application from "expo-application";
+import * as Clipboard from "expo-clipboard";
+import * as Device from "expo-device";
 import Constants from "expo-constants";
 import { useFocusEffect, useRouter } from "expo-router";
 import * as Updates from "expo-updates";
 import { Children, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { ApiError, pingServer } from "../lib/api";
-import { bugReportBody, formatVersionLine, type BuildInfo } from "../lib/appInfo";
+import { formatVersionLine, type BuildInfo } from "../lib/appInfo";
+import { bugReportClipboard, bugReportOpenUrl, bugReportUrl } from "../lib/bugReport";
 import { DEFAULT_CONFIG, isConfigured, loadConfig, type ServerConfig } from "../lib/config";
 import { classifyConnectionFailure, describeConnectionFailure } from "../lib/connectionError";
 import { discordFeatureRequestURL } from "../lib/discord";
 import { forgetServer } from "../lib/disconnect";
 import { haptics } from "../lib/haptics";
 import { checkStore, openOrStartUpdate } from "../lib/inAppUpdates";
+import { describePrompt } from "../lib/storeUpdate";
 import { NativeHeaderButton } from "../lib/native-header-button";
 import { openGitHub } from "../lib/openGitHub";
 import { getPushStatus, openNotificationSettings, registerForPush, unregisterFromPush } from "../lib/push";
 import { describePushToggle, describeRegisterFailure, type PushStatus } from "../lib/pushStatus";
-import { storeUpdateSheetRoute } from "../lib/sheetResult";
 import { useApp } from "../lib/store";
 import {
 	describeSoftwareUpdateRow,
@@ -32,11 +35,17 @@ import {
 } from "../lib/storeUpdate";
 import type { Theme } from "../lib/theme";
 import { preferenceLabel, type ThemePreference } from "../lib/themePreference";
+
+// Light / Dark / System, in the desktop app's order and wording.
+const THEME_OPTIONS: { value: ThemePreference; icon: keyof typeof Feather.glyphMap }[] = [
+	{ value: "light", icon: "sun" },
+	{ value: "dark", icon: "moon" },
+	{ value: "system", icon: "smartphone" },
+];
 import { useTheme, useThemedStyles, useThemeState } from "../lib/ThemeProvider";
 import { checkAndDownload, describeUpdateRow, type UpdateOutcome } from "../lib/updates";
 import { VERSION_FLOOR } from "../lib/versionFloor";
 
-const ISSUES_URL = "https://github.com/AgentWrapper/agent-orchestrator/issues/new";
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
 
@@ -142,6 +151,32 @@ function SettingsCard({ children }: { children: ReactNode }) {
 	);
 }
 
+/** The theme options, inline inside the Settings sheet on Android. */
+function ThemeChoices({ preference, onSelect }: { preference: ThemePreference; onSelect(next: ThemePreference): void }) {
+	const t = useTheme();
+	const styles = useThemedStyles(makeStyles);
+	return (
+		<View style={styles.inlineChoices}>
+			{THEME_OPTIONS.map((option) => {
+				const selected = preference === option.value;
+				return (
+					<Pressable
+						key={option.value}
+						accessibilityRole="button"
+						accessibilityState={{ selected }}
+						onPress={() => { haptics.select(); onSelect(option.value); }}
+						style={({ pressed }) => [styles.inlineChoice, pressed && { opacity: 0.6 }]}
+					>
+						<Feather name={option.icon} size={16} color={selected ? t.textPrimary : t.textTertiary} />
+						<Text style={[styles.inlineChoiceLabel, selected && { color: t.textPrimary, fontWeight: "700" }]}>{preferenceLabel(option.value)}</Text>
+						{selected ? <Feather name="check" size={16} color={t.textPrimary} /> : null}
+					</Pressable>
+				);
+			})}
+		</View>
+	);
+}
+
 function CardRow({
 	icon,
 	label,
@@ -224,16 +259,21 @@ function ConnectionTestRow({ cfg, paired }: { cfg: ServerConfig; paired: boolean
 
 function AppearanceRow() {
 	const t = useTheme();
-	const router = useRouter();
 	const { preference, scheme, setPreference } = useThemeState();
+	const [open, setOpen] = useState(false);
 	if (Platform.OS === "android") {
+		// Settings is itself a sheet on Android, so the choices expand in place
+		// rather than opening a second sheet on top of it.
 		return (
-			<CardRow
-				icon="sun"
-				label="Appearance"
-				value={preferenceLabel(preference)}
-				onPress={() => router.push("/sheets/theme")}
-			/>
+			<>
+				<CardRow
+					icon="sun"
+					label="Appearance"
+					value={preferenceLabel(preference)}
+					onPress={() => { haptics.tap(); setOpen((value) => !value); }}
+				/>
+				{open ? <ThemeChoices preference={preference} onSelect={(next) => { setPreference(next); setOpen(false); }} /> : null}
+			</>
 		);
 	}
 	return (
@@ -319,13 +359,13 @@ function NotificationsRow() {
 
 function SoftwareUpdateRow() {
 	const t = useTheme();
-	const router = useRouter();
 	const { isUpdatePending, isChecking, isDownloading } = Updates.useUpdates();
 	const [otaManual, setOtaManual] = useState<UpdateOutcome | null>(null);
 	const [manualBusy, setManualBusy] = useState(false);
 	const [storeChecking, setStoreChecking] = useState(false);
 	const [storeLast, setStoreLast] = useState<StoreRowResult | null>(null);
 	const [storeCheck, setStoreCheck] = useState<StoreCheck | null>(null);
+	const [storePrompt, setStorePrompt] = useState<{ version?: string; storeConfirmed: boolean; check: StoreCheck | null } | null>(null);
 
 	const ota = describeUpdateRow({
 		enabled: Updates.isEnabled,
@@ -336,17 +376,16 @@ function SoftwareUpdateRow() {
 	const store = describeStoreRow({ enabled: !__DEV__, checking: storeChecking, last: storeLast });
 	const row = describeSoftwareUpdateRow({ ota, store });
 
+	// Shown in the Settings sheet rather than as a second sheet over it. Away
+	// from Settings the nudge still gets its own sheet route — there it is the
+	// only thing on screen.
 	function presentStoreSheet(check: StoreCheck | null) {
-		const floor = floorSignal(Application.nativeApplicationVersion, VERSION_FLOOR);
 		const confirmed = check?.updateAvailable === true;
-		const version = confirmed && Platform.OS === "ios" ? check?.storeVersion : floorTarget(VERSION_FLOOR);
-		router.push(storeUpdateSheetRoute({
-			version,
+		setStorePrompt({
+			version: confirmed && Platform.OS === "ios" ? check?.storeVersion : floorTarget(VERSION_FLOOR),
 			storeConfirmed: confirmed,
-			onAction: (action) => {
-				if (action === "update") void openOrStartUpdate(check);
-			},
-		}));
+			check,
+		});
 	}
 
 	async function onPress() {
@@ -387,14 +426,45 @@ function SoftwareUpdateRow() {
 	}
 
 	return (
-		<CardRow
-			icon="download-cloud"
-			label="Software update"
-			value={row.value}
-			valueColor={row.tone === "good" ? t.green : row.tone === "bad" ? t.red : undefined}
-			loading={row.busy}
-			onPress={row.action === null ? undefined : onPress}
-		/>
+		<>
+			<CardRow
+				icon="download-cloud"
+				label="Software update"
+				value={row.value}
+				valueColor={row.tone === "good" ? t.green : row.tone === "bad" ? t.red : undefined}
+				loading={row.busy}
+				onPress={row.action === null ? undefined : onPress}
+			/>
+			{storePrompt ? (
+				<InlinePanel
+					title="A newer AO is ready"
+					copy={describePrompt({ version: storePrompt.version, storeConfirmed: storePrompt.storeConfirmed, storeName: Platform.OS === "ios" ? "App Store" : "Play Store" })}
+					primary={`Open ${Platform.OS === "ios" ? "App Store" : "Play Store"}`}
+					secondary="Not now"
+					onPrimary={() => { const check = storePrompt.check; setStorePrompt(null); void openOrStartUpdate(check); }}
+					onSecondary={() => setStorePrompt(null)}
+				/>
+			) : null}
+		</>
+	);
+}
+
+/** A confirm step that opens inside the Settings sheet instead of over it. */
+function InlinePanel({ title, copy, primary, secondary, onPrimary, onSecondary }: { title: string; copy: string; primary: string; secondary: string; onPrimary(): void; onSecondary(): void }) {
+	const styles = useThemedStyles(makeStyles);
+	return (
+		<View style={styles.inlinePanel}>
+			<Text style={styles.inlinePanelTitle}>{title}</Text>
+			<Text style={styles.inlinePanelCopy}>{copy}</Text>
+			<View style={styles.inlinePanelActions}>
+				<Pressable accessibilityRole="button" onPress={() => { haptics.tap(); onSecondary(); }} style={({ pressed }) => [styles.inlinePanelAction, pressed && { opacity: 0.7 }]}>
+					<Text style={styles.inlinePanelActionLabel}>{secondary}</Text>
+				</Pressable>
+				<Pressable accessibilityRole="button" onPress={() => { haptics.tap(); onPrimary(); }} style={({ pressed }) => [styles.inlinePanelAction, styles.inlinePanelPrimary, pressed && { opacity: 0.85 }]}>
+					<Text style={styles.inlinePanelPrimaryLabel}>{primary}</Text>
+				</Pressable>
+			</View>
+		</View>
 	);
 }
 
@@ -410,11 +480,26 @@ function buildInfo(): BuildInfo {
 }
 
 function ReportProblemRow() {
+	const { config, connection } = useApp();
+	// Says what just happened, so the copy is discoverable if the form comes up empty.
+	const [copied, setCopied] = useState(false);
 	function report() {
-		const body = encodeURIComponent(bugReportBody(buildInfo(), Platform.OS, Platform.Version));
-		void openGitHub(`${ISSUES_URL}?body=${body}`);
+		const environment = {
+			build: buildInfo(),
+			platform: Platform.OS,
+			osVersion: Platform.Version,
+			deviceModel: Device.modelName,
+			paired: !!config && isConfigured(config),
+			connection,
+		};
+		// Copied as well as prefilled: a signed-out browser, or a GitHub app that
+		// intercepts the link anyway, can drop the form and leave the reporter
+		// typing into an empty box with no idea what to include.
+		void Clipboard.setStringAsync(bugReportClipboard(environment));
+		setCopied(true);
+		void openGitHub(bugReportOpenUrl(bugReportUrl(environment), Platform.OS));
 	}
-	return <CardRow icon="help-circle" label="Report a problem" onPress={report} />;
+	return <CardRow icon="help-circle" label="Report a problem" value={copied ? "Details copied" : undefined} onPress={report} />;
 }
 
 function FeatureRequestRow() {
@@ -474,6 +559,19 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	sectionFooter: { color: t.textTertiary, fontSize: 11, lineHeight: 16, paddingHorizontal: 10 },
 	card: { backgroundColor: t.bgElevated, borderRadius: 16, borderCurve: "continuous", overflow: "hidden" },
 	separator: { height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle, marginLeft: 50 },
+	// Choices that expand inside a row's own card, indented under its label so
+	// they read as belonging to the row above rather than as a new group.
+	inlineChoices: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingVertical: 2 },
+	inlineChoice: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 50, paddingRight: 14 },
+	inlineChoiceLabel: { flex: 1, color: t.textSecondary, fontSize: 14, lineHeight: 19 },
+	inlinePanel: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingHorizontal: 14, paddingVertical: 12, gap: 10 },
+	inlinePanelTitle: { color: t.textPrimary, fontSize: 14, lineHeight: 19, fontWeight: "700" },
+	inlinePanelCopy: { color: t.textSecondary, fontSize: 12, lineHeight: 17 },
+	inlinePanelActions: { flexDirection: "row", gap: 8 },
+	inlinePanelAction: { minHeight: 38, justifyContent: "center", paddingHorizontal: 14, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
+	inlinePanelPrimary: { backgroundColor: t.textPrimary, borderColor: t.textPrimary },
+	inlinePanelActionLabel: { color: t.textPrimary, fontSize: 13, fontWeight: "600" },
+	inlinePanelPrimaryLabel: { color: t.bgBase, fontSize: 13, fontWeight: "700" },
 	row: { minHeight: 52, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, gap: 10 },
 	rowPressed: { backgroundColor: t.bgElevatedHover },
 	rowIcon: { width: 26, textAlign: "center" },

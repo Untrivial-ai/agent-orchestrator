@@ -2429,6 +2429,10 @@ describe("SessionView", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
 		expect(screen.getByRole("menuitem", { name: "Switch to chat UI" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Switch to chat UI" })).toHaveAttribute(
+			"title",
+			"This agent can't switch a running terminal session to chat. Start a new chat session instead.",
+		);
 	});
 
 	it("walks backward through auxiliary terminals before returning to the permanent terminal", () => {
@@ -3135,13 +3139,13 @@ describe("SessionView", () => {
 		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "false");
 	});
 
-	it("treats tab and header whole-file feedback as the same focused composer", async () => {
+	it("toggles the header whole-file feedback composer on repeat", async () => {
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "open files" }));
 		fireEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
-		fireEvent.click(screen.getByRole("button", { name: "Add feedback for file src/App.tsx" }));
+		fireEvent.click(screen.getByRole("button", { name: "header feedback" }));
 		await userEvent.type(screen.getByRole("textbox", { name: "feedback draft" }), "keep this draft");
 
 		fireEvent.click(screen.getByRole("button", { name: "header feedback" }));

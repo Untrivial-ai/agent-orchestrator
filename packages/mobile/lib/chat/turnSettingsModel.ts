@@ -15,6 +15,13 @@ export type TurnSettingRow = {
 	value: string;
 	kind: "select" | "boolean";
 	enabled?: boolean;
+	/**
+	 * How the provider categorised this control. Derived once, from the option
+	 * itself — the summary used to re-guess it from the label and missed a Mode
+	 * option called "Mode", so it showed AO's approvalMode while the sheet was
+	 * editing the provider's.
+	 */
+	providerKind?: ProviderTurnControlKind;
 	choices: TurnSettingChoice[];
 	target:
 		| { kind: "settings"; key: keyof TurnSettings }
@@ -136,26 +143,36 @@ export function turnSettingsRows(snapshot: ConversationSnapshot, models: ChatMod
 export function turnSettingsSummary(snapshot: ConversationSnapshot, models: ChatModel[], options: ChatConfigOption[]): string {
 	const rows = turnSettingsRows(snapshot, models, options);
 	const model = rows.find(isModelRow);
+	const effort = rows.find(isEffortRow);
 	const permissions = rows.find(isPermissionRow);
 	const modelValue = model?.value || snapshot.settings.model || "Default model";
 	const permissionValue = permissions?.value
 		|| APPROVALS.find((item) => item.value === (snapshot.settings.approvalMode ?? "default"))?.label
 		|| "Default";
-	return `${modelValue} · ${permissionValue === "Default" ? "Default permissions" : permissionValue}`;
+	// Effort is the setting people change most after the model, and it was the
+	// one this line never mentioned. "Default" is dropped: naming it spends the
+	// row's width saying nothing was chosen.
+	const effortValue = effort?.value || capitalize(snapshot.settings.reasoningEffort ?? "");
+	return [
+		modelValue,
+		effortValue.toLowerCase() === "default" ? "" : effortValue,
+		permissionValue === "Default" ? "Default permissions" : permissionValue,
+	].filter(Boolean).join(" · ");
 }
 
 function isModelRow(row: TurnSettingRow): boolean {
-	const key = row.target.kind === "option" ? row.target.optionId : row.id;
-	return row.target.kind === "settings" && row.target.key === "model"
-		|| row.label.toLowerCase() === "model"
-		|| ["model", "agent"].includes(key.toLowerCase());
+	if (row.target.kind === "settings") return row.target.key === "model";
+	return row.providerKind === "model";
+}
+
+function isEffortRow(row: TurnSettingRow): boolean {
+	if (row.target.kind === "settings") return row.target.key === "reasoningEffort";
+	return row.providerKind === "effort";
 }
 
 function isPermissionRow(row: TurnSettingRow): boolean {
-	if (row.target.kind === "settings" && row.target.key === "approvalMode") return true;
-	const key = row.target.kind === "option" ? row.target.optionId : row.id;
-	const description = `${key} ${row.label}`.toLowerCase();
-	return description.includes("permission") || description.includes("approval");
+	if (row.target.kind === "settings") return row.target.key === "approvalMode";
+	return row.providerKind === "permissions";
 }
 
 function providerRow(option: ChatConfigOption): TurnSettingRow {
@@ -174,18 +191,13 @@ function providerRow(option: ChatConfigOption): TurnSettingRow {
 			selected: choice.value === option.currentValue,
 		})),
 		target: { kind: "option", optionId: option.id },
+		providerKind: providerTurnControlKind(option),
 	};
 }
 
 function controlPriority(row: TurnSettingRow): number {
 	if (row.target.kind === "option") {
-		const kind = providerTurnControlKind({
-			id: row.target.optionId,
-			name: row.label,
-			type: row.kind,
-			choices: [],
-		});
-		return { fast: 0, model: 1, effort: 2, permissions: 3, other: 10 }[kind];
+		return { fast: 0, model: 1, effort: 2, permissions: 3, other: 10 }[row.providerKind ?? "other"];
 	}
 	const key = row.id;
 	if (key === "model") return 1;

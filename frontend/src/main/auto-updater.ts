@@ -418,8 +418,20 @@ let stagedEscalated = false;
 let stagedRequestId: string | undefined;
 let escalationTimer: ReturnType<typeof setInterval> | undefined;
 let escalationStateDir: string | undefined;
-const STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-const NIGHTLY_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+// Automatic re-check cadence for a long-running session. A fresh check also
+// runs on every launch (startAutoUpdates), so most users are current the moment
+// they open the app; this interval only governs sessions left open for a long
+// stretch. Kept to once a day on every channel: 15-minute nightly polling and
+// hourly stable polling were redundant background work and, on a cold network,
+// a source of launch-time check errors. Trade-off: the failing-checks nudge
+// needs consecutive automatic failures, and every launch supplies one, so users
+// who restart still trip it quickly; but a session left open continuously on a
+// broken updater now waits days rather than hours before the nudge appears.
+// Feature pins (a pr<N> channel) are the case a daily interval bites hardest: a
+// new build pushed to that PR is not noticed until relaunch, and the 30-minute
+// retirement poll only catches the PR closing, not a fresh build on it. Accepted
+// deliberately, since a pinned session is short-lived and relaunch re-checks.
+const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let automaticUpdateTimer: ReturnType<typeof setInterval> | undefined;
 let automaticUpdateTimerIntervalMs: number | undefined;
 type UpdaterOperation =
@@ -1093,7 +1105,16 @@ async function checkForUpdatesWithDeadline(): Promise<UpdateCheckOutcome> {
   };
   const timer = setTimeout(() => {
     timedOut = true;
-    broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE }));
+    // Automatic checks suppress their own transient failures in the UI (see the
+    // "error the user never asked for" note in the error handler). Surfacing the
+    // timeout here would defeat that and strand a red error on the Settings panel
+    // after a slow launch-time check the user never requested. The throw below
+    // still routes an automatic timeout through the suppression + failing-checks
+    // nudge path. Manual and return-home checks are user-initiated, so they still
+    // get the error immediately at the deadline.
+    if (activeUpdaterOperation !== "automatic-check") {
+      broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE }));
+    }
     // Cancellation aborts the request AND rejects its promise. Do not race the
     // check: electron-updater must clear its cached promise before AO retries.
     for (const token of tokens) token.cancel();
@@ -1804,8 +1825,8 @@ function wireUpdaterEvents(): void {
     // process open on quit.
     void runEscalationCheck();
     // Re-arming on a re-stage would push the next evaluation out by another 30
-    // minutes every time, and the nightly channel re-stages every 15 — the loop
-    // would never get a turn. Leave the running timer alone in that case.
+    // minutes every time a background check re-stages the same build, so the
+    // loop would never get a turn. Leave the running timer alone in that case.
     if (!restaged || escalationTimer === undefined) {
       stopEscalationTimer();
       escalationTimer = setInterval(
@@ -1992,10 +2013,15 @@ export function getUpdateStatus(): UpdateStatus {
   };
 }
 
-function automaticUpdateCheckInterval(settings: UpdateSettings): number {
-  return settings.channel === "nightly" && settings.feature === null
-    ? NIGHTLY_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS
-    : STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
+// The cadence is one number for every channel today, so this ignores its
+// argument. Kept as a settings-taking seam on purpose: it is the single place a
+// future per-channel cadence (for example a shorter interval for feature pins)
+// would branch, and the scheduler already carries the interval through
+// runAutomaticUpdateCheck's return value and re-arms when it changes, so
+// reintroducing a variable cadence stays a one-function change. The _settings
+// underscore is the signal that the parameter is deliberately unused for now.
+function automaticUpdateCheckInterval(_settings: UpdateSettings): number {
+  return AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
 }
 
 /**
@@ -2039,7 +2065,7 @@ async function runAutomaticUpdateCheck(
   stateDir: string,
 ): Promise<number> {
   let nextIntervalMs =
-    automaticUpdateTimerIntervalMs ?? STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
+    automaticUpdateTimerIntervalMs ?? AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
   try {
     await runSerializedUpdaterOperation("automatic-check", async () => {
       const settings = await reconcileAndPersist(
@@ -2060,9 +2086,9 @@ async function runAutomaticUpdateCheck(
       // electron-updater does not treat "already in the cache" as done: a cache
       // hit still runs the download task's completion path, which on macOS copies
       // the whole zip to update.zip and hands Squirrel a fresh install request.
-      // With autoDownload on, that repeated for every check for as long as the
-      // user went without quitting — 175 MB of copying and a ShipIt spawn every
-      // 15 minutes on nightly. Anything genuinely newer than the staged build is
+      // With autoDownload on, that repeated on every check for as long as the
+      // user went without quitting: 175 MB of copying and a ShipIt spawn on each
+      // automatic check. Anything genuinely newer than the staged build is
       // still fetched, below.
       // A staged build from a channel the user has left is already armed with
       // the OS installer; the replacement must be fetched even when automatic

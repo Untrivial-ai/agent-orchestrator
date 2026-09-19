@@ -483,13 +483,22 @@ function BoardPullRequestGroup({
 					<Fragment key={pr.url || pr.number}>
 						<ExternalLink
 							ariaLabel={`PR #${pr.number} ${statusLabel}`}
-							className={cn("inline-flex min-w-0 items-center gap-x-2 py-0.5", linkClassName)}
+							// `shrink-0` keeps wrapping the only way a crowded row can resolve:
+							// without it the row squeezes entries into each other, and the
+							// number below — which has no box of its own to be clipped by —
+							// paints straight over its neighbour and past the card's edge.
+							// `max-w-full` is the floor for the one case wrapping cannot fix,
+							// a single entry wider than the row, which truncates instead.
+							className={cn(
+								"inline-flex min-w-0 max-w-full shrink-0 items-center gap-x-2 py-0.5",
+								linkClassName,
+							)}
 							href={pr.url}
 							stopPropagation
 						>
 			<PullRequestLifecycleIcon state={group.state} />
 			<span className="sr-only">{labels.short}</span>
-			<span className="font-mono text-xs font-medium text-foreground">#{pr.number}</span>
+			<span className="truncate font-mono text-xs font-medium text-foreground">#{pr.number}</span>
 			<span className="sr-only">{statusLabel}</span>
 			{hasComments ? (
 				<div className="-ml-0.5 flex shrink-0 items-center pl-1">

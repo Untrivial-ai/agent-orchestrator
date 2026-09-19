@@ -32,12 +32,36 @@ export type DashboardPR = {
 	unresolvedThreads?: number;
 };
 
+/**
+ * Where the daemon placed a session in its delivery lifecycle, derived
+ * server-side from durable facts and independently of `status`.
+ *
+ * Mirrors the desktop contract (backend/pkg/contract/kanban.go, surfaced to the
+ * renderer as KANBAN_COLUMNS). The daemon has always sent this; mobile simply
+ * discarded it and re-derived its own grouping, which is how the two boards
+ * came to disagree about the same session.
+ */
+export const KANBAN_COLUMNS = ["building", "validating", "needs_review", "ready", "archive"] as const;
+export type KanbanColumn = (typeof KANBAN_COLUMNS)[number];
+
+export function isKanbanColumn(value: string | null | undefined): value is KanbanColumn {
+	return !!value && (KANBAN_COLUMNS as readonly string[]).includes(value);
+}
+
 export type DashboardSession = {
 	id: string;
 	projectId: string;
 	/** Opaque daemon runtime handle used only for terminal mux operations. */
 	terminalHandleId?: string;
 	status: string | null;
+	/** The daemon's own board placement. Absent on a daemon too old to send it. */
+	kanbanColumn?: KanbanColumn | null;
+	/**
+	 * The daemon's phrase for what is happening inside that column — richer than
+	 * `status` ("Awaiting PR", "Fixing CI failures"), and already localized on the
+	 * wire so clients print it without a mapping table.
+	 */
+	displayStatus?: string | null;
 	attentionLevel?: AttentionLevel | string | null;
 	activity?: string | null;
 	// Which agent CLI drives this session (claude-code, codex, …). Parsed off the
@@ -155,6 +179,8 @@ type WireSession = {
 	activity?: unknown;
 	isTerminated?: boolean;
 	status?: string | null;
+	kanbanColumn?: string | null;
+	displayStatus?: string | null;
 	branch?: string;
 	createdAt?: string;
 	updatedAt?: string;
@@ -228,6 +254,8 @@ function mapSession(s: WireSession): DashboardSession {
 		projectId: s.projectId ?? "",
 		terminalHandleId: s.terminalHandleId,
 		status: s.status ?? null,
+		kanbanColumn: isKanbanColumn(s.kanbanColumn) ? s.kanbanColumn : null,
+		displayStatus: s.displayStatus?.trim() || null,
 		activity: activityString(s.activity),
 		harness: s.harness ?? null,
 		mode: s.mode === "chat" ? "chat" : "tui",

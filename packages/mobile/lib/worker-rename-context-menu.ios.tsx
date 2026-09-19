@@ -1,14 +1,15 @@
-import { MenuView, type NativeActionEvent } from "@expo/ui/community/menu";
+import { MenuView, type MenuAction, type NativeActionEvent } from "@expo/ui/community/menu";
 import { type ReactNode } from "react";
 import { Pressable } from "react-native";
 import type { GestureType } from "react-native-gesture-handler";
 import type { MutableRefObject } from "react";
-import { workerRenameActions } from "./worker-action-model";
+import { workerActionSymbol, type WorkerAction, type WorkerActionId } from "./worker-action-model";
 
-export function WorkerRenameContextMenu({
+export function WorkerRowContextMenu({
 	children,
 	onPress,
-	onRename,
+	actions,
+	onAction,
 	gestureRef: _gestureRef,
 	accessibilityLabel,
 	accessibilityHint,
@@ -17,23 +18,32 @@ export function WorkerRenameContextMenu({
 }: {
 	children: ReactNode;
 	onPress(): void;
-	onRename(): void;
+	actions: WorkerAction[];
+	onAction(id: WorkerActionId): void;
 	gestureRef: MutableRefObject<GestureType | undefined>;
 	accessibilityLabel: string;
 	accessibilityHint: string;
 	style: object;
 	pressedStyle: object;
 }) {
+	// iOS resolves SF Symbols by name at runtime, so every action can carry one.
+	const menuActions: MenuAction[] = actions.map((action) => ({
+		id: action.id,
+		title: action.title,
+		image: workerActionSymbol(action.id),
+		attributes: action.destructive ? { destructive: true } : undefined,
+	}));
+
 	const chooseAction = (event: NativeActionEvent) => {
-		if (event.nativeEvent.event === "rename") onRename();
+		onAction(event.nativeEvent.event as WorkerActionId);
 	};
 
 	return (
 		<MenuView
-			actions={workerRenameActions().map((action) => ({ ...action, image: "pencil" }))}
+			actions={menuActions}
 			shouldOpenOnLongPress
 			onPressAction={chooseAction}
-			testID="worker-rename-menu"
+			testID="worker-row-menu"
 		>
 			<Pressable
 				accessibilityRole="button"

@@ -46,7 +46,7 @@ export function SpawnComposerControls({
 				</Host>
 			</View>
 			<Host style={styles.spawnHost} colorScheme={scheme} seedColor={t.blue}>
-				<Button label={busy ? "Starting..." : "Start Task"} variant="filled" onPress={onSpawn} disabled={disabled} style={styles.spawnButton} />
+				<Button label={busy ? "Starting…" : "Start task"} variant="filled" onPress={onSpawn} disabled={disabled} style={styles.spawnButton} />
 			</Host>
 		</View>
 	);
