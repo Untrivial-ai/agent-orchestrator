@@ -1901,8 +1901,6 @@
 	],
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
-	"newTask.tuningRequiresChat": "Model tuning currently requires Chat mode; TUI tasks use provider defaults.",
-	"newTask.tuiTuningDefaults": "TUI fallback uses provider defaults; model tuning requires Chat mode.",
 	"settings.models.effort": "Effort",
 	"settings.models.providerDefault": "Provider default",
 	"settings.models.unsupportedTuning": "{{role}}model tuning is no longer supported by the selected model. Choose a supported value before saving.",

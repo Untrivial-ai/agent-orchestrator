@@ -174,22 +174,32 @@ describe("HarnessSettingsSection", () => {
 		}));
 	});
 
-	it("shows no reinstall or instructions actions for installed harnesses", async () => {
+	it("offers a safe reinstall action for installed harnesses", async () => {
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalogWithInstalled("claude-code", "cursor") } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
 			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
 			return { data: undefined } as never;
 		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/{agent}/install") {
+				return { data: { target: "claude-code", status: "installing", method: "homebrew" } } as never;
+			}
+			return { data: undefined } as never;
+		});
+		const user = userEvent.setup();
 		renderSection();
 		const claudeRow = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		const cursorRow = (await screen.findByText("Cursor")).closest('[data-agent="cursor"]') as HTMLElement;
 
-		for (const row of [claudeRow, cursorRow]) {
-			expect(row).toHaveTextContent("Installed");
-			expect(within(row).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
-			expect(within(row).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
-		}
+		expect(claudeRow).toHaveTextContent("Installed");
+		await user.click(within(claudeRow).getByRole("button", { name: "Reinstall" }));
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/install", {
+			params: { path: { agent: "claude-code" } },
+			body: { method: "homebrew", operation: "reinstall" },
+		}));
+		expect(within(cursorRow).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
+		expect(within(cursorRow).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
 	});
 
 	it("starts an official vendor installer with one click and no instructions dialog", async () => {

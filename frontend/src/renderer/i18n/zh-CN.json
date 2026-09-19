@@ -1883,8 +1883,6 @@
 	],
 	"newTask.model": "Model",
 	"newTask.taskRequired": "Task is required.",
-	"newTask.tuningRequiresChat": "模型调优目前需要聊天模式；TUI 任务使用提供商默认值。",
-	"newTask.tuiTuningDefaults": "TUI 回退使用提供商默认值；模型调优需要聊天模式。",
 	"settings.models.effort": "推理强度",
 	"settings.models.providerDefault": "提供商默认值",
 	"settings.models.unsupportedTuning": "所选模型不再支持{{role}}模型调优。请在保存前选择受支持的值。",

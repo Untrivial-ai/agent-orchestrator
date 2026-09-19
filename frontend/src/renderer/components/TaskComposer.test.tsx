@@ -589,7 +589,60 @@ describe("TaskComposer", () => {
 		expect(onSubmittingChange).toHaveBeenLastCalledWith(false);
 	});
 
-	it("offers an explicit Terminal UI retry after Chat preflight fails", async () => {
+	it("silently routes agents without Chat support to Terminal UI", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/settings") {
+				return { data: { defaultSessionMode: "chat", chatHarnesses: ["codex"] } };
+			}
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "grok",
+						selectionMode: "catalog",
+						models: [{ id: "grok-4.6", label: "grok-4.6", isDefault: true }],
+						allowCustom: true,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "grok", config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { workerId: "sess-grok" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("grok-4.6");
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		fireEvent.change(task(), { target: { value: "Do the thing" } });
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() => expect(h.post).toHaveBeenCalledWith(
+			"/api/v1/orchestrators/delegate",
+			expect.objectContaining({ body: expect.objectContaining({ agent: "grok", mode: "tui" }) }),
+		));
+	});
+
+	it("preserves Codex effort when retrying in Terminal UI", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/settings") {
+				return { data: { defaultSessionMode: "chat", chatHarnesses: ["codex"] } };
+			}
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "catalog",
+						models: [{
+							id: "gpt-test",
+							label: "GPT Test",
+							isDefault: true,
+							efforts: ["low", "high"],
+						}],
+						allowCustom: true,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+		});
 		h.post
 			.mockResolvedValueOnce({ error: { code: "CHAT_DRIVER_UNAVAILABLE" } })
 			.mockResolvedValueOnce({ data: { workerId: "sess-tui" } });
@@ -600,6 +653,9 @@ describe("TaskComposer", () => {
 				<TaskComposer projectId="proj-1" onCreated={onCreated} />
 			</Wrap>,
 		);
+		await userEvent.click(await screen.findByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(await screen.findByRole("menuitemradio", { name: "High" }));
 		fireEvent.change(task(), { target: { value: "Do the thing" } });
 		fireEvent.click(screen.getByText("Start task"));
 
@@ -608,7 +664,7 @@ describe("TaskComposer", () => {
 		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("sess-tui"));
 		expect(h.post).toHaveBeenLastCalledWith(
 			"/api/v1/orchestrators/delegate",
-			expect.objectContaining({ body: expect.objectContaining({ mode: "tui" }) }),
+			expect.objectContaining({ body: expect.objectContaining({ effort: "high", mode: "tui" }) }),
 		);
 	});
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
@@ -207,6 +208,19 @@ func (m sessionLifecycleMessenger) Send(ctx context.Context, id domain.SessionID
 	return m.sessionLifecycle.Send(ctx, id, message, nil)
 }
 
+// telemetryEmitsSpawned reports whether the ao.session.spawned carrier event can
+// reach a sink under this config: product telemetry on and the event not on the
+// kill switch. When it cannot, session wiring leaves the GitHub identity resolver
+// nil so a spawn never makes a GitHub call whose only purpose is a dropped event.
+// This mirrors newTelemetrySink, which returns a NoopSink under the same off
+// condition, so the non-nil NoopSink never reaches an unnecessary resolve.
+func telemetryEmitsSpawned(cfg config.Config) bool {
+	if !cfg.Telemetry.Events {
+		return false
+	}
+	return !slices.Contains(cfg.Telemetry.DisabledEvents, "ao.session.spawned")
+}
+
 // startSession builds the controller-facing session service: a session manager
 // over the selected runtime, routed git/scratch workspaces, the shared store +
 // LCM, the per-session agent resolver, and the agent messenger. The tracker is
@@ -263,6 +277,14 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)
+	// Attach the operator's GitHub login to product telemetry only when its carrier
+	// event can actually be sent, and guard the typed nil from newMultiSCMProvider
+	// so the interface stays nil (degrading to anonymous) rather than wrapping a
+	// nil pointer.
+	var githubIdentity ports.ScopedIdentityResolver
+	if scmProvider != nil && telemetryEmitsSpawned(cfg) {
+		githubIdentity = scmProvider
+	}
 	sessionSvc := sessionsvc.NewWithDeps(sessionsvc.Deps{
 		Manager:           mgr,
 		Store:             store,
@@ -275,6 +297,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		BackgroundContext: ctx,
 		AgentReadiness:    agentReadiness,
 		Agents:            agents,
+		GithubIdentity:    githubIdentity,
 		// no_signal only makes sense for harnesses with complete lifecycle signal
 		// coverage; partial callbacks cannot prove that silence is abnormal.
 		SignalCapable: activitydispatch.FullySupportsHarness,

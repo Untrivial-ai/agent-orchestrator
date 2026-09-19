@@ -334,12 +334,6 @@ export function TaskComposer({
 		const refreshed = await refreshAgentModels(selectedAgent, modelsProjectId);
 		queryClient.setQueryData(agentModelsQueryKey(selectedAgent, modelsProjectId), refreshed);
 	}, [modelsProjectId, queryClient, selectedAgent]);
-	const displayedModelWarning = requiresTuiFallback
-		? t("newTask.tuningRequiresChat")
-		: fallbackAction === "tui"
-			? [modelWarning, t("newTask.tuiTuningDefaults")].filter(Boolean).join(" ")
-			: modelWarning;
-
 	useEffect(() => {
 		if (!agentTouched) setAgent(defaultWorkerAgent);
 	}, [agentTouched, defaultWorkerAgent]);
@@ -395,7 +389,8 @@ export function TaskComposer({
 				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
 				model: requestedModel,
-				effort: interfaceMode === "tui" || !effortTouched ? undefined : effort,
+				// Only explicit Codex picks set this; agent changes reset it, and TUI retries preserve it.
+				effort: effortTouched ? effort : undefined,
 				mode: interfaceMode,
 				approvalMode,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
@@ -489,7 +484,7 @@ export function TaskComposer({
 				showFallbackAction: fallbackAction !== undefined,
 				error,
 				isSubmitting,
-				modelWarning: displayedModelWarning,
+				modelWarning,
 				onFallbackAction: (brief) =>
 					void (fallbackAction === "bypass-permissions"
 						? submitTask(brief, undefined, "bypass-permissions")

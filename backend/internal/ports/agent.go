@@ -111,6 +111,14 @@ type AgentBinaryResolver interface {
 	ResolveBinary(ctx context.Context) (path string, err error)
 }
 
+// AgentBinaryResolutionInvalidator is an optional capability for adapters that
+// cache the executable path. Install and reinstall flows use it to make the
+// next readiness, model-discovery, or launch operation resolve the current
+// local installation again.
+type AgentBinaryResolutionInvalidator interface {
+	InvalidateBinaryResolution()
+}
+
 // AgentBinaryPresenceResolver is an optional startup-only refinement for an
 // adapter whose normal binary resolution performs additional validation. It
 // must only inspect local executable paths; it must not start the agent CLI.
