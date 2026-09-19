@@ -282,10 +282,17 @@ func (c *crushAuthConfig) readJSON(data []byte) bool {
 		Models    map[string]json.RawMessage
 		Env       map[string]string
 	}
-	if !strings.HasPrefix(strings.TrimSpace(string(data)), "{") || json.Unmarshal(data, &layer) != nil {
+	if !crushAuthObject(data, "providers", "models", "env") || json.Unmarshal(data, &layer) != nil {
 		return false
 	}
 	for id, raw := range layer.Providers {
+		var token struct{ OAuth json.RawMessage }
+		if !crushAuthObject(raw, "type", "api_key", "base_url", "disable", "oauth") || json.Unmarshal(raw, &token) != nil {
+			return false
+		}
+		if len(token.OAuth) > 0 && !crushAuthObject(token.OAuth, "access_token", "refresh_token", "expires_at") {
+			return false
+		}
 		var p crushAuthProvider
 		if json.Unmarshal(raw, &p) != nil {
 			return false
@@ -297,7 +304,7 @@ func (c *crushAuthConfig) readJSON(data []byte) bool {
 	}
 	for id, raw := range layer.Models {
 		var m crushAuthModel
-		if json.Unmarshal(raw, &m) != nil {
+		if !crushAuthObject(raw, "provider", "model") || json.Unmarshal(raw, &m) != nil {
 			return false
 		}
 		m = c.Models[id]
@@ -307,6 +314,27 @@ func (c *crushAuthConfig) readJSON(data []byte) bool {
 	}
 	for key, value := range layer.Env {
 		c.Env[key] = value
+	}
+	return true
+}
+
+// encoding/json leaves existing scalar and struct values unchanged for null.
+// Reject explicit nulls at the named auth-schema fields before merging a layer.
+// This checks only this object; unrelated settings are not recursively inspected.
+func crushAuthObject(data []byte, nonnullFields ...string) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || fields == nil {
+		return false
+	}
+	for key, value := range fields {
+		if strings.TrimSpace(string(value)) != "null" {
+			continue
+		}
+		for _, field := range nonnullFields {
+			if strings.EqualFold(key, field) {
+				return false
+			}
+		}
 	}
 	return true
 }

@@ -203,10 +203,17 @@ func (c *qwenAuthSettings) readJSON(data []byte) bool {
 		ProviderProtocol json.RawMessage `json:"providerProtocol"`
 		Env              map[string]string
 	}
-	if !bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) || json.Unmarshal(data, &layer) != nil {
+	if !qwenAuthObject(data, "security", "model", "modelProviders", "providerProtocol", "env") || json.Unmarshal(data, &layer) != nil {
 		return false
 	}
 	if len(layer.Security) > 0 {
+		var security struct{ Auth json.RawMessage }
+		if !qwenAuthObject(layer.Security, "auth") || json.Unmarshal(layer.Security, &security) != nil {
+			return false
+		}
+		if len(security.Auth) > 0 && !qwenAuthObject(security.Auth, "selectedType", "apiKey", "baseUrl") {
+			return false
+		}
 		value := c.Security
 		if json.Unmarshal(layer.Security, &value) != nil {
 			return false
@@ -215,7 +222,7 @@ func (c *qwenAuthSettings) readJSON(data []byte) bool {
 	}
 	if len(layer.Model) > 0 {
 		value := c.Model
-		if json.Unmarshal(layer.Model, &value) != nil {
+		if !qwenAuthObject(layer.Model, "name", "baseUrl") || json.Unmarshal(layer.Model, &value) != nil {
 			return false
 		}
 		c.Model = value
@@ -246,9 +253,17 @@ func (c *qwenAuthSettings) readJSON(data []byte) bool {
 			if decoder.Decode(&raw) != nil {
 				return false
 			}
-			var models []qwenAuthModel
-			if json.Unmarshal(raw, &models) != nil {
+			var entries []json.RawMessage
+			if json.Unmarshal(raw, &entries) != nil || entries == nil {
 				return false
+			}
+			models := make([]qwenAuthModel, 0, len(entries))
+			for _, entry := range entries {
+				var model qwenAuthModel
+				if !qwenAuthObject(entry, "id", "baseUrl", "envKey", "wireApi") || json.Unmarshal(entry, &model) != nil {
+					return false
+				}
+				models = append(models, model)
 			}
 			c.ModelProviders[id] = models
 			c.providerOrder = append(c.providerOrder, id)
@@ -263,6 +278,27 @@ func (c *qwenAuthSettings) readJSON(data []byte) bool {
 	}
 	for key, value := range layer.Env {
 		c.Env[key] = value
+	}
+	return true
+}
+
+// A JSON null must not silently preserve a previous auth setting during merge.
+// Validate only the explicitly named fields of this schema object, never an
+// unrelated settings subtree or a recursive key/token search.
+func qwenAuthObject(data []byte, nonnullFields ...string) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || fields == nil {
+		return false
+	}
+	for key, value := range fields {
+		if !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			continue
+		}
+		for _, field := range nonnullFields {
+			if strings.EqualFold(key, field) {
+				return false
+			}
+		}
 	}
 	return true
 }
