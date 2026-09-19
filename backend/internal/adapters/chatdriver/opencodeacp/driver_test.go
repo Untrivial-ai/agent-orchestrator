@@ -205,21 +205,6 @@ func TestConfigureKeepsTheUsersOwnInlineConfig(t *testing.T) {
 	}
 }
 
-func configuredAgents(t *testing.T, cfg acpdriver.LaunchConfig) map[string]map[string]any {
-	t.Helper()
-	_, env, err := configure(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	var config struct {
-		Agent map[string]map[string]any `json:"agent"`
-	}
-	if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
-	return config.Agent
-}
-
 func TestPermissionPolicyAnswersRequestsTheWayAutoDoes(t *testing.T) {
 	edit, execute, fetch := acpsdk.ToolKindEdit, acpsdk.ToolKindExecute, acpsdk.ToolKindFetch
 	options := []acpsdk.PermissionOption{
