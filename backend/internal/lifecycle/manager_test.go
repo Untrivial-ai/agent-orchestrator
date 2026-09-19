@@ -837,6 +837,45 @@ func TestActivity_InvalidIsIgnored(t *testing.T) {
 	}
 }
 
+func TestActivity_DelayedNeedsInputNotificationDoesNotPromoteIdle(t *testing.T) {
+	m, st, _ := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := st.sessions["mer-1"]
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityWaitingInput, Event: "notification",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := st.sessions["mer-1"]
+	if got.Activity.State != domain.ActivityIdle {
+		t.Fatalf("delayed notification promoted activity to %q, want idle", got.Activity.State)
+	}
+	if !got.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("delayed notification changed UpdatedAt: got %v, want %v", got.UpdatedAt, before.UpdatedAt)
+	}
+}
+
+func TestActivity_NeedsInputNotificationDuringTurnStillPromotes(t *testing.T) {
+	m, st, _ := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityWaitingInput, Event: "notification",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.sessions["mer-1"].Activity.State; got != domain.ActivityWaitingInput {
+		t.Fatalf("in-turn notification set activity to %q, want waiting_input", got)
+	}
+}
+
 func TestActivity_MetadataOnlyStoresAgentSessionIDWithoutChangingActivity(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
