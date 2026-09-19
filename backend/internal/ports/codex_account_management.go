@@ -32,6 +32,14 @@ type CodexOperationLease interface {
 	Release()
 }
 
+// CodexReviewerControllerSnapshot identifies the one Codex reviewer controller
+// observed for a worker while account switching fences lifecycle operations.
+type CodexReviewerControllerSnapshot struct {
+	HandleID        string
+	NativeSessionID string
+	Running         bool
+}
+
 // CodexOperationGate serializes device-global Codex credential mutation with
 // controller registration and ordinary clients of the active Codex home.
 type CodexOperationGate interface {

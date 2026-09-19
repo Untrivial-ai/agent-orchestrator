@@ -89,6 +89,8 @@ Use `agentRules` or `agentRulesFile` for worker instructions and `orchestratorRu
 
 Reviewer harnesses are configured separately from workers. AO currently supports Claude Code, Codex, and OpenCode reviewers. If none is configured, AO reuses the worker harness when it is review-capable, otherwise it falls back to Claude Code.
 
+You can configure multiple reviewers for cross-provider review workflows. Each configured reviewer will evaluate the same PR head independently. The PR is considered fully reviewed only when every configured reviewer has approved the current head. Any `changes_requested` result keeps the review unresolved. Reviewer failure or timeout is surfaced as incomplete, never treated as approval. Individual verdicts remain attributed and visible by reviewer.
+
 Review runs are available in the desktop inspector and through:
 
 ```bash
