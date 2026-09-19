@@ -1206,6 +1206,28 @@ func TestActivity_StaleUserPromptDoesNotResumeExitedWorkload(t *testing.T) {
 	}
 }
 
+func TestActivity_CurrentChatControllerResumesExitedWorkload(t *testing.T) {
+	signals := []ports.ActivitySignal{
+		{Valid: true, State: domain.ActivityActive, Event: "chat.turn.started", ControllerGeneration: "gen-current"},
+		{Valid: true, State: domain.ActivityIdle, Event: "chat.turn.completed", ControllerGeneration: "gen-current"},
+		{Valid: true, State: domain.ActivityWaitingInput, Event: "chat.input.requested", ControllerGeneration: "gen-current"},
+	}
+	for _, signal := range signals {
+		m, st, _ := newManager()
+		st.sessions["mer-1"] = domain.SessionRecord{
+			ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+			Metadata: domain.SessionMetadata{ControllerGeneration: "gen-current"},
+			Activity: domain.Activity{State: domain.ActivityExited},
+		}
+		if err := m.ApplyActivitySignal(ctx, "mer-1", signal); err != nil {
+			t.Fatalf("event %q: %v", signal.Event, err)
+		}
+		if got := st.sessions["mer-1"].Activity.State; got != signal.State {
+			t.Fatalf("event %q left state %q, want %q", signal.Event, got, signal.State)
+		}
+	}
+}
+
 func TestActivity_StaleLaunchSignalIsIgnored(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
