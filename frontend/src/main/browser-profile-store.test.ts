@@ -1,14 +1,14 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	BROWSER_PROFILE_MAX_COUNT,
 	BROWSER_PROFILE_REGISTRY_VERSION,
 	browserProfilePartition,
 	type BrowserProfileRegistry,
 } from "../shared/browser-profiles";
-import { BrowserProfileStore } from "./browser-profile-store";
+import { BROWSER_PROFILE_OPERATION_TIMEOUT_MS, BrowserProfileStore } from "./browser-profile-store";
 
 const tempDirectories: string[] = [];
 
@@ -171,5 +171,24 @@ describe("BrowserProfileStore", () => {
 		expect(await second).toBe("second");
 		await drain;
 		expect(store.isProfileOperationInProgress(profile.id)).toBe(false);
+	});
+
+	it("times out profile data operations that run too long", async () => {
+		vi.useFakeTimers();
+		try {
+			const store = new BrowserProfileStore({ stateDir: await makeStateDir() });
+			const profile = await store.createProfile("Work");
+			const operation = store.runProfileOperation(profile.id, () => false, async () => {
+				await new Promise<void>(() => undefined);
+			});
+			const expectation = expect(operation).rejects.toMatchObject({
+				code: "BROWSER_PROFILE_OPERATION_TIMEOUT",
+			});
+			await vi.advanceTimersByTimeAsync(BROWSER_PROFILE_OPERATION_TIMEOUT_MS);
+			await expectation;
+			expect(store.isProfileOperationInProgress(profile.id)).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
