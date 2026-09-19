@@ -1,8 +1,8 @@
 ---
 title: "Agent Orchestrator vs Superset"
-description: "Compare AO and Superset for managing parallel CLI coding agents across isolated Git worktrees."
+description: "Honest Sept 2026 comparison of AO and Superset for parallel coding agents, worktrees, review loops, multi-device access, and licensing."
 date: "2026-08-01"
-lastUpdated: "2026-08-01"
+lastUpdated: "2026-09-18"
 type: "1v1"
 competitors:
   - "Agent Orchestrator"
@@ -10,39 +10,64 @@ competitors:
 keywords:
   - "Agent Orchestrator vs Superset"
   - "Superset alternative"
+  - "Superset vs Agent Orchestrator"
   - "parallel coding agents"
   - "open source agent orchestration"
 ---
 
 ## Short answer
 
-Choose **Agent Orchestrator (AO)** when the unit of work is an issue that must reach a reviewed, passing pull request. Choose **Superset** when you want an open-source agent workspace with an integrated editor, terminal, browser, and diff experience.
+Choose **Agent Orchestrator (AO)** when you want a free Apache-2.0 supervisor that tracks work from issue through PR, CI, and review across macOS, Windows, Linux, iOS, and Android. Choose **Superset** when you want a polished macOS agent workspace with remote hosts, scheduled automations, Linear/Slack, SOC 2 paperwork, and an MCP surface you can call from other tools.
 
-Both products run CLI agents in isolated worktrees. [Superset describes itself as an open-source AI coding platform](https://docs.superset.sh/overview); [AO is a local orchestration layer that tracks agents through PR completion](https://orchestrator.inc/docs/).
+Third-party pages that still describe AO as local-only with a deprecated CLI and no multi-device story are out of date. As of September 2026, AO ships a desktop app, a supported thin `ao` CLI against that desktop daemon, and iOS/Android companions over Connect Mobile. AO still has **no MCP server yet** (in progress)—do not treat that as shipped.
+
+[Superset](https://docs.superset.sh/overview) is source-available under the Elastic License. [AO](https://orchestrator.inc/docs/) is Apache-2.0 and keeps the issue-to-merge loop as the product center.
+
+## What AO uniquely has
+
+- **Project orchestrator** that plans and delegates across workers, not only a per-workspace agent chat.
+- **CI-failure and review-comment routing** back to the owning session after a PR is open.
+- **Desktop + iOS + Android** against the same local daemon (Connect Mobile on a trusted home network).
+- **Apache-2.0** on macOS, Windows, and Linux with about **25 harnesses**, GitHub and GitLab, and an **isolated browser per worker**.
+- No seat pricing: free, BYO agent credentials.
+
+## Where Superset is stronger
+
+- **macOS workspace polish**: integrated editor, terminal, browser, and diffs in one surface.
+- **Remote hosts, automations, Linear, and Slack** on paid tiers; AO has **no Linear yet** (in progress).
+- **MCP server / CLI / SDK** so agents and scripts can drive Superset; AO's MCP server is in progress, not shipped.
+- **SOC 2 Type II** and weekly changelog cadence that procurement teams often ask for.
+- Team pricing and login-gated product packaging (Free / roughly $15–20 Pro / Enterprise).
 
 ## At a glance
 
 | Area | Agent Orchestrator | Superset |
 | --- | --- | --- |
-| Primary workflow | Issue and PR lifecycle orchestration | Interactive coding-agent workspace |
-| Agent isolation | Worktree or clone workspace plugins | Git worktrees |
-| Review loop | CI and review feedback can return to the owning agent automatically | Built-in diff and commit workflow |
-| Extensibility | Plugin slots for agents, trackers, SCMs, runtimes, workspaces, notifiers, and terminals | CLI-agent integrations, MCP, and workspace tooling |
-| Interface | Desktop supervisor plus local `ao` CLI | Desktop workspace with editor, terminal, browser, and diffs |
-| Cost model | Free, open source, BYO agent credentials | Open source, BYO agent credentials |
-
-## Why choose Agent Orchestrator
-
-AO is stronger when supervising work matters more than editing inside the orchestrator. Sessions are connected to tracker items, branches, pull requests, checks, and reviews. Reactions can notify or re-engage the correct agent when external state changes.
-
-This creates a consistent issue-to-merge workflow even when projects use different agent CLIs or infrastructure. AO's thin desktop supervisor and local CLI sit above those tools rather than trying to become the code editor itself.
+| Primary workflow | Issue → orchestrator/workers → PR → CI/review loop | Interactive agent workspace with worktrees |
+| Team | Independent Untrivial / community | 3 founders |
+| Platforms | macOS, Windows, Linux; iOS and Android companions | macOS desktop; Linux untested / experimental |
+| License | Apache-2.0 | Elastic License 2.0 (source-available) |
+| Pricing | Free | Free / ~$15–20 Pro / Enterprise |
+| Orchestration | Project orchestrator + worker sessions | Skills and workspaces inside the user's agent |
+| Feedback loop | Routes CI failures and review comments to the owning agent | Built-in diff, commit, and PR workflow |
+| Remote / automation | Local daemon; Connect Mobile on LAN | Remote hosts, automations, Linear, Slack |
+| MCP | No MCP server yet (in progress) | MCP surface shipped |
+| Compliance | Open-source trust model; no SOC claim here | SOC 2 Type II |
 
 ## Frequently Asked Questions
 
-### Are AO and Superset both open source?
+### Is AO still “local-only” with no multi-device story?
 
-Yes. Both are open-source desktop tools that use your own coding-agent access rather than proxying model calls.
+No. The desktop app owns a loopback daemon on your machine, and Connect Mobile adds an opt-in LAN listener for the iOS and Android apps. That is not a hosted multi-user cloud; it is a real phone companion for the same projects and sessions.
 
-### What is AO's main advantage over Superset?
+### Is the AO CLI deprecated?
 
-AO focuses on durable issue, session, PR, CI, and review state, including automatic feedback routing after an agent opens a pull request.
+The legacy npm package `@aoagents/ao` is frozen at `0.10.0` and is no longer the recommended install path. The **desktop-bundled `ao` CLI** remains a supported thin client over the app-owned daemon for scripting and terminal workflows. Prefer [desktop download](https://orchestrator.inc/download/).
+
+### Does AO expose MCP the way Superset does?
+
+Not yet. AO does not ship an MCP server today; that work is in progress. Superset already documents MCP as part of its surface. Prefer Superset (or another MCP-first tool) if that integration is a hard requirement today.
+
+### Are AO and Superset both “open source”?
+
+AO is Apache-2.0. Superset is source-available under Elastic License 2.0, which is not an OSI open-source license. Both use your own coding-agent credentials rather than proxying model calls by default.
