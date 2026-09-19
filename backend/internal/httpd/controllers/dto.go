@@ -167,6 +167,11 @@ type CleanupSessionsQuery struct {
 	Project string `query:"project,omitempty" description:"Project id filter. When omitted, clean terminated sessions across all projects."`
 }
 
+// RemoveProjectQuery is the query string accepted by DELETE /api/v1/projects/{id}.
+type RemoveProjectQuery struct {
+	Force *bool `query:"force,omitempty" description:"When true, remove the project even when it has live sessions; those sessions are stopped and their workspaces reclaimed. Without it a project with live sessions is refused."`
+}
+
 // WorkspaceFileQuery is the query string accepted by GET /api/v1/sessions/{sessionId}/workspace/file.
 type WorkspaceFileQuery struct {
 	Path string `query:"path" description:"Session-worktree-relative file path."`

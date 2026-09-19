@@ -32,8 +32,9 @@ type projectGetOptions struct {
 }
 
 type projectRemoveOptions struct {
-	json bool
-	yes  bool
+	json  bool
+	yes   bool
+	force bool
 }
 
 // addProjectRequest mirrors the daemon's project AddInput body for
@@ -460,7 +461,11 @@ func newProjectRemoveCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			var res projectRemoveResult
-			if err := ctx.deleteJSON(cmd.Context(), "projects/"+url.PathEscape(id), &res); err != nil {
+			path := "projects/" + url.PathEscape(id)
+			if opts.force {
+				path += "?force=true"
+			}
+			if err := ctx.deleteJSON(cmd.Context(), path, &res); err != nil {
 				return err
 			}
 			if opts.json {
@@ -479,6 +484,7 @@ func newProjectRemoveCommand(ctx *commandContext) *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&opts.json, "json", false, "Output removal result as JSON")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "Remove the project even when it has live sessions (stops them)")
 	return cmd
 }
 

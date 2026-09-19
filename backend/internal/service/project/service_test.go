@@ -154,8 +154,10 @@ func wantCode(t *testing.T, err error, code string) {
 }
 
 type fakeProjectTeardowner struct {
-	projects []domain.ProjectID
-	err      error
+	projects   []domain.ProjectID
+	live       int
+	err        error
+	onTeardown func()
 }
 
 type captureSink struct {
@@ -170,7 +172,14 @@ func (*captureSink) Close(context.Context) error { return nil }
 
 func (f *fakeProjectTeardowner) TeardownProject(_ context.Context, project domain.ProjectID) error {
 	f.projects = append(f.projects, project)
+	if f.onTeardown != nil {
+		f.onTeardown()
+	}
 	return f.err
+}
+
+func (f *fakeProjectTeardowner) LiveSessionCount(context.Context, domain.ProjectID) (int, error) {
+	return f.live, nil
 }
 
 func TestManager_AddListGetRemove(t *testing.T) {
@@ -203,7 +212,7 @@ func TestManager_AddListGetRemove(t *testing.T) {
 		t.Fatalf("Get = %#v", res)
 	}
 
-	rm, err := m.Remove(ctx, "ao")
+	rm, err := m.Remove(ctx, "ao", false)
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
@@ -216,7 +225,7 @@ func TestManager_AddListGetRemove(t *testing.T) {
 	_, err = m.Get(ctx, "ao")
 	wantCode(t, err, "PROJECT_NOT_FOUND")
 
-	_, err = m.Remove(ctx, "ao")
+	_, err = m.Remove(ctx, "ao", false)
 	wantCode(t, err, "PROJECT_NOT_FOUND")
 }
 
@@ -596,7 +605,7 @@ func TestManager_RemoveTeardownsBeforeArchive(t *testing.T) {
 	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := m.Remove(ctx, "ao"); err != nil {
+	if _, err := m.Remove(ctx, "ao", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if len(teardown.projects) != 1 || teardown.projects[0] != "ao" {
@@ -619,12 +628,82 @@ func TestManager_RemoveDoesNotArchiveWhenTeardownFails(t *testing.T) {
 	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := m.Remove(ctx, "ao"); !errors.Is(err, boom) {
+	if _, err := m.Remove(ctx, "ao", false); !errors.Is(err, boom) {
 		t.Fatalf("Remove err = %v, want teardown failure", err)
 	}
 	if got, err := m.Get(ctx, "ao"); err != nil || got.Project == nil || got.Project.ID != "ao" {
 		t.Fatalf("project after failed remove = %#v, %v; want still active", got, err)
 	}
+}
+
+func TestManager_RemoveRefusesLiveSessionsWithoutForce(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	teardown := &fakeProjectTeardowner{live: 2}
+	m := project.NewWithDeps(project.Deps{Store: store, Sessions: teardown})
+
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err = m.Remove(ctx, "ao", false)
+	wantCode(t, err, "PROJECT_HAS_LIVE_SESSIONS")
+	if len(teardown.projects) != 0 {
+		t.Fatalf("teardown ran despite live sessions: %#v", teardown.projects)
+	}
+	if got, err := m.Get(ctx, "ao"); err != nil || got.Project == nil {
+		t.Fatalf("project after refused remove = %#v, %v; want still active", got, err)
+	}
+}
+
+func TestManager_RemoveForceStopsLiveSessions(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	teardown := &fakeProjectTeardowner{live: 2}
+	m := project.NewWithDeps(project.Deps{Store: store, Sessions: teardown})
+
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := m.Remove(ctx, "ao", true); err != nil {
+		t.Fatalf("Remove force: %v", err)
+	}
+	if len(teardown.projects) != 1 || teardown.projects[0] != "ao" {
+		t.Fatalf("teardown projects = %#v, want [ao]", teardown.projects)
+	}
+	_, err = m.Get(ctx, "ao")
+	wantCode(t, err, "PROJECT_NOT_FOUND")
+}
+
+func TestManager_RemoveSurvivesCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	// The caller dies mid-teardown: the CLI asking for removal frequently runs
+	// inside one of the sessions being stopped (issue #4948). The removal must
+	// still finish and archive the project.
+	teardown := &fakeProjectTeardowner{onTeardown: cancel}
+	m := project.NewWithDeps(project.Deps{Store: store, Sessions: teardown})
+
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := m.Remove(ctx, "ao", false); err != nil {
+		t.Fatalf("Remove after caller cancellation: %v", err)
+	}
+	_, err = m.Get(context.Background(), "ao")
+	wantCode(t, err, "PROJECT_NOT_FOUND")
 }
 
 func TestManager_DefaultsWhenUnconfigured(t *testing.T) {
@@ -867,7 +946,7 @@ func TestManager_ReaddAfterRemove(t *testing.T) {
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao")}); err != nil {
 		t.Fatalf("first Add: %v", err)
 	}
-	if _, err := m.Remove(ctx, "ao"); err != nil {
+	if _, err := m.Remove(ctx, "ao", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao2")}); err != nil {
@@ -875,7 +954,7 @@ func TestManager_ReaddAfterRemove(t *testing.T) {
 	}
 
 	otherRepo := gitRepo(t)
-	if _, err := m.Remove(ctx, "ao2"); err != nil {
+	if _, err := m.Remove(ctx, "ao2", false); err != nil {
 		t.Fatalf("Remove ao2: %v", err)
 	}
 	if _, err := m.Add(ctx, project.AddInput{Path: otherRepo, ProjectID: ptr("ao2")}); err != nil {
@@ -1357,7 +1436,7 @@ func TestManager_GetUpdateRemoveErrors(t *testing.T) {
 	_, err = m.Get(ctx, domain.ProjectID("bad/id"))
 	wantCode(t, err, "INVALID_PROJECT_ID")
 
-	_, err = m.Remove(ctx, "nope")
+	_, err = m.Remove(ctx, "nope", false)
 	wantCode(t, err, "PROJECT_NOT_FOUND")
 
 	repo := gitRepo(t)

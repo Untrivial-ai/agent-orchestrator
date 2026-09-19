@@ -1858,11 +1858,12 @@ func projectOperations() []operation {
 		{
 			method: http.MethodDelete, path: "/api/v1/projects/{id}", id: "removeProject", tag: "projects",
 			summary:    "Remove a project; stops sessions, cleans workspaces, unregisters",
-			pathParams: []any{controllers.ProjectIDParam{}},
+			pathParams: []any{controllers.ProjectIDParam{}, controllers.RemoveProjectQuery{}},
 			resps: []respUnit{
 				{http.StatusOK, projectsvc.RemoveResult{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},

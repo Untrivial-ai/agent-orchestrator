@@ -23,6 +23,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 )
 
+// projectRemovalBudget bounds a detached project removal. Removing a project
+// stops each of its live sessions and reclaims their workspaces, so it is
+// sized well above a single request timeout; it exists only so a wedged git or
+// runtime call cannot pin the goroutine forever.
+const projectRemovalBudget = 10 * time.Minute
+
 // Manager is the controller-facing contract for the /api/v1/projects surface.
 type Manager interface {
 	// List returns every registered project, including degraded entries
@@ -54,13 +60,16 @@ type Manager interface {
 	SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error)
 
 	// Remove unregisters a project, stopping its sessions and reclaiming
-	// managed workspaces.
-	Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error)
+	// managed workspaces. A project with live sessions is refused unless force
+	// is set, because stopping them is destructive and cannot be undone.
+	Remove(ctx context.Context, id domain.ProjectID, force bool) (RemoveResult, error)
 }
 
 // SessionTeardowner is the narrow session-service surface project removal
 // needs: stop live project sessions and reclaim managed terminal workspaces.
 type SessionTeardowner interface {
+	// LiveSessionCount reports how many non-terminated sessions the project has.
+	LiveSessionCount(ctx context.Context, project domain.ProjectID) (int, error)
 	TeardownProject(ctx context.Context, project domain.ProjectID) error
 }
 
@@ -798,10 +807,25 @@ func resolveDefaultBranch(ctx context.Context, path string) string {
 // Remove stops live project sessions, reclaims safe managed workspaces, then
 // archives the project registration. The original repository path and durable
 // session/history rows are preserved.
-func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error) {
+//
+// A project with live sessions is refused unless force is set: the caller may
+// be one of those sessions, and stopping them is destructive.
+//
+// Once the removal starts it no longer rides the caller's context. The CLI that
+// asked for the removal is frequently running inside one of the sessions being
+// torn down, so its death mid-request used to cancel the teardown and leave the
+// project registered with every session dead (issue #4948). The detached
+// context keeps the operation atomic: either the record is archived or nothing
+// changed.
+func (m *Service) Remove(ctx context.Context, id domain.ProjectID, force bool) (RemoveResult, error) {
 	if err := validateProjectID(id); err != nil {
 		return RemoveResult{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return RemoveResult{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), projectRemovalBudget)
+	defer cancel()
 	row, ok, err := m.store.GetProject(ctx, string(id))
 	if err != nil {
 		return RemoveResult{}, apierr.Internal("PROJECT_REMOVE_FAILED", "Failed to remove project")
@@ -810,6 +834,17 @@ func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult
 		return RemoveResult{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
 	if m.sessions != nil {
+		if !force {
+			live, err := m.sessions.LiveSessionCount(ctx, id)
+			if err != nil {
+				return RemoveResult{}, err
+			}
+			if live > 0 {
+				return RemoveResult{}, apierr.Conflict("PROJECT_HAS_LIVE_SESSIONS",
+					"Project has live sessions; stop them first or re-run with force",
+					map[string]any{"liveSessions": live})
+			}
+		}
 		if err := m.sessions.TeardownProject(ctx, id); err != nil {
 			return RemoveResult{}, err
 		}

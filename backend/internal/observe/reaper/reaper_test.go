@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -214,6 +215,77 @@ func TestTick_SmallBoardMassDeathStillConcludes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []domain.SessionID{"mer-1", "mer-2"} {
+		if got := lcm.observed[id]; got.Runtime != ports.ProbeDead {
+			t.Fatalf("session %s runtime = %q, want %q", id, got.Runtime, ports.ProbeDead)
+		}
+	}
+}
+
+// A project-wide outage must trip even when a healthy rest of the board keeps
+// the board-wide dead fraction under half (issue #4948: 14 sessions of one
+// project were terminated in numeric order while other projects' sessions
+// probed alive and diluted the pass).
+func TestTick_ProjectMassDeathTripsBelowBoardFraction(t *testing.T) {
+	lcm := &fakeLCM{}
+	alive := map[string]bool{}
+	var rows []domain.SessionRecord
+	for i := 1; i <= 14; i++ {
+		rec := handledSession(domain.SessionID(fmt.Sprintf("lab-a-%d", i)))
+		rec.ProjectID = "lab-a"
+		rows = append(rows, rec)
+	}
+	for i := 1; i <= 16; i++ {
+		id := domain.SessionID(fmt.Sprintf("lab-b-%d", i))
+		rec := handledSession(id)
+		rec.ProjectID = "lab-b"
+		rows = append(rows, rec)
+		alive["h-"+string(id)] = true
+	}
+	r := New(lcm, fakeSessions{rows: rows}, perHandleRuntime{alive: alive}, Config{Logger: quietLogger()})
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 14; i++ {
+		id := domain.SessionID(fmt.Sprintf("lab-a-%d", i))
+		if got := lcm.observed[id]; got.Runtime != ports.ProbeFailed {
+			t.Fatalf("session %s runtime = %q, want %q (a project's whole set reading dead is an outage)",
+				id, got.Runtime, ports.ProbeFailed)
+		}
+	}
+	for i := 1; i <= 16; i++ {
+		id := domain.SessionID(fmt.Sprintf("lab-b-%d", i))
+		if got := lcm.observed[id]; got.Runtime != ports.ProbeAlive {
+			t.Fatalf("session %s runtime = %q, want %q (a healthy project must be untouched)",
+				id, got.Runtime, ports.ProbeAlive)
+		}
+	}
+}
+
+// The per-project breaker keeps the board-wide threshold's small-board
+// exemption: a handful of sessions in one project finishing together is
+// normal and still concludes.
+func TestTick_SmallProjectMassDeathStillConcludes(t *testing.T) {
+	lcm := &fakeLCM{}
+	alive := map[string]bool{}
+	var rows []domain.SessionRecord
+	for i := 1; i <= 4; i++ {
+		rec := handledSession(domain.SessionID(fmt.Sprintf("lab-a-%d", i)))
+		rec.ProjectID = "lab-a"
+		rows = append(rows, rec)
+	}
+	for i := 1; i <= 8; i++ {
+		id := domain.SessionID(fmt.Sprintf("lab-b-%d", i))
+		rec := handledSession(id)
+		rec.ProjectID = "lab-b"
+		rows = append(rows, rec)
+		alive["h-"+string(id)] = true
+	}
+	r := New(lcm, fakeSessions{rows: rows}, perHandleRuntime{alive: alive}, Config{Logger: quietLogger()})
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 4; i++ {
+		id := domain.SessionID(fmt.Sprintf("lab-a-%d", i))
 		if got := lcm.observed[id]; got.Runtime != ports.ProbeDead {
 			t.Fatalf("session %s runtime = %q, want %q", id, got.Runtime, ports.ProbeDead)
 		}

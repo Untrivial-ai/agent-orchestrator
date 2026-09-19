@@ -933,6 +933,22 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	return out, nil
 }
 
+// LiveSessionCount reports the project's non-terminated sessions, so callers
+// can refuse a destructive teardown the user did not ask for.
+func (s *Service) LiveSessionCount(ctx context.Context, project domain.ProjectID) (int, error) {
+	recs, err := s.listRecords(ctx, project)
+	if err != nil {
+		return 0, err
+	}
+	live := 0
+	for _, rec := range recs {
+		if !rec.IsTerminated {
+			live++
+		}
+	}
+	return live, nil
+}
+
 // TeardownProject stops every live session in a project concurrently, then asks
 // the session manager to reclaim terminal workspaces. The expensive per-session
 // work (agent/runtime shutdown, controller teardown) is independent, so running
