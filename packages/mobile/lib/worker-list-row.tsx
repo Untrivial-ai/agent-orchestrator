@@ -68,7 +68,11 @@ export const WorkerListRow = memo(
 	const visual = statusVisual(t, session.status);
 	const glyph = workerStatusGlyph(session.status);
 	const prs = prLine(session);
-	const details = [row.branch, prs?.text].filter(Boolean).join("  ·  ");
+	// The second line is the pull request, and only the pull request. It used to
+	// lead with the branch, which on most rows was the worktree path
+	// (`ao/dev/<project>-N/root`) — the same string the session header shows, and
+	// noise under a title that already names the work.
+	const details = prs?.text ?? "";
 	useEffect(() => {
 		if (isRenaming) return;
 		setRenameTitle(row.title);
@@ -325,7 +329,7 @@ function WorkerRowContents({
 
 			{renameError ? <Text accessibilityRole="alert" style={styles.renameError}>{renameError}</Text> : null}
 			{details ? (
-				<Text style={[styles.details, prsTone && !row.branch && { color: toneColor(t, prsTone) }]} numberOfLines={1}>
+				<Text style={[styles.details, prsTone && { color: toneColor(t, prsTone) }]} numberOfLines={1}>
 					{details}
 				</Text>
 			) : null}

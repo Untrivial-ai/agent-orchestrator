@@ -7,7 +7,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
 	ActivityIndicator,
 	Alert,
-	InteractionManager,
 	Keyboard,
 	KeyboardAvoidingView,
 	Platform,
@@ -18,7 +17,7 @@ import {
 } from "react-native";
 import { mobileReachablePreviewURL, restoreSession, resumeSessionAgent, type DashboardSession, type OrchestratorLink } from "../api";
 import { haptics } from "../haptics";
-import { deferRouteContent, resetHeaderRightForSwap } from "../headerRightSwap";
+import { resetHeaderRightForSwap } from "../headerRightSwap";
 import { openGitHub } from "../openGitHub";
 import { glassHeaderControl } from "../native-header-items";
 import { NativeHeaderButton } from "../native-header-button";
@@ -76,7 +75,6 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const headerHeight = useHeaderHeight();
 	const insets = useSafeAreaInsets();
 	const [headerRightReady, setHeaderRightReady] = useState(false);
-	const [contentReadySessionId, setContentReadySessionId] = useState<string>();
 	useLayoutEffect(
 		() => resetHeaderRightForSwap(
 			() => navigation.setOptions(glassHeaderControl("right")),
@@ -84,13 +82,6 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		),
 		[navigation],
 	);
-	useEffect(() => deferRouteContent(
-		() => setContentReadySessionId(session.id),
-		(callback) => {
-			const task = InteractionManager.runAfterInteractions(callback);
-			return () => task.cancel();
-		},
-	), [session.id]);
 	const { config, projects, refresh: refreshBoard, setActiveProject, setWorkerPinned, renameWorker, kill } = useApp();
 	const conversation = useMobileConversation(config, session.id);
 	const interfaceSwitch = useInterfaceTransition(config, session.id, refreshBoard);
@@ -188,10 +179,6 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		navigation.setOptions({ gestureEnabled: !cardShowing });
 	}, [cardShowing, navigation]);
 	useLayoutEffect(() => {
-		if (!headerRightReady) {
-			navigation.setOptions(glassHeaderControl("right"));
-			return;
-		}
 		navigation.setOptions({
 			headerTitle: () => (
 				<ConversationTitle
@@ -201,11 +188,22 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 					state={headerState}
 				/>
 			),
-			...glassHeaderControl("right", (
-				<NativeHeaderButton icon="more" label="Conversation actions" onPress={() => { haptics.tap(); setMenuOpen(true); }} />
-			)),
 		});
-	}, [headerHarness, headerRightReady, headerState, navigation, projectName, title, t]);
+	}, [headerHarness, headerState, navigation, projectName, title, t]);
+
+	// The title is set on the first commit, above. Only the trailing control waits:
+	// native-stack measures the replacement for a frame, and deferring the whole
+	// options object meant the title arrived with it — iOS then animated the
+	// header in from the top, after the screen had already landed.
+	useLayoutEffect(() => {
+		navigation.setOptions(
+			headerRightReady
+				? glassHeaderControl("right", (
+					<NativeHeaderButton icon="more" label="Conversation actions" onPress={() => { haptics.tap(); setMenuOpen(true); }} />
+				))
+				: glassHeaderControl("right"),
+		);
+	}, [headerRightReady, navigation, t]);
 
 	const loadWorkspaceFiles = useCallback(async () => {
 		if (!config || !conversation.snapshot) return { paths: filePaths, truncated: filePathsTruncated };
@@ -407,7 +405,6 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	if (conversation.loading && !conversation.snapshot) return <Centered icon="message-square" title="Loading conversation…" spinning />;
 	if (conversation.unavailable) return <Unavailable message={conversation.unavailable.message} onShell={() => void openShell()} openingShell={openingShell} />;
 	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Couldn't load the conversation" message={conversation.error || "The daemon did not return a conversation."} action="Retry" onAction={() => void conversation.refresh()} />;
-	if (contentReadySessionId !== session.id) return <Centered icon="message-square" title="Preparing conversation…" spinning />;
 
 	const snapshot = conversation.snapshot;
 	const active = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");

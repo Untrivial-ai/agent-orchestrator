@@ -1,5 +1,6 @@
-import { Stack } from "expo-router";
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider as NavigationThemeProvider } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { useMemo } from "react";
 import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -86,6 +87,21 @@ export default function RootLayout() {
 function Shell() {
 	const t = useTheme();
 	const { scheme } = useThemeState();
+	const navigationTheme = useMemo(
+		() => ({
+			...(scheme === "dark" ? DarkTheme : DefaultTheme),
+			colors: {
+				...DarkTheme.colors,
+				primary: t.accent,
+				background: t.bgBase,
+				card: t.bgSurface,
+				text: t.textPrimary,
+				border: t.borderSubtle,
+				notification: t.red,
+			},
+		}),
+		[t, scheme],
+	);
 	return (
 		// Themed backdrop behind the navigator. Every view above this one is
 		// transparent, so without it the transition between two screens revealed the
@@ -98,8 +114,21 @@ function Shell() {
 			<UpdatesManager />
 			<StoreUpdateManager />
 			<OnboardingGate />
+			{/* The navigator paints surfaces of its own, and it reads them from *its*
+			    theme, not from the palette above. Two of those surfaces are visible
+			    only while a page moves: the stack's own container, which shows
+			    through the seam between the outgoing and incoming screens, and the
+			    content view underneath a screen's own background. Left on the
+			    navigator's defaults they are white — the edge that appeared around
+			    the page mid-transition — so the theme carries our palette into the
+			    native layer instead. */}
+			<NavigationThemeProvider value={navigationTheme}>
 			<Stack
 				screenOptions={{
+					// One push animation for every page: the platform's own slide. Named
+					// rather than left to "default" so a sub-page never picks up a
+					// different presentation than the page beside it.
+					animation: "slide_from_right",
 					headerStyle: { backgroundColor: t.bgSurface },
 					// Every native header control draws its glyph in this tone. At `textPrimary`
 					// the back and action buttons on sub-pages came out near-white — brighter
@@ -194,6 +223,7 @@ function Shell() {
 					options={{ ...CONNECT_SHEET_OPTIONS, contentStyle: { backgroundColor: t.bgSurface } }}
 				/>
 			</Stack>
+			</NavigationThemeProvider>
 		</View>
 	);
 }
