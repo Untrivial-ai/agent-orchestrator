@@ -154,6 +154,24 @@ describe("buildCommands attention", () => {
 		expect(ids.has("attention:w-merge")).toBe(false);
 		expect(ids.has("attention:w-action")).toBe(true);
 	});
+
+	it("keeps terminated merged sessions search-only", () => {
+		const summaries: WorkspaceSummary[] = [
+			{
+				id: "proj-1",
+				name: "app",
+				path: "/repos/app",
+				type: "main",
+				sessions: [session({ id: "w-archived", title: "shipped payment retry", status: "merged", isTerminated: true })],
+			},
+		];
+		const items = buildCommands({ workspaces: summaries });
+		const ids = new Set(items.map((item) => item.id));
+		expect(ids.has("attention:w-archived")).toBe(false);
+		expect(items.find((item) => item.id === "session:w-archived")?.searchOnly).toBe(true);
+		expect(filterCommands(items, "").some((item) => item.id.endsWith("w-archived"))).toBe(false);
+		expect(filterCommands(items, "shipped").some((item) => item.id === "session:w-archived")).toBe(true);
+	});
 });
 
 describe("buildCommands sessions", () => {
