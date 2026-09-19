@@ -54,6 +54,7 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.AgentBinaryResolutionInvalidator = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoff = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 
@@ -324,6 +325,14 @@ func (p *Plugin) qwenBinary(ctx context.Context) (string, error) {
 	}
 	p.resolvedBinary = binary
 	return binary, nil
+}
+
+// InvalidateBinaryResolution makes the next operation resolve Qwen again, so
+// a reinstall or upgrade that relocates the binary is picked up.
+func (p *Plugin) InvalidateBinaryResolution() {
+	p.binaryMu.Lock()
+	p.resolvedBinary = ""
+	p.binaryMu.Unlock()
 }
 
 // appendApprovalFlags maps AO's four permission modes onto Qwen Code's
