@@ -18,9 +18,9 @@ import {
 } from "react-native";
 import { mobileReachablePreviewURL, restoreSession, resumeSessionAgent, type DashboardSession, type OrchestratorLink } from "../api";
 import { haptics } from "../haptics";
-import { headerActionStyle } from "../headerAction";
 import { deferRouteContent, resetHeaderRightForSwap } from "../headerRightSwap";
 import { openGitHub } from "../openGitHub";
+import { NativeHeaderButton } from "../native-header-button";
 import { useApp } from "../store";
 import {
 	mobileInterfaceTransitionIsActive,
@@ -201,9 +201,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				/>
 			),
 			headerRight: () => (
-				<Pressable accessibilityRole="button" accessibilityLabel="Conversation actions" hitSlop={11} onPress={() => { haptics.tap(); setMenuOpen(true); }} style={headerActionStyle}>
-					<Feather name="more-horizontal" size={20} color={t.textSecondary} />
-				</Pressable>
+				<NativeHeaderButton icon="more" label="Conversation actions" onPress={() => { haptics.tap(); setMenuOpen(true); }} />
 			),
 		});
 	}, [headerHarness, headerRightReady, headerState, navigation, projectName, title, t]);

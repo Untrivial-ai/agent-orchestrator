@@ -2,7 +2,7 @@ import { Button, Host } from "@expo/ui";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import { radius } from "./tokens";
 
-export type NativeHeaderButtonIcon = "menu" | "bell" | "close" | "check" | "back";
+export type NativeHeaderButtonIcon = "menu" | "bell" | "close" | "check" | "back" | "more";
 
 export function NativeHeaderButton({
 	icon,

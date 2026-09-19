@@ -10,6 +10,7 @@ const icons: Record<NativeHeaderButtonIcon, keyof typeof Feather.glyphMap> = {
 	close: "x",
 	check: "check",
 	back: "chevron-left",
+	more: "more-horizontal",
 };
 
 export function NativeHeaderButton({
