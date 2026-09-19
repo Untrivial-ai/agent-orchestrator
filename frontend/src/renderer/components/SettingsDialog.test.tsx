@@ -75,6 +75,18 @@ describe("SettingsDialog", () => {
 		expect(screen.getByRole("button", { name: "Mobile" })).toHaveAttribute("aria-current", "page");
 	});
 
+	it("keeps the Mobile tab disabled in the settings nav", async () => {
+		useUiStore.getState().openGlobalSettings("general");
+		renderSettingsDialog();
+
+		const mobileTab = await screen.findByRole("button", { name: "Mobile" });
+		expect(mobileTab).toBeDisabled();
+		expect(mobileTab).not.toHaveAttribute("aria-current", "page");
+
+		await userEvent.click(mobileTab);
+		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("general");
+	});
+
 	it("mounts dialog chrome before the selected settings form", async () => {
 		useUiStore.getState().openGlobalSettings("general");
 		renderSettingsDialog();

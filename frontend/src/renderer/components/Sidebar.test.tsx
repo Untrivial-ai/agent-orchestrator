@@ -1602,18 +1602,20 @@ describe("Sidebar", () => {
 		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
-	it("opens the Mobile settings page from the footer", async () => {
+	it("keeps the Connect mobile footer button disabled", async () => {
 		const user = userEvent.setup();
 		renderSidebar();
-		await user.click((await screen.findAllByRole("button", { name: "Connect mobile" }))[0]);
-		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "mobile" });
+
+		const mobileButtons = await screen.findAllByRole("button", { name: "Connect mobile" });
+		expect(mobileButtons.length).toBeGreaterThan(0);
+		for (const button of mobileButtons) {
+			expect(button).toBeVisible();
+			expect(button).toBeDisabled();
+		}
+
+		await user.click(mobileButtons[0]);
+		expect(useUiStore.getState().settingsModal).toBeNull();
 		expect(navigateMock).not.toHaveBeenCalled();
-	});
-
-	it("always shows Connect mobile", () => {
-		renderSidebar();
-
-		expect(screen.getByRole("button", { name: "Connect mobile" })).toBeVisible();
 	});
 
 	it("opens the command palette when Search is clicked", async () => {
