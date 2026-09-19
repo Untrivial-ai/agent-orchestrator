@@ -133,7 +133,7 @@ func TestListTerminalCleanupCandidates(t *testing.T) {
 	a := terminalSession(t, s, "cand", 0)
 	// B: terminal, facts current (removed, generation matches) -> excluded.
 	b := terminalSession(t, s, "cand", 0)
-	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: b.ID, SessionGeneration: 0, WorkspaceDisposition: domain.DispositionRemoved})
+	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: b.ID, SessionGeneration: 0, WorkspaceDisposition: domain.DispositionRemoved, RuntimeReleasedAt: now})
 	// C: terminal, facts stale (session bumped to gen 2, facts written at gen 1) -> candidate.
 	c := terminalSession(t, s, "cand", 2)
 	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: c.ID, SessionGeneration: 1, WorkspaceDisposition: domain.DispositionRemoved})
@@ -142,8 +142,11 @@ func TestListTerminalCleanupCandidates(t *testing.T) {
 	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: d.ID, WorkspaceDisposition: domain.DispositionPending, NextAttemptAt: now.Add(-time.Hour)})
 	// E: terminal, pending but not yet due -> excluded.
 	e := terminalSession(t, s, "cand", 0)
-	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: e.ID, WorkspaceDisposition: domain.DispositionPending, NextAttemptAt: now.Add(time.Hour)})
-	// F: live (not terminated) -> excluded.
+	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: e.ID, WorkspaceDisposition: domain.DispositionPending, RuntimeReleasedAt: now, NextAttemptAt: now.Add(time.Hour)})
+	// F: terminal, workspace removed but runtime release unresolved -> candidate.
+	f := terminalSession(t, s, "cand", 0)
+	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: f.ID, WorkspaceDisposition: domain.DispositionRemoved})
+	// G: live (not terminated) -> excluded.
 	if _, err := s.CreateSession(ctx, sampleRecord("cand")); err != nil {
 		t.Fatalf("create live session: %v", err)
 	}
@@ -156,7 +159,7 @@ func TestListTerminalCleanupCandidates(t *testing.T) {
 	for _, id := range ids {
 		got[id] = true
 	}
-	want := []domain.SessionID{a.ID, c.ID, d.ID}
+	want := []domain.SessionID{a.ID, c.ID, d.ID, f.ID}
 	if len(got) != len(want) {
 		t.Fatalf("candidates = %v, want exactly %v", ids, want)
 	}

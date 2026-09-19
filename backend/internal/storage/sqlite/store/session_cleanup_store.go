@@ -72,6 +72,7 @@ WHERE s.is_terminated = 1
   AND (
       f.session_id IS NULL
       OR f.session_generation < s.cleanup_generation
+      OR f.runtime_released_at IS NULL
       OR (
           f.workspace_disposition = 'pending'
           AND (f.next_attempt_at IS NULL OR f.next_attempt_at <= ?)

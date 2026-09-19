@@ -30,8 +30,9 @@ import (
 )
 
 type stubRuntime struct {
-	created   int
-	destroyed int
+	created    int
+	destroyed  int
+	destroyErr error
 	// aliveByHandle scripts IsAlive per handle ID. If a handle ID is absent,
 	// IsAlive returns true (default: alive), matching the pre-existing behavior
 	// that all other tests relied on.
@@ -46,7 +47,7 @@ func (s *stubRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.
 func (s *stubRuntime) Destroy(_ context.Context, h ports.RuntimeHandle) error {
 	s.destroyed++
 	s.destroyedHandles = append(s.destroyedHandles, h.ID)
-	return nil
+	return s.destroyErr
 }
 func (s *stubRuntime) IsAlive(_ context.Context, h ports.RuntimeHandle) (bool, error) {
 	if s.aliveByHandle != nil {
@@ -107,13 +108,30 @@ type stubAgents struct{}
 
 func (stubAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return stubAgent{}, true }
 
-type stubWorkspace struct{ destroyed int }
+type stubWorkspace struct {
+	destroyed  int
+	destroyErr error
+	root       string
+}
 
 func (s *stubWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
-	return ports.WorkspaceInfo{Path: "/ws/" + string(cfg.SessionID), Branch: cfg.Branch, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}, nil
+	path := "/ws/" + string(cfg.SessionID)
+	if s.root != "" {
+		path = filepath.Join(s.root, string(cfg.SessionID))
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return ports.WorkspaceInfo{}, err
+		}
+	}
+	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}, nil
 }
-func (s *stubWorkspace) Destroy(context.Context, ports.WorkspaceInfo) error {
+func (s *stubWorkspace) Destroy(_ context.Context, info ports.WorkspaceInfo) error {
+	if s.destroyErr != nil {
+		return s.destroyErr
+	}
 	s.destroyed++
+	if s.root != "" {
+		return os.RemoveAll(info.Path)
+	}
 	return nil
 }
 func (s *stubWorkspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
@@ -210,6 +228,7 @@ func newStack(t *testing.T) *stack {
 	ws := &stubWorkspace{}
 	mgr := sessionmanager.New(sessionmanager.Deps{Runtime: rt, Agents: stubAgents{}, Workspace: ws, Store: store, Messenger: msg, Lifecycle: lcm, LookPath: func(string) (string, error) { return "/usr/bin/true", nil }})
 	lcm.SetCompletionTerminator(mgr)
+	lcm.SetCrashFinalizer(mgr)
 	sm := sessionsvc.New(mgr, store)
 	return &stack{store: store, sm: sm, mgr: mgr, lcm: lcm, prm: prm, rt: rt, ws: ws, msg: msg}
 }

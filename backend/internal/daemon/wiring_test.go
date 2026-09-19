@@ -900,6 +900,12 @@ func (f *fakeSessionLifecycle) Kill(_ context.Context, _ domain.SessionID) (bool
 	return false, nil
 }
 
+func (f *fakeSessionLifecycle) FinalizeCrashedSession(context.Context, domain.SessionID) error {
+	return nil
+}
+func (f *fakeSessionLifecycle) RunTerminalResourceGC(context.Context) (sessionmanager.CleanupResult, error) {
+	return sessionmanager.CleanupResult{}, nil
+}
 func (f *fakeSessionLifecycle) Reconcile(_ context.Context) error {
 	f.reconcileCalled = true
 	return f.reconcileErr

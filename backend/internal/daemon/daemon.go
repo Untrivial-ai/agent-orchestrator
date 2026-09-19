@@ -535,6 +535,7 @@ func Run() error {
 	sessMgr.SetTerminalInputGate(termMgr)
 	lifecycleMessenger.Bind(sessionLifecycleMessenger{sessMgr})
 	lcStack.LCM.SetCompletionTerminator(sessMgr)
+	lcStack.LCM.SetCrashFinalizer(sessMgr)
 	lcStack.LCM.SetSessionInputLease(sessMgr)
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
@@ -688,6 +689,12 @@ func Run() error {
 	agentSvc.WarmCodexAccounts()
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})
 	lcStack.autoReviewDone = autoReview.Start(ctx)
+	// Periodic terminal-resource GC: reclaims worktrees/branches still held by
+	// terminated sessions (crash-finalization failures, merge/tracker
+	// termination leftovers, pre-fix history), guided by the durable
+	// session_cleanup_facts bookkeeping (#3921, #3402, #2811). Runs for the
+	// daemon's lifetime; stops with ctx.
+	startTerminalResourceGC(ctx, sessMgr, log)
 	// Push-device registry: persisted phones that receive OS push notifications.
 	// A load failure must not block boot — degrade to no push rather than refusing
 	// to start the daemon. pushRegistry (interface) is assigned only when load
