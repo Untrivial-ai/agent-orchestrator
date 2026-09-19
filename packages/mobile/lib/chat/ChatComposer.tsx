@@ -8,7 +8,7 @@ import { ActivityIndicator, Image, Keyboard, Pressable, ScrollView, StyleSheet, 
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
-import { fontScaleCap, space, type } from "../tokens";
+import { fontScaleCap, iconSize, space, type } from "../tokens";
 import { MicKey } from "../voice/MicKey";
 import { useVoiceInput } from "../voice/useVoiceInput";
 import { activeTurn, type ChatConfigOption, type ChatImage, type ChatModel, type ChatResource, type ChatSkill, type ConversationSnapshot, type TurnSettings } from "./types";
@@ -360,7 +360,7 @@ export function ChatComposer({
 					multiline
 					maxLength={40_000}
 				/>
-				<MicKey circular size={42} state={voice.state} mode={voice.mode} onPressIn={voice.pressIn} onPressOut={voice.pressOut} />
+				<MicKey variant="plain" size={44} glyphSize={iconSize.lg} state={voice.state} mode={voice.mode} onPressIn={voice.pressIn} onPressOut={voice.pressOut} />
 				{primaryAction === "stop" ? <Pressable accessibilityRole="button" accessibilityLabel="Stop turn" accessibilityState={{ busy: interrupting, disabled: disabled || interrupting }} disabled={disabled || interrupting} onPress={() => { haptics.tap(); void onInterrupt(); }} style={[styles.stop, (disabled || interrupting) && { opacity: 0.55 }]}>{interrupting ? <ActivityIndicator size="small" color={t.textPrimary} /> : <Feather name="square" size={12} color={t.textPrimary} />}</Pressable> : <Pressable accessibilityRole="button" accessibilityLabel={active ? "Queue message" : "Send message"} accessibilityState={{ disabled: disabled || stopped || pending || submitting }} disabled={disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)} onPress={() => { haptics.tap(); void submit("send"); }} style={({ pressed }) => [styles.send, pressed && { opacity: 0.8 }, (disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)) && { opacity: 0.35 }]}>{pending || submitting ? <ActivityIndicator size="small" color={t.bgBase} /> : <Feather name="arrow-up" size={17} color={t.bgBase} />}</Pressable>}
 			</View>}
 		</View>
@@ -371,10 +371,16 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	dock: { paddingHorizontal: space.md, paddingTop: space.xs, gap: space.xs, backgroundColor: t.bgBase },
 	metaRow: { width: "100%", height: 44, flexDirection: "row", alignItems: "center" },
 	settingsSlot: { flex: 1, minWidth: 0, height: 44, alignItems: "flex-start", justifyContent: "center" },
-	composer: { minHeight: 54, maxHeight: 150, flexDirection: "row", alignItems: "flex-end", gap: space.hair, padding: space.xxs, backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, borderRadius: 28, borderCurve: "continuous" },
-	input: { flex: 1, minHeight: 42, maxHeight: 138, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, paddingHorizontal: space.hair, paddingVertical: space.sm, textAlignVertical: "top" },
-	send: { width: 42, height: 42, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: t.textPrimary },
-	stop: { width: 42, height: 42, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: t.bgSubtle, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
+	// One pill for the whole row: attach, the field, dictation, and the one filled
+	// control that commits. The pill's radius is half its resting height, so a
+	// single line reads as a capsule and a long message grows a rounded panel —
+	// no second border, no second surface.
+	composer: { minHeight: 56, maxHeight: 164, flexDirection: "row", alignItems: "flex-end", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: t.bgElevated, borderRadius: 28, borderCurve: "continuous" },
+	// 44pt of box around a 20pt line, so one line sits centred in the pill rather
+	// than riding its bottom edge.
+	input: { flex: 1, minHeight: 44, maxHeight: 152, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, paddingVertical: space.md, textAlignVertical: "top" },
+	send: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.accent },
+	stop: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.bgSubtle, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
 	attachments: { gap: space.xs, paddingBottom: space.xs },
 	attachment: { maxWidth: 180, flexDirection: "row", alignItems: "center", gap: space.xs, backgroundColor: t.bgElevated, borderRadius: 8, borderWidth: 1, borderColor: t.borderSubtle, paddingHorizontal: space.sm, paddingVertical: space.xs },
 	attachmentImage: { width: 28, height: 28, borderRadius: 4, backgroundColor: t.bgSubtle },

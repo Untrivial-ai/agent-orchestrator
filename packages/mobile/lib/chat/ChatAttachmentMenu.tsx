@@ -31,7 +31,9 @@ export function ChatAttachmentMenu({
 			accessibilityState={{ disabled }}
 			style={[styles.trigger, disabled && styles.disabled]}
 		>
-			<Feather name="paperclip" size={iconSize.lg} color={disabled ? t.textFaint : t.textSecondary} />
+			{/* A plus, not a paperclip: the composer is one row of three controls, and
+			    the clip read as an attachment badge on the field rather than a way in. */}
+			<Feather name="plus" size={iconSize.xl} color={disabled ? t.textFaint : t.textSecondary} />
 		</View>
 	);
 
@@ -51,6 +53,6 @@ export function ChatAttachmentMenu({
 }
 
 const makeStyles = (_t: Theme) => StyleSheet.create({
-	trigger: { width: 42, height: 42, borderRadius: 20, borderCurve: "continuous", alignItems: "center", justifyContent: "center" },
+	trigger: { width: 44, height: 44, borderRadius: 22, borderCurve: "continuous", alignItems: "center", justifyContent: "center" },
 	disabled: { opacity: 0.55 },
 });
