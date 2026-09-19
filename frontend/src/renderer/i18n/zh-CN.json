@@ -1417,7 +1417,7 @@
 	"terminal.close": "关闭终端",
 	"terminal.closeNamed": "关闭终端 {{title}}",
 	"terminal.closeSessionTab": "关闭会话标签页 {{label}}",
-	"terminal.connecting": "正在连接…",
+	"terminal.connecting": "正在连接",
 	"terminal.connectionFailed": "连接失败",
 	"terminal.decreaseFontSize": "减小终端字体大小",
 	"terminal.controlsAria": "终端显示控件",

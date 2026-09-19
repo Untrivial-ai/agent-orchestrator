@@ -1438,7 +1438,7 @@
 	"terminal.close": "Fermer le terminal",
 	"terminal.closeNamed": "Fermer le terminal {{title}}",
 	"terminal.closeSessionTab": "Fermer l'onglet de session {{label}}",
-	"terminal.connecting": "Connexion…",
+	"terminal.connecting": "Connexion",
 	"terminal.connectionFailed": "échec de la connexion",
 	"terminal.decreaseFontSize": "Réduire la taille de police du terminal",
 	"terminal.controlsAria": "Contrôles d'affichage du terminal",

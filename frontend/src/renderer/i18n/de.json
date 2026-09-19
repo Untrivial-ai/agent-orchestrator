@@ -1416,7 +1416,7 @@
 	"terminal.close": "Terminal schließen",
 	"terminal.closeNamed": "Terminal {{title}} schließen",
 	"terminal.closeSessionTab": "Sitzungs-Tab {{label}} schließen",
-	"terminal.connecting": "Verbindung wird hergestellt…",
+	"terminal.connecting": "Verbindung wird hergestellt",
 	"terminal.connectionFailed": "Verbindung fehlgeschlagen",
 	"terminal.decreaseFontSize": "Terminal-Schriftgröße verkleinern",
 	"terminal.controlsAria": "Terminal-Anzeigesteuerung",
