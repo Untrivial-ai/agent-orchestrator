@@ -48,28 +48,11 @@ describe("coerceLocale", () => {
 });
 
 describe("app i18next instance", () => {
-	it("provides localized recovery actions and explanations for every supported locale", () => {
-		const actionKeys = [
-			"agentRecovery.installAction",
-			"agentRecovery.loginAction",
-			"agentRecovery.reviewAction",
-			"agentRecovery.configureAction",
-		] as const;
-		const descriptionKeys = [
-			"agentRecovery.installDescription",
-			"agentRecovery.loginDescription",
-			"agentRecovery.reviewDescription",
-			"agentRecovery.configureDescription",
-		] as const;
-
+	it("provides agent management and readiness labels for every supported locale", () => {
 		for (const locale of APP_LOCALES) {
 			const catalog = allCatalogs[locale] as unknown as Record<string, string>;
-			for (const key of actionKeys) {
+			for (const key of ["agentSelector.manage", "agentSelector.noneReady", "agentSelector.needsSetup"]) {
 				expect(catalog[key], `${locale} is missing ${key}`).toBeTruthy();
-				expect(catalog[key], `${locale}.${key} should be a concise CTA`).not.toContain("{{agent}}");
-			}
-			for (const key of descriptionKeys) {
-				expect(catalog[key], `${locale} is missing ${key}`).toContain("{{agent}}");
 			}
 		}
 	});

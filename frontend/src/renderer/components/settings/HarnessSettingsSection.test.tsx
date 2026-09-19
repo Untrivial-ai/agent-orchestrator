@@ -8,7 +8,6 @@ import { appI18n } from "../../i18n";
 import { agentReadinessQueryKey, useAgentReadinessQuery, type AgentReadiness } from "../../hooks/useAgentReadinessQuery";
 import type { TerminalSessionState } from "../../hooks/useTerminalSession";
 import { agentReadiness } from "../../test/agent-readiness-fixtures";
-import { AgentSelectorRecoveryAction } from "../AgentSelectorRecoveryAction";
 import { HarnessSettingsSection } from "./HarnessSettingsSection";
 
 vi.mock("../TerminalPane", () => ({
@@ -74,7 +73,7 @@ function ReadinessSelector({ agentId }: { agentId: string }) {
 	const readiness = useAgentReadinessQuery();
 	return (
 		<div data-testid="originating-selector">
-			<AgentSelectorRecoveryAction agentId={agentId} agents={readiness.data?.agents} isLoading={readiness.isPending} variant="compact" />
+			{readiness.data?.agents.find((agent) => agent.id === agentId)?.effectiveReadiness}
 		</div>
 	);
 }
@@ -364,7 +363,7 @@ describe("HarnessSettingsSection", () => {
 		await waitFor(() => expect(installerFetches).toBe(2));
 	});
 
-	it.each(["authorized", "unauthorized"] as const)("updates a mounted selector after installation returns %s readiness", async (authentication) => {
+	it.each(["authorized", "unauthorized"] as const)("updates a mounted readiness consumer after installation returns %s", async (authentication) => {
 		const initial = { agents: [
 			agentReadiness("claude-code", "Claude Code"),
 			agentReadiness("codex", "Codex", { installation: "not_installed", authentication: "unknown" }),
@@ -388,19 +387,17 @@ describe("HarnessSettingsSection", () => {
 		});
 		const { client } = renderSection(undefined, "codex");
 		const selector = screen.getByTestId("originating-selector");
-		await within(selector).findByRole("button", { name: "Install agent" });
+		await waitFor(() => expect(selector).toHaveTextContent("not_ready"));
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		await userEvent.click(await within(row).findByRole("button", { name: "Install" }));
 
 		await waitFor(() => expect(row).toHaveTextContent("Installed"));
-		await waitFor(() => expect(within(selector).queryByRole("button", { name: "Install agent" })).not.toBeInTheDocument());
-		if (authentication === "authorized") expect(selector).toBeEmptyDOMElement();
-		else expect(await within(selector).findByRole("button", { name: "Log in" })).toBeInTheDocument();
+		await waitFor(() => expect(selector).toHaveTextContent(authentication === "authorized" ? /^ready$/ : /^not_ready$/));
 		expect(client.getQueryData<AgentReadiness>(agentReadinessQueryKey)?.agents).toEqual([initial.agents[0], updated]);
 		expect(screen.getByTestId("originating-selector")).toBe(selector);
 	});
 
-	it("removes a mounted selector login action when the Harness authentication terminal completes", async () => {
+	it("updates a mounted readiness consumer when the Harness authentication terminal completes", async () => {
 		const initial = { agents: [
 			agentReadiness("claude-code", "Claude Code"),
 			agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
@@ -429,12 +426,12 @@ describe("HarnessSettingsSection", () => {
 		Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
 		const { client } = renderSection(undefined, "codex");
 		const selector = screen.getByTestId("originating-selector");
-		await within(selector).findByRole("button", { name: "Log in" });
+		await waitFor(() => expect(selector).toHaveTextContent("not_ready"));
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		await userEvent.click(await within(row).findByRole("button", { name: "Login" }));
 		await userEvent.click(await screen.findByRole("button", { name: "Complete login terminal" }));
 
-		await waitFor(() => expect(selector).toBeEmptyDOMElement());
+		await waitFor(() => expect(selector).toHaveTextContent(/^ready$/));
 		expect(client.getQueryData<AgentReadiness>(agentReadinessQueryKey)?.agents).toEqual([initial.agents[0], authorized]);
 		expect(screen.getByTestId("originating-selector")).toBe(selector);
 		await waitFor(() => expect(screen.queryByRole("button", { name: "Complete login terminal" })).not.toBeInTheDocument());

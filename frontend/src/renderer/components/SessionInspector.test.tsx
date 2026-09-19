@@ -2026,7 +2026,7 @@ describe("SessionInspector summary reviews", () => {
     expect(trigger).not.toHaveTextContent("claude-code");
   });
 
-  it("offers compact recovery for the effective session reviewer", async () => {
+  it("opens Harness from the reviewer menu for its unavailable selection", async () => {
     const responder = commonGetsResponder();
     getMock.mockImplementation(async (path: string) => {
       if (path === "/api/v1/agents/readiness") {
@@ -2044,7 +2044,9 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
-    await userEvent.click(await screen.findByRole("button", { name: "Log in" }));
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+    await waitFor(() => expect(useUiStore.getState().settingsModal).not.toBeNull());
 
     expect(useUiStore.getState().settingsModal).toEqual({
       scope: "global",

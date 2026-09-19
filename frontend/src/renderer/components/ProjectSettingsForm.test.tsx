@@ -211,7 +211,7 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
-	it("offers recovery for configured project agents and reviewers without clearing their values", async () => {
+	it("opens management for configured project agents without clearing their values", async () => {
 		const project = {
 			id: "proj-1",
 			name: "Project One",
@@ -236,9 +236,9 @@ describe("ProjectSettingsForm", () => {
 		});
 
 		renderSettings("proj-1", undefined, "agents");
-		const recoveryActions = await screen.findAllByRole("button", { name: "Log in" });
-		expect(recoveryActions).toHaveLength(2);
-		await userEvent.click(recoveryActions[0]);
+		await userEvent.click(await screen.findByRole("button", { name: "Default worker agent" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+		await waitFor(() => expect(openGlobalSettingsMock).toHaveBeenCalled());
 
 		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: "codex" });
 		expect(screen.getByRole("button", { name: "Default worker agent" })).toHaveTextContent("Codex");
@@ -1101,7 +1101,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.getByRole("button", { name: "Default orchestrator agent" })).toBeDisabled();
 	});
 
-	it("offers both interactive Kiro and Pi reviewers", async () => {
+	it("offers ready Pi reviewers and hides Kiro until authorized", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
@@ -1119,7 +1119,7 @@ describe("ProjectSettingsForm", () => {
 		const reviewer = await screen.findByRole("button", { name: "Default reviewer agent" });
 		await userEvent.click(reviewer);
 		const labels = (await screen.findAllByRole("menuitem")).map((option) => option.textContent);
-		expect(labels).toContain("KiroAuth unknown");
+		expect(labels).not.toContain("KiroAuth unknown");
 		expect(labels).toContain("Pi");
 	});
 
@@ -1203,7 +1203,7 @@ describe("ProjectSettingsForm", () => {
 			"GitHub Copilot",
 			"Kilo Code",
 			"Pi",
-			"KiroAuth unknown",
+			"Manage agents…",
 		]);
 	});
 
@@ -1294,7 +1294,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Experimental host-trusted reviewer");
 	});
 
-	it("shows unknown-auth agents as selectable with a warning in project settings", async () => {
+	it("hides unknown-auth agents and offers management in project settings", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
@@ -1322,7 +1322,7 @@ describe("ProjectSettingsForm", () => {
 			"Goose",
 			"Kilo Code",
 			"Pi",
-			"KiroAuth unknown",
+			"Manage agents…",
 		]);
 		expect(options[8]).not.toHaveAttribute("aria-disabled", "true");
 	});
@@ -1361,7 +1361,7 @@ describe("ProjectSettingsForm", () => {
 		);
 	});
 
-	it("disables the Copilot reviewer when its binary is missing", async () => {
+	it("hides the Copilot reviewer when its binary is missing", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
@@ -1397,11 +1397,11 @@ describe("ProjectSettingsForm", () => {
 		const copilot = (await screen.findAllByRole("menuitem")).find((option) =>
 			option.textContent?.includes("GitHub Copilot"),
 		);
-		expect(copilot).toHaveTextContent("Needs install");
-		expect(copilot).toHaveAttribute("aria-disabled", "true");
+		expect(copilot).toBeUndefined();
+		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
 
-	it("shows the standard unknown-auth warning for an installed Copilot reviewer", async () => {
+	it("hides an installed Copilot reviewer until authorization is known", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
@@ -1437,8 +1437,8 @@ describe("ProjectSettingsForm", () => {
 		const copilot = (await screen.findAllByRole("menuitem")).find((option) =>
 			option.textContent?.includes("GitHub Copilot"),
 		);
-		expect(copilot).toHaveTextContent("Auth unknown");
-		expect(copilot).not.toHaveAttribute("aria-disabled", "true");
+		expect(copilot).toBeUndefined();
+		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
 
 	it("offers Kilo Code as a configured reviewer", async () => {
@@ -1710,7 +1710,7 @@ describe("ProjectSettingsForm", () => {
 		], "agents");
 
 		const orchestratorAgent = await screen.findByRole("button", { name: "Default orchestrator agent" });
-		expect(orchestratorAgent).toHaveTextContent("goose");
+		expect(orchestratorAgent).toHaveTextContent("Goose");
 
 		submitSettings();
 

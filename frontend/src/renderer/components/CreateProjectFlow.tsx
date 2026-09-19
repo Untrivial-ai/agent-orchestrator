@@ -1297,6 +1297,7 @@ function CloudAgentSetupStep({
 			) : null}
 			<RequiredAgentField
 				id="cloudWorkerAgent"
+				manageAgents={false}
 				label={t("createProject.workerAgent", { defaultValue: "Worker" })}
 				placeholder={t("createProject.chooseAgent", { defaultValue: "Choose an agent" })}
 				agents={cloudAgents}
@@ -1305,6 +1306,7 @@ function CloudAgentSetupStep({
 			/>
 			<RequiredAgentField
 				id="cloudOrchestratorAgent"
+				manageAgents={false}
 				label={t("createProject.orchestratorAgent", { defaultValue: "Orchestrator" })}
 				placeholder={t("createProject.chooseAgent", { defaultValue: "Choose an agent" })}
 				agents={cloudAgents}

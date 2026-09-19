@@ -82,69 +82,54 @@ describe("CreateProjectAgentSheet", () => {
 		expect(await screen.findByRole("listbox")).toHaveClass("max-h-select-menu-max!");
 	});
 
-	it("renders explanatory recovery actions below stacked selectors and outside their dropdown", async () => {
-		render(
-			<RequiredAgentField
-				agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
-				id="agent"
-				label="Agent"
-				onChange={() => undefined}
-				placeholder="Project default"
-				recoveryAction={<button type="button">Log in to Codex</button>}
-				value="codex"
-			/>,
-		);
-
+	it.each(["stacked", "chip", "settings-row"] as const)("%s lists only ready agents and opens Harness without changing a saved selection", async (variant) => {
+		const onChange = vi.fn();
+		useUiStore.setState({ settingsModal: null });
+		render(<RequiredAgentField
+			id="agent" label="Agent" placeholder="Choose agent" value="codex" variant={variant} onChange={onChange}
+			agents={[
+				agentReadiness("claude-code", "Claude Code", { freshness: "stale" }),
+				agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+				agentReadiness("aider", "Aider", { authentication: "not_applicable" }),
+				agentReadiness("cursor", "Cursor", { installation: "not_installed" }),
+				agentReadiness("opencode", "OpenCode", { authentication: "unknown" }),
+			]}
+		/>);
 		const trigger = screen.getByLabelText("Agent");
-		const action = screen.getByRole("button", { name: "Log in to Codex" });
-		expect(trigger.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
+		expect(trigger).toHaveTextContent("Codex");
+		expect(trigger).toHaveTextContent("Needs setup");
+		expect(screen.queryByRole("button", { name: "Log in" })).not.toBeInTheDocument();
 		await userEvent.click(trigger);
-		expect(await screen.findByRole("listbox")).not.toContainElement(action);
+		const role = variant === "stacked" ? "option" : "menuitem";
+		expect(screen.getByRole(role, { name: /Claude Code/ })).toBeInTheDocument();
+		expect(screen.getByRole(role, { name: /Aider/ })).toBeInTheDocument();
+		for (const name of [/Codex/, /Cursor/, /OpenCode/]) expect(screen.queryByRole(role, { name })).not.toBeInTheDocument();
+		await userEvent.keyboard("{End}{Enter}");
+		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness", focusAgentId: "codex" }));
+		expect(onChange).not.toHaveBeenCalled();
+		expect(trigger).toHaveTextContent("Codex");
 	});
 
-	it("renders compact recovery actions beside chip selectors and outside their dropdown", async () => {
-		render(
-			<RequiredAgentField
-				agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
-				id="agent"
-				label="Agent"
-				onChange={() => undefined}
-				placeholder="Project default"
-				recoveryAction={<button type="button">Log in</button>}
-				value="codex"
-				variant="chip"
-			/>,
-		);
-
-		const trigger = screen.getByLabelText("Agent");
-		const action = screen.getByRole("button", { name: "Log in" });
-		expect(trigger.parentElement).toBe(action.parentElement);
-
-		await userEvent.click(trigger);
-		expect(await screen.findByRole("menu")).not.toContainElement(action);
+	it("preserves cloud agent choices without offering local Harness management", async () => {
+		render(<RequiredAgentField id="agent" label="Agent" placeholder="Choose agent" value="" manageAgents={false} variant="chip" onChange={() => undefined}
+			agents={[agentReadiness("codex", "Codex", { authentication: "unknown" })]} />);
+		await userEvent.click(screen.getByLabelText("Agent"));
+		expect(screen.getByRole("menuitem", { name: /Codex/ })).not.toHaveAttribute("aria-disabled", "true");
+		expect(screen.queryByRole("menuitem", { name: "Manage agents…" })).not.toBeInTheDocument();
 	});
 
-	it("keeps explanatory recovery actions below settings-row selectors", () => {
-		render(
-			<RequiredAgentField
-				agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
-				id="agent"
-				label="Agent"
-				onChange={() => undefined}
-				placeholder="Project default"
-				recoveryAction={<button type="button">Log in to Codex</button>}
-				value="codex"
-				variant="settings-row"
-			/>,
-		);
-
-		const trigger = screen.getByLabelText("Agent");
-		const action = screen.getByRole("button", { name: "Log in to Codex" });
-		expect(trigger.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	it("keeps agent management available with an empty ready list", async () => {
+		const onChange = vi.fn();
+		useUiStore.setState({ settingsModal: null });
+		render(<RequiredAgentField id="agent" label="Agent" placeholder="Choose agent" value="" onChange={onChange} agents={[]} />);
+		await userEvent.click(screen.getByLabelText("Agent"));
+		expect(screen.getByText("No agents ready")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("option", { name: "Manage agents…" }));
+		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness" }));
+		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("offers recovery for a selected create-project agent without losing the selection", async () => {
+	it("opens management for a selected create-project agent without losing the selection", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(agentReadinessQueryKey, {
 			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
@@ -162,7 +147,9 @@ describe("CreateProjectAgentSheet", () => {
 				],
 			});
 		});
-		await userEvent.click((await screen.findAllByRole("button", { name: "Log in" }))[0]);
+		await userEvent.click(worker);
+		await userEvent.click(screen.getByRole("option", { name: "Manage agents…" }));
+		await waitFor(() => expect(useUiStore.getState().settingsModal).not.toBeNull());
 		expect(useUiStore.getState().settingsModal).toEqual({
 			scope: "global",
 			section: "harness",

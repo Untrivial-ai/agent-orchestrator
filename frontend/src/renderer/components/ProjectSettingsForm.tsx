@@ -29,7 +29,6 @@ import { captureRendererEvent } from "../lib/telemetry";
 import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
 import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
-import { AgentSelectorRecoveryAction } from "./AgentSelectorRecoveryAction";
 import { buildIntake, deriveRepoPath, deriveRepoHost, IntakeFields, type IntakeForm } from "./IntakeFields";
 import { ProductExternalLink } from "./ProductExternalLink";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
@@ -452,14 +451,6 @@ function SettingsBody({
 								agents={agentCatalog?.agents}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								invalid={validationError !== null && form.workerAgent === ""}
-								recoveryAction={
-									<AgentSelectorRecoveryAction
-										agentId={form.workerAgent}
-										agents={agentCatalog?.agents}
-										isLoading={agentsQuery.isFetching}
-										variant="explanatory"
-									/>
-								}
 								onChange={(v) =>
 									setForm((f) => ({ ...f, workerAgent: v, workerModel: "", workerMode: "", workerEffort: "" }))
 								}
@@ -489,14 +480,6 @@ function SettingsBody({
 								agents={agentCatalog?.agents}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								invalid={validationError !== null && form.orchestratorAgent === ""}
-								recoveryAction={
-									<AgentSelectorRecoveryAction
-										agentId={form.orchestratorAgent}
-										agents={agentCatalog?.agents}
-										isLoading={agentsQuery.isFetching}
-										variant="explanatory"
-									/>
-								}
 								onChange={(v) =>
 									setForm((f) => ({
 										...f,
@@ -568,15 +551,6 @@ function SettingsBody({
 								defaultOptionLabel={t("settings.project.default")}
 								defaultTriggerLabel={t("settings.project.default")}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
-								recoveryAction={
-									<AgentSelectorRecoveryAction
-										agentId={form.reviewerHarness}
-										agents={agentCatalog?.agents}
-										isLoading={agentsQuery.isFetching}
-										variant="explanatory"
-									/>
-								}
-								recoveryActionPlacement="below"
 							/>
 						</SettingsRow>
 						{form.reviewerHarness ? (
