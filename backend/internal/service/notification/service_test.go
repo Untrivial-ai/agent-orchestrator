@@ -246,6 +246,28 @@ func TestDeleteMissingReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteReturnsCommittedNotificationWhenPublishFails(t *testing.T) {
+	var logs bytes.Buffer
+	row := domain.NotificationRecord{
+		ID: "n1", SessionID: "mer-1", ProjectID: "mer", Type: domain.NotificationNeedsInput,
+		Title: "needs input", Status: domain.NotificationUnread, CreatedAt: time.Now(),
+	}
+	st := &fakeStore{deleteRow: row, deleteOK: true}
+	publisher := &capturePublisher{err: errors.New("subscriber failed")}
+	mgr := New(Deps{Store: st, Publisher: publisher, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+
+	got, err := mgr.Delete(context.Background(), "n1")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got.ID != "n1" || st.deletedID != "n1" {
+		t.Fatalf("notification=%+v deleted=%q", got, st.deletedID)
+	}
+	if !strings.Contains(logs.String(), "notification delete event publish failed") {
+		t.Fatalf("logs = %q", logs.String())
+	}
+}
+
 func TestListUnreadRequiresStore(t *testing.T) {
 	_, err := New(Deps{}).List(context.Background(), ListFilter{})
 	if err == nil {

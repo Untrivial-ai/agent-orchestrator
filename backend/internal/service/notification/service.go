@@ -176,7 +176,7 @@ func (m *Manager) Delete(ctx context.Context, id string) (Notification, error) {
 	}
 	if m.publisher != nil {
 		if err := m.publisher.Publish(ctx, domain.NotificationEvent{Kind: domain.NotificationDeleted, Record: row}); err != nil {
-			return Notification{}, fmt.Errorf("notification: publish delete: %w", err)
+			m.logger.WarnContext(ctx, "notification delete event publish failed", "error", err)
 		}
 	}
 	return notificationFromRecord(row), nil

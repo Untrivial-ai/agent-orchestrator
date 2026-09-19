@@ -453,6 +453,36 @@ describe("notification cache helpers", () => {
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([]);
 	});
 
+	it("does not restore counts when the row was absent or its page was replaced", () => {
+		const qc = queryClient();
+		const deleted = notification({ status: "read" });
+		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2 }],
+		});
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+			pageParams: ["", "older"],
+			pages: [
+				{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2 },
+				{ notifications: [deleted], unreadCount: 1, unresolvedCount: 2 },
+			],
+		});
+
+		applyOptimisticNotificationDelete(qc, deleted);
+		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(2);
+		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
+			pageParams: [""],
+			pages: [{ notifications: [notification({ id: "replacement" })], unreadCount: 0, unresolvedCount: 1 }],
+		});
+
+		expect(rollbackOptimisticNotificationDelete(qc, deleted.id)).toBe(true);
+		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(2);
+		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(1);
+		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))).toEqual([
+			expect.objectContaining({ id: "replacement" }),
+		]);
+	});
+
 	it("bounds remembered delete confirmations without dropping active optimistic deletes", () => {
 		const qc = queryClient();
 		applyOptimisticNotificationDelete(qc, notification({ id: "pending" }));

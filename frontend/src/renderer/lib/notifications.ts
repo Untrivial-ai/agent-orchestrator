@@ -52,7 +52,7 @@ type NotificationDeletionState =
 	| {
 			kind: "optimistic";
 			notification: NotificationDTO;
-			caches: { recent: boolean; unread: boolean };
+			present: { recent: boolean; unread: boolean };
 			positions: { recent?: number; unread?: number };
 	  }
 	| { kind: "confirmed" };
@@ -194,10 +194,16 @@ function cachedPageIndex(
 		?.pages.findIndex((page) => page.notifications.some((item) => item.id === id));
 }
 
-function removeNotificationFromCaches(queryClient: QueryClient, notification: NotificationDTO): void {
+function removeNotificationFromCaches(
+	queryClient: QueryClient,
+	notification: NotificationDTO,
+	requirePresent = false,
+): void {
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, (current) => {
 			if (!current) return current;
+			const present = getCachedNotifications(current).some((item) => item.id === notification.id);
+			if (requirePresent && !present) return current;
 			return {
 				...current,
 				pages: current.pages.map((page) => ({
@@ -220,13 +226,16 @@ export function applyOptimisticNotificationDelete(queryClient: QueryClient, noti
 	states.set(notification.id, {
 		kind: "optimistic",
 		notification,
-		caches: { unread: unreadIndex !== undefined, recent: recentIndex !== undefined },
+		present: {
+			unread: unreadIndex !== undefined && unreadIndex >= 0,
+			recent: recentIndex !== undefined && recentIndex >= 0,
+		},
 		positions: {
 			unread: unreadIndex === -1 ? undefined : unreadIndex,
 			recent: recentIndex === -1 ? undefined : recentIndex,
 		},
 	});
-	removeNotificationFromCaches(queryClient, notification);
+	removeNotificationFromCaches(queryClient, notification, true);
 }
 
 /** Applies the server response or live event exactly once across both caches. */
@@ -252,15 +261,16 @@ export function rollbackOptimisticNotificationDelete(queryClient: QueryClient, i
 		["unread", unreadNotificationsQueryKey],
 		["recent", recentNotificationsQueryKey],
 	] as const) {
-		if (!state.caches[name]) continue;
+		if (!state.present[name]) continue;
 		queryClient.setQueryData<NotificationsCache>(queryKey, (current) => {
 			if (!current) return current;
 			const pageIndex = state.positions[name];
 			const alreadyPresent = getCachedNotifications(current).some((item) => item.id === id);
+			if (pageIndex === undefined || pageIndex >= current.pages.length || alreadyPresent) return current;
 			const pages = current.pages.map((page, index) => ({
 				...page,
 				notifications:
-					pageIndex === index && !alreadyPresent
+					pageIndex === index
 						? sortNotifications([...page.notifications, state.notification])
 						: page.notifications,
 				unreadCount: page.unreadCount + Number(state.notification.status === "unread"),
