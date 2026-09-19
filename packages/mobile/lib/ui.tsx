@@ -306,20 +306,54 @@ export function ScreenHeader({
 	);
 }
 
-export function ListSectionHeader({ label, count }: { label: string; count?: number }) {
+/**
+ * A board group's heading. With `onToggle` it folds its section away — same
+ * typography and rule as before, plus the chevron that says so.
+ *
+ * The chevron sits beside the label rather than at the far edge so the row still
+ * reads as one heading with a rule running out of it, which is what the board
+ * looked like before sections could be folded.
+ */
+export function ListSectionHeader({
+	label,
+	count,
+	open = true,
+	onToggle,
+}: {
+	label: string;
+	count?: number;
+	open?: boolean;
+	onToggle?: () => void;
+}) {
+	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
-	return (
-		<View style={s.listSectionHeader}>
+	const body = (
+		<>
 			<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.listSectionLabel}>
 				{label}
 			</Text>
-			<View style={s.listSectionRule} />
+			{onToggle ? (
+				<Feather name={open ? "chevron-down" : "chevron-right"} size={15} color={t.textTertiary} />
+			) : null}
 			{count !== undefined ? (
 				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.listSectionCount}>
 					{count}
 				</Text>
 			) : null}
-		</View>
+		</>
+	);
+
+	if (!onToggle) return <View style={s.listSectionHeader}>{body}</View>;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityState={{ expanded: open }}
+			accessibilityLabel={`${label} section`}
+			onPress={onToggle}
+			style={({ pressed }) => [s.listSectionHeader, pressed && { opacity: 0.6 }]}
+		>
+			{body}
+		</Pressable>
 	);
 }
 
@@ -746,7 +780,6 @@ const makeStyles = (t: Theme) =>
 			paddingBottom: space.xxs,
 		},
 		listSectionLabel: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
-		listSectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle },
 		// Mono and tabular so a count changing from 9 to 10 does not shift the rule.
 		listSectionCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "700", fontFamily: t.fontMono },
 		badge: { flexDirection: "row", alignItems: "center", gap: space.xs },

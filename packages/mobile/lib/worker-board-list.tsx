@@ -34,7 +34,7 @@ type ListSection =
  * which is exactly what LinearTransition animates.
  */
 export type BoardRow =
-	| { kind: "header"; key: string; label: string }
+	| { kind: "header"; key: string; label: string; open: boolean; collapsible: boolean }
 	| { kind: "archive"; key: string }
 	| { kind: "session"; key: string; session: DashboardSession };
 
@@ -80,6 +80,10 @@ export function WorkerBoardList({
 	// Collapsed by default, like desktop's archive strip: it is history, and on a
 	// long-running project it is most of the sessions.
 	const [archiveOpen, setArchiveOpen] = useState(initialArchiveOpen);
+	// Every group can be folded away as well. Open by default — the board is a
+	// working view, and a section nobody opened is a section nobody saw — but a
+	// collapsed group keeps its header, so the shape of the board stays readable.
+	const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
 	const projectNames = useMemo(
 		() => new Map(projects.map((project) => [project.id, project.name])),
@@ -120,14 +124,31 @@ export function WorkerBoardList({
 	// reorder rather than an unmount. See BoardRow.
 	const listData = useMemo<BoardRow[]>(
 		() =>
-			listSections.flatMap((section) => [
-				section.zone === "archive"
-					? ({ kind: "archive", key: "header:archive" } as const)
-					: ({ kind: "header", key: `header:${section.zone}`, label: section.label } as const),
-				...section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const),
-			]),
-		[listSections],
+			listSections.flatMap((section): BoardRow[] => {
+				if (section.zone === "archive") {
+					return [
+						{ kind: "archive", key: "header:archive" } as const,
+						...section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const),
+					];
+				}
+				// Search results are a transient answer, so they are never foldable —
+				// folding the thing you just asked for is a way to lose it.
+				const collapsible = section.zone !== "search";
+				const open = !collapsible || !collapsedSections[section.zone];
+				return [
+					{ kind: "header", key: `header:${section.zone}`, label: section.label, open, collapsible } as const,
+					...(open
+						? section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const)
+						: []),
+				];
+			}),
+		[collapsedSections, listSections],
 	);
+
+	const toggleSection = useCallback((zone: string) => {
+		haptics.tap();
+		setCollapsedSections((current) => ({ ...current, [zone]: !current[zone] }));
+	}, []);
 
 	// Swipeable's Android callbacks arrive after the UI thread has already begun
 	// opening the next rail. Close the previous native row synchronously so two
@@ -210,7 +231,11 @@ export function WorkerBoardList({
 					if (item.kind === "header") {
 						return (
 							<BoardRowTransition>
-								<ListSectionHeader label={item.label} />
+								<ListSectionHeader
+									label={item.label}
+									open={item.open}
+									onToggle={item.collapsible ? () => toggleSection(item.key.replace("header:", "")) : undefined}
+								/>
 							</BoardRowTransition>
 						);
 					}
