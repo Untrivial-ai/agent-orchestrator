@@ -195,11 +195,15 @@ export const SessionInspector = memo(function SessionInspector({
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
 	const filesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	// Switching tabs must never reset content-level preferences (e.g. the
+	// Files changed-only toggle) as a side effect — that would clobber the
+	// user's choice every time they navigate away from Files and back.
+	// Callers that genuinely want that reset (opening a file/review from
+	// chat) invoke onOpenFiles/onOpenReviewFile explicitly themselves.
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);
-		if (next === "files") onOpenFiles?.();
-	}, [onOpenFiles, onViewChange]);
+	}, [onViewChange]);
 	const openReviews = useCallback(() => setView("reviews"), [setView]);
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
