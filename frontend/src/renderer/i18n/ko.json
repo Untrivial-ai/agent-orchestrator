@@ -1436,6 +1436,8 @@
 	"terminal.renameHintDoubleClick": "{{workingDir}} (더블클릭하여 이름 바꾸기)",
 	"terminal.renameHintRightClick": "{{workingDir}} (우클릭하여 이름 바꾸기)",
 	"terminal.reviewer": "리뷰어",
+	"terminal.reviewCompleted": "리뷰 완료",
+	"terminal.reviewerCompleted": "리뷰가 완료되어 풀 리퀘스트에 게시되었습니다.",
 	"terminal.scrollTabsLeft": "탭 왼쪽으로 스크롤",
 	"terminal.scrollTabsRight": "탭 오른쪽으로 스크롤",
 	"terminal.search": "터미널 검색",

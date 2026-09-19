@@ -334,6 +334,7 @@ export function TerminalCacheProvider({
 			if (cached) return cached;
 			const sessionId = paneSession.id;
 			const orgId = cloud.orgId;
+			const reviewerTerminalID = terminalTarget?.kind === "reviewer" ? terminalTarget.handleId : undefined;
 			// One replay cursor per pane, shared across every mux the hook rebuilds
 			// on reconnect (the factory closure captures it and is itself cached
 			// per factoryKey). A rebuilt mux resumes from the last sequence it
@@ -345,6 +346,7 @@ export function TerminalCacheProvider({
 				createCloudTerminalMux({
 					wsBaseUrl: `${cloudCpRef.current.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/api/cloud/v1`,
 					kind,
+					terminalId: reviewerTerminalID,
 					cursor,
 					// Both kinds open their socket directly; the CP's find-or-create
 					// OpenTerminal + starting/ready messages drive readiness. There is
@@ -355,6 +357,7 @@ export function TerminalCacheProvider({
 					mintTicket: async (ticketKind) => {
 						const response = await cloudCpRef.current.client.createTerminalTicket(orgId, sessionId, {
 							kind: ticketKind,
+							...(reviewerTerminalID ? { terminalId: reviewerTerminalID } : {}),
 						});
 						return response.ticket;
 					},
@@ -972,6 +975,10 @@ function AttachedTerminal({
 		waitForInitialOutput: Boolean(attachSession?.cloud),
 		createMux,
 		daemonReady,
+		exitNotice:
+			terminalTarget?.kind === "reviewer"
+				? "\r\n\x1b[2m[reviewer terminal finished]\x1b[0m"
+				: undefined,
 		inputDisabled,
 		isVisible,
 		shellTerminalHandleId,
@@ -1170,6 +1177,7 @@ function AttachedTerminal({
 					variant={
 						terminalTarget?.kind === "reviewer" ? "reviewer" : terminalTarget?.kind === "shell" ? "shell" : "session"
 					}
+					reviewStatus={terminalTarget?.kind === "reviewer" ? terminalTarget.reviewStatus : undefined}
 				/>
 			)}
 			{/* Keep a small gutter where terminal output starts, but let xterm use the
@@ -1273,12 +1281,16 @@ type TerminalEndedStripProps = {
 	error?: string;
 	isRestoring: boolean;
 	onRestore: () => void;
+	reviewStatus?: "running" | "complete" | "delivered" | "failed" | "cancelled";
 	variant: "reviewer" | "session" | "shell";
 };
 
-function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, variant }: TerminalEndedStripProps) {
+function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, reviewStatus, variant }: TerminalEndedStripProps) {
 	const { t } = useTranslation();
-	const message = canRestore
+	const reviewDelivered = variant === "reviewer" && reviewStatus === "delivered";
+	const message = reviewDelivered
+		? t("terminal.reviewerCompleted")
+		: canRestore
 		? t("terminal.restoreToContinue")
 		: variant === "reviewer"
 			? t("terminal.reviewerEnded")
@@ -1291,7 +1303,7 @@ function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, variant
 			<div className="flex min-h-control-board items-center gap-3">
 				<div className="min-w-0 flex-1">
 					<div className="font-mono text-caption font-medium uppercase tracking-wide-md text-muted-foreground">
-						{t("terminal.ended")}
+						{reviewDelivered ? t("terminal.reviewCompleted") : t("terminal.ended")}
 					</div>
 					<div className="mt-0.5 truncate text-xs text-muted-foreground">{message}</div>
 				</div>

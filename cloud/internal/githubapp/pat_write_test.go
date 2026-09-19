@@ -10,6 +10,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 )
 
 type stubPATStore struct {
@@ -43,6 +44,24 @@ func (s *stubPATStore) ClaimPullRequestRecord(
 	s.claimCalls++
 	s.claimInput = input
 	return input, nil
+}
+
+func (s *stubPATStore) ReviewRunPullRequest(context.Context, string, string) (domain.ReviewRunPullRequest, error) {
+	return domain.ReviewRunPullRequest{}, postgres.ErrNotFound
+}
+
+func (s *stubPATStore) CompleteAndDeliverReviewRun(
+	context.Context, string, string, string, domain.SubmitReviewResult, string,
+) (domain.ReviewRun, error) {
+	return domain.ReviewRun{}, nil
+}
+
+func (s *stubPATStore) FailReviewRun(context.Context, string, string, string, string) (domain.ReviewRun, error) {
+	return domain.ReviewRun{}, nil
+}
+
+func (s *stubPATStore) CloseReviewTerminal(context.Context, string, string, string) error {
+	return nil
 }
 
 const testPAT = "ghp_TESTPATtoken000000000000000000000"

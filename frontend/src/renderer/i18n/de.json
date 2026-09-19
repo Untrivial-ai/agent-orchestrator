@@ -1436,6 +1436,8 @@
 	"terminal.renameHintDoubleClick": "{{workingDir}} (Doppelklick zum Umbenennen)",
 	"terminal.renameHintRightClick": "{{workingDir}} (Rechtsklick zum Umbenennen)",
 	"terminal.reviewer": "Reviewer",
+	"terminal.reviewCompleted": "Review abgeschlossen",
+	"terminal.reviewerCompleted": "Review abgeschlossen und im Pull Request veröffentlicht.",
 	"terminal.scrollTabsLeft": "Tabs nach links scrollen",
 	"terminal.scrollTabsRight": "Tabs nach rechts scrollen",
 	"terminal.search": "Terminal durchsuchen",

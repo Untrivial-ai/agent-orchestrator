@@ -62,9 +62,10 @@ import {
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
+import { useCloudCp } from "../hooks/useCloudCp";
 import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { cloudLifecycleStage, type CloudLifecycleStage } from "../lib/cloud-lifecycle";
-import { useCloudCp } from "../hooks/useCloudCp";
+import type { CloudCpAOReviewRun, CloudCpSessionReviewState } from "../lib/cloud-cp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
@@ -275,6 +276,13 @@ function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTa
 	if (!handleId) return undefined;
 	const latest = data?.reviews?.find((review) => review.latestRun)?.latestRun;
 	return { handleId, harness: data?.reviewerHarness || latest?.harness || "codex" };
+}
+
+function cloudReviewRunForTerminal(
+	data: CloudCpSessionReviewState | undefined,
+	terminalID: string,
+): CloudCpAOReviewRun | undefined {
+	return data?.runs.find((run) => run.reviewerTerminalId === terminalID);
 }
 
 type SessionViewProps = {
@@ -542,7 +550,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[queryClient],
 	);
 	const workspaceQuery = useWorkspaceSession(sessionId);
-	const { client: cloudCpClient } = useCloudCp();
+	const { client: cloudCpClient, ready: cloudCpReady, baseUrl: cloudCpBaseUrl } = useCloudCp();
 	const theme = useResolvedTheme();
 	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
@@ -830,7 +838,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
-			window.ao && session && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
+			window.ao && session && !session.cloud && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
 		),
 		refetchInterval: (query) => {
 			const data = query.state.data as ReviewsResponse | undefined;
@@ -844,8 +852,34 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			return data ?? ({ reviewerHandleId: "", reviews: [], runs: [] } satisfies ReviewsResponse);
 		},
 	});
-	const availableReviewerTerminal = reviewerTerminalFromReviews(reviewerQuery.data);
-	const reviewerTerminal = session && sessionIsActive(session) ? availableReviewerTerminal : undefined;
+	const cloudReviewerQuery = useQuery({
+		queryKey: ["cloud-session-reviews", cloudCpBaseUrl, session?.cloud?.orgId, sessionId],
+		enabled: Boolean(session?.cloud && cloudCpReady && sessionIsActive(session)),
+		queryFn: () => {
+			if (!session?.cloud) throw new Error("Cloud session is unavailable");
+			return cloudCpClient.getSessionReviewState(session.cloud.orgId, sessionId);
+		},
+		retry: 1,
+		refetchInterval: (query) =>
+			query.state.data?.reviews.some((review) => review.status === "running") ? 2500 : false,
+	});
+	const availableReviewerTerminal = session?.cloud
+		? cloudReviewerQuery.data?.reviewerHandleId?.trim()
+			? {
+					handleId: cloudReviewerQuery.data.reviewerHandleId,
+					harness: cloudReviewerQuery.data.reviewerHarness || session.provider,
+			  }
+			: undefined
+		: reviewerTerminalFromReviews(reviewerQuery.data);
+	const retainedCloudReviewerTerminal =
+		session?.cloud && terminalTarget.kind === "reviewer"
+			? cloudReviewRunForTerminal(cloudReviewerQuery.data, terminalTarget.handleId)
+				? { handleId: terminalTarget.handleId, harness: terminalTarget.harness }
+				: undefined
+			: undefined;
+	const reviewerTerminal = session && sessionIsActive(session)
+		? availableReviewerTerminal ?? retainedCloudReviewerTerminal
+		: undefined;
 
 	// Shell terminals opened inside a session live beside its pane as extra tabs,
 	// scoped to the session on screen so each session has its own shell set.
@@ -1145,12 +1179,42 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		setTerminalTarget((current) =>
 			current.kind === "reviewer" &&
-				reviewerQuery.isFetched &&
-			(!availableReviewerTerminal || availableReviewerTerminal.handleId !== current.handleId)
+			(session?.cloud ? cloudReviewerQuery.isFetched : reviewerQuery.isFetched) &&
+			(!availableReviewerTerminal || availableReviewerTerminal.handleId !== current.handleId) &&
+			!(session?.cloud && cloudReviewRunForTerminal(cloudReviewerQuery.data, current.handleId))
 				? { kind: "worker" }
 				: current,
 		);
-	}, [availableReviewerTerminal, reviewerQuery.isFetched]);
+	}, [availableReviewerTerminal, cloudReviewerQuery.data, cloudReviewerQuery.isFetched, reviewerQuery.isFetched, session?.cloud]);
+	useEffect(() => {
+		if (!session?.cloud) return;
+		setTerminalTarget((current) => {
+			if (current.kind !== "reviewer") return current;
+			const run = cloudReviewRunForTerminal(cloudReviewerQuery.data, current.handleId);
+			if (!run || current.reviewStatus === run.status) return current;
+			return { ...current, reviewStatus: run.status };
+		});
+	}, [cloudReviewerQuery.data, session?.cloud]);
+	// A Cloud trigger can replace a previously ended reviewer with a new terminal
+	// while the inspector remains mounted. Make that replacement visible even if
+	// the trigger response raced the inspector callback: the shared Cloud review
+	// query is the durable source of truth for the active reviewer handle.
+	const cloudReviewIsRunning = Boolean(
+		session?.cloud && cloudReviewerQuery.data?.reviews.some((review) => review.status === "running"),
+	);
+	useEffect(() => {
+		if (!session?.cloud || !reviewerTerminal || !cloudReviewIsRunning) return;
+		setTerminalTarget((current) =>
+			current.kind === "reviewer" && current.handleId === reviewerTerminal.handleId
+				? current
+				: {
+						kind: "reviewer",
+						handleId: reviewerTerminal.handleId,
+						harness: reviewerTerminal.harness,
+						sessionId,
+					},
+		);
+	}, [cloudReviewIsRunning, reviewerTerminal, session?.cloud, sessionId]);
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
 	const hasInspector = Boolean(session);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);

@@ -1436,6 +1436,8 @@
 	"terminal.renameHintDoubleClick": "{{workingDir}}（ダブルクリックで名前を変更）",
 	"terminal.renameHintRightClick": "{{workingDir}}（右クリックで名前を変更）",
 	"terminal.reviewer": "レビュアー",
+	"terminal.reviewCompleted": "レビュー完了",
+	"terminal.reviewerCompleted": "レビューが完了し、プルリクエストに投稿されました。",
 	"terminal.scrollTabsLeft": "タブを左にスクロール",
 	"terminal.scrollTabsRight": "タブを右にスクロール",
 	"terminal.search": "ターミナル内を検索",

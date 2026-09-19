@@ -72,8 +72,13 @@ func runCheckpointBridge(
 	}()
 
 	// Coarse periodic safety net (see checkpointSafetyNetInterval).
+	// Snapshot the configured interval before starting the goroutine. Tests shorten
+	// the package variable, and a bridge from a prior test can still be winding
+	// down while the next test changes it. Reading the mutable package variable
+	// inside the goroutine would race with that change.
+	safetyNetInterval := checkpointSafetyNetInterval
 	go func() {
-		ticker := time.NewTicker(checkpointSafetyNetInterval)
+		ticker := time.NewTicker(safetyNetInterval)
 		defer ticker.Stop()
 		for {
 			select {

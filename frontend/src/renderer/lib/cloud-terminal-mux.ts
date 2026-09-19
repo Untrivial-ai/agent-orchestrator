@@ -31,6 +31,8 @@ export interface CloudTerminalMuxOptions {
 	wsBaseUrl: string;
 	/** "agent" attaches the running coding agent; "workspace" opens a shell. */
 	kind: "agent" | "workspace";
+	/** Dedicated agent terminal to attach, rather than the session's primary agent terminal. */
+	terminalId?: string;
 	/** Mints a fresh single-use terminal ticket (goes through the CP proxy). */
 	mintTicket: (kind: "agent" | "workspace") => Promise<string>;
 	/**
@@ -146,12 +148,13 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 
 	const openSocket = (kind: "agent" | "workspace", ticket: string) => {
 		if (disposed) return;
-		const query = new URLSearchParams({
+	const query = new URLSearchParams({
 			ticket,
 			kind,
 			after: String(after),
 			protocol: "2",
-		});
+	});
+	if (options.terminalId) query.set("terminalId", options.terminalId);
 		const url = `${options.wsBaseUrl.replace(/\/+$/, "")}/terminal?${query.toString()}`;
 		const ws = new WS(url);
 		socket = ws;

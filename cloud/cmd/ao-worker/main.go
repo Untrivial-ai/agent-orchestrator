@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -338,22 +339,54 @@ func startInteractiveAgent(
 	if err != nil {
 		return fmt.Errorf("build interactive coding-agent command: %w", err)
 	}
-	agentCommand.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
-	agentCommand.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
-	agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
-	agentCommand.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
-	agentCommand.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
-	agentCommand.Env["AO_CHECKPOINT_SOCKET"] = checkpointSocketPath
-	agentCommand.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
-	agentCommand.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
-		`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
-		`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
-		"to push the current branch and open a pull request against the repository's default branch."
-	agentCommand.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
-	agentCommand.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
-		`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
-		`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
-		"to submit an AO-triggered review verdict."
+	runtimeEnv := map[string]string{
+		"AO_CLOUD_WORKER_API_URL":    client.baseURL,
+		"AO_CLOUD_WORKER_TOKEN_FILE": client.tokenFile,
+		"AO_SESSION_ID":              bootstrap.SessionID,
+		"AO_PROJECT_ID":              bootstrap.Launch.ProjectID,
+		"AO_SESSION_KIND":            bootstrap.Launch.Kind,
+		"AO_CHECKPOINT_SOCKET":       checkpointSocketPath,
+		"AO_PULL_REQUEST_SOCKET":     pullRequestSocketPath,
+		"AO_PULL_REQUEST_HELP": "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
+			`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
+			`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
+			"to push the current branch and open a pull request against the repository's default branch.",
+		"AO_REVIEW_SOCKET": reviewSocketPath,
+		"AO_REVIEW_HELP": "curl --unix-socket $AO_REVIEW_SOCKET " +
+			`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
+			`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
+			"to submit an AO-triggered review verdict.",
+	}
+	for key, value := range runtimeEnv {
+		agentCommand.Env[key] = value
+	}
+	// A review shares the checkout but always gets a new native conversation.
+	// The selected provider is fetched only when its reviewer terminal opens so
+	// a user can change the Cloud sidebar setting without restarting the worker.
+	transportSupervisor.SetReviewCommandFactory(func(reviewCtx context.Context, harness string) (workerexec.Command, error) {
+		if harness == "" {
+			harness = bootstrap.Launch.Harness
+		}
+		if err := verifyHarnessAvailable(harness); err != nil {
+			return workerexec.Command{}, err
+		}
+		reviewCredential, err := client.CredentialForProvider(reviewCtx, harness)
+		if err != nil {
+			return workerexec.Command{}, fmt.Errorf("load reviewer credential: %w", err)
+		}
+		reviewLaunch := bootstrap.Launch
+		reviewLaunch.Harness = harness
+		reviewLaunch.SessionID = uuid.NewString()
+		reviewLaunch.AgentSessionID = ""
+		reviewCommand, err := (workerexec.HarnessBuilder{DataDir: dataDir}).BuildInteractive(reviewLaunch, reviewCredential, workspace)
+		if err != nil {
+			return workerexec.Command{}, fmt.Errorf("build reviewer command: %w", err)
+		}
+		for key, value := range runtimeEnv {
+			reviewCommand.Env[key] = value
+		}
+		return reviewCommand, nil
+	})
 	agentTerminal, err := client.ensureAgentTerminal(ctx)
 	if err != nil {
 		if agentCommand.Cleanup != nil {
@@ -558,8 +591,16 @@ func (c *client) ClaimTurn(ctx context.Context) (*worker.Turn, error) {
 }
 
 func (c *client) Credential(ctx context.Context) (worker.CredentialResponse, error) {
+	return c.CredentialForProvider(ctx, "")
+}
+
+func (c *client) CredentialForProvider(ctx context.Context, provider string) (worker.CredentialResponse, error) {
 	var response worker.CredentialResponse
-	err := c.doMethod(ctx, http.MethodGet, "/worker/credential", nil, &response)
+	path := "/worker/credential"
+	if provider != "" {
+		path += "?provider=" + url.QueryEscape(provider)
+	}
+	err := c.doMethod(ctx, http.MethodGet, path, nil, &response)
 	if err != nil {
 		return worker.CredentialResponse{}, err
 	}

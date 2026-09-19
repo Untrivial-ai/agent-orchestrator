@@ -26,8 +26,14 @@ import type {
 } from "../types/workspace";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
-const { getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
+const { cloudCpMock, getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
   () => ({
+    cloudCpMock: {
+      cancelSessionReviews: vi.fn(),
+      getSessionReviewState: vi.fn(),
+      listSessionPullRequests: vi.fn(),
+      triggerSessionReviews: vi.fn(),
+    },
     getMock: vi.fn(),
     navigateMock: vi.fn(),
     patchMock: vi.fn(),
@@ -73,6 +79,14 @@ vi.mock("../lib/api-client", () => ({
     }
     return fallback;
   },
+}));
+
+vi.mock("../hooks/useCloudCp", () => ({
+  useCloudCp: () => ({
+    client: cloudCpMock,
+    ready: true,
+    baseUrl: "https://cloud.example.test",
+  }),
 }));
 
 const pr = (
@@ -274,6 +288,12 @@ const reviewState = (n: number, status: string, targetSha = `sha-${n}`) => ({
 });
 
 beforeEach(() => {
+  cloudCpMock.cancelSessionReviews.mockReset();
+  cloudCpMock.getSessionReviewState.mockReset();
+  cloudCpMock.listSessionPullRequests.mockReset();
+  cloudCpMock.triggerSessionReviews.mockReset();
+  cloudCpMock.listSessionPullRequests.mockResolvedValue({ sessionId: "sess-1", pullRequests: [] });
+  cloudCpMock.getSessionReviewState.mockResolvedValue({ sessionId: "sess-1", reviews: [], runs: [] });
   getMock.mockReset();
   navigateMock.mockReset();
   patchMock.mockReset();
@@ -302,6 +322,123 @@ afterEach(() => {
 });
 
 describe("SessionInspector tabs", () => {
+  it("uses the same review panel and Cloud control-plane actions for cloud sessions", async () => {
+    cloudCpMock.listSessionPullRequests.mockResolvedValue({
+      sessionId: "sess-1",
+      pullRequests: [{
+        url: "https://github.com/acme/repo/pull/7",
+        number: 7,
+        state: "open",
+        updatedAt: "2026-06-15T00:00:00Z",
+      }],
+    });
+    cloudCpMock.getSessionReviewState.mockResolvedValue({
+      sessionId: "sess-1",
+      reviewerHarness: "claude-code",
+      reviews: [{
+        pullRequestUrl: "https://github.com/acme/repo/pull/7",
+        pullRequestNumber: 7,
+        title: "Cloud review",
+        targetSha: "head-7",
+        status: "needs_review",
+      }],
+      runs: [],
+    });
+    cloudCpMock.triggerSessionReviews.mockResolvedValue({
+      sessionId: "sess-1",
+      reviewerHandleId: "cloud-reviewer-7",
+      reviewerHarness: "claude-code",
+      reviews: [{
+        pullRequestUrl: "https://github.com/acme/repo/pull/7",
+        pullRequestNumber: 7,
+        title: "Cloud review",
+        targetSha: "head-7",
+        status: "running",
+      }],
+      runs: [],
+    });
+    const onOpenReviewerTerminal = vi.fn();
+
+    renderWithQuery(
+      <SessionInspector
+        onOpenReviewerTerminal={onOpenReviewerTerminal}
+        session={session([], { cloud: { orgId: "org-1" } })}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Reviews" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Reviews" }));
+    expect(await screen.findByText("Review controls")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Review latest commit" }));
+
+    await waitFor(() =>
+      expect(cloudCpMock.triggerSessionReviews).toHaveBeenCalledWith("org-1", "sess-1"),
+    );
+    expect(onOpenReviewerTerminal).toHaveBeenCalledWith({
+      handleId: "cloud-reviewer-7",
+      harness: "claude-code",
+    });
+  });
+
+  it("does not report an already-reviewed commit while a cloud review handle is pending", async () => {
+    cloudCpMock.listSessionPullRequests.mockResolvedValue({
+      sessionId: "sess-1",
+      pullRequests: [{
+        url: "https://github.com/acme/repo/pull/7",
+        number: 7,
+        state: "open",
+        updatedAt: "2026-06-15T00:00:00Z",
+      }],
+    });
+    cloudCpMock.getSessionReviewState.mockResolvedValue({
+      sessionId: "sess-1",
+      reviewerHarness: "claude-code",
+      reviews: [{
+        pullRequestUrl: "https://github.com/acme/repo/pull/7",
+        pullRequestNumber: 7,
+        title: "Cloud review",
+        targetSha: "head-7",
+        status: "needs_review",
+      }],
+      runs: [],
+    });
+    cloudCpMock.triggerSessionReviews.mockResolvedValue({
+      sessionId: "sess-1",
+      reviewerHandleId: "",
+      reviewerHarness: "claude-code",
+      reviews: [{
+        pullRequestUrl: "https://github.com/acme/repo/pull/7",
+        pullRequestNumber: 7,
+        title: "Cloud review",
+        targetSha: "head-7",
+        status: "running",
+      }],
+      runs: [],
+    });
+    const onOpenReviewerTerminal = vi.fn();
+
+    renderWithQuery(
+      <SessionInspector
+        onOpenReviewerTerminal={onOpenReviewerTerminal}
+        session={session([], { cloud: { orgId: "org-1" } })}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: "Reviews" }));
+    await userEvent.click(screen.getByRole("button", { name: "Review latest commit" }));
+
+    await waitFor(() =>
+      expect(cloudCpMock.triggerSessionReviews).toHaveBeenCalledWith("org-1", "sess-1"),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "This commit has already been reviewed. Push a new commit to run another review.",
+      }),
+    ).not.toBeInTheDocument();
+    expect(onOpenReviewerTerminal).not.toHaveBeenCalled();
+  });
+
   it("shows only Browser content without navigation tabs for an orchestrator", () => {
     renderWithQuery(<SessionInspector browserOnly session={session([], { kind: "orchestrator" })} />);
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();

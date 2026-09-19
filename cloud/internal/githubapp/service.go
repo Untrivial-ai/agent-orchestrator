@@ -64,8 +64,8 @@ type Store interface {
 		orgID, pullRequestID string,
 		observation domain.PullRequestObservation,
 	) (domain.PullRequest, error)
-	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA string) (domain.ReviewRun, bool, error)
-	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt string) error
+	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA, harness string) (domain.ReviewRun, bool, error)
+	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt, harness string) (string, error)
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error
 	ReviewRunPullRequest(ctx context.Context, orgID, reviewRunID string) (domain.ReviewRunPullRequest, error)
 	CompleteAndDeliverReviewRun(
@@ -75,6 +75,8 @@ type Store interface {
 		providerReviewID string,
 	) (domain.ReviewRun, error)
 	FailReviewRun(ctx context.Context, orgID, reviewRunID, reviewSessionID, lastError string) (domain.ReviewRun, error)
+	CancelRunningReviewRunsBySession(ctx context.Context, orgID, sessionID string) ([]domain.ReviewRun, error)
+	CancelReviewRuns(ctx context.Context, orgID, sessionID string, runIDs []string) ([]domain.ReviewRun, error)
 	ReserveGitHubRepositoryCapability(context.Context, domain.Principal, string, string, string, []byte, int64) (domain.GitHubRepositoryCapability, bool, error)
 	ActivateGitHubRepositoryCapability(context.Context, domain.Principal, string, string, domain.GitHubRepository, []byte, []byte, []byte) (domain.GitHubRepositoryCapability, error)
 	GitHubRepositoryCapability(context.Context, []byte, string) (domain.GitHubRepositoryCapability, error)
@@ -101,6 +103,16 @@ type Service struct {
 	checkMu       sync.Mutex
 	checkAt       time.Time
 	checkErr      error
+}
+
+// NewReviewService builds the review-lifecycle subset used by local Cloud.
+// Starting and cancelling a reviewer terminal does not require GitHub App
+// credentials; delivery is handled separately with the session owner's PAT.
+func NewReviewService(store Store, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{store: store, logger: logger}
 }
 
 func (s *Service) Check(ctx context.Context) error {
@@ -535,7 +547,6 @@ func (s *Service) RaisePullRequest(
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	s.triggerReview(ctx, orgID, sessionID, record)
 	return record, nil
 }
 
@@ -600,7 +611,6 @@ func (s *Service) ClaimPullRequest(
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	s.triggerReview(ctx, orgID, sessionID, record)
 	return record, nil
 }
 

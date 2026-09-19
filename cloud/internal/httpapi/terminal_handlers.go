@@ -50,7 +50,8 @@ func (s *Server) createTerminalTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Kind string `json:"kind"`
+		Kind       string `json:"kind"`
+		TerminalID string `json:"terminalId,omitempty"`
 	}
 	if err := decodeJSONLimit(w, r, &input, maxWorkerControlBody); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
@@ -60,8 +61,12 @@ func (s *Server) createTerminalTicket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "TERMINAL_KIND_UNSUPPORTED", "Terminal kind must be agent or workspace.")
 		return
 	}
+	if input.TerminalID != "" && requireUUID(input.TerminalID, "terminalId") != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "The terminal ID must be a UUID.")
+		return
+	}
 	token, scopes, err := s.store.IssueTerminalTicket(
-		r.Context(), principalFrom(r), orgID, sessionID, input.Kind, terminalTicketTTL,
+		r.Context(), principalFrom(r), orgID, sessionID, input.Kind, input.TerminalID, terminalTicketTTL,
 	)
 	if errors.Is(err, postgres.ErrTerminalSessionExited) {
 		writeError(w, r, http.StatusGone, "TERMINAL_SESSION_EXITED", "The coding-agent terminal has exited. Start a new session to continue.")
@@ -89,11 +94,13 @@ func (s *Server) createTerminalTicket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSpace(r.URL.Query().Get("ticket"))
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	terminalID := strings.TrimSpace(r.URL.Query().Get("terminalId"))
 	if kind == "" {
 		kind = "workspace"
 	}
 	after, err := strconv.ParseInt(defaultString(r.URL.Query().Get("after"), "0"), 10, 64)
-	if token == "" || (kind != "workspace" && kind != "agent") || err != nil || after < 0 {
+	if token == "" || (kind != "workspace" && kind != "agent") ||
+		(terminalID != "" && requireUUID(terminalID, "terminalId") != nil) || err != nil || after < 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid ticket, kind, and after cursor are required.")
 		return
 	}
@@ -101,7 +108,7 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 	if kind == "agent" {
 		ttl = agentTerminalTTL
 	}
-	terminal, err := s.store.OpenTerminal(r.Context(), token, kind, ttl)
+	terminal, err := s.store.OpenTerminal(r.Context(), token, kind, terminalID, ttl)
 	if errors.Is(err, postgres.ErrInvalidTicket) {
 		if s.logger != nil {
 			s.logger.Warn(
