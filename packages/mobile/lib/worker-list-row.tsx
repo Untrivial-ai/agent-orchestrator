@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Keyboard, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { DashboardSession } from "./api";
 import { AgentLogo } from "./AgentLogo";
@@ -18,11 +18,13 @@ import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
 import { normalizeConversationTitle } from "./chat/conversationMenuModel";
 import { iconSize, press, space, type } from "./tokens";
 
-export function WorkerListRow({
+export const WorkerListRow = memo(
+	function WorkerListRow({
 	session,
 	projectName,
 	isRenaming,
 	activeSwipeId,
+	nowBucket,
 	onSwipeOpen,
 	onSwipeClose,
 	onRenameStart,
@@ -37,6 +39,12 @@ export function WorkerListRow({
 	projectName?: string;
 	isRenaming: boolean;
 	activeSwipeId?: string;
+	/**
+	 * The current minute, passed in only so a row re-renders when its relative
+	 * timestamp would read differently — the memo below compares session *values*,
+	 * so nothing else would wake a row whose data has not changed.
+	 */
+	nowBucket: number;
 	onSwipeOpen(id: string, close: () => void): void;
 	onSwipeClose(id: string): void;
 	onRenameStart(): void;
@@ -202,7 +210,24 @@ export function WorkerListRow({
 			)}
 		</WorkerRowInteraction>
 	);
-}
+},
+	/**
+	 * Ignores the handler props on purpose. Every one of them is created inline by
+	 * the board and closes only over this row's own `session` (and store actions
+	 * that never change identity), so a row whose session, name and swipe state are
+	 * the same cannot be holding a stale handler. Comparing them would defeat the
+	 * memo — and re-rendering every row of a long board is what made folding heavy.
+	 */
+	(prev, next) =>
+		prev.nowBucket === next.nowBucket &&
+		prev.projectName === next.projectName &&
+		prev.isRenaming === next.isRenaming &&
+		prev.activeSwipeId === next.activeSwipeId &&
+		// By value, not identity: the store polls and publishes freshly parsed
+		// session objects each tick, so identity would fail for every row and put
+		// the whole board through a re-render on every poll.
+		(prev.session === next.session || JSON.stringify(prev.session) === JSON.stringify(next.session)),
+);
 
 function WorkerRowContents({
 	row,

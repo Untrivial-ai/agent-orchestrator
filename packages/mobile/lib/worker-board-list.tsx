@@ -84,6 +84,9 @@ export function WorkerBoardList({
 	// working view, and a section nobody opened is a section nobody saw — but a
 	// collapsed group keeps its header, so the shape of the board stays readable.
 	const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+	// Minute-granular, so a memoised row still updates its relative timestamp even
+	// when nothing about the session itself has changed.
+	const nowBucket = Math.floor(Date.now() / 60_000);
 
 	const projectNames = useMemo(
 		() => new Map(projects.map((project) => [project.id, project.name])),
@@ -240,10 +243,11 @@ export function WorkerBoardList({
 						);
 					}
 					const session = item.session;
-					return (
-						<BoardRowTransition>
-							<WorkerListRow
-								session={session}
+						return (
+							<BoardRowTransition>
+								<WorkerListRow
+									nowBucket={nowBucket}
+									session={session}
 								projectName={showProject ? projectNames.get(session.projectId) : session.harness || "Agent"}
 								isRenaming={renamingWorkerId === session.id}
 								activeSwipeId={activeSwipeId}
