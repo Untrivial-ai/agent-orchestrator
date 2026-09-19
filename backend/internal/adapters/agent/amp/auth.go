@@ -47,16 +47,24 @@ func ampAuthStatus(ctx context.Context, binary string, check ports.AgentAuthChec
 	if getenv == nil {
 		getenv = os.Getenv
 	}
+	// Amp selects any nonempty environment value before its credential store.
+	// A malformed selected value is inconclusive, not permission to inspect a
+	// lower-priority stored key. Preserve raw emptiness when choosing the source.
+	apiKey := getenv("AMP_API_KEY")
+	if value, exists := check.Env["AMP_API_KEY"]; exists {
+		apiKey = value
+	}
+	if apiKey != "" {
+		if ampAccessToken.MatchString(strings.TrimSpace(apiKey)) {
+			return ports.AgentAuthStatusConfigured, nil
+		}
+		return ports.AgentAuthStatusUnknown, nil
+	}
 	d.Getenv = func(key string) string {
 		if value, exists := check.Env[key]; exists {
 			return strings.TrimSpace(value)
 		}
 		return strings.TrimSpace(getenv(key))
-	}
-	// Settings access tokens have this documented prefix. Browser session
-	// tokens expire within an hour and cannot refresh from AMP_API_KEY.
-	if ampAccessToken.MatchString(d.Getenv("AMP_API_KEY")) {
-		return ports.AgentAuthStatusConfigured, nil
 	}
 	home := d.Getenv("HOME")
 	if d.GOOS == "windows" || (d.GOOS == "" && runtime.GOOS == "windows") {
@@ -121,6 +129,8 @@ func ampAuthStatus(ctx context.Context, binary string, check ports.AgentAuthChec
 	return ports.AgentAuthStatusUnknown, ctx.Err()
 }
 
+// Settings access tokens have this documented prefix. Browser session tokens
+// expire within an hour and cannot refresh from AMP_API_KEY.
 var ampAccessToken = regexp.MustCompile(`^sgamp_[A-Za-z0-9_-]+$`)
 
 func ampSettingsFlag(args []string) string {
@@ -180,20 +190,15 @@ func ampUsageAuthStatus(ctx context.Context, binary string, check ports.AgentAut
 	if probeCtx.Err() != nil || len(out) > authutil.MaxFileSize {
 		return ports.AgentAuthStatusUnknown, nil
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		lower := strings.ToLower(strings.TrimPrefix(line, "Error: "))
-		if lower == "invalid api key" || lower == "not signed in" || strings.HasPrefix(lower, "not signed in. ") ||
-			lower == "authentication required" || strings.HasPrefix(lower, "authentication required. ") {
-			return ports.AgentAuthStatusUnauthorized, nil
-		}
-	}
+	// The usage command exits successfully only after userDisplayBalanceInfo
+	// completes against the provider. Its displayText is server-controlled and
+	// has no stable identity/balance line that authentication should depend on.
 	if err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "Signed in as ") && strings.TrimSpace(strings.TrimPrefix(line, "Signed in as ")) != "" {
-				return ports.AgentAuthStatusAuthorized, nil
-			}
+		return ports.AgentAuthStatusAuthorized, nil
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Error: You must be logged in to view usage.") {
+			return ports.AgentAuthStatusUnauthorized, nil
 		}
 	}
 	return ports.AgentAuthStatusUnknown, nil

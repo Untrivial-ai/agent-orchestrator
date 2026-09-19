@@ -45,14 +45,16 @@ func TestAmpProbeFirstAndAuthoritative(t *testing.T) {
 		fail         bool
 		want         ports.AgentAuthStatus
 	}{
-		{"signed in", "Signed in as user@example.test\nIndividual credits: $10.00 remaining\n", false, ports.AgentAuthStatusAuthorized},
-		{"signed out", "Not signed in. Run 'amp login' to sign in.", true, ports.AgentAuthStatusUnauthorized},
-		{"rejected", "Error: Invalid API key", true, ports.AgentAuthStatusUnauthorized},
-		{"login required", "Error: Authentication required. Please run 'amp login'.", true, ports.AgentAuthStatusUnauthorized},
-		{"quoted output is inconclusive", "Example: Signed in as user@example.test", false, ports.AgentAuthStatusConfigured},
+		// The provider supplies displayText; successful usage completion is
+		// authoritative even when that text contains no fixed identity marker.
+		{"provider validation completed with no identity line", "\n", false, ports.AgentAuthStatusAuthorized},
+		{"provider validation completed with empty display text", "", false, ports.AgentAuthStatusAuthorized},
+		{"native signed out", "Error: You must be logged in to view usage. Run `amp login` first.\n", true, ports.AgentAuthStatusUnauthorized},
+		{"quoted native error is inconclusive", "Example: Error: You must be logged in to view usage. Run `amp login` first.", true, ports.AgentAuthStatusConfigured},
+		{"unrecognized auth error", "Error: Authentication required. Please run 'amp login'.", true, ports.AgentAuthStatusConfigured},
+		{"unsupported version", "error: unknown command 'usage'", true, ports.AgentAuthStatusConfigured},
 		{"failure with success text", "Signed in as user@example.test", true, ports.AgentAuthStatusConfigured},
-		{"generic positive", "Authenticated successfully", false, ports.AgentAuthStatusConfigured},
-		{"empty account", "Signed in as ", false, ports.AgentAuthStatusConfigured},
+		{"generic positive on failure", "Authenticated successfully", true, ports.AgentAuthStatusConfigured},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d := ampTestDeps(t, map[string]string{"AMP_API_KEY": "sgamp_test_access_token"})
@@ -226,12 +228,27 @@ func TestAmpScopedSettingsAndEnvironment(t *testing.T) {
 	}
 }
 
-func TestAmpInvalidEnvFallsBackToValidFile(t *testing.T) {
-	d := ampTestDeps(t, map[string]string{"AMP_API_KEY": "invalid"})
-	ampTestFile(t, filepath.Join(d.Getenv("HOME"), ".local", "share", "amp", "secrets.json"), `{"apiKey@https://ampcode.com/":"sgamp_access"}`)
-	got, err := ampAuthStatus(context.Background(), "amp", ports.AgentAuthCheck{}, d)
-	if err != nil || got != ports.AgentAuthStatusConfigured {
-		t.Fatalf("got %q, %v", got, err)
+func TestAmpSelectedInvalidEnvDoesNotFallBackToStoredCredentials(t *testing.T) {
+	for _, tt := range []struct {
+		name, inherited string
+		scoped          map[string]string
+		want            ports.AgentAuthStatus
+	}{
+		{"invalid", "invalid", nil, ports.AgentAuthStatusUnknown},
+		{"session token", "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE5MDAwMDAwMDB9.signature", nil, ports.AgentAuthStatusUnknown},
+		{"whitespace selects environment", " \t", nil, ports.AgentAuthStatusUnknown},
+		{"scoped invalid masks inherited", "sgamp_inherited", map[string]string{"AMP_API_KEY": "invalid"}, ports.AgentAuthStatusUnknown},
+		{"empty permits stored credentials", "", nil, ports.AgentAuthStatusConfigured},
+		{"scoped empty permits stored credentials", "invalid", map[string]string{"AMP_API_KEY": ""}, ports.AgentAuthStatusConfigured},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := ampTestDeps(t, map[string]string{"AMP_API_KEY": tt.inherited})
+			ampTestFile(t, filepath.Join(d.Getenv("HOME"), ".local", "share", "amp", "secrets.json"), `{"apiKey@https://ampcode.com/":"sgamp_access"}`)
+			got, err := ampAuthStatus(context.Background(), "amp", ports.AgentAuthCheck{Env: tt.scoped}, d)
+			if err != nil || got != tt.want {
+				t.Fatalf("got %q, %v; want %q", got, err, tt.want)
+			}
+		})
 	}
 }
 
