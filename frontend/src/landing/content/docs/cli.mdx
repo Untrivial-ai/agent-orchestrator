@@ -24,6 +24,7 @@ ao
 ├── review                         ls, trigger, cancel, submit
 ├── preview                        select/clear a target; start, status, stop a server
 ├── browser                        Control the selected session browser
+├── mcp                            Run the AO MCP server (stdio or loopback HTTP)
 ├── import                         Import projects from legacy AO data
 ├── completion                     Generate shell completions
 └── version                        Print build information
@@ -188,6 +189,10 @@ Controls the live, session-isolated Electron browser owned by the desktop app. I
 The command family includes status/open, accessibility snapshots and references, click/drag/fill/type/press/hover, highlight, scroll, select/check state, property reads, tabs and popups, DevTools, frames, dialogs, waits, screenshots, console/page errors, and bounded opt-in network metadata capture.
 
 References become stale after navigation, DOM replacement, frame changes, or tab changes. Take another snapshot when AO reports `STALE_REFERENCE`. Network capture is off by default, metadata-only, bounded, and automatically expires.
+
+### `ao mcp`
+
+Runs the AO MCP server so Claude Code, Cursor, or Codex can drive the local daemon. Default transport is stdio; `--http 127.0.0.1:8787` serves streamable HTTP on loopback only. See the [MCP server](/docs/mcp) page for client config snippets.
 
 ## Migration and shell integration
 
