@@ -32,11 +32,13 @@ ARG CLAUDE_CODE_VERSION=2.1.228
 ARG CODEX_VERSION=0.147.0
 ARG CURSOR_AGENT_VERSION=2026.08.11-e8db854
 ARG GH_VERSION=2.97.0
+ARG AGENT_BROWSER_VERSION=0.33.1
 RUN apt-get update && \
     apt-get upgrade --yes && \
     apt-get install --yes --no-install-recommends \
         bash \
         ca-certificates \
+        chromium \
         curl \
         git \
         jq \
@@ -73,8 +75,27 @@ RUN case "${TARGETARCH}" in \
         | tar --strip-components=1 -xzf - -C "/opt/cursor-agent/${CURSOR_AGENT_VERSION}" && \
     ln -s "/opt/cursor-agent/${CURSOR_AGENT_VERSION}/cursor-agent" /usr/local/bin/cursor-agent && \
     cursor-agent --version
+# The pinned agent-browser engine for the in-VM session browser (same pins as
+# frontend/scripts/prepare-agent-browser.mjs; keep the two tables in sync).
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64) ab_asset=agent-browser-linux-x64;  ab_sha256=6e04d06605c4ca62da36e3263086e0f7ceae808b55508de2c3958d4b7fe430aa ;; \
+        arm64) ab_asset=agent-browser-linux-arm64; ab_sha256=281cce8e3e9eb11fd823b13c085996d7361c35923ad454ce5cb06a5515630e9b ;; \
+        *) echo "unsupported agent-browser architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl --fail --location --silent --show-error \
+        "https://github.com/vercel-labs/agent-browser/releases/download/v${AGENT_BROWSER_VERSION}/${ab_asset}" \
+        -o /tmp/agent-browser; \
+    echo "${ab_sha256}  /tmp/agent-browser" | sha256sum -c -; \
+    mkdir -p /usr/local/lib/ao; \
+    install -m 0755 /tmp/agent-browser /usr/local/lib/ao/agent-browser; \
+    rm -f /tmp/agent-browser; \
+    /usr/local/lib/ao/agent-browser --version; \
+    chromium --version
 COPY --from=build --chown=ao-worker:ao-worker /out/ao-worker /ao-worker
 COPY --from=build --chown=ao-worker:ao-worker /out/ao /usr/local/bin/ao
+ENV AO_CLOUD_CHROMIUM_PATH=/usr/bin/chromium \
+    AO_CLOUD_AGENT_BROWSER_PATH=/usr/local/lib/ao/agent-browser
 USER ao-worker
 WORKDIR /workspace/repository
 ENTRYPOINT ["/ao-worker"]

@@ -76,6 +76,9 @@ func run(args []string) error {
 		printUsage(os.Stdout)
 		return nil
 	}
+	if args[0] == "browser" {
+		return runBrowser(args[1:])
+	}
 	apiURL := strings.TrimRight(strings.TrimSpace(os.Getenv("AO_CLOUD_WORKER_API_URL")), "/")
 	tokenFile := strings.TrimSpace(os.Getenv("AO_CLOUD_WORKER_TOKEN_FILE"))
 	if apiURL == "" {
@@ -474,8 +477,10 @@ func printUsage(out io.Writer) {
   ao report MESSAGE
   ao kill SESSION_ID
   ao claim-pr NUMBER_OR_URL
+  ao browser <verb> [args]
 
 All commands are authenticated through the control plane. spawn/list/send/kill
 require an orchestrator session; report requires an orchestrator parent. Child
-workers never connect directly to one another.`)
+workers never connect directly to one another. `+"`ao browser`"+` talks to
+this session's in-VM browser service on the loopback listener.`)
 }

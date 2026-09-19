@@ -71,6 +71,53 @@ token with read access to `ao-cloud`.
 
 These are shared-ready boundaries, not a hosted Cloud implementation.
 
+## Session browser (Stage 1)
+
+Cloud sandbox sessions run an in-VM browser service ("browserd") so `ao
+browser <verb>` works inside a session exactly as it does on desktop: same
+verb tree (`backend/pkg/clibrowser` is the shared implementation), same wire
+contract (`backend/pkg/browsercontract`), same JSON result shapes and
+untrusted-content markers.
+
+How it fits together:
+
+- `/ao-worker` starts browserd before the agent terminal opens: it mints the
+  per-session HMAC capability, binds a loopback-only HTTP listener on
+  `127.0.0.1`, and exports `AO_BROWSER_CAPABILITY` and `AO_BROWSER_API_URL`
+  into the agent environment (and the worker environment, so workspace shell
+  terminals inherit them). A browserd failure logs and continues; the worker
+  never dies for it.
+- The supervised headless Chromium (Debian `chromium` package) and the pinned
+  agent-browser engine (`/usr/local/lib/ao/agent-browser`, sha256-pinned per
+  arch in `cloud/Dockerfile`, kept in sync with
+  `frontend/scripts/prepare-agent-browser.mjs`) start lazily on the first
+  browser verb. Chromium binds CDP to loopback only; its port is discovered
+  from `<profile>/DevToolsActivePort`.
+- Everything stays inside the VM: agent verbs never touch the control plane,
+  and screenshots (up to 5 MiB) never leave the sandbox.
+- The browser profile lives under `<dataDir>/browser/<sessionID>/profile` and
+  dies with the sandbox. After 30 minutes with no browser command the
+  supervised Chromium stops; the next verb starts it again.
+
+Verb support: everything the desktop supports except `network-*`,
+`devtools-*`, and `unhighlight` (they return
+`BROWSER_ACTION_UNSUPPORTED_CLOUD`; network capture is planned for a later
+stage). `open localhost:3000` and bare hostnames work, so VM-local dev
+servers are first-class targets.
+
+Try it locally with the docker provider stack
+(`cloud/scripts/test-cloud-local.sh`):
+
+```bash
+docker exec "$(docker ps -q --filter label=ao.provider=docker | head -1)" \
+  ao browser open https://example.com
+docker exec "$(docker ps -q --filter label=ao.provider=docker | head -1)" \
+  ao browser snapshot --interactive
+```
+
+Full manual instructions, including running the same production service on a
+CreateOS sandbox VM without any control plane: `docs/cloud-browser-stage1.md`.
+
 ## Private implementation status
 
 The private repository now contains:

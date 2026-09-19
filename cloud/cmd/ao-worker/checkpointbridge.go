@@ -71,9 +71,15 @@ func runCheckpointBridge(
 		}
 	}()
 
-	// Coarse periodic safety net (see checkpointSafetyNetInterval).
+	// Coarse periodic safety net (see checkpointSafetyNetInterval). The
+	// interval is captured here, in the caller's goroutine, rather than inside
+	// the goroutine below: tests shorten the package-level variable between
+	// runs, and a fire-and-forget goroutine can execute its first read after
+	// this function has returned, which the race detector (correctly) flags
+	// against the next test's write.
+	safetyNetInterval := checkpointSafetyNetInterval
 	go func() {
-		ticker := time.NewTicker(checkpointSafetyNetInterval)
+		ticker := time.NewTicker(safetyNetInterval)
 		defer ticker.Stop()
 		for {
 			select {

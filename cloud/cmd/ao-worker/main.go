@@ -169,6 +169,29 @@ func run(logger *slog.Logger) error {
 	checkpointSocketPath := filepath.Join(dataDir, "ao-checkpoint.sock")
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// The in-VM browser service binds synchronously before any terminal opens
+	// so the agent env can never race the listener. A browserd failure must
+	// not kill the worker (same policy as a missing harness): agents lose
+	// browser verbs and everything else keeps running. The vars are exported
+	// into the worker env (workspace shell terminals inherit os.Environ) and
+	// injected into the coding-agent command when it is built.
+	browserdEnv, stopBrowserd, err := startBrowserd(runCtx, BrowserdOptions{
+		DataDir:   dataDir,
+		SessionID: bootstrap.SessionID,
+		Logger:    logger,
+	})
+	if err != nil {
+		logger.Warn("browserd unavailable; continuing without browser verbs", "error", err)
+	} else {
+		defer func() { _ = stopBrowserd(context.Background()) }()
+		for key, value := range browserdEnv {
+			if err := os.Setenv(key, value); err != nil {
+				logger.Warn("export browser env failed", "key", key, "error", err)
+			}
+		}
+	}
+
 	started := make(chan error, 1)
 	transportSupervisor := workertransport.Supervisor{
 		Control: client, Workspace: workspace, Logger: logger,
@@ -249,6 +272,7 @@ func run(logger *slog.Logger) error {
 		if err := startInteractiveAgent(
 			runCtx, logger, client, bootstrap, workspace, dataDir,
 			pullRequestSocketPath, reviewSocketPath, checkpointSocketPath, &transportSupervisor, rehydrateDone,
+			browserdEnv,
 		); err != nil && runCtx.Err() == nil {
 			logger.Error("background coding-agent startup failed", "error", err)
 		}
@@ -315,6 +339,7 @@ func startInteractiveAgent(
 	workspace, dataDir, pullRequestSocketPath, reviewSocketPath, checkpointSocketPath string,
 	transportSupervisor *workertransport.Supervisor,
 	rehydrateDone <-chan struct{},
+	browserEnv map[string]string,
 ) error {
 	// Wait until the checkout has completed and any delete/restore rehydration
 	// has run: the transcript must be on disk before the command is built, so
@@ -354,6 +379,9 @@ func startInteractiveAgent(
 		`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
 		`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
 		"to submit an AO-triggered review verdict."
+	for key, value := range browserEnv {
+		agentCommand.Env[key] = value
+	}
 	agentTerminal, err := client.ensureAgentTerminal(ctx)
 	if err != nil {
 		if agentCommand.Cleanup != nil {
