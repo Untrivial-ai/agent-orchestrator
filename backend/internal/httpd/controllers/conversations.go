@@ -857,6 +857,13 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_CONFIG_OPTION_INVALID", err.Error(), nil)
 
+	case errors.Is(err, ports.ErrChatPermissionRestartRequired):
+		// Client should confirm and retry; never show the provider-specific
+		// validator prose in the composer.
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_PERMISSION_RESTART_REQUIRED",
+			"Changing this approval mode restarts Chat with the new permissions.", nil)
+
 	case errors.Is(err, ports.ErrChatUnsupported):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"SESSION_MODE_UNSUPPORTED", err.Error(), nil)

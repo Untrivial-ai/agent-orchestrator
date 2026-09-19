@@ -1073,18 +1073,18 @@ export function useConversationCommands(sessionId: string | undefined) {
 			resolve.isPending ||
 			resolveInput.isPending ||
 			(interrupt.isPending && interruptTargetsCurrentSession),
-		error:
-			(sendTargetsCurrentSession && send.error) ||
-			resolve.error ||
-			(interruptTargetsCurrentSession && interrupt.error) ||
-			chooseSettings.error
-				? apiErrorMessage(
-							(sendTargetsCurrentSession ? send.error : undefined) ??
-							resolve.error ??
-							(interruptTargetsCurrentSession ? interrupt.error : undefined) ??
-							chooseSettings.error,
-					)
-				: undefined,
+		error: (() => {
+			const candidates = [
+				sendTargetsCurrentSession ? send.error : undefined,
+				resolve.error,
+				interruptTargetsCurrentSession ? interrupt.error : undefined,
+				chooseSettings.error &&
+				apiErrorCode(chooseSettings.error) !== "CHAT_PERMISSION_RESTART_REQUIRED"
+					? chooseSettings.error
+					: undefined,
+			].filter(Boolean);
+			return candidates[0] ? apiErrorMessage(candidates[0]) : undefined;
+		})(),
 	};
 }
 

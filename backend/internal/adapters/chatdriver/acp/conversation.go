@@ -409,6 +409,20 @@ func (c *conversation) DiscardDeferredTurn(providerTurnID string) {
 	c.mu.Unlock()
 }
 
+// ValidateTurnSettings reports whether the live process can apply these
+// settings without replacing the provider. Cursor uses this so Chat can restart
+// transparently before the next turn rather than failing mid-send.
+func (c *conversation) ValidateTurnSettings(settings ports.ChatTurnSettings) error {
+	c.mu.Lock()
+	initialPermission := c.initialPermission
+	validateSettings := c.validateSettings
+	c.mu.Unlock()
+	if validateSettings == nil {
+		return nil
+	}
+	return validateSettings(initialPermission, settings)
+}
+
 func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.ChatTurnSettings) error {
 	c.mu.Lock()
 	sessionID := c.sessionID
