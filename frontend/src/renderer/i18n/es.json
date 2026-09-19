@@ -1,4 +1,12 @@
 {
+	"agentRecovery.installAction": "Instalar agente",
+	"agentRecovery.loginAction": "Iniciar sesión",
+	"agentRecovery.reviewAction": "Revisar configuración",
+	"agentRecovery.configureAction": "Configurar agente",
+	"agentRecovery.installDescription": "{{agent}} no está instalado. Instálalo antes de iniciar una sesión.",
+	"agentRecovery.loginDescription": "{{agent}} necesita autenticación para poder iniciarse.",
+	"agentRecovery.reviewDescription": "{{agent}} está configurado, pero es necesario revisar su configuración.",
+	"agentRecovery.configureDescription": "AO no pudo confirmar que {{agent}} esté listo. Revisa su configuración antes de iniciar.",
 	"session.statusChecking": "Comprobando…",
 	"session.statusUnavailable": "No se puede verificar",
 	"session.retryStatus": "Volver a comprobar el estado",

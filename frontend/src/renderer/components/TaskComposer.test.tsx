@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
 	ensureReadiness: vi.fn(),
 	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
+	agentCatalog: undefined as { agents: ReturnType<typeof import("../test/agent-readiness-fixtures").agentReadiness>[] } | undefined,
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
@@ -18,7 +19,7 @@ vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
 	return {
 		...actual,
 		ensureAgentReadiness: h.ensureTargetedReadiness,
-		useAgentReadinessQuery: () => ({ data: undefined, isFetching: false }),
+		useAgentReadinessQuery: () => ({ data: h.agentCatalog, isFetching: false }),
 		useEnsureAgentReadiness: h.ensureReadiness,
 	};
 });
@@ -29,14 +30,17 @@ vi.mock("./CreateProjectAgentSheet", () => ({
 		onChange,
 		triggerClassName,
 		disabled,
+		recoveryAction,
 	}: {
 		value: string;
 		onChange: (value: string) => void;
 		triggerClassName?: string;
 		disabled?: boolean;
+		recoveryAction?: ReactNode;
 	}) => {
 		h.agentValues.push(value);
 		return (
+			<>
 			<button
 				type="button"
 				aria-label="Agent"
@@ -46,6 +50,8 @@ vi.mock("./CreateProjectAgentSheet", () => ({
 				disabled={disabled}
 				onClick={() => onChange(value === "codex" ? "claude-code" : "codex")}
 			/>
+				{recoveryAction}
+			</>
 		);
 	},
 }));
@@ -64,6 +70,8 @@ vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
 import { TaskComposer } from "./TaskComposer";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
+import { cloudProjectsQueryKey } from "../hooks/useWorkspaceQuery";
+import { useUiStore } from "../stores/ui-store";
 
 function Wrap({ children, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }) }: {
 	children: ReactNode;
@@ -97,6 +105,7 @@ afterEach(() => {
 	h.capture.mockReset();
 	h.ensureReadiness.mockReset();
 	h.ensureTargetedReadiness.mockReset();
+	h.agentCatalog = undefined;
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
 });
@@ -112,6 +121,45 @@ describe("TaskComposer", () => {
 		expect(screen.queryByRole("status", { name: "Loading models…" })).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Model")).toHaveTextContent("Select agent");
 		expect(screen.getByLabelText("Model")).toHaveAttribute("aria-disabled", "true");
+	});
+
+	it.each(["not_installed", "installed"] as const)("omits local recovery for cloud tasks when the desktop harness is %s", async (installation) => {
+		h.agentCatalog = {
+			agents: [agentReadiness("codex", "Codex", { installation, authentication: "unauthorized" })],
+		};
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData([...cloudProjectsQueryKey, "", ""], [{ id: "cloud-proj" }]);
+		render(<Wrap queryClient={queryClient}><TaskComposer projectId="cloud-proj" onCreated={vi.fn()} /></Wrap>);
+		await userEvent.click(screen.getByRole("button", { name: "Agent" }));
+
+		expect(screen.getByRole("button", { name: "Agent" })).toHaveAttribute("data-value", "codex");
+		expect(screen.queryByRole("button", { name: "Install agent" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Log in" })).not.toBeInTheDocument();
+	});
+
+	it("keeps the typed task when opening and closing agent recovery settings", async () => {
+		h.agentCatalog = {
+			agents: [agentReadiness("codex", "Codex", { authentication: "unauthorized" })],
+		};
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) return { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } };
+			return { data: { status: "ok", project: { config: { worker: { agent: "codex" } } } } };
+		});
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		fireEvent.change(task(), { target: { value: "Keep the draft" } });
+
+		await userEvent.click(await screen.findByRole("button", { name: "Log in" }));
+		expect(useUiStore.getState().settingsModal).toEqual({
+			scope: "global",
+			section: "harness",
+			focusAgentId: "codex",
+		});
+		act(() => useUiStore.getState().closeSettings());
+		expect(task()).toHaveValue("Keep the draft");
 	});
 
 	it("starts a standalone worker without loading or sending a project", async () => {

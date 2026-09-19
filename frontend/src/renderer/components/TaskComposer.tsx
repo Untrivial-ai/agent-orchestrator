@@ -6,7 +6,7 @@ import {
 	type TaskComposerModelCatalog,
 	type TaskComposerModelControl,
 } from "@aoagents/product-ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
@@ -37,6 +37,7 @@ import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { useModelTuning } from "./settings/ModelTuningControls";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
+import { AgentSelectorRecoveryAction } from "./AgentSelectorRecoveryAction";
 
 type Project = components["schemas"]["Project"];
 type DelegateAgent = components["schemas"]["DelegateTaskRequest"]["agent"];
@@ -541,7 +542,19 @@ export function TaskComposer({
 						: submitTask(brief, "tui")),
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
-			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
+			renderAgentControl={(control) => (
+				<DesktopAgentControl
+					{...control}
+					recoveryAction={!isCloudProject && (
+						<AgentSelectorRecoveryAction
+							agentId={selectedAgent}
+							agents={agentCatalog?.agents}
+							isLoading={agentsQuery.isFetching}
+							variant="compact"
+						/>
+					)}
+				/>
+			)}
 			renderEffortControl={(control) => <TaskEffortPicker {...control} />}
 			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
 			showEffort={!requiresTuiFallback && effortOptions.length > 0}
@@ -579,10 +592,11 @@ function formatEffortLabel(value: string): string {
 	return value === "xhigh" ? "Extra high" : value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function DesktopAgentControl(control: TaskComposerAgentControl) {
+function DesktopAgentControl({ recoveryAction, ...control }: TaskComposerAgentControl & { recoveryAction?: ReactNode }) {
 	return (
 		<RequiredAgentField
 			{...control}
+			recoveryAction={recoveryAction}
 			variant="chip"
 			triggerClassName="composer-toolbar-option w-full justify-between"
 		/>

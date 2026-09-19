@@ -42,7 +42,9 @@ vi.mock("./ProjectSettingsForm", () => ({
 }));
 
 vi.mock("./GlobalSettingsForm", () => ({
-	GlobalSettingsForm: ({ section }: { section: string }) => <div data-testid="global-settings-section">{section}</div>,
+	GlobalSettingsForm: ({ focusAgentId, section }: { focusAgentId?: string; section: string }) => (
+		<div data-focus-agent={focusAgentId} data-testid="global-settings-section">{section}</div>
+	),
 }));
 
 // The dialog reads the cloud gate to decide whether the Cloud nav page exists;
@@ -86,6 +88,28 @@ describe("SettingsDialog", () => {
 			"/api/v1/agents/codex/accounts/ensure",
 			{ body: { accountIds: [], includeUsage: true, forceAuthentication: true, forceDeviceReconciliation: true } },
 		));
+	});
+
+	it("opens Harness and forwards its agent focus target without redirecting to Codex Accounts", async () => {
+		useUiStore.getState().openGlobalSettings("harness", { focusAgentId: "claude-code" });
+		renderSettingsDialog();
+
+		const form = await screen.findByTestId("global-settings-section");
+		expect(form).toHaveTextContent("harness");
+		expect(form).toHaveAttribute("data-focus-agent", "claude-code");
+		expect(screen.getByRole("button", { name: "Harness" })).toHaveAttribute("aria-current", "page");
+		expect(screen.getByRole("button", { name: "Subscriptions" })).not.toHaveAttribute("aria-current", "page");
+	});
+
+	it("does not replay the Harness focus target after navigating away during the same modal opening", async () => {
+		useUiStore.getState().openGlobalSettings("harness", { focusAgentId: "claude-code" });
+		renderSettingsDialog();
+		expect(await screen.findByTestId("global-settings-section")).toHaveAttribute("data-focus-agent", "claude-code");
+
+		await userEvent.click(screen.getByRole("button", { name: "General" }));
+		await userEvent.click(screen.getByRole("button", { name: "Harness" }));
+
+		expect(screen.getByTestId("global-settings-section")).not.toHaveAttribute("data-focus-agent");
 	});
 
 	it("refreshes accounts once when global Settings opens, not when its pages change", async () => {
@@ -140,7 +164,7 @@ describe("SettingsDialog", () => {
 
 		const dialog = await screen.findByRole("dialog");
 		expect(dialog).toHaveAttribute("aria-modal", "true");
-		await vi.waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+		await vi.waitFor(() => expect(screen.getByRole("button", { name: "Close settings" })).toHaveFocus());
 		await userEvent.keyboard("{Escape}");
 		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
 

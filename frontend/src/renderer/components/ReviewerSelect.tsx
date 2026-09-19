@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -62,6 +62,8 @@ export function ReviewerSelect({
 	disabled = false,
 	agents,
 	excludedHarness,
+	recoveryAction,
+	recoveryActionPlacement = "inline",
 }: {
 	value: string;
 	onChange: (value: string) => void;
@@ -79,6 +81,8 @@ export function ReviewerSelect({
 	disabled?: boolean;
 	agents?: components["schemas"]["AgentReadinessSnapshot"][];
 	excludedHarness?: string;
+	recoveryAction?: ReactNode;
+	recoveryActionPlacement?: "inline" | "below";
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
@@ -122,7 +126,7 @@ export function ReviewerSelect({
 		.filter(Boolean)
 		.join(" · ");
 
-	return (
+	const menu = (
 		<OptionMenu open={menuOpen} onOpenChange={setMenuOpen}>
 			<OptionMenuTrigger
 				className={cn(
@@ -176,6 +180,19 @@ export function ReviewerSelect({
 				))}
 			</OptionMenuContent>
 		</OptionMenu>
+	);
+
+	if (!recoveryAction) return menu;
+	return (
+		<div
+			className={cn(
+				"flex min-w-0 gap-1.5",
+				recoveryActionPlacement === "below" ? "flex-col items-end" : "items-center",
+			)}
+		>
+			{menu}
+			{recoveryAction}
+		</div>
 	);
 }
 

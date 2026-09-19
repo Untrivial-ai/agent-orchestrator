@@ -10,12 +10,13 @@ function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
-const { getMock, putMock, postMock, navigateMock, closeSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
+const { getMock, putMock, postMock, navigateMock, closeSettingsMock, openGlobalSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
 	putMock: vi.fn(),
 	postMock: vi.fn(),
 	navigateMock: vi.fn(),
 	closeSettingsMock: vi.fn(),
+	openGlobalSettingsMock: vi.fn(),
 	setOrchestratorReplacementErrorMock: vi.fn(),
 	captureOrchestratorReplacementFailureMock: vi.fn(),
 	ensureAgentReadinessMock: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("../stores/ui-store", () => ({
 	useUiStore: (selector: (state: Record<string, unknown>) => unknown) =>
 		selector({
 			closeSettings: closeSettingsMock,
+			openGlobalSettings: openGlobalSettingsMock,
 			setOrchestratorReplacementError: setOrchestratorReplacementErrorMock,
 		}),
 }));
@@ -163,9 +165,9 @@ const agentCatalogResponse = {
 	error: undefined,
 };
 
-function mockProject(project: Record<string, unknown>) {
+function mockProject(project: Record<string, unknown>, agentResponse = agentCatalogResponse) {
 	getMock.mockImplementation(async (path: string) => {
-		if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+		if (path === "/api/v1/agents/readiness") return agentResponse;
 		if (path === "/api/v1/agents/{agent}/models") {
 			return {
 				data: {
@@ -196,6 +198,7 @@ beforeEach(() => {
 	postMock.mockReset();
 	navigateMock.mockReset();
 	closeSettingsMock.mockReset();
+	openGlobalSettingsMock.mockReset();
 	setOrchestratorReplacementErrorMock.mockReset();
 	captureOrchestratorReplacementFailureMock.mockReset();
 	ensureAgentReadinessMock.mockReset();
@@ -208,6 +211,40 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
+	it("offers recovery for configured project agents and reviewers without clearing their values", async () => {
+		const project = {
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "",
+			defaultBranch: "main",
+			config: {
+				worker: { agent: "codex" },
+				orchestrator: { agent: "claude-code" },
+				reviewers: [{ harness: "codex" }],
+			},
+		};
+		mockProject(project, {
+			data: {
+				agents: [
+					agentReadiness("claude-code", "Claude Code"),
+					agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+				],
+			},
+			error: undefined,
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+		const recoveryActions = await screen.findAllByRole("button", { name: "Log in" });
+		expect(recoveryActions).toHaveLength(2);
+		await userEvent.click(recoveryActions[0]);
+
+		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: "codex" });
+		expect(screen.getByRole("button", { name: "Default worker agent" })).toHaveTextContent("Codex");
+		expect(screen.getByRole("button", { name: "Default reviewer agent" })).toHaveTextContent("Codex");
+	});
+
 	it("ensures agent readiness in the background without manual refresh buttons", async () => {
 		mockProject({
 			id: "proj-1",

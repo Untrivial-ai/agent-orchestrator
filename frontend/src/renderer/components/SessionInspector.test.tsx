@@ -278,7 +278,7 @@ beforeEach(() => {
   navigateMock.mockReset();
   patchMock.mockReset();
   postMock.mockReset();
-  useUiStore.setState({ developerMode: false, inspectorSessions: {} });
+  useUiStore.setState({ developerMode: false, inspectorSessions: {}, settingsModal: null });
   putMock.mockReset();
   mockCommonGets();
   patchMock.mockResolvedValue({
@@ -2024,6 +2024,33 @@ describe("SessionInspector summary reviews", () => {
     });
     expect(trigger).toHaveTextContent("Claude Code");
     expect(trigger).not.toHaveTextContent("claude-code");
+  });
+
+  it("offers compact recovery for the effective session reviewer", async () => {
+    const responder = commonGetsResponder();
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents/readiness") {
+        return {
+          data: {
+            agents: [
+              agentReadiness("claude-code", "Claude Code"),
+              agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+            ],
+          },
+        };
+      }
+      return responder(path);
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: "Log in" }));
+
+    expect(useUiStore.getState().settingsModal).toEqual({
+      scope: "global",
+      section: "harness",
+      focusAgentId: "codex",
+    });
   });
 
   it("configures session auto-review and disables manual controls", async () => {
