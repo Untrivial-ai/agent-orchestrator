@@ -304,6 +304,65 @@ func TestWorkspaceReviewFileAndRevisionsReturnSelectedStates(t *testing.T) {
 	}
 }
 
+func TestWorkspaceReviewWriteUsesFingerprintAndReturnsNewSnapshot(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeWorkspaceFile(t, repo, "README.md", "before\n")
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	review, err := workspace.ReviewSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := review.Files[0]
+	result, err := workspace.ReviewWrite(context.Background(), worker.WorkspaceReviewWriteRequest{
+		Path: "README.md", Content: "after\n", ExpectedFileFingerprint: before.FileFingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "after\n" || result.FileFingerprint == before.FileFingerprint || result.WorkspaceVersion == review.WorkspaceVersion {
+		t.Fatalf("write result = %+v", result)
+	}
+	content, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	if err != nil || string(content) != "after\n" {
+		t.Fatalf("content = %q, err=%v", content, err)
+	}
+}
+
+func TestWorkspaceReviewWriteRejectsStaleFingerprintWithoutOverwriting(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeWorkspaceFile(t, repo, "README.md", "before\n")
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	review, err := workspace.ReviewSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceFile(t, repo, "README.md", "agent changed\n")
+	_, err = workspace.ReviewWrite(context.Background(), worker.WorkspaceReviewWriteRequest{
+		Path: "README.md", Content: "browser changed\n", ExpectedFileFingerprint: review.Files[0].FileFingerprint,
+	})
+	if !errors.Is(err, ErrWorkspaceFingerprintStale) {
+		t.Fatalf("write error = %v", err)
+	}
+	content, readErr := os.ReadFile(filepath.Join(repo, "README.md"))
+	if readErr != nil || string(content) != "agent changed\n" {
+		t.Fatalf("stale write changed content = %q, err=%v", content, readErr)
+	}
+}
+
 func containsReviewPath(files []worker.WorkspaceReviewFileSummary, path string) bool {
 	for _, file := range files {
 		if file.Path == path {

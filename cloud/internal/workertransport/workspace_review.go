@@ -22,9 +22,58 @@ import (
 const maxWorkspaceReviewFiles = 10_000
 
 var (
-	ErrWorkspaceSnapshotStale  = errors.New("workspace snapshot is stale")
-	ErrWorkspaceCommitNotFound = errors.New("workspace review commit was not found")
+	ErrWorkspaceSnapshotStale    = errors.New("workspace snapshot is stale")
+	ErrWorkspaceFingerprintStale = errors.New("workspace file fingerprint is stale")
+	ErrWorkspaceCommitNotFound   = errors.New("workspace review commit was not found")
 )
+
+// ReviewWrite atomically replaces an editable text file only if the caller's
+// fingerprint still describes the current workspace snapshot.
+func (w *workspace) ReviewWrite(ctx context.Context, input worker.WorkspaceReviewWriteRequest) (worker.WorkspaceReviewWriteResponse, error) {
+	path, err := cleanWorkspacePath(input.Path, false)
+	if err != nil {
+		return worker.WorkspaceReviewWriteResponse{}, err
+	}
+	review, err := w.ReviewSummary(ctx)
+	if err != nil {
+		return worker.WorkspaceReviewWriteResponse{}, err
+	}
+	wire := wirePath(path)
+	var current worker.WorkspaceReviewFileSummary
+	found := false
+	for _, file := range review.Files {
+		if file.Path == wire {
+			current, found = file, true
+			break
+		}
+	}
+	if !found {
+		return worker.WorkspaceReviewWriteResponse{}, os.ErrNotExist
+	}
+	if !current.Editable {
+		return worker.WorkspaceReviewWriteResponse{}, errors.New("workspace file is not editable text")
+	}
+	if input.ExpectedFileFingerprint == "" || input.ExpectedFileFingerprint != current.FileFingerprint {
+		return worker.WorkspaceReviewWriteResponse{}, ErrWorkspaceFingerprintStale
+	}
+	written, err := w.Write(worker.WorkspaceWriteRequest{Path: wire, Content: input.Content})
+	if err != nil {
+		return worker.WorkspaceReviewWriteResponse{}, err
+	}
+	after, err := w.ReviewSummary(ctx)
+	if err != nil {
+		return worker.WorkspaceReviewWriteResponse{}, err
+	}
+	for _, file := range after.Files {
+		if file.Path == wire {
+			return worker.WorkspaceReviewWriteResponse{
+				Path: wire, Content: written.Content, Size: written.Size,
+				FileFingerprint: file.FileFingerprint, WorkspaceVersion: after.WorkspaceVersion,
+			}, nil
+		}
+	}
+	return worker.WorkspaceReviewWriteResponse{}, os.ErrNotExist
+}
 
 // ReviewDiffs returns a bounded unified patch for one workspace snapshot.
 func (w *workspace) ReviewDiffs(ctx context.Context, input worker.WorkspaceReviewDiffsRequest) (worker.WorkspaceReviewDiffsResponse, error) {
