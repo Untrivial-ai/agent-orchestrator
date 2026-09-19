@@ -3,7 +3,7 @@ import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { createFileRoute, Outlet, useMatchRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { isCancelledError, useQueryClient } from "@tanstack/react-query";
 import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderPlus } from "lucide-react";
+import { FolderPlus, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { CommandPalette } from "../components/CommandPalette";
 import { CenterPanelShell } from "../components/CenterPanelShell";
@@ -44,6 +44,7 @@ import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { aoBridge } from "../lib/bridge";
 import { handleModifierLinkClick } from "../lib/external-link-policy";
 import { recordProjectOpened } from "../lib/project-history";
+import { runOnboardingFinish } from "../lib/onboarding-finish";
 import { cn } from "../lib/utils";
 import {
 	isLinuxPlatform,
@@ -65,7 +66,17 @@ export const Route = createFileRoute("/_shell")({
 	loader: async ({ context }) => {
 		await refreshDaemonStatus().catch(() => undefined);
 		if (!usesPreviewWorkspaceData && !hasTrustedApiBaseUrl()) return;
-		return context.queryClient.fetchQuery({ ...workspaceQueryOptions, staleTime: 0 });
+		try {
+			return await context.queryClient.fetchQuery({ ...workspaceQueryOptions, staleTime: 0 });
+		} catch (error) {
+			// staleTime: 0 means every navigation refetches, so an overlapping
+			// invalidate (spawning an orchestrator, pinning, terminating) can
+			// cancel this fetch mid-flight. A superseded read is not a failed
+			// load: hand back the cache rather than failing the whole shell
+			// route, which would surface as an unrecoverable error screen.
+			if (!isCancelledError(error)) throw error;
+			return context.queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
+		}
 	},
 	component: ShellLayout,
 });
@@ -198,6 +209,10 @@ function ShellLayout() {
 	const requestCreateProjectFromPath = useUiStore((state) => state.requestCreateProjectFromPath);
 	const requestNewShellTerminal = useUiStore((state) => state.requestNewShellTerminal);
 	const newShellTerminalNonce = useUiStore((state) => state.newShellTerminalNonce);
+	const onboardingFinishRequest = useUiStore((state) => state.onboardingFinishRequest);
+	const clearOnboardingFinishRequest = useUiStore((state) => state.clearOnboardingFinishRequest);
+	const setOnboardingFinishError = useUiStore((state) => state.setOnboardingFinishError);
+	const clearOnboardingFinishError = useUiStore((state) => state.clearOnboardingFinishError);
 	const setActiveShellTerminal = useUiStore((state) => state.setActiveShellTerminal);
 	const openShellTerminal = useOpenShellTerminal();
 	// Single subscription for sidebar clearance + drag strip (macOS no-ops inside the hook).
@@ -228,6 +243,7 @@ function ShellLayout() {
 	}, [isFullScreen]);
 	// Seeded to the current value so a mount never opens a terminal unasked.
 	const handledShellNonceRef = useRef(newShellTerminalNonce);
+	const handledOnboardingFinishNonceRef = useRef(0);
 	const [isKeyboardShortcutsOpen, setIsKeyboardShortcutsOpen] = useState(false);
 	const [isKeyboardShortcutsSettingsOpen, setIsKeyboardShortcutsSettingsOpen] = useState(false);
 	const routeParams = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
@@ -933,6 +949,28 @@ function ShellLayout() {
 		setActiveShellTerminal,
 	]);
 
+	useEffect(() => {
+		if (!onboardingFinishRequest) return;
+		if (handledOnboardingFinishNonceRef.current === onboardingFinishRequest.nonce) return;
+		handledOnboardingFinishNonceRef.current = onboardingFinishRequest.nonce;
+
+		void (async () => {
+			const outcome = await runOnboardingFinish(onboardingFinishRequest, {
+				createProject,
+				initializeProjectRepository,
+			});
+			if (outcome.ok) {
+				clearOnboardingFinishError();
+				clearOnboardingFinishRequest(onboardingFinishRequest.nonce);
+				return;
+			}
+			// Hand the failure back to onboarding instead of quitting it: the user
+			// keeps the project and agents they picked and can retry from there.
+			setOnboardingFinishError({ message: outcome.message, nonce: onboardingFinishRequest.nonce });
+			await navigate({ replace: true, to: "/onboarding" });
+		})();
+	}, [clearOnboardingFinishError, clearOnboardingFinishRequest, createProject, initializeProjectRepository, navigate, onboardingFinishRequest, setOnboardingFinishError]);
+
 	useEffect(
 		() => aoBridge.app.onOpenSettingsShortcut(() => useUiStore.getState().openGlobalSettings()),
 		[],
@@ -982,6 +1020,20 @@ function ShellLayout() {
 	// Rendering the sidebar with an empty query while the home outlet shows its
 	// loader creates a visible two-stage launch and can make the home page flash
 	// before the project list arrives.
+	if (onboardingFinishRequest) {
+		return (
+			<main className="grid h-[100dvh] w-screen place-items-center bg-background text-foreground">
+				<div className="flex flex-col items-center gap-4 text-center">
+					<Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden="true" />
+					<div>
+						<h1 className="text-xl font-medium tracking-[-0.02em]">{t("onboarding.startingOrchestrator")}</h1>
+						<p className="mt-2 text-sm text-muted-foreground">{t("onboarding.preparingProject")}</p>
+					</div>
+				</div>
+			</main>
+		);
+	}
+
 	if (isStartupLoading) return <DaemonStartupLoader />;
 
 	return (

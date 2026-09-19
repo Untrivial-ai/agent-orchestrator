@@ -62,6 +62,17 @@ export type GlobalToast = {
 	nonce: number;
 };
 
+export type OnboardingFinishRequest = {
+	path: string;
+	orchestratorAgent: string;
+	workerAgent: string;
+	clonePreparationId?: string;
+	defaultBranch?: string;
+	asWorkspace?: boolean;
+	repositorySetup?: "NOT_A_GIT_REPO" | "PROJECT_UNBORN" | null;
+	nonce: number;
+};
+
 // Selection (which project/session is open) now lives in the URL — the router
 // is the single source of truth, read via route params. This store holds only
 // ephemeral UI: theme, sidebar collapse, command palette, per-session inspector
@@ -104,6 +115,12 @@ export type UiState = {
 	// re-fires. Consumed by the same CreateProjectFlow instance that owns
 	// openSignal for ⌘N (Sidebar's CreateProjectButton).
 	folderDropRequest: { path: string; nonce: number } | null;
+	// One-shot signal raised when onboarding finishes: the shell creates the
+	// chosen project and opens the orchestrator chat.
+	onboardingFinishRequest: OnboardingFinishRequest | null;
+	// Set when the finish handoff fails. The request is deliberately kept so the
+	// flow can retry with the same choices rather than making the user redo them.
+	onboardingFinishError: { nonce: number; message: string } | null;
 	// Bumps to ask for a new standalone shell terminal. Like newTaskRequest this
 	// is a one-shot signal, not state: the tab-strip + button and Ctrl+Shift+` both
 	// raise it so they cannot drift apart, and a repeat press re-fires because
@@ -159,6 +176,10 @@ export type UiState = {
 	requestNewTask: (projectId: string) => void;
 	requestCreateProject: () => void;
 	requestCreateProjectFromPath: (path: string) => void;
+	requestOnboardingFinish: (input: Omit<OnboardingFinishRequest, "nonce">) => void;
+	clearOnboardingFinishRequest: (nonce: number) => void;
+	setOnboardingFinishError: (error: { nonce: number; message: string }) => void;
+	clearOnboardingFinishError: () => void;
 	requestNewShellTerminal: () => void;
 	setActiveShellTerminal: (handleId: string | null) => void;
 	setVisibleTerminalKind: (sessionId: string, kind: TerminalTarget["kind"]) => void;
@@ -229,6 +250,8 @@ export const useUiStore = create<UiState>((set, get) => ({
 	newTaskRequest: null,
 	createProjectNonce: 0,
 	folderDropRequest: null,
+	onboardingFinishRequest: null,
+	onboardingFinishError: null,
 	newShellTerminalNonce: 0,
 	activeShellTerminalHandleId: null,
 	visibleTerminalKindBySession: {},
@@ -437,6 +460,19 @@ export const useUiStore = create<UiState>((set, get) => ({
 	requestCreateProject: () => set((state) => ({ createProjectNonce: state.createProjectNonce + 1 })),
 	requestCreateProjectFromPath: (path) =>
 		set((state) => ({ folderDropRequest: { path, nonce: (state.folderDropRequest?.nonce ?? 0) + 1 } })),
+	requestOnboardingFinish: (input) =>
+		set((state) => ({
+			onboardingFinishRequest: {
+				...input,
+				nonce: (state.onboardingFinishRequest?.nonce ?? 0) + 1,
+			},
+		})),
+	clearOnboardingFinishRequest: (nonce) =>
+		set((state) => state.onboardingFinishRequest?.nonce === nonce
+			? { onboardingFinishRequest: null }
+			: state),
+	setOnboardingFinishError: (error) => set({ onboardingFinishError: error }),
+	clearOnboardingFinishError: () => set({ onboardingFinishError: null }),
 	requestNewShellTerminal: () => set((state) => ({ newShellTerminalNonce: state.newShellTerminalNonce + 1 })),
 	setActiveShellTerminal: (activeShellTerminalHandleId) => set({ activeShellTerminalHandleId }),
 	setVisibleTerminalKind: (sessionId, kind) =>

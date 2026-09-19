@@ -146,6 +146,7 @@ const productUiReactBoundary: Plugin = {
 export default defineConfig({
 	// "@/" → the renderer root (src/renderer), the shadcn/ui import convention.
 	resolve: {
+		dedupe: ["react", "react-dom", "motion"],
 		alias: {
 			"@": fileURLToPath(new URL("./src/renderer", import.meta.url)),
 			"@aoagents/product-ui": fileURLToPath(

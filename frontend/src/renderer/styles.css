@@ -339,6 +339,18 @@
 	backdrop-filter: blur(var(--blur-overlay));
 }
 
+/* The landing previews carry their own scroll containers and hide the bar with
+ * this class. The renderer renders those previews in onboarding, so the utility
+ * has to exist here too, not only in the landing app's stylesheet. */
+@utility scrollbar-hide {
+	-ms-overflow-style: none;
+	scrollbar-width: none;
+
+	&::-webkit-scrollbar {
+		display: none;
+	}
+}
+
 @utility modal-shake {
 	animation: project-import-shake 280ms ease-in-out;
 }

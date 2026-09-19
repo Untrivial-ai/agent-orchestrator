@@ -71,6 +71,10 @@ export function useDaemonStatus(queryClient: QueryClient = defaultQueryClient) {
 			if (daemonChanged) {
 				queryClient.removeQueries({ queryKey: agentReadinessQueryKey, exact: true });
 				queryClient.removeQueries({ queryKey: codexAccountsQueryKey, exact: true });
+				// Anything that probed before the daemon was reachable failed with no
+				// base URL and would otherwise sit on that error forever. Now that the
+				// port is known, give every query a chance to run for real.
+				void queryClient.invalidateQueries();
 			}
 			if (nextStatus.state === "ready" && nextStatus.port) {
 				applyDaemonStatus(nextStatus);

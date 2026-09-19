@@ -24,3 +24,19 @@ describe("sidebar visibility", () => {
 		expect(window.localStorage.getItem("ao.sidebar.open")).toBe("true");
 	});
 });
+
+describe("onboarding handoff", () => {
+	it("keeps a newer request when an older handoff finishes", () => {
+		const store = useUiStore.getState();
+		store.requestOnboardingFinish({ path: "/one", orchestratorAgent: "codex", workerAgent: "codex" });
+		const firstNonce = useUiStore.getState().onboardingFinishRequest?.nonce;
+		store.requestOnboardingFinish({ path: "/two", orchestratorAgent: "codex", workerAgent: "codex" });
+
+		useUiStore.getState().clearOnboardingFinishRequest(firstNonce ?? -1);
+		expect(useUiStore.getState().onboardingFinishRequest?.path).toBe("/two");
+
+		const currentNonce = useUiStore.getState().onboardingFinishRequest?.nonce;
+		useUiStore.getState().clearOnboardingFinishRequest(currentNonce ?? -1);
+		expect(useUiStore.getState().onboardingFinishRequest).toBeNull();
+	});
+});
