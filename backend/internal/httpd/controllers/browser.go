@@ -10,6 +10,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 )
@@ -70,6 +71,11 @@ func (c *BrowserController) execute(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "SESSION_ID_REQUIRED", "sessionId is required", nil)
 		return
 	}
+	commandKind := strings.ToLower(strings.TrimSpace(in.Action))
+	if len(commandKind) > 64 {
+		commandKind = "invalid"
+	}
+	envelope.SetTelemetryField(r, "browser_command", commandKind)
 	result, action, err := c.Svc.Execute(
 		r.Context(),
 		in.SessionID,
@@ -90,8 +96,19 @@ func (c *BrowserController) execute(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeBrowserError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, browserruntime.ErrReconnecting) {
+		captureBrowserFailure(r, apierr.KindUnavailable, "BROWSER_RUNTIME_RECONNECTING")
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "BROWSER_RUNTIME_RECONNECTING", "Desktop browser runtime is reconnecting; retry shortly", nil)
+		return
+	}
 	if errors.Is(err, browserruntime.ErrUnavailable) {
+		captureBrowserFailure(r, apierr.KindUnavailable, "BROWSER_RUNTIME_UNAVAILABLE")
 		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "BROWSER_RUNTIME_UNAVAILABLE", "Desktop browser runtime is not connected", nil)
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		captureBrowserFailure(r, apierr.KindUnavailable, "BROWSER_COMMAND_TIMEOUT")
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "timeout", "BROWSER_COMMAND_TIMEOUT", "Browser command timed out; retry the action", nil)
 		return
 	}
 	var commandErr browserruntime.CommandError
@@ -107,12 +124,27 @@ func writeBrowserError(w http.ResponseWriter, r *http.Request, err error) {
 			status = http.StatusConflict
 			typeName = "conflict"
 		case "BROWSER_TARGET_UNAVAILABLE", "BROWSER_AUTOMATION_UNAVAILABLE", "AGENT_BROWSER_NOT_INSTALLED",
-			"AGENT_BROWSER_START_FAILED", "BROWSER_DEVTOOLS_UNAVAILABLE":
+			"AGENT_BROWSER_START_FAILED", "BROWSER_DEVTOOLS_UNAVAILABLE", "BROWSER_RUNTIME_PROTOCOL_ERROR":
 			status = http.StatusServiceUnavailable
 			typeName = "unavailable"
+		}
+		if status >= http.StatusInternalServerError {
+			captureBrowserFailure(r, apierr.KindUnavailable, commandErr.Code)
 		}
 		envelope.WriteAPIError(w, r, status, typeName, commandErr.Code, commandErr.Message, nil)
 		return
 	}
-	envelope.WriteError(w, r, err)
+	var apiErr *apierr.Error
+	if errors.As(err, &apiErr) {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	captureBrowserFailure(r, apierr.KindInternal, "BROWSER_COMMAND_FAILED")
+	envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "BROWSER_COMMAND_FAILED", "Browser command failed; retry the action", nil)
+}
+
+func captureBrowserFailure(r *http.Request, kind apierr.Kind, code string) {
+	// Keep the captured error message generic: command errors can contain
+	// provider/page details, while telemetry only needs the stable code.
+	envelope.CaptureError(r, apierr.New(kind, code, "browser command failed", nil))
 }

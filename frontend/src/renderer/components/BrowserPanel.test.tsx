@@ -41,11 +41,13 @@ const hookState = vi.hoisted(() => ({
 	reopenClosedTab: vi.fn(),
 	openDevTools: vi.fn(),
 	closeDevTools: vi.fn(),
+	reconnectBrowserRuntime: vi.fn(),
 	devtoolsState: { viewId: "42:sess-1", open: false, activeTabId: "t1" },
 	setAnnotationMode: vi.fn(),
 	annotationAction: vi.fn(),
 	annotationMode: false,
 	annotationState: { count: 0, screenshotCount: 0, hasDraft: false },
+	browserRuntimeConnected: true as boolean | null,
 	tabs: [{ id: "t1", url: "", title: "", active: true }],
 	activeTabId: "t1",
 	tabNotice: "",
@@ -90,6 +92,8 @@ vi.mock("../hooks/useBrowserView", () => ({
 			devtoolsState: hookState.devtoolsState,
 			openDevTools: hookState.openDevTools,
 			closeDevTools: hookState.closeDevTools,
+			browserRuntimeConnected: hookState.browserRuntimeConnected,
+			reconnectBrowserRuntime: hookState.reconnectBrowserRuntime,
 			annotationMode: hookState.annotationMode,
 			annotationState: hookState.annotationState,
 			setAnnotationMode: hookState.setAnnotationMode,
@@ -221,6 +225,8 @@ describe("BrowserPanel", () => {
 		hookState.closedTabs = [];
 		hookState.openDevTools.mockReset();
 		hookState.closeDevTools.mockReset();
+		hookState.reconnectBrowserRuntime.mockReset();
+		hookState.reconnectBrowserRuntime.mockResolvedValue(undefined);
 		hookState.devtoolsState = { viewId: "42:sess-1", open: false, activeTabId: "t1" };
 		hookState.navState = {
 			viewId: "42:sess-1",
@@ -236,6 +242,7 @@ describe("BrowserPanel", () => {
 		hookState.annotationAction.mockResolvedValue(undefined);
 		hookState.annotationMode = false;
 		hookState.annotationState = { count: 0, screenshotCount: 0, hasDraft: false };
+		hookState.browserRuntimeConnected = true;
 		postMock.mockReset();
 		postMock.mockResolvedValue({ data: {} });
 		annotationSubmitListeners.clear();
@@ -1194,6 +1201,16 @@ describe("BrowserPanel", () => {
 
 		expect(screen.getByTestId("browser-toolbar")).toHaveClass("browser-panel__toolbar");
 		expect(screen.getByTestId("browser-viewport")).toHaveClass("browser-panel__viewport");
+	});
+
+	it("offers to reconnect when the browser runtime is disconnected", async () => {
+		hookState.browserRuntimeConnected = false;
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		expect(screen.getByTestId("browser-runtime-alert")).toHaveTextContent("Browser runtime disconnected.");
+		await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+
+		expect(hookState.reconnectBrowserRuntime).toHaveBeenCalledOnce();
 	});
 
 	it("does not render a globe icon in the URL input", () => {

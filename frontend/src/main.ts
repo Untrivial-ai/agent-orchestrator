@@ -139,6 +139,7 @@ import {
 	createBrowserViewHost,
 	shouldHandleAppShortcutInBrowserContext,
 	type BrowserViewHost,
+	type BrowserRuntimeState,
 } from "./main/browser-view-host";
 import { createBrowserProfileStore } from "./main/browser-profile-store";
 import { BrowserHistoryStore } from "./main/browser-history-store";
@@ -1267,6 +1268,15 @@ function disposeBrowserRuntimeLink(): void {
 	browserRuntimeLinkIdentity = null;
 }
 
+function publishBrowserRuntimeState(connected: boolean): void {
+	getShellWebContents()?.send("browser:runtimeState", { connected } satisfies BrowserRuntimeState);
+}
+
+function reconnectBrowserRuntimeLink(): void {
+	disposeBrowserRuntimeLink();
+	establishBrowserRuntimeLink();
+}
+
 function establishBrowserRuntimeLink(): void {
 	if (!browserViewHost) return;
 	const rfp = runFilePath();
@@ -1308,6 +1318,7 @@ function establishBrowserRuntimeLink(): void {
 			return host.execute(command.sessionId, command.action, command.args, signal);
 		},
 		log: (message) => console.log(`AO: ${message}`),
+		onStateChange: publishBrowserRuntimeState,
 	});
 	browserRuntimeLinkIdentity = identity;
 }
@@ -2012,6 +2023,11 @@ ipcMain.handle("theme:persist-terminal", (_event, scheme: unknown) => {
 
 // Renderer calls this when focus lands on real shell UI (not the titlebar menu), so menu:action's panel fallback below doesn't go stale.
 ipcMain.on("shell:focus", () => browserViewHost?.forgetLastFocusedPanel());
+
+ipcMain.handle("browser:runtime:reconnect", (event) => {
+		if (event.sender !== getShellWebContents()) throw new Error("Untrusted browser runtime request.");
+		reconnectBrowserRuntimeLink();
+});
 
 ipcMain.on("browser:overlay", (event, open: unknown) => {
 	if (event.sender !== getShellWebContents() || typeof open !== "boolean") return;

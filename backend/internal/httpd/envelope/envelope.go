@@ -25,9 +25,14 @@ type errCapture struct{ captured CapturedError }
 type CapturedError struct {
 	Err            error
 	ReportingOwner ownership.Owner
+	Fields         map[string]any
 }
 
 type errCaptureKey struct{}
+
+var safeTelemetryFields = map[string]struct{}{
+	"browser_command": {},
+}
 
 // WithErrorCapture returns a copy of the request whose context carries an
 // error-capture slot, plus a getter for the error recorded by WriteError while
@@ -41,8 +46,32 @@ func WithErrorCapture(r *http.Request) (*http.Request, func() CapturedError) {
 // captureError records err for the request if a capture slot is present.
 func captureError(r *http.Request, err error) {
 	if c, ok := r.Context().Value(errCaptureKey{}).(*errCapture); ok {
-		c.captured = CapturedError{Err: err, ReportingOwner: ownership.OwnerOf(err)}
+		c.captured.Err = err
+		c.captured.ReportingOwner = ownership.OwnerOf(err)
 	}
+}
+
+// CaptureError records a safe, structured error for request telemetry before a
+// controller writes a response directly with WriteAPIError.
+func CaptureError(r *http.Request, err error) {
+	captureError(r, err)
+}
+
+// SetTelemetryField records a bounded, privacy-safe field for the request's
+// structured telemetry. Callers must only pass values that are already safe to
+// export; request bodies, URLs, and page content must never be stored here.
+func SetTelemetryField(r *http.Request, key string, value any) {
+	c, ok := r.Context().Value(errCaptureKey{}).(*errCapture)
+	if !ok || c == nil {
+		return
+	}
+	if _, allowed := safeTelemetryFields[key]; !allowed {
+		return
+	}
+	if c.captured.Fields == nil {
+		c.captured.Fields = make(map[string]any)
+	}
+	c.captured.Fields[key] = value
 }
 
 // APIError is the locked wire shape for every non-2xx response.

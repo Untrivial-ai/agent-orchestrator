@@ -131,6 +131,8 @@
 	"browser.reopenClosedTab": "Reabrir aba fechada",
 	"browser.reload": "Recarregar",
 	"browser.retryAnnotation": "Tentar anotação novamente",
+	"browser.runtimeDisconnected": "O runtime do navegador foi desconectado.",
+	"browser.reconnectRuntime": "Reconectar",
 	"browser.returnToPanel": "Voltar ao painel",
 	"browser.sending": "Enviando",
 	"browser.sent": "Enviado",

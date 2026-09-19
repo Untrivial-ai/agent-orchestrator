@@ -85,6 +85,19 @@ func requestLoggerWithCapture(log *slog.Logger, sink ports.EventSink, captureHTT
 							}
 							payload["fingerprint"] = fingerprint
 						}
+						for key, value := range captured.Fields {
+							payload[key] = value
+						}
+						if r.URL.Path == "/api/v1/browser/commands" {
+							switch errorCode {
+							case "BROWSER_RUNTIME_RECONNECTING":
+								payload["runtime_link_state"] = "reconnecting"
+							case "BROWSER_RUNTIME_UNAVAILABLE":
+								payload["runtime_link_state"] = "disconnected"
+							default:
+								payload["runtime_link_state"] = "connected"
+							}
+						}
 						sink.Emit(r.Context(), ports.TelemetryEvent{
 							Name:       "ao.http.5xx",
 							Source:     "http",

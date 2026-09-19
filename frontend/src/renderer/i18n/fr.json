@@ -131,6 +131,8 @@
 	"browser.reopenClosedTab": "Rouvrir l'onglet fermé",
 	"browser.reload": "Actualiser",
 	"browser.retryAnnotation": "Réessayer l'annotation",
+	"browser.runtimeDisconnected": "Le moteur du navigateur est déconnecté.",
+	"browser.reconnectRuntime": "Reconnecter",
 	"browser.returnToPanel": "Retour au panneau",
 	"browser.sending": "Envoi",
 	"browser.sent": "Envoyé",

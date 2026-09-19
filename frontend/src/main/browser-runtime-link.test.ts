@@ -8,11 +8,10 @@ const servers: net.Server[] = [];
 afterEach(async () => {
 	handles.splice(0).forEach((handle) => handle.dispose());
 	await Promise.all(
-		servers.splice(0).map(
-			(server) =>
-				new Promise<void>((resolve) => {
-					server.close(() => resolve());
-				}),
+		servers.splice(0).map((server) =>
+			new Promise<void>((resolve) => {
+				server.close(() => resolve());
+			}),
 		),
 	);
 });
@@ -61,6 +60,28 @@ describe("browser runtime link", () => {
 				result: { text: "button Save [ref=e1]" },
 			}),
 		);
+	});
+
+	it("reports disconnects so the desktop can offer reconnect", async () => {
+		let serverSocket: net.Socket | null = null;
+		const states: boolean[] = [];
+		const server = net.createServer((socket) => {
+			serverSocket = socket;
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address() as net.AddressInfo;
+		const handle = connectBrowserRuntime(
+			{ host: address.address, port: address.port },
+			{ execute: async () => ({}), onStateChange: (connected) => states.push(connected) },
+		);
+		handles.push(handle);
+		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(states).toContain(true));
+		serverSocket!.destroy();
+		await vi.waitFor(() => expect(states).toContain(false));
+		handle.dispose();
+		expect(states).toEqual([true, false]);
 	});
 
 	it("returns structured command errors", async () => {

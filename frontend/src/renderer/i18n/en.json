@@ -94,6 +94,8 @@
 	"browser.reopenTab": "Reopen {{title}}",
 	"browser.reopenClosedTab": "Reopen closed tab",
 	"browser.retryAnnotation": "Retry annotation",
+	"browser.runtimeDisconnected": "Browser runtime disconnected.",
+	"browser.reconnectRuntime": "Reconnect",
 	"browser.returnToPanel": "Return to panel",
 	"browser.sending": "Sending",
 	"browser.sent": "Sent",

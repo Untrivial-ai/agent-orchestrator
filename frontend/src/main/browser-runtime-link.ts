@@ -34,6 +34,7 @@ type BrowserRuntimeLinkOptions = {
 	execute: (command: BrowserRuntimeCommand, signal: AbortSignal) => Promise<unknown>;
 	token?: string;
 	log?: (message: string) => void;
+	onStateChange?: (connected: boolean) => void;
 };
 
 export function connectBrowserRuntime(
@@ -55,6 +56,11 @@ export function connectBrowserRuntime(
 		string,
 		{ command: BrowserRuntimeCommand; target: net.Socket; epoch: number }
 	>();
+	const setConnected = (value: boolean) => {
+		if (connected === value) return;
+		connected = value;
+		options.onStateChange?.(value);
+	};
 
 	const sendCancelledResultOnTarget = (command: BrowserRuntimeCommand, target: net.Socket) => {
 		if (target.destroyed) return;
@@ -254,7 +260,7 @@ export function connectBrowserRuntime(
 				next.destroy();
 				return;
 			}
-			connected = true;
+			setConnected(true);
 			backoff = BACKOFF_INIT_MS;
 			void send({ type: "hello", version: PROTOCOL_VERSION, token: options.token }, next, epoch).catch((error) => {
 				log(`browser-runtime-link: hello failed: ${String(error)}`);
@@ -268,7 +274,7 @@ export function connectBrowserRuntime(
 		const tearDownConnection = () => {
 			if (connectionTornDown || socket !== next || connectionEpoch !== epoch) return;
 			connectionTornDown = true;
-			connected = false;
+			setConnected(false);
 			cancelConnectionCommands();
 			socket = null;
 			connectionEpoch += 1;
@@ -286,7 +292,7 @@ export function connectBrowserRuntime(
 		},
 		dispose() {
 			disposed = true;
-			connected = false;
+			setConnected(false);
 			clearRetry();
 			destroySocket();
 		},

@@ -131,6 +131,8 @@
 	"browser.reopenClosedTab": "重新打开已关闭的标签页",
 	"browser.reload": "重新加载",
 	"browser.retryAnnotation": "重试标注",
+	"browser.runtimeDisconnected": "浏览器运行时已断开连接。",
+	"browser.reconnectRuntime": "重新连接",
 	"browser.returnToPanel": "返回面板",
 	"browser.sending": "发送中",
 	"browser.sent": "已发送",

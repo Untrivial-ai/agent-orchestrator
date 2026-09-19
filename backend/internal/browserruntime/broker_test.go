@@ -102,6 +102,70 @@ func TestBrokerExecuteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBrokerExecuteWaitsForRuntimeReconnect(t *testing.T) {
+	broker := New(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = broker.Serve(ctx, ln) }()
+
+	resultCh := make(chan Result, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := broker.Execute(context.Background(), "session-1", "snapshot", nil)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- result
+	}()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(wireMessage{Type: "hello", Version: ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	var command wireMessage
+	if err := dec.Decode(&command); err != nil {
+		t.Fatal(err)
+	}
+	if command.Type != "command" || command.Action != "snapshot" {
+		t.Fatalf("command = %#v", command)
+	}
+	if err := enc.Encode(wireMessage{Type: "result", RequestID: command.RequestID, OK: true, Result: json.RawMessage(`{"ok":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	case result := <-resultCh:
+		if result.Value.(map[string]interface{})["ok"] != true {
+			t.Fatalf("result = %#v", result.Value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for result")
+	}
+}
+
+func TestBrokerExecuteHonorsContextWhileWaitingForRuntime(t *testing.T) {
+	broker := New(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := broker.Execute(ctx, "session-1", "snapshot", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline", err)
+	}
+}
+
 func TestBrokerMapsRuntimeError(t *testing.T) {
 	broker := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,8 +213,10 @@ func TestBrokerMapsRuntimeError(t *testing.T) {
 
 func TestBrokerUnavailableWithoutElectron(t *testing.T) {
 	broker := New(nil)
-	if _, err := broker.Execute(context.Background(), "session-1", "snapshot", nil); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("error = %v, want ErrUnavailable", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := broker.Execute(ctx, "session-1", "snapshot", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline", err)
 	}
 }
 

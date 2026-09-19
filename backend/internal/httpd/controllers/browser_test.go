@@ -2,6 +2,7 @@ package controllers_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -121,10 +122,25 @@ func TestBrowserCommandValidationAndErrors(t *testing.T) {
 	if status != http.StatusServiceUnavailable || !containsAll(body, `"code":"BROWSER_RUNTIME_UNAVAILABLE"`) {
 		t.Fatalf("unavailable = %d body=%s", status, body)
 	}
+	runtime.err = browserruntime.ErrReconnecting
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/browser/commands", `{"sessionId":"ao-1","action":"snapshot"}`)
+	if status != http.StatusServiceUnavailable || !containsAll(body, `"code":"BROWSER_RUNTIME_RECONNECTING"`) {
+		t.Fatalf("reconnecting = %d body=%s", status, body)
+	}
 	runtime.err = browserruntime.CommandError{Code: "STALE_REFERENCE", Message: "snapshot again"}
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/browser/commands", `{"sessionId":"ao-1","action":"click"}`)
 	if status != http.StatusConflict || !containsAll(body, `"code":"STALE_REFERENCE"`) {
 		t.Fatalf("stale = %d body=%s", status, body)
+	}
+	runtime.err = context.DeadlineExceeded
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/browser/commands", `{"sessionId":"ao-1","action":"wait"}`)
+	if status != http.StatusServiceUnavailable || !containsAll(body, `"code":"BROWSER_COMMAND_TIMEOUT"`) {
+		t.Fatalf("timeout = %d body=%s", status, body)
+	}
+	runtime.err = errors.New("unexpected browser failure")
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/browser/commands", `{"sessionId":"ao-1","action":"snapshot"}`)
+	if status != http.StatusInternalServerError || !containsAll(body, `"code":"BROWSER_COMMAND_FAILED"`, `"message":"Browser command failed; retry the action"`) {
+		t.Fatalf("unexpected = %d body=%s", status, body)
 	}
 }
 

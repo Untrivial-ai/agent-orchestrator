@@ -407,6 +407,8 @@ export function BrowserPanelView({
 		reopenClosedTab,
 		agentBrowserActive,
 		agentBrowserActivity,
+		browserRuntimeConnected,
+		reconnectBrowserRuntime = async () => undefined,
 		devtoolsState = { viewId: "", open: false, activeTabId: "" },
 		profileState = { viewId: "", profileId: null, temporary: true },
 		openDevTools = async () => undefined,
@@ -431,6 +433,7 @@ export function BrowserPanelView({
 	const [customDeviceWidth, setCustomDeviceWidth] = useState("390");
 	const [controlsView, setControlsView] = useState<"root" | "devices" | "profiles">("root");
 	const [controlsOpen, setControlsOpen] = useState(false);
+	const [runtimeReconnectPending, setRuntimeReconnectPending] = useState(false);
 	const [browserProfiles, setBrowserProfiles] = useState<BrowserProfile[]>([]);
 	const [profilesLoading, setProfilesLoading] = useState(false);
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
@@ -818,6 +821,15 @@ export function BrowserPanelView({
 							? error
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
+	const runtimeDisconnected = hasNativeBrowser && browserRuntimeConnected === false;
+	const reconnectRuntime = useCallback(async () => {
+		setRuntimeReconnectPending(true);
+		try {
+			await reconnectBrowserRuntime();
+		} finally {
+			setRuntimeReconnectPending(false);
+		}
+	}, [reconnectBrowserRuntime]);
 	const suggestionsOpen = urlEditing && historySuggestions.length > 0;
 	const browserAddressBar = (
 		<form
@@ -1138,6 +1150,21 @@ export function BrowserPanelView({
 					<>
 						{browserTabBar}
 						<div className="browser-panel__toolbar" data-testid="browser-toolbar">
+							{runtimeDisconnected ? (
+								<div className="flex min-w-0 items-center gap-1.5 text-2xs text-destructive" data-testid="browser-runtime-alert" role="alert">
+									<span className="truncate">{t("browser.runtimeDisconnected")}</span>
+									<Button
+										className="shrink-0"
+										disabled={runtimeReconnectPending}
+										onClick={() => void reconnectRuntime()}
+										size="sm"
+										type="button"
+										variant="outline"
+									>
+										{t("browser.reconnectRuntime")}
+									</Button>
+								</div>
+							) : null}
 							<BrowserControlTooltip label={t("browser.back")}>
 								<span className="browser-panel__navigation-control inline-flex">
 							<Button

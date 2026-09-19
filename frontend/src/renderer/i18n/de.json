@@ -131,6 +131,8 @@
 	"browser.reopenClosedTab": "Geschlossenen Tab erneut öffnen",
 	"browser.reload": "Neu laden",
 	"browser.retryAnnotation": "Annotation erneut versuchen",
+	"browser.runtimeDisconnected": "Browser-Laufzeit getrennt.",
+	"browser.reconnectRuntime": "Neu verbinden",
 	"browser.returnToPanel": "Zurück zum Panel",
 	"browser.sending": "Wird gesendet",
 	"browser.sent": "Gesendet",

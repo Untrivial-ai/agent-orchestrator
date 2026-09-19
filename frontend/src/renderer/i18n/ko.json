@@ -131,6 +131,8 @@
 	"browser.reopenClosedTab": "닫은 탭 다시 열기",
 	"browser.reload": "새로고침",
 	"browser.retryAnnotation": "주석 다시 시도",
+	"browser.runtimeDisconnected": "브라우저 런타임 연결이 끊겼습니다.",
+	"browser.reconnectRuntime": "다시 연결",
 	"browser.returnToPanel": "패널로 돌아가기",
 	"browser.sending": "전송 중",
 	"browser.sent": "전송됨",
