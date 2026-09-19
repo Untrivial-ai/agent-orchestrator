@@ -22,14 +22,9 @@ import { useReducedMotion } from "./useReducedMotion";
  * animation still schedules work every frame, and the setting asks for no
  * movement rather than instant movement.
  */
-export function BoardRowTransition({ children, instant = false }: { children: ReactNode; instant?: boolean }) {
+export function BoardRowTransition({ children }: { children: ReactNode }) {
 	const reduceMotion = useReducedMotion();
-	// `instant` is for folds: collapsing a section removes a whole run of rows at
-	// once, and animating each one — each row is a Swipeable — plus the layout
-	// transition on every row that survives is what made opening and closing an
-	// accordion stutter. Folding is a deliberate, legible action; it does not need
-	// per-row choreography.
-	if (reduceMotion || instant) return <>{children}</>;
+	if (reduceMotion) return <>{children}</>;
 
 	return (
 		<Animated.View

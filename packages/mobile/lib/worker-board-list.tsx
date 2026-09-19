@@ -84,7 +84,6 @@ export function WorkerBoardList({
 	// working view, and a section nobody opened is a section nobody saw — but a
 	// collapsed group keeps its header, so the shape of the board stays readable.
 	const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
-	const [folding, setFolding] = useState(false);
 
 	const projectNames = useMemo(
 		() => new Map(projects.map((project) => [project.id, project.name])),
@@ -148,11 +147,7 @@ export function WorkerBoardList({
 
 	const toggleSection = useCallback((zone: string) => {
 		haptics.tap();
-		// Fold without per-row animation (see BoardRowTransition): a section is a
-		// run of heavy rows, and animating all of them at once is the stutter.
-		setFolding(true);
 		setCollapsedSections((current) => ({ ...current, [zone]: !current[zone] }));
-		setTimeout(() => setFolding(false), 32);
 	}, []);
 
 	// Swipeable's Android callbacks arrive after the UI thread has already begun
@@ -228,14 +223,14 @@ export function WorkerBoardList({
 					// with the rows rather than snapping around them.
 					if (item.kind === "archive") {
 						return (
-							<BoardRowTransition instant={folding}>
+							<BoardRowTransition>
 								<ArchiveHeader count={archived.length} open={archiveOpen} onToggle={() => setArchiveOpen((v) => !v)} />
 							</BoardRowTransition>
 						);
 					}
 					if (item.kind === "header") {
 						return (
-							<BoardRowTransition instant={folding}>
+							<BoardRowTransition>
 								<ListSectionHeader
 									label={item.label}
 									open={item.open}
@@ -246,7 +241,7 @@ export function WorkerBoardList({
 					}
 					const session = item.session;
 					return (
-						<BoardRowTransition instant={folding}>
+						<BoardRowTransition>
 							<WorkerListRow
 								session={session}
 								projectName={showProject ? projectNames.get(session.projectId) : session.harness || "Agent"}
