@@ -75,6 +75,9 @@ export default function RootLayout() {
 					</ThemeProvider>
 				</SafeAreaProvider>
 			</KeyboardProvider>
+			{/* Dev-only measurement overlay, mounted as a sibling of the whole app so it
+			    resolves against the full screen rather than a provider's box. */}
+			<LayoutGrid />
 		</GestureHandlerRootView>
 	);
 }
@@ -184,8 +187,6 @@ function Shell() {
 					options={{ ...CONNECT_SHEET_OPTIONS, contentStyle: { backgroundColor: t.bgSurface } }}
 				/>
 			</Stack>
-			{/* Dev-only measurement overlay; renders nothing in a release build. */}
-			<LayoutGrid />
 		</>
 	);
 }

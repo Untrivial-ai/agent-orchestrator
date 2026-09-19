@@ -47,23 +47,31 @@ export function LayoutGrid() {
 	return (
 		<View pointerEvents="none" style={StyleSheet.absoluteFill}>
 			{verticals.map((x) => (
-				<View key={`v${x}`} style={[styles.line, { left: x, width: x % MAJOR === 0 ? 1 : StyleSheet.hairlineWidth, opacity: x % MAJOR === 0 ? 0.35 : 0.12, top: 0, bottom: 0 }]} />
+				<View key={`v${x}`} style={[styles.line, { left: x, width: x % MAJOR === 0 ? 1 : StyleSheet.hairlineWidth, opacity: x % MAJOR === 0 ? 0.55 : 0.18, top: 0, bottom: 0 }]} />
 			))}
 			{horizontals.map((y) => (
-				<View key={`h${y}`} style={[styles.line, { top: y, height: y % MAJOR === 0 ? 1 : StyleSheet.hairlineWidth, opacity: y % MAJOR === 0 ? 0.35 : 0.12, left: 0, right: 0 }]} />
+				<View key={`h${y}`} style={[styles.line, { top: y, height: y % MAJOR === 0 ? 1 : StyleSheet.hairlineWidth, opacity: y % MAJOR === 0 ? 0.55 : 0.18, left: 0, right: 0 }]} />
 			))}
-			<Text style={styles.caption}>{`${MINOR}pt grid · bold lines ${MAJOR}pt`}</Text>
+			<View style={styles.captionWrap}>
+				<Text style={styles.caption}>{`${MINOR}pt grid · bold lines = ${MAJOR}pt controls`}</Text>
+			</View>
 		</View>
 	);
 }
 
 const styles = StyleSheet.create({
 	line: { position: "absolute", backgroundColor: "#ff2d55" },
-	caption: {
+	captionWrap: {
 		position: "absolute",
-		top: 60,
+		top: 70,
 		alignSelf: "center",
-		color: "#ff2d55",
+		backgroundColor: "rgba(0,0,0,0.65)",
+		borderRadius: 6,
+		paddingHorizontal: 8,
+		paddingVertical: 3,
+	},
+	caption: {
+		color: "#ffffff",
 		fontSize: 11,
 		fontWeight: "700",
 		letterSpacing: 0.4,

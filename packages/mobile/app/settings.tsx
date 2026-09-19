@@ -96,6 +96,14 @@ export default function SettingsScreen() {
 					</SettingsCard>
 				</SettingsSection>
 
+				{__DEV__ ? (
+					<SettingsSection title="Developer" footer="Layout grid draws the app's 4pt steps, with the 44pt control lines emphasised.">
+						<SettingsCard>
+							<LayoutGridRow />
+						</SettingsCard>
+					</SettingsSection>
+				) : null}
+
 				<SettingsSection title="Preferences">
 					<SettingsCard>
 						<AppearanceRow />
@@ -113,14 +121,6 @@ export default function SettingsScreen() {
 						<FeatureRequestRow />
 					</SettingsCard>
 				</SettingsSection>
-
-				{__DEV__ ? (
-					<SettingsSection title="Developer" footer="Layout grid draws the app's 4pt steps, with the 44pt control lines emphasised.">
-						<SettingsCard>
-							<LayoutGridRow />
-						</SettingsCard>
-					</SettingsSection>
-				) : null}
 
 				<DisconnectRow
 					onForget={async () => {
