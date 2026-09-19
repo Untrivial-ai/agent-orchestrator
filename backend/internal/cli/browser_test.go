@@ -526,7 +526,10 @@ func TestBrowserScreenshotHelpExplainsJSONAndBase64Modes(t *testing.T) {
 }
 
 func TestBrowserRequiresSessionAndValidWait(t *testing.T) {
+	// Clear ambient worker/desktop env so this usage-path test never dials a
+	// live daemon when AO_BROWSER_CAPABILITY is already set in the process.
 	t.Setenv("AO_SESSION_ID", "")
+	t.Setenv("AO_BROWSER_CAPABILITY", "")
 	if _, _, err := executeCLI(t, Deps{}, "browser", "status"); ExitCode(err) != 2 {
 		t.Fatalf("status error = %v code=%d", err, ExitCode(err))
 	}

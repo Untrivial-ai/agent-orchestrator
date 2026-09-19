@@ -1,0 +1,93 @@
+---
+title: MCP server
+description: Drive the local AO daemon from Claude Code, Cursor, or Codex over MCP.
+---
+
+AO ships an MCP server as `ao mcp`. It wraps the local loopback daemon so your own Claude Code, Cursor, or Codex session can list projects, inspect sessions and PR/CI state, spawn workers, send messages, read recent Chat output, and kill sessions — without a separate install.
+
+The desktop app (or `ao start`) must be running so the daemon is available.
+
+## Tools
+
+| Tool | What it does |
+| --- | --- |
+| `list_projects` | List registered AO projects |
+| `list_sessions` | List sessions with status and PR/CI facts |
+| `spawn_worker` | Spawn a project or standalone worker |
+| `send_message` | Send a message to a session |
+| `read_session_output` | Read recent Chat messages and activities |
+| `get_pr_status` | Get PR, CI, and review status for a session |
+| `kill_session` | Terminate a session |
+
+## Run
+
+```bash
+ao mcp
+```
+
+Stdio is the default transport and matches the snippets below. For streamable HTTP on loopback only:
+
+```bash
+ao mcp --http 127.0.0.1:8787
+```
+
+## Claude Code
+
+Add the server to your Claude Code MCP config (for example `~/.claude.json` or the project `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "ao": {
+      "command": "ao",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+If `ao` is not on your PATH, use the absolute path to the binary from the desktop app or a local `go build`.
+
+## Cursor
+
+In Cursor MCP settings (`~/.cursor/mcp.json` or the project `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "ao": {
+      "command": "ao",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+## Codex
+
+In Codex MCP config (for example `~/.codex/config.toml`):
+
+```toml
+[mcp_servers.ao]
+command = "ao"
+args = ["mcp"]
+```
+
+Or the JSON shape some Codex setups use:
+
+```json
+{
+  "mcpServers": {
+    "ao": {
+      "command": "ao",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+## Notes
+
+- The MCP process talks only to the local AO daemon on `127.0.0.1`. It does not open a new network listener unless you pass `--http`, and that flag rejects non-loopback addresses.
+- `read_session_output` uses the Chat conversation API. Terminal-only sessions without a Chat transcript will not have message history through this tool.
+- Spawning still requires a ready agent harness on the machine (`ao agent ls`).
