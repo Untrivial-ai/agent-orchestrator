@@ -1,9 +1,13 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, openSync, readSync, writeSync, closeSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { buildBlockMap } = require("app-builder-lib/out/targets/blockmap/blockmap.js");
 
 vi.mock("./blockmap.mjs", () => ({
 	writeBlockmap: vi.fn(async (filePath) => {
@@ -12,7 +16,7 @@ vi.mock("./blockmap.mjs", () => ({
 	}),
 }));
 
-import { selectInstallers, feedFilename, buildYml, hashFile, generateFeeds } from "./feed.mjs";
+import { selectInstallers, feedFilename, buildYml, hashFile, generateFeeds, readEmbeddedBlockMapSize } from "./feed.mjs";
 import { writeBlockmap } from "./blockmap.mjs";
 const V = "0.10.4";
 const NAMES = [
@@ -136,6 +140,24 @@ describe("buildYml", () => {
 		expect(yml).toContain("version: 0.10.4");
 		expect(yml).toContain("releaseDate:");
 	});
+
+	it("emits blockMapSize for a linux file that carries it", () => {
+		const yml = buildYml(
+			"0.10.4",
+			[{ url: "Agent.Orchestrator-0.10.4.AppImage", sha512: "AA/BB+cc==", size: 123, blockMapSize: 4242 }],
+			"2026-06-27T12:00:00.000Z",
+		);
+		expect(yml).toContain("    size: 123\n    blockMapSize: 4242\n");
+	});
+
+	it("omits blockMapSize for files that do not carry it", () => {
+		const yml = buildYml(
+			"0.10.4",
+			[{ url: "Agent.Orchestrator.Setup.0.10.4.exe", sha512: "AA/BB+cc==", size: 123 }],
+			"2026-06-27T12:00:00.000Z",
+		);
+		expect(yml).not.toContain("blockMapSize");
+	});
 });
 
 describe("hashFile", () => {
@@ -162,6 +184,48 @@ describe("hashFile", () => {
 		hashFile(filePath);
 
 		expect(existsSync(`${filePath}.blockmap`)).toBe(false);
+
+		rmSync(dir, { recursive: true, force: true });
+	});
+});
+
+describe("readEmbeddedBlockMapSize", () => {
+	it("returns the blockMapSize of a file with an embedded tail", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "feed-test-"));
+		const filePath = join(dir, "Agent.Orchestrator-0.10.4.AppImage");
+		writeFileSync(filePath, "fake appimage payload ".repeat(100));
+		const { blockMapSize } = await buildBlockMap(filePath, "deflate");
+
+		expect(readEmbeddedBlockMapSize(filePath)).toBe(blockMapSize);
+
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("returns undefined for a file without a tail", () => {
+		const dir = mkdtempSync(join(tmpdir(), "feed-test-"));
+		const filePath = join(dir, "no-tail.AppImage");
+		writeFileSync(filePath, "fake appimage without embedded tail");
+
+		expect(readEmbeddedBlockMapSize(filePath)).toBeUndefined();
+
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("returns undefined for a file with a corrupt tail", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "feed-test-"));
+		const filePath = join(dir, "corrupt.AppImage");
+		writeFileSync(filePath, "fake appimage payload ".repeat(100));
+		const { blockMapSize } = await buildBlockMap(filePath, "deflate");
+		// Flip a byte inside the deflate stream so inflate/validation fails.
+		const size = statSync(filePath).size;
+		const fd = openSync(filePath, "r+");
+		const corrupt = Buffer.allocUnsafe(1);
+		readSync(fd, corrupt, 0, 1, size - 4 - blockMapSize + 5);
+		corrupt[0] ^= 0xff;
+		writeSync(fd, corrupt, 0, 1, size - 4 - blockMapSize + 5);
+		closeSync(fd);
+
+		expect(readEmbeddedBlockMapSize(filePath)).toBeUndefined();
 
 		rmSync(dir, { recursive: true, force: true });
 	});
@@ -223,6 +287,29 @@ describe("generateFeeds macOS sidecar suppression", () => {
 		expect(writeBlockmap).toHaveBeenCalledTimes(2);
 		expect(writeBlockmap).toHaveBeenCalledWith(join(dir, winExe));
 		expect(writeBlockmap).toHaveBeenCalledWith(join(dir, linuxAppImage));
+
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("publishes blockMapSize on linux feeds, never on win", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "feed-test-"));
+		const winExe = "Agent.Orchestrator.Setup.0.10.4.exe";
+		const linuxAppImage = "Agent.Orchestrator-0.10.4.AppImage";
+		writeFileSync(join(dir, winExe), "fake win installer");
+		// A real maker output: the linux artifact carries the embedded tail and
+		// the pipeline must surface its size so AppImageUpdater can diff.
+		writeFileSync(join(dir, linuxAppImage), "fake appimage payload ".repeat(100));
+		await buildBlockMap(join(dir, linuxAppImage), "deflate");
+
+		await generateFeeds(dir, "0.10.4", "nightly", "2026-06-27T12:00:00.000Z");
+
+		const linuxYml = readFileSync(join(dir, "nightly-linux.yml"), "utf8");
+		const linuxBytes = readFileSync(join(dir, linuxAppImage));
+		const blockMapSize = linuxBytes.readUInt32BE(linuxBytes.length - 4);
+		expect(linuxYml).toContain(`    blockMapSize: ${blockMapSize}\n`);
+
+		const winYml = readFileSync(join(dir, "nightly.yml"), "utf8");
+		expect(winYml).not.toContain("blockMapSize");
 
 		rmSync(dir, { recursive: true, force: true });
 	});

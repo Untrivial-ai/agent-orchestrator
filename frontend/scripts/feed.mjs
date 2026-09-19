@@ -7,9 +7,10 @@
 // already-published nightly can be retro-flagged by re-running the feed job
 // with --important set (or editing the yml and running
 // `gh release upload TAG nightly*.yml --clobber`).
-import { readdirSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, writeFileSync, readFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { inflateRawSync } from "node:zlib";
 import { writeBlockmap } from "./blockmap.mjs";
 
 // selectInstallers picks the versioned, auto-updatable installers from a release
@@ -40,8 +41,10 @@ export function feedFilename(channel, platform) {
 // for mac the arm64 entry comes first. The deprecated top-level path/sha512
 // point at files[0].
 //
-// blockMapSize is never written. Per platform that means (verified against the
-// published electron-updater@6.8.9 tarball, see #3288 workstream 3):
+// blockMapSize is written only for linux, where AppImageUpdater reads the new
+// file's blockmap from the AppImage's own embedded tail. Per platform that means
+// (verified against the published electron-updater@6.8.9 tarball, see #3288
+// workstream 3):
 //   win:   NsisUpdater takes AppUpdater.differentialDownloadInstaller, which
 //          fetches the "<installer>.blockmap" sidecar. Omitting blockMapSize is
 //          what selects that sidecar path, so win sidecars are load-bearing.
@@ -49,8 +52,13 @@ export function feedFilename(channel, platform) {
 //          FileWithEmbeddedBlockMapDifferentialDownloader, which reads the
 //          blockmap from the AppImage's own tail at
 //          `fileSize - (blockMapSize + 4)` and therefore hard-requires
-//          blockMapSize in the yml. With it absent, linux differential updates
-//          cannot run at all and every client falls back to a full download.
+//          blockMapSize in the yml. The maker appends an embedded blockmap
+//          (deflate + 4-byte big-endian size footer) to every AppImage at build
+//          time (makers/maker-appimage.ts -> app-builder-lib appendBlockmap),
+//          so the feed emits the footer value (readEmbeddedBlockMapSize); with
+//          it the updater diffs against the running AppImage's map and fetches
+//          only the changed chunks. Feed ymls that omit it send the updater a
+//          NaN range (ERR_OUT_OF_RANGE) and force a full download (#5576).
 //          The linux .blockmap sidecars we publish are consumed by nothing (see
 //          the note in generateFeeds).
 //   mac:   no sidecar is generated on any channel. Absence is the global
@@ -64,6 +72,7 @@ export function buildYml(version, files, releaseDate, important = false) {
 		lines.push(`  - url: ${f.url}`);
 		lines.push(`    sha512: ${f.sha512}`);
 		lines.push(`    size: ${f.size}`);
+		if (f.blockMapSize !== undefined) lines.push(`    blockMapSize: ${f.blockMapSize}`);
 	}
 	lines.push(`path: ${files[0].url}`);
 	lines.push(`sha512: ${files[0].sha512}`);
@@ -79,12 +88,11 @@ export function buildYml(version, files, releaseDate, important = false) {
 // are unresolved. Local client flags cannot protect older binaries.
 //
 // The linux sidecars this still writes are dead weight: AppImageUpdater reads
-// its blockmap from the AppImage tail, never from a sidecar, and needs a
-// blockMapSize we never emit (see buildYml). Generation is kept deliberately
-// rather than dropped, because the release publish guard lives in a separate
-// private pipeline that currently asserts on the linux sidecar filenames;
-// dropping the files here would red that guard out of band. Removing both
-// together is tracked as its own decision on #3288 workstream 3.
+// its blockmap from the AppImage tail, never from a sidecar. Generation is kept
+// deliberately rather than dropped, because the release publish guard lives in
+// a separate private pipeline that currently asserts on the linux sidecar
+// filenames; dropping the files here would red that guard out of band. Removing
+// both together is tracked as its own decision on #3288 workstream 3.
 export async function generateFeeds(dir, rawVersion, channel, releaseDate, important = false) {
 	const version = rawVersion.split("+")[0];
 	const sel = selectInstallers(readdirSync(dir), version);
@@ -97,11 +105,15 @@ export async function generateFeeds(dir, rawVersion, channel, releaseDate, impor
 		if (names.length === 0) continue;
 		const files = [];
 		for (const name of names) {
+			const filePath = join(dir, name);
 			const { sha512, size } =
 				platform === "mac"
-					? hashFile(join(dir, name))
-					: await writeBlockmap(join(dir, name));
-			files.push({ url: name, sha512, size });
+					? hashFile(filePath)
+					: await writeBlockmap(filePath);
+			// linux feeds surface the embedded blockmap size (see the buildYml
+			// platform notes); win/mac stay sidecar/full-download shaped.
+			const blockMapSize = platform === "linux" ? readEmbeddedBlockMapSize(filePath) : undefined;
+			files.push({ url: name, sha512, size, blockMapSize });
 		}
 		writeFileSync(join(dir, feedFilename(channel, platform)), buildYml(version, files, releaseDate, important));
 	}
@@ -140,4 +152,41 @@ export function hashFile(filePath) {
 	const sha512 = createHash("sha512").update(data).digest("base64");
 	const size = statSync(filePath).size;
 	return { sha512, size };
+}
+
+// readEmbeddedBlockMapSize returns the blockMapSize of an AppImage's embedded
+// blockmap tail, or undefined when the tail is absent or inconsistent. The maker
+// appends `deflate(blockmap v2) + 4-byte big-endian size` to every AppImage
+// (app-builder-lib appendBlockmap), so the size is the file's final 4 bytes.
+// Before trusting it, re-inflate the tail and require the chunk sizes to cover
+// the file exactly (sum(sizes) + blockMapSize + 4 === file size), so a stale or
+// truncated tail can never publish a size that makes the updater read garbage.
+// A non-linux file (no tail) or a corrupt tail returns undefined, and buildYml
+// then omits the field: the updater falls back to a full download, exactly as
+// pre-#5576 clients behave.
+export function readEmbeddedBlockMapSize(filePath) {
+	const size = statSync(filePath).size;
+	if (size < 5) return undefined;
+	const fd = openSync(filePath, "r");
+	try {
+		const footer = Buffer.allocUnsafe(4);
+		readSync(fd, footer, 0, 4, size - 4);
+		const blockMapSize = footer.readUInt32BE(0);
+		const start = size - 4 - blockMapSize;
+		if (blockMapSize <= 0 || start < 0) return undefined;
+		const compressed = Buffer.allocUnsafe(blockMapSize);
+		readSync(fd, compressed, 0, blockMapSize, start);
+		const blockMap = JSON.parse(inflateRawSync(compressed).toString());
+		const fileEntry = blockMap?.files?.[0];
+		if (blockMap?.version !== "2" || fileEntry == null ||
+			!Array.isArray(fileEntry.checksums) || !Array.isArray(fileEntry.sizes) ||
+			fileEntry.checksums.length !== fileEntry.sizes.length) return undefined;
+		const covered = fileEntry.sizes.reduce((sum, n) => sum + n, 0);
+		if (covered + blockMapSize + 4 !== size) return undefined;
+		return blockMapSize;
+	} catch {
+		return undefined;
+	} finally {
+		closeSync(fd);
+	}
 }
