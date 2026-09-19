@@ -85,7 +85,7 @@ func agyAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil.D
 				return ports.AgentAuthStatusUnknown, nil
 			}
 		}
-		if !errors.Is(err, os.ErrNotExist) {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return ports.AgentAuthStatusUnknown, nil
 		}
 	}

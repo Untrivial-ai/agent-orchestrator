@@ -150,6 +150,36 @@ func TestAgyAuthStatusUsesFixedKeyringEntry(t *testing.T) {
 	}
 }
 
+func TestAgySettingsWithoutProviderUseBrowserKeyring(t *testing.T) {
+	home := t.TempDir()
+	writeAgyAuthFixture(t, filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), `{}`)
+	keyringCalls := 0
+	d := authutil.Dependencies{
+		GOOS: "darwin",
+		Getenv: func(name string) string {
+			if name == "HOME" {
+				return home
+			}
+			return ""
+		},
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			keyringCalls++
+			if name != "/usr/bin/security" || !reflect.DeepEqual(args, []string{"find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"}) {
+				t.Fatalf("unexpected keyring command: %s %#v", name, args)
+			}
+			return []byte(`{"token":{"access_token":"test-access"}}`), nil
+		},
+	}
+
+	got, err := agyAuthStatus(context.Background(), ports.AgentAuthCheck{}, d)
+	if err != nil || got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, err = %v; want configured", got, err)
+	}
+	if keyringCalls != 1 {
+		t.Fatalf("keyring calls = %d; want 1", keyringCalls)
+	}
+}
+
 func TestAgyInvalidExplicitProviderDoesNotUseKeyring(t *testing.T) {
 	for _, tt := range []struct {
 		name, settings string
