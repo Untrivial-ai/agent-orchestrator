@@ -363,6 +363,10 @@ type BrowserEntry = {
 	tabId: string;
 	view: BrowserViewLike;
 	ready: Promise<void>;
+	// A profile replacement can be restoring a URL while a newer replacement is
+	// already being prepared. Keep the intended URL alongside Chromium's current
+	// URL so a second snapshot does not lose a restore that is still pending.
+	restoreUrl?: string;
 	state: BrowserNavState;
 	annotationEnabled: boolean;
 	annotationSessions: Map<string, { session: BrowserAnnotationSession; token: string }>;
@@ -398,6 +402,14 @@ type BrowserSessionEntry = {
 	profileSwitching: boolean;
 	profileSwitchTargetId: BrowserProfileId | null;
 	nativeActiveTabId?: string;
+	// Human tab selection is deliberately separate from activation performed by
+	// the automation runtime. A delayed runtime Target.activateTarget callback
+	// must not overwrite a newer renderer selection.
+	humanSelectionGeneration: number;
+	humanSelectionTargetId?: string;
+	nativeSyncAbortController?: AbortController;
+	nativeActivationOrigin?: "agent" | "sync";
+	nativeTargetProvider?: AgentBrowserTargetProvider;
 	nativeOperationQueue: Promise<void>;
 	devtoolsPlacement: BrowserDevToolsPlacement;
 	// Bounded browser diagnostics exposed only through an explicit errors query.
@@ -836,6 +848,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				browserOperations: 0,
 				profileSwitching: false,
 				profileSwitchTargetId: null,
+				humanSelectionGeneration: 0,
 				nativeOperationQueue: Promise.resolve(),
 				devtoolsPlacement: DEFAULT_NATIVE_DEVTOOLS_PLACEMENT,
 				signals: { entries: [] },
@@ -898,6 +911,20 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			() => undefined,
 		);
 		return result;
+	};
+
+	const withNativeActivationOrigin = async <T>(
+		session: BrowserSessionEntry,
+		origin: "agent" | "sync",
+		operation: () => Promise<T>,
+	): Promise<T> => {
+		const previous = session.nativeActivationOrigin;
+		session.nativeActivationOrigin = origin;
+		try {
+			return await operation();
+		} finally {
+			session.nativeActivationOrigin = previous;
+		}
 	};
 
 	const withBrowserOperation = async <T>(session: BrowserSessionEntry, operation: () => Promise<T>): Promise<T> => {
@@ -985,19 +1012,24 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (!options.agentBrowserRuntime) return;
 		while (session.nativeActiveTabId !== session.activeTabId) {
 			const tabId = session.activeTabId;
+			const selectionGeneration = session.humanSelectionGeneration;
 			const entry = session.tabs.get(tabId);
 			if (!entry) throw browserError("BROWSER_TARGET_UNAVAILABLE", "Active browser tab is unavailable");
-			await entry.ready;
+			await awaitWithAbort(entry.ready, signal);
 			// The human-facing BrowserView state is authoritative. Selecting through
 			// agent-browser updates its independent active_page_index before another
-			// native command is allowed to run.
+			// native command is allowed to run. The runtime can call the target
+			// provider after a newer human selection, so re-apply that latest intent
+			// before allowing the loop to converge.
 			try {
-				await options.agentBrowserRuntime.runAction(
-					session.sessionId,
-					"tab-select",
-					{ tabId },
-					agentBrowserTargets(session),
-					signal,
+				await withNativeActivationOrigin(session, "sync", () =>
+					options.agentBrowserRuntime!.runAction(
+						session.sessionId,
+						"tab-select",
+						{ tabId },
+						agentBrowserTargets(session),
+						signal,
+					),
 				);
 			} catch (error) {
 				// The runtime keeps its own tab registry (a real, separate process —
@@ -1013,36 +1045,57 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				// the select once more.
 				if (!isAgentBrowserCommandFailure(error)) throw error;
 				try {
-					await options.agentBrowserRuntime.runAction(session.sessionId, "tabs", {}, agentBrowserTargets(session), signal);
-					await options.agentBrowserRuntime.runAction(
-						session.sessionId,
-						"tab-select",
-						{ tabId },
-						agentBrowserTargets(session),
-						signal,
+					await withNativeActivationOrigin(session, "sync", () =>
+						options.agentBrowserRuntime!.runAction(
+							session.sessionId,
+							"tabs",
+							{},
+							agentBrowserTargets(session),
+							signal,
+						),
+					);
+					await withNativeActivationOrigin(session, "sync", () =>
+						options.agentBrowserRuntime!.runAction(
+							session.sessionId,
+							"tab-select",
+							{ tabId },
+							agentBrowserTargets(session),
+							signal,
+						),
 					);
 				} catch (resyncError) {
 					if (!isAgentBrowserCommandFailure(resyncError)) throw resyncError;
-					// Still desynced after asking it to refresh — accept the drift
-					// rather than wedge the session forever. AO's own tab state
-					// (WebContentsView activation/close) doesn't depend on this and is
-					// unaffected either way; only the automation runtime's targeting of
-					// *this* tab stays stale until a future tab-new/tab-close resyncs
-					// it from its side — meaning a subsequent agent click/fill/snapshot
-					// can silently land on a different tab than intended. Every native
-					// operation routes through this loop first, so this is the one place
-					// that can log it without spamming on every call.
-					console.warn(
-						`[browser] automation runtime still can't target tab ${tabId} in session ${session.sessionId} after a resync attempt — accepting drift`,
-					);
+					// Never let automation continue against a different tab. Human tab
+					// selection is local and remains responsive, but an agent command has
+					// to prove that the runtime is targeting that same tab first.
+					throw resyncError;
 				}
+			}
+			if (session.humanSelectionGeneration !== selectionGeneration) {
+				const latestTabId = session.humanSelectionTargetId;
+				if (latestTabId && session.tabs.has(latestTabId) && session.activeTabId !== latestTabId) {
+					activateTab(session, latestTabId, false);
+				}
+				session.nativeActiveTabId = undefined;
+				continue;
 			}
 			session.nativeActiveTabId = tabId;
 		}
 	};
 
 	function queueNativeActiveTabSync(session: BrowserSessionEntry): void {
-		void queueNativeOperation(session, () => ensureNativeActiveTab(session)).catch(() => undefined);
+		session.nativeSyncAbortController?.abort();
+		const controller = new AbortController();
+		session.nativeSyncAbortController = controller;
+		const queued = queueNativeOperation(session, () => ensureNativeActiveTab(session, controller.signal));
+		void queued.then(
+			() => {
+				if (session.nativeSyncAbortController === controller) session.nativeSyncAbortController = undefined;
+			},
+			() => {
+				if (session.nativeSyncAbortController === controller) session.nativeSyncAbortController = undefined;
+			},
+		);
 	}
 
 	const openTab = async (
@@ -1092,7 +1145,12 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		});
 	};
 
-	function activateTab(session: BrowserSessionEntry, tabId: string, notify = true): BrowserEntry {
+	function activateTab(
+		session: BrowserSessionEntry,
+		tabId: string,
+		notify = true,
+		humanSelection = false,
+	): BrowserEntry {
 		const next = session.tabs.get(tabId);
 		if (!next) throw browserError("TAB_NOT_FOUND", `Browser tab ${tabId} does not exist`);
 		const previous = session.tabs.get(session.activeTabId);
@@ -1100,6 +1158,10 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			applyBrowserViewBounds(previous.view, OFFSCREEN_BOUNDS, false);
 		}
 		session.activeTabId = tabId;
+		if (humanSelection) {
+			session.humanSelectionGeneration += 1;
+			session.humanSelectionTargetId = tabId;
+		}
 		if (session.devtools && isBlankBrowserEntry(next)) destroyDevTools(session);
 		applySessionBounds(session, next);
 		pushNavState(options, next);
@@ -1166,40 +1228,48 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			await openTab(session, url, true);
 			return listTabs(session);
 		}
-		return queueNativeOperation(session, async () => {
-			await options.agentBrowserRuntime!.runAction(
-				session.sessionId,
-				"tab-new",
-				{ url },
-				agentBrowserTargets(session),
-			);
-			session.nativeActiveTabId = session.activeTabId;
-			return listTabs(session);
-		});
+		return withBrowserOperation(session, () =>
+			queueNativeOperation(session, async () => {
+				await withNativeActivationOrigin(session, "agent", () =>
+					options.agentBrowserRuntime!.runAction(
+						session.sessionId,
+						"tab-new",
+						{ url },
+						agentBrowserTargets(session),
+					),
+				);
+				session.nativeActiveTabId = session.activeTabId;
+				return listTabs(session);
+			}),
+		);
 	};
 
 	const closeUserTab = async (session: BrowserSessionEntry, tabId: string): Promise<BrowserTabsState> => {
 		if (session.tabs.size === 1) return listTabs(session);
 		if (!session.tabs.has(tabId)) return listTabs(session);
 		if (!options.agentBrowserRuntime) return closeTab(session, tabId);
-		return queueNativeOperation(session, async () => {
-			await ensureNativeActiveTab(session);
-			try {
-				await options.agentBrowserRuntime!.runAction(
-					session.sessionId,
-					"tab-close",
-					{ tabId },
-					agentBrowserTargets(session),
-				);
-			} catch (error) {
-				if (!isAgentBrowserCommandFailure(error)) throw error;
-				if (!session.tabs.has(tabId)) return listTabs(session);
-				return closeTab(session, tabId);
-			}
-			session.nativeActiveTabId = undefined;
-			await ensureNativeActiveTab(session);
-			return listTabs(session);
-		});
+		return withBrowserOperation(session, () =>
+			queueNativeOperation(session, async () => {
+				try {
+					await ensureNativeActiveTab(session);
+					await withNativeActivationOrigin(session, "agent", () =>
+						options.agentBrowserRuntime!.runAction(
+							session.sessionId,
+							"tab-close",
+							{ tabId },
+							agentBrowserTargets(session),
+						),
+					);
+					session.nativeActiveTabId = undefined;
+					await ensureNativeActiveTab(session);
+				} catch (error) {
+					if (!isAgentBrowserCommandFailure(error)) throw error;
+					if (!session.tabs.has(tabId)) return listTabs(session);
+					return closeTab(session, tabId);
+				}
+				return listTabs(session);
+			}),
+		);
 	};
 
 	const focusLocation = (session: BrowserSessionEntry): void => {
@@ -1283,25 +1353,32 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	}
 
 	function agentBrowserTargets(session: BrowserSessionEntry): AgentBrowserTargetProvider {
+		if (session.nativeTargetProvider) return session.nativeTargetProvider;
 		const target = (entry: BrowserEntry): AgentBrowserTarget => ({
 			id: entry.tabId,
 			url: entry.view.webContents.getURL() || "about:blank",
 			title: entry.view.webContents.getTitle(),
 			debugger: entry.view.webContents.debugger,
 		});
-		return {
+		const provider: AgentBrowserTargetProvider = {
 			listTargets: () => [...session.tabs.values()].map(target),
 			createTarget: async (url) => target(await openTab(session, url === "about:blank" ? undefined : url, true)),
 			activateTarget: async (targetId) => {
 				const entry = session.tabs.get(targetId);
 				if (!entry) throw browserError("TAB_NOT_FOUND", `Browser tab ${targetId} does not exist`);
 				await entry.ready;
-				activateTab(session, targetId);
+				// AgentBrowserRuntime caches the first provider used for a session. Read
+				// the current command's origin from the session instead of relying on a
+				// per-call provider object, so both initialization orders preserve the
+				// distinction between an explicit agent tab-select and synchronization.
+				activateTab(session, targetId, session.nativeActivationOrigin !== "sync");
 			},
 			closeTarget: (targetId) => {
 				closeTab(session, targetId);
 			},
 		};
+		session.nativeTargetProvider = provider;
+		return provider;
 	}
 
 	const retargetDevTools = async (
@@ -1644,7 +1721,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const savedTabsForSession = (session: BrowserSessionEntry): SavedBrowserTab[] =>
 		[...session.tabs.values()].map((entry) => {
 			try {
-				const url = entry.view.webContents.getURL();
+				const url = entry.restoreUrl ?? entry.view.webContents.getURL();
 				return { tabId: entry.tabId, ...(isAllowedBrowserURL(url, options.rendererOrigin) ? { url } : {}) };
 			} catch {
 				return { tabId: entry.tabId };
@@ -1670,29 +1747,57 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			createTab(session, false, false, saved.tabId);
 		}
 		session.nextTabNumber = Math.max(nextTabNumber, highestTabNumber + 1);
-		for (const saved of tabs) {
-			if (!saved.url) continue;
-			const entry = session.tabs.get(saved.tabId);
-			if (!entry) continue;
-			await entry.ready;
-			assertCurrentSession();
-			try {
-				await entry.view.webContents.loadURL(saved.url);
-			} catch (error) {
-				entry.state = {
-					...readNavState(entry),
-					error: error instanceof Error ? error.message : "Unable to reload page after profile switch",
-				};
-			}
-			assertCurrentSession();
-		}
-		assertCurrentSession();
 		const nextActiveTabId = session.tabs.has(activeTabId) ? activeTabId : tabs[0]!.tabId;
 		activateTab(session, nextActiveTabId, false);
 		// A newly-created agent-browser runtime starts on the provider's first
 		// target, regardless of which human tab AO restored as active. Preserve
 		// that distinction so the next agent command selects the right target.
 		session.nativeActiveTabId = tabs[0]!.tabId;
+
+		const restoreTab = (saved: SavedBrowserTab): Promise<void> => {
+			const entry = session.tabs.get(saved.tabId);
+			const url = saved.url;
+			if (!entry || !url) return Promise.resolve();
+			entry.restoreUrl = url;
+			const initialized = entry.ready;
+			const restored = (async () => {
+				await initialized;
+				assertCurrentSession();
+				if (session.tabs.get(saved.tabId) !== entry) {
+					throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser tab is no longer available");
+				}
+				try {
+					await entry.view.webContents.loadURL(url);
+				} catch (error) {
+					if (session.tabs.get(saved.tabId) !== entry) return;
+					entry.state = {
+						...readNavState(entry),
+						error: error instanceof Error ? error.message : "Unable to reload page after profile switch",
+					};
+				}
+				assertCurrentSession();
+				if (session.tabs.get(saved.tabId) !== entry) {
+					throw browserError("BROWSER_TARGET_UNAVAILABLE", "Browser tab is no longer available");
+				}
+				entry.restoreUrl = undefined;
+			})();
+			entry.ready = restored;
+			// Background restoration must not create an unhandled rejection if the
+			// worker is destroyed or another profile replacement supersedes it.
+			void restored.catch(() => undefined);
+			return restored;
+		};
+
+		// Start restoring what the user is looking at first, then launch inactive
+		// reloads in parallel. Every entry carries its own readiness barrier, so a
+		// page load cannot block the structural profile swap; automation that later
+		// targets one still awaits that tab's `ready` promise.
+		const activeSaved = tabs.find((saved) => saved.tabId === nextActiveTabId)!;
+		restoreTab(activeSaved);
+		for (const saved of tabs) {
+			if (saved !== activeSaved) restoreTab(saved);
+		}
+		assertCurrentSession();
 	};
 
 	const switchProfile = async (viewId: string, requestedProfileId: BrowserProfileId | null): Promise<BrowserProfileViewState> => {
@@ -1738,7 +1843,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		};
 		try {
 			// A renderer tab-selection operation does not increment the agent activity
-			// counter. Let already-queued native work finish before tearing down CDP.
+			// counter. Cancel the background synchronization it may have queued before
+			// tearing down CDP. Its readiness wait is abortable, so a stalled blank
+			// target cannot hold the structural profile swap hostage. Actual agent and
+			// user tab operations are counted above and are rejected before this point.
+			session.nativeSyncAbortController?.abort();
 			await session.nativeOperationQueue;
 			assertCurrentSession();
 			if (session.agentBrowserCommands > 0 || session.browserOperations > 0) {
@@ -2121,11 +2230,10 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		const session = entries.get(input.viewId);
 		if (!session || !isRendererOwned(event, input.viewId)) return emptyTabsState(input.viewId);
 		assertProfileStable(session);
-		return queueNativeOperation(session, async () => {
-			activateTab(session, input.tabId);
-			await ensureNativeActiveTab(session);
-			return listTabs(session);
-		});
+		const changed = session.activeTabId !== input.tabId;
+		activateTab(session, input.tabId, true, true);
+		if (changed) session.nativeActiveTabId = undefined;
+		return listTabs(session);
 	});
 	handle("browser:closeTab", (event, input: BrowserTabInput) => {
 		const session = entries.get(input.viewId);
@@ -2138,15 +2246,19 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			throw browserError("TAB_NOT_FOUND", `Browser tab ${input.tabId} does not exist`);
 		}
 		if (!options.agentBrowserRuntime) return closeTab(session, input.tabId);
-		return queueNativeOperation(session, async () => {
-			await ensureNativeActiveTab(session);
+		return withBrowserOperation(session, () => queueNativeOperation(session, async () => {
 			try {
-				await options.agentBrowserRuntime!.runAction(
-					session.sessionId,
-					"tab-close",
-					{ tabId: input.tabId },
-					agentBrowserTargets(session),
+				await ensureNativeActiveTab(session);
+				await withNativeActivationOrigin(session, "agent", () =>
+					options.agentBrowserRuntime!.runAction(
+						session.sessionId,
+						"tab-close",
+						{ tabId: input.tabId },
+						agentBrowserTargets(session),
+					),
 				);
+				session.nativeActiveTabId = undefined;
+				await ensureNativeActiveTab(session);
 			} catch (error) {
 				// The automation runtime's own internal tab registry can drift from
 				// session.tabs over a long-running session (observed in practice as
@@ -2169,10 +2281,8 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				if (!session.tabs.has(input.tabId)) return listTabs(session);
 				return closeTab(session, input.tabId);
 			}
-			session.nativeActiveTabId = undefined;
-			await ensureNativeActiveTab(session);
 			return listTabs(session);
-		});
+		}));
 	});
 	on("browser:panelUsed", (event, viewId: string) => {
 		if (isRendererOwned(event, viewId) && entries.has(viewId)) lastUsedViewId = viewId;
@@ -2248,23 +2358,37 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			const commandId = randomUUID();
 			setAgentBrowserActivity(session, action, true, commandId, "started");
 			try {
-				const entry = activeEntry(session);
+			const entry = activeEntry(session);
 			const runNative = async (nativeAction: string, nativeArgs: Record<string, unknown> = {}) => {
 				if (!options.agentBrowserRuntime) {
 					throw browserError("BROWSER_AUTOMATION_UNAVAILABLE", "Browser automation runtime is unavailable");
 				}
 				return queueNativeOperation(session, async () => {
 					await ensureNativeActiveTab(session, signal);
-					await activeEntry(session).ready;
-					const result = await options.agentBrowserRuntime!.runAction(
-						sessionId,
-						nativeAction,
-						nativeArgs,
-						agentBrowserTargets(session),
-						signal,
+					await awaitWithAbort(activeEntry(session).ready, signal);
+					const selectionGeneration = session.humanSelectionGeneration;
+					const result = await withNativeActivationOrigin(session, "agent", () =>
+						options.agentBrowserRuntime!.runAction(
+							sessionId,
+							nativeAction,
+							nativeArgs,
+							agentBrowserTargets(session),
+							signal,
+						),
 					);
 					if (nativeAction === "tab-select" && typeof nativeArgs.tabId === "string") {
-						session.nativeActiveTabId = nativeArgs.tabId;
+						if (
+							session.humanSelectionGeneration === selectionGeneration &&
+							session.activeTabId === nativeArgs.tabId
+						) {
+							session.nativeActiveTabId = nativeArgs.tabId;
+						} else {
+							const latestTabId = session.humanSelectionTargetId;
+							if (latestTabId && session.tabs.has(latestTabId) && session.activeTabId !== latestTabId) {
+								activateTab(session, latestTabId, false);
+							}
+							session.nativeActiveTabId = undefined;
+						}
 					}
 					if (nativeAction === "tab-new" || nativeAction === "tab-close") {
 						session.nativeActiveTabId = undefined;
@@ -2447,8 +2571,15 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 					if (!options.agentBrowserRuntime) {
 						throw browserError("BROWSER_AUTOMATION_UNAVAILABLE", "Browser automation runtime is unavailable");
 					}
-					await activeEntry(session).ready;
-					return options.agentBrowserRuntime.screenshot(sessionId, agentBrowserTargets(session), signal);
+					return queueNativeOperation(session, async () => {
+						await ensureNativeActiveTab(session, signal);
+						const selectionGeneration = session.humanSelectionGeneration;
+						await awaitWithAbort(activeEntry(session).ready, signal);
+						if (session.humanSelectionGeneration !== selectionGeneration) {
+							await ensureNativeActiveTab(session, signal);
+						}
+						return options.agentBrowserRuntime!.screenshot(sessionId, agentBrowserTargets(session), signal);
+					});
 				case "network-start":
 					return startNetworkCapture(
 						session,
@@ -2536,16 +2667,23 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			const targetViewId = lastFocusedViewId ?? lastUsedViewId;
 			if (targetViewId === null) return;
 			const session = entries.get(targetViewId);
-			if (!session || !session.visible) return;
-			const entry = activeEntry(session);
+			if (!session || !session.visible || session.profileSwitching) return;
+			const entry = session.tabs.get(session.activeTabId);
+			if (!entry) return;
 			const bounds = session.bounds;
 			if (bounds.width <= 0 || bounds.height <= 0) return;
 			entry.view.setVisible?.(false);
 			applyBrowserViewBounds(entry.view, { ...bounds, height: Math.max(1, bounds.height - 1) });
 			setTimeout(() => {
 				const current = entries.get(targetViewId);
-				if (!current || !current.visible) return;
-				applyBrowserViewBounds(activeEntry(current).view, current.bounds, true);
+				if (
+					!current ||
+					!current.visible ||
+					current.profileSwitching ||
+					current.activeTabId !== entry.tabId ||
+					current.tabs.get(entry.tabId) !== entry
+				) return;
+				applyBrowserViewBounds(entry.view, current.bounds, true);
 			}, 0);
 		},
 	};
@@ -3467,6 +3605,36 @@ function normalizeNativeMessages(
 
 function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) throw browserError("BROWSER_COMMAND_CANCELED", "Browser command was canceled");
+}
+
+function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return promise;
+	throwIfAborted(signal);
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => signal.removeEventListener("abort", onAbort);
+		const onAbort = () => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			reject(browserError("BROWSER_COMMAND_CANCELED", "Browser command was canceled"));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		void promise.then(
+			(value) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(value);
+			},
+			(error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error);
+			},
+		);
+	});
 }
 
 function browserError(code: string, message: string): Error & { code: string } {
