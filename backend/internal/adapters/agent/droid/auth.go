@@ -39,6 +39,7 @@ type droidAuthModel struct {
 	Provider     string            `json:"provider"`
 	ExtraHeaders map[string]string `json:"extraHeaders"`
 	Bedrock      *droidBedrock     `json:"bedrock"`
+	legacy       bool
 }
 
 type droidBedrock struct {
@@ -170,6 +171,7 @@ func (c *droidAuthConfig) readLegacy(ctx context.Context, d authutil.Dependencie
 			ID: legacy.ID, Model: legacy.Model, DisplayName: legacy.DisplayName,
 			BaseURL: legacy.BaseURL, APIKey: legacy.APIKey, APIKeyHelper: legacy.APIKeyHelper,
 			Provider: legacy.Provider, ExtraHeaders: legacy.ExtraHeaders, Bedrock: legacy.Bedrock,
+			legacy: true,
 		})
 	}
 	return true, false
@@ -237,23 +239,26 @@ func (c droidAuthConfig) selectedCustomModel() (droidAuthModel, bool) {
 func droidCustomModelEvidence(ctx context.Context, d authutil.Dependencies, model droidAuthModel) authutil.Evidence {
 	unknown := authutil.Evidence{Status: ports.AgentAuthStatusUnknown}
 	provider := strings.TrimSpace(model.Provider)
-	if provider != "anthropic" && provider != "openai" && provider != "generic-chat-completion-api" {
-		return unknown
-	}
 	if strings.TrimSpace(model.Model) == "" {
 		return unknown
 	}
 	if model.Bedrock != nil {
+		if provider != "anthropic" && provider != "openai" && provider != "bedrock-converse" {
+			return unknown
+		}
+		if strings.TrimSpace(model.Bedrock.BedrockBaseURL) != "" && !droidValidHTTPURL(droidModelValue(model, model.Bedrock.BedrockBaseURL, d.Getenv)) {
+			return unknown
+		}
 		cloud := d
 		baseEnv := cloud.Getenv
 		cloud.Getenv = func(key string) string {
 			switch key {
 			case "AWS_PROFILE":
-				if value := droidExpand(model.Bedrock.AWSProfile, baseEnv); value != "" {
+				if value := droidModelValue(model, model.Bedrock.AWSProfile, baseEnv); value != "" {
 					return value
 				}
 			case "AWS_REGION":
-				if value := droidExpand(model.Bedrock.AWSRegion, baseEnv); value != "" {
+				if value := droidModelValue(model, model.Bedrock.AWSRegion, baseEnv); value != "" {
 					return value
 				}
 			}
@@ -261,14 +266,14 @@ func droidCustomModelEvidence(ctx context.Context, d authutil.Dependencies, mode
 		}
 		return authutil.AWSEvidence(ctx, cloud)
 	}
-	if !droidValidHTTPURL(droidExpand(model.BaseURL, d.Getenv)) {
+	if provider != "anthropic" && provider != "openai" && provider != "generic-chat-completion-api" {
 		return unknown
 	}
-	if strings.TrimSpace(model.APIKeyHelper) != "" {
-		return authutil.Evidence{Status: ports.AgentAuthStatusConfigured, Source: "api-key-helper"}
+	if !droidValidHTTPURL(droidModelValue(model, model.BaseURL, d.Getenv)) {
+		return unknown
 	}
 	if strings.TrimSpace(model.APIKey) != "" {
-		if droidExpand(model.APIKey, d.Getenv) != "" {
+		if droidModelValue(model, model.APIKey, d.Getenv) != "" {
 			return authutil.Evidence{Status: ports.AgentAuthStatusConfigured, Source: "api-key"}
 		}
 		return unknown
@@ -279,7 +284,7 @@ func droidCustomModelEvidence(ctx context.Context, d authutil.Dependencies, mode
 			continue
 		}
 		hasHeader = true
-		if droidExpand(value, d.Getenv) != "" {
+		if droidModelValue(model, value, d.Getenv) != "" {
 			return authutil.Evidence{Status: ports.AgentAuthStatusConfigured, Source: "static-header"}
 		}
 	}
@@ -287,6 +292,17 @@ func droidCustomModelEvidence(ctx context.Context, d authutil.Dependencies, mode
 		return unknown
 	}
 	return authutil.NoAuthEvidence(true)
+}
+
+func droidModelValue(model droidAuthModel, value string, env func(string) string) string {
+	if model.legacy {
+		value = strings.TrimSpace(value)
+		if strings.Contains(value, "${") || strings.Contains(value, "$(") || strings.ContainsAny(value, "`\n") {
+			return ""
+		}
+		return value
+	}
+	return droidExpand(value, env)
 }
 
 func droidReadOptional(ctx context.Context, d authutil.Dependencies, path string) ([]byte, bool, bool) {

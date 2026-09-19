@@ -161,3 +161,78 @@ func TestClineScopedProviderAndClineAPIKey(t *testing.T) {
 		t.Fatalf("selected cline status = %q, want configured", got)
 	}
 }
+
+func TestClineSelectedProviderEnvironmentKeysAndAliases(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		stored   string
+		env      map[string]string
+		want     ports.AgentAuthStatus
+	}{
+		{name: "anthropic apiKeyEnv", provider: "anthropic", stored: "anthropic", env: map[string]string{"ANTHROPIC_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "openai alias", provider: "openai", stored: "openai-compatible", env: map[string]string{"OPENAI_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "together alias", provider: "togetherai", stored: "together", env: map[string]string{"TOGETHER_API_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "SAP alias", provider: "sap-ai-core", stored: "sapaicore", env: map[string]string{"AICORE_SERVICE_KEY": "test-key"}, want: ports.AgentAuthStatusConfigured},
+		{name: "unrelated environment", provider: "openai", stored: "openai-compatible", env: map[string]string{"ANTHROPIC_API_KEY": "unrelated"}, want: ports.AgentAuthStatusUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateClineAuth(t)
+			entry := `"` + tt.stored + `":{"settings":{"provider":"` + tt.stored + `"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`
+			writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), clineProviders(tt.stored, entry))
+			if got := scopedClineStatus(t, ports.AgentAuthCheck{Args: []string{"cline", "--provider", tt.provider}, Env: tt.env}); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClineOAuthRequiresSupportedProviderAndAccessToken(t *testing.T) {
+	future := strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)
+	tests := []struct {
+		name, selected, entries string
+		want                    ports.AgentAuthStatus
+	}{
+		{name: "refresh token alone", selected: "cline", entries: `"cline":{"settings":{"provider":"cline","auth":{"refreshToken":"refresh","expiresAt":` + future + `}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"oauth"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "supported access token", selected: "cline", entries: `"cline":{"settings":{"provider":"cline","auth":{"accessToken":"access","expiresAt":` + future + `}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"oauth"}`, want: ports.AgentAuthStatusConfigured},
+		{name: "unsupported refresh token", selected: "anthropic", entries: `"anthropic":{"settings":{"provider":"anthropic","auth":{"refreshToken":"refresh","expiresAt":` + future + `}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"oauth"}`, want: ports.AgentAuthStatusUnknown},
+		{name: "unsupported OAuth fields", selected: "anthropic", entries: `"anthropic":{"settings":{"provider":"anthropic","auth":{"accessToken":"access","refreshToken":"refresh","expiresAt":1}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"oauth"}`, want: ports.AgentAuthStatusUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateClineAuth(t)
+			writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), clineProviders(tt.selected, tt.entries))
+			if got := scopedClineStatus(t, ports.AgentAuthCheck{}); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClineRejectsInvalidNativeProviderFileSchema(t *testing.T) {
+	tests := []struct {
+		name, file string
+		env        map[string]string
+	}{
+		{name: "invalid provider id", file: clineProviders("bad/provider", `"bad/provider":{"settings":{"provider":"bad/provider","apiKey":"test-key"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "empty token source", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":""}`)},
+		{name: "null token source", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":null}`)},
+		{name: "invalid modes", file: `{"version":1,"lastUsedProvider":"openai-compatible","modes":{"voiceInput":{"providerId":"","modelId":"model"}},"providers":{"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}}}`},
+		{name: "invalid AWS authentication", file: clineProviders("bedrock", `"bedrock":{"settings":{"provider":"bedrock","aws":{"authentication":"magic"}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`), env: map[string]string{"AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test"}},
+		{name: "invalid SAP API", file: clineProviders("sapaicore", `"sapaicore":{"settings":{"provider":"sapaicore","sap":{"clientId":"client","clientSecret":"secret","tokenUrl":"https://auth.example.test/token","api":"magic"}},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+		{name: "invalid protocol", file: clineProviders("openai-compatible", `"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"test-key","protocol":"magic"},"updatedAt":"2026-01-01T00:00:00Z","tokenSource":"manual"}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateClineAuth(t)
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			writeClineAuthFile(t, filepath.Join(home, ".cline", "data", "settings", "providers.json"), tt.file)
+			if got := scopedClineStatus(t, ports.AgentAuthCheck{}); got != ports.AgentAuthStatusUnknown {
+				t.Fatalf("status = %q, want unknown", got)
+			}
+		})
+	}
+}

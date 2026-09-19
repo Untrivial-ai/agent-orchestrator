@@ -140,7 +140,7 @@ func TestDroidCustomProviderEvidence(t *testing.T) {
 	}{
 		{name: "environment key", model: "custom:gateway", env: map[string]string{"GATEWAY_KEY": "test-key"}, settings: `{"customModels":[{"id":"custom:gateway","model":"gateway","baseUrl":"https://gateway.example.test/v1","apiKey":"${GATEWAY_KEY}","provider":"openai"}]}`, want: ports.AgentAuthStatusConfigured},
 		{name: "unresolved environment key", model: "custom:gateway", settings: `{"customModels":[{"id":"custom:gateway","model":"gateway","baseUrl":"https://gateway.example.test/v1","apiKey":"${GATEWAY_KEY}","provider":"openai"}]}`, want: ports.AgentAuthStatusUnknown},
-		{name: "helper evidence", model: "custom:gateway", settings: `{"customModels":[{"id":"custom:gateway","model":"gateway","baseUrl":"https://gateway.example.test/v1","apiKeyHelper":"touch MARKER","provider":"anthropic"}]}`, want: ports.AgentAuthStatusConfigured},
+		{name: "untrusted helper ignored", model: "custom:gateway", settings: `{"customModels":[{"id":"custom:gateway","model":"gateway","baseUrl":"https://gateway.example.test/v1","apiKeyHelper":"touch MARKER","provider":"anthropic"}]}`, want: ports.AgentAuthStatusNotApplicable},
 		{name: "static headers", model: "custom:gateway", settings: `{"customModels":[{"id":"custom:gateway","model":"gateway","baseUrl":"https://gateway.example.test/v1","extraHeaders":{"Authorization":"Bearer fixed"},"provider":"generic-chat-completion-api"}]}`, want: ports.AgentAuthStatusConfigured},
 		{name: "trusted keyless endpoint", model: "custom:gateway", settings: `{"customModels":[{"id":"custom:gateway","model":"gateway","baseUrl":"https://gateway.example.test/v1","provider":"generic-chat-completion-api"}]}`, want: ports.AgentAuthStatusNotApplicable},
 		{name: "keyless endpoint not selected", model: "factory/default", settings: `{"customModels":[{"id":"custom:gateway","model":"gateway","baseUrl":"https://gateway.example.test/v1","provider":"generic-chat-completion-api"}]}`, want: ports.AgentAuthStatusUnknown},
@@ -174,5 +174,72 @@ func TestDroidBedrockUsesAWSDefaultChain(t *testing.T) {
 		]}`)
 	if got := scopedDroidStatus(t, ports.AgentAuthCheck{}); got != ports.AgentAuthStatusConfigured {
 		t.Fatalf("status = %q, want configured", got)
+	}
+}
+
+func TestDroidIgnoresAPIKeyHelperOutsideOrgManagedSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		path func(home, workspace string) string
+		args func(path string) []string
+	}{
+		{name: "user", path: func(home, _ string) string { return filepath.Join(home, ".factory", "settings.json") }},
+		{name: "project", path: func(_, workspace string) string { return filepath.Join(workspace, ".factory", "settings.json") }},
+		{name: "runtime", path: func(home, _ string) string { return filepath.Join(home, "runtime.json") }, args: func(path string) []string { return []string{"droid", "--settings", path} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateDroidAuth(t)
+			workspace := filepath.Join(home, "workspace")
+			path := tt.path(home, workspace)
+			marker := filepath.Join(home, "must-not-exist")
+			writeDroidAuthFile(t, path, `{"model":"custom:helper","customModels":[{"id":"custom:helper","model":"helper","baseUrl":"https://gateway.example.test/v1","apiKeyHelper":"touch `+marker+`","provider":"anthropic"}]}`)
+			var args []string
+			if tt.args != nil {
+				args = tt.args(path)
+			}
+			if got := scopedDroidStatus(t, ports.AgentAuthCheck{WorkingDir: workspace, Args: args}); got != ports.AgentAuthStatusNotApplicable {
+				t.Fatalf("status = %q, want not_applicable", got)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("apiKeyHelper was executed: %v", err)
+			}
+		})
+	}
+}
+
+func TestDroidLegacyConfigDoesNotExpandEnvironmentValues(t *testing.T) {
+	home := isolateDroidAuth(t)
+	t.Setenv("LEGACY_KEY", "resolved-key")
+	writeDroidAuthFile(t, filepath.Join(home, ".factory", "config.json"), `{
+		"model":"custom:legacy", "custom_models":[
+			{"id":"custom:legacy","model":"legacy-model","base_url":"https://legacy.example.test/v1","api_key":"${LEGACY_KEY}","provider":"openai"}
+		]}`)
+	if got := scopedDroidStatus(t, ports.AgentAuthCheck{}); got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+}
+
+func TestDroidBedrockConverseAndEndpointValidation(t *testing.T) {
+	tests := []struct {
+		name, provider, endpoint string
+		want                     ports.AgentAuthStatus
+	}{
+		{name: "bedrock converse", provider: "bedrock-converse", want: ports.AgentAuthStatusConfigured},
+		{name: "valid endpoint", provider: "anthropic", endpoint: "https://bedrock.example.test", want: ports.AgentAuthStatusConfigured},
+		{name: "invalid endpoint", provider: "anthropic", endpoint: "://broken", want: ports.AgentAuthStatusUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateDroidAuth(t)
+			writeDroidAuthFile(t, filepath.Join(home, ".aws", "credentials"), "[work]\naws_access_key_id=test\naws_secret_access_key=test\n")
+			writeDroidAuthFile(t, filepath.Join(home, ".factory", "settings.json"), `{
+				"model":"custom:bedrock", "customModels":[
+					{"id":"custom:bedrock","model":"anthropic.claude","provider":"`+tt.provider+`","bedrock":{"awsProfile":"work","awsRegion":"us-east-1","bedrockBaseUrl":"`+tt.endpoint+`"}}
+				]}`)
+			if got := scopedDroidStatus(t, ports.AgentAuthCheck{}); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
