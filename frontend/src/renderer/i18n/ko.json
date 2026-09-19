@@ -965,6 +965,7 @@
 	"settings.keyboardShortcuts": "키보드 단축키",
 	"settings.language": "언어",
 	"settings.language.en": "English",
+	"settings.language.ru": "Русский",
 	"settings.language.saveFailed": "언어 설정을 저장할 수 없습니다.",
 	"settings.language.zhCN": "简体中文",
 	"settings.language.ja": "日本語",
