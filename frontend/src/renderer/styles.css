@@ -1000,9 +1000,8 @@ button.settings-row-bar {
 	opacity: 0.75;
 }
 
-/* The composer is one continuous surface. Agent and model sit as separate
-   equal-width dropdowns in a horizontal row so changing provider names never
-   moves the model or the primary action. */
+/* The composer keeps provider controls in stable tracks so changing labels
+   never moves the model or primary action. */
 .composer-toolbar {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto auto;
@@ -1026,6 +1025,11 @@ button.settings-row-bar {
 	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 	align-items: center;
 	column-gap: var(--space-2);
+}
+
+.composer-run-controls-with-effort {
+	/* Capability-driven Agent / Model / Effort sizing: 2 / 2 / 1. */
+	grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(5.5rem, 1fr);
 }
 
 .composer-toolbar-slot {
