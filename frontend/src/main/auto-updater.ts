@@ -2161,6 +2161,15 @@ function schedulePeriodicAutomaticUpdateCheck(
   stateDir: string,
   intervalMs: number,
 ): void {
+  // Every path that arms the periodic timer lands here: startup, a settings
+  // change, a manual check, and the timer re-arming itself. A package-managed
+  // install can never apply a discovered build, so the timer is refused at
+  // the choke point rather than only at startup, or a later settings write
+  // would quietly start the polling startAutoUpdates declined.
+  if (getLinuxInstallBlocker() !== undefined) {
+    stopPeriodicAutomaticUpdateCheck();
+    return;
+  }
   if (
     automaticUpdateTimer !== undefined &&
     automaticUpdateTimerIntervalMs === intervalMs
@@ -2213,8 +2222,25 @@ async function requestAutomaticUpdateCheck(
 // Caller guards on app.isPackaged.
 export async function startAutoUpdates(stateDir: string): Promise<void> {
   escalationStateDir = stateDir;
-  restoreStagedBuild(stateDir);
+  // The retirement poll runs on every install kind, blocked or not. It is a
+  // settings reconcile, not an update: a user who pinned a pr<N> build and
+  // then moved to a system package would otherwise keep that pin, and the
+  // dead pr<N> channel in saved settings, with nothing ever clearing it.
   startRetirementPollTimer(stateDir);
+  // A package-managed install can never apply what a check would find, so the
+  // check itself is waste: a periodic timer plus a ~180MB download, discarded.
+  // escalationStateDir is set before the guard: the escalation paths read it
+  // regardless of whether this process goes on to check. Nothing was ever
+  // staged from here either, so the staged-build restore is skipped along with
+  // the check. The periodic timer is refused again in
+  // schedulePeriodicAutomaticUpdateCheck, which covers the settings-change and
+  // manual-check paths that never pass here.
+  const blocker = getLinuxInstallBlocker();
+  if (blocker !== undefined) {
+    console.info("auto-updates disabled:", blocker);
+    return;
+  }
+  restoreStagedBuild(stateDir);
   const intervalMs = await requestAutomaticUpdateCheck(stateDir);
   if (intervalMs !== undefined)
     schedulePeriodicAutomaticUpdateCheck(stateDir, intervalMs);
@@ -2284,6 +2310,7 @@ export async function checkForUpdatesNow(
     });
     return;
   }
+  if (refuseManualUpdateOnPackagedInstall(options.requestId)) return;
   // Which phase a failure came from. The queue clears global operation state in
   // its own `finally` before this function's catch runs, and a queued operation
   // can reset the module-level phase, so the distinction is captured locally
@@ -2391,6 +2418,7 @@ export async function returnToHome(
     });
     return;
   }
+  if (refuseManualUpdateOnPackagedInstall(requestId)) return;
   // See checkForUpdatesNow: boxed so the closure assignment is visible here.
   const failed: { phase: UpdatePhase } = { phase: "check" };
   try {
@@ -2456,6 +2484,7 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
     });
     return;
   }
+  if (refuseManualUpdateOnPackagedInstall(requestId)) return;
   manualDownloadPending = true;
   broadcast({ state: "downloading", version, requestId });
   try {
@@ -2578,6 +2607,60 @@ export function getMacInstallBlocker(): string | undefined {
   return undefined;
 }
 
+// getLinuxInstallBlocker is the Linux install preflight, and the counterpart to
+// the macOS one above. A deb, rpm or Arch install puts the app under root-owned
+// /usr with every file tracked by the package manager, so electron-updater
+// downloads a build it can never write into place — and would fight the package
+// manager for ownership if it could. An AppImage is the opposite case: it is a
+// single user-owned file the updater replaces normally, and APPIMAGE is set
+// only in that case, so it is the discriminator rather than the path.
+//
+// Fails open like the macOS path: only a positively identified blocker
+// suppresses the attempt.
+export function getLinuxInstallBlocker(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  if (process.env.APPIMAGE) return undefined;
+  const appDir = path.dirname(process.execPath);
+  if (!existsSync(appDir)) return undefined;
+  try {
+    accessSync(appDir, fsConstants.W_OK);
+  } catch {
+    return (
+      "Agent Orchestrator was installed by your system's package manager, so it " +
+      "updates with the rest of your system rather than updating itself. Use " +
+      "your package manager to get the latest version."
+    );
+  }
+  return undefined;
+}
+
+// refuseManualUpdateOnPackagedInstall is the guard every manual entry point
+// (Settings "check now", the download buttons, and "return to home channel")
+// runs before touching the feed.
+// startAutoUpdates only covers the timer; the settings IPC handler reaches
+// checkForUpdatesNow directly, and the sidebar reaches downloadUpdateNow, so
+// without this a package-managed install still hit the feed and could pull a
+// ~180MB build that quitAndInstallUpdate then refused. Refusing up front
+// reports the package-manager guidance instead of a "downloaded" build that
+// can never install. Returns true when the caller must stop.
+function refuseManualUpdateOnPackagedInstall(requestId?: string): boolean {
+  const blocker = getLinuxInstallBlocker();
+  if (blocker === undefined) return false;
+  emitUpdateOutcome({
+    event: "ao.renderer.update_unsupported",
+    phase: activeUpdaterPhase,
+    trigger: activeUpdateTrigger(),
+    error_category: "not_supported",
+  });
+  broadcast({ state: "unsupported", message: blocker, requestId });
+  return true;
+}
+
+// getInstallBlocker is the platform-dispatching preflight the install paths ask.
+export function getInstallBlocker(): string | undefined {
+  return getMacInstallBlocker() ?? getLinuxInstallBlocker();
+}
+
 // applyInstallOnQuitPolicy keeps autoInstallOnAppQuit honest. Every check path
 // sets it to true, and the "downloaded" status row tells the user the build
 // installs on quit. When the install cannot work from this location that is a
@@ -2585,7 +2668,7 @@ export function getMacInstallBlocker(): string | undefined {
 // did, and #3527's dialog only ever covered the button. Turning it off makes
 // the staged build wait for a location it can actually install from.
 function applyInstallOnQuitPolicy(): void {
-  const blocker = getMacInstallBlocker();
+  const blocker = getInstallBlocker();
   autoUpdater.autoInstallOnAppQuit = blocker === undefined && !awaitingStagedReplacement && !nativePreparationBlocked;
   if (awaitingStagedReplacement) {
     console.info(
@@ -2614,7 +2697,7 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
   if (awaitingStagedReplacement) {
     throw new Error("Check for updates and download an update before restarting to install.");
   }
-  const blocker = getMacInstallBlocker();
+  const blocker = getInstallBlocker();
   if (blocker !== undefined) {
     throw new Error(blocker);
   }
