@@ -3818,6 +3818,9 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		AutoReviewEnabled: projectConfig.AutoReview,
 		AutoInjectReview:  true,
 		AutoInjectCI:      true,
+		// New sessions default to tearing themselves down once their PR set
+		// completes through a merge. Users can opt out per session.
+		TerminateOnPRMerge: true,
 	}
 }
 
