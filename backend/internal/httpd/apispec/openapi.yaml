@@ -12718,6 +12718,8 @@ components:
       type: object
     WorkspaceRepo:
       properties:
+        defaultBranch:
+          type: string
         gitStatus:
           type: string
         name:

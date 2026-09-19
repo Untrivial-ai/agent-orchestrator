@@ -41,6 +41,7 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | `ao project add`                    | `POST /api/v1/projects`                        |
 | `ao project ls`                     | `GET /api/v1/projects`                         |
 | `ao project get <id>`               | `GET /api/v1/projects/{id}`                    |
+| `ao project repos [<project-id>]`   | `GET /api/v1/projects/{id}` (workspace children inspect primitive) |
 | `ao project set-config <id>`        | `PUT /api/v1/projects/{id}/config`             |
 | `ao project rm <id>`                | `DELETE /api/v1/projects/{id}`                 |
 | `ao agent ls`                       | `POST /api/v1/agents/readiness/ensure` (`display`) |

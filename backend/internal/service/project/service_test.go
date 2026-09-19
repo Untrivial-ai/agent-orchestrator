@@ -1590,6 +1590,42 @@ func TestManager_AddWorkspacePreservesAOInitializedChildDefaultBranchWithoutRemo
 	}
 }
 
+func TestManager_GetWorkspaceExposesChildDefaultBranch(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := t.TempDir()
+	for _, child := range []struct{ name, def, feat string }{
+		{"api", "dev", "feat-x"},
+		{"cli", "main", "feat-y"},
+	} {
+		src := gitRepoWithOriginHead(t, child.def, child.feat)
+		if err := os.Rename(src, filepath.Join(parent, child.name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := m.Add(ctx, project.AddInput{Path: parent, ProjectID: ptr("ws-branches"), AsWorkspace: true}); err != nil {
+		t.Fatalf("Add workspace: %v", err)
+	}
+	got, err := m.Get(ctx, "ws-branches")
+	if err != nil {
+		t.Fatalf("Get workspace: %v", err)
+	}
+	if got.Project == nil || len(got.Project.WorkspaceRepos) != 2 {
+		t.Fatalf("Get = %#v, want 2 child repos", got)
+	}
+	byName := map[string]project.WorkspaceRepo{}
+	for _, r := range got.Project.WorkspaceRepos {
+		byName[r.Name] = r
+	}
+	if byName["api"].DefaultBranch != "dev" {
+		t.Fatalf("api defaultBranch = %q, want dev", byName["api"].DefaultBranch)
+	}
+	if byName["cli"].DefaultBranch != "main" {
+		t.Fatalf("cli defaultBranch = %q, want main", byName["cli"].DefaultBranch)
+	}
+}
+
 func TestManager_AddWorkspaceAcceptsUnbornChildAsNeedsInit(t *testing.T) {
 	configureCommitter(t)
 	ctx := context.Background()

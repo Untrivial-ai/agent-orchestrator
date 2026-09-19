@@ -4549,6 +4549,7 @@ export interface components {
             status: "unmodified" | "modified" | "added" | "deleted" | "renamed";
         };
         WorkspaceRepo: {
+            defaultBranch?: string;
             gitStatus?: string;
             name: string;
             relativePath: string;

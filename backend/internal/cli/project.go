@@ -68,9 +68,11 @@ type projectDetails struct {
 }
 
 type workspaceRepoDetails struct {
-	Name         string `json:"name"`
-	RelativePath string `json:"relativePath"`
-	Repo         string `json:"repo"`
+	Name          string `json:"name"`
+	RelativePath  string `json:"relativePath"`
+	Repo          string `json:"repo"`
+	DefaultBranch string `json:"defaultBranch,omitempty"`
+	GitStatus     string `json:"gitStatus,omitempty"`
 }
 
 // agentConfig mirrors the daemon's typed domain.AgentConfig for the CLI client.
@@ -182,6 +184,7 @@ func newProjectCommand(ctx *commandContext) *cobra.Command {
 	}
 	cmd.AddCommand(newProjectListCommand(ctx))
 	cmd.AddCommand(newProjectGetCommand(ctx))
+	cmd.AddCommand(newProjectReposCommand(ctx))
 	cmd.AddCommand(newProjectAddCommand(ctx))
 	cmd.AddCommand(newProjectSetConfigCommand(ctx))
 	cmd.AddCommand(newProjectRemoveCommand(ctx))
@@ -241,6 +244,165 @@ func newProjectGetCommand(ctx *commandContext) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opts.json, "json", false, "Output project as JSON")
 	return cmd
+}
+
+type projectReposOptions struct {
+	json bool
+}
+
+// projectReposResult is the JSON envelope for `ao project repos <id>`: the
+// inspect primitive slice 1 of #5644 hangs off. Orchestrators use --json to
+// see registry-vs-disk drift without parsing human text.
+type projectReposResult struct {
+	ProjectID string                 `json:"projectId"`
+	Repos     []workspaceRepoDetails `json:"repos"`
+}
+
+// projectAllReposResult is the JSON envelope for `ao project repos` without an
+// id: one entry per workspace project.
+type projectAllReposResult struct {
+	Projects []projectReposResult `json:"projects"`
+}
+
+func newProjectReposCommand(ctx *commandContext) *cobra.Command {
+	var opts projectReposOptions
+	cmd := &cobra.Command{
+		Use:   "repos [<project-id>]",
+		Short: "List child repos of a workspace project",
+		Long: "List the registered child repos of a workspace project " +
+			"(name, relative path, origin URL, default branch). " +
+			"Without a project id, lists child repos for every workspace project. " +
+			"Use --json for the orchestrator-friendly inspect primitive.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 1 {
+				return usageError{errors.New("usage: ao project repos [<project-id>]")}
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				id := strings.TrimSpace(args[0])
+				if id == "" {
+					return usageError{errors.New("usage: ao project repos [<project-id>]")}
+				}
+				res, err := fetchProjectRepos(cmd, ctx, id)
+				if err != nil {
+					return err
+				}
+				if opts.json {
+					return writeJSON(cmd.OutOrStdout(), res)
+				}
+				return writeProjectRepos(cmd, res)
+			}
+			all, err := fetchAllProjectRepos(cmd, ctx)
+			if err != nil {
+				return err
+			}
+			if opts.json {
+				return writeJSON(cmd.OutOrStdout(), all)
+			}
+			return writeAllProjectRepos(cmd, all)
+		},
+	}
+	cmd.Flags().BoolVar(&opts.json, "json", false, "Output child repos as JSON")
+	return cmd
+}
+
+// fetchProjectRepos loads one project and returns its registered workspace
+// children. Non-workspace projects are a runtime error (exit 1), not usage.
+func fetchProjectRepos(cmd *cobra.Command, ctx *commandContext, id string) (projectReposResult, error) {
+	var res projectGetResult
+	if err := ctx.getJSON(cmd.Context(), "projects/"+url.PathEscape(id), &res); err != nil {
+		return projectReposResult{}, err
+	}
+	if res.Project.Kind != "" && res.Project.Kind != "workspace" {
+		return projectReposResult{}, fmt.Errorf("project %s is not a workspace project (kind=%s)", res.Project.ID, res.Project.Kind)
+	}
+	repos := res.Project.WorkspaceRepos
+	if repos == nil {
+		repos = []workspaceRepoDetails{}
+	}
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+	return projectReposResult{ProjectID: res.Project.ID, Repos: repos}, nil
+}
+
+// fetchAllProjectRepos lists every workspace project and its children. It
+// fans out over GET /projects/{id} because the list surface carries no child
+// rows; workspace counts are small so the N+1 is acceptable for a CLI.
+func fetchAllProjectRepos(cmd *cobra.Command, ctx *commandContext) (projectAllReposResult, error) {
+	var list projectListResult
+	if err := ctx.getJSON(cmd.Context(), "projects", &list); err != nil {
+		return projectAllReposResult{}, err
+	}
+	sort.Slice(list.Projects, func(i, j int) bool { return list.Projects[i].ID < list.Projects[j].ID })
+	out := projectAllReposResult{Projects: []projectReposResult{}}
+	for _, summary := range list.Projects {
+		kind := summary.Kind
+		if kind == "" {
+			kind = "single_repo"
+		}
+		if kind != "workspace" {
+			continue
+		}
+		res, err := fetchProjectRepos(cmd, ctx, summary.ID)
+		if err != nil {
+			return projectAllReposResult{}, err
+		}
+		out.Projects = append(out.Projects, res)
+	}
+	return out, nil
+}
+
+func writeProjectRepos(cmd *cobra.Command, res projectReposResult) error {
+	out := cmd.OutOrStdout()
+	if len(res.Repos) == 0 {
+		_, err := fmt.Fprintf(out, "No child repos registered for workspace project %s.\n", res.ProjectID)
+		return err
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tPATH\tORIGIN\tDEFAULT BRANCH\tSTATUS"); err != nil {
+		return err
+	}
+	for _, repo := range res.Repos {
+		branch := repo.DefaultBranch
+		if branch == "" {
+			branch = "-"
+		}
+		origin := repo.Repo
+		if origin == "" {
+			origin = "-"
+		}
+		status := repo.GitStatus
+		if status == "" {
+			status = "-"
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", repo.Name, repo.RelativePath, origin, branch, status); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func writeAllProjectRepos(cmd *cobra.Command, all projectAllReposResult) error {
+	out := cmd.OutOrStdout()
+	if len(all.Projects) == 0 {
+		_, err := fmt.Fprintln(out, "No workspace projects registered.")
+		return err
+	}
+	for i, res := range all.Projects {
+		if i > 0 {
+			if _, err := fmt.Fprintln(out, ""); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(out, "Project %s:\n", res.ProjectID); err != nil {
+			return err
+		}
+		if err := writeProjectRepos(cmd, res); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newProjectAddCommand(ctx *commandContext) *cobra.Command {
@@ -547,6 +709,9 @@ func writeProjectDetails(cmd *cobra.Command, res projectGetResult) error {
 			desc := repo.RelativePath
 			if repo.Repo != "" {
 				desc += " (" + repo.Repo + ")"
+			}
+			if repo.DefaultBranch != "" {
+				desc += " [" + repo.DefaultBranch + "]"
 			}
 			if _, err := fmt.Fprintf(out, "    %s: %s\n", repo.Name, desc); err != nil {
 				return err
