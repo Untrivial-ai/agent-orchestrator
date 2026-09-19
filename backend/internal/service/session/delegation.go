@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	delegatedTaskTitleLimit             = 20
+	delegatedTaskTitleLimit             = maxDisplayNameLen
 	delegatedTaskUntitledName           = "Untitled task"
 	delegatedTaskTitleRefinementTimeout = time.Minute
 )

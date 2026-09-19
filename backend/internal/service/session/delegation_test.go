@@ -51,7 +51,7 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 			if out.WorkerID != "mer-9" || out.OrchestratorID != "" {
 				t.Fatalf("out = %#v, want worker mer-9 with asynchronous title handoff", out)
 			}
-			if !cmd.spawned || cmd.spawnedCfg.ProjectID != "ao" || cmd.spawnedCfg.Kind != domain.KindWorker || cmd.spawnedCfg.Harness != tt.wantAgent || cmd.spawnedCfg.Prompt != brief || cmd.spawnedCfg.DisplayName != "Fix the renderer wit" {
+			if !cmd.spawned || cmd.spawnedCfg.ProjectID != "ao" || cmd.spawnedCfg.Kind != domain.KindWorker || cmd.spawnedCfg.Harness != tt.wantAgent || cmd.spawnedCfg.Prompt != brief || cmd.spawnedCfg.DisplayName != "Fix the renderer without changing the API." {
 				t.Fatalf("spawn cfg = %#v", cmd.spawnedCfg)
 			}
 			if cmd.spawnedCfg.AgentConfig.Model != strings.TrimSpace(tt.model) {
@@ -98,8 +98,9 @@ func TestDelegatedTaskDisplayName(t *testing.T) {
 	}{
 		{name: "empty", brief: " \n\t ", want: "Untitled task"},
 		{name: "short", brief: "  tell me a joke  ", want: "tell me a joke"},
-		{name: "whitespace", brief: "Fix the renderer\nwithout changing the API", want: "Fix the renderer wit"},
-		{name: "unicode rune limit", brief: "一二三四五六七八九十一二三四五六七八九十一", want: "一二三四五六七八九十一二三四五六七八九十"},
+		{name: "whitespace", brief: "Fix the renderer\nwithout changing the API", want: "Fix the renderer without changing the API"},
+		{name: "unicode rune limit", brief: strings.Repeat("一", 101), want: strings.Repeat("一", 100)},
+		{name: "truncates past the rune limit", brief: strings.Repeat(" long", 21), want: strings.TrimSpace(strings.Repeat(" long", 21)[:100])},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := delegatedTaskDisplayName(tt.brief); got != tt.want {

@@ -854,6 +854,24 @@ func TestManager_UpdateSettings(t *testing.T) {
 	if updatedWithLegacy.Name != legacyName || updatedWithLegacy.DefaultBranch != "main" {
 		t.Fatalf("UpdateSettings result = %#v, want unchanged legacy name with new branch", updatedWithLegacy)
 	}
+
+	// A legacy name stored with surrounding whitespace must also hit the
+	// exemption: the renderer seeds the settings field from project.name and
+	// sends .trim(), so compare against the trimmed stored value.
+	paddedLegacy := "  " + strings.Repeat("l", 110) + "  "
+	if _, err := store.UpdateProjectSettings(ctx, "ao", paddedLegacy, cfg); err != nil {
+		t.Fatalf("UpdateProjectSettings with padded legacy name: %v", err)
+	}
+	paddedUpdated, err := m.UpdateSettings(ctx, "ao", project.UpdateSettingsInput{
+		DisplayName: strings.Repeat("l", 110),
+		Config:      domain.ProjectConfig{DefaultBranch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings with trimmed whitespace-padded legacy name: %v", err)
+	}
+	if paddedUpdated.Name != strings.Repeat("l", 110) || paddedUpdated.DefaultBranch != "main" {
+		t.Fatalf("UpdateSettings result = %#v, want trimmed legacy name with new branch", paddedUpdated)
+	}
 }
 
 func TestManager_Add_DisplayNameValidationAndTruncation(t *testing.T) {

@@ -709,7 +709,7 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if !ok || !row.ArchivedAt.IsZero() {
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
-	if utf8.RuneCountInString(inDisplayName) > maxDisplayNameLen && inDisplayName != projectDisplayName(row) {
+	if utf8.RuneCountInString(inDisplayName) > maxDisplayNameLen && inDisplayName != strings.TrimSpace(projectDisplayName(row)) {
 		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", fmt.Sprintf("Display name must be %d characters or fewer", maxDisplayNameLen), nil)
 	}
 	if row.Kind.WithDefault() == domain.ProjectKindScratch {
