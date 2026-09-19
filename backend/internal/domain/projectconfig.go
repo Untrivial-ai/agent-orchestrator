@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -46,6 +47,11 @@ type ProjectConfig struct {
 
 	// AgentConfig is the default agent config for the project.
 	AgentConfig AgentConfig `json:"agentConfig,omitempty"`
+	// HarnessConfigs holds per-harness agent-config overrides. A session running
+	// harness H layers HarnessConfigs[H] over AgentConfig before the role
+	// override is applied, so a project can tune model/effort per harness
+	// without repeating them per role. Keys must be a known harness.
+	HarnessConfigs map[AgentHarness]AgentConfig `json:"harnessConfigs,omitempty"`
 	// Worker and Orchestrator are role-specific harness/agent-config overrides.
 	Worker       RoleOverride `json:"worker,omitempty"`
 	Orchestrator RoleOverride `json:"orchestrator,omitempty"`
@@ -180,6 +186,21 @@ func (c ProjectConfig) Validate() error {
 	}
 	if err := c.AgentConfig.Validate(); err != nil {
 		return err
+	}
+	// Keys iterate deterministically so error messages are stable. Sort the
+	// harness names even though the map lookup is order-independent.
+	harnessKeys := make([]AgentHarness, 0, len(c.HarnessConfigs))
+	for harness := range c.HarnessConfigs {
+		harnessKeys = append(harnessKeys, harness)
+	}
+	sort.Slice(harnessKeys, func(i, j int) bool { return harnessKeys[i] < harnessKeys[j] })
+	for _, harness := range harnessKeys {
+		if !harness.IsKnown() {
+			return fmt.Errorf("harnessConfigs[%q]: unknown harness %q", harness, harness)
+		}
+		if err := c.HarnessConfigs[harness].Validate(); err != nil {
+			return fmt.Errorf("harnessConfigs[%q]: %w", harness, err)
+		}
 	}
 	if err := validateNameComponent("sessionPrefix", c.SessionPrefix); err != nil {
 		return err

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -97,6 +98,89 @@ func TestBuildProjectConfigTrackerIntakeFlags(t *testing.T) {
 	// Provider is omitted: the daemon infers it from the project's git origin.
 	if !got.TrackerIntake.Enabled || got.TrackerIntake.Provider != "" || got.TrackerIntake.Repo != "acme/demo" || got.TrackerIntake.Assignee != "alice" {
 		t.Fatalf("tracker intake config = %#v", got.TrackerIntake)
+	}
+}
+
+func TestBuildProjectConfigHarnessModelEffortFlags(t *testing.T) {
+	got, err := buildProjectConfig(projectSetConfigOptions{
+		effort:        "high",
+		harnessModel:  []string{"claude-code=opus", "opencode=some-model"},
+		harnessEffort: []string{"opencode=high", "codex=low"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentConfig.Effort != "high" {
+		t.Fatalf("base effort = %q, want high", got.AgentConfig.Effort)
+	}
+	if got.HarnessConfigs["claude-code"].Model != "opus" {
+		t.Fatalf("claude-code harness config = %#v, want model opus", got.HarnessConfigs["claude-code"])
+	}
+	// The same harness named in both lists merges into one entry.
+	if got.HarnessConfigs["opencode"].Model != "some-model" || got.HarnessConfigs["opencode"].Effort != "high" {
+		t.Fatalf("opencode harness config = %#v, want model some-model effort high", got.HarnessConfigs["opencode"])
+	}
+	if got.HarnessConfigs["codex"].Effort != "low" {
+		t.Fatalf("codex harness config = %#v, want effort low", got.HarnessConfigs["codex"])
+	}
+}
+
+func TestBuildProjectConfigHarnessFlagsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		opts projectSetConfigOptions
+	}{
+		{"harness model missing equals", projectSetConfigOptions{harnessModel: []string{"codex"}}},
+		{"harness model empty harness", projectSetConfigOptions{harnessModel: []string{"=opus"}}},
+		{"harness model whitespace harness", projectSetConfigOptions{harnessModel: []string{"  =opus"}}},
+		{"harness effort missing equals", projectSetConfigOptions{harnessEffort: []string{"opencode"}}},
+		{"harness effort empty harness", projectSetConfigOptions{harnessEffort: []string{"=high"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildProjectConfig(tt.opts)
+			var usage usageError
+			if err == nil || !errors.As(err, &usage) {
+				t.Fatalf("err = %v, want usageError", err)
+			}
+		})
+	}
+}
+
+func TestProjectSetConfig_HarnessModelEffortFlags(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "set-config", "demo",
+		"--effort", "high",
+		"--harness-model", "claude-code=opus",
+		"--harness-model", "opencode=x-model",
+		"--harness-effort", "opencode=high",
+		"--harness-effort", "codex=low")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPut || capture.path != "/api/v1/projects/demo/config" {
+		t.Fatalf("request = %s %s, want PUT /api/v1/projects/demo/config", capture.method, capture.path)
+	}
+	var got setConfigRequest
+	if err := json.Unmarshal(capture.body, &got); err != nil {
+		t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
+	}
+	if got.Config.AgentConfig.Effort != "high" {
+		t.Fatalf("base effort = %q, want high", got.Config.AgentConfig.Effort)
+	}
+	if got.Config.HarnessConfigs["claude-code"].Model != "opus" {
+		t.Fatalf("claude-code harness config = %#v, want model opus", got.Config.HarnessConfigs["claude-code"])
+	}
+	if got.Config.HarnessConfigs["opencode"].Model != "x-model" || got.Config.HarnessConfigs["opencode"].Effort != "high" {
+		t.Fatalf("opencode harness config = %#v, want model x-model effort high", got.Config.HarnessConfigs["opencode"])
+	}
+	if got.Config.HarnessConfigs["codex"].Effort != "low" {
+		t.Fatalf("codex harness config = %#v, want effort low", got.Config.HarnessConfigs["codex"])
 	}
 }
 

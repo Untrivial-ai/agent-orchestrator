@@ -301,6 +301,92 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	}
 }
 
+func TestEffectiveAgentConfigLayersPerHarnessConfig(t *testing.T) {
+	cfg := domain.ProjectConfig{
+		AgentConfig: domain.AgentConfig{Model: "base", Effort: "low", Mode: "", Permissions: domain.PermissionModeAuto},
+		HarnessConfigs: map[domain.AgentHarness]domain.AgentConfig{
+			domain.HarnessOpenCode:   {Model: "opencode-model", Effort: "high"},
+			domain.HarnessClaudeCode: {Model: "claude-model"},
+		},
+		// No Model here so the per-harness entries are observable; the harness
+		// config layers between base and the role override.
+		Worker: domain.RoleOverride{Harness: domain.HarnessCodex},
+	}
+
+	// A harness with a per-harness entry layers it over base.
+	got := effectiveAgentConfig(domain.HarnessOpenCode, domain.KindWorker, cfg)
+	if got.Model != "opencode-model" || got.Effort != "high" {
+		t.Fatalf("opencode worker config = %#v, want model=opencode-model effort=high", got)
+	}
+
+	// A per-harness entry that sets only the model keeps the base effort.
+	got = effectiveAgentConfig(domain.HarnessClaudeCode, domain.KindWorker, cfg)
+	if got.Model != "claude-model" || got.Effort != "low" {
+		t.Fatalf("claude worker config = %#v, want model=claude-model effort=low", got)
+	}
+
+	// A harness without a per-harness entry falls back to base.
+	got = effectiveAgentConfig(domain.HarnessAider, domain.KindWorker, cfg)
+	if got.Model != "base" || got.Effort != "low" {
+		t.Fatalf("aider worker config = %#v, want model=base effort=low", got)
+	}
+
+	// A role override pinned to the launching harness still wins over the
+	// per-harness entry (set fields win).
+	cfg.HarnessConfigs[domain.HarnessCodex] = domain.AgentConfig{Model: "codex-model", Effort: "low"}
+	cfg.Worker = domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "worker-model", Effort: "high"}}
+	got = effectiveAgentConfig(domain.HarnessCodex, domain.KindWorker, cfg)
+	if got.Model != "worker-model" || got.Effort != "high" {
+		t.Fatalf("codex worker with role override = %#v, want model=worker-model effort=high", got)
+	}
+
+	// A role override pinned to a different harness is dropped for the launching
+	// harness; the per-harness entry still applies.
+	got = effectiveAgentConfig(domain.HarnessOpenCode, domain.KindWorker, cfg)
+	if got.Model != "opencode-model" || got.Effort != "high" {
+		t.Fatalf("opencode worker with mismatched role override = %#v, want model=opencode-model effort=high", got)
+	}
+
+	// The orchestrator role keeps its own harness override slot.
+	cfg.Orchestrator = domain.RoleOverride{Harness: domain.HarnessOpenCode, AgentConfig: domain.AgentConfig{Model: "orch-model"}}
+	got = effectiveAgentConfig(domain.HarnessOpenCode, domain.KindOrchestrator, cfg)
+	if got.Model != "orch-model" {
+		t.Fatalf("orchestrator opencode config = %#v, want model=orch-model", got)
+	}
+}
+
+func TestEffectiveAgentConfigDropsRoleOverrideForOtherHarness(t *testing.T) {
+	cfg := domain.ProjectConfig{
+		AgentConfig: domain.AgentConfig{Model: "base", Permissions: domain.PermissionModeAuto},
+		HarnessConfigs: map[domain.AgentHarness]domain.AgentConfig{
+			domain.HarnessCodex: {Model: "codex-model"},
+		},
+		Worker: domain.RoleOverride{Harness: domain.HarnessClaudeCode, AgentConfig: domain.AgentConfig{Model: "claude-model", Permissions: domain.PermissionModeAcceptEdits}},
+	}
+	rec := domain.SessionRecord{Kind: domain.KindWorker}
+
+	// Switching to the harness the role override is pinned to layers everything.
+	got := effectiveAgentConfig(domain.HarnessClaudeCode, rec.Kind, cfg)
+	if got.Model != "claude-model" || got.Permissions != domain.PermissionModeAcceptEdits {
+		t.Fatalf("claude switch config = %#v, want model=claude-model, permissions=accept-edits", got)
+	}
+
+	// Switching to a different harness keeps base + per-harness config for the
+	// target, drops the role override's model/effort/mode, but preserves its
+	// permission mode.
+	got = effectiveAgentConfig(domain.HarnessCodex, rec.Kind, cfg)
+	if got.Model != "codex-model" || got.Permissions != domain.PermissionModeAcceptEdits {
+		t.Fatalf("codex switch config = %#v, want model=codex-model, permissions=accept-edits", got)
+	}
+
+	// A target harness with no per-harness entry resolves to base plus the
+	// carried-over permission mode.
+	got = effectiveAgentConfig(domain.HarnessAider, rec.Kind, cfg)
+	if got.Model != "base" || got.Permissions != domain.PermissionModeAcceptEdits {
+		t.Fatalf("aider switch config = %#v, want model=base, permissions=accept-edits", got)
+	}
+}
+
 type tuningCatalog struct {
 	catalog ports.AgentModelCatalog
 	err     error

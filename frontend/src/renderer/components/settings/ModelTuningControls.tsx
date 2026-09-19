@@ -32,15 +32,16 @@ export function useModelTuning(props: Omit<ModelTuningControlsProps, "variant" |
 	const selected =
 		models?.find((item) => item.id === model) ??
 		(model === "" ? models?.find((item) => item.isDefault) : undefined);
-	const capabilitiesKnown = models !== undefined;
-	const invalidEffort = Boolean(effort && capabilitiesKnown && !selected?.efforts?.includes(effort));
+	// Only a catalog model with known efforts can prove an effort unsupported.
+	// Custom ids and empty catalogs are unverifiable, not invalid.
+	const invalidEffort = Boolean(effort && selected && !selected.efforts?.includes(effort));
 
 	useEffect(() => {
 		if (previousModel.current === model) return;
-		if (!capabilitiesKnown) return;
+		if (!selected) return;
 		previousModel.current = model;
-		if (effort && !selected?.efforts?.includes(effort)) onEffortReset("");
-	}, [capabilitiesKnown, effort, model, onEffortReset, selected]);
+		if (effort && !selected.efforts?.includes(effort)) onEffortReset("");
+	}, [effort, model, onEffortReset, selected]);
 
 	useEffect(() => {
 		const valid = !invalidEffort;

@@ -20,6 +20,12 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"good role override", ProjectConfig{Worker: RoleOverride{Harness: HarnessCodex}}, false},
 		{"unknown role harness", ProjectConfig{Orchestrator: RoleOverride{Harness: "nope"}}, true},
 		{"bad role agent config", ProjectConfig{Worker: RoleOverride{AgentConfig: AgentConfig{Permissions: "nope"}}}, true},
+		{"good harness config", ProjectConfig{HarnessConfigs: map[AgentHarness]AgentConfig{HarnessCodex: {Model: "m"}}}, false},
+		{"good harness config with effort", ProjectConfig{HarnessConfigs: map[AgentHarness]AgentConfig{HarnessOpenCode: {Effort: "high"}}}, false},
+		{"unknown harness config key", ProjectConfig{HarnessConfigs: map[AgentHarness]AgentConfig{"nope": {Model: "m"}}}, true},
+		{"fake harness not user-selectable", ProjectConfig{HarnessConfigs: map[AgentHarness]AgentConfig{HarnessFake: {Model: "m"}}}, true},
+		{"bad harness config value", ProjectConfig{HarnessConfigs: map[AgentHarness]AgentConfig{HarnessCodex: {Permissions: "yolo"}}}, true},
+		{"multiple harness configs good", ProjectConfig{HarnessConfigs: map[AgentHarness]AgentConfig{HarnessCodex: {Model: "m"}, HarnessClaudeCode: {Effort: "low"}}}, false},
 		{"good symlinks", ProjectConfig{Symlinks: []string{".env", "configs/dev.toml"}}, false},
 		{"symlink absolute path", ProjectConfig{Symlinks: []string{"/etc/passwd"}}, true},
 		{"symlink parent escape", ProjectConfig{Symlinks: []string{"../escape"}}, true},
@@ -209,6 +215,9 @@ func TestProjectConfigIsZero(t *testing.T) {
 	}
 	if (ProjectConfig{Env: map[string]string{"A": "b"}}).IsZero() {
 		t.Fatal("config with env should not be zero")
+	}
+	if (ProjectConfig{HarnessConfigs: map[AgentHarness]AgentConfig{HarnessCodex: {Model: "m"}}}).IsZero() {
+		t.Fatal("config with harnessConfigs should not be zero")
 	}
 	if (ProjectConfig{AutoReview: true}).IsZero() {
 		t.Fatal("config with autoReview enabled should not be zero")
