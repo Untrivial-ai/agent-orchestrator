@@ -2160,3 +2160,42 @@ func TestEmptyCloneOnboardingCreatesFirstWorkspace(t *testing.T) {
 		})
 	}
 }
+
+// Registration must persist registered_at in UTC. A time.Time in a zone with a
+// numeric abbreviation round-trips through SQLite as a string the driver cannot
+// parse back — e.g. "2026-09-11 20:39:10.511227327 +0530 +0530". The failed
+// Scan then breaks every ListProjects for users in those zones.
+func TestManager_AddPersistsRegisteredAtInUTC(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	// Asia/Colombo and similar zones abbreviate to a numeric "+0530", which the
+	// driver cannot parse back from time.Time.String(); a letter abbreviation
+	// such as "IST" would not reproduce the failure.
+	colombo := time.FixedZone("+0530", 5*60*60+30*60)
+	m := project.NewWithDeps(project.Deps{
+		Store: store,
+		Clock: func() time.Time { return time.Now().In(colombo) },
+	})
+
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	row, ok, err := store.GetProject(ctx, "ao")
+	if err != nil || !ok {
+		t.Fatalf("GetProject: err=%v ok=%v", err, ok)
+	}
+	if _, offset := row.RegisteredAt.Zone(); offset != 0 {
+		t.Fatalf("registered_at zone offset = %d, want 0 (UTC)", offset)
+	}
+
+	// The read path a failed boot dies on.
+	if _, err := m.List(ctx); err != nil {
+		t.Fatalf("List after registering from a non-UTC zone: %v", err)
+	}
+}
