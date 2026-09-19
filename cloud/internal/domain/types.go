@@ -55,6 +55,7 @@ type CreateProject struct {
 type UpdateProject struct {
 	DisplayName   string
 	DefaultBranch string
+	Config        json.RawMessage
 }
 
 type Session struct {

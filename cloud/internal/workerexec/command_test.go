@@ -226,3 +226,39 @@ func TestBuildInteractiveCursorBuildsWithoutPrompt(t *testing.T) {
 		t.Fatalf("cursor unexpectedly carries a system prompt flag: %q", prompt)
 	}
 }
+
+func TestBuildInteractiveUsesCloudProjectAgentConfig(t *testing.T) {
+	command, err := (HarnessBuilder{
+		DataDir: t.TempDir(),
+		CodexLogin: func(_, _, _, _ string) error {
+			return nil
+		},
+	}).BuildInteractive(worker.LaunchContext{
+		SessionID: "11111111-1111-4111-8111-111111111111",
+		Kind:      "worker",
+		Harness:   "codex",
+		Mode:      "standard",
+		AgentConfig: worker.AgentConfig{
+			Model:       "gpt-5",
+			Effort:      "high",
+			Permissions: "bypass-permissions",
+		},
+	}, worker.CredentialResponse{
+		Provider: "codex", CredentialType: "api_key", Secret: "test-secret",
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("BuildInteractive: %v", err)
+	}
+	if command.Cleanup != nil {
+		t.Cleanup(command.Cleanup)
+	}
+	if !containsAdjacent(command.Args, "--model", "gpt-5") {
+		t.Fatalf("configured model missing from %#v", command.Args)
+	}
+	if !containsAdjacent(command.Args, "-c", `model_reasoning_effort="high"`) {
+		t.Fatalf("configured effort missing from %#v", command.Args)
+	}
+	if !slices.Contains(command.Args, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("configured permission policy missing from %#v", command.Args)
+	}
+}

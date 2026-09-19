@@ -21,11 +21,21 @@ type LaunchContext struct {
 	AgentSessionID string `json:"agentSessionId,omitempty"`
 	// ParentSessionID is the orchestrator that spawned this session; empty for
 	// top-level sessions.
-	ParentSessionID string   `json:"parentSessionId,omitempty"`
-	Mode            string   `json:"mode"`
-	DeniedCommands  []string `json:"deniedCommands"`
-	RepositoryURL   string   `json:"repositoryUrl"`
-	DefaultBranch   string   `json:"defaultBranch"`
+	ParentSessionID string      `json:"parentSessionId,omitempty"`
+	Mode            string      `json:"mode"`
+	DeniedCommands  []string    `json:"deniedCommands"`
+	RepositoryURL   string      `json:"repositoryUrl"`
+	DefaultBranch   string      `json:"defaultBranch"`
+	AgentConfig     AgentConfig `json:"agentConfig,omitempty"`
+}
+
+// AgentConfig is the role's project default captured in the worker launch
+// context. The worker applies settings that its selected harness supports.
+type AgentConfig struct {
+	Model       string `json:"model,omitempty"`
+	Effort      string `json:"effort,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	Permissions string `json:"permissions,omitempty"`
 }
 
 // BootstrapResponse is the control plane's answer to a valid bootstrap ticket.

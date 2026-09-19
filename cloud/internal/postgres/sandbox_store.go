@@ -825,6 +825,7 @@ func (s *Store) WorkerLaunchSpec(
 	orgID, sessionID string,
 ) (domain.WorkerLaunch, error) {
 	launch := domain.WorkerLaunch{OrgID: orgID}
+	var projectConfig json.RawMessage
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		err := tx.QueryRow(
 			ctx,
@@ -832,7 +833,7 @@ func (s *Store) WorkerLaunchSpec(
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.denied_commands,
 				COALESCE(session.parent_session_id::text, ''),
-				project.repository_url, project.default_branch
+				project.repository_url, project.default_branch, project.config
 			FROM ao_sessions session
 			JOIN ao_projects project ON project.id = session.project_id
 			WHERE session.id = $1 AND session.org_id = $2`,
@@ -852,6 +853,7 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.ParentSessionID,
 			&launch.RepositoryURL,
 			&launch.DefaultBranch,
+			&projectConfig,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
@@ -864,6 +866,7 @@ func (s *Store) WorkerLaunchSpec(
 	if err != nil {
 		return domain.WorkerLaunch{}, err
 	}
+	launch.AgentConfig = domain.ParseProjectSettings(projectConfig).AgentConfigForSession(launch.Kind)
 	return launch, nil
 }
 

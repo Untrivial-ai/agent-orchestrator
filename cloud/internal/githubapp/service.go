@@ -48,6 +48,7 @@ type Store interface {
 	GitHubInstallationByRoute(context.Context, string, string) (domain.GitHubInstallation, error)
 	ApplyGitHubInstallationEvent(context.Context, string, string, string) error
 	WorkerGitHubCheckoutContext(context.Context, string, string) (domain.GitHubCheckoutContext, error)
+	ProjectConfigForSession(context.Context, string, string) (json.RawMessage, error)
 	WorkerRemoteGitHubCheckoutContext(context.Context, string, string) (domain.RemoteGitHubCheckoutContext, error)
 	CreatePullRequestRecord(
 		ctx context.Context,

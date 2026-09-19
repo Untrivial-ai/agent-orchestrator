@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
+import { useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import { ensureCodexAccounts } from "../hooks/useCodexAccountsQuery";
 import { writeCodexAccounts } from "../hooks/codex-accounts-state";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
@@ -33,8 +34,8 @@ export function SettingsDialog() {
 	const queryClient = useQueryClient();
 	const settingsModal = useUiStore((state) => state.settingsModal);
 	const closeSettings = useUiStore((state) => state.closeSettings);
-	// Reads the daemon settings the dialog tree already queries; no extra fetch.
 	const { cloudEnabled } = useCloudGate();
+	const cloudProjects = useCloudProjectsQuery({ subscribed: false });
 
 	const displaySettings = settingsModal;
 	// The selected page includes several store/query subscribers. Mount it one
@@ -50,11 +51,14 @@ export function SettingsDialog() {
 
 	const globalSections = visibleGlobalSettings({ cloudEnabled });
 
+	const isCloudProject =
+		displaySettings?.scope === "project" &&
+		cloudProjects.data?.some((project) => project.id === displaySettings.projectId);
 	const projectSections: Array<{ id: ProjectSettingsSection; label: string; icon: LucideIcon }> = [
 		{ id: "general", label: t("settings.project.identity"), icon: MonitorCog },
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
 		{ id: "workflow", label: t("settings.project.workflow"), icon: GitBranch },
-		{ id: "intake", label: t("settings.project.intake"), icon: Inbox },
+		...(isCloudProject ? [] : [{ id: "intake" as const, label: t("settings.project.intake"), icon: Inbox }]),
 	];
 
 	const isProjectSettings = displaySettings?.scope === "project";
@@ -98,6 +102,10 @@ export function SettingsDialog() {
 			setProjectSaveState(initialProjectSaveState());
 		}
 	}, [cloudEnabled, settingsModal]);
+
+	useEffect(() => {
+		if (isCloudProject && activeProjectSection === "intake") setActiveProjectSection("general");
+	}, [activeProjectSection, isCloudProject]);
 
 	useEffect(() => {
 		const globalSettingsOpen = settingsModal?.scope === "global";

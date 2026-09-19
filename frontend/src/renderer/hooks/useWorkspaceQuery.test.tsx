@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { appI18n } from "../i18n";
-import type { WorkspaceSummary } from "../types/workspace";
+import { toKanbanColumn, type WorkspaceSummary } from "../types/workspace";
 
 const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, setQueryHealthyMock } = vi.hoisted(
 	() => ({
@@ -587,6 +587,65 @@ describe("useWorkspaceQuery", () => {
 		});
 		expect(result.current.data?.[2]).toMatchObject({ id: "__standalone__", name: "Scratchpad" });
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
+	});
+
+	it("maps a cloud session's prs and SCM status like a local session", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		listProjectsMock.mockResolvedValue({ items: [{ id: "cp-1", displayName: "cloud-app" }], page: { hasMore: false } });
+		listSessionsMock.mockResolvedValue({
+			items: [
+				{
+					id: "cloud-worker",
+					projectId: "cp-1",
+					kind: "worker",
+					harness: "codex",
+					displayName: "Fix login",
+					status: "ci_failed",
+					activityState: "idle",
+					isTerminated: false,
+					updatedAt: "2026-08-01T00:00:00Z",
+					scmStatus: "ci_failed",
+					prs: [
+						{
+							url: "https://github.com/acme/cloud-app/pull/7",
+							number: 7,
+							state: "open",
+							ci: "failing",
+							review: "none",
+							mergeability: "blocked",
+							reviewComments: false,
+							updatedAt: "2026-08-01T00:00:00Z",
+						},
+					],
+				},
+			],
+			page: { hasMore: false },
+		});
+		respondWith({
+			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+		});
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.data?.[1]?.sessions).toHaveLength(1));
+
+		expect(result.current.data?.[1]?.sessions[0]).toMatchObject({
+			status: "ci_failed",
+			scmStatus: "ci_failed",
+			kanbanColumn: toKanbanColumn(undefined, "ci_failed"),
+			prs: [
+				{
+					url: "https://github.com/acme/cloud-app/pull/7",
+					number: 7,
+					state: "open",
+					ci: "failing",
+					review: "none",
+					mergeability: "blocked",
+					reviewComments: false,
+					updatedAt: "2026-08-01T00:00:00Z",
+				},
+			],
+		});
 	});
 
 	it("keeps local projects when the cloud fetch fails", async () => {

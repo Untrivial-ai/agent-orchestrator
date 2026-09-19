@@ -21,7 +21,7 @@ import {
 	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
-import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useCloudProjectsQuery, useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
@@ -37,6 +37,7 @@ import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { SettingsRow } from "./settings/SettingsRow";
 import { Switch } from "./ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { CloudProjectSettingsForm, type CloudProjectSettingsSection } from "./CloudProjectSettingsForm";
 
 type Project = components["schemas"]["Project"];
 type ProjectConfig = components["schemas"]["ProjectConfig"];
@@ -62,6 +63,28 @@ export type ProjectSettingsSaveState = {
 };
 
 export function ProjectSettingsForm({
+	projectId,
+	section = "general",
+	onSaveState,
+}: {
+	projectId: string;
+	section?: ProjectSettingsSection;
+	onSaveState?: (state: ProjectSettingsSaveState) => void;
+}) {
+	const { t } = useTranslation();
+	const cloudProjects = useCloudProjectsQuery();
+	if (cloudProjects.isFetching && cloudProjects.data === undefined) {
+		return <p className="text-sm text-settings-muted">{t("settings.project.loading")}</p>;
+	}
+	const isCloudProject = cloudProjects.data?.some((project) => project.id === projectId) ?? false;
+	if (isCloudProject) {
+		const cloudSection: CloudProjectSettingsSection = section === "intake" ? "general" : section;
+		return <CloudProjectSettingsForm projectId={projectId} section={cloudSection} onSaveState={onSaveState} />;
+	}
+	return <LocalProjectSettingsForm projectId={projectId} section={section} onSaveState={onSaveState} />;
+}
+
+function LocalProjectSettingsForm({
 	projectId,
 	section = "general",
 	onSaveState,

@@ -464,16 +464,17 @@ func (c *Client) CreateRepositoryAsUser(
 // PullRequestResponse is the GitHub API's pull request shape, trimmed to the
 // fields this client needs.
 type PullRequestResponse struct {
-	ID           int64  `json:"id"`
-	Number       int    `json:"number"`
-	HTMLURL      string `json:"html_url"`
-	State        string `json:"state"`
-	Draft        bool   `json:"draft"`
-	Title        string `json:"title"`
-	User         User   `json:"user"`
-	Additions    int    `json:"additions"`
-	Deletions    int    `json:"deletions"`
-	ChangedFiles int    `json:"changed_files"`
+	ID           int64      `json:"id"`
+	Number       int        `json:"number"`
+	HTMLURL      string     `json:"html_url"`
+	State        string     `json:"state"`
+	Draft        bool       `json:"draft"`
+	MergedAt     *time.Time `json:"merged_at"`
+	Title        string     `json:"title"`
+	User         User       `json:"user"`
+	Additions    int        `json:"additions"`
+	Deletions    int        `json:"deletions"`
+	ChangedFiles int        `json:"changed_files"`
 	Head         struct {
 		SHA string `json:"sha"`
 		Ref string `json:"ref"`
@@ -511,6 +512,34 @@ func (c *Client) GetPullRequestRecord(
 		return PullRequestResponse{}, errors.New("GitHub returned an incomplete pull request response")
 	}
 	return pullRequest, nil
+}
+
+// ListPullRequestsByHead lists the repository's pull requests, in any state,
+// whose head is the given branch of the repository itself. The list endpoint
+// omits diff stats; a later GetPullRequest fills them in.
+func (c *Client) ListPullRequestsByHead(
+	ctx context.Context,
+	token, owner, repo, branch string,
+) ([]PullRequestResponse, error) {
+	owner = strings.TrimSpace(owner)
+	repo = strings.TrimSpace(repo)
+	branch = strings.TrimSpace(branch)
+	if owner == "" || repo == "" || branch == "" {
+		return nil, errors.New("pull request owner, repo, and branch are required")
+	}
+	query := url.Values{}
+	query.Set("head", owner+":"+branch)
+	query.Set("state", "all")
+	query.Set("per_page", "30")
+	var pullRequests []PullRequestResponse
+	if err := c.userJSON(
+		ctx, token, http.MethodGet,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/pulls?"+query.Encode(),
+		nil, &pullRequests,
+	); err != nil {
+		return nil, err
+	}
+	return pullRequests, nil
 }
 
 // CreatePullRequestInput is the request to open a pull request.
