@@ -9,10 +9,14 @@ export type ConversationMenuAction =
 	| "pin"
 	| "compact"
 	| "terminal_ui"
-	| "reload_mcp";
+	| "reload_mcp"
+	| "delete";
 
 export type ConversationMenuSection = {
-	title: "Workspace" | "Conversation" | "Agent";
+	// Delete acts on the session, not the conversation, and is the one entry
+	// here that destroys something — so it sits in a section of its own,
+	// last, rather than among actions you can take back.
+	title: "Workspace" | "Conversation" | "Agent" | "Session";
 	actions: ConversationMenuAction[];
 };
 
@@ -21,11 +25,13 @@ export function conversationMenuSections({
 	canPin,
 	canCompact,
 	canReloadMcp,
+	canDelete,
 }: {
 	canRename: boolean;
 	canPin: boolean;
 	canCompact: boolean;
 	canReloadMcp: boolean;
+	canDelete: boolean;
 }): ConversationMenuSection[] {
 	return [
 		{ title: "Workspace", actions: ["shell", "preview", "pull_requests"] },
@@ -47,6 +53,7 @@ export function conversationMenuSections({
 				...(canReloadMcp ? ["reload_mcp" as const] : []),
 			],
 		},
+		...(canDelete ? [{ title: "Session" as const, actions: ["delete" as const] }] : []),
 	];
 }
 

@@ -20,7 +20,8 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 				}}
 			>
 				<SidebarDestinationIcon
-					destination={{ id: "settings", label: "Settings", icon: "settings", href: "/settings" }}
+					destination={{ id: "settings", label: "Settings", href: "/settings" }}
+					active={active}
 					color={active ? t.blue : t.textSecondary}
 				/>
 			</Row>

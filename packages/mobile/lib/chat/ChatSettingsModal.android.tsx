@@ -1,6 +1,5 @@
 import { Feather } from "@expo/vector-icons";
 import { Host, Slider, Switch as NativeSwitch } from "@expo/ui";
-import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { haptics } from "../haptics";
@@ -63,6 +62,10 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 		setOpenChoice({ title, value, items, onChange });
 	};
 
+	// Choices open as a page inside this sheet, never as a second sheet over it:
+	// Android stacked two grabbers and only the top one answered a swipe down.
+	if (openChoice) return <ChoicePage choice={openChoice} onBack={() => setOpenChoice(null)} />;
+
 	return <View style={[styles.screen, { backgroundColor: t.bgSurface }]}>
 		<View style={styles.header}>
 			<SheetHeader title="Turn settings" subtitle="Changes apply to the next message." right={<Pressable accessibilityRole="button" accessibilityLabel="Refresh turn settings" disabled={refreshing} onPress={() => { haptics.tap(); onRefresh(); }} style={styles.refresh}>
@@ -102,7 +105,6 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 
 			{usesProviderOptions && options.length === 0 && models.length === 0 ? <Text style={styles.empty}>No turn controls are available for this provider.</Text> : null}
 		</ScrollView>
-		<OptionSheet choice={openChoice} onDismiss={() => setOpenChoice(null)} />
 	</View>;
 }
 
@@ -164,28 +166,22 @@ function EffortSlider({ choices, selected, disabled, onChange }: { choices: Choi
 	</View>;
 }
 
-function OptionSheet({ choice, onDismiss }: { choice: OpenChoice; onDismiss(): void }) {
+function ChoicePage({ choice, onBack }: { choice: NonNullable<OpenChoice>; onBack(): void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	const rows = useMemo(() => choice?.items ?? [], [choice]);
-	return <BottomSheet
-		index={choice ? 0 : -1}
-		enablePanDownToClose
-		enableDynamicSizing
-		backgroundStyle={{ backgroundColor: t.bgSurface }}
-		onClose={onDismiss}
-	>
-		<BottomSheetView style={styles.choiceSheet}>
-				<Text style={styles.choiceTitle}>{choice?.title}</Text>
-				<ScrollView style={styles.choiceList}>{rows.map((item, index) => {
-					const selected = item.value === choice?.value;
-					return <Pressable key={item.value} accessibilityRole="button" accessibilityState={{ selected }} onPress={() => { haptics.select(); choice?.onChange(item.value); onDismiss(); }} style={[styles.choiceRow, index > 0 && styles.choiceDivider, selected && styles.choiceSelected]}>
-						<View style={styles.choiceCopy}><Text style={[styles.choiceLabel, selected && styles.choiceLabelSelected]}>{item.label}</Text>{item.description ? <Text style={styles.choiceDescription}>{item.description}</Text> : null}</View>
-						{selected ? <Feather name="check" size={19} color={t.blue} style={styles.choiceCheck} /> : null}
-					</Pressable>;
-				})}</ScrollView>
-		</BottomSheetView>
-	</BottomSheet>;
+	return <View style={[styles.screen, { backgroundColor: t.bgSurface }]}>
+		<Pressable accessibilityRole="button" accessibilityLabel={`Back to turn settings`} onPress={() => { haptics.tap(); onBack(); }} style={({ pressed }) => [styles.choiceBack, pressed && styles.rowPressed]}>
+			<Feather name="chevron-left" size={20} color={t.textSecondary} />
+			<Text style={styles.choiceTitle}>{choice.title}</Text>
+		</Pressable>
+		<ScrollView contentContainerStyle={styles.choiceList} showsVerticalScrollIndicator={false}><View style={styles.choiceCard}>{choice.items.map((item, index) => {
+			const selected = item.value === choice.value;
+			return <Pressable key={item.value} accessibilityRole="button" accessibilityState={{ selected }} onPress={() => { haptics.select(); choice.onChange(item.value); onBack(); }} style={[styles.choiceRow, index > 0 && styles.choiceDivider, selected && styles.choiceSelected]}>
+				<View style={styles.choiceCopy}><Text style={[styles.choiceLabel, selected && styles.choiceLabelSelected]}>{item.label}</Text>{item.description ? <Text style={styles.choiceDescription}>{item.description}</Text> : null}</View>
+				{selected ? <Feather name="check" size={19} color={t.blue} style={styles.choiceCheck} /> : null}
+			</Pressable>;
+		})}</View></ScrollView>
+	</View>;
 }
 
 function Notice({ color, background, icon, text }: { color: string; background: string; icon: keyof typeof Feather.glyphMap; text: string }) {
@@ -230,9 +226,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	effortLabels: { flexDirection: "row", justifyContent: "space-between", gap: 4 },
 	effortLabel: { flex: 1, color: t.textTertiary, fontSize: 9, lineHeight: 13, textAlign: "center" },
 	empty: { color: t.textTertiary, fontSize: 13, lineHeight: 19, paddingHorizontal: 4 },
-	choiceSheet: { paddingTop: 6, paddingHorizontal: 16, paddingBottom: 14, backgroundColor: t.bgSurface },
-	choiceTitle: { color: t.textPrimary, fontSize: 19, lineHeight: 25, fontWeight: "700", paddingHorizontal: 4, paddingBottom: 10 },
-	choiceList: { maxHeight: 460, overflow: "hidden", borderRadius: 16, backgroundColor: t.bgElevated },
+	choiceBack: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12 },
+	choiceTitle: { color: t.textPrimary, fontSize: 19, lineHeight: 25, fontWeight: "700" },
+	choiceList: { paddingHorizontal: 16, paddingBottom: 20 },
+	choiceCard: { borderRadius: 16, overflow: "hidden", backgroundColor: t.bgElevated },
 	choiceRow: { minHeight: 52, flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 15, paddingVertical: 10 },
 	choiceDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
 	choiceSelected: { backgroundColor: t.tintBlue },

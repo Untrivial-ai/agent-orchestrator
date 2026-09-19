@@ -8,12 +8,15 @@ describe("conversation overflow menu", () => {
 			canPin: true,
 			canCompact: true,
 			canReloadMcp: true,
+			canDelete: true,
 		});
 
 		expect(sections).toEqual([
 			{ title: "Workspace", actions: ["shell", "preview", "pull_requests"] },
 			{ title: "Conversation", actions: ["map", "refresh", "settings", "rename", "pin", "compact"] },
 			{ title: "Agent", actions: ["terminal_ui", "reload_mcp"] },
+			// Last, and alone: the only entry here that destroys something.
+			{ title: "Session", actions: ["delete"] },
 		]);
 	});
 
@@ -23,10 +26,14 @@ describe("conversation overflow menu", () => {
 			canPin: false,
 			canCompact: false,
 			canReloadMcp: false,
+			canDelete: false,
 		});
 
 		expect(sections[1]?.actions).toEqual(["map", "refresh", "settings"]);
 		expect(sections[2]?.actions).toEqual(["terminal_ui"]);
+		// An orchestrator has no delete here, so the section goes rather than
+		// rendering an empty group.
+		expect(sections.some((section) => section.title === "Session")).toBe(false);
 	});
 });
 

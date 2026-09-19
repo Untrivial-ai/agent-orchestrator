@@ -65,6 +65,11 @@ type mutableInstallAgent struct {
 	installed atomic.Bool
 }
 
+type invalidatingAgent struct {
+	fakeAgent
+	calls atomic.Int32
+}
+
 type mutableAuthAgent struct {
 	fakeAgent
 	status    *ports.AgentAuthStatus
@@ -224,6 +229,10 @@ func (f *mutableInstallAgent) ResolveBinary(context.Context) (string, error) {
 		return "", ports.ErrAgentBinaryNotFound
 	}
 	return "agent", nil
+}
+
+func (f *invalidatingAgent) InvalidateBinaryResolution() {
+	f.calls.Add(1)
 }
 
 func (f *mutableAuthAgent) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
@@ -1286,6 +1295,21 @@ func TestResolveAgentBinaryUsesRequestedAdapter(t *testing.T) {
 	}
 	if path != "agent" {
 		t.Fatalf("ResolveAgentBinary(codex) = %q, want adapter-resolved path", path)
+	}
+}
+
+func TestInvalidateAgentInstallationInvalidatesAdapterBinary(t *testing.T) {
+	adapter := &invalidatingAgent{}
+	svc := NewWithAgents([]agentregistry.HarnessAgent{{
+		Harness:  domain.HarnessCodex,
+		Manifest: adapters.Manifest{ID: "codex", Name: "Codex"},
+		Agent:    adapter,
+	}})
+
+	svc.InvalidateAgentInstallation(string(domain.HarnessCodex))
+
+	if got := adapter.calls.Load(); got != 1 {
+		t.Fatalf("binary invalidation calls = %d, want 1", got)
 	}
 }
 

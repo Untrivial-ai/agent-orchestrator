@@ -193,6 +193,10 @@ type Service struct {
 	// normal, not a broken pipeline. nil means "unknown": never downgrade.
 	signalCapable         func(domain.AgentHarness) bool
 	chatProviderPreserved func(domain.SessionID) bool
+	// githubIdentity optionally resolves the operator's authenticated GitHub
+	// account so the handle rides along with product telemetry. Nil disables it
+	// and the emitter degrades to anonymous.
+	githubIdentity ports.ScopedIdentityResolver
 }
 
 // SetChatProviderPreserver wires the live Chat lifetime observation after both
@@ -229,6 +233,9 @@ type Deps struct {
 	// wiring passes activitydispatch.SupportsHarness. Left nil, no session is
 	// ever downgraded to no_signal.
 	SignalCapable func(domain.AgentHarness) bool
+	// GithubIdentity resolves the operator's authenticated GitHub account so the
+	// handle rides along with product telemetry.
+	GithubIdentity ports.ScopedIdentityResolver
 }
 
 // NewWithDeps wires a session service with optional PR-claim dependencies.
@@ -237,7 +244,7 @@ func NewWithDeps(d Deps) *Service {
 	if backgroundContext == nil {
 		backgroundContext = context.Background()
 	}
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -381,6 +388,14 @@ func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, dur
 	}
 	projectID := rec.ProjectID
 	sessionID := rec.ID
+	payload := map[string]any{
+		"kind":        string(rec.Kind),
+		"harness":     string(rec.Harness),
+		"duration_ms": durationMs,
+	}
+	if actor, ok := s.githubActor(ctx); ok {
+		payload["github_actor"] = actor
+	}
 	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
 		Name:       "ao.session.spawned",
 		Source:     "session_service",
@@ -389,12 +404,24 @@ func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, dur
 		ProjectID:  &projectID,
 		SessionID:  &sessionID,
 		RequestID:  reqid.FromContext(ctx),
-		Payload: map[string]any{
-			"kind":        string(rec.Kind),
-			"harness":     string(rec.Harness),
-			"duration_ms": durationMs,
-		},
+		Payload:    payload,
 	})
+}
+
+// githubActor returns the operator's GitHub login when the authenticated
+// account resolves to a human, and ("", false) for every failure mode (resolver
+// unset, no token, GET /user failure, offline, org or bot account, empty login)
+// so the event stays anonymous. Host is left empty because GitHub identity is
+// not host-scoped.
+func (s *Service) githubActor(ctx context.Context) (string, bool) {
+	if s.githubIdentity == nil {
+		return "", false
+	}
+	identity, err := s.githubIdentity.AuthenticatedIdentityForProvider(ctx, "github", "")
+	if err != nil || !identity.Human || identity.Login == "" {
+		return "", false
+	}
+	return identity.Login, true
 }
 
 func (s *Service) emitFirstSessionSpawned(ctx context.Context, rec domain.SessionRecord, project domain.ProjectRecord) {
@@ -462,6 +489,7 @@ func (s *Service) SpawnOrchestrator(
 	projectID domain.ProjectID,
 	clean bool,
 	requestedMode domain.SessionMode,
+	approval domain.PermissionMode,
 ) (domain.Session, error) {
 	unlock := s.lockOrchestratorProject(projectID)
 	defer unlock()
@@ -503,6 +531,9 @@ func (s *Service) SpawnOrchestrator(
 		ProjectID:     projectID,
 		Kind:          domain.KindOrchestrator,
 		RequestedMode: mode,
+		AgentConfig: ports.AgentConfig{
+			Permissions: approval,
+		},
 	})
 	if err != nil {
 		return domain.Session{}, err

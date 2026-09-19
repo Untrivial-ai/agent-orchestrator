@@ -40,4 +40,17 @@ describe("active turn controls", () => {
 		expect(composerSource).toContain('numberOfLines={1} style={styles.deliveryNoteText}');
 		expect(composerSource).toContain('Sent after this');
 	});
+	// One name per session, as on desktop: useWorkspaceQuery derives
+	// `displayName ?? issueId ?? id`, ChatWorkspace prefers that over the
+	// conversation's own title, and renaming anywhere is the same displayName
+	// PATCH. With the precedence inverted, renaming on the board changed the row
+	// and left this header showing the agent's auto-generated title.
+	it("prefers the session's name over the conversation title", () => {
+		expect(screenSource).toContain("const title = sessionName || conversation.snapshot?.title");
+	});
+
+	it("renames the session, not the conversation", () => {
+		expect(screenSource).toContain("onRename: (next) => renameWorker(session.id, next)");
+		expect(screenSource).not.toContain("conversation.rename(next)");
+	});
 });

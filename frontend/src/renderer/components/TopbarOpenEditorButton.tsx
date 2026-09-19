@@ -88,8 +88,6 @@ export function TopbarOpenEditorButton({
 	const editors = targets.filter((target) => target.kind === "editor");
 	const preferred = editors.find((target) => target.id === state?.preferredEditorId);
 	const safeTargets = targets.filter((target) => target.kind !== "editor");
-	const fileManagerName = safeTargets.find((target) => target.kind === "file_manager")?.name ?? t("editor.fileManager");
-	const terminalName = safeTargets.find((target) => target.kind === "terminal")?.name ?? t("editor.terminal");
 	const workspaceAvailable = state?.workspaceAvailable === true;
 	const busy = stateQuery.isPending || open.isPending;
 	const mainDisabled = busy || !workspaceAvailable || !preferred;
@@ -104,15 +102,13 @@ export function TopbarOpenEditorButton({
 		? state?.unavailableReason ?? t("editor.workspaceUnavailable")
 		: null;
 	const visibleActionError = launchError ?? workspaceError;
-	const noEditorGuidance = !stateQuery.isPending && workspaceAvailable && editors.length === 0
-		? t("editor.noEditorGuidance", { fileManager: fileManagerName, terminal: terminalName })
-		: null;
+	const noEditorInstalled = !stateQuery.isPending && workspaceAvailable && editors.length === 0;
 	const mainTitle = stateQuery.isPending
 		? t("editor.preparingWorkspace")
 		: (workspaceError
 			?? (preferred
 				? t("editor.openWorkspaceInTitle", { name: preferred.name })
-				: (noEditorGuidance ?? t("editor.chooseEditorTitle"))));
+				: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditorTitle"))));
 
 	return (
 		<>
@@ -134,7 +130,7 @@ export function TopbarOpenEditorButton({
 									? t("editor.preparingWorkspace")
 									: preferred
 										? t("editor.openInAria", { name: preferred.name })
-										: t("editor.chooseEditor")}
+										: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditor"))}
 								className="hover:bg-transparent"
 								disabled={mainDisabled}
 								onClick={() => launch()}
@@ -179,17 +175,6 @@ export function TopbarOpenEditorButton({
 								{editor.name}
 							</DropdownMenuItem>
 						))}
-						{editors.length === 0 && noEditorGuidance ? (
-							<>
-								<DropdownMenuSeparator />
-								<div
-									className="px-2 py-1.5 text-micro leading-relaxed text-passive select-none max-w-60"
-									role="note"
-								>
-									{noEditorGuidance}
-								</div>
-							</>
-						) : null}
 					</DropdownMenuContent>
 				</DropdownMenu>
 			</div>

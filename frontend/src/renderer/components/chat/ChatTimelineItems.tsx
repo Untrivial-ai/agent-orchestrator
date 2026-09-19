@@ -547,6 +547,9 @@ export function HumanMessage({
 				/>
 			) : (
 				<div
+					/* Themes draw sent and queued differently; light theme needs to tell them
+					   apart in CSS because it paints an enclosure only around a sent one. */
+					data-queued={queued ? "" : undefined}
 					className={cn(
 						"cursor-chat-human-message w-fit max-w-[min(78%,560px)] rounded-[10px] px-3 py-2.5 text-sm leading-[1.55]",
 						animateIn && "chat-human-message-enter",
