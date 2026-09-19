@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // PRJ-* RENDERER SMOKE (issue #2483, renderer slice).
 //

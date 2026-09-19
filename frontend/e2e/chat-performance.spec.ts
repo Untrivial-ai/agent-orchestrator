@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";

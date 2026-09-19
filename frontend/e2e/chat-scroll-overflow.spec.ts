@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 import { installFakeAgent } from "./support/fake-bridge";
 
 const sessionId = "chat-scroll";

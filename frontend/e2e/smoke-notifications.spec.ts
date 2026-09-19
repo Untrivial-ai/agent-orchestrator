@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 import { installFakeAgent } from "./support/fake-bridge";
 
 // NTF-003 RENDERER SMOKE (issue #2483, renderer slice). dev:web + fake bridge —

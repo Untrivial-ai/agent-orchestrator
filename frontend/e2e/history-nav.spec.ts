@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // Repro for the titlebar history arrows: navigate home → project → back,
 // then the forward arrow must be enabled and actually traverse forward.

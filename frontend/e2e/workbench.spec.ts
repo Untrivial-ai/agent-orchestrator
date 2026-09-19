@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // The Playwright web server runs `dev:web` (VITE_NO_ELECTRON=1), so
 // useWorkspaceQuery serves the deterministic preview fixtures from

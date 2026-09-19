@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 import { installFakeAgent, installFakeBridge } from "./support/fake-bridge";
 
 // Data-directory invariant (issue #2483, RENDERER SLICE). dev:web + fake

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // dev:web (VITE_NO_ELECTRON=1) serves lib/mock-data.ts. The api-gateway
 // workspace owns a "stacked-auth" session ("auth stack") carrying three PRs:
