@@ -16,9 +16,6 @@ import { captureRendererEvent } from "./telemetry";
 // palette) render everywhere, and subscribing them to the cloud session/org
 // queries just for this click handler would fire cloud requests on every
 // mount. The client is built lazily from the settings query cache instead.
-const ORCHESTRATOR_KICKOFF_PROMPT =
-	"You are the orchestrator for this project. Survey the repository, then wait for tasks and delegate work to worker sessions.";
-
 // A Cloud worker image currently ships these three harnesses. This ordering
 // preserves the former Codex default whenever it is available, while allowing
 // a user's connected Claude Code or Cursor credential to run the orchestrator
@@ -69,7 +66,9 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 			kind: "orchestrator",
 			harness,
 			displayName: "Orchestrator",
-			prompt: ORCHESTRATOR_KICKOFF_PROMPT,
+			// Role instructions are standing system configuration assembled by the
+			// worker; do not duplicate them as a visible user message.
+			prompt: "",
 			...(provider ? { provider } : {}),
 		});
 		void captureRendererEvent("ao.renderer.cloud_orchestrator_spawn_succeeded", { project_id: projectId });
