@@ -54,6 +54,28 @@ func (s *ompAuthString) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
+// Native model roles accept a string or a list joined as comma-separated selectors.
+type ompModelRole string
+
+func (s *ompModelRole) UnmarshalYAML(n *yaml.Node) error {
+	if n.Tag == "!!str" {
+		*s = ompModelRole(n.Value)
+		return nil
+	}
+	if n.Kind != yaml.SequenceNode {
+		return errors.New("model role must be a string or string list")
+	}
+	values := make([]string, 0, len(n.Content))
+	for _, value := range n.Content {
+		if value.Tag != "!!str" {
+			return errors.New("model role list entries must be strings")
+		}
+		values = append(values, value.Value)
+	}
+	*s = ompModelRole(strings.Join(values, ","))
+	return nil
+}
+
 type ompProviderConfig struct {
 	APIKey  *ompAuthString `yaml:"apiKey"`
 	BaseURL ompAuthString  `yaml:"baseUrl"`
@@ -63,8 +85,8 @@ type ompProviderConfig struct {
 	} `yaml:"models"`
 }
 type ompSettings struct {
-	DisabledProviders []ompAuthString          `yaml:"disabledProviders"`
-	ModelRoles        map[string]ompAuthString `yaml:"modelRoles"`
+	DisabledProviders []ompAuthString         `yaml:"disabledProviders"`
+	ModelRoles        map[string]ompModelRole `yaml:"modelRoles"`
 	Auth              struct {
 		Broker struct {
 			URL   ompAuthString `yaml:"url"`
@@ -230,11 +252,11 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 	}
 	if scope.WorkingDir != "" {
 		var project struct {
-			ModelRoles map[string]*ompAuthString `yaml:"modelRoles"`
+			ModelRoles map[string]*ompModelRole `yaml:"modelRoles"`
 		}
 		if authutil.ReadYAML(ctx, d.Dependencies, filepath.Join(scope.WorkingDir, ".omp", "config.yml"), &project) == nil {
 			if settings.ModelRoles == nil {
-				settings.ModelRoles = make(map[string]ompAuthString)
+				settings.ModelRoles = make(map[string]ompModelRole)
 			}
 			for role, value := range project.ModelRoles {
 				// Native project null clears the override, exposing the global role.
@@ -261,6 +283,11 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 		model = string(settings.ModelRoles["default"])
 	}
 	if provider == "" && model != "" {
+		// Choosing among multiple native selectors requires model resolution;
+		// the first selector's provider is not proof of the effective provider.
+		if strings.Contains(model, ",") {
+			return ports.AgentAuthStatusUnknown, nil
+		}
 		if prefix, _, ok := strings.Cut(model, "/"); ok {
 			provider = prefix
 		} else {

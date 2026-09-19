@@ -448,6 +448,11 @@ func TestOMPProjectModelRolesOverrideGlobalRoles(t *testing.T) {
 	}{
 		{"project rejects unrelated global credential", "modelRoles: {default: anthropic/test}", "modelRoles: {default: openai/test}", "", nil, ports.AgentAuthStatusUnknown},
 		{"project selects matching credential", "modelRoles: {default: openai/test}", "modelRoles: {default: anthropic/test}", "", nil, ports.AgentAuthStatusConfigured},
+		{"project list rejects unrelated global credential", "modelRoles: {default: anthropic/test}", "modelRoles: {default: [openai/test]}", "", nil, ports.AgentAuthStatusUnknown},
+		{"project list selects matching credential", "modelRoles: {default: openai/test}", "modelRoles: {default: [anthropic/test]}", "", nil, ports.AgentAuthStatusConfigured},
+		{"unresolved project list does not use global credential", "modelRoles: {default: anthropic/test}", "modelRoles: {default: [unresolved-model]}", "", nil, ports.AgentAuthStatusUnknown},
+		{"multiple project selectors remain unknown", "modelRoles: {default: anthropic/test}", "modelRoles: {default: [anthropic/test, openai/test]}", "", nil, ports.AgentAuthStatusUnknown},
+		{"global list rejects unrelated credential", "modelRoles: {default: [openai/test]}", "{}", "", nil, ports.AgentAuthStatusUnknown},
 		{"other project role retains global default", "modelRoles: {default: openai/test}", "modelRoles: {smol: anthropic/test}", "", nil, ports.AgentAuthStatusUnknown},
 		{"null project role retains global default", "modelRoles: {default: openai/test}", "modelRoles: {default: null}", "", nil, ports.AgentAuthStatusUnknown},
 		{"global disabled providers retained", "disabledProviders: [anthropic]\nmodelRoles: {default: openai/test}", "modelRoles: {default: anthropic/test}", "", nil, ports.AgentAuthStatusUnknown},
