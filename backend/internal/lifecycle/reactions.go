@@ -169,6 +169,22 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		if rec.IsTerminated || !rec.TerminateOnPRMerge {
 			return nil
 		}
+		// A merge must not race the still-working agent (#2879). A session whose
+		// agent is still ActivityActive is genuinely mid-climb: with one PR merged
+		// it is very likely raising the next PR in the same session, and
+		// flag-terminating it now (#2811's flag-only lane) would drop it from the
+		// SCM observer roster — the follow-up PR would never be attributed,
+		// enriched, or nudged alert. Defer the completed-session teardown until the
+		// agent has actually quiesced: the observer keeps polling this live session
+		// regardless because it is still observed, so the next observation of the
+		// still-merged PR re-runs this reaction after the agent exits and lands the
+		// termination then. The is_terminated / needs-input dead-session gates that
+		// the rest of reactions.go consults (see ApplyRuntimeObservation) still
+		// bound this lane at each poll; only the "sessionComplete reads PR rows"
+		// bar must additionally wait on genuine agent quiescence.
+		if rec.Activity.State == domain.ActivityActive {
+			return nil
+		}
 		done, err := m.sessionComplete(ctx, id)
 		if err != nil {
 			return err

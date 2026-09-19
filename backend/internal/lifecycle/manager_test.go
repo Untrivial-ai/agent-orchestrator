@@ -490,6 +490,18 @@ func working(id domain.SessionID) domain.SessionRecord {
 	}
 }
 
+// exited seeds a session whose agent has genuinely QUIESCED (ActivityExited) —
+// the agent came down and is provably resting/idle, not mid-climb. This is the
+// fixture the merged-PR termination contract is meant to be exercised against:
+// flag-termination of a session is legitimate only when the agent has actually
+// stopped working (quiesced), NOT while it is still ActivityActive (#2879).
+// Here the merged lane's sessionComplete must still terminate an agent that
+// merged its PR and then genuinely exited.
+func exited(id domain.SessionID) domain.SessionRecord {
+	rec := working(id)
+	rec.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: time.Now()}
+	return rec
+}
 func TestRuntimeObservation_ConfirmedRuntimeDeathTerminates(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
@@ -3435,7 +3447,7 @@ func TestPRObservation_MergedUsesConfiguredTerminator(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3445,6 +3457,35 @@ func TestPRObservation_MergedUsesConfiguredTerminator(t *testing.T) {
 	}
 	if terminator.calls != 1 {
 		t.Fatalf("terminator calls = %d, want 1", terminator.calls)
+	}
+}
+
+// TestPRObservation_MergedOnStillWorkingAgentDoesNotTerminate is the RED test
+// for #2879: an agent STILL CLIMBING (ActivityActive / `working`) with one PR
+// merged must NOT be flag-terminated. The merge may be PR #1 of several and
+// the agent is mid-traversal — likely about to push PR #2 in the same session.
+// Flag-terminating here (is_terminated=true, #2811) drops the session from the
+// SCM observer roster, so that follow-up PR is never attributed, never
+// enriched, never nudged. Termination must wait until the agent has actually
+// quiesced (ActivityExited or provably-idle). This test intentionally fails on
+// current code, which terminates on PR-state alone (≥1 merged ∧ none open).
+func TestPRObservation_MergedOnStillWorkingAgentDoesNotTerminate(t *testing.T) {
+	m, st, _ := newManager()
+	terminator := &fakeCompletionTerminator{}
+	m.SetCompletionTerminator(terminator)
+	rec := working("mer-1") // ActivityActive: agent is STILL climbing (#2879)
+	rec.TerminateOnPRMerge = true
+	st.sessions["mer-1"] = rec
+	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Merged: true}); err != nil {
+		t.Fatal(err)
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatalf("merged PR must NOT terminate a session whose agent is still ActivityActive (working), got %+v", st.sessions["mer-1"])
+	}
+	if terminator.calls != 0 {
+		t.Fatalf("terminator calls = %d, want 0 while the agent is still working", terminator.calls)
 	}
 }
 
@@ -3470,7 +3511,7 @@ func TestPRObservation_MergedTeardownFailureStaysLiveForRetry(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{err: errors.New("transient teardown failure")}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3486,7 +3527,7 @@ func TestPRObservation_MergedTeardownFailureStaysLiveForRetry(t *testing.T) {
 
 func TestPRObservation_MergedRequiresConfiguredTerminator(t *testing.T) {
 	m, st, _ := newManager()
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3529,7 +3570,7 @@ func TestPRObservation_LastMergeTerminatesSession(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{
