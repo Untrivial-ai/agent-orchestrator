@@ -97,7 +97,10 @@ function Shell() {
 			<Stack
 				screenOptions={{
 					headerStyle: { backgroundColor: t.bgSurface },
-					headerTintColor: t.textPrimary,
+					// Every native header control draws its glyph in this tone. At `textPrimary`
+					// the back and action buttons on sub-pages came out near-white — brighter
+					// than the identical-looking glass buttons on the board, which use this one.
+					headerTintColor: t.textSecondary,
 					headerTitleStyle: { fontWeight: "700" },
 					headerShadowVisible: false,
 					headerBackButtonDisplayMode: "minimal",
