@@ -10,12 +10,13 @@ function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
-const { getMock, putMock, postMock, navigateMock, closeSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
+const { getMock, putMock, postMock, navigateMock, closeSettingsMock, openGlobalSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
 	putMock: vi.fn(),
 	postMock: vi.fn(),
 	navigateMock: vi.fn(),
 	closeSettingsMock: vi.fn(),
+	openGlobalSettingsMock: vi.fn(),
 	setOrchestratorReplacementErrorMock: vi.fn(),
 	captureOrchestratorReplacementFailureMock: vi.fn(),
 	ensureAgentReadinessMock: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("../stores/ui-store", () => ({
 	useUiStore: (selector: (state: Record<string, unknown>) => unknown) =>
 		selector({
 			closeSettings: closeSettingsMock,
+			openGlobalSettings: openGlobalSettingsMock,
 			setOrchestratorReplacementError: setOrchestratorReplacementErrorMock,
 		}),
 }));
@@ -163,9 +165,9 @@ const agentCatalogResponse = {
 	error: undefined,
 };
 
-function mockProject(project: Record<string, unknown>) {
+function mockProject(project: Record<string, unknown>, agentResponse = agentCatalogResponse) {
 	getMock.mockImplementation(async (path: string) => {
-		if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+		if (path === "/api/v1/agents/readiness") return agentResponse;
 		if (path === "/api/v1/agents/{agent}/models") {
 			return {
 				data: {
@@ -196,6 +198,7 @@ beforeEach(() => {
 	postMock.mockReset();
 	navigateMock.mockReset();
 	closeSettingsMock.mockReset();
+	openGlobalSettingsMock.mockReset();
 	setOrchestratorReplacementErrorMock.mockReset();
 	captureOrchestratorReplacementFailureMock.mockReset();
 	ensureAgentReadinessMock.mockReset();
@@ -208,6 +211,40 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
+	it("opens management for configured project agents without clearing their values", async () => {
+		const project = {
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "",
+			defaultBranch: "main",
+			config: {
+				worker: { agent: "codex" },
+				orchestrator: { agent: "claude-code" },
+				reviewers: [{ harness: "codex" }],
+			},
+		};
+		mockProject(project, {
+			data: {
+				agents: [
+					agentReadiness("claude-code", "Claude Code"),
+					agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+				],
+			},
+			error: undefined,
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+		await userEvent.click(await screen.findByRole("button", { name: "Default worker agent" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+		await waitFor(() => expect(openGlobalSettingsMock).toHaveBeenCalled());
+
+		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: "codex" });
+		expect(screen.getByRole("button", { name: "Default worker agent" })).toHaveTextContent("Codex");
+		expect(screen.getByRole("button", { name: "Default reviewer agent" })).toHaveTextContent("Codex");
+	});
+
 	it("ensures agent readiness in the background without manual refresh buttons", async () => {
 		mockProject({
 			id: "proj-1",
@@ -1064,7 +1101,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.getByRole("button", { name: "Default orchestrator agent" })).toBeDisabled();
 	});
 
-	it("offers both interactive Kiro and Pi reviewers", async () => {
+	it("offers ready Pi reviewers and hides Kiro until authorized", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
@@ -1082,7 +1119,7 @@ describe("ProjectSettingsForm", () => {
 		const reviewer = await screen.findByRole("button", { name: "Default reviewer agent" });
 		await userEvent.click(reviewer);
 		const labels = (await screen.findAllByRole("menuitem")).map((option) => option.textContent);
-		expect(labels).toContain("KiroAuth unknown");
+		expect(labels).not.toContain("KiroAuth unknown");
 		expect(labels).toContain("Pi");
 	});
 
@@ -1166,7 +1203,7 @@ describe("ProjectSettingsForm", () => {
 			"GitHub Copilot",
 			"Kilo Code",
 			"Pi",
-			"KiroAuth unknown",
+			"Manage agents…",
 		]);
 	});
 
@@ -1257,7 +1294,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Experimental host-trusted reviewer");
 	});
 
-	it("shows unknown-auth agents as selectable with a warning in project settings", async () => {
+	it("hides unknown-auth agents and offers management in project settings", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
@@ -1285,7 +1322,7 @@ describe("ProjectSettingsForm", () => {
 			"Goose",
 			"Kilo Code",
 			"Pi",
-			"KiroAuth unknown",
+			"Manage agents…",
 		]);
 		expect(options[8]).not.toHaveAttribute("aria-disabled", "true");
 	});
@@ -1324,7 +1361,7 @@ describe("ProjectSettingsForm", () => {
 		);
 	});
 
-	it("disables the Copilot reviewer when its binary is missing", async () => {
+	it("hides the Copilot reviewer when its binary is missing", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
@@ -1360,11 +1397,11 @@ describe("ProjectSettingsForm", () => {
 		const copilot = (await screen.findAllByRole("menuitem")).find((option) =>
 			option.textContent?.includes("GitHub Copilot"),
 		);
-		expect(copilot).toHaveTextContent("Needs install");
-		expect(copilot).toHaveAttribute("aria-disabled", "true");
+		expect(copilot).toBeUndefined();
+		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
 
-	it("shows the standard unknown-auth warning for an installed Copilot reviewer", async () => {
+	it("hides an installed Copilot reviewer until authorization is known", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
@@ -1400,8 +1437,8 @@ describe("ProjectSettingsForm", () => {
 		const copilot = (await screen.findAllByRole("menuitem")).find((option) =>
 			option.textContent?.includes("GitHub Copilot"),
 		);
-		expect(copilot).toHaveTextContent("Auth unknown");
-		expect(copilot).not.toHaveAttribute("aria-disabled", "true");
+		expect(copilot).toBeUndefined();
+		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
 
 	it("offers Kilo Code as a configured reviewer", async () => {
@@ -1673,7 +1710,7 @@ describe("ProjectSettingsForm", () => {
 		], "agents");
 
 		const orchestratorAgent = await screen.findByRole("button", { name: "Default orchestrator agent" });
-		expect(orchestratorAgent).toHaveTextContent("goose");
+		expect(orchestratorAgent).toHaveTextContent("Goose");
 
 		submitSettings();
 

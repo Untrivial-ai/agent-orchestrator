@@ -7,12 +7,14 @@ import { agentModelsQueryOptions, type AgentModelCatalog } from "../hooks/useAge
 import { agentLabel } from "../lib/agent-options";
 import {
 	buildRankedAgentOptions,
+	isReadyAgent,
 	type AgentInfo,
 	type RankedAgentOption,
 	unknownAgentReadiness,
 } from "../lib/agent-select-options";
 import { KNOWN_REVIEWER_HARNESS_IDS } from "../lib/reviewer-harnesses";
 import { cn } from "../lib/utils";
+import { useAgentManagementMenu } from "../hooks/useAgentManagementMenu";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentSelectMenuItem } from "./settings/AgentSelectMenuItem";
 import {
@@ -97,11 +99,15 @@ export function ReviewerSelect({
 		fallbackAgents,
 	});
 	const selectableOptions = options.filter((agent) => {
+		if (!isReadyAgent(agent)) return false;
 		if (agent.id === excludedHarness) return false;
 		if (showDefaultOption && defaultHarness && agent.id === defaultHarness) return false;
 		return true;
 	});
 	const effectiveHarness = value || defaultHarness || "";
+	const needsSetup = Boolean(effectiveHarness && !options.some((agent) => agent.id === effectiveHarness && isReadyAgent(agent)));
+	const management = useAgentManagementMenu(needsSetup ? effectiveHarness : undefined);
+	const defaultAvailable = !defaultHarness || options.some((agent) => agent.id === defaultHarness && isReadyAgent(agent));
 	const menuProjectID = projectId ?? "";
 	const triggerCatalog = useQuery(agentModelsQueryOptions(effectiveHarness, menuProjectID));
 
@@ -125,6 +131,7 @@ export function ReviewerSelect({
 	return (
 		<OptionMenu open={menuOpen} onOpenChange={setMenuOpen}>
 			<OptionMenuTrigger
+				ref={management.triggerRef}
 				className={cn(
 					"w-auto min-w-0 max-w-full justify-between gap-2 px-2 text-left",
 					contentAlign === "end" && "justify-end text-right",
@@ -136,10 +143,11 @@ export function ReviewerSelect({
 				<span className="flex min-w-0 items-center gap-2">
 					{effectiveHarness ? <AgentAvatar provider={effectiveHarness} className="size-icon-lg shrink-0" /> : null}
 					<span className={cn("min-w-0 truncate", contentAlign === "end" && "text-right")}>{triggerLabel}</span>
+					{needsSetup && <span className="text-xs text-muted-foreground">{t("agentSelector.needsSetup")}</span>}
 				</span>
 			</OptionMenuTrigger>
-			<OptionMenuContent align={contentAlign === "end" ? "end" : "start"} className="reviews-agent-menu-surface w-[18rem]">
-				{showDefaultOption && defaultOptionLabel ? (
+			<OptionMenuContent onCloseAutoFocus={management.onCloseAutoFocus} align={contentAlign === "end" ? "end" : "start"} className="reviews-agent-menu-surface w-[18rem]">
+				{showDefaultOption && defaultOptionLabel && defaultAvailable ? (
 					<ReviewerHarnessOption
 						agent={{ id: "__default__", label: defaultOptionLabel, disabled: false, status: "", statusTone: "success" }}
 						currentHarness={value}
@@ -174,6 +182,8 @@ export function ReviewerSelect({
 						closeMenu={() => setMenuOpen(false)}
 					/>
 				))}
+				{selectableOptions.length === 0 && !(showDefaultOption && defaultOptionLabel && defaultAvailable) && <p className="px-3 py-2 text-xs text-muted-foreground">{t("agentSelector.noneReady")}</p>}
+				<OptionMenuItem className="mt-1 border-t border-border" onSelect={management.requestManagement}>{t("agentSelector.manage")}</OptionMenuItem>
 			</OptionMenuContent>
 		</OptionMenu>
 	);

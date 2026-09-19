@@ -35,6 +35,7 @@ const installerQueryKey = ["agent-installers"] as const;
 const installJobsQueryKey = ["agent-install-jobs"] as const;
 const POLL_INTERVAL_MS = 1_000;
 const AUTH_TERMINAL_LIFETIME_MS = 15 * 60_000;
+const FOCUS_HIGHLIGHT_MS = 2_000;
 
 type AgentAuthState = { pending: boolean; checking: boolean; error: string | null };
 type AgentAuthStates = Partial<Record<AgentId, AgentAuthState>>;
@@ -96,7 +97,13 @@ function installMethodLabel(method: { id: string; label: string } | undefined, f
 	return method.label;
 }
 
-export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: boolean }) {
+export function HarnessSettingsSection({
+	focusAgentId,
+	titleHidden = false,
+}: {
+	focusAgentId?: string;
+	titleHidden?: boolean;
+}) {
 	const { i18n, t } = useTranslation();
 	const queryClient = useQueryClient();
 	const agents = useAgentReadinessQuery();
@@ -119,6 +126,10 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	const refreshedSuccess = useRef(new Set<string>());
 	const pendingActions = useRef(new Set<AgentId>());
 	const [pendingAgentIds, setPendingAgentIds] = useState<Set<AgentId>>(new Set());
+	const rowsRef = useRef<HTMLDivElement>(null);
+	const focusHandledRef = useRef(false);
+	const highlightTimerRef = useRef<number | null>(null);
+	const [highlightedAgentId, setHighlightedAgentId] = useState<AgentId | null>(null);
 
 	const plans = useMemo(() => new Map(installers.data?.map((plan) => [plan.agentId, plan]) ?? []), [installers.data]);
 	const jobMap = useMemo(() => new Map(jobs.data?.map((job) => [job.target, job]) ?? []), [jobs.data]);
@@ -129,7 +140,8 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		[agents.data],
 	);
 	const normalizedSearch = search.trim().toLowerCase();
-	const rows = AGENT_OPTIONS.filter((agentId) => agentId === authWorkflow?.agentId || agentLabel(agentId).toLowerCase().includes(normalizedSearch));
+	const targetAgentId = AGENT_OPTIONS.find((agentId) => agentId === focusAgentId) ?? null;
+	const rows = AGENT_OPTIONS.filter((agentId) => agentId === targetAgentId || agentId === authWorkflow?.agentId || agentLabel(agentId).toLowerCase().includes(normalizedSearch));
 	const updateAuthState = useCallback((agentId: AgentId, patch: Partial<AgentAuthState>) => {
 		setAuthStates((current) => ({
 			...current,
@@ -144,6 +156,25 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		() => (jobs.data ?? []).filter((job) => job.status === "succeeded").map((job) => `${job.target}:${job.updatedAt ?? job.finishedAt ?? "done"}`).sort().join(","),
 		[jobs.data],
 	);
+
+	useEffect(() => {
+		if (focusHandledRef.current || !targetAgentId) return;
+		if (agents.isPending || installers.isPending || jobs.isPending || authPlans.isPending) return;
+		const row = Array.from(rowsRef.current?.querySelectorAll<HTMLElement>("[data-agent]") ?? [])
+			.find((candidate) => candidate.dataset.agent === targetAgentId);
+		if (!row) return;
+
+		focusHandledRef.current = true;
+		row.scrollIntoView({ behavior: "smooth", block: "center" });
+		const primaryAction = row.querySelector<HTMLElement>("[data-harness-primary-action]:not(:disabled)");
+		(primaryAction ?? row).focus({ preventScroll: true });
+		setHighlightedAgentId(targetAgentId);
+		highlightTimerRef.current = window.setTimeout(() => setHighlightedAgentId(null), FOCUS_HIGHLIGHT_MS);
+	}, [agents.isPending, authPlans.isPending, installers.isPending, jobs.isPending, targetAgentId]);
+
+	useEffect(() => () => {
+		if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+	}, []);
 
 	useEffect(() => {
 		if (!activeKey) return;
@@ -399,7 +430,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 				</div>
 			) : null}
 
-			<div className="settings-grouped-rows flex w-full flex-col">
+			<div className="settings-grouped-rows flex w-full flex-col" ref={rowsRef}>
 			{rows.map((agentId) => {
 					const plan = plans.get(agentId);
 					const job = jobMap.get(agentId);
@@ -485,13 +516,13 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 								{authStatus === "authorized" ? (
 									<span className="inline-flex items-center gap-1 text-xs font-medium text-success"><Check className="size-4" aria-hidden="true" />{isSetupAction ? t("settings.harness.configured") : t("settings.harness.loggedIn")}</span>
 								) : (
-									<Button disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
+									<Button data-harness-primary-action="" disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
 										{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
 										{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
 									</Button>
 								)}
 								{authPlan.available && (authStatus === "unknown" || authStatus === "unauthorized") ? (
-									<Button disabled={authState?.checking} size="sm" variant="outline" onClick={() => void checkAuth(agentId)}>
+									<Button data-harness-primary-action="" disabled={authState?.checking} size="sm" variant="outline" onClick={() => void checkAuth(agentId)}>
 										{authState?.checking ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
 										{authState?.checking ? t("settings.harness.checkingLogin") : isSetupAction ? t("settings.harness.checkConfiguration") : t("settings.harness.checkLogin")}
 									</Button>
@@ -499,7 +530,17 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 							</>
 						) : null;
 					return (
-						<div className="settings-row-bar min-h-14 flex-wrap gap-3" data-agent={agentId} key={agentId}>
+						<div
+							aria-labelledby={`harness-agent-${agentId}`}
+							className={cn(
+								"settings-row-bar min-h-14 flex-wrap gap-3 transition-[background-color,box-shadow] duration-200",
+								highlightedAgentId === agentId && "bg-accent-weak ring-2 ring-inset ring-accent",
+							)}
+							data-agent={agentId}
+							data-focus-highlighted={highlightedAgentId === agentId ? "" : undefined}
+							key={agentId}
+							tabIndex={-1}
+						>
 							<AgentAvatar className="size-7 shrink-0" decorative provider={agentId} />
 							<div className="min-w-0 flex-1">
 								<p className="truncate text-sm font-medium text-settings-label" id={`harness-agent-${agentId}`}>{agentLabel(agentId)}</p>
@@ -536,6 +577,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 							) : availableMethods.length > 0 ? (
 				<div className="flex items-stretch overflow-hidden rounded-md bg-[var(--color-bg-settings-trigger)]">
 									<Button
+										data-harness-primary-action=""
 										className={cn(
 											MENU_TRIGGER_CHROME,
 											"h-8! min-h-8! rounded-none! border-0! bg-transparent px-3! text-xs leading-4 hover:bg-[var(--color-bg-settings-trigger-hover)]! dark:hover:bg-[var(--color-bg-settings-trigger-hover)]!",

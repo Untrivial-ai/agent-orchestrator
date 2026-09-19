@@ -207,22 +207,22 @@ describe("NewTaskDialog", () => {
 		expect(requestBody().agent).toBe("cursor");
 	});
 
-	it("allows selecting an installed agent with unknown auth", async () => {
+	it("hides agents with unknown auth and offers agent management without changing the selection", async () => {
 		renderDialog();
 		const user = userEvent.setup();
 		await waitForAgentCatalog();
 
 		await user.click(screen.getByRole("button", { name: "Agent" }));
 		const options = await screen.findAllByRole("menuitem");
-		expect(options.map((option) => option.textContent)).toEqual(["Claude Code", "Cursor", "KiroAuth unknown"]);
-		expect(options[2]).not.toHaveAttribute("aria-disabled", "true");
-		await user.click(options[2]);
+		expect(options.map((option) => option.textContent)).toEqual(["Claude Code", "Cursor", "Manage agents…"]);
+		expect(screen.queryByRole("menuitem", { name: /Kiro/ })).not.toBeInTheDocument();
+		await user.keyboard("{Escape}");
 
 		await user.type(screen.getByLabelText("Task"), "B");
 		await user.click(screen.getByRole("button", { name: "Start task" }));
 
 		await waitFor(() => expect(requestBody).not.toThrow());
-		expect(requestBody().agent).toBe("kiro");
+		expect(requestBody().agent).toBe("claude-code");
 	});
 
 	it("starts an untitled task without an initial prompt", async () => {

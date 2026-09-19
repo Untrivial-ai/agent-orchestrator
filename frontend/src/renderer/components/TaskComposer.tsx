@@ -497,7 +497,7 @@ export function TaskComposer({
 						: submitTask(brief, "tui")),
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
-			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
+			renderAgentControl={(control) => <DesktopAgentControl {...control} manageAgents={!isCloudProject} />}
 			renderModelControl={(control) => (
 				<TaskModelPicker {...control} onRefresh={refreshSelectedModels}
 					tuning={selectedAgent === "codex" && !requiresTuiFallback ? {
@@ -511,10 +511,11 @@ export function TaskComposer({
 	);
 }
 
-function DesktopAgentControl(control: TaskComposerAgentControl) {
+function DesktopAgentControl({ manageAgents, ...control }: TaskComposerAgentControl & { manageAgents: boolean }) {
 	return (
 		<RequiredAgentField
 			{...control}
+			manageAgents={manageAgents}
 			variant="chip"
 			triggerClassName="composer-toolbar-option w-full justify-between"
 		/>
