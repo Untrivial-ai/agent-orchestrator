@@ -404,7 +404,7 @@ func TestAutohandAuthStatusOAuthExpiryRequiresRefreshToken(t *testing.T) {
 		{
 			name:   "expired OpenAI token without refresh token",
 			config: `{"provider":"openai","openai":{"authMode":"chatgpt","model":"gpt-5","chatgptAuth":{"accessToken":"access","accountId":"account","expiresAt":"2026-09-18T12:00:00Z"}}}`,
-			want:   ports.AgentAuthStatusUnknown,
+			want:   ports.AgentAuthStatusUnauthorized,
 		},
 		{
 			name:   "expired OpenAI token with refresh token",
@@ -414,7 +414,7 @@ func TestAutohandAuthStatusOAuthExpiryRequiresRefreshToken(t *testing.T) {
 		{
 			name:   "expired xAI token without refresh token",
 			config: `{"provider":"xai","xai":{"authMode":"oauth","model":"grok","oauthAuth":{"accessToken":"access","expiresAt":"2026-09-18T12:00:00Z"}}}`,
-			want:   ports.AgentAuthStatusUnknown,
+			want:   ports.AgentAuthStatusUnauthorized,
 		},
 		{
 			name:   "expired xAI token with refresh token",

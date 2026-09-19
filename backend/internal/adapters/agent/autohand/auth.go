@@ -814,10 +814,7 @@ func autohandOAuthStatus(auth autohandOAuthSettings, requireAccount bool, d auth
 	if now == nil {
 		now = time.Now
 	}
-	if !expires.After(now()) && !usableSecret(auth.RefreshToken) {
-		return ports.AgentAuthStatusUnknown
-	}
-	return ports.AgentAuthStatusConfigured
+	return authutil.ExpiryEvidence(expires, usableSecret(auth.RefreshToken), now()).Status
 }
 
 func autohandAccountStatus(auth autohandAuthSettings, d authutil.Dependencies) ports.AgentAuthStatus {
