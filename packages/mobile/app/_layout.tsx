@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { Platform } from "react-native";
+import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -86,7 +86,10 @@ function Shell() {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	return (
-		<>
+		// Themed backdrop behind the navigator. Every view above this one is
+		// transparent, so without it the transition between two screens revealed the
+		// platform's default view colour — a white flash around the page as it moved.
+		<View style={{ flex: 1, backgroundColor: t.bgBase }}>
 			{/* Light content on a dark app, dark content on a light one. */}
 			<StatusBar style={scheme === "dark" ? "light" : "dark"} />
 			<TelemetryManager />
@@ -190,6 +193,6 @@ function Shell() {
 					options={{ ...CONNECT_SHEET_OPTIONS, contentStyle: { backgroundColor: t.bgSurface } }}
 				/>
 			</Stack>
-		</>
+		</View>
 	);
 }
