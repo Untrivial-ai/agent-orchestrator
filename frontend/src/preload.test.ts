@@ -74,6 +74,17 @@ describe("preload repository branch bridge", () => {
 	});
 });
 
+describe("preload Developer Mode updater bridge", () => {
+	it("sends only the updater eligibility boolean to the main process", async () => {
+		await exposedBridge().updateSettings.setMacDifferentialUpdates(true);
+
+		expect(electronMocks.invoke).toHaveBeenCalledWith(
+			"updateSettings:setMacDifferentialUpdates",
+			true,
+		);
+	});
+});
+
 describe("preload openFolderPath bridge", () => {
 	// The dispatcher's "active listener" is module-level state that outlives a
 	// single test, exactly like the real renderer's mounted subscription — so

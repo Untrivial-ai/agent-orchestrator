@@ -1396,3 +1396,54 @@ func TestSendRefusedForTerminatedChatSession(t *testing.T) {
 		t.Errorf("a terminated session still received %v", launcher.relayed)
 	}
 }
+
+type deadlineConsumingChatLauncher struct {
+	*recordingLauncher
+	cancel context.CancelFunc
+}
+
+func (l *deadlineConsumingChatLauncher) StartChatTurn(_ context.Context, _ domain.SessionID, text string) (string, error) {
+	l.turns = append(l.turns, text)
+	l.cancel()
+	return "", context.DeadlineExceeded
+}
+
+func (l *deadlineConsumingChatLauncher) StopChat(ctx context.Context, id domain.SessionID) error {
+	l.stopped = append(l.stopped, id)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestChatSpawn_RollbackGivesEachCleanupStepAFreshDeadline(t *testing.T) {
+	previousBudget := spawnRollbackBudget
+	spawnRollbackBudget = 10 * time.Millisecond
+	t.Cleanup(func() { spawnRollbackBudget = previousBudget })
+
+	spawnCtx, cancel := context.WithCancel(context.Background())
+	launcher := &deadlineConsumingChatLauncher{
+		recordingLauncher: &recordingLauncher{},
+		cancel:            cancel,
+	}
+	mgr, st, _ := newChatManager(launcher)
+	ws := mgr.workspace.(*fakeWorkspace)
+
+	_, _, _, err := mgr.Spawn(spawnCtx, ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessCodex,
+		Prompt:        "fix the button",
+		RequestedMode: domain.SessionModeChat,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSpawnDeliverPrompt) {
+		t.Fatalf("Spawn err = %v, want prompt delivery deadline", err)
+	}
+	if ws.destroyed != 1 {
+		t.Fatalf("workspace destroyed = %d, want 1", ws.destroyed)
+	}
+	if ws.destroyCtxErr != nil {
+		t.Fatalf("workspace cleanup inherited exhausted chat shutdown deadline: %v", ws.destroyCtxErr)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session row was not terminated after chat shutdown exhausted its deadline")
+	}
+}

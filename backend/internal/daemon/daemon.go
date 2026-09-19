@@ -398,7 +398,14 @@ func Run() error {
 	prReader := newMultiSCMProvider(cfg.GitLab, log)
 	prMerger := newMultiSCMMerger(cfg.GitLab, log)
 	if prReader != nil && prMerger != nil {
-		prActions = prsvc.NewActionService(prsvc.ActionDeps{Store: store, Merger: prMerger, Reader: prReader})
+		prActions = prsvc.NewActionService(prsvc.ActionDeps{
+			Store:        store,
+			Merger:       prMerger,
+			Reader:       prReader,
+			Resolver:     prReader,
+			Writer:       store,
+			ThreadWriter: store,
+		})
 	} else {
 		log.Warn("pr action service disabled: no usable SCM provider")
 	}

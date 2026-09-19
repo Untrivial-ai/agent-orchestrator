@@ -57,7 +57,7 @@
 				"foregroundImage": "./assets/android-icon-foreground.png",
 				"monochromeImage": "./assets/android-icon-monochrome.png"
 			},
-			"predictiveBackGestureEnabled": false,
+			"predictiveBackGestureEnabled": true,
 			"permissions": ["android.permission.CAMERA"],
 			"softwareKeyboardLayoutMode": "resize"
 		},

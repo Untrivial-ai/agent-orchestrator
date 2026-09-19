@@ -166,6 +166,7 @@ func run(logger *slog.Logger) error {
 	}
 	pullRequestSocketPath := filepath.Join(dataDir, "ao-pull-request.sock")
 	reviewSocketPath := filepath.Join(dataDir, "ao-review.sock")
+	checkpointSocketPath := filepath.Join(dataDir, "ao-checkpoint.sock")
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	started := make(chan error, 1)
@@ -213,6 +214,12 @@ func run(logger *slog.Logger) error {
 	}); err != nil {
 		logger.Warn("publish worker.ready failed", "error", err)
 	}
+	// rehydrateDone gates the coding agent on delete/restore rehydration: the
+	// preserved uncommitted work must be applied and the transcript written
+	// before the agent is built, so --resume finds the conversation and the
+	// workspace holds the restored files. It is closed once (checkout success or
+	// failure) so the agent never hangs.
+	rehydrateDone := make(chan struct{})
 	go func() {
 		if err := prepareWorkspace(
 			runCtx, logger, client, bootstrap, workspace, dataDir, publicURL,
@@ -220,14 +227,28 @@ func run(logger *slog.Logger) error {
 			if runCtx.Err() == nil {
 				logger.Error("background workspace startup failed", "error", err)
 			}
+			close(rehydrateDone)
 			return
 		}
+		// Restore a previously deleted session's state before the agent launches.
+		// A fresh session finds nothing captured and this returns quickly.
+		rehydrateSession(runCtx, logger, client, bootstrap, workspace, dataDir)
+		close(rehydrateDone)
 		transportSupervisor.MarkWorkspaceReady()
+		// Serve durable-restore checkpointing now that the checkout and the git
+		// credential helper are in place. The capture is triggered by the agent's
+		// turn-completion (Stop) hook via this unix socket, not a timer. Bound to
+		// runCtx: it stops on shutdown.
+		cp := newCheckpointer(client, bootstrap, workspace, dataDir, logger)
+		if err := runCheckpointBridge(runCtx, checkpointSocketPath, cp.checkpoint, logger); err != nil &&
+			runCtx.Err() == nil {
+			logger.Warn("checkpoint bridge stopped", "error", err)
+		}
 	}()
 	go func() {
 		if err := startInteractiveAgent(
 			runCtx, logger, client, bootstrap, workspace, dataDir,
-			pullRequestSocketPath, reviewSocketPath, &transportSupervisor,
+			pullRequestSocketPath, reviewSocketPath, checkpointSocketPath, &transportSupervisor, rehydrateDone,
 		); err != nil && runCtx.Err() == nil {
 			logger.Error("background coding-agent startup failed", "error", err)
 		}
@@ -291,9 +312,18 @@ func startInteractiveAgent(
 	logger *slog.Logger,
 	client *client,
 	bootstrap worker.BootstrapResponse,
-	workspace, dataDir, pullRequestSocketPath, reviewSocketPath string,
+	workspace, dataDir, pullRequestSocketPath, reviewSocketPath, checkpointSocketPath string,
 	transportSupervisor *workertransport.Supervisor,
+	rehydrateDone <-chan struct{},
 ) error {
+	// Wait until the checkout has completed and any delete/restore rehydration
+	// has run: the transcript must be on disk before the command is built, so
+	// BuildInteractive detects the restored conversation and launches --resume.
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-rehydrateDone:
+	}
 	if err := verifyHarnessAvailable(bootstrap.Launch.Harness); err != nil {
 		logger.Warn("coding-agent harness unavailable", "error", err)
 		return nil
@@ -313,6 +343,7 @@ func startInteractiveAgent(
 	agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
 	agentCommand.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
 	agentCommand.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
+	agentCommand.Env["AO_CHECKPOINT_SOCKET"] = checkpointSocketPath
 	agentCommand.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
 	agentCommand.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
 		`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
@@ -325,7 +356,9 @@ func startInteractiveAgent(
 		"to submit an AO-triggered review verdict."
 	agentTerminal, err := client.ensureAgentTerminal(ctx)
 	if err != nil {
-		agentCommand.Cleanup()
+		if agentCommand.Cleanup != nil {
+			agentCommand.Cleanup()
+		}
 		return fmt.Errorf("initialize agent terminal: %w", err)
 	}
 	if err := transportSupervisor.StartAgent(ctx, agentCommand, agentTerminal.TerminalID); err != nil {

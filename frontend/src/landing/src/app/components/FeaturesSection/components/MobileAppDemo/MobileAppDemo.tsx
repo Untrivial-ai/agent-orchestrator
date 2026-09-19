@@ -394,7 +394,7 @@ function ScreenHeader({
           {/* The mascot's wand tip doubles as the connection lamp, exactly as in
               the app's ScreenHeader. */}
           <span className="relative block size-[22px]">
-            <img src="/ao-logo.svg" alt="" className="size-full" draggable="false" />
+            <img src="/ao-logo.svg" alt="" className="size-full" draggable="false" loading="lazy" decoding="async" />
             <span
               className="absolute -right-[1px] -top-[2px] size-[5px] rounded-full"
               style={{
@@ -475,6 +475,8 @@ function HarnessMark({
         src={src}
         alt=""
         draggable="false"
+        loading="lazy"
+        decoding="async"
         style={{ width: size - inset, height: size - inset }}
       />
     </span>

@@ -2752,9 +2752,21 @@ html.sidebar-reordering * {
 	box-shadow: none;
 }
 
-:root[data-theme="light"] .cursor-chat-human-message {
-	background: color-mix(in srgb, var(--color-bg-secondary) 78%, var(--color-bg-tertiary));
+/* Light theme collapses the surface stack the dark bubble relies on: `--card`
+   and `--background` are the same near-white, so `--color-bg-secondary` cannot
+   sit above the canvas. Take the unwashed tertiary step and paint the hairline
+   this rule has always declared, so the message still reads as enclosed. */
+:root[data-theme="light"] .cursor-chat-human-message:not([data-queued]) {
+	border-width: 1px;
+	background: var(--color-bg-tertiary);
 	border-color: color-mix(in oklch, var(--color-text-primary) 14%, transparent);
+}
+
+/* Queued keeps its dashed, unfilled outline: the agent has not seen it yet, and
+   a fill would make it read as sent. */
+:root[data-theme="light"] .cursor-chat-human-message[data-queued] {
+	background: transparent;
+	border-color: color-mix(in oklch, var(--color-text-primary) 22%, transparent);
 }
 
 :root[data-theme="light"] .cursor-chat-origin-message,

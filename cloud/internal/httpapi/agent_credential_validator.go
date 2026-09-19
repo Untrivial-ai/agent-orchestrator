@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -27,7 +28,7 @@ func (v *agentCredentialValidator) Validate(
 	agent, credentialType string,
 	secret []byte,
 ) error {
-	if agent != "opencode" {
+if agent != "opencode" {
 		return errInvalidAgentCredential
 	}
 	if credentialType != "api_key" {

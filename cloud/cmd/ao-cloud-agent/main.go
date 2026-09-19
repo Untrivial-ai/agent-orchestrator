@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -123,6 +124,13 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 	if len(args) != 2 {
 		return nil
 	}
+	// A completed turn (Stop) is the event that drives durable-restore
+	// checkpointing: poke the worker's checkpoint bridge so it captures the
+	// transcript and any uncommitted work. Event-driven, best-effort, and
+	// fire-and-forget so a completed turn never waits on git or the network.
+	if args[1] == "stop" {
+		pokeCheckpoint(ctx)
+	}
 	payload, err := io.ReadAll(io.LimitReader(input, maxHookPayload+1))
 	if err != nil || len(payload) > maxHookPayload {
 		return nil
@@ -146,6 +154,34 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 	)
 	// Hook delivery is best-effort and must never break the coding agent.
 	return nil
+}
+
+// pokeCheckpoint signals the worker's checkpoint bridge (a unix socket at
+// AO_CHECKPOINT_SOCKET) that a turn completed, so it captures a durable-restore
+// checkpoint. It is fire-and-forget: any failure (no socket, worker down) is
+// ignored so a completed turn is never delayed or broken by capture.
+func pokeCheckpoint(ctx context.Context) {
+	socket := os.Getenv("AO_CHECKPOINT_SOCKET")
+	if socket == "" {
+		return
+	}
+	httpClient := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(dialCtx, "unix", socket)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/checkpoint", nil)
+	if err != nil {
+		return
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 func runSpawn(ctx context.Context, c *client, args []string) error {

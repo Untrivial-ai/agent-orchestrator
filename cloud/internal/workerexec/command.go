@@ -71,7 +71,7 @@ func (b HarnessBuilder) BuildInteractive(
 	if launch.Kind == "orchestrator" {
 		systemPrompt = orchestratorSystemPrompt(skillDir)
 	}
-	harness := agentruntime.Harness(launch.Harness)
+harness := agentruntime.Harness(launch.Harness)
 	permission := agentruntime.PermissionPolicyForMode(
 		agentruntime.SessionMode(launch.Mode),
 	)
@@ -123,7 +123,7 @@ func (b HarnessBuilder) BuildInteractive(
 		}
 		return Command{}, err
 	}
-	if err := installOpenCodeActivityHooks(workspace); err != nil {
+if err := installOpenCodeActivityHooks(workspace); err != nil {
 		if command.Cleanup != nil {
 			command.Cleanup()
 		}
@@ -230,7 +230,7 @@ func (b HarnessBuilder) prepareOpenCodeEnvironment(
 			},
 		}
 	}); err != nil {
-		return fmt.Errorf("prepare opencode config: %w", err)
+return fmt.Errorf("prepare opencode config: %w", err)
 	}
 	command.Env["OPENCODE_CONFIG"] = configPath
 	return nil

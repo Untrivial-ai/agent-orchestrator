@@ -986,6 +986,41 @@ describe("useTerminalSession", () => {
 		expect(view.result.current.state).toBe("attached");
 	});
 
+	it("has no client open timeout for a cloud pane: a slow open never storms", () => {
+		// A cloud pane opens its socket directly; readiness is server-driven (the
+		// CP holds it in "starting" until the terminal opens). There is NO client
+		// open timeout — the 3s/30s band-aids only ever tore a healthy slow open
+		// down mid-attach and rebuilt the mux, a self-sustaining storm. So however
+		// long the CP takes, the pane keeps its single mux and stays "connecting".
+		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
+		const { view, muxes } = setup({ attachedSession: cloudSession });
+		expect(view.result.current.state).toBe("connecting");
+		// Far past any old timeout: no teardown, no rebuild, no storm.
+		act(() => void vi.advanceTimersByTime(120_000));
+		expect(muxes).toHaveLength(1);
+		expect(muxes[0].disposed).toBe(false);
+		expect(view.result.current.state).toBe("connecting");
+		// The server finally acks: one clean attach, no rebuild.
+		act(() => muxes[0].emitOpened("handle-1"));
+		expect(view.result.current.state).toBe("attached");
+		expect(muxes).toHaveLength(1);
+	});
+
+	it("recovers a stalled cloud pane only when the socket closes (server-driven)", () => {
+		// With no client timer, a stalled cloud pane is recovered by the transport,
+		// not a clock: the CP closes the socket at its own ready deadline, which
+		// reaches onConnectionChange("closed") and schedules exactly one flat
+		// reattach. No client-side timeout ever fires to rebuild the mux.
+		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
+		const { view, muxes } = setup({ attachedSession: cloudSession });
+		act(() => void vi.advanceTimersByTime(120_000));
+		expect(muxes).toHaveLength(1); // no client teardown while the socket lives
+		act(() => muxes[0].emitConnection("closed")); // CP ready deadline closes it
+		act(() => void vi.advanceTimersByTime(1_000)); // flat cloud reconnect
+		expect(muxes).toHaveLength(2); // exactly one rebuild, not a storm
+		expect(view.result.current.state).not.toBe("attached");
+	});
+
 	it("backs off between failed reconnect attempts", () => {
 		const { muxes } = setup();
 		act(() => muxes[0].emitConnection("closed"));

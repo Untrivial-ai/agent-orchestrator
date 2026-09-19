@@ -29,7 +29,9 @@ import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import { useDaemonStatus } from "../hooks/useDaemonStatus";
 import { useOpenShellTerminal } from "../hooks/useShellTerminals";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
-import { useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions, workspaceStatusesChecking } from "../hooks/useWorkspaceQuery";
+import { cloudProjectsQueryKey, cloudSessionsQueryKey, useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
+import { useCloudCp } from "../hooks/useCloudCp";
+import { useCloudOrg } from "../hooks/useCloudOrg";
 import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
@@ -49,7 +51,7 @@ import {
 } from "../lib/platform";
 import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
-import { sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
+import { CLOUD_PROJECT_KIND, sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
 
 export const Route = createFileRoute("/_shell")({
@@ -167,6 +169,8 @@ function ShellLayout() {
 	const navigate = useNavigate();
 	const matchRoute = useMatchRoute();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
+	const { org: cloudOrg } = useCloudOrg();
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data ?? [];
 	// Global shortcut listeners need the latest workspace list, but recreating
@@ -605,6 +609,36 @@ function ShellLayout() {
 		async (projectId: string) => {
 			const isLastWorkspace =
               workspaces.length === 1 && workspaces[0]?.id === projectId;
+// Cloud projects live in the control plane, not the local daemon: route
+			// their delete to the CP (which archives the project and all its
+			// sessions) instead of the local project endpoint.
+			const isCloudProject =
+				workspaces.find((item) => item.id === projectId)?.kind === CLOUD_PROJECT_KIND;
+			if (isCloudProject) {
+				if (!cloudOrg?.id) {
+					const failure = new Error("The cloud control plane is not ready. Sign in and try again.") as Error & {
+						code?: string;
+					};
+					failure.code = "cloud_not_ready";
+					throw failure;
+				}
+				try {
+					await cloudClient.deleteProject(cloudOrg.id, projectId);
+				} catch (error) {
+					const failure = new Error(
+						error instanceof Error ? error.message : "Unable to delete cloud project",
+					) as Error & { code?: string };
+					throw failure;
+				}
+				// The archive is asynchronous (202); refresh the cloud queries so the
+				// merged board drops the project and its sessions on the next fetch.
+				await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
+				await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+				if (isLastWorkspace) {
+					void navigate({ to: "/" });
+				}
+				return;
+			}
 			const { error } = await apiClient.DELETE("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },
 			});
@@ -618,7 +652,7 @@ function ShellLayout() {
               void navigate({ to: "/" });
 }
 		},
-		[navigate, updateWorkspaces, workspaces],
+		[cloudClient, cloudOrg?.id, navigate, queryClient, updateWorkspaces, workspaces],
 	);
 
 	const restartOrchestrator = useCallback(
@@ -645,8 +679,8 @@ function ShellLayout() {
 
 	// A daemon port is not enough to render a trustworthy empty state: the
 	// route loader may have cached [] before Electron reported the port. Fetch
-	// against each ready daemon, then wait for session recovery before the board decides
-	// between projects and the first-run import flow.
+	// against each ready daemon before the board decides between projects and the
+	// first-run import flow. Per-session recovery renders on the cards themselves.
 	useEffect(() => {
 		let active = true;
 		if (usesPreviewWorkspaceData) {
@@ -669,8 +703,8 @@ function ShellLayout() {
 		setWorkspaceStartupState("loading");
 		void queryClient
 			.fetchQuery({ ...workspaceQueryOptions, staleTime: 0 })
-			.then((workspaces) => {
-				if (active && !workspaceStatusesChecking(workspaces)) setWorkspaceStartupState("ready");
+			.then(() => {
+				if (active) setWorkspaceStartupState("ready");
 			})
 			.catch((error) => {
 				if (active && !isCancelledError(error)) setWorkspaceStartupState("error");
@@ -691,7 +725,6 @@ function ShellLayout() {
 			daemonStatus.state !== "ready" ||
 			workspaceStartupState === "ready" ||
 			!workspaceQuery.isSuccess ||
-			workspaceStatusesChecking(workspaceQuery.data) ||
 			workspaceQuery.dataUpdatedAt <= workspaceStartupBaselineRef.current
 		) {
 			return;
@@ -700,7 +733,6 @@ function ShellLayout() {
 	}, [
 		daemonStatus.state,
 		workspaceQuery.dataUpdatedAt,
-		workspaceQuery.data,
 		workspaceQuery.isSuccess,
 		workspaceStartupState,
 	]);

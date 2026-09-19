@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   encryptionAvailable: true,
   selectedStorageBackend: "gnome_libsecret",
   getAuthorizationUrlWithPKCE: vi.fn(),
+  ipcHandle: vi.fn(),
   notifyRenderers: vi.fn(),
   openExternal: vi.fn(),
   showMessageBox: vi.fn(),
@@ -41,7 +42,7 @@ vi.mock("electron", () => ({
     isPackaged: true,
   },
   dialog: { showMessageBox: mocks.showMessageBox },
-  ipcMain: { handle: vi.fn() },
+  ipcMain: { handle: mocks.ipcHandle },
   safeStorage: {
     decryptString: mocks.decryptString,
     encryptString: mocks.encryptString,
@@ -124,6 +125,20 @@ describe("native WorkOS authentication", () => {
     await expect(getCloudSession(dataDir)).resolves.toMatchObject({
       user: { email: "person@example.com" },
     });
+  });
+
+  it("requires an AO Cloud session before starting provider login", async () => {
+    const handler = mocks.ipcHandle.mock.calls.find(
+      ([channel]) => channel === "cloud:connectProviderAuth",
+    )?.[1] as ((event: unknown, input: unknown) => Promise<void>) | undefined;
+    expect(handler).toBeTypeOf("function");
+    await expect(
+      handler?.({}, {
+        baseUrl: "https://cloud.example",
+        orgId: "org-123",
+        provider: "codex",
+      }),
+    ).rejects.toThrow("Sign in to AO Cloud before connecting a provider.");
   });
 
   it("rejects callbacks whose OAuth state does not match", async () => {

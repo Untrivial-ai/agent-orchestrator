@@ -906,6 +906,22 @@ describe("SessionView", () => {
 		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("uses generic copy while a cloud workspace is connecting", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = false;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "provisioning",
+		};
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Connecting");
+		expect(screen.getByRole("status")).not.toHaveTextContent("Coder");
+	});
+
 	it("activates a new terminal opened while a file tab is selected", async () => {
 		const shell = {
 			handleId: "sh-after-file",
@@ -3121,13 +3137,13 @@ describe("SessionView", () => {
 		expect(screen.getByRole("tab", { name: "App.tsx" })).toHaveAttribute("aria-selected", "false");
 	});
 
-	it("treats tab and header whole-file feedback as the same focused composer", async () => {
+	it("toggles the header whole-file feedback composer on repeat", async () => {
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
 		render(<SessionView sessionId="sess-1" />);
 
 		fireEvent.click(screen.getByRole("button", { name: "open files" }));
 		fireEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
-		fireEvent.click(screen.getByRole("button", { name: "Add feedback for file src/App.tsx" }));
+		fireEvent.click(screen.getByRole("button", { name: "header feedback" }));
 		await userEvent.type(screen.getByRole("textbox", { name: "feedback draft" }), "keep this draft");
 
 		fireEvent.click(screen.getByRole("button", { name: "header feedback" }));

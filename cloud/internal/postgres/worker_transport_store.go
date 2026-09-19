@@ -355,12 +355,34 @@ func (s *Store) IssueTerminalTicket(
 		var exited bool
 		err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
 			return tx.QueryRow(ctx,
+				// Exit detection must look only at the LATEST worker epoch's agent
+				// terminal. A restore provisions a fresh box under a NEW epoch and
+				// closes the old epoch's terminal, so an old 'closed' row is expected
+				// and must NOT read as "agent exited" while a newer epoch is live.
+				// Scoping the closed/failed check to MAX(worker_epoch) is provider
+				// agnostic: it does not depend on ao_worker_connections, which nodeops
+				// sessions do not populate (so the previous open+live-worker guard
+				// false-fired a 410 on every nodeops restore).
 				`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
 					SELECT 1 FROM ao_terminal_sessions terminal
 					WHERE terminal.org_id = session.org_id
 					  AND terminal.session_id = session.id
 					  AND terminal.kind = 'agent'
 					  AND terminal.state IN ('closed', 'failed')
+					  AND NOT EXISTS (
+					  	SELECT 1 FROM ao_terminal_sessions live
+					  	WHERE live.org_id = terminal.org_id
+					  	  AND live.session_id = terminal.session_id
+					  	  AND live.kind = 'agent'
+					  	  AND live.state IN ('opening', 'open')
+					  	  AND live.worker_epoch = terminal.worker_epoch
+					  )
+					  AND terminal.worker_epoch = (
+						SELECT MAX(latest.worker_epoch) FROM ao_terminal_sessions latest
+						WHERE latest.org_id = session.org_id
+						  AND latest.session_id = session.id
+						  AND latest.kind = 'agent'
+					  )
 				)
 				FROM ao_sessions session
 				WHERE session.org_id = $1 AND session.id = $2`,
@@ -472,12 +494,29 @@ func (s *Store) IssueTerminalTicket(
 			if kind == "agent" {
 				var exited bool
 				lookupErr := tx.QueryRow(ctx,
+					// See IssueTerminalTicket: only the LATEST epoch's agent terminal
+					// state signals a real exit. An old 'closed' row from a restore
+					// under a superseded epoch must not read as exited.
 					`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
 						SELECT 1 FROM ao_terminal_sessions terminal
 						WHERE terminal.org_id = session.org_id
 						  AND terminal.session_id = session.id
 						  AND terminal.kind = 'agent'
 						  AND terminal.state IN ('closed', 'failed')
+						  AND NOT EXISTS (
+						  	SELECT 1 FROM ao_terminal_sessions live
+						  	WHERE live.org_id = terminal.org_id
+						  	  AND live.session_id = terminal.session_id
+						  	  AND live.kind = 'agent'
+						  	  AND live.state IN ('opening', 'open')
+						  	  AND live.worker_epoch = terminal.worker_epoch
+						  )
+						  AND terminal.worker_epoch = (
+							SELECT MAX(latest.worker_epoch) FROM ao_terminal_sessions latest
+							WHERE latest.org_id = session.org_id
+							  AND latest.session_id = session.id
+							  AND latest.kind = 'agent'
+						  )
 					)
 					FROM ao_sessions session
 					WHERE session.org_id = $1 AND session.id = $2`,
@@ -494,6 +533,34 @@ func (s *Store) IssueTerminalTicket(
 		}
 		if err != nil {
 			return err
+		}
+		// The worker connection registers on bootstrap, but the coding agent only
+		// starts after the repository checkout (tens of seconds later), and the
+		// worker creates the agent terminal (EnsureWorkerAgentTerminal, state
+		// 'open') at that point. Issuing a browser agent ticket on worker-connection
+		// alone lets the browser attach and find-or-create an agent terminal that no
+		// agent is serving; it then times out to 'failed' and poisons the next mint
+		// as a 410. Gate the agent ticket on an already-live agent terminal at this
+		// epoch: until the worker has started the agent, report the worker as merely
+		// unavailable (409) so the browser keeps waiting on "Connecting" instead.
+		// The workspace shell terminal is deliberately available earlier, so this
+		// only applies to kind == "agent".
+		if kind == "agent" {
+			var agentTerminalLive bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS (
+					SELECT 1 FROM ao_terminal_sessions
+					WHERE org_id = $1 AND session_id = $2 AND worker_epoch = $3
+					  AND kind = 'agent' AND state IN ('opening', 'open')
+					  AND expires_at > now()
+				)`,
+				orgID, sessionID, epoch,
+			).Scan(&agentTerminalLive); err != nil {
+				return err
+			}
+			if !agentTerminalLive {
+				return ErrWorkerUnavailable
+			}
 		}
 		mode = effectiveMode(mode, access.ModeCap)
 		deniedCommands = effectiveDeniedCommands(deniedCommands, access.DeniedCommands)
@@ -555,6 +622,23 @@ func (s *Store) RefreshTerminalInteraction(
 	})
 }
 
+// lockAgentTerminal serializes agent-terminal find-or-create for one
+// (org, session, worker epoch) tuple. The browser's OpenTerminal(agent) and the
+// worker's EnsureWorkerAgentTerminal are both find-or-create on the same tuple;
+// under Read Committed, two concurrent transactions could each see no existing
+// row and both insert, yielding two agent terminal rows for one epoch — and the
+// worker would then spawn a second interactive agent for the extra row. The
+// transaction-scoped advisory lock makes the pair mutually exclusive, so they
+// always converge on a single row (the loser reuses the winner's). Keyed off a
+// per-epoch string; released automatically at commit/rollback.
+func lockAgentTerminal(ctx context.Context, tx pgx.Tx, orgID, sessionID string, epoch int64) error {
+	_, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		fmt.Sprintf("ao-agent-terminal:%s:%s:%d", orgID, sessionID, epoch),
+	)
+	return err
+}
+
 func (s *Store) EnsureWorkerAgentTerminal(
 	ctx context.Context,
 	orgID, sessionID, workerID string,
@@ -574,6 +658,9 @@ func (s *Store) EnsureWorkerAgentTerminal(
 		}
 		if !current {
 			return ErrStaleWorker
+		}
+		if err := lockAgentTerminal(ctx, tx, orgID, sessionID, epoch); err != nil {
+			return err
 		}
 		err = tx.QueryRow(ctx,
 			`UPDATE ao_terminal_sessions
@@ -650,6 +737,12 @@ func (s *Store) OpenTerminal(
 			return ErrStaleWorker
 		}
 		if kind == "agent" {
+			// Serialize against the worker's own EnsureWorkerAgentTerminal so a
+			// browser open that races the worker cannot create a duplicate agent
+			// terminal row for this epoch (which would spawn a second agent).
+			if err := lockAgentTerminal(ctx, tx, ticket.OrgID, ticket.SessionID, ticket.WorkerEpoch); err != nil {
+				return err
+			}
 			err := tx.QueryRow(ctx,
 				`UPDATE ao_terminal_sessions
 				SET expires_at = now() + $1::interval, updated_at = now()

@@ -2,8 +2,8 @@ import { KeyRound } from "lucide-react";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { GitHubTokenField } from "../onboarding/GitHubTokenField";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
 import { useCloudGate } from "../../hooks/useCloudGate";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import { useCloudOrg } from "../../hooks/useCloudOrg";
@@ -74,7 +74,7 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 			setGitHubPAT("");
 			await queryClient.invalidateQueries({ queryKey: ["cloud-user-provider-connections"] });
 		} catch (error) {
-			setGitHubPATError(error instanceof Error ? error.message : "Could not save the GitHub token.");
+			setGitHubPATError(error instanceof Error ? error.message : t("settings.cloudAgents.github.errorSave"));
 		} finally {
 			setGitHubPATBusy(false);
 		}
@@ -86,7 +86,7 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 			await client.deleteGitHubPAT();
 			await queryClient.invalidateQueries({ queryKey: ["cloud-user-provider-connections"] });
 		} catch (error) {
-			setGitHubPATError(error instanceof Error ? error.message : "Could not remove the GitHub token.");
+			setGitHubPATError(error instanceof Error ? error.message : t("settings.cloudAgents.github.errorRemove"));
 		} finally {
 			setGitHubPATBusy(false);
 		}
@@ -113,18 +113,31 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 					</Button>
 				</div>
 				<div className="mt-3 border-t border-border px-3 pt-3">
-					<SettingsRow key="github-pat" icon={KeyRound} label="GitHub private repositories">
-						<span className="text-sm leading-5 text-settings-muted">{githubPATConnected ? "Connected" : "Not connected"}</span>
+					<SettingsRow key="github-pat" icon={KeyRound} label={t("settings.cloudAgents.github.title")}>
+						<span className="text-sm leading-5 text-settings-muted">{githubPATConnected ? t("settings.cloudAgents.github.connected") : t("settings.cloudAgents.github.notConnected")}</span>
 					</SettingsRow>
-					<p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t("settings.githubPat.description")}</p>
-					<div className="mt-2 flex items-center gap-2">
-						<Input type="password" autoComplete="off" spellCheck={false} value={githubPAT} onChange={(event) => setGitHubPAT(event.target.value)} placeholder="github_pat_…" />
-						<Button type="button" variant="footer" disabled={githubPATBusy || githubPAT.trim() === ""} onClick={() => void saveGitHubPAT()}>
-							{githubPATBusy ? "Saving…" : "Save token"}
-						</Button>
-						{githubPATConnected ? <Button type="button" variant="footer" disabled={githubPATBusy} onClick={() => void removeGitHubPAT()}>{t("settings.githubPat.remove")}</Button> : null}
-					</div>
-					{githubPATError ? <p role="alert" className="mt-2 text-xs text-error">{githubPATError}</p> : null}
+					<GitHubTokenField
+						id="settings-github-pat"
+						bare
+						className="mt-2"
+						label={t("settings.cloudAgents.github.tokenLabel")}
+						hint={t("settings.cloudAgents.github.tokenHint")}
+						value={githubPAT}
+						disabled={githubPATBusy}
+						error={githubPATError}
+						submitLabel={githubPATBusy ? t("settings.cloudAgents.github.saving") : t("settings.cloudAgents.github.save")}
+						submitVariant="outline"
+						submitDisabled={githubPATBusy}
+						onChange={setGitHubPAT}
+						onSubmit={() => void saveGitHubPAT()}
+					/>
+					{githubPATConnected ? (
+						<div className="mt-2 flex justify-end">
+							<Button type="button" variant="footer" disabled={githubPATBusy} onClick={() => void removeGitHubPAT()}>
+								{t("settings.cloudAgents.github.remove")}
+							</Button>
+						</div>
+					) : null}
 				</div>
 			</div>
 		</SettingsSection>
