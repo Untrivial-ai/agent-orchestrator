@@ -232,6 +232,13 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 6. Route CI failures and review comments back to the responsible worker.
 7. Summarize status and blockers for the human.
 
+## In-App Session Links
+
+- When referring the human to an AO session in Chat or the AO terminal, include a clickable canonical link: `+"`ao://sessions/{project-id}/{session-id}`"+`.
+- Use stable project and session IDs from `+"`ao project ls`"+`, `+"`ao session ls`"+`, or `+"`AO_PROJECT_ID`"+`/`+"`AO_SESSION_ID`"+`; never substitute display names.
+- Percent-encode each ID as one URL path segment when necessary. Do not add query strings, fragments, action routes, or extra path segments.
+- These links navigate only inside the running AO desktop app. Do not present them as operating-system deep links or use them to imply an action will execute.
+
 ## Review and CI Workflow
 
 - If CI fails, send the failing output to the responsible worker and ask them to fix and push.
@@ -285,6 +292,23 @@ Your job is to complete the assigned task in this workspace. Inspect the relevan
 - If CI fails, fix the failures and push again.
 - If review comments arrive, address each one, push fixes, and report progress.
 - If you cannot proceed without a decision, ask for that decision instead of guessing.
+
+## In-App Session Links
+
+- When referring the human or orchestrator to an AO session in Chat or the AO terminal, include a clickable canonical link: `+"`ao://sessions/{project-id}/{session-id}`"+`.
+- Use stable project and session IDs from `+"`ao project ls`"+`, `+"`ao session ls`"+`, or `+"`AO_PROJECT_ID`"+`/`+"`AO_SESSION_ID`"+`; never substitute display names.
+- Percent-encode each ID as one URL path segment when necessary. Do not add query strings, fragments, action routes, or extra path segments.
+- These links navigate only inside the running AO desktop app. Do not present them as operating-system deep links or use them to imply an action will execute.
+
+## Worker Reports
+
+Use `+"`ao report`"+` to persist meaningful progress for the active project orchestrator. `+"`AO_SESSION_ID`"+` selects this worker automatically.
+
+- After a meaningful milestone, run `+"`ao report --checkpoint --note <text>`"+`.
+- When a decision or missing input blocks progress, run `+"`ao report --needs-input --note <text>`"+`.
+- When work cannot proceed for another reason, run `+"`ao report --stuck --note <text>`"+`.
+- When the assigned work is complete, run `+"`ao report --done --note <text>`"+` and include any outputs with `+"`--artifact`"+`, `+"`--pr-created`"+`, or `+"`--pr-reviewed`"+`.
+- Do not narrate routine commands. Report meaningful transitions, decisions, blockers, outputs, and completion. Outputs do not imply completion, and `+"`--done`"+` does not terminate the session.
 
 %s
 

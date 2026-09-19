@@ -16,6 +16,7 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 | `orchestrator` | List orchestrator sessions | Viewing which sessions are orchestrators | [commands/orchestrator.md](commands/orchestrator.md) |
 | `review` | Submit a reviewer result for a worker's PR | Completing a code review loop | [commands/review.md](commands/review.md) |
 | `send` | Send a message to a running agent session | Correcting or directing a live agent | [commands/send.md](commands/send.md) |
+| `report` | Persist a meaningful worker report | Checkpoints, blockers, decisions, outputs, and completion | [commands/report.md](commands/report.md) |
 | `preview` | Start a session-owned app or open an exact URL/file | Running and showing the worker's relevant app, Markdown, HTML, PDF, or image | [commands/preview.md](commands/preview.md) |
 | `browser` | Inspect and control the session's shared live browser | Verifying a web app through snapshots, interactions, waits, screenshots, console, and errors | [commands/browser.md](commands/browser.md) |
 | `start` | Fetch (if needed) and open the AO desktop app | Launching the app | [commands/start.md](commands/start.md) |
@@ -31,6 +32,10 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 - Most read commands accept `--json` for machine-readable output.
 - `-p / --project` scopes session subcommand lookups to one project.
 - Session and project ids are shown by `ao session ls` and `ao project ls`.
+- To refer to a session in AO Chat or the AO terminal, use the canonical in-app
+  link `ao://sessions/{project-id}/{session-id}`. Read
+  [commands/session.md](commands/session.md) for identity, encoding, and safety
+  rules before constructing one.
 - `--agent` is an alias for `--harness` on `ao spawn`.
 - Every command accepts `-h / --help` for the full flag list.
 - For frontend launch, preview selection, or artifact handoff, read

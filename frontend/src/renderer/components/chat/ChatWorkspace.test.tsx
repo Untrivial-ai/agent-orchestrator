@@ -202,6 +202,17 @@ const chatSession = {
 } satisfies WorkspaceSession;
 
 describe("HumanMessage attachments", () => {
+	it("hides appended worker report context from the human message", async () => {
+		const text =
+			"Please continue\n\n<ao-worker-reports>\nReports since your previous turn:\n\n[done] ao://sessions/project/worker\nFinished\n</ao-worker-reports>";
+		render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+
+		expect(screen.getByText("Please continue")).toBeInTheDocument();
+		expect(screen.queryByText(/Reports since your previous turn/)).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Copy user message" }));
+		expect(writeText).toHaveBeenCalledWith("Please continue");
+	});
+
 	function renderImageAttachment(header: string, name: string) {
 		render(
 			<HumanMessage
@@ -1044,6 +1055,22 @@ describe("ChatWorkspace timeline", () => {
 		await user.click(screen.getByRole("link", { name: "local preview" }));
 
 		expect(onLinkOpen).toHaveBeenCalledWith("http://localhost:5173");
+	});
+
+	it.each([
+		["human", "user"],
+		["automation", "user"],
+		["daemon", "user"],
+		["provider", "assistant"],
+	] as const)("activates session links from %s messages", async (origin, role) => {
+		const snapshot = structuredClone(chatFixtureSettled);
+		const template = snapshot.items.find((item): item is ConversationMessage => item.kind === "message");
+		if (!template) throw new Error("fixture has no message");
+		snapshot.items = [{ ...template, id: `link-${origin}`, origin, role, text: "ao://sessions/project/session", streaming: false }];
+		const onSessionLinkOpen = vi.fn();
+		render(<ChatWorkspace snapshot={snapshot} onSessionLinkOpen={onSessionLinkOpen} />);
+		await userEvent.setup().click(screen.getByRole("link"));
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/session");
 	});
 
 	it("offers real recovery actions when the controller stops", async () => {

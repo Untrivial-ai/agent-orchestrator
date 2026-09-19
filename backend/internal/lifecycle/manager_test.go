@@ -1600,6 +1600,7 @@ func TestActivity_CoordinationPromptFollowedByPromptlessStopDoesNotAdvanceCheckp
 		LaunchID: "terminal-generation", AgentSessionID: "native-1",
 		Timestamp:                    coordinationPromptAt,
 		ConversationCheckpointOrigin: domain.ConversationCheckpointOriginCoordination,
+		CoordinationID:               "report-batch:abc123",
 	}); err != nil {
 		t.Fatalf("apply coordination prompt boundary: %v", err)
 	}
@@ -1616,7 +1617,8 @@ func TestActivity_CoordinationPromptFollowedByPromptlessStopDoesNotAdvanceCheckp
 	if got.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
 		!got.LatestUserPromptAt.Equal(previousPromptAt) ||
 		got.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
-		got.ConversationCheckpointState != domain.ConversationCheckpointCoordination {
+		got.ConversationCheckpointState != domain.ConversationCheckpointCoordination ||
+		got.ConversationCheckpointTurnID != "report-batch:abc123" {
 		t.Fatalf("coordination turn advanced user checkpoint: got %+v, want prior human facts at %s",
 			got, previousPromptAt)
 	}
