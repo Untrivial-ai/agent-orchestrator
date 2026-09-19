@@ -119,7 +119,8 @@ GOOGLE_CLOUD_API_KEY GOOGLE_CLOUD_PROJECT GCLOUD_PROJECT GOOGLE_CLOUD_LOCATION G
 			t.Fatalf("missing authentication conformance inventory for %q", ha.Harness)
 		}
 		t.Run(string(ha.Harness), func(t *testing.T) {
-			isolateAuthRoots(t)
+			root := isolateAuthRoots(t)
+			prepareAuthTestHome(t, ha.Harness, root)
 			for _, name := range strings.Fields(test.environment) {
 				t.Setenv(name, "")
 			}
@@ -157,11 +158,26 @@ func authStatusForTest(ctx context.Context, agent ports.Agent, check ports.Agent
 	return agent.(ports.AgentAuthChecker).AuthStatus(ctx)
 }
 
-func isolateAuthRoots(t *testing.T) {
+func isolateAuthRoots(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "APPDATA", "LOCALAPPDATA", "TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, root)
+	}
+	return root
+}
+
+func prepareAuthTestHome(t *testing.T, harness domain.AgentHarness, root string) {
+	t.Helper()
+	if harness != "agy" {
+		return
+	}
+	dir := filepath.Join(root, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create Agy settings directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"modelProvider":"gemini"}`), 0o600); err != nil {
+		t.Fatalf("write Agy settings: %v", err)
 	}
 }
 
