@@ -1372,7 +1372,7 @@
 	"startup.githubSetupSignedOutPr": "拉取请求需要 GitHub 访问权限。登录一次后，代理即可从此会话创建 PR 并读取议题。",
 	"startup.githubSetupTitle": "连接 GitHub 以创建拉取请求",
 	"onboarding.detectingAgents": "正在查找已安装的代理 CLI…",
-	"onboarding.detectedAgents": "检测到 {{count}} 个可用的代理 CLI",
+	"onboarding.detectedAgents_one": "检测到 {{count}} 个可用的代理 CLI",
 	"onboarding.detectedAgents_other": "检测到 {{count}} 个可用的代理 CLI",
 	"onboarding.noAgentsDetected": "尚未检测到代理 CLI — 安装一个即可开始",
 	"onboarding.agentReady": "可用",

@@ -1522,7 +1522,7 @@
 	"startup.githubSetupSignedOutPr": "Pull requests need GitHub access. Sign in once so agents can open PRs and read issues from this session.",
 	"startup.githubSetupTitle": "Connect GitHub for pull requests",
 	"onboarding.detectingAgents": "Looking for installed agent CLIs…",
-	"onboarding.detectedAgents": "Detected {{count}} ready agent CLI",
+	"onboarding.detectedAgents_one": "Detected {{count}} ready agent CLI",
 	"onboarding.detectedAgents_other": "Detected {{count}} ready agent CLIs",
 	"onboarding.noAgentsDetected": "No agent CLI detected yet — install one to get started",
 	"onboarding.agentReady": "Ready",
