@@ -3377,6 +3377,12 @@ func TestToSpawnAPIErrorMapsSpawnStageSentinels(t *testing.T) {
 			"WORKSPACE_PROVISION_FAILED",
 		},
 		{
+			"orchestrator predecessor release",
+			fmt.Errorf("%w: preserve workspace: access denied", sessionmanager.ErrOrchestratorRecovery),
+			apierr.KindConflict,
+			"ORCHESTRATOR_REPLACEMENT_BLOCKED",
+		},
+		{
 			"runtime create",
 			fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: context deadline exceeded", sessionmanager.ErrRuntimeCreate),
 			apierr.KindInternal,
