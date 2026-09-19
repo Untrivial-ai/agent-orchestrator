@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
@@ -20,16 +21,20 @@ import (
 func TestOpenCodeLocalEvidenceIsConfigured(t *testing.T) {
 	for _, source := range []string{"environment", "auth file", "auth list"} {
 		t.Run(source, func(t *testing.T) {
-			plugin := openCodeAuthFixture(t, "0 credentials\n")
-			switch source {
-			case "environment":
-				t.Setenv("OPENAI_API_KEY", "secret")
-			case "auth file":
-				writeOpenCodeAuthFile(t, "{\"openai\":{\"type\":\"api\",\"key\":\"secret\"}}")
-			case "auth list":
-				plugin = openCodeAuthFixture(t, "OpenAI api\n1 credential\n")
+			var got ports.AgentAuthStatus
+			var err error
+			if source == "auth list" {
+				got, err = opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{},
+					openCodeAuthListDependencies(t, "OpenAI api\n1 credential\n"))
+			} else {
+				plugin := openCodeAuthFixture(t, "0 credentials\n")
+				if source == "environment" {
+					t.Setenv("OPENAI_API_KEY", "secret")
+				} else {
+					writeOpenCodeAuthFile(t, "{\"openai\":{\"type\":\"api\",\"key\":\"secret\"}}")
+				}
+				got, err = plugin.AuthStatus(context.Background())
 			}
-			got, err := plugin.AuthStatus(context.Background())
 			if err != nil || got != ports.AgentAuthStatusConfigured {
 				t.Fatalf("AuthStatus = %q, %v; want configured", got, err)
 			}
@@ -193,11 +198,41 @@ func TestOpenCodeAuthListIsConservative(t *testing.T) {
 		{"0 credentials\nOpenAI OPENAI_API_KEY\n1 environment variable\n", ports.AgentAuthStatusConfigured},
 	} {
 		t.Run(tc.output, func(t *testing.T) {
-			got, err := openCodeAuthFixture(t, tc.output).AuthStatus(context.Background())
+			got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{},
+				openCodeAuthListDependencies(t, tc.output))
 			if err != nil || got != tc.want {
 				t.Fatalf("status = %q, %v; want %q", got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestOpenCodeAuthListDiscardsOutputAfterDeadline(t *testing.T) {
+	deps := openCodeAuthListDependencies(t, "1 credential\n")
+	run := deps.Run
+	deps.Timeout = time.Nanosecond
+	deps.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		// Completion is ordered after cancellation, independent of scheduling
+		// speed. Late positive output must not establish configured status.
+		<-ctx.Done()
+		return run(ctx, name, args...)
+	}
+	got, err := opencodeAuthStatusFor(context.Background(), "injected-opencode", ports.AgentAuthCheck{}, deps)
+	if err != nil || got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("late auth-list output = %q, %v; want unknown", got, err)
+	}
+}
+
+func openCodeAuthListDependencies(t *testing.T, output string) authutil.Dependencies {
+	t.Helper()
+	return authutil.Dependencies{
+		Getenv: func(string) string { return "" },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "injected-opencode" || !reflect.DeepEqual(args, []string{"auth", "list"}) {
+				t.Fatalf("unexpected native probe: %q %q", name, args)
+			}
+			return []byte(output), nil
+		},
 	}
 }
 
