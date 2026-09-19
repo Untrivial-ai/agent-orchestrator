@@ -621,7 +621,7 @@ const api = {
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
 		cancelProviderAuth: () => ipcRenderer.invoke("cloud:cancelProviderAuth") as Promise<void>,
 		connectProviderAuth: (input: { baseUrl: string; orgId: string; provider: string }) =>
-			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<void>,
+			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<string | void>,
 		// Dev-only local (email/password) sign-in against a loopback Docker CP.
 		// Whether the surface is offered is decided in main (unpackaged/dev +
 		// loopback); the renderer only mirrors it for UI visibility.
