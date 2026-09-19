@@ -1568,7 +1568,7 @@
 	"terminal.close": "Close terminal",
 	"terminal.closeNamed": "Close terminal {{title}}",
 	"terminal.closeSessionTab": "Close session tab {{label}}",
-	"terminal.connecting": "Connecting…",
+	"terminal.connecting": "Connecting",
 	"terminal.connectionFailed": "connection failed",
 	"terminal.decreaseFontSize": "Decrease terminal font size",
 	"terminal.controlsAria": "Terminal display controls",

@@ -1386,10 +1386,6 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
 			prepareForActivation,
-			// Live buffer discriminator for predictive local echo on cloud panes:
-			// predictions run only while the NORMAL buffer is active (alt-screen
-			// TUIs repaint too aggressively to predict into).
-			bufferType: () => term.buffer.active.type,
 			notifyCursorColorScheme: () => {
 				if (callbacksRef.current.supportsCursorColorScheme) {
 					notifyCursorScheme(callbacksRef.current.theme, false, true);

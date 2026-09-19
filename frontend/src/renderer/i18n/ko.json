@@ -1416,7 +1416,7 @@
 	"terminal.close": "터미널 닫기",
 	"terminal.closeNamed": "터미널 {{title}} 닫기",
 	"terminal.closeSessionTab": "세션 탭 {{label}} 닫기",
-	"terminal.connecting": "연결 중…",
+	"terminal.connecting": "연결 중",
 	"terminal.connectionFailed": "연결 실패",
 	"terminal.decreaseFontSize": "터미널 글꼴 크기 줄이기",
 	"terminal.controlsAria": "터미널 표시 컨트롤",

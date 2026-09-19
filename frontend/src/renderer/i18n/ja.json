@@ -1416,7 +1416,7 @@
 	"terminal.close": "ターミナルを閉じる",
 	"terminal.closeNamed": "ターミナル {{title}} を閉じる",
 	"terminal.closeSessionTab": "セッションタブ {{label}} を閉じる",
-	"terminal.connecting": "接続中…",
+	"terminal.connecting": "接続中",
 	"terminal.connectionFailed": "接続に失敗しました",
 	"terminal.decreaseFontSize": "ターミナルのフォントサイズを小さくする",
 	"terminal.controlsAria": "ターミナル表示コントロール",

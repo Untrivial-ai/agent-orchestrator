@@ -83,6 +83,32 @@ func (s *Store) OrchestratorSandboxProvider(
 	return provider, err
 }
 
+// OrchestratorProjectWorkerAgent returns the worker agent configured on the
+// orchestrator's project (config.worker.agent), so a child spawned without an
+// explicit harness inherits exactly the agent chosen when the project was
+// created rather than a hardcoded default. Returns "" when the project set no
+// worker agent, and ErrForbidden when the session is not an active orchestrator
+// in the organization. config is JSONB with a typeof=object CHECK, so the ->>
+// access is always safe.
+func (s *Store) OrchestratorProjectWorkerAgent(
+	ctx context.Context,
+	orgID, orchestratorSessionID string,
+) (string, error) {
+	var agent string
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		projectID, err := requireActiveOrchestrator(ctx, tx, orgID, orchestratorSessionID)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(
+			ctx,
+			`SELECT COALESCE(config->'worker'->>'agent', '') FROM ao_projects WHERE org_id = $1 AND id = $2`,
+			orgID, projectID,
+		).Scan(&agent)
+	})
+	return agent, err
+}
+
 func (s *Store) CreateOrchestratorChild(
 	ctx context.Context,
 	orgID, orchestratorSessionID, idempotencyKey string,

@@ -1539,7 +1539,10 @@ describe("CreateProjectFlow project import validation", () => {
 				displayName: "web-app",
 				repositoryUrl: "https://github.com/acme/web-app",
 				defaultBranch: "main",
-				config: { workerAgent: "claude-code", orchestratorAgent: "claude-code" },
+				config: {
+					worker: { agent: "claude-code" },
+					orchestrator: { agent: "claude-code" },
+				},
 			}),
 		);
 		expect(onCreateProject).not.toHaveBeenCalled();
@@ -1625,7 +1628,10 @@ describe("CreateProjectFlow project import validation", () => {
 			displayName: "private-repo",
 			repositoryUrl: "https://github.com/acme/private-repo",
 			defaultBranch: "main",
-			config: { workerAgent: "claude-code", orchestratorAgent: "claude-code" },
+			config: {
+				worker: { agent: "claude-code" },
+				orchestrator: { agent: "claude-code" },
+			},
 		});
 	});
 

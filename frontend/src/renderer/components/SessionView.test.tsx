@@ -906,7 +906,7 @@ describe("SessionView", () => {
 		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses generic copy while a cloud workspace is connecting", () => {
+	it("shows a generic elapsed timer, not Coder-specific copy, while a cloud workspace is connecting", () => {
 		const session = workerSession("sess-2");
 		session.runtimeConnected = false;
 		session.cloud = {
@@ -918,7 +918,9 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-2" />);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Connecting");
+		// The connecting top-right status is a bare elapsed-time counter (e.g. "0s"),
+		// never a provider-specific label like "Waiting for Coder agent".
+		expect(screen.getByRole("status").textContent ?? "").toMatch(/^\d+s$/);
 		expect(screen.getByRole("status")).not.toHaveTextContent("Coder");
 	});
 

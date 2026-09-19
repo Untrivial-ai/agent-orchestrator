@@ -33,10 +33,9 @@ import { usePreparedClone } from "../hooks/usePreparedClone";
 import { useProviderConnections } from "../hooks/useProviderConnections";
 import { cloudProjectsQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { agentLabel } from "../lib/agent-options";
-import type { AgentInfo } from "../lib/agent-select-options";
+import { cloudAgentInfos } from "../lib/cloud-agents";
 import { aoBridge } from "../lib/bridge";
-import { CloudCpAuthError, CloudCpError, type CloudCpProviderConnection } from "../lib/cloud-cp";
+import { CloudCpAuthError, CloudCpError } from "../lib/cloud-cp";
 import { useCloudSession } from "../lib/cloud-session";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { useUiStore } from "../stores/ui-store";
@@ -1210,33 +1209,6 @@ function isHttpsRepositoryUrl(raw: string): boolean {
 // Cloud project creation goes straight to the control plane
 // (client.createProject) instead of the daemon POST the local flow uses; the
 // repository is cloned in a cloud sandbox, so no folder picker or agent sheet.
-/** Coding agents a cloud sandbox can actually run — the same three the
- * control plane's `validAgentProvider` accepts (cloud/internal/httpapi/
- * provider_handlers.go). Unlike local's full AGENT_OPTIONS list, cloud has no
- * "install" step, so every unlisted agent would just be a dead end. */
-const CLOUD_AGENT_PROVIDERS = ["claude-code", "codex", "cursor"] as const;
-
-/** Maps the org's cloud provider connections onto the same AgentInfo shape
- * local readiness uses, so the cloud agent picker is the identical
- * component local's agent sheet already ships (RequiredAgentField,
- * AgentSelectMenuItem, buildRankedAgentOptions) — a missing or invalid
- * connection reads as "Needs auth" and is unselectable, exactly like a local
- * agent nobody has logged into, not a bespoke cloud-only status pill. */
-function cloudAgentInfos(connections: CloudCpProviderConnection[] | undefined): AgentInfo[] {
-	const byProvider = new Map((connections ?? []).map((connection) => [connection.provider, connection]));
-	return CLOUD_AGENT_PROVIDERS.map((id) => {
-		const authorized = byProvider.get(id)?.validationState === "valid";
-		return {
-			id,
-			label: agentLabel(id),
-			installation: { state: "installed", freshness: "fresh" },
-			authentication: { state: authorized ? "authorized" : "unauthorized", freshness: "fresh" },
-			effectiveReadiness: authorized ? "ready" : "not_ready",
-			usageCount: 0,
-			lastUsedAt: null,
-		};
-	});
-}
 
 /** Second half of cloud project creation: which agent runs the worker and
  * which plans as orchestrator. Reuses the exact field local's own agent
@@ -1472,7 +1444,10 @@ function CloudProjectCard({
 				displayName: displayName.trim(),
 				repositoryUrl: repositoryUrl.trim(),
 				defaultBranch: defaultBranch.trim(),
-				config: { workerAgent: selection.workerAgent, orchestratorAgent: selection.orchestratorAgent },
+				config: {
+					worker: { agent: selection.workerAgent },
+					orchestrator: { agent: selection.orchestratorAgent },
+				},
 			});
 			await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
 			onCreated();
