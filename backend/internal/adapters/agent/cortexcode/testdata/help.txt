@@ -1,0 +1,24 @@
+Usage: cortex [options] [message]
+
+Commands:
+  cortex exec
+  cortex acp
+  cortex resume [session_id]
+  cortex connections
+
+Options:
+  -m, --model <model>              Model override
+      --goal <prompt>              Submit the first headless message
+  -r, --resume <session_id>        Resume a session by exact ID
+      --session-id <session_id>    Set the session ID for a new session
+      --output-format stream-json  Emit newline-delimited JSON
+      --input-format stream-json   Read newline-delimited JSON from stdin
+
+Captured from official stable artifact 1.1.87+175514.04f5c9114e11
+(Cortex Code v0.26.0916), SHA-256
+30c477268c1a3da3295acca80e7cc3c12e8c65c787b15f565e717b14d0c9b666.
+
+The release lacks the required stdio permission mediation option and an
+append-only system-instruction flag. This sanitized fixture intentionally
+records that failed admission result; it contains no account or credential
+data.
