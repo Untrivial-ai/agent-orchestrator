@@ -2,8 +2,10 @@ package workertransport
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -124,6 +126,79 @@ func TestWorkspaceVersionChangesWithIndexAndWorktree(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTreeListsOneLevelWithChangedDirectories(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeReviewBytes(t, repo, "src/app.ts", []byte("export const app = true;\n"))
+	writeReviewBytes(t, repo, "src/lib/clean.ts", []byte("clean\n"))
+	writeWorkspaceFile(t, repo, "README.md", "readme\n")
+	writeWorkspaceFile(t, repo, ".gitignore", "ignored.log\n")
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+	writeReviewBytes(t, repo, "src/app.ts", []byte("export const app = false;\n"))
+	writeWorkspaceFile(t, repo, "ignored.log", "ignored\n")
+
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	root, err := workspace.ReviewTree(context.Background(), worker.WorkspaceReviewTreeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Entries) != 3 || root.Entries[0].Name != "src" || root.Entries[0].Type != "dir" || !root.Entries[0].HasChanges {
+		t.Fatalf("root entries = %+v", root.Entries)
+	}
+	if containsTreePath(root.Entries, "ignored.log") {
+		t.Fatalf("ignored path leaked into tree: %+v", root.Entries)
+	}
+	src, err := workspace.ReviewTree(context.Background(), worker.WorkspaceReviewTreeRequest{Path: "src"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(src.Entries) != 2 || src.Entries[0].Name != "lib" || src.Entries[0].Type != "dir" || src.Entries[1].Path != "src/app.ts" || src.Entries[1].Status != worker.WorkspaceReviewModified {
+		t.Fatalf("src entries = %+v", src.Entries)
+	}
+	if _, err := workspace.ReviewTree(context.Background(), worker.WorkspaceReviewTreeRequest{Path: "../outside"}); !errors.Is(err, errUnsafePath) {
+		t.Fatalf("traversal error = %v, want %v", err, errUnsafePath)
+	}
+}
+
+func TestWorkspaceSearchMatchesPathsAndBoundedText(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeReviewBytes(t, repo, "src/app.ts", []byte("needle in content\n"))
+	writeReviewBytes(t, repo, "docs/needle.md", []byte("other\n"))
+	writeReviewBytes(t, repo, "image.bin", []byte{0, 'n', 'e', 'e', 'd', 'l', 'e'})
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	page, err := workspace.ReviewSearch(context.Background(), worker.WorkspaceReviewSearchRequest{Query: "needle", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Results) != 1 || page.NextCursor == "" || !page.Truncated {
+		t.Fatalf("first page = %+v", page)
+	}
+	next, err := workspace.ReviewSearch(context.Background(), worker.WorkspaceReviewSearchRequest{Query: "needle", Cursor: page.NextCursor, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{page.Results[0].Path}
+	for _, result := range next.Results {
+		paths = append(paths, result.Path)
+	}
+	if !slices.Contains(paths, "docs/needle.md") || !slices.Contains(paths, "src/app.ts") || slices.Contains(paths, "image.bin") {
+		t.Fatalf("search paths = %v", paths)
+	}
+}
+
 func containsReviewPath(files []worker.WorkspaceReviewFileSummary, path string) bool {
 	for _, file := range files {
 		if file.Path == path {
@@ -136,6 +211,15 @@ func containsReviewPath(files []worker.WorkspaceReviewFileSummary, path string) 
 func containsReviewRename(files []worker.WorkspaceReviewFileSummary, path, previous string) bool {
 	for _, file := range files {
 		if file.Path == path && file.PreviousPath == previous && file.Status == worker.WorkspaceReviewRenamed {
+			return true
+		}
+	}
+	return false
+}
+
+func containsTreePath(entries []worker.WorkspaceReviewTreeEntry, path string) bool {
+	for _, entry := range entries {
+		if entry.Path == path {
 			return true
 		}
 	}

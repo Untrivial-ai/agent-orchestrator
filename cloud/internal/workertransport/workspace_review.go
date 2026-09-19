@@ -3,11 +3,13 @@ package workertransport
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -16,6 +18,123 @@ import (
 )
 
 const maxWorkspaceReviewFiles = 10_000
+
+// ReviewTree lists one repository directory level from Git's tracked and
+// untracked-but-not-ignored inventory.
+func (w *workspace) ReviewTree(ctx context.Context, input worker.WorkspaceReviewTreeRequest) (worker.WorkspaceReviewTreeResponse, error) {
+	directory, err := cleanWorkspacePath(input.Path, true)
+	if err != nil {
+		return worker.WorkspaceReviewTreeResponse{}, err
+	}
+	review, err := w.ReviewSummary(ctx)
+	if err != nil {
+		return worker.WorkspaceReviewTreeResponse{}, err
+	}
+	prefix := ""
+	if directory != "." {
+		prefix = wirePath(directory) + "/"
+	}
+	type collected struct {
+		entry worker.WorkspaceReviewTreeEntry
+	}
+	entries := make(map[string]collected)
+	for _, file := range review.Files {
+		if !strings.HasPrefix(file.Path, prefix) {
+			continue
+		}
+		remainder := strings.TrimPrefix(file.Path, prefix)
+		if remainder == "" {
+			continue
+		}
+		name, tail, isDirectory := strings.Cut(remainder, "/")
+		path := name
+		if prefix != "" {
+			path = strings.TrimSuffix(prefix, "/") + "/" + name
+		}
+		if isDirectory {
+			current := entries[path].entry
+			current.Name, current.Path, current.Type = name, path, "dir"
+			current.HasChanges = current.HasChanges || file.Status != worker.WorkspaceReviewUnmodified
+			entries[path] = collected{entry: current}
+			_ = tail
+			continue
+		}
+		entries[path] = collected{entry: worker.WorkspaceReviewTreeEntry{
+			Name: name, Path: path, Type: "file", Status: file.Status,
+			Size: file.Size, Binary: file.Binary,
+		}}
+	}
+	result := make([]worker.WorkspaceReviewTreeEntry, 0, len(entries))
+	for _, item := range entries {
+		result = append(result, item.entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Type != result[j].Type {
+			return result[i].Type == "dir"
+		}
+		return result[i].Name < result[j].Name
+	})
+	return worker.WorkspaceReviewTreeResponse{Path: wirePath(directory), Entries: result, Truncated: review.Truncated}, nil
+}
+
+// ReviewSearch performs a bounded case-insensitive path and text search over
+// the Git-visible file inventory. Binary and oversized files are not scanned.
+func (w *workspace) ReviewSearch(ctx context.Context, input worker.WorkspaceReviewSearchRequest) (worker.WorkspaceReviewSearchResponse, error) {
+	query := strings.ToLower(strings.TrimSpace(input.Query))
+	if query == "" {
+		return worker.WorkspaceReviewSearchResponse{}, errors.New("workspace search query is required")
+	}
+	limit := input.Limit
+	if limit == 0 {
+		limit = 50
+	}
+	if limit < 1 || limit > 100 {
+		return worker.WorkspaceReviewSearchResponse{}, errors.New("workspace search limit must be between 1 and 100")
+	}
+	offset := 0
+	if input.Cursor != "" {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(input.Cursor)
+		if decodeErr != nil {
+			return worker.WorkspaceReviewSearchResponse{}, errors.New("invalid workspace search cursor")
+		}
+		offset, decodeErr = strconv.Atoi(string(decoded))
+		if decodeErr != nil || offset < 0 {
+			return worker.WorkspaceReviewSearchResponse{}, errors.New("invalid workspace search cursor")
+		}
+	}
+	review, err := w.ReviewSummary(ctx)
+	if err != nil {
+		return worker.WorkspaceReviewSearchResponse{}, err
+	}
+	matches := make([]worker.WorkspaceReviewSearchResult, 0)
+	for _, file := range review.Files {
+		matched := strings.Contains(strings.ToLower(file.Path), query)
+		if !matched && !file.Binary && file.Size <= maxWorkspaceFile {
+			content, readErr := w.readReviewFile(file.Path, maxWorkspaceFile)
+			matched = readErr == nil && utf8.Valid(content) && strings.Contains(strings.ToLower(string(content)), query)
+		}
+		if !matched || file.Binary {
+			continue
+		}
+		matches = append(matches, worker.WorkspaceReviewSearchResult{
+			Path: file.Path, Status: file.Status, Size: file.Size,
+			Binary: file.Binary, FileFingerprint: file.FileFingerprint,
+		})
+	}
+	if offset > len(matches) {
+		return worker.WorkspaceReviewSearchResponse{}, errors.New("invalid workspace search cursor")
+	}
+	end := offset + limit
+	if end > len(matches) {
+		end = len(matches)
+	}
+	response := worker.WorkspaceReviewSearchResponse{Query: input.Query, Results: matches[offset:end]}
+	if end < len(matches) {
+		response.Truncated = true
+		response.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(end)))
+	}
+	return response, nil
+}
 
 // ReviewSummary returns the Cloud-owned equivalent of the local workspace
 // review model. Git state is calculated inside the sandbox for every provider.
