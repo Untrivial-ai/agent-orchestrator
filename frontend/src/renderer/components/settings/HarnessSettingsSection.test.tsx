@@ -159,43 +159,35 @@ describe("HarnessSettingsSection", () => {
 		});
 	});
 
-	it("shows a compact authentication status with a separate manual recheck control", async () => {
+	it("forces one global readiness refresh", async () => {
 		const authorized = catalogWithInstalled("claude-code");
 		authorized.agents[0].authentication.state = "authorized";
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: authorized } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
 			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
-			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [
-				{ agentId: "claude-code", action: "login", launchMode: "terminal", available: true },
-			] } } as never;
+			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [] } } as never;
 			return { data: undefined } as never;
 		});
 		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness/ensure") return { data: authorized } as never;
-			if (path === "/api/v1/agents/{agent}/probe") return { data: { agent: { id: "claude-code", label: "Claude Code", authStatus: "authorized" }, supported: true, installed: true } } as never;
+			if (path === "/api/v1/agents/refresh") return { data: authorized } as never;
 			return { data: undefined } as never;
 		});
 		const user = userEvent.setup();
 		renderSection();
-		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
-		await within(row).findByText("Connected");
-		const recheck = within(row).getByRole("button", { name: "Claude Code: Check login" });
-		expect(recheck).not.toHaveTextContent("Connected");
+		const refresh = await screen.findByRole("button", { name: "Refresh harness status" });
 		vi.mocked(apiClient.POST).mockClear();
 
-		await user.click(recheck);
+		await user.click(refresh);
 
-		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", {
-			params: { path: { agent: "claude-code" } },
-		}));
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/refresh"));
+		expect(apiClient.POST).not.toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", expect.anything());
 	});
 
 	it("runs a fresh authentication check after terminal completion", async () => {
 		const authorized = catalogWithInstalled("claude-code");
 		authorized.agents[0].authentication.state = "authorized";
-		let resolveInitialProbe!: (value: unknown) => void;
-		const pendingInitialProbe = new Promise((resolve) => { resolveInitialProbe = resolve; });
 		let probeCalls = 0;
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
@@ -209,7 +201,6 @@ describe("HarnessSettingsSection", () => {
 		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/{agent}/probe") {
 				probeCalls += 1;
-				if (probeCalls === 1) return await pendingInitialProbe as never;
 				return { data: { agent: { id: "claude-code", label: "Claude Code", authStatus: "authorized" }, supported: true, installed: true } } as never;
 			}
 			if (path === "/api/v1/agents/readiness/ensure") return { data: authorized } as never;
@@ -231,22 +222,13 @@ describe("HarnessSettingsSection", () => {
 
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
-		const checkLogin = await within(row).findByRole(
-			"button",
-			{ name: "Claude Code: Check login" },
-			{ timeout: 10_000 },
-		);
-		await user.click(checkLogin);
-		await waitFor(() => expect(probeCalls).toBe(1));
 		const login = await within(row).findByRole("button", { name: "Login" });
 		await user.click(login);
 		await within(row).findByTestId("inline-terminal-body");
 		expect(terminalStateCallback.value).toBeDefined();
 
 		act(() => terminalStateCallback.value?.("exited"));
-		expect(probeCalls).toBe(1);
-		resolveInitialProbe({ data: { agent: { id: "claude-code", label: "Claude Code", authStatus: "unauthorized" }, supported: true, installed: true } });
-		await waitFor(() => expect(probeCalls).toBe(2));
+		await waitFor(() => expect(probeCalls).toBe(1));
 
 		await waitFor(() => expect(close).toHaveBeenCalledWith("/api/v1/shell-terminals/{handleId}", {
 			params: { path: { handleId: "auth-terminal-1" } },
@@ -278,10 +260,10 @@ describe("HarnessSettingsSection", () => {
 		await within(row).findByText("Set up");
 	});
 
-	it("does not show a global harness refresh control", async () => {
+	it("shows exactly one global harness refresh control", async () => {
 		renderSection();
 		await screen.findByText("Claude Code");
-		expect(screen.queryByRole("button", { name: "Refresh harness status" })).not.toBeInTheDocument();
+		expect(screen.getAllByRole("button", { name: "Refresh harness status" })).toHaveLength(1);
 	});
 
 	it("starts the fixed daemon install route and exposes retry after failure", async () => {

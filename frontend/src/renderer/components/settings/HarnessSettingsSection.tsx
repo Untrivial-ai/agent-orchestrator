@@ -108,6 +108,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	const startAgentAuth = useStartAgentAuth();
 	const [search, setSearch] = useState("");
 	const [authStates, setAuthStates] = useState<AgentAuthStates>({});
+	const [refreshError, setRefreshError] = useState<string | null>(null);
 	const [actionErrors, setActionErrors] = useState<Partial<Record<AgentId, string>>>({});
 	const [selectedMethods, setSelectedMethods] = useState<Partial<Record<AgentId, string>>>({});
 	const [expandedDiagnostics, setExpandedDiagnostics] = useState<Partial<Record<AgentId, boolean>>>({});
@@ -370,20 +371,45 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		if (workflow) void closeAuthTerminal(workflow.terminal.handleId).catch(() => undefined);
 	}, []);
 
+	const refresh = async () => {
+		setRefreshError(null);
+		try {
+			const [{ error }] = await Promise.all([
+				apiClient.POST("/api/v1/agents/refresh"),
+				queryClient.invalidateQueries({ queryKey: installerQueryKey }),
+				queryClient.invalidateQueries({ queryKey: installJobsQueryKey }),
+				queryClient.invalidateQueries({ queryKey: agentAuthPlansQueryKey }),
+			]);
+			if (error) throw new Error(apiErrorMessage(error));
+			await queryClient.invalidateQueries({ queryKey: agentReadinessQueryKey });
+		} catch (error) {
+			setRefreshError(error instanceof Error ? error.message : t("settings.harness.loadFailed"));
+		}
+	};
+
 	return (
 		<SettingsSection title={t("settings.harness")} titleHidden={titleHidden} sectionId="harness">
-			<div className="sticky top-0 z-10 flex items-center bg-card pb-2">
+			<div className="sticky top-0 z-10 flex items-center gap-2 bg-card pb-2">
 				<label className="flex h-9! min-w-0 flex-1 items-center gap-2 rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3">
 					<Search aria-hidden="true" className="size-4 shrink-0 text-settings-muted" />
 					<span className="sr-only">{t("settings.harness.search")}</span>
 					<input aria-label={t("settings.harness.search")} className="min-w-0 flex-1 bg-transparent text-sm text-settings-label outline-none placeholder:text-settings-muted" placeholder={t("settings.harness.searchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} />
 				</label>
+				<Button
+					aria-label={t("settings.harness.refresh")}
+					className="h-9! w-9! min-h-9! min-w-9! shrink-0 aspect-square p-0"
+					size="icon-sm"
+					variant="outline"
+					onClick={() => void refresh()}
+				>
+					<RefreshCw className={cn((agents.isFetching || installers.isFetching || jobs.isFetching) && "animate-spin")} />
+				</Button>
 			</div>
 
-			{installers.error || authPlans.error || agents.error || jobs.error ? (
+			{installers.error || authPlans.error || agents.error || jobs.error || refreshError ? (
 				<div className="flex items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
 					<TriangleAlert className="size-4" aria-hidden="true" />
-					{jobs.error instanceof Error ? jobs.error.message : t("settings.harness.loadFailed")}
+					{refreshError ?? (jobs.error instanceof Error ? jobs.error.message : t("settings.harness.loadFailed"))}
 				</div>
 			) : null}
 
@@ -476,17 +502,6 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 									<Button disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
 										{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
 										{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
-									</Button>
-								) : null}
-								{authPlan.available ? (
-									<Button
-										aria-label={`${agentLabel(agentId)}: ${authState?.checking ? t("settings.harness.checkingLogin") : isSetupAction ? t("settings.harness.checkConfiguration") : t("settings.harness.checkLogin")}`}
-										disabled={authState?.checking}
-										size="icon-sm"
-										variant="ghost"
-										onClick={() => void checkAuth(agentId)}
-									>
-										{authState?.checking ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
 									</Button>
 								) : null}
 							</>
