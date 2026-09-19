@@ -14,7 +14,7 @@ import {
 	chatFixtureThreadError,
 } from "../../lib/chat-fixture";
 import { appI18n } from "../../i18n";
-import type { ConversationMessage, ConversationSnapshot } from "../../types/conversation";
+import type { ConversationItem, ConversationMessage, ConversationSnapshot } from "../../types/conversation";
 import { setApiBaseUrl } from "../../lib/api-client";
 import { useUiStore } from "../../stores/ui-store";
 import type { WorkspaceSession } from "../../types/workspace";
@@ -1080,6 +1080,109 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.getByText("Approval expired")).toBeInTheDocument();
 		expect(screen.queryByText("Approved")).not.toBeInTheDocument();
+	});
+
+	describe("reconnect error rows", () => {
+		function reconnectErrorItem(attempt: number, turnId: string, sequence: number): ConversationItem {
+			return {
+				kind: "activity",
+				id: `err-${turnId}-${attempt}`,
+				turnId,
+				sequence,
+				revision: 0,
+				activityKind: "error",
+				status: "failed",
+				summary: `Reconnecting... [${attempt}/5]`,
+				detail: { message: `Reconnecting... [${attempt}/5]`, error: "stream disconnected" },
+				createdAt: "2026-08-08T00:00:00Z",
+			};
+		}
+
+		// The bug: a turn that recovered from a reconnect storm still shows every
+		// attempt as an unresolved-looking row, telling two opposite stories at once.
+		it("collapses consecutive reconnect errors into one row once the turn completes", () => {
+			const snapshot = structuredClone(chatFixture);
+			snapshot.turns = [{ ...snapshot.turns[0], id: "turn-1", state: "completed" }];
+			snapshot.items = [
+				reconnectErrorItem(1, "turn-1", 1),
+				reconnectErrorItem(2, "turn-1", 2),
+				reconnectErrorItem(3, "turn-1", 3),
+				{
+					kind: "message",
+					id: "m-after",
+					turnId: "turn-1",
+					sequence: 4,
+					revision: 0,
+					role: "assistant",
+					origin: "provider",
+					text: "Done, the reconnect did not lose any work.",
+					streaming: false,
+					createdAt: "2026-08-08T00:01:00Z",
+				},
+			];
+
+			render(<ChatWorkspace snapshot={snapshot} />);
+
+			expect(
+				screen.getByText("3 connection issues during this turn (resolved)"),
+			).toBeInTheDocument();
+			expect(screen.queryByText("Reconnecting... [1/5]")).not.toBeInTheDocument();
+			expect(screen.queryByText("Reconnecting... [2/5]")).not.toBeInTheDocument();
+			expect(screen.queryByText("Reconnecting... [3/5]")).not.toBeInTheDocument();
+		});
+
+		it("expands the collapsed row to show every attempt", async () => {
+			const user = userEvent.setup();
+			const snapshot = structuredClone(chatFixture);
+			snapshot.turns = [{ ...snapshot.turns[0], id: "turn-1", state: "completed" }];
+			snapshot.items = [
+				reconnectErrorItem(1, "turn-1", 1),
+				reconnectErrorItem(2, "turn-1", 2),
+			];
+
+			render(<ChatWorkspace snapshot={snapshot} />);
+
+			const toggle = screen.getByRole("button", {
+				name: "2 connection issues during this turn (resolved)",
+			});
+			expect(toggle).toHaveAttribute("aria-expanded", "false");
+			await user.click(toggle);
+			expect(toggle).toHaveAttribute("aria-expanded", "true");
+			expect(screen.getByText(/Reconnecting\.\.\. \[1\/5\]/)).toBeInTheDocument();
+			expect(screen.getByText(/Reconnecting\.\.\. \[2\/5\]/)).toBeInTheDocument();
+		});
+
+		// A turn still running, or one that failed, has not proven the errors did not
+		// matter — every row stays so the reader can see exactly what happened.
+		it("leaves every row in place while the turn has not completed", () => {
+			const snapshot = structuredClone(chatFixture);
+			snapshot.turns = [{ ...snapshot.turns[0], id: "turn-1", state: "running" }];
+			snapshot.items = [
+				reconnectErrorItem(1, "turn-1", 1),
+				reconnectErrorItem(2, "turn-1", 2),
+			];
+
+			render(<ChatWorkspace snapshot={snapshot} />);
+
+			expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
+			expect(screen.getByText("Reconnecting... [2/5]")).toBeInTheDocument();
+			expect(
+				screen.queryByText("2 connection issues during this turn (resolved)"),
+			).not.toBeInTheDocument();
+		});
+
+		it("does not collapse a single error row into a summary", () => {
+			const snapshot = structuredClone(chatFixture);
+			snapshot.turns = [{ ...snapshot.turns[0], id: "turn-1", state: "completed" }];
+			snapshot.items = [reconnectErrorItem(1, "turn-1", 1)];
+
+			render(<ChatWorkspace snapshot={snapshot} />);
+
+			expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
+			expect(
+				screen.queryByText("1 connection issues during this turn (resolved)"),
+			).not.toBeInTheDocument();
+		});
 	});
 
 	it("lets readers select conversation text", () => {

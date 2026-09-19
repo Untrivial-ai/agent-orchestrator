@@ -98,6 +98,7 @@ import {
 	CompactionMarker,
 	HumanMessage,
 	OriginMessage,
+	providerErrorCopy,
 	SteerMessage,
 	TurnChangedFiles,
 	TurnDuration,
@@ -1616,13 +1617,79 @@ function readableItems(snapshot: ConversationSnapshot): ConversationItem[] {
 	const plannedTurns = new Set(
 		snapshot.turns.filter((turn) => turn.plan?.steps.length).map((turn) => turn.id),
 	);
-	return snapshot.items.filter((item) => {
+	const kept = snapshot.items.filter((item) => {
 		if (item.kind !== "activity") return true;
 		if (item.activityKind === "usage") return false;
 		if (item.activityKind === "plan" && item.turnId && plannedTurns.has(item.turnId)) return false;
 		if (item.activityKind === "reasoning") return false;
 		return true;
 	});
+	return collapseResolvedReconnectErrors(kept, snapshot.turns);
+}
+
+/**
+ * Fold a completed turn's reconnect/error rows into one resolved summary.
+ *
+ * A reconnect storm writes one durable error activity per attempt — "2/5", "3/5",
+ * up to five or more in a row — and each is real history the daemon should keep.
+ * But once the turn that hit them goes on to `completed`, a wall of stale
+ * "disconnected" rows sitting above the agent's finished work reads as an
+ * unresolved failure that never happened. Only a turn the daemon has actually
+ * marked `completed` is folded: a turn that is still running, or that ended in
+ * `failed`/`interrupted`/`cancelled`, keeps every row, because nothing has proven
+ * those errors did not matter. This runs inside the same `useMemo` pass that
+ * already builds the readable list, so it adds no extra render or poll.
+ */
+function collapseResolvedReconnectErrors(
+	items: ConversationItem[],
+	turns: ConversationTurn[],
+): ConversationItem[] {
+	const completedTurnIds = new Set(
+		turns.filter((turn) => turn.state === "completed").map((turn) => turn.id),
+	);
+	if (completedTurnIds.size === 0) return items;
+
+	const result: ConversationItem[] = [];
+	let run: ConversationActivity[] = [];
+	const flushRun = () => {
+		if (run.length === 0) return;
+		result.push(run.length === 1 ? run[0] : collapsedReconnectErrorActivity(run));
+		run = [];
+	};
+
+	for (const item of items) {
+		const isResolvedReconnectError =
+			item.kind === "activity" &&
+			item.activityKind === "error" &&
+			Boolean(item.turnId) &&
+			completedTurnIds.has(item.turnId as string) &&
+			(run.length === 0 || run[0].turnId === item.turnId);
+		if (isResolvedReconnectError) {
+			run.push(item as ConversationActivity);
+			continue;
+		}
+		flushRun();
+		result.push(item);
+	}
+	flushRun();
+	return result;
+}
+
+/** Build the single collapsed row standing in for a run of resolved error rows. */
+function collapsedReconnectErrorActivity(run: ConversationActivity[]): ConversationActivity {
+	const first = run[0];
+	const last = run[run.length - 1];
+	return {
+		...last,
+		id: `${first.id}:collapsed-reconnect`,
+		sequence: first.sequence,
+		status: "resolved",
+		summary: `${run.length} connection issues during this turn (resolved)`,
+		detail: {
+			...last.detail,
+			collapsedReconnectErrors: run.map((activity) => providerErrorCopy(activity)),
+		},
+	};
 }
 
 /* -------------------------------------------------------------------------- */
