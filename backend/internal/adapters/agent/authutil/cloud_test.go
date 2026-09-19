@@ -108,6 +108,80 @@ func TestAWSFileOverridesAndWebIdentity(t *testing.T) {
 	assertCloud(t, AWSEvidence(context.Background(), cloudDeps(t, map[string]string{"AWS_CONFIG_FILE": config})), "configured", "aws-profile")
 }
 
+func TestAWSRelativeCredentialPathsDoNotUseDaemonWorkingDirectory(t *testing.T) {
+	daemonDir := t.TempDir()
+	t.Chdir(daemonDir)
+	writeFixture(t, filepath.Join(daemonDir, "credentials"), "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n")
+	writeFixture(t, filepath.Join(daemonDir, "config"), "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n")
+	writeFixture(t, filepath.Join(daemonDir, "token"), "fixture-token")
+
+	writeFixture(t, filepath.Join(daemonDir, "profile-config"), "[default]\nrole_arn=arn:aws:iam::123:role/test\nweb_identity_token_file=token\n")
+	for _, workingDir := range []string{"", "."} {
+		for _, env := range []map[string]string{
+			{"AWS_SHARED_CREDENTIALS_FILE": "credentials"},
+			{"AWS_CONFIG_FILE": "config"},
+			{"AWS_ROLE_ARN": "arn:aws:iam::123:role/test", "AWS_WEB_IDENTITY_TOKEN_FILE": "token"},
+			{"AWS_CONFIG_FILE": "profile-config"},
+		} {
+			deps := cloudDeps(t, env)
+			deps.WorkingDir = workingDir
+			assertCloud(t, AWSEvidence(context.Background(), deps), "unknown", "")
+		}
+	}
+}
+
+func TestAWSRelativeCredentialPathsUseAbsoluteWorkingDirectory(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		env   map[string]string
+		files map[string]string
+	}{
+		{
+			name: "shared credentials",
+			env:  map[string]string{"AWS_SHARED_CREDENTIALS_FILE": "credentials"},
+			files: map[string]string{
+				"credentials": "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n",
+			},
+		},
+		{
+			name: "config",
+			env:  map[string]string{"AWS_CONFIG_FILE": "config"},
+			files: map[string]string{
+				"config": "[default]\naws_access_key_id=fixture-access\naws_secret_access_key=fixture-secret\n",
+			},
+		},
+		{
+			name: "environment web identity",
+			env:  map[string]string{"AWS_ROLE_ARN": "arn:aws:iam::123:role/test", "AWS_WEB_IDENTITY_TOKEN_FILE": "token"},
+			files: map[string]string{
+				"token": "fixture-token",
+			},
+		},
+		{
+			name: "profile web identity",
+			env:  map[string]string{"AWS_CONFIG_FILE": "config"},
+			files: map[string]string{
+				"config": "[default]\nrole_arn=arn:aws:iam::123:role/test\nweb_identity_token_file=token\n",
+				"token":  "fixture-token",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			for name, body := range tt.files {
+				writeFixture(t, filepath.Join(workspace, name), body)
+			}
+			deps := cloudDeps(t, tt.env)
+			deps.WorkingDir = workspace
+			wantSource := "aws-profile"
+			if tt.name == "environment web identity" {
+				wantSource = "aws-web-identity"
+			}
+			assertCloud(t, AWSEvidence(context.Background(), deps), "configured", wantSource)
+		})
+	}
+}
+
 func TestAWSSSOCache(t *testing.T) {
 	for _, tt := range []struct {
 		name, session, expiry, token string
@@ -227,6 +301,50 @@ func TestGoogleADCCredentialSchemas(t *testing.T) {
 			assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), tt.status, source)
 		})
 	}
+}
+
+func TestGoogleADCRelativeCredentialPathDoesNotUseDaemonWorkingDirectory(t *testing.T) {
+	daemonDir := t.TempDir()
+	t.Chdir(daemonDir)
+	writeFixture(t, filepath.Join(daemonDir, "adc.json"), `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`)
+	for _, workingDir := range []string{"", "."} {
+		deps := cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": "adc.json"})
+		deps.WorkingDir = workingDir
+		assertCloud(t, GoogleADCEvidence(context.Background(), deps), "unknown", "")
+	}
+}
+
+func TestGoogleADCRelativeCredentialPathUsesAbsoluteWorkingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	writeFixture(t, filepath.Join(workspace, "adc.json"), `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`)
+	deps := cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": "adc.json"})
+	deps.WorkingDir = workspace
+	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-file")
+}
+
+func TestGoogleADCRelativeWindowsAPPDATAUsesWorkspaceNotDaemonWorkingDirectory(t *testing.T) {
+	daemonDir := t.TempDir()
+	workspace := t.TempDir()
+	relativeADC := filepath.Join("appdata", "gcloud", "application_default_credentials.json")
+	credential := `{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh"}`
+	writeFixture(t, filepath.Join(daemonDir, relativeADC), credential)
+	t.Chdir(daemonDir)
+	deps := cloudDeps(t, map[string]string{"APPDATA": "appdata"})
+	deps.GOOS = "windows"
+	deps.WorkingDir = workspace
+
+	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "unknown", "")
+	writeFixture(t, filepath.Join(workspace, relativeADC), credential)
+	assertCloud(t, GoogleADCEvidence(context.Background(), deps), "configured", "google-adc-file")
+}
+
+func TestGoogleADCRelativeSubjectTokenUsesCredentialDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, filepath.Join(root, "subject-token"), "fixture-token")
+	credential := `{"type":"external_account","audience":"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/oidc","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://sts.googleapis.com/v1/token","credential_source":{"file":"subject-token"}}`
+	path := filepath.Join(root, "adc.json")
+	writeFixture(t, path, credential)
+	assertCloud(t, GoogleADCEvidence(context.Background(), cloudDeps(t, map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": path})), "configured", "google-adc-file")
 }
 
 func TestGoogleADCDefaultPathsAndFallback(t *testing.T) {

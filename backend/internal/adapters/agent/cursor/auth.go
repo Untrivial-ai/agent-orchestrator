@@ -45,10 +45,10 @@ func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) 
 	if strings.TrimSpace(key) != "" {
 		return ports.AgentAuthStatusConfigured, nil
 	}
-	return cursorCLIAuthStatus(ctx, binary)
+	return cursorCLIAuthStatus(ctx, binary, check, p.authRunner)
 }
 
-func cursorCLIAuthStatus(ctx context.Context, binary string) (ports.AgentAuthStatus, error) {
+func cursorCLIAuthStatus(ctx context.Context, binary string, check ports.AgentAuthCheck, run authprobe.ScopedCmdRunner) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
@@ -57,7 +57,10 @@ func cursorCLIAuthStatus(ctx context.Context, binary string) (ports.AgentAuthSta
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := authprobe.CmdRunner(probeCtx, binary, "status", "--format", "json")
+	if run == nil {
+		run = authprobe.RunScopedCommand
+	}
+	out, err := run(probeCtx, check, binary, "status", "--format", "json")
 	if ctx.Err() != nil {
 		return ports.AgentAuthStatusUnknown, ctx.Err()
 	}

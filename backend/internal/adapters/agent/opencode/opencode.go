@@ -202,6 +202,7 @@ func opencodeAuthStatusFor(ctx context.Context, binary string, in ports.AgentAut
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	deps.WorkingDir = in.WorkingDir
 	baseGetenv := deps.Getenv
 	if baseGetenv == nil {
 		baseGetenv = os.Getenv

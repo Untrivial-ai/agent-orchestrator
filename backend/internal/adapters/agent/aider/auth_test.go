@@ -214,6 +214,27 @@ func TestAiderAuthStatusIgnoresDaemonWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestAiderCloudCredentialPathUsesWorkspaceNotDaemonWorkingDirectory(t *testing.T) {
+	daemonDir := t.TempDir()
+	workspace := t.TempDir()
+	writeAiderPath(t, filepath.Join(daemonDir, "credentials"), "[default]\naws_access_key_id=daemon-access\naws_secret_access_key=daemon-secret\n")
+	t.Chdir(daemonDir)
+	check := ports.AgentAuthCheck{
+		WorkingDir: workspace,
+		Config:     ports.AgentConfig{Model: "bedrock/anthropic.claude"},
+		Env:        map[string]string{"AWS_SHARED_CREDENTIALS_FILE": "credentials"},
+	}
+	env := map[string]string{"HOME": t.TempDir()}
+
+	if got := runAiderAuth(t, check, env, nil); got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status with daemon-only credentials = %q, want %q", got, ports.AgentAuthStatusUnknown)
+	}
+	writeAiderPath(t, filepath.Join(workspace, "credentials"), "[default]\naws_access_key_id=workspace-access\naws_secret_access_key=workspace-secret\n")
+	if got := runAiderAuth(t, check, env, nil); got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status with workspace credentials = %q, want %q", got, ports.AgentAuthStatusConfigured)
+	}
+}
+
 func TestAiderAuthStatusIgnoresRelativeWindowsHome(t *testing.T) {
 	daemonDir := t.TempDir()
 	writeAiderPath(t, filepath.Join(daemonDir, "relative-home", ".aider.conf.yml"), "model: openai/gpt-5\nopenai-api-key: daemon-secret\n")

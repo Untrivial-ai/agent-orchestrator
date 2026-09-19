@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -339,7 +338,7 @@ func TestPromptReadinessHints(t *testing.T) {
 
 func TestAuthStatusUsesKiroWhoami(t *testing.T) {
 	t.Setenv("KIRO_API_KEY", "")
-	restore := stubKiroAuthRunner(t, func(_ context.Context, name string, arg ...string) ([]byte, error) {
+	runner := func(_ context.Context, _ ports.AgentAuthCheck, name string, arg ...string) ([]byte, error) {
 		if name != "kiro-cli" {
 			t.Fatalf("binary = %q, want kiro-cli", name)
 		}
@@ -347,10 +346,9 @@ func TestAuthStatusUsesKiroWhoami(t *testing.T) {
 			t.Fatalf("args = %#v, want [whoami --format json]", arg)
 		}
 		return []byte(`{"accountType":"BuilderId","startUrl":null,"region":"us-east-1"}`), nil
-	})
-	defer restore()
+	}
 
-	plugin := &Plugin{resolvedBinary: "kiro-cli"}
+	plugin := &Plugin{resolvedBinary: "kiro-cli", authRunner: runner}
 	status, err := plugin.AuthStatus(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -398,12 +396,11 @@ func TestGetConfigSpecHonorsContextCancellation(t *testing.T) {
 }
 func TestAuthStatusUnauthorizedFromKiroWhoami(t *testing.T) {
 	t.Setenv("KIRO_API_KEY", "")
-	restore := stubKiroAuthRunner(t, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	runner := func(_ context.Context, _ ports.AgentAuthCheck, _ string, _ ...string) ([]byte, error) {
 		return []byte(`{"account":null}`), nil
-	})
-	defer restore()
+	}
 
-	plugin := &Plugin{resolvedBinary: "kiro-cli"}
+	plugin := &Plugin{resolvedBinary: "kiro-cli", authRunner: runner}
 	status, err := plugin.AuthStatus(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -976,13 +973,6 @@ func containsSubsequence(values []string, needle []string) bool {
 	}
 
 	return false
-}
-
-func stubKiroAuthRunner(t *testing.T, runner func(context.Context, string, ...string) ([]byte, error)) func() {
-	t.Helper()
-	previous := authprobe.CmdRunner
-	authprobe.CmdRunner = runner
-	return func() { authprobe.CmdRunner = previous }
 }
 
 func countKiroHookCommand(entries []kiroHookEntry, command string) int {

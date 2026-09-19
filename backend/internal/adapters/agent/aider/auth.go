@@ -150,6 +150,7 @@ func aiderAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	d.WorkingDir = check.WorkingDir
 	args, valid := parseAiderArgs(check.Args)
 	if !valid {
 		return ports.AgentAuthStatusUnknown, nil

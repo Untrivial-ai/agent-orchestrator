@@ -31,7 +31,7 @@ func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) 
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
-	status, err := kiroWhoamiAuthStatus(ctx, binary)
+	status, err := kiroWhoamiAuthStatus(ctx, binary, check, p.authRunner)
 	if err != nil || status == ports.AgentAuthStatusConfigured || status == ports.AgentAuthStatusAuthorized {
 		return status, err
 	}
@@ -50,7 +50,7 @@ func (p *Plugin) AuthStatusFor(ctx context.Context, check ports.AgentAuthCheck) 
 	return status, nil
 }
 
-func kiroWhoamiAuthStatus(ctx context.Context, binary string) (ports.AgentAuthStatus, error) {
+func kiroWhoamiAuthStatus(ctx context.Context, binary string, check ports.AgentAuthCheck, run authprobe.ScopedCmdRunner) (ports.AgentAuthStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
@@ -59,7 +59,10 @@ func kiroWhoamiAuthStatus(ctx context.Context, binary string) (ports.AgentAuthSt
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := authprobe.CmdRunner(probeCtx, binary, "whoami", "--format", "json")
+	if run == nil {
+		run = authprobe.RunScopedCommand
+	}
+	out, err := run(probeCtx, check, binary, "whoami", "--format", "json")
 	if ctx.Err() != nil {
 		return ports.AgentAuthStatusUnknown, ctx.Err()
 	}

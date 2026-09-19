@@ -62,10 +62,38 @@ func chainEvidence(ctx context.Context, d Dependencies, loader func(context.Cont
 }
 
 func (d Dependencies) home() string {
+	root := d.getenv("HOME")
 	if d.goos() == "windows" && d.getenv("USERPROFILE") != "" {
-		return d.getenv("USERPROFILE")
+		root = d.getenv("USERPROFILE")
 	}
-	return d.getenv("HOME")
+	path, _ := d.resolvePath(root)
+	return path
+}
+
+func (d Dependencies) resolvePath(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), true
+	}
+	if !filepath.IsAbs(d.WorkingDir) {
+		return "", false
+	}
+	return filepath.Join(filepath.Clean(d.WorkingDir), path), true
+}
+
+func resolvePathFrom(path, base string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), true
+	}
+	if !filepath.IsAbs(base) {
+		return "", false
+	}
+	return filepath.Join(filepath.Clean(base), path), true
 }
 
 // AWSEvidence inspects local default-chain inputs and, when supplied, a bounded
@@ -81,8 +109,10 @@ func AWSEvidence(ctx context.Context, d Dependencies) Evidence {
 	if hasValues(d.getenv("AWS_ACCESS_KEY_ID"), d.getenv("AWS_SECRET_ACCESS_KEY")) {
 		return configured("aws-environment")
 	}
-	if hasValues(d.getenv("AWS_ROLE_ARN"), d.getenv("AWS_WEB_IDENTITY_TOKEN_FILE")) && nonemptyFile(ctx, d, d.getenv("AWS_WEB_IDENTITY_TOKEN_FILE")) {
-		return configured("aws-web-identity")
+	if hasValues(d.getenv("AWS_ROLE_ARN"), d.getenv("AWS_WEB_IDENTITY_TOKEN_FILE")) {
+		if tokenPath, ok := d.resolvePath(d.getenv("AWS_WEB_IDENTITY_TOKEN_FILE")); ok && nonemptyFile(ctx, d, tokenPath) {
+			return configured("aws-web-identity")
+		}
 	}
 	profile := d.getenv("AWS_PROFILE")
 	if profile == "" {
@@ -91,12 +121,19 @@ func AWSEvidence(ctx context.Context, d Dependencies) Evidence {
 	if profile == "" {
 		profile = "default"
 	}
-	credentialsPath, configPath := d.getenv("AWS_SHARED_CREDENTIALS_FILE"), d.getenv("AWS_CONFIG_FILE")
+	credentialsPath, configPath := "", ""
+	credentialsOverride, configOverride := d.getenv("AWS_SHARED_CREDENTIALS_FILE"), d.getenv("AWS_CONFIG_FILE")
+	if credentialsOverride != "" {
+		credentialsPath, _ = d.resolvePath(credentialsOverride)
+	}
+	if configOverride != "" {
+		configPath, _ = d.resolvePath(configOverride)
+	}
 	if root := d.home(); root != "" {
-		if credentialsPath == "" {
+		if credentialsOverride == "" {
 			credentialsPath = filepath.Join(root, ".aws", "credentials")
 		}
-		if configPath == "" {
+		if configOverride == "" {
 			configPath = filepath.Join(root, ".aws", "config")
 		}
 	}
@@ -127,8 +164,10 @@ func awsProfile(ctx context.Context, d Dependencies, profile string, credentials
 	if hasValues(values["aws_access_key_id"], values["aws_secret_access_key"]) {
 		return true
 	}
-	if hasValues(values["role_arn"], values["web_identity_token_file"]) && nonemptyFile(ctx, d, values["web_identity_token_file"]) {
-		return true
+	if hasValues(values["role_arn"], values["web_identity_token_file"]) {
+		if tokenPath, ok := d.resolvePath(values["web_identity_token_file"]); ok && nonemptyFile(ctx, d, tokenPath) {
+			return true
+		}
 	}
 	if hasValues(values["role_arn"], values["source_profile"]) && awsProfile(ctx, d, values["source_profile"], credentials, config, seen) {
 		return true
@@ -216,12 +255,21 @@ func GoogleADCEvidence(ctx context.Context, d Dependencies) Evidence {
 	if ctx.Err() != nil {
 		return unknown()
 	}
-	paths := []string{d.getenv("GOOGLE_APPLICATION_CREDENTIALS")}
+	paths := make([]string, 0, 2)
+	if explicit := d.getenv("GOOGLE_APPLICATION_CREDENTIALS"); explicit != "" {
+		if path, ok := d.resolvePath(explicit); ok {
+			paths = append(paths, path)
+		}
+	}
 	if dir := d.getenv("CLOUDSDK_CONFIG"); dir != "" {
-		paths = append(paths, filepath.Join(dir, "application_default_credentials.json"))
+		if path, ok := d.resolvePath(dir); ok {
+			paths = append(paths, filepath.Join(path, "application_default_credentials.json"))
+		}
 	} else if d.goos() == "windows" {
 		if dir := d.getenv("APPDATA"); dir != "" {
-			paths = append(paths, filepath.Join(dir, "gcloud", "application_default_credentials.json"))
+			if path, ok := d.resolvePath(dir); ok {
+				paths = append(paths, filepath.Join(path, "gcloud", "application_default_credentials.json"))
+			}
 		}
 	} else if root := d.home(); root != "" {
 		paths = append(paths, filepath.Join(root, ".config", "gcloud", "application_default_credentials.json"))
@@ -284,11 +332,15 @@ func validADC(ctx context.Context, d Dependencies, path string) bool {
 			return false
 		}
 		if source.File != "" {
+			sourcePath, ok := resolvePathFrom(source.File, filepath.Dir(path))
+			if !ok {
+				return false
+			}
 			if format.Type == "text" {
-				return nonemptyFile(ctx, d, source.File)
+				return nonemptyFile(ctx, d, sourcePath)
 			}
 			var content map[string]any
-			if ReadJSON(ctx, d, source.File, &content) != nil {
+			if ReadJSON(ctx, d, sourcePath, &content) != nil {
 				return false
 			}
 			token, ok := content[format.SubjectTokenFieldName].(string)

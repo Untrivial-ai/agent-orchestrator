@@ -113,6 +113,7 @@ func ompAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d ompAuthDep
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	d.WorkingDir = scope.WorkingDir
 	inherited := d.Getenv
 	processEnv := inherited == nil
 	if inherited == nil {

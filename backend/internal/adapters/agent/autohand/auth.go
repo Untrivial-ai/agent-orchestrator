@@ -110,6 +110,7 @@ func autohandAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authu
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	d.WorkingDir = check.WorkingDir
 	baseGetenv := d.Getenv
 	if baseGetenv == nil {
 		baseGetenv = os.Getenv

@@ -41,6 +41,7 @@ func piAuthStatus(ctx context.Context, binary string, check ports.AgentAuthCheck
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	d.WorkingDir = check.WorkingDir
 	d.Getenv = piScopedGetenv(check.Env, d.Getenv)
 	provider, scoped := piSelectedProvider(check)
 	if status := piSelectedNoAuthStatus(ctx, provider, d); status == ports.AgentAuthStatusNotApplicable {

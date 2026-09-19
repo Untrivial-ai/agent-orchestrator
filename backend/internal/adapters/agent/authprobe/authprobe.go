@@ -2,6 +2,9 @@ package authprobe
 
 import (
 	"context"
+	"os"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +16,50 @@ import (
 // It is exposed as a package variable to allow mocking in tests.
 var CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, error) {
 	return aoprocess.CommandContext(ctx, name, arg...).CombinedOutput()
+}
+
+// ScopedCmdRunner runs a native auth command in the effective invocation
+// scope. The function type keeps adapter probes injectable without mutable
+// package globals.
+type ScopedCmdRunner func(context.Context, ports.AgentAuthCheck, string, ...string) ([]byte, error)
+
+// RunScopedCommand executes an argument vector directly, without a shell, in
+// the supplied workspace and with launch overrides applied to the inherited
+// environment. Callers own the command timeout and output parser.
+func RunScopedCommand(ctx context.Context, check ports.AgentAuthCheck, name string, args ...string) ([]byte, error) {
+	cmd := aoprocess.CommandContext(ctx, name, args...)
+	if check.WorkingDir != "" {
+		cmd.Dir = check.WorkingDir
+	}
+	cmd.Env = scopedEnvironment(os.Environ(), check.Env, runtime.GOOS == "windows")
+	return cmd.CombinedOutput()
+}
+
+func scopedEnvironment(inherited []string, overrides map[string]string, caseInsensitive bool) []string {
+	merged := make(map[string]string, len(inherited)+len(overrides))
+	for _, entry := range inherited {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if caseInsensitive {
+			key = strings.ToUpper(key)
+		}
+		merged[key] = entry
+	}
+	for key, value := range overrides {
+		lookup := key
+		if caseInsensitive {
+			lookup = strings.ToUpper(lookup)
+		}
+		merged[lookup] = key + "=" + value
+	}
+	out := make([]string, 0, len(merged))
+	for _, entry := range merged {
+		out = append(out, entry)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CLIStatus runs bounded local CLI probes and recognizes explicit negative output.

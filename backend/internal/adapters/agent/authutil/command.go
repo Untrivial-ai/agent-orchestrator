@@ -15,13 +15,14 @@ import (
 // local environment, regular filesystem, clock, and bounded command runner.
 // Tests should supply Getenv and Run before invoking credential discovery.
 type Dependencies struct {
-	Getenv   func(string) string
-	Lstat    func(string) (os.FileInfo, error)
-	ReadFile func(string) ([]byte, error)
-	Run      func(context.Context, string, ...string) ([]byte, error)
-	Now      func() time.Time
-	GOOS     string
-	Timeout  time.Duration
+	WorkingDir string
+	Getenv     func(string) string
+	Lstat      func(string) (os.FileInfo, error)
+	ReadFile   func(string) ([]byte, error)
+	Run        func(context.Context, string, ...string) ([]byte, error)
+	Now        func() time.Time
+	GOOS       string
+	Timeout    time.Duration
 	// Cloud loaders are optional and must honor context cancellation. With no
 	// loader installed, metadata/refresh-dependent chains remain unknown.
 	LoadAWS       func(context.Context) (CloudCredential, error)

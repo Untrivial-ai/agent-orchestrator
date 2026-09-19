@@ -36,8 +36,8 @@ func TestKiroWhoamiAuthStatusJSON(t *testing.T) {
 		{"timeout", `{"account":null}`, context.DeadlineExceeded, ports.AgentAuthStatusUnknown},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			stubKiroAuthCommand(t, []byte(tt.out), tt.err)
-			got, err := kiroWhoamiAuthStatus(context.Background(), "kiro-cli")
+			run, _ := stubKiroAuthCommand(t, []byte(tt.out), tt.err)
+			got, err := kiroWhoamiAuthStatus(context.Background(), "kiro-cli", ports.AgentAuthCheck{}, run)
 			if err != nil || got != tt.want {
 				t.Fatalf("status = %q, err = %v; want %q", got, err, tt.want)
 			}
@@ -62,8 +62,8 @@ func TestKiroAuthStatusForScope(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("KIRO_API_KEY", tt.inherited)
-			calls := stubKiroAuthCommand(t, []byte(tt.out), nil)
-			checker, ok := any(&Plugin{resolvedBinary: "kiro-cli"}).(ports.AgentScopedAuthChecker)
+			run, calls := stubKiroAuthCommand(t, []byte(tt.out), nil)
+			checker, ok := any(&Plugin{resolvedBinary: "kiro-cli", authRunner: run}).(ports.AgentScopedAuthChecker)
 			if !ok {
 				t.Fatal("Kiro does not check scoped credentials")
 			}
@@ -78,6 +78,34 @@ func TestKiroAuthStatusForScope(t *testing.T) {
 	}
 }
 
+func TestKiroAuthStatusForScopesNativeProbe(t *testing.T) {
+	workspace := t.TempDir()
+	run := func(ctx context.Context, check ports.AgentAuthCheck, name string, args ...string) ([]byte, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("whoami probe has no deadline")
+		}
+		if name != "kiro-cli" || !reflect.DeepEqual(args, []string{"whoami", "--format", "json"}) {
+			t.Fatalf("unexpected command: %s %#v", name, args)
+		}
+		if check.WorkingDir != workspace || !reflect.DeepEqual(check.Env, map[string]string{"AO_TEST_OVERLAY": "scoped", "AO_TEST_MASK": ""}) {
+			t.Fatalf("probe scope = %#v", check)
+		}
+		return []byte(`{"accountType":"BuilderId","startUrl":null,"region":"us-east-1"}`), nil
+	}
+	t.Setenv("KIRO_API_KEY", "")
+
+	got, err := (&Plugin{resolvedBinary: "kiro-cli", authRunner: run}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{
+		WorkingDir: workspace,
+		Env: map[string]string{
+			"AO_TEST_OVERLAY": "scoped",
+			"AO_TEST_MASK":    "",
+		},
+	})
+	if err != nil || got != ports.AgentAuthStatusConfigured {
+		t.Fatalf("status = %q, err = %v; want %q", got, err, ports.AgentAuthStatusConfigured)
+	}
+}
+
 func TestKiroAuthStatusForMalformedAPIKey(t *testing.T) {
 	for _, tt := range []struct{ name, key string }{
 		{"whitespace only", " \t\n"},
@@ -89,8 +117,8 @@ func TestKiroAuthStatusForMalformedAPIKey(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("KIRO_API_KEY", tt.key)
-			stubKiroAuthCommand(t, []byte(`{"account":null}`), nil)
-			p := &Plugin{resolvedBinary: "kiro-cli"}
+			run, _ := stubKiroAuthCommand(t, []byte(`{"account":null}`), nil)
+			p := &Plugin{resolvedBinary: "kiro-cli", authRunner: run}
 			got, err := p.AuthStatusFor(context.Background(), ports.AgentAuthCheck{})
 			if err != nil || got != ports.AgentAuthStatusUnknown {
 				t.Fatalf("status = %q, err = %v; want unknown", got, err)
@@ -99,8 +127,8 @@ func TestKiroAuthStatusForMalformedAPIKey(t *testing.T) {
 	}
 	t.Run("scoped malformed key overrides valid inherited key", func(t *testing.T) {
 		t.Setenv("KIRO_API_KEY", "ksk_test_key")
-		stubKiroAuthCommand(t, []byte(`{}`), nil)
-		got, err := (&Plugin{resolvedBinary: "kiro-cli"}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{Env: map[string]string{"KIRO_API_KEY": "scope-key"}})
+		run, _ := stubKiroAuthCommand(t, []byte(`{}`), nil)
+		got, err := (&Plugin{resolvedBinary: "kiro-cli", authRunner: run}).AuthStatusFor(context.Background(), ports.AgentAuthCheck{Env: map[string]string{"KIRO_API_KEY": "scope-key"}})
 		if err != nil || got != ports.AgentAuthStatusUnknown {
 			t.Fatalf("status = %q, err = %v; want unknown", got, err)
 		}
@@ -109,8 +137,8 @@ func TestKiroAuthStatusForMalformedAPIKey(t *testing.T) {
 
 func TestKiroAuthStatusGlobalIgnoresHeadlessKey(t *testing.T) {
 	t.Setenv("KIRO_API_KEY", "ksk_test_key")
-	calls := stubKiroAuthCommand(t, []byte(`{"account":null}`), nil)
-	got, err := (&Plugin{resolvedBinary: "kiro-cli"}).AuthStatus(context.Background())
+	run, calls := stubKiroAuthCommand(t, []byte(`{"account":null}`), nil)
+	got, err := (&Plugin{resolvedBinary: "kiro-cli", authRunner: run}).AuthStatus(context.Background())
 	if err != nil || got != ports.AgentAuthStatusUnauthorized || *calls != 1 {
 		t.Fatalf("status = %q, err = %v, calls = %d", got, err, *calls)
 	}
@@ -126,11 +154,10 @@ func TestKiroAuthStatusCanceled(t *testing.T) {
 	}
 }
 
-func stubKiroAuthCommand(t *testing.T, out []byte, err error) *int {
+func stubKiroAuthCommand(t *testing.T, out []byte, err error) (authprobe.ScopedCmdRunner, *int) {
 	t.Helper()
-	previous := authprobe.CmdRunner
 	calls := 0
-	authprobe.CmdRunner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	run := func(ctx context.Context, _ ports.AgentAuthCheck, name string, args ...string) ([]byte, error) {
 		calls++
 		if name != "kiro-cli" || !reflect.DeepEqual(args, []string{"whoami", "--format", "json"}) {
 			t.Fatalf("unexpected command: %s %#v", name, args)
@@ -140,6 +167,5 @@ func stubKiroAuthCommand(t *testing.T, out []byte, err error) *int {
 		}
 		return out, err
 	}
-	t.Cleanup(func() { authprobe.CmdRunner = previous })
-	return &calls
+	return run, &calls
 }

@@ -86,6 +86,7 @@ func droidAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	d.WorkingDir = scope.WorkingDir
 	baseEnv := d.Getenv
 	if baseEnv == nil {
 		baseEnv = os.Getenv

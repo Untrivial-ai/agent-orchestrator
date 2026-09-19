@@ -327,6 +327,7 @@ func gooseAuthStatus(ctx context.Context, check ports.AgentAuthCheck, d authutil
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	d.WorkingDir = check.WorkingDir
 	getenv := d.Getenv
 	if getenv == nil {
 		getenv = os.Getenv

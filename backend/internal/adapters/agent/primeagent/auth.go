@@ -52,6 +52,7 @@ func primeAuthStatus(ctx context.Context, scope ports.AgentAuthCheck, d authutil
 	if err := ctx.Err(); err != nil {
 		return ports.AgentAuthStatusUnknown, err
 	}
+	d.WorkingDir = scope.WorkingDir
 	inherited := d.Getenv
 	if inherited == nil {
 		inherited = os.Getenv
