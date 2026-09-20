@@ -248,6 +248,44 @@ describe("HarnessSettingsSection", () => {
 		expect(within(row).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
 	});
 
+	it("does not show authenticated when the settings readiness refresh fails", async () => {
+		const authorized = catalogWithInstalled("claude-code");
+		authorized.agents[0].authentication.state = "authorized";
+		authorized.agents[0].effectiveReadiness = "ready";
+		let rejectPoll!: (reason?: unknown) => void;
+		const pendingPoll = new Promise<never>((_resolve, reject) => {
+			rejectPoll = reject;
+		});
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: authorized } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [
+				{ agentId: "claude-code", action: "login", launchMode: "terminal", available: true },
+			] } } as never;
+			return { data: undefined } as never;
+		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path, options) => {
+			if (path !== "/api/v1/agents/readiness/ensure") return { data: undefined } as never;
+			const agentIds = (options as { body?: { agentIds?: string[] } }).body?.agentIds ?? [];
+			if (agentIds.length === 0) return { data: authorized } as never;
+			return await pendingPoll;
+		});
+
+		renderSection();
+		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
+		expect(await within(row).findByRole("button", { name: "Checking…" })).toBeDisabled();
+		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
+
+		await act(async () => {
+			rejectPoll(new Error("Readiness refresh failed."));
+		});
+
+		expect(await within(row).findByText("Readiness refresh failed.", {}, { timeout: 3_000 })).toHaveClass("text-error");
+		expect(within(row).getByRole("button", { name: "Login" })).toBeEnabled();
+		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
+	});
+
 	it("shows login instead of authenticated after an authorization check fails", async () => {
 		const failedCheck = catalogWithInstalled("claude-code");
 		failedCheck.agents[0].authentication.state = "authorized";

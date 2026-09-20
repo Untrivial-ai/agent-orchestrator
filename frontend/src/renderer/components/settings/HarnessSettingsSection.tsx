@@ -146,7 +146,12 @@ export function HarnessSettingsSection({
 		() => new Set<AgentId>(agents.data?.agents.filter((agent) => agent.installation.state === "installed").map((agent) => agent.id as AgentId) ?? []),
 		[agents.data],
 	);
-	useSettingsAgentReadinessPolling({ agentIds: [...installed] });
+	const readinessPoll = useSettingsAgentReadinessPolling({ agentIds: [...installed] });
+	const readinessPollError = readinessPoll.error instanceof Error
+		? readinessPoll.error.message
+		: readinessPoll.error
+			? t("settings.harness.authFailed")
+			: null;
 	const normalizedSearch = search.trim().toLowerCase();
 	const targetAgentId = AGENT_OPTIONS.find((agentId) => agentId === focusAgentId) ?? null;
 	const rows = AGENT_OPTIONS
@@ -453,10 +458,10 @@ export function HarnessSettingsSection({
 				</Button>
 			</div>
 
-			{installers.error || authPlans.error || agents.error || jobs.error || refreshError ? (
+			{installers.error || authPlans.error || agents.error || jobs.error || readinessPoll.error || refreshError ? (
 				<div className="flex items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
 					<TriangleAlert className="size-4" aria-hidden="true" />
-					{refreshError ?? (jobs.error instanceof Error ? jobs.error.message : t("settings.harness.loadFailed"))}
+					{refreshError ?? readinessPollError ?? (jobs.error instanceof Error ? jobs.error.message : t("settings.harness.loadFailed"))}
 				</div>
 			) : null}
 
@@ -478,13 +483,14 @@ export function HarnessSettingsSection({
 						const isSetupAction = authPlan?.action === "setup";
 						const authState = authStates[agentId];
 						const authStatus = readinessAgent?.authentication.state;
-						const readinessChecking = authState?.checking || readinessAgent?.authentication.freshness === "checking";
+						const readinessChecking = authState?.checking || readinessAgent?.authentication.freshness === "checking" || readinessPoll.isFetching;
 						const readinessAuthFailed = ["auth_check_failed", "auth_check_timeout", "auth_check_inconclusive"]
 							.includes(readinessAgent?.authentication.reasonCode ?? "");
 						const isReady = readinessAgent?.effectiveReadiness === "ready"
 							&& readinessAgent.authentication.freshness === "fresh"
-							&& !readinessAuthFailed;
-						const rowHasError = failed || Boolean(authState?.error) || readinessAuthFailed;
+							&& !readinessAuthFailed
+							&& !readinessPoll.isError;
+						const rowHasError = failed || Boolean(authState?.error) || readinessAuthFailed || readinessPoll.isError;
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
 							job &&
@@ -496,6 +502,8 @@ export function HarnessSettingsSection({
 							? t("settings.harness.checkingLogin")
 							: authState?.error
 								? authState.error
+							: readinessPollError
+								? readinessPollError
 							: readinessAuthFailed
 								? (readinessAgent?.authentication.reason ?? t("settings.harness.authFailed"))
 							: authStatus === "authorized"
