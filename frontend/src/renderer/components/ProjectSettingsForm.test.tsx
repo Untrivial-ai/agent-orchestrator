@@ -211,7 +211,10 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
-	it("opens management for configured project agents without clearing their values", async () => {
+	it.each([
+		{ field: "Default worker agent", selectedAgent: "codex", selectedLabel: "Codex" },
+		{ field: "Default orchestrator agent", selectedAgent: "claude-code", selectedLabel: "Claude Code" },
+	])("shows the New Task agent list and opens management from $field", async ({ field, selectedAgent, selectedLabel }) => {
 		const project = {
 			id: "proj-1",
 			name: "Project One",
@@ -228,21 +231,28 @@ describe("ProjectSettingsForm", () => {
 		mockProject(project, {
 			data: {
 				agents: [
-					agentReadiness("claude-code", "Claude Code"),
+					agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" }),
 					agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+					agentReadiness("cursor", "Cursor"),
+					agentReadiness("opencode", "OpenCode"),
 				],
 			},
 			error: undefined,
 		});
 
 		renderSettings("proj-1", undefined, "agents");
-		await userEvent.click(await screen.findByRole("button", { name: "Default worker agent" }));
+		const trigger = await screen.findByRole("button", { name: field });
+		await userEvent.click(trigger);
+		expect((await screen.findAllByRole("menuitem")).map((option) => option.textContent)).toEqual([
+			"Cursor",
+			"OpenCode",
+			"Manage agents…",
+		]);
 		await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
 		await waitFor(() => expect(openGlobalSettingsMock).toHaveBeenCalled());
 
-		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: "codex" });
-		expect(screen.getByRole("button", { name: "Default worker agent" })).toHaveTextContent("Codex");
-		expect(screen.getByRole("button", { name: "Default reviewer agent" })).toHaveTextContent("Codex");
+		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: selectedAgent });
+		expect(trigger).toHaveTextContent(selectedLabel);
 	});
 
 	it("ensures agent readiness in the background without manual refresh buttons", async () => {
