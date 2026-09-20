@@ -19,6 +19,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/amp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/omp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
@@ -1860,6 +1861,29 @@ func TestSpawn_WrapsSupervisedAgentAndPersistsGeneration(t *testing.T) {
 	}
 	if rec.Metadata.RuntimeLaunchID != "launch-7" {
 		t.Fatalf("stored launch id = %q, want launch-7", rec.Metadata.RuntimeLaunchID)
+	}
+}
+
+func TestSpawn_WrapsRealOMPAgentWithSupervisor(t *testing.T) {
+	m := New(Deps{
+		DataDir:     t.TempDir(),
+		Executable:  func() (string, error) { return "/opt/ao", nil },
+		NewLaunchID: func() string { return "launch-omp" },
+	})
+	env := map[string]string{}
+	argv, launchID, err := m.superviseAgentProcess(omp.New(), "s-1", env, []string{"omp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/opt/ao", "agent-process", "supervise", "--session", "s-1", "--launch", "launch-omp", "--", "omp"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("runtime argv = %#v, want %#v", argv, want)
+	}
+	if launchID != "launch-omp" {
+		t.Fatalf("launch id = %q, want launch-omp", launchID)
+	}
+	if env[EnvSupervisedProcess] != "1" {
+		t.Fatalf("supervised env = %q, want 1", env[EnvSupervisedProcess])
 	}
 }
 
