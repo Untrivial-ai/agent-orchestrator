@@ -86,8 +86,8 @@ export function cacheAgentReadiness(queryClient: QueryClient, next: AgentReadine
 export const agentReadinessQueryOptions = {
 	queryKey: agentReadinessQueryKey,
 	queryFn: ({ signal }: { signal: AbortSignal }) => fetchAgentReadiness(signal),
-	structuralSharing: (current: AgentReadiness | undefined, next: AgentReadiness) =>
-		mergeAgentReadiness(current, next),
+	structuralSharing: (current: unknown, next: unknown) =>
+		mergeAgentReadiness(current as AgentReadiness | undefined, next as AgentReadiness),
 	retry: 1,
 	// Freshness belongs to the daemon coordinator. React Query only retains the
 	// latest display copy and must never decide whether native work is required.
