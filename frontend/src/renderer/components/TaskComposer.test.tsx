@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
 	ensureReadiness: vi.fn(),
 	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
+	agentCatalog: undefined as { agents: ReturnType<typeof import("../test/agent-readiness-fixtures").agentReadiness>[] } | undefined,
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
@@ -18,7 +19,7 @@ vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
 	return {
 		...actual,
 		ensureAgentReadiness: h.ensureTargetedReadiness,
-		useAgentReadinessQuery: () => ({ data: undefined, isFetching: false }),
+		useAgentReadinessQuery: () => ({ data: h.agentCatalog, isFetching: false }),
 		useEnsureAgentReadiness: h.ensureReadiness,
 	};
 });
@@ -97,6 +98,7 @@ afterEach(() => {
 	h.capture.mockReset();
 	h.ensureReadiness.mockReset();
 	h.ensureTargetedReadiness.mockReset();
+	h.agentCatalog = undefined;
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
 });
@@ -264,20 +266,32 @@ describe("TaskComposer", () => {
 		expect(h.agentValues).toHaveLength(1);
 	});
 
-	it("keeps agent and model as separate equal toolbar dropdowns", () => {
+	it("uses 2:2:1 toolbar tracks when the selected model advertises effort", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: {
+					agent: "codex",
+					selectionMode: "catalog",
+					models: [{ id: "gpt-test", label: "GPT Test", isDefault: true, efforts: ["low", "high"] }],
+					allowCustom: true,
+				} };
+			}
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+		});
 		render(
 			<Wrap>
 				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
 			</Wrap>,
 		);
 
+		await screen.findByRole("button", { name: "Effort" });
 		const runControls = screen.getByRole("group", { name: "Runs with" });
-		expect(runControls).toHaveClass("composer-run-controls");
+		expect(runControls).toHaveClass("composer-run-controls", "composer-run-controls-with-effort");
 		expect(runControls.closest(".composer-toolbar")).not.toBeNull();
-		expect(runControls.querySelectorAll(".composer-toolbar-slot")).toHaveLength(2);
+		expect(runControls.querySelectorAll(".composer-toolbar-slot")).toHaveLength(3);
 		expect(screen.getByTestId("agent-field").closest(".composer-toolbar-slot")).not.toBeNull();
 		expect(screen.getByLabelText("Model").closest(".composer-toolbar-slot")).not.toBeNull();
-		expect(runControls.querySelector(".composer-toolbar-divider")).toBeNull();
+		expect(screen.getByLabelText("Effort").closest(".composer-toolbar-effort-slot")).not.toBeNull();
 	});
 
 	it("keeps the file attach control in the bottom action row", () => {
@@ -660,9 +674,8 @@ describe("TaskComposer", () => {
 				<TaskComposer projectId="proj-1" onCreated={onCreated} />
 			</Wrap>,
 		);
-		await userEvent.click(await screen.findByRole("button", { name: "Model" }));
-		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
-		await userEvent.click(await screen.findByRole("menuitemradio", { name: "High" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Effort" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "High" }));
 		fireEvent.change(task(), { target: { value: "Do the thing" } });
 		fireEvent.click(screen.getByText("Start task"));
 
@@ -804,7 +817,7 @@ describe("TaskComposer", () => {
 		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
 	});
 
-	it("does not expose Codex effort controls for Claude Code", async () => {
+	it("exposes effort for any harness whose selected model advertises it", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
@@ -823,7 +836,7 @@ describe("TaskComposer", () => {
 
 		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
 		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Sonnet");
-		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
+		expect(await screen.findByRole("button", { name: "Effort" })).toBeInTheDocument();
 	});
 
 	it("preselects the agent's default model when the project configures none", async () => {
@@ -1087,23 +1100,22 @@ describe("TaskComposer", () => {
 
 		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
 		const picker = await screen.findByRole("button", { name: "Model" });
-		expect(picker).toHaveTextContent("GPT Test · High");
-		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
+		expect(picker).toHaveTextContent("GPT Test");
+		const effortPicker = await screen.findByRole("button", { name: "Effort" });
+		expect(effortPicker).toHaveTextContent("High");
 
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
 
-		await userEvent.click(picker);
-		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
-		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Low" }));
+		await userEvent.click(effortPicker);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Low" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
 		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low" }));
 
-		await userEvent.click(picker);
-		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
-		await userEvent.click(await screen.findByRole("menuitemradio", { name: "Provider default" }));
+		await userEvent.click(effortPicker);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Default" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
 		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "" }));

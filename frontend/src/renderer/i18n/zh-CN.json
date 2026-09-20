@@ -1,4 +1,7 @@
 {
+	"agentSelector.manage": "管理代理…",
+	"agentSelector.noneReady": "暂无可用代理",
+	"agentSelector.needsSetup": "需要设置",
 	"session.statusChecking": "正在检查…",
 	"session.statusUnavailable": "无法验证",
 	"session.retryStatus": "重新检查状态",

@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	TaskComposerView,
 	type TaskComposerAgentControl,
+	type TaskComposerEffortControl,
 	type TaskComposerModelCatalog,
 	type TaskComposerModelControl,
 } from "@aoagents/product-ui";
@@ -33,7 +34,8 @@ import {
 	revalidateAgentModels,
 } from "../hooks/useAgentModelsQuery";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
-import { AgentModelCombobox, type ModelEffortSelection } from "./settings/AgentModelCombobox";
+import { AgentModelCombobox } from "./settings/AgentModelCombobox";
+import { useModelTuning } from "./settings/ModelTuningControls";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
 type Project = components["schemas"]["Project"];
@@ -354,6 +356,14 @@ export function TaskComposer({
 	const defaultModeForSelectedAgent = projectModeForSelectedAgent || (catalogUsesModes ? catalogDefaultOption : "");
 	const selectedModel = model || defaultModelForSelectedAgent;
 	const selectedMode = mode || defaultModeForSelectedAgent;
+	const { selected: effortModel } = useModelTuning({
+		models: catalogModels,
+		model: selectedModel,
+		effort,
+		onEffortChange: setEffort,
+		onEffortReset: setEffort,
+	});
+	const effortOptions = effortModel?.efforts ?? [];
 
 	const selectedAgentLabel = agentCatalog?.agents.find((item) => item.id === selectedAgent)?.label || selectedAgent;
 	const requiresTuiFallback =
@@ -453,6 +463,7 @@ export function TaskComposer({
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
+				effort: t("settings.models.effort"),
 				fallbackAction: fallbackAction === "bypass-permissions"
 					? t("newTask.startWithoutApprovals", { defaultValue: "Start without approvals" })
 					: t("newTask.createAsTui"),
@@ -504,6 +515,15 @@ export function TaskComposer({
 					setModelTouched(true);
 				},
 			}}
+			effort={{
+				disabled: isSubmitting,
+				options: effortOptions,
+				value: effort,
+				onChange: (value) => {
+					setEffort(value);
+					setEffortTouched(true);
+				},
+			}}
 			attachments={{
 				items: attachments.map(({ id, name, dataUrl }) => ({ id, name, previewUrl: dataUrl })),
 				error: attachmentError,
@@ -521,24 +541,49 @@ export function TaskComposer({
 						: submitTask(brief, "tui")),
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
-			renderAgentControl={(control) => <DesktopAgentControl {...control} />}
-			renderModelControl={(control) => (
-				<TaskModelPicker {...control} onRefresh={refreshSelectedModels}
-					tuning={selectedAgent === "codex" && !requiresTuiFallback ? {
-						effort,
-						onEffortChange: (value) => { setEffort(value); setEffortTouched(true); },
-						onEffortReset: setEffort,
-					} : undefined}
-				/>
-			)}
+			renderAgentControl={(control) => <DesktopAgentControl {...control} manageAgents={!isCloudProject} />}
+			renderEffortControl={(control) => <TaskEffortPicker {...control} />}
+			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
+			showEffort={!requiresTuiFallback && effortOptions.length > 0}
 		/>
 	);
 }
 
-function DesktopAgentControl(control: TaskComposerAgentControl) {
+function TaskEffortPicker({ disabled, label, onChange, options, value }: TaskComposerEffortControl) {
+	const { t } = useTranslation();
+	const defaultLabel = t("settings.models.default");
+	const visibleLabel = value ? formatEffortLabel(value) : defaultLabel;
+
+	return (
+		<SettingsOptionMenu
+			aria-label={label}
+			disabled={disabled}
+			value={value || "__default__"}
+			options={[
+				{ value: "__default__", label: defaultLabel },
+				...options.map((option) => ({ value: option, label: formatEffortLabel(option) })),
+			]}
+			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
+			menuAlign="end"
+			renderTrigger={() => (
+				<span className="min-w-0 truncate text-control text-foreground" title={visibleLabel}>
+					{visibleLabel}
+				</span>
+			)}
+			onChange={(nextEffort) => onChange(nextEffort === "__default__" ? "" : nextEffort)}
+		/>
+	);
+}
+
+function formatEffortLabel(value: string): string {
+	return value === "xhigh" ? "Extra high" : value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function DesktopAgentControl({ manageAgents, ...control }: TaskComposerAgentControl & { manageAgents: boolean }) {
 	return (
 		<RequiredAgentField
 			{...control}
+			manageAgents={manageAgents}
 			variant="chip"
 			triggerClassName="composer-toolbar-option w-full justify-between"
 		/>
@@ -557,8 +602,7 @@ function TaskModelPicker({
 	onModelChange,
 	onModeChange,
 	onRefresh,
-	tuning,
-}: TaskComposerModelControl & { onRefresh: () => Promise<void>; tuning?: ModelEffortSelection }) {
+}: TaskComposerModelControl & { onRefresh: () => Promise<void> }) {
 	const { t } = useTranslation();
 
 	// Says what happens with no override, rather than labelling it "Agent default".
@@ -637,7 +681,6 @@ function TaskModelPicker({
 	return (
 		<AgentModelCombobox
 			key={agentId}
-			tuning={tuning}
 			aria-label={t("newTask.model")}
 			value={value}
 			models={displayModels}

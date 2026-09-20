@@ -1,4 +1,7 @@
 {
+	"agentSelector.manage": "Gerenciar agentes…",
+	"agentSelector.noneReady": "Nenhum agente pronto",
+	"agentSelector.needsSetup": "Requer configuração",
 	"session.statusChecking": "Verificando…",
 	"session.statusUnavailable": "Não foi possível verificar",
 	"session.retryStatus": "Verificar status novamente",

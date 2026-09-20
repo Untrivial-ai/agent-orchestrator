@@ -24,3 +24,35 @@ describe("sidebar visibility", () => {
 		expect(window.localStorage.getItem("ao.sidebar.open")).toBe("true");
 	});
 });
+
+describe("global settings deep links", () => {
+	it("stores an optional harness focus target without changing existing calls", () => {
+		useUiStore.getState().openGlobalSettings("harness", { focusAgentId: "codex" });
+		expect(useUiStore.getState().settingsModal).toEqual({
+			scope: "global",
+			section: "harness",
+			focusAgentId: "codex",
+		});
+
+		useUiStore.getState().openGlobalSettings("agents");
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "agents" });
+	});
+
+	it("preserves project settings only for explicit recovery navigation", () => {
+		useUiStore.getState().openProjectSettings("project-1");
+		useUiStore.getState().openGlobalSettings("general");
+		useUiStore.getState().closeSettings();
+		expect(useUiStore.getState().settingsModal).toBeNull();
+
+		useUiStore.getState().openProjectSettings("project-1");
+		useUiStore.getState().openGlobalSettings("harness", { focusAgentId: "codex", preserveProject: true });
+		expect(useUiStore.getState().settingsModal).toEqual({
+			scope: "global",
+			section: "harness",
+			focusAgentId: "codex",
+			returnTo: { scope: "project", projectId: "project-1" },
+		});
+		useUiStore.getState().closeSettings();
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "project-1" });
+	});
+});
