@@ -131,12 +131,41 @@ describe("McpServerBanner", () => {
 
 	it("draws no control at all when the harness cannot reload", () => {
 		render(<McpServerBanner servers={broken} />);
-		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Reload/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Dismiss tool server warning/ })).toBeInTheDocument();
 	});
 
 	it("surfaces a failed reload", () => {
 		render(<McpServerBanner servers={broken} onReload={vi.fn()} error="controller not ready" />);
 		expect(screen.getByText("controller not ready")).toBeInTheDocument();
+	});
+
+	it("dismisses the current failure until the broken server list changes", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(<McpServerBanner servers={broken} />);
+		await user.click(screen.getByRole("button", { name: /Dismiss tool server warning/ }));
+		expect(screen.queryByText("A tool server did not start")).not.toBeInTheDocument();
+
+		rerender(<McpServerBanner servers={broken} />);
+		expect(screen.queryByText("A tool server did not start")).not.toBeInTheDocument();
+
+		rerender(
+			<McpServerBanner
+				servers={[
+					...broken,
+					{
+						name: "figma",
+						status: "failed" as const,
+						failureReason: "invalid_config",
+					},
+				]}
+			/>,
+		);
+		expect(screen.getByText("2 tool servers did not start")).toBeInTheDocument();
+
+		rerender(<McpServerBanner servers={[]} />);
+		rerender(<McpServerBanner servers={broken} />);
+		expect(screen.getByText("A tool server did not start")).toBeInTheDocument();
 	});
 
 	// A healthy server is not news. The caller filters, and an empty list must not
