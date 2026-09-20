@@ -333,17 +333,18 @@ func TestReadinessCoordinatorFailurePreservesKnownStateAndLaunchBypassesRetry(t 
 		t.Fatalf("failure reason is not safe: %q", got)
 	}
 
-	before := agent.resolveCalls.Load()
+	beforeResolve := agent.resolveCalls.Load()
+	beforeAuth := agent.authCalls.Load()
 	if _, err := coordinator.Ensure(context.Background(), []string{"codex"}, domain.AgentReadinessPurposeSettings); err != nil {
 		t.Fatal(err)
 	}
-	if agent.resolveCalls.Load() != before {
-		t.Fatal("settings ensure ignored retry delay")
+	if agent.authCalls.Load() != beforeAuth+1 {
+		t.Fatalf("settings authentication checks = %d, want %d despite display retry delay", agent.authCalls.Load(), beforeAuth+1)
 	}
 	if _, err := coordinator.Ensure(context.Background(), []string{"codex"}, domain.AgentReadinessPurposeLaunch); err != nil {
 		t.Fatal(err)
 	}
-	if agent.resolveCalls.Load() != before+1 {
+	if agent.resolveCalls.Load() != beforeResolve+1 {
 		t.Fatal("launch ensure did not bypass retry delay")
 	}
 }

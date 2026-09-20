@@ -248,7 +248,7 @@ describe("HarnessSettingsSection", () => {
 		expect(within(row).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
 	});
 
-	it("does not show configured when the settings readiness refresh fails", async () => {
+	it("keeps configured visible when the settings readiness refresh fails", async () => {
 		const authorized = catalogWithInstalled("claude-code");
 		authorized.agents[0].authentication.state = "authorized";
 		authorized.agents[0].effectiveReadiness = "ready";
@@ -274,16 +274,14 @@ describe("HarnessSettingsSection", () => {
 
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
-		expect(await within(row).findByRole("button", { name: "Checking…" })).toBeDisabled();
-		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
+		expect(await within(row).findByText("Configured")).toBeInTheDocument();
 
 		await act(async () => {
 			rejectPoll(new Error("Readiness refresh failed."));
 		});
 
-		expect(await within(row).findByText("Readiness refresh failed.", {}, { timeout: 3_000 })).toHaveClass("text-error");
-		expect(within(row).getByRole("button", { name: "Login" })).toBeEnabled();
-		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
+		expect(await screen.findByText("Readiness refresh failed.", {}, { timeout: 3_000 })).toHaveClass("text-error");
+		expect(within(row).getByText("Configured")).toBeInTheDocument();
 	});
 
 	it("shows login instead of configured after an authorization check fails", async () => {
@@ -312,6 +310,31 @@ describe("HarnessSettingsSection", () => {
 		expect(await within(row).findByRole("button", { name: "Login" })).toBeEnabled();
 		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
 		expect(within(row).getByText("Authentication check failed.")).toHaveClass("text-error");
+	});
+
+	it("keeps configured visible for a stale authorized observation", async () => {
+		const stale = catalogWithInstalled("claude-code");
+		stale.agents[0].authentication.state = "authorized";
+		stale.agents[0].authentication.freshness = "stale";
+		stale.agents[0].effectiveReadiness = "ready";
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: stale } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [
+				{ agentId: "claude-code", action: "login", launchMode: "terminal", available: true },
+			] } } as never;
+			return { data: undefined } as never;
+		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness/ensure") return { data: stale } as never;
+			return { data: undefined } as never;
+		});
+
+		renderSection();
+		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
+		expect(await within(row).findByText("Configured")).toBeInTheDocument();
+		expect(within(row).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
 	});
 
 	it("ensures and caches readiness when the page opens", async () => {
@@ -422,6 +445,9 @@ describe("HarnessSettingsSection", () => {
 
 		act(() => terminalStateCallback.value?.("exited"));
 		await waitFor(() => expect(probeCalls).toBe(1));
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/readiness/ensure", {
+			body: { agentIds: ["claude-code"], purpose: "settings" },
+		}));
 
 		await waitFor(() => expect(close).toHaveBeenCalledWith("/api/v1/shell-terminals/{handleId}", {
 			params: { path: { handleId: "auth-terminal-1" } },
@@ -688,6 +714,9 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", { params: { path: { agent: "codex" } } }), { timeout: 3_000 });
+		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/readiness/ensure", {
+			body: { agentIds: ["codex"], purpose: "settings" },
+		}));
 		await waitFor(() => expect(row).toHaveTextContent("Unknown"));
 		expect(within(row).queryByRole("button", { name: "Install" })).not.toBeInTheDocument();
 		await waitFor(() => expect(installerFetches).toBe(2));

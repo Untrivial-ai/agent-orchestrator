@@ -178,7 +178,7 @@ export function HarnessSettingsSection({
 			params: { path: { agent: agentId } },
 		}).finally(async () => {
 			try {
-				const readiness = await ensureAgentReadiness([agentId], "display");
+				const readiness = await ensureAgentReadiness([agentId], "settings");
 				cacheAgentReadiness(queryClient, readiness);
 			} catch {
 				await queryClient.invalidateQueries({ queryKey: agentReadinessQueryKey });
@@ -344,7 +344,7 @@ export function HarnessSettingsSection({
 			updateAuthState(agentId, { checking: true, error: null });
 			try {
 				const result = await probeAgentAuth(agentId);
-				const readiness = await ensureAgentReadiness([agentId], "display");
+				const readiness = await ensureAgentReadiness([agentId], "settings");
 				cacheAgentReadiness(queryClient, readiness);
 				return result;
 			} catch (error) {
@@ -484,14 +484,14 @@ export function HarnessSettingsSection({
 						const isSetupAction = authPlan?.action === "setup";
 						const authState = authStates[agentId];
 						const authStatus = readinessAgent?.authentication.state;
-						const readinessChecking = authState?.checking || readinessAgent?.authentication.freshness === "checking" || readinessPoll.isFetching;
+						const readinessChecking = authState?.checking || readinessAgent?.authentication.freshness === "checking";
 						const readinessAuthFailed = ["auth_check_failed", "auth_check_timeout", "auth_check_inconclusive"]
 							.includes(readinessAgent?.authentication.reasonCode ?? "");
 						const isReady = readinessAgent?.effectiveReadiness === "ready"
-							&& readinessAgent.authentication.freshness === "fresh"
+							&& (authStatus === "authorized" || authStatus === "not_applicable")
 							&& !readinessAuthFailed
-							&& !readinessPoll.isError;
-						const rowHasError = failed || Boolean(authState?.error) || readinessAuthFailed || readinessPoll.isError;
+							&& !authState?.error;
+						const rowHasError = failed || Boolean(authState?.error) || readinessAuthFailed;
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
 							job &&

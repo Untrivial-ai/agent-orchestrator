@@ -317,7 +317,7 @@ func (c *readinessCoordinator) ensureOne(ctx context.Context, id string, purpose
 		c.logDecision(id, purpose, "cache_hit", 0, snapshot, "", time.Time{})
 		return snapshot, nil
 	}
-	if purpose != domain.AgentReadinessPurposeLaunch && !entry.nextRetryAt.IsZero() && c.now().Before(entry.nextRetryAt) {
+	if purpose == domain.AgentReadinessPurposeDisplay && !entry.nextRetryAt.IsZero() && c.now().Before(entry.nextRetryAt) {
 		snapshot := c.snapshotLocked(entry, purpose)
 		nextRetry := entry.nextRetryAt
 		c.mu.Unlock()
