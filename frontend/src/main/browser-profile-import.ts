@@ -1186,7 +1186,10 @@ function normalizeCookieRows(
 				url,
 				name,
 				value,
-				domain,
+				// Source stores use a leading dot for domain cookies. Omitting
+				// `domain` is what makes Electron preserve a host-only cookie,
+				// including cookies protected by the `__Host-` prefix.
+				...(domain.startsWith(".") ? { domain } : {}),
 				path: cookiePath,
 				secure,
 				httpOnly: row.httpOnly === true,
