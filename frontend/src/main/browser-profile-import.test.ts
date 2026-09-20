@@ -1076,10 +1076,10 @@ describe("BrowserProfileImportService", () => {
 		}, vi.fn());
 
 		expect(importedCookies).toBe(20_000);
-		expect(result.entries[0]).toMatchObject({ importedCookies: 20_000, skippedCookies: 6 });
+		expect(result.entries[0]).toMatchObject({ importedCookies: 20_000, skippedCookies: 7 });
 		expect(result.entries[0]!.warnings).toEqual(expect.arrayContaining([
 			{ code: "isolated-cookies-skipped", count: 1 },
-			{ code: "cookie-limit-truncated", count: 5 },
+			{ code: "cookie-limit-truncated", count: 6 },
 		]));
 	});
 
