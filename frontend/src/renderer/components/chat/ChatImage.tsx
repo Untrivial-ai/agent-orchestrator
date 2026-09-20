@@ -17,6 +17,7 @@ import type { ExtraProps } from "react-markdown";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
+import { useChatImageSrc } from "./chat-image-source";
 
 /** Thumbnails in a gallery share one height so the row reads as a set. */
 const InGallery = createContext(false);
@@ -64,10 +65,21 @@ export function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
 	const [open, setOpen] = useState(false);
 	// The failed URL rather than a boolean: a new URL deserves its own attempt.
 	const [failedSrc, setFailedSrc] = useState<string | null>(null);
-	const url = typeof src === "string" ? src : undefined;
+	const rawUrl = typeof src === "string" ? src : undefined;
+	const url = useChatImageSrc(rawUrl);
 	const label = alt ?? "";
 
-	if (!url || url === failedSrc) return <span className="text-muted-foreground">{label}</span>;
+	if (!url || url === failedSrc)
+		return (
+			<span
+				className={cn(
+					"text-muted-foreground",
+					inGallery && "inline-flex h-40 items-center rounded-md border border-border px-3",
+				)}
+			>
+				{label || rawUrl}
+			</span>
+		);
 
 	const onError = () => setFailedSrc(url);
 
