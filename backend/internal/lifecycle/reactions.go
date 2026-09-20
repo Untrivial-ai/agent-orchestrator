@@ -490,12 +490,16 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	if err := m.ApplyPRObservation(ctx, id, scmToPRObservation(o)); err != nil {
 		return err
 	}
-	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o)
+	ready, err := m.scmObservationReadyToMerge(ctx, o)
+	if err != nil {
+		return err
+	}
+	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o, ready)
 	if err != nil {
 		return err
 	}
 	m.emitNotification(ctx, intent)
-	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, m.clock())...)
+	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, ready, m.clock())...)
 	return nil
 }
 
@@ -503,8 +507,8 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 // observation made stale. The PR either got merged/closed, or stopped being
 // mergeable — either way the "this is ready for you to merge" ping no longer
 // describes anything the user can act on.
-func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, now time.Time) []ports.NotificationResolution {
-	if scmObservationIsReadyToMerge(o) {
+func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, ready bool, now time.Time) []ports.NotificationResolution {
+	if ready {
 		return nil
 	}
 	return []ports.NotificationResolution{{
@@ -515,7 +519,7 @@ func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, now ti
 	}}
 }
 
-func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain.SessionID, o ports.SCMObservation) (*ports.NotificationIntent, error) {
+func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain.SessionID, o ports.SCMObservation, ready bool) (*ports.NotificationIntent, error) {
 	// Serialize the session snapshot with activity transitions so ready-to-merge
 	// notifications do not race against a simultaneous waiting_input update.
 	m.mu.Lock()
@@ -527,10 +531,10 @@ func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain
 	if !ok {
 		return nil, nil
 	}
-	return m.notificationIntentForSCM(rec, o), nil
+	return m.notificationIntentForSCM(rec, o, ready), nil
 }
 
-func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCMObservation) *ports.NotificationIntent {
+func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCMObservation, ready bool) *ports.NotificationIntent {
 	prURL := firstSCMNonEmpty(o.PR.URL, o.PR.HTMLURL)
 	base := ports.NotificationIntent{
 		SessionID:          rec.ID,
@@ -553,7 +557,7 @@ func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCM
 		base.Type = domain.NotificationPRClosedUnmerged
 		return &base
 	}
-	if rec.IsTerminated || rec.Activity.State.NeedsInput() || !scmObservationIsReadyToMerge(o) {
+	if rec.IsTerminated || rec.Activity.State.NeedsInput() || !ready {
 		return nil
 	}
 	base.Type = domain.NotificationReadyToMerge
@@ -564,8 +568,8 @@ func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCM
 // readiness rule (domain.MergeReadiness). Startup reconciliation applies the
 // same rule to the stored facts, so the two paths cannot disagree about what
 // "ready to merge" means.
-func scmObservationIsReadyToMerge(o ports.SCMObservation) bool {
-	return domain.MergeReadiness{
+func (m *Manager) scmObservationReadyToMerge(ctx context.Context, o ports.SCMObservation) (bool, error) {
+	ready := domain.MergeReadiness{
 		Draft:              o.PR.Draft,
 		Merged:             o.PR.Merged,
 		Closed:             o.PR.Closed,
@@ -574,15 +578,26 @@ func scmObservationIsReadyToMerge(o ports.SCMObservation) bool {
 		Mergeability:       domain.Mergeability(o.Mergeability.State),
 		UnresolvedComments: hasUnresolvedSCMComments(o.Review.Threads),
 	}.ReadyToMerge()
+	if !ready {
+		return false, nil
+	}
+	prURL := firstSCMNonEmpty(o.PR.URL, o.PR.HTMLURL)
+	comments, err := m.store.ListPRComments(ctx, prURL)
+	if err != nil {
+		return false, fmt.Errorf("list persisted comments for %s: %w", prURL, err)
+	}
+	for _, comment := range comments {
+		if domain.IsActionableReviewComment(comment.Resolved, comment.IsBot, comment.File, comment.Line) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func hasUnresolvedSCMComments(threads []ports.SCMReviewThreadObservation) bool {
 	for _, th := range threads {
-		if th.Resolved || th.IsBot {
-			continue
-		}
 		for _, c := range th.Comments {
-			if !c.IsBot {
+			if domain.IsActionableReviewComment(th.Resolved, c.IsBot, th.Path, th.Line) {
 				return true
 			}
 		}
@@ -614,7 +629,6 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 	if pr.Mergeability == "" {
 		pr.Mergeability = domain.MergeUnknown
 	}
-
 	checkCommit := firstSCMNonEmpty(o.CI.HeadSHA, o.PR.HeadSHA)
 	for _, ch := range o.CI.FailedChecks {
 		status := domain.PRCheckStatus(ch.Status)
@@ -639,7 +653,7 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 func prCommentObservations(comments []domain.PullRequestComment) []ports.PRCommentObservation {
 	out := make([]ports.PRCommentObservation, 0, len(comments))
 	for _, comment := range comments {
-		if comment.Resolved || comment.IsBot {
+		if !domain.IsActionableReviewComment(comment.Resolved, comment.IsBot, comment.File, comment.Line) {
 			continue
 		}
 		out = append(out, ports.PRCommentObservation{

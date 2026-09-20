@@ -213,7 +213,7 @@ func (s *Store) ReconcileResolvedNotifications(ctx context.Context, at time.Time
 		}
 		unresolved := false
 		for _, c := range comments {
-			if !c.Resolved && !c.IsBot {
+			if domain.IsActionableReviewComment(c.Resolved, c.IsBot, c.File, c.Line) {
 				unresolved = true
 				break
 			}
