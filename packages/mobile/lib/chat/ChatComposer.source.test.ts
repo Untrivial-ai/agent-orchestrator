@@ -59,4 +59,15 @@ describe("chat composer pill", () => {
 	it("opens the row with a plus rather than a paperclip", () => {
 		expect(source("./ChatAttachmentMenu.tsx")).toContain('name="plus"');
 	});
+
+	// The dock used to swap its inset for the keyboard gap on a visibility flag,
+	// and that flag turns over when the keyboard has finished hiding — so the
+	// composer, and the model label above it, spent the whole closing animation one
+	// inset too low and then jumped into place at the end.
+	it("rides the keyboard's own progress instead of switching inset on a flag", () => {
+		expect(composer).toContain("useReanimatedKeyboardAnimation()");
+		expect(composer).toContain("(restingInset - KEYBOARD_DOCK_GAP) * keyboard.progress.value");
+		expect(composer).toContain("{ paddingBottom: restingInset }");
+		expect(composer).not.toContain("dockInset(");
+	});
 });

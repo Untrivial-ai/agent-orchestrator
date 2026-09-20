@@ -28,7 +28,7 @@ import {
 	mobileInterfaceTransitionRecoveryMessage,
 	useInterfaceTransition,
 } from "../session/useInterfaceTransition";
-import { dockInset, keyboardVerticalOffset, screenKeyboardAvoidance } from "../session/keyboardInset";
+import { dockRestingInset, keyboardVerticalOffset, screenKeyboardAvoidance } from "../session/keyboardInset";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { getWorkspacePaths, openSessionShell } from "./api";
@@ -520,7 +520,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				onOpenSettings={() => void openTurnSettings()}
 				onSettings={conversation.chooseSettings}
 				onConfigOption={conversation.setConfigOption}
-				bottomInset={dockInset(keyboardHeight, insets.bottom, keyboardVisible)}
+				restingInset={dockRestingInset(insets.bottom)}
 			/>
 		</KeyboardAvoidingView>
 	);

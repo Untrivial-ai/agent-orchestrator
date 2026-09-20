@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dockInset, KEYBOARD_DOCK_GAP, keyboardVerticalOffset, MIN_DOCK_INSET, rootKeyboardPad, screenKeyboardAvoidance } from "./keyboardInset";
+import { dockInset, dockRestingInset, KEYBOARD_DOCK_GAP, keyboardVerticalOffset, MIN_DOCK_INSET, rootKeyboardPad, screenKeyboardAvoidance } from "./keyboardInset";
 import { CONTROL_KEYS } from "./keys";
 
 describe("dockInset", () => {
@@ -21,6 +21,24 @@ describe("dockInset", () => {
 
 	it("falls back to a minimum on a device with no home indicator", () => {
 		expect(dockInset(0, 0, false)).toBe(MIN_DOCK_INSET);
+	});
+});
+
+// The chat dock holds this value at all times and rides the keyboard's progress
+// to close the difference. Switching it on a visibility flag is what made the
+// composer overshoot: the flag turns over when the keyboard has *finished*
+// hiding, so the dock spent the whole close one inset too low and then jumped.
+describe("dockRestingInset", () => {
+	it("is the home-indicator inset with the keyboard down", () => {
+		expect(dockRestingInset(34)).toBe(34);
+	});
+
+	it("falls back to the minimum without a home indicator", () => {
+		expect(dockRestingInset(0)).toBe(MIN_DOCK_INSET);
+	});
+
+	it("never returns the keyboard gap, which the dock owes only mid-animation", () => {
+		expect(dockRestingInset(34)).not.toBe(KEYBOARD_DOCK_GAP);
 	});
 });
 

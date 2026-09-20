@@ -73,3 +73,18 @@ export function dockInset(kbHeight: number, insetsBottom: number, keyboardVisibl
 	if (keyboardVisible) return KEYBOARD_DOCK_GAP;
 	return insetsBottom > 0 ? insetsBottom : MIN_DOCK_INSET;
 }
+
+/**
+ * What the dock owes with the keyboard down: the home-indicator inset, or a
+ * minimum on a device without one.
+ *
+ * The chat dock holds this value *always* and rides the keyboard's own progress
+ * to close the difference (see `ChatComposer`). Switching between this and
+ * `KEYBOARD_DOCK_GAP` on a visibility flag is what made the composer overshoot:
+ * the flag turns over when the keyboard has finished hiding, so the dock spent
+ * the whole closing animation one resting-inset too low and then jumped up into
+ * place at the end — and the model label above it with it.
+ */
+export function dockRestingInset(insetsBottom: number): number {
+	return insetsBottom > 0 ? insetsBottom : MIN_DOCK_INSET;
+}

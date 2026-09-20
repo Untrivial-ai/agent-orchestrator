@@ -5,10 +5,13 @@ import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Image, Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { fontScaleCap, iconSize, space, type } from "../tokens";
+import { KEYBOARD_DOCK_GAP } from "../session/keyboardInset";
 import { MicKey } from "../voice/MicKey";
 import { useVoiceInput } from "../voice/useVoiceInput";
 import { activeTurn, type ChatConfigOption, type ChatImage, type ChatModel, type ChatResource, type ChatSkill, type ConversationSnapshot, type TurnSettings } from "./types";
@@ -82,7 +85,7 @@ export function ChatComposer({
 	onOpenSettings,
 	onSettings,
 	onConfigOption,
-	bottomInset,
+	restingInset,
 	quotaActive,
 	request,
 	requestDismissed,
@@ -113,7 +116,12 @@ export function ChatComposer({
 	onOpenSettings(): void;
 	onSettings(settings: TurnSettings): Promise<void>;
 	onConfigOption(id: string, value: { value: string } | { enabled: boolean }): Promise<ChatConfigOption[]>;
-	bottomInset: number;
+	/**
+	 * What the dock owes with the keyboard down — the home-indicator inset. The
+	 * dock keeps it at all times and closes the difference to the keyboard by
+	 * itself; see `dockRise` below.
+	 */
+	restingInset: number;
 	/** The account-quota banner is up, so the context meter stands down. */
 	quotaActive?: boolean;
 	/** A pending request, which takes the composer's place until it is answered. */
@@ -129,6 +137,12 @@ export function ChatComposer({
 	const t = useTheme();
 	const router = useRouter();
 	const styles = useThemedStyles(makeStyles);
+	// The keyboard's own progress, 0 closed to 1 open. This is the same value the
+	// keyboard is animating with, so the dock moves in lockstep with it.
+	const keyboard = useReanimatedKeyboardAnimation();
+	const dockRise = useAnimatedStyle(() => ({
+		transform: [{ translateY: (restingInset - KEYBOARD_DOCK_GAP) * keyboard.progress.value }],
+	}));
 	const [text, setText] = useState("");
 	const [cursor, setCursor] = useState(0);
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -286,7 +300,11 @@ export function ChatComposer({
 		void openPicker(suggestion.kind, suggestion);
 	}, [cursor, openPicker, pickerGate, text]);
 	return (
-		<View style={[styles.dock, { paddingBottom: bottomInset }]}>
+		// The dock holds its resting inset at all times and rides the keyboard's own
+		// progress to close the difference, so its distance to the keyboard is
+		// `KEYBOARD_DOCK_GAP` at every frame of the animation rather than only once
+		// the keyboard has finished moving.
+		<Animated.View style={[styles.dock, { paddingBottom: restingInset }, dockRise]}>
 			{voice.state === "starting" || voice.state === "recording" ? <View style={styles.voice}><Feather name="mic" size={12} color={t.red} /><Text style={styles.voiceText}>{voice.partial || (voice.state === "starting" ? "Keep holding…" : "Listening…")}</Text></View> : null}
 			{attachments.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachments}>{attachments.map((item) => <View key={item.id} style={styles.attachment}>{item.kind === "image" ? <Image accessibilityIgnoresInvertColors source={{ uri: `data:${item.image.mimeType};base64,${item.image.data}` }} style={styles.attachmentImage} /> : <Feather name="file-text" size={12} color={t.accent} />}<Text numberOfLines={1} style={styles.attachmentName}>{item.name}</Text><Pressable hitSlop={7} accessibilityLabel={`Remove ${item.name}`} onPress={() => { haptics.tap(); setAttachments((old) => old.filter((candidate) => candidate.id !== item.id)); }}><Feather name="x" size={12} color={t.textTertiary} /></Pressable></View>)}</ScrollView> : null}
 			{/* Composer-local only. Conversation and action failures are banners above
@@ -391,7 +409,7 @@ export function ChatComposer({
 				<MicKey variant="plain" size={44} glyphSize={iconSize.lg} state={voice.state} mode={voice.mode} onPressIn={voice.pressIn} onPressOut={voice.pressOut} />
 				{primaryAction === "stop" ? <Pressable accessibilityRole="button" accessibilityLabel="Stop turn" accessibilityState={{ busy: interrupting, disabled: disabled || interrupting }} disabled={disabled || interrupting} onPress={() => { haptics.tap(); void onInterrupt(); }} style={[styles.stop, (disabled || interrupting) && { opacity: 0.55 }]}>{interrupting ? <ActivityIndicator size="small" color={t.textPrimary} /> : <Feather name="square" size={12} color={t.textPrimary} />}</Pressable> : <Pressable accessibilityRole="button" accessibilityLabel={active ? "Queue message" : "Send message"} accessibilityState={{ disabled: disabled || stopped || pending || submitting }} disabled={disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)} onPress={() => { haptics.tap(); void submit("send"); }} style={({ pressed }) => [styles.send, pressed && { opacity: 0.8 }, (disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)) && { opacity: 0.35 }]}>{pending || submitting ? <ActivityIndicator size="small" color={t.bgBase} /> : <Feather name="arrow-up" size={17} color={t.bgBase} />}</Pressable>}
 			</View>}
-		</View>
+		</Animated.View>
 	);
 }
 
