@@ -36,12 +36,18 @@ describe("worker dock keyboard layout", () => {
 // turns over when the keyboard has finished hiding, which left the buttons
 // hanging where the keyboard had been and then snapping back.
 describe("worker dock lift", () => {
-	it("is the keyboard's height above the resting line", () => {
-		expect(workerDockRestingBottom(34) + workerDockLift(336, 34)).toBe(336 + 12);
+	it("sets the dock down 8pt above the keyboard", () => {
+		expect(workerDockRestingBottom(34) + workerDockLift(336, 34)).toBe(336 + 8);
+	});
+
+	it("is shorter than the keyboard's height, because the dock starts higher than the screen edge", () => {
+		expect(workerDockLift(336, 34)).toBeLessThan(336);
 	});
 
 	it("is zero once the keyboard is at or below the resting line", () => {
-		expect(workerDockLift(34, 34)).toBe(0);
+		// Resting is safeArea + 12, so a keyboard shorter than resting minus the
+		// gap has nothing to lift the dock over.
+		expect(workerDockLift(38, 34)).toBe(0);
 		expect(workerDockLift(0, 34)).toBe(0);
 	});
 

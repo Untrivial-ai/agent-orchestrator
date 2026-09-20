@@ -1,5 +1,13 @@
 const RESTING_GAP = 12;
 const KEYBOARD_GAP = 12;
+/**
+ * The dock's gap above the keyboard, which is not the gap it keeps at rest.
+ *
+ * Leaves less room than `RESTING_GAP` on purpose: the field is 44pt inside a
+ * 52pt dock, so it carries 4pt of the dock's own height below it, and matching
+ * the two gaps left the field reading as further from the keys than it is.
+ */
+const KEYBOARD_DOCK_GAP = 8;
 const DOCK_HEIGHT = 52;
 const LIST_GAP = 16;
 
@@ -22,7 +30,9 @@ export function workerDockLift(keyboardHeight: number, safeAreaBottom: number): 
 	// UI runtime tries to call back into JS and the screen dies with "tried to
 	// synchronously call a Remote Function".
 	"worklet";
-	return Math.max(keyboardHeight - safeAreaBottom, 0);
+	const resting = safeAreaBottom + RESTING_GAP;
+	const target = keyboardHeight + KEYBOARD_DOCK_GAP;
+	return Math.max(target - resting, 0);
 }
 
 export function workerDockKeyboardLayout(
