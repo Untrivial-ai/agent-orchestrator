@@ -102,29 +102,159 @@ export type XtermTerminalProps = {
 // Prefer the WebGL renderer, fall back to 2D canvas. Both rasterize box-drawing
 // glyphs themselves onto a fixed cell grid; the DOM renderer does not, so TUI
 // borders would drift. Loaded after open().
-function loadRenderer(term: Terminal): void {
-	let fallbackLoaded = false;
+//
+// Chromium caps active WebGL contexts per page (~16) and force-loses the OLDEST
+// once that cap is exceeded — which blanks long-parked terminal panes in visit
+// order (issue #5662, root-caused in #2333). Retained panes are never unmounted,
+// so without intervention every visited session holds a live WebGL context for
+// the renderer's whole lifetime and eventually trips that cap. This controller
+// releases a pane's WebGL context while it is parked and restores one when it is
+// shown again, keeping the live-context count near the number of *visible* panes.
+//
+// Crucially, WebglAddon.dispose() does NOT free the GPU context: it only detaches
+// its canvas and drops references, leaving the context counted against Chromium's
+// cap until garbage collection — which on tab-switching timescales does not run,
+// so a "disposed" context still evicts live panes. So park explicitly force-frees
+// the slot via WEBGL_lose_context.loseContext() (captured before dispose removes
+// the canvas) and only marks the pane parked once that succeeds. If the slot
+// cannot be provably reclaimed, it degrades to the 2D-canvas renderer — which
+// holds no WebGL context — rather than falsely claiming the slot was released.
+type WebglLikeContext = (WebGLRenderingContext | WebGL2RenderingContext) & {
+	getExtension(name: "WEBGL_lose_context"): { loseContext(): void } | null;
+};
+
+export type RendererController = {
+	/** Follow the pane's visibility: release the GPU context when parked, restore it when shown. */
+	setVisible: (visible: boolean) => void;
+};
+
+// The WebGL renderer appends its own (unclassed) canvas under xterm's
+// `.xterm-screen`, alongside a 2D `.xterm-link-layer` canvas. Identify the new
+// WebGL canvas by diffing against the canvases present before the addon loaded,
+// so we never call getContext() on the link layer (or on a context-less canvas,
+// which would create a spurious context of its own).
+function findNewWebglContext(host: HTMLElement, before: ReadonlySet<Element>): WebglLikeContext | null {
+	for (const canvas of host.querySelectorAll("canvas")) {
+		if (before.has(canvas)) continue;
+		try {
+			const gl = (canvas.getContext("webgl2") ?? canvas.getContext("webgl")) as WebglLikeContext | null;
+			if (gl) return gl;
+		} catch {
+			// Not a WebGL canvas (e.g. a 2D layer) — keep scanning.
+		}
+	}
+	return null;
+}
+
+function createRendererController(term: Terminal, host: HTMLElement): RendererController {
+	let mode: "none" | "webgl" | "canvas" | "parked" = "none";
+	let webgl: WebglAddon | null = null;
+	// Captured while the WebGL renderer is live: dispose() removes its canvas, so
+	// the context must be grabbed beforehand to force-free it on park.
+	let capturedGl: WebglLikeContext | null = null;
+
 	const loadCanvasFallback = () => {
-		if (fallbackLoaded) return;
-		fallbackLoaded = true;
+		if (mode === "canvas") return;
 		try {
 			term.loadAddon(new CanvasAddon());
 		} catch (error) {
 			console.warn("xterm: WebGL and canvas renderers unavailable; box-drawing may drift", error);
 		}
+		mode = "canvas";
 	};
-	try {
-		const webgl = new WebglAddon();
-		webgl.onContextLoss(() => {
-			webgl.dispose();
+
+	const loadWebgl = (): boolean => {
+		const before = new Set<Element>(host.querySelectorAll("canvas"));
+		let addon: WebglAddon;
+		try {
+			addon = new WebglAddon();
+		} catch {
+			// WebGL unavailable in this environment (blocklist/headless).
+			return false;
+		}
+		addon.onContextLoss(() => {
+			// Chromium force-lost a LIVE context (cap exceeded). Only handle it while
+			// we still own the WebGL renderer — a park-released or canvas pane must
+			// never be swapped here. The context is already gone, so no force-free is
+			// needed; fall back to canvas permanently for this pane. Disposing the dead
+			// addon is wrapped because it can throw in some GPU environments, and a
+			// throw here must not prevent the canvas fallback from loading (#4949).
+			if (mode !== "webgl") return;
+			const dead = webgl;
+			webgl = null;
+			capturedGl = null;
+			mode = "none";
+			try {
+				dead?.dispose();
+			} catch (error) {
+				console.warn("xterm: WebGL dispose failed after context loss", error);
+			}
 			loadCanvasFallback();
 		});
-		term.loadAddon(webgl);
-		return;
-	} catch {
-		// WebGL context unavailable — fall through to the canvas renderer.
-	}
-	loadCanvasFallback();
+		try {
+			term.loadAddon(addon);
+		} catch {
+			return false;
+		}
+		webgl = addon;
+		mode = "webgl";
+		capturedGl = findNewWebglContext(host, before);
+		return true;
+	};
+
+	const park = () => {
+		// Only a live WebGL renderer holds a context that counts against the cap; a
+		// canvas-fallback pane uses a 2D context and needs no release.
+		if (mode !== "webgl") return;
+		const gl = capturedGl;
+		const addon = webgl;
+		webgl = null;
+		capturedGl = null;
+		try {
+			addon?.dispose();
+		} catch (error) {
+			// dispose() can throw in some GPU environments; the force-free below is
+			// what actually reclaims the slot, so continue regardless.
+			console.warn("xterm: WebGL dispose failed while parking", error);
+		}
+		let freed = false;
+		try {
+			const ext = gl?.getExtension("WEBGL_lose_context") ?? null;
+			if (ext) {
+				ext.loseContext();
+				freed = true;
+			}
+		} catch (error) {
+			console.warn("xterm: WEBGL_lose_context failed while parking", error);
+		}
+		if (freed) {
+			mode = "parked";
+			return;
+		}
+		// Could not prove the GPU slot was reclaimed. Do NOT claim 'parked' — that
+		// would drift our accounting from Chromium's live count. Keep a 2D-canvas
+		// renderer instead, which holds no WebGL context.
+		mode = "none";
+		loadCanvasFallback();
+	};
+
+	const unpark = () => {
+		// Only a pane we cleanly park-released needs a renderer restored. A pane on
+		// the canvas fallback stays there (no WebGL slot to reclaim), and a live
+		// WebGL pane is already correct.
+		if (mode !== "parked") return;
+		mode = "none";
+		if (!loadWebgl()) loadCanvasFallback();
+	};
+
+	if (!loadWebgl()) loadCanvasFallback();
+
+	return {
+		setVisible: (visible: boolean) => {
+			if (visible) unpark();
+			else park();
+		},
+	};
 }
 
 // xterm palette tracks the app theme (see lib/terminal-themes.ts + tokens.css).
@@ -383,6 +513,10 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	const scrollbarTrackRef = useRef<HTMLDivElement | null>(null);
 	const scrollbarThumbRef = useRef<HTMLDivElement | null>(null);
 	const termRef = useRef<Terminal | null>(null);
+	// Per-pane WebGL renderer lifecycle: releases the GPU context while parked and
+	// restores it when shown, so retained panes stop exhausting Chromium's WebGL
+	// context cap and blanking (#5662). Driven by props.isVisible below.
+	const rendererControllerRef = useRef<RendererController | null>(null);
 	const notifyCursorSchemeRef = useRef<(scheme: Theme, force?: boolean, retry?: boolean) => void>(() => {});
 	const announcedCursorSchemeRef = useRef<Theme | null>(null);
 	const searchAddonRef = useRef<SearchAddon | null>(null);
@@ -668,7 +802,11 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// reservation aligned with our CSS: a stable 7px macOS gutter, and no
 		// reservation on platforms where the scrollbar remains hidden.
 		configureScrollbarReservation(term);
-		loadRenderer(term);
+		rendererControllerRef.current = createRendererController(term, host);
+		// A terminal created directly into a parked pane must release its context
+		// immediately, matching the visibility effect below (which only runs on
+		// isVisible *changes*, not this initial mount).
+		if (callbacksRef.current.isVisible === false) rendererControllerRef.current.setVisible(false);
 		term.options.macOptionClickForcesSelection = true;
 		forceSelectionMode(term);
 		confineDragSelectionToTerminalWidth(term);
@@ -1414,6 +1552,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			host.removeEventListener("focusout", handleFocusOut);
 			delete (host as DevXtermHost).__aoXtermForTest;
 			termRef.current = null;
+			// The renderer's addons are disposed by term.dispose() below; drop the
+			// controller handle so the visibility effect can't touch a dead terminal.
+			rendererControllerRef.current = null;
 			if (searchAddonRef.current === searchAddon) searchAddonRef.current = null;
 			fitRef.current = null;
 			cancelAnimationFrame(raf);
@@ -1473,6 +1614,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}, 0);
 		};
 	}, []);
+
+	// Park/unpark the WebGL context with the pane's visibility. Separate from the
+	// dependency-free mount effect so the terminal is never torn down on a
+	// visibility change; the controller only releases/restores the GPU renderer.
+	useEffect(() => {
+		rendererControllerRef.current?.setVisible(props.isVisible !== false);
+	}, [props.isVisible]);
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
