@@ -254,6 +254,34 @@ func TestReadinessCoordinatorUsesPurposeSpecificFreshnessWindows(t *testing.T) {
 	}
 }
 
+func TestReadinessCoordinatorSettingsRefreshesOnlyAuthentication(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	agent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/codex", nil },
+		auth:    func(context.Context) (ports.AgentAuthStatus, error) { return ports.AgentAuthStatusAuthorized, nil },
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents:          []agentregistry.HarnessAgent{readinessHarness("codex", "Codex", agent)},
+		Now:             func() time.Time { return now },
+		DisplayTTL:      5 * time.Minute,
+		SettingsAuthTTL: 15 * time.Second,
+	})
+	if _, err := coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(16 * time.Second)
+	if _, err := coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.resolveCalls.Load(); got != 1 {
+		t.Fatalf("settings installation checks = %d, want cached result", got)
+	}
+	if got := agent.authCalls.Load(); got != 2 {
+		t.Fatalf("settings authentication checks = %d, want recheck after 15s", got)
+	}
+}
+
 func TestReadinessCoordinatorFailurePreservesKnownStateAndLaunchBypassesRetry(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -306,11 +334,11 @@ func TestReadinessCoordinatorFailurePreservesKnownStateAndLaunchBypassesRetry(t 
 	}
 
 	before := agent.resolveCalls.Load()
-	if _, err := coordinator.Ensure(context.Background(), []string{"codex"}, domain.AgentReadinessPurposeDisplay); err != nil {
+	if _, err := coordinator.Ensure(context.Background(), []string{"codex"}, domain.AgentReadinessPurposeSettings); err != nil {
 		t.Fatal(err)
 	}
 	if agent.resolveCalls.Load() != before {
-		t.Fatal("display ensure ignored retry delay")
+		t.Fatal("settings ensure ignored retry delay")
 	}
 	if _, err := coordinator.Ensure(context.Background(), []string{"codex"}, domain.AgentReadinessPurposeLaunch); err != nil {
 		t.Fatal(err)

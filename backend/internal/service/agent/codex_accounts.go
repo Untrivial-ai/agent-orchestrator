@@ -19,6 +19,7 @@ import (
 
 const (
 	codexAccountDisplayTTL       = 5 * time.Minute
+	codexAccountSettingsTTL      = 15 * time.Second
 	codexAccountLaunchTTL        = 30 * time.Second
 	codexAccountAuthTimeout      = 10 * time.Second
 	codexAccountReconcileTimeout = 45 * time.Second
@@ -437,8 +438,11 @@ func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record c
 			return out, nil
 		}
 		ttl := codexAccountDisplayTTL
-		if purpose == domain.AgentReadinessPurposeLaunch {
+		switch purpose {
+		case domain.AgentReadinessPurposeLaunch:
 			ttl = codexAccountLaunchTTL
+		case domain.AgentReadinessPurposeSettings:
+			ttl = codexAccountSettingsTTL
 		}
 		fresh := current.Snapshot.Authentication.CheckedAt != nil && m.now().Sub(*current.Snapshot.Authentication.CheckedAt) < ttl
 		if !state.invalidated && fresh {
@@ -446,7 +450,7 @@ func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record c
 			m.mu.Unlock()
 			return out, nil
 		}
-		if purpose == domain.AgentReadinessPurposeDisplay && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
+		if purpose != domain.AgentReadinessPurposeLaunch && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
 			out := current.Snapshot.Authentication
 			m.mu.Unlock()
 			return out, nil

@@ -9,6 +9,7 @@ import {
 	ensureAgentReadiness,
 	useAgentReadinessQuery,
 	useEnsureAgentReadiness,
+	useSettingsAgentReadinessPolling,
 } from "../../hooks/useAgentReadinessQuery";
 import { agentAuthPlansQueryKey, probeAgentAuth, useAgentAuthPlans, useStartAgentAuth } from "../../hooks/useAgentAuth";
 import { agentModelsQueryPrefix } from "../../hooks/useAgentModelsQuery";
@@ -113,7 +114,7 @@ export function HarnessSettingsSection({
 	const { i18n, t } = useTranslation();
 	const queryClient = useQueryClient();
 	const agents = useAgentReadinessQuery();
-	useEnsureAgentReadiness();
+	useEnsureAgentReadiness({ purpose: "settings" });
 	const installers = useQuery({ queryKey: installerQueryKey, queryFn: fetchInstallers, staleTime: 60_000 });
 	const jobs = useQuery({ queryKey: installJobsQueryKey, queryFn: fetchInstallJobs, retry: false });
 	const authPlans = useAgentAuthPlans();
@@ -146,6 +147,7 @@ export function HarnessSettingsSection({
 		() => new Set<AgentId>(agents.data?.agents.filter((agent) => agent.installation.state === "installed").map((agent) => agent.id as AgentId) ?? []),
 		[agents.data],
 	);
+	useSettingsAgentReadinessPolling({ agentIds: [...installed] });
 	const normalizedSearch = search.trim().toLowerCase();
 	const targetAgentId = AGENT_OPTIONS.find((agentId) => agentId === focusAgentId) ?? null;
 	const rows = AGENT_OPTIONS
@@ -477,9 +479,8 @@ export function HarnessSettingsSection({
 						const isSetupAction = authPlan?.action === "setup";
 						const authState = authStates[agentId];
 						const authStatus = readinessAgent?.authentication.state;
-						const installationStatusLabel = authStatus === "authorized"
-							? t("settings.harness.authorized")
-							: t("settings.harness.installed");
+						const isReady = readinessAgent?.effectiveReadiness === "ready";
+						const readinessChecking = authState?.checking || readinessAgent?.authentication.freshness === "checking";
 						const rowHasError = failed || Boolean(authState?.error);
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
@@ -488,7 +489,7 @@ export function HarnessSettingsSection({
 							(job.error || job.output || job.method || job.expectedDestination),
 						);
 
-						const authSummary = authState?.checking
+						const authSummary = readinessChecking
 							? t("settings.harness.checkingLogin")
 							: authState?.error
 								? authState.error
@@ -513,23 +514,17 @@ export function HarnessSettingsSection({
 							onChange={(value) => setSelectedMethods((current) => ({ ...current, [agentId]: value }))}
 						/>
 						) : null;
-						const authControls = !authPlan && authPlans.isPending ? (
+						const authControls = isReady ? (
+							<Button type="button" size="sm" variant="ghost" disabled>{t("settings.harness.ready")}</Button>
+						) : readinessChecking ? (
+							<Button type="button" size="sm" variant="ghost" disabled><LoaderCircle className="animate-spin" aria-hidden="true" />{t("settings.harness.checkingLogin")}</Button>
+						) : !authPlan && authPlans.isPending ? (
 							<LoaderCircle className="size-4 animate-spin text-settings-muted" aria-hidden="true" />
 						) : authPlan && authPlan.action !== "instructions" ? (
-							<>
-								{authStatus !== "authorized" ? (
-									<Button data-harness-primary-action="" data-terminal-focus-handoff="true" disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
-										{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
-										{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
-									</Button>
-								) : null}
-								{authPlan.available && (authStatus === "unknown" || authStatus === "unauthorized") ? (
-									<Button data-harness-primary-action="" disabled={authState?.checking} size="sm" variant="outline" onClick={() => void checkAuth(agentId)}>
-										{authState?.checking ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-										{authState?.checking ? t("settings.harness.checkingLogin") : isSetupAction ? t("settings.harness.checkConfiguration") : t("settings.harness.checkLogin")}
-									</Button>
-								) : null}
-							</>
+							<Button data-terminal-focus-handoff="true" disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
+								{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
+								{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
+							</Button>
 						) : null;
 					return (
 						<div
@@ -555,16 +550,6 @@ export function HarnessSettingsSection({
 				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "installing" ? t("settings.harness.installing") : t("settings.harness.verifying")}</span>
 							) : isInstalled ? (
 								<div className="flex shrink-0 items-center gap-2">
-								<Button
-					type="button"
-					size="none"
-					variant="ghost"
-					className={cn(MENU_TRIGGER_CHROME, "h-8! min-h-8! shrink-0 rounded-md! border-0! bg-[var(--color-bg-settings-trigger)] px-3! text-xs leading-4")}
-					aria-label={installationStatusLabel}
-					disabled
-								>
-									{installationStatusLabel}
-								</Button>
 								{authControls}
 								</div>
 							) : failed ? (

@@ -1078,6 +1078,7 @@
 	"settings.harness.installFailed": "Installation failed.",
 	"settings.harness.installed": "Installed",
 	"settings.harness.authorized": "Authorized",
+	"settings.harness.ready": "Ready",
 	"settings.harness.installing": "Installing…",
 	"settings.harness.instructions": "Instructions",
 	"settings.harness.interrupted": "Interrupted",

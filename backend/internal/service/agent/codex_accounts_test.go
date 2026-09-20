@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -826,6 +827,42 @@ func TestRequiredReauthenticationStaysSignedOutUntilLogin(t *testing.T) {
 	view := manager.cached()
 	if len(view.Accounts) != 1 || view.Accounts[0].Authentication.State != domain.AgentAuthenticationUnauthorized || view.Accounts[0].UsageSummary != nil {
 		t.Fatalf("account awaiting sign-in = %#v", view.Accounts)
+	}
+}
+
+func TestSettingsAuthenticationUsesShortFreshnessWindow(t *testing.T) {
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{
+			Authentication: domain.AgentAuthenticationAuthorized,
+			Method:         domain.CodexAuthMethodChatGPT,
+		}}, nil
+	}}
+	manager := newTestCodexAccountManager(t, factory, nil)
+	manager.catalog.newID = func() string { return testAccountID }
+	record := commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+	})
+	var nowNanos atomic.Int64
+	nowNanos.Store(time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC).UnixNano())
+	manager.now = func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
+
+	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	nowNanos.Add(int64(10 * time.Second))
+	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	if factory.opens != 1 {
+		t.Fatalf("Codex reads inside settings TTL = %d, want 1", factory.opens)
+	}
+	nowNanos.Add(int64(6 * time.Second))
+	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	if factory.opens != 2 {
+		t.Fatalf("Codex reads after settings TTL = %d, want 2", factory.opens)
 	}
 }
 
