@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -101,6 +102,66 @@ func TestServeOpenStreamsAndWritesTerminal(t *testing.T) {
 		rs := pty.resizeCalls()
 		return len(rs) == 1 && rs[0] == [2]uint16{30, 100}
 	})
+}
+
+// TestServeLastInputMapPrunedAfterClose proves whether the manager's
+// lastInputAt map is reclaimed when terminals go away. It opens N terminals,
+// types into each (which records lastInputAt[id]), then closes each through the
+// normal per-terminal msgClose path and asserts the map is empty afterward.
+//
+// It fails while the leak is present (the map still holds N entries after every
+// terminal is closed) and passes once close prunes lastInputAt — so it both
+// demonstrates the bug now and guards the fix later.
+func TestServeLastInputMapPrunedAfterClose(t *testing.T) {
+	const n = 8
+	src := &fakeSource{alive: true} // spawner auto-creates one PTY per attach
+	mgr := NewManager(src, nil, testLogger(), WithHeartbeat(0))
+	defer mgr.Close()
+
+	conn := newFakeConn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Serve(ctx, conn)
+
+	lastInputLen := func() int {
+		mgr.inputMu.Lock()
+		defer mgr.inputMu.Unlock()
+		return len(mgr.lastInputAt)
+	}
+	attachmentCount := func() int {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		return len(mgr.attachments)
+	}
+
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("t%d", i)
+	}
+
+	// Open every terminal and wait for each to attach.
+	for _, id := range ids {
+		conn.in <- clientMsg{Ch: chTerminal, ID: id, Type: msgOpen}
+		recv(t, conn, chTerminal, msgOpened, 2*time.Second)
+	}
+
+	// Type into every terminal — each accepted write records lastInputAt[id].
+	for _, id := range ids {
+		conn.in <- clientMsg{Ch: chTerminal, ID: id, Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("hi\n"))}
+	}
+	eventually(t, 2*time.Second, func() bool { return lastInputLen() == n })
+
+	// Close every terminal through the normal per-terminal close path, then wait
+	// until teardown has actually run (every attachment forgotten).
+	for _, id := range ids {
+		conn.in <- clientMsg{Ch: chTerminal, ID: id, Type: msgClose}
+	}
+	eventually(t, 2*time.Second, func() bool { return attachmentCount() == 0 })
+
+	if got := lastInputLen(); got != 0 {
+		t.Fatalf("lastInputAt not pruned after closing all %d terminals: len = %d, want 0 "+
+			"(map leaks one entry per terminal id for the daemon's lifetime)", n, got)
+	}
 }
 
 type fixedSessionInputLease bool
