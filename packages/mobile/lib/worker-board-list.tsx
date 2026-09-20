@@ -58,6 +58,7 @@ export function WorkerBoardList({
 	ListEmptyComponent,
 	initialArchiveOpen = false,
 	showProject = true,
+	identityKey,
 }: {
 	sessions: DashboardSession[];
 	/** Non-empty switches the board to a single flat "Search results" section. */
@@ -71,6 +72,17 @@ export function WorkerBoardList({
 	initialArchiveOpen?: boolean;
 	/** Off on a project's own page, where every row would repeat its name; the agent shows instead. */
 	showProject?: boolean;
+	/**
+	 * Changes when the *set* of workers changes wholesale — a different project
+	 * filter, or a search. The list is remounted on a new value.
+	 *
+	 * Swapping the filter in place left the board showing two lists at once:
+	 * recycled cells of the old grouping drawn under the new data, the empty state
+	 * on top of rows that were still on screen. A remount has no old cells to
+	 * recycle, and no row-to-row layout animation to run for a change that is not
+	 * a row moving.
+	 */
+	identityKey?: string;
 }) {
 	const t = useTheme();
 	const { projects, kill, renameWorker, setWorkerPinned, restore, resumeAgent } = useApp();
@@ -213,6 +225,7 @@ export function WorkerBoardList({
 		<LayoutAnimationConfig skipEntering>
 			<FlatList
 				ref={listRef}
+				key={identityKey}
 				data={listData}
 				keyExtractor={(item) => item.key}
 				contentContainerStyle={{ paddingBottom: contentBottomInset }}

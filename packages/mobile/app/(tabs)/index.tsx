@@ -161,6 +161,7 @@ export default function FleetScreen() {
 				<WorkerBoardList
 					sessions={projectSessions}
 					query={query}
+					identityKey={`${workerProjectId}|${query.trim()}`}
 					listRef={listRef}
 					contentBottomInset={workerListBottomInset(keyboardLayout.dockBottom)}
 					refreshing={refreshing}
