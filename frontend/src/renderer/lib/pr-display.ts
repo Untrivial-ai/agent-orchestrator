@@ -219,6 +219,16 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 	return { primary, supporting, readiness };
 }
 
+export function prCanMerge(pr: SessionPRSummary): boolean {
+	return (
+		pr.state === "open" &&
+		pr.ci.state === "passing" &&
+		pr.mergeability.state === "mergeable" &&
+		(pr.review.decision === "approved" || pr.review.decision === "none") &&
+		!pr.review.hasUnresolvedHumanComments
+	);
+}
+
 function mergeReadiness(pr: SessionPRSummary): NonNullable<PRCardPresentation["readiness"]> {
 	let status: PRCardStatus;
 	if (pr.mergeability.state === "conflicting") {
@@ -383,7 +393,9 @@ function mergeSummary(pr: SessionPRSummary): string | undefined {
 		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.conflictsWithBase") : undefined;
 	}
 	if (pr.mergeability.state === "blocked" || pr.mergeability.state === "unstable") {
-		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.providerBlocked") : undefined;
+		return mergeLinks(pr).length === 0
+			? appI18n.t("pr.merge.providerBlocked", { provider: pr.provider === "gitlab" ? "GitLab" : "GitHub" })
+			: undefined;
 	}
 	return formatDiffSummary(pr);
 }
