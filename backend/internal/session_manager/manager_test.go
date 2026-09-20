@@ -88,6 +88,18 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	f.sessions[rec.ID] = rec
 	return nil
 }
+func (f *fakeStore) UpdateSessionModel(_ context.Context, id domain.SessionID, model string) (bool, error) {
+	if f.updateSessionErr != nil {
+		return false, f.updateSessionErr
+	}
+	rec, ok := f.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	rec.Metadata.Model = model
+	f.sessions[id] = rec
+	return true, nil
+}
 func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error) {
 	if f.updateSessionErr != nil {
 		return false, f.updateSessionErr

@@ -40,6 +40,11 @@ UPDATE sessions SET
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
 WHERE id = ?;
 
+-- name: UpdateSessionModel :execrows
+UPDATE sessions
+SET model = sqlc.arg(model)
+WHERE id = sqlc.arg(id);
+
 -- name: UpdateBrowserCapabilityVerifier :execrows
 -- Rotate only the browser credential for the exact controller owner observed by
 -- the launcher. This must not replay a stale SessionRecord over newer lifecycle,

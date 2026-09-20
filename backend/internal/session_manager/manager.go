@@ -334,6 +334,7 @@ type Store interface {
 	ListWorkspaceRepos(ctx context.Context, projectID string) ([]domain.WorkspaceRepoRecord, error)
 	CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error)
 	UpdateSession(ctx context.Context, rec domain.SessionRecord) error
+	UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error)
 	UpdateBrowserCapabilityVerifier(ctx context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
@@ -2641,18 +2642,14 @@ func (m *Manager) PersistChatModel(ctx context.Context, id domain.SessionID, mod
 	if want == "" {
 		return nil
 	}
-	rec, ok, err := m.store.GetSession(ctx, id)
+	updated, err := m.store.UpdateSessionModel(ctx, id, want)
 	if err != nil {
 		return fmt.Errorf("persist chat model %s: %w", id, err)
 	}
-	if !ok {
+	if !updated {
 		return fmt.Errorf("persist chat model %s: %w", id, ErrNotFound)
 	}
-	if strings.TrimSpace(rec.Metadata.Model) == want {
-		return nil
-	}
-	rec.Metadata.Model = want
-	return m.store.UpdateSession(ctx, rec)
+	return nil
 }
 
 // SaveAndTeardownAll captures uncommitted work and tears down every live
