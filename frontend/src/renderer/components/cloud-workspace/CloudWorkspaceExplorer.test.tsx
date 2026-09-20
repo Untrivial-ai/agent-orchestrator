@@ -9,13 +9,14 @@ import type { WorkspaceSession } from "../../types/workspace";
 import { TooltipProvider } from "../ui/tooltip";
 import { CloudWorkspaceExplorer } from "./CloudWorkspaceExplorer";
 
-const { getWorkspaceReview, getWorkspaceReviewTree } = vi.hoisted(() => ({
+const { getWorkspaceReview, getWorkspaceReviewDiffs, getWorkspaceReviewTree } = vi.hoisted(() => ({
 	getWorkspaceReview: vi.fn(),
+	getWorkspaceReviewDiffs: vi.fn(),
 	getWorkspaceReviewTree: vi.fn(),
 }));
 
 vi.mock("../../hooks/useCloudCp", () => ({
-	useCloudCp: () => ({ baseUrl: "https://cloud.test", ready: true, client: { getWorkspaceReview, getWorkspaceReviewTree } }),
+	useCloudCp: () => ({ baseUrl: "https://cloud.test", ready: true, client: { getWorkspaceReview, getWorkspaceReviewDiffs, getWorkspaceReviewTree } }),
 }));
 vi.mock("../../hooks/useCloudWorkspaceReview", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../../hooks/useCloudWorkspaceReview")>();
@@ -29,6 +30,7 @@ const session: WorkspaceSession = {
 
 describe("CloudWorkspaceExplorer", () => {
 	it("switches from categorized changes to the complete repository tree", async () => {
+		getWorkspaceReviewDiffs.mockResolvedValue({ workspaceVersion: "v1", groups: [{ patch: "", truncated: false, includedPaths: [], deferred: [], errors: [] }] });
 		getWorkspaceReview.mockResolvedValue({
 			workspaceVersion: "v1", files: [{ path: "README.md", status: "unmodified", additions: 0, deletions: 0, size: 5, binary: false, editable: true, fileFingerprint: "fp" }],
 			truncated: false, sections: { staged: [], unstaged: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false, editable: true, fileFingerprint: "fp2" }], untracked: [], committed: [] }, commits: [],
@@ -40,7 +42,7 @@ describe("CloudWorkspaceExplorer", () => {
 				<TooltipProvider><CloudWorkspaceExplorer session={session} /></TooltipProvider>
 			</QueryClientProvider>,
 		);
-		expect(await screen.findByRole("button", { name: /src\/App\.tsx/ })).toBeInTheDocument();
+		expect(await screen.findByText("src/App.tsx")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("tab", { name: "Files" }));
 		expect(await screen.findByRole("treeitem", { name: /README\.md/ })).toBeInTheDocument();
 	});

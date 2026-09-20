@@ -1,122 +1,33 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { CloudFileContentPane, CloudWorkspaceDiff } from "./CloudWorkspaceDiff";
-import { TooltipProvider } from "./ui/tooltip";
+import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceSession } from "../types/workspace";
+import type { FileAnnotationModel } from "./WorkspaceDiffView";
+import { CloudFileContentPane, CloudWorkspaceDiff } from "./CloudWorkspaceDiff";
 
-const { cloudState, getWorkspaceDiff, readWorkspaceDiffFile } = vi.hoisted(() => ({
-	cloudState: { ready: true },
-	getWorkspaceDiff: vi.fn(),
-	readWorkspaceDiffFile: vi.fn(),
-}));
+const { explorerProps, contentProps, client } = vi.hoisted(() => ({ explorerProps: vi.fn(), contentProps: vi.fn(), client: {} }));
+vi.mock("../hooks/useCloudCp", () => ({ useCloudCp: () => ({ baseUrl: "https://cloud.test", client, ready: true }) }));
+vi.mock("./cloud-workspace/CloudWorkspaceExplorer", () => ({ CloudWorkspaceExplorer: (props: { onOpenFile?: (path: string, options: unknown) => void }) => { explorerProps(props); return <button onClick={() => props.onOpenFile?.("src/App.tsx", { scope: "committed", commitSha: "abc", mode: "diff", editing: true })}>open cloud file</button>; } }));
+vi.mock("./cloud-workspace/CloudFileContentPane", () => ({ CloudFileContentPane: (props: unknown) => { contentProps(props); return <div>cloud content</div>; } }));
 
-vi.mock("../hooks/useCloudCp", () => ({
-	useCloudCp: () => ({
-		baseUrl: "https://cloud.example.test",
-		client: { getWorkspaceDiff, readWorkspaceDiffFile },
-		ready: cloudState.ready,
-	}),
-}));
+const session: WorkspaceSession = { branch: "ao/cloud", cloud: { orgId: "org-1", sandboxProvider: "coder" }, id: "session-1", prs: [], provider: "codex", status: "working", title: "Cloud", updatedAt: "2026-09-20T00:00:00Z", workspaceId: "workspace-1", workspaceName: "Cloud workspace" };
+const annotation: FileAnnotationModel = { target: null, draft: "", status: "idle", error: "", begin: vi.fn(), setDraft: vi.fn(), cancel: vi.fn(), submit: vi.fn() };
 
-const session: WorkspaceSession = {
-	branch: "ao/cloud-diff",
-	cloud: { orgId: "org-1", sandboxProvider: "docker" },
-	id: "session-1",
-	prs: [],
-	provider: "claude-code",
-	status: "working",
-	title: "Cloud diff",
-	updatedAt: "2026-09-20T00:00:00Z",
-	workspaceId: "workspace-1",
-	workspaceName: "Cloud workspace",
-};
-
-function renderDiff(onOpenFile = vi.fn(), sessionInput = session) {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	return {
-		onOpenFile,
-		...render(
-			<QueryClientProvider client={queryClient}>
-				<TooltipProvider>
-					<CloudWorkspaceDiff onOpenFile={onOpenFile} session={sessionInput} />
-				</TooltipProvider>
-			</QueryClientProvider>,
-		),
-	};
-}
-
-describe("CloudWorkspaceDiff", () => {
-	afterEach(() => {
-		cloudState.ready = true;
-		getWorkspaceDiff.mockReset();
-		readWorkspaceDiffFile.mockReset();
+describe("Cloud workspace compatibility exports", () => {
+	it("delegates review and preserves file-open options", async () => {
+		const onOpenFile = vi.fn();
+		render(<CloudWorkspaceDiff annotation={annotation} onOpenFile={onOpenFile} session={session} split />);
+		await userEvent.click(screen.getByRole("button", { name: "open cloud file" }));
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { scope: "committed", commitSha: "abc", mode: "diff", editing: true });
+		expect(explorerProps).toHaveBeenCalledWith(expect.objectContaining({ annotation, session, split: true }));
 	});
 
-	it("does not present an empty diff while the cloud client is still resolving", () => {
-		cloudState.ready = false;
-		renderDiff();
-
-		expect(screen.getByText("Loading files...")).toBeInTheDocument();
-		expect(screen.queryByLabelText("Cloud diff summary")).not.toBeInTheDocument();
-		expect(getWorkspaceDiff).not.toHaveBeenCalled();
-	});
-
-	it("opens a selected cloud diff file in the center file workspace", async () => {
-		getWorkspaceDiff.mockResolvedValue({
-			diffBaseRef: "HEAD",
-			files: [{ additions: 3, binary: false, deletions: 1, path: "src/App.tsx", status: "modified" }],
-			truncated: { combined: false, stats: false },
-		});
-		const { onOpenFile } = renderDiff();
-
-		await userEvent.click(await screen.findByRole("button", { name: /src\/App\.tsx/ }));
-
-		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx");
-	});
-
-	it("shows Coder workspace changes through the shared diff endpoint", async () => {
-		getWorkspaceDiff.mockResolvedValue({
-			diffBaseRef: "HEAD",
-			files: [{ additions: 1, binary: false, deletions: 0, path: "src/Coder.ts", status: "added" }],
-			truncated: { combined: false, stats: false },
-		});
-		const coderSession = { ...session, cloud: { orgId: "org-1", sandboxProvider: "coder" } };
-		renderDiff(vi.fn(), coderSession);
-
-		expect(await screen.findByRole("button", { name: /src\/Coder\.ts/ })).toBeInTheDocument();
-		expect(getWorkspaceDiff).toHaveBeenCalledWith("org-1", "session-1");
-	});
-
-	it("switches a cloud center file between its complete content and diff", async () => {
-		readWorkspaceDiffFile.mockResolvedValue({
-			additions: 3,
-			binary: false,
-			content: "export const answer = 42;\n",
-			contentTruncated: false,
-			deleted: false,
-			deletions: 1,
-			diff: "@@ -1 +1 @@\n-old\n+export const answer = 42;",
-			diffTruncated: false,
-			path: "src/App.tsx",
-			size: 26,
-			status: "modified",
-		});
-		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-		render(
-			<QueryClientProvider client={queryClient}>
-				<CloudFileContentPane path="src/App.tsx" session={session} />
-			</QueryClientProvider>,
-		);
-
-		expect(await screen.findByText("export const answer = 42;")).toBeInTheDocument();
-		expect(readWorkspaceDiffFile).toHaveBeenCalledWith("org-1", "session-1", "src/App.tsx");
-
-		await userEvent.click(screen.getByRole("tab", { name: "Diff" }));
-		expect(await screen.findByText(/export const answer = 42/)).toBeInTheDocument();
+	it("passes scoped view and edit state to the Cloud content pane", () => {
+		render(<CloudFileContentPane annotation={annotation} commitSha="abc" initialEditing initialMode="rendered" initialRequestKey={4} path="README.md" scope="committed" session={session} split />);
+		expect(screen.getByText("cloud content")).toBeInTheDocument();
+		expect(contentProps).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://cloud.test", client, orgId: "org-1", sessionId: "session-1", path: "README.md", scope: "committed", commitSha: "abc", initialEditing: true, initialMode: "rendered", initialRequestKey: 4, split: true }));
 	});
 });

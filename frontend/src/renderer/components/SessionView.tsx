@@ -1989,8 +1989,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							</div>
 							{fileTabs.activePath ? (
 								<div className="absolute inset-0">
-									{session?.cloud ? (
-										<CloudFileContentPane path={fileTabs.activePath} session={session} />
+					{session?.cloud ? (
+						<CloudFileContentPane
+							annotation={fileAnnotation}
+							commitSha={activeCenterFileRequest?.commitSha}
+							initialEditing={activeCenterFileInitialEditing}
+							initialMode={activeCenterFileRequest?.mode ?? "file"}
+							initialRequestKey={activeCenterFileRequest?.key ?? 0}
+							onDirtyChange={setCenterFileDirty}
+							path={fileTabs.activePath}
+							scope={activeCenterFileRequest?.scope}
+							session={session}
+							split={filesSplit}
+						/>
 									) : (
 										<SessionFileWorkspace
 											annotation={fileAnnotation}
@@ -2065,7 +2076,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							filesView={
 								inspectorView === "files" && session ? (
 									session.cloud ? (
-										<CloudWorkspaceDiff onOpenFile={openCenterFile} onToggleMaximized={handleToggleFilesPopOut} session={session} />
+										<CloudWorkspaceDiff annotation={fileAnnotation} onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
 									) : (
 										<SessionFileExplorer
 										onOpenFile={openCenterFile}
@@ -2167,7 +2178,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							)}
 						>
 							{session.cloud ? (
-								<CloudWorkspaceDiff isMaximized onToggleMaximized={handleToggleFilesPopOut} session={session} />
+								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
 							) : (
 								<SessionFileExplorer
 									isMaximized

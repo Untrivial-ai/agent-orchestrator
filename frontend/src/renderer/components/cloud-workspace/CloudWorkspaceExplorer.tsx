@@ -6,11 +6,12 @@ import { useCloudCp } from "../../hooks/useCloudCp";
 import { cloudWorkspaceReviewSummaryQueryOptions, useCloudWorkspaceReviewEvents } from "../../hooks/useCloudWorkspaceReview";
 import type { CloudCpWorkspaceReviewFileSummary, CloudCpWorkspaceReviewScope } from "../../lib/cloud-cp";
 import type { WorkspaceSession } from "../../types/workspace";
-import { PanelMessage, RetryButton } from "../WorkspaceDiffView";
+import { PanelMessage, RetryButton, type FileAnnotationModel } from "../WorkspaceDiffView";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { CloudFileTree } from "./CloudFileTree";
+import { CloudWorkspaceReviewPane } from "./CloudWorkspaceReviewPane";
 
 export type CloudFileOpenOptions = {
 	scope?: CloudCpWorkspaceReviewScope;
@@ -20,6 +21,7 @@ export type CloudFileOpenOptions = {
 };
 
 type CloudWorkspaceExplorerProps = {
+	annotation?: FileAnnotationModel;
 	session: WorkspaceSession;
 	isMaximized?: boolean;
 	onOpenFile?: (path: string, options?: CloudFileOpenOptions) => void;
@@ -28,7 +30,9 @@ type CloudWorkspaceExplorerProps = {
 	split?: boolean;
 };
 
-export function CloudWorkspaceExplorer({ session, isMaximized = false, onOpenFile, onSplitChange, onToggleMaximized, split: controlledSplit }: CloudWorkspaceExplorerProps) {
+const noAnnotation: FileAnnotationModel = { target: null, draft: "", status: "idle", error: "", begin: () => undefined, setDraft: () => undefined, cancel: () => undefined, submit: async () => undefined };
+
+export function CloudWorkspaceExplorer({ annotation = noAnnotation, session, isMaximized = false, onOpenFile, onSplitChange, onToggleMaximized, split: controlledSplit }: CloudWorkspaceExplorerProps) {
 	const { t } = useTranslation();
 	const { client, ready, baseUrl } = useCloudCp();
 	const orgId = session.cloud?.orgId;
@@ -68,10 +72,7 @@ export function CloudWorkspaceExplorer({ session, isMaximized = false, onOpenFil
 				{onToggleMaximized ? <Tooltip><TooltipTrigger asChild><Button aria-label={isMaximized ? t("files.minimize") : t("files.maximize")} onClick={() => onToggleMaximized(!isMaximized)} size="icon-sm" variant="ghost">{isMaximized ? <Minimize2 className="size-icon-sm" /> : <Maximize2 className="size-icon-sm" />}</Button></TooltipTrigger><TooltipContent>{isMaximized ? t("files.minimize") : t("files.maximize")}</TooltipContent></Tooltip> : null}
 			</header>
 			{!enabled || summaryQuery.isPending ? <PanelMessage>{t("files.loading")}</PanelMessage> : summaryQuery.isError ? <PanelMessage action={<RetryButton onClick={() => void summaryQuery.refetch()} />}>{summaryQuery.error.message}</PanelMessage> : showChanges ? (
-				<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto py-1">
-					{changedFiles.filter(({ file }) => file.path.toLowerCase().includes(filter.toLowerCase())).map(({ file, scope }) => <button className="flex h-8 w-full items-center gap-2 px-3 text-left font-mono text-xs hover:bg-muted" key={`${scope}:${file.path}`} onClick={() => open(file.path, { mode: "diff", scope })} type="button"><span className="min-w-0 flex-1 truncate">{file.path}</span><span className="text-success">+{file.additions}</span><span className="text-error">-{file.deletions}</span></button>)}
-					{changedFiles.length === 0 ? <PanelMessage>{t("files.noneChanged")}</PanelMessage> : null}
-				</div>
+				<CloudWorkspaceReviewPane annotation={annotation} baseUrl={baseUrl} client={client} data={summaryQuery.data} filter={filter} onBrowseAll={() => setShowChanges(false)} onOpenFile={open} orgId={orgId!} sessionId={session.id} split={split} />
 			) : <CloudFileTree baseUrl={baseUrl} client={client} filterText={filter} onOpenFile={(path) => open(path, { mode: "file" })} orgId={orgId!} selectedPath={selectedPath} sessionId={session.id} />}
 		</section>
 	);

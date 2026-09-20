@@ -198,13 +198,14 @@ export const SessionInspector = memo(function SessionInspector({
 	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
 	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
 	const cloudOrgId = session?.cloud?.orgId;
-	const cloudDiff = useQuery({
-		queryKey: ["cloud-workspace-diff", cloudBaseUrl, cloudOrgId ?? "", session?.id ?? ""],
+	const cloudReview = useQuery({
+		queryKey: ["cloud-workspace-review", cloudBaseUrl, cloudOrgId ?? "", session?.id ?? "", "summary"],
 		enabled: cloudReady && session?.cloud !== undefined && cloudOrgId !== undefined,
 		refetchInterval: 5_000,
-		queryFn: () => cloudCpClient.getWorkspaceDiff(cloudOrgId!, session!.id),
+		queryFn: () => cloudCpClient.getWorkspaceReview(cloudOrgId!, session!.id),
 	});
-	const filesChangedCount = session?.cloud ? cloudDiff.data?.files.length : localFilesChangedCount;
+	const cloudFilesChangedCount = cloudReview.data?.summary.files;
+	const filesChangedCount = session?.cloud ? (cloudFilesChangedCount ? cloudFilesChangedCount : undefined) : localFilesChangedCount;
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);
@@ -229,7 +230,7 @@ export const SessionInspector = memo(function SessionInspector({
 			...entry,
 			badge: entry.id === "browser" && browserUnseen,
 			displayLabel:
-				entry.id === "files" && filesChangedCount !== undefined
+				entry.id === "files" && filesChangedCount !== undefined && filesChangedCount > 0
 					? t("files.tabCount", { count: filesChangedCount })
 					: label,
 			label,
