@@ -51,6 +51,9 @@ type SpawnConfig struct {
 	// controller while preserving the AO session. An unsupported explicit request
 	// fails the spawn rather than falling back to the other mode.
 	RequestedMode domain.SessionMode
+	// TerminateOnTurnComplete opts this spawn into one-shot Chat lifecycle.
+	// The session manager rejects it if the resolved controller is not Chat.
+	TerminateOnTurnComplete bool
 
 	// DisplayName is the user-facing sidebar label. Empty falls back to the
 	// session id in the read model (e.g. orchestrator sessions).

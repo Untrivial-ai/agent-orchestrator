@@ -919,6 +919,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 	cfg.RequestedMode = mode
+	if cfg.TerminateOnTurnComplete && mode != domain.SessionModeChat {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: one-shot sessions require chat mode")
+	}
 
 	// A chat session runs no agent inside a terminal runtime, so the terminal
 	// prerequisites are not its concern.
@@ -4013,11 +4016,12 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		Activity:    domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
 		// Resolved before this point and persisted here. There is no UPDATE
 		// statement that can change it afterwards.
-		Mode:              domain.NormalizeSessionMode(cfg.RequestedMode),
-		Metadata:          domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, projectConfig), cfg.AgentConfig).Permissions},
-		AutoReviewEnabled: projectConfig.AutoReview,
-		AutoInjectReview:  true,
-		AutoInjectCI:      true,
+		Mode:                    domain.NormalizeSessionMode(cfg.RequestedMode),
+		TerminateOnTurnComplete: cfg.TerminateOnTurnComplete,
+		Metadata:                domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, projectConfig), cfg.AgentConfig).Permissions},
+		AutoReviewEnabled:       projectConfig.AutoReview,
+		AutoInjectReview:        true,
+		AutoInjectCI:            true,
 	}
 }
 

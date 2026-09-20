@@ -305,6 +305,8 @@ type SpawnSessionRequest struct {
 	// keeps the resolved project/role default. The daemon validates that the
 	// selected harness can honor the model before launching.
 	Model string `json:"model,omitempty" maxLength:"256"`
+	// TerminateOnTurnComplete opts into one-shot Chat lifecycle for this session.
+	TerminateOnTurnComplete bool `json:"terminateOnTurnComplete,omitempty"`
 
 	// DisplayName is the sidebar label for the session, capped at 20 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task

@@ -138,7 +138,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, terminate_on_turn_complete, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -176,6 +176,7 @@ type GetSessionRow struct {
 	RuntimeLaunchID                  string
 	WorkspaceRepoPath                string
 	TerminateOnPRMerge               bool
+	TerminateOnTurnComplete          bool
 	DiffBaseSha                      string
 	DiffBaseRef                      string
 	ReviewerHarness                  domain.ReviewerHarness
@@ -235,6 +236,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.RuntimeLaunchID,
 		&i.WorkspaceRepoPath,
 		&i.TerminateOnPRMerge,
+		&i.TerminateOnTurnComplete,
 		&i.DiffBaseSha,
 		&i.DiffBaseRef,
 		&i.ReviewerHarness,
@@ -275,11 +277,11 @@ INSERT INTO sessions (
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path,
-    preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
+    preview_url, preview_revision, terminate_on_pr_merge, terminate_on_turn_complete, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -323,6 +325,7 @@ type InsertSessionParams struct {
 	PreviewURL                       string
 	PreviewRevision                  int64
 	TerminateOnPRMerge               bool
+	TerminateOnTurnComplete          bool
 	CleanupGeneration                int64
 	BrowserCapabilityVerifier        string
 	SessionMode                      domain.SessionMode
@@ -379,6 +382,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.PreviewURL,
 		arg.PreviewRevision,
 		arg.TerminateOnPRMerge,
+		arg.TerminateOnTurnComplete,
 		arg.CleanupGeneration,
 		arg.BrowserCapabilityVerifier,
 		arg.SessionMode,
@@ -402,7 +406,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, terminate_on_turn_complete, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -440,6 +444,7 @@ type ListAllSessionsRow struct {
 	RuntimeLaunchID                  string
 	WorkspaceRepoPath                string
 	TerminateOnPRMerge               bool
+	TerminateOnTurnComplete          bool
 	DiffBaseSha                      string
 	DiffBaseRef                      string
 	ReviewerHarness                  domain.ReviewerHarness
@@ -505,6 +510,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.RuntimeLaunchID,
 			&i.WorkspaceRepoPath,
 			&i.TerminateOnPRMerge,
+			&i.TerminateOnTurnComplete,
 			&i.DiffBaseSha,
 			&i.DiffBaseRef,
 			&i.ReviewerHarness,
@@ -551,7 +557,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, terminate_on_turn_complete, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -589,6 +595,7 @@ type ListSessionsByProjectRow struct {
 	RuntimeLaunchID                  string
 	WorkspaceRepoPath                string
 	TerminateOnPRMerge               bool
+	TerminateOnTurnComplete          bool
 	DiffBaseSha                      string
 	DiffBaseRef                      string
 	ReviewerHarness                  domain.ReviewerHarness
@@ -654,6 +661,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.RuntimeLaunchID,
 			&i.WorkspaceRepoPath,
 			&i.TerminateOnPRMerge,
+			&i.TerminateOnTurnComplete,
 			&i.DiffBaseSha,
 			&i.DiffBaseRef,
 			&i.ReviewerHarness,

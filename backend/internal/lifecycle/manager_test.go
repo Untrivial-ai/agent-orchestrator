@@ -441,6 +441,12 @@ func (f *fakeCompletionTerminator) Kill(_ context.Context, _ domain.SessionID) (
 	return true, f.err
 }
 
+type sessionTerminatorFunc func(context.Context, domain.SessionID) (bool, error)
+
+func (f sessionTerminatorFunc) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
+	return f(ctx, id)
+}
+
 type fixedSessionOperationGate bool
 
 func (g fixedSessionOperationGate) SessionMutationInProgress(domain.SessionID) bool {
@@ -3428,6 +3434,55 @@ func TestPRObservation_MergedStaysLiveWhenAutoTerminateDisabled(t *testing.T) {
 	}
 	if len(msg.msgs) != 0 {
 		t.Fatalf("merged PR should not send nudge, got %v", msg.msgs)
+	}
+}
+
+func TestActivitySignal_OneShotChatCompletionUsesConfiguredTerminator(t *testing.T) {
+	m, st, _ := newManager()
+	called := make(chan struct{})
+	terminator := &fakeCompletionTerminator{}
+	m.SetCompletionTerminator(sessionTerminatorFunc(func(_ context.Context, _ domain.SessionID) (bool, error) {
+		terminator.calls++
+		close(called)
+		return true, nil
+	}))
+	rec := working("mer-1")
+	rec.TerminateOnTurnComplete = true
+	st.sessions["mer-1"] = rec
+
+	if err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "chat.turn.completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("one-shot completion did not schedule termination")
+	}
+	if terminator.calls != 1 {
+		t.Fatalf("terminator calls = %d, want 1", terminator.calls)
+	}
+}
+
+func TestActivitySignal_NormalChatCompletionDoesNotTerminate(t *testing.T) {
+	m, st, _ := newManager()
+	called := make(chan struct{}, 1)
+	m.SetCompletionTerminator(sessionTerminatorFunc(func(_ context.Context, _ domain.SessionID) (bool, error) {
+		called <- struct{}{}
+		return true, nil
+	}))
+	st.sessions["mer-1"] = working("mer-1")
+
+	if err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "chat.turn.completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+		t.Fatal("normal chat completion unexpectedly terminated session")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

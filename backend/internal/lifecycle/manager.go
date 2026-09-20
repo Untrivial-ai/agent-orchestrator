@@ -945,9 +945,14 @@ retryProjection:
 				return nil
 			}
 			m.mu.Unlock()
-			return m.acknowledgeAgentSwitchTarget(ctx, id, s, now)
+			if err := m.acknowledgeAgentSwitchTarget(ctx, id, s, now); err != nil {
+				return err
+			}
+			m.scheduleOneShotTermination(ctx, rec, s)
+			return nil
 		}
 		m.mu.Unlock()
+		m.scheduleOneShotTermination(ctx, rec, s)
 		return nil
 	}
 	next := rec
@@ -1000,7 +1005,19 @@ retryProjection:
 	}
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
+	m.scheduleOneShotTermination(ctx, next, s)
 	return nil
+}
+
+func (m *Manager) scheduleOneShotTermination(ctx context.Context, rec domain.SessionRecord, signal ports.ActivitySignal) {
+	if !rec.TerminateOnTurnComplete || signal.Event != "chat.turn.completed" || rec.IsTerminated {
+		return
+	}
+	go func() {
+		if err := m.terminateCompletedSession(context.WithoutCancel(ctx), rec.ID); err != nil {
+			slog.Error("one-shot session teardown failed", "session", rec.ID, "error", err)
+		}
+	}()
 }
 
 // stagePendingAgentSwitchNativeMetadata persists provider-assigned startup

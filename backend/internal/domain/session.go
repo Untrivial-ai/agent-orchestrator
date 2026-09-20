@@ -179,10 +179,14 @@ type SessionRecord struct {
 	IsTerminated  bool      `json:"isTerminated"`
 	// TerminateOnPRMerge is a user-controlled lifecycle policy. When enabled,
 	// completing the session's PR set through a merge tears down the session.
-	TerminateOnPRMerge bool            `json:"terminateOnPrMerge"`
-	AutoInjectReview   bool            `json:"autoInjectReview"`
-	AutoInjectCI       bool            `json:"autoInjectCI"`
-	Metadata           SessionMetadata `json:"-"`
+	TerminateOnPRMerge bool `json:"terminateOnPrMerge"`
+	// TerminateOnTurnComplete makes this Chat session one-shot: once its primary
+	// turn reaches a terminal provider event, lifecycle tears it down through the
+	// same Kill path as an explicit user action. It is immutable after spawn.
+	TerminateOnTurnComplete bool            `json:"terminateOnTurnComplete"`
+	AutoInjectReview        bool            `json:"autoInjectReview"`
+	AutoInjectCI            bool            `json:"autoInjectCI"`
+	Metadata                SessionMetadata `json:"-"`
 	// CleanupGeneration is a monotonic counter bumped each time the session is
 	// un-terminated (spawn/restore). The terminal-resource reconciler stamps its
 	// durable cleanup facts with the generation they were written for so a

@@ -8533,6 +8533,8 @@ components:
           type: string
         terminateOnPrMerge:
           type: boolean
+        terminateOnTurnComplete:
+          type: boolean
         updatedAt:
           format: date-time
           type: string
@@ -8544,6 +8546,7 @@ components:
       - activity
       - isTerminated
       - terminateOnPrMerge
+      - terminateOnTurnComplete
       - autoInjectReview
       - autoInjectCI
       - createdAt
@@ -11859,6 +11862,8 @@ components:
         prompt:
           maxLength: 16384
           type: string
+        terminateOnTurnComplete:
+          type: boolean
         trackerProvider:
           enum:
           - github

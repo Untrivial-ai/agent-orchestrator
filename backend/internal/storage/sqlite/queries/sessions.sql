@@ -17,11 +17,11 @@ INSERT INTO sessions (
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path,
-    preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
+    preview_url, preview_revision, terminate_on_pr_merge, terminate_on_turn_complete, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
@@ -167,7 +167,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, terminate_on_turn_complete, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -182,7 +182,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, terminate_on_turn_complete, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
@@ -197,7 +197,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
     created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
-    workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
+    workspace_repo_path, terminate_on_pr_merge, terminate_on_turn_complete, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,

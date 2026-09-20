@@ -766,6 +766,38 @@ func TestSessionRenameUpdatesDisplayName(t *testing.T) {
 	}
 }
 
+func TestSessionTerminateOnTurnCompleteRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	rec := domain.SessionRecord{
+		ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessOMP,
+		Mode: domain.SessionModeChat, TerminateOnTurnComplete: true,
+		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetSession: ok=%v err=%v", ok, err)
+	}
+	if !got.TerminateOnTurnComplete {
+		t.Fatalf("terminateOnTurnComplete = false, want true")
+	}
+	got.DisplayName = "updated"
+	if err := s.UpdateSession(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok || !again.TerminateOnTurnComplete {
+		t.Fatalf("immutable one-shot policy lost across UpdateSession: ok=%v err=%v rec=%+v", ok, err, again)
+	}
+}
+
 func TestSessionTerminateOnPRMergePolicyRoundTripAndCDC(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

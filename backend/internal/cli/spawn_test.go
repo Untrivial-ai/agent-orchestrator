@@ -368,6 +368,37 @@ func TestSpawnResolvesProjectFromEnvAndDefaultAgent(t *testing.T) {
 	}
 }
 
+func TestSpawnOneShotForwardsTerminationPolicy(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var req spawnRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, "{\"status\":\"ok\",\"project\":{\"id\":\"demo\",\"name\":\"Demo\",\"path\":\"/repo/demo\",\"config\":{\"worker\":{\"agent\":\"codex\"}}}}")
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
+			_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, "{\"session\":{\"id\":\"demo-oneshot\",\"status\":\"idle\"}}")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	if _, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"spawn", "--project", "demo", "--agent", "codex", "--name", "one-shot", "--one-shot"); err != nil {
+		t.Fatalf("spawn one-shot: %v", err)
+	}
+	if !req.TerminateOnTurnComplete {
+		t.Fatalf("terminateOnTurnComplete = false, want true")
+	}
+}
+
 func TestSpawnResolvesProjectFromAOSessionID(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string

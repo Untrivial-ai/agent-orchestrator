@@ -32,6 +32,7 @@ type spawnOptions struct {
 	model           string
 	claimPR         string
 	noTakeover      bool
+	oneShot         bool
 	skipAgentCheck  bool
 	trackerProvider string
 }
@@ -39,17 +40,18 @@ type spawnOptions struct {
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
-	ProjectID       string `json:"projectId,omitempty"`
-	IssueID         string `json:"issueId,omitempty"`
-	ParentSessionID string `json:"parentSessionId,omitempty"`
-	TrackerProvider string `json:"trackerProvider,omitempty"`
-	Kind            string `json:"kind,omitempty"`
-	Mode            string `json:"mode,omitempty"`
-	Harness         string `json:"harness,omitempty"`
-	Branch          string `json:"branch,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
-	Model           string `json:"model,omitempty"`
-	DisplayName     string `json:"displayName"`
+	ProjectID               string `json:"projectId,omitempty"`
+	IssueID                 string `json:"issueId,omitempty"`
+	ParentSessionID         string `json:"parentSessionId,omitempty"`
+	TrackerProvider         string `json:"trackerProvider,omitempty"`
+	Kind                    string `json:"kind,omitempty"`
+	Mode                    string `json:"mode,omitempty"`
+	Harness                 string `json:"harness,omitempty"`
+	Branch                  string `json:"branch,omitempty"`
+	Prompt                  string `json:"prompt,omitempty"`
+	Model                   string `json:"model,omitempty"`
+	TerminateOnTurnComplete bool   `json:"terminateOnTurnComplete,omitempty"`
+	DisplayName             string `json:"displayName"`
 }
 
 type spawnResult struct {
@@ -154,17 +156,18 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			req := spawnRequest{
-				ProjectID:       opts.project,
-				IssueID:         opts.issue,
-				ParentSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
-				TrackerProvider: opts.trackerProvider,
-				Kind:            opts.kind,
-				Harness:         opts.harness,
-				Mode:            opts.mode,
-				Branch:          opts.branch,
-				Prompt:          opts.prompt,
-				Model:           strings.TrimSpace(opts.model),
-				DisplayName:     name,
+				ProjectID:               opts.project,
+				IssueID:                 opts.issue,
+				ParentSessionID:         strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
+				TrackerProvider:         opts.trackerProvider,
+				Kind:                    opts.kind,
+				Harness:                 opts.harness,
+				Mode:                    opts.mode,
+				Branch:                  opts.branch,
+				Prompt:                  opts.prompt,
+				Model:                   strings.TrimSpace(opts.model),
+				TerminateOnTurnComplete: opts.oneShot,
+				DisplayName:             name,
 			}
 			var res spawnResult
 			if err := ctx.postJSON(cmd.Context(), "sessions", req, &res); err != nil {
@@ -225,6 +228,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 20 characters)")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Immediately claim an existing PR for the spawned session")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
+	f.BoolVar(&opts.oneShot, "one-shot", false, "Terminate this Chat session automatically after its primary turn reaches a terminal state")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip CLI readiness warnings (the daemon still validates launch readiness)")
 	return cmd
 }
