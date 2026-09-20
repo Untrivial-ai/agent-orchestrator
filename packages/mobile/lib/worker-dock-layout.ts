@@ -18,6 +18,10 @@ export function workerDockRestingBottom(safeAreaBottom: number): number {
  * the flag turns over when the keyboard has finished hiding.
  */
 export function workerDockLift(keyboardHeight: number, safeAreaBottom: number): number {
+	// Called from an animated style, which runs on the UI thread: without this the
+	// UI runtime tries to call back into JS and the screen dies with "tried to
+	// synchronously call a Remote Function".
+	"worklet";
 	return Math.max(keyboardHeight - safeAreaBottom, 0);
 }
 
