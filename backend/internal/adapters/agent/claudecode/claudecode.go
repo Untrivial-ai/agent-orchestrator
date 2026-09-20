@@ -404,12 +404,15 @@ func claudeAuthStatusFromOutput(out []byte) (ports.AgentAuthStatus, bool) {
 		return ports.AgentAuthStatusUnknown, false
 	}
 	var status struct {
-		LoggedIn bool `json:"loggedIn"`
+		LoggedIn *bool `json:"loggedIn"`
 	}
 	if json.Unmarshal(out[start:end+1], &status) != nil {
 		return ports.AgentAuthStatusUnknown, false
 	}
-	if status.LoggedIn {
+	if status.LoggedIn == nil {
+		return ports.AgentAuthStatusUnknown, false
+	}
+	if *status.LoggedIn {
 		return ports.AgentAuthStatusAuthorized, true
 	}
 	return ports.AgentAuthStatusUnauthorized, true

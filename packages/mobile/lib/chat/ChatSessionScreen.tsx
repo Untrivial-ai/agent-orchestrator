@@ -16,10 +16,11 @@ import {
 	Text,
 	View,
 } from "react-native";
-import { restoreSession, resumeSessionAgent, type DashboardSession, type OrchestratorLink } from "../api";
+import { mobileReachablePreviewURL, restoreSession, resumeSessionAgent, type DashboardSession, type OrchestratorLink } from "../api";
 import { haptics } from "../haptics";
 import { headerActionStyle } from "../headerAction";
 import { deferRouteContent, resetHeaderRightForSwap } from "../headerRightSwap";
+import { openGitHub } from "../openGitHub";
 import { useApp } from "../store";
 import {
 	mobileInterfaceTransitionIsActive,
@@ -34,6 +35,7 @@ import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { getWorkspacePaths, openSessionShell } from "./api";
 import { requestDockModel } from "./requestDockModel";
 import { ChatComposer } from "./ChatComposer";
+import { ChatLinkProvider } from "./ChatMarkdown";
 import { ChatTimeline } from "./ChatTimeline";
 import { ConversationTitle } from "./ConversationTitle";
 import { chatSheetRoute } from "./chatSheetRegistry";
@@ -256,6 +258,15 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		} finally { setOpeningShell(false); }
 	}, [config, openingShell, router, session.id, session.projectId]);
 
+	// Links open in-app, like the desktop Browser inspector. A localhost link from
+	// the agent's machine is mapped onto the AO host first (the phone's own
+	// localhost is never the dev server the agent named); openGitHub then applies
+	// the package's rule for a web page - GitHub app when it has a screen for it,
+	// the in-app browser otherwise.
+	const openLink = useCallback((url: string) => {
+		void openGitHub(mobileReachablePreviewURL(url, config?.host ?? "")?.href ?? url);
+	}, [config?.host]);
+
 	const resume = useCallback(async () => {
 		if (resuming) return;
 		setResuming(true);
@@ -463,19 +474,21 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			{conversation.actionError && conversation.actionError !== conversation.error ? <DismissibleBanner copy={errorBanner("action", conversation.actionError)} dismissed={dismissedBanners} onDismiss={dismissBanner} tone="danger" icon="alert-circle" /> : null}
 			{rolledBack ? <DismissibleBanner copy={rolledBackBanner(rolledBack)} dismissed={dismissedBanners} onDismiss={dismissBanner} tone="muted" icon="rotate-ccw" /> : null}
 			{conversation.pendingSends.map((pendingSend) => pendingSend.state === "failed" ? <InlineBanner key={pendingSend.id} tone="danger" icon="send" title="Message not sent" body={pendingSend.error || "Delivery failed"} action="Retry" secondary="Discard" onPress={() => void conversation.retrySend(pendingSend.id).catch(() => {})} onSecondary={() => conversation.discardSend(pendingSend.id)} /> : null)}
-			<ChatTimeline
-				snapshot={snapshot}
-				loadingOlder={conversation.loadingOlder}
-				onLoadOlder={conversation.loadOlder}
-				approvalPending={conversation.pendingActions.includes("approval")}
-				inputPending={conversation.pendingActions.includes("input")}
-				onDecide={conversation.resolveApproval}
-				onResolveInput={conversation.resolveInput}
-				onRollback={conversation.rollback}
-				jumpToSequence={jumpToSequence}
-				onJumpHandled={clearJumpToSequence}
-				answeredBelow={answeredBelow}
-			/>
+			<ChatLinkProvider onLinkOpen={openLink}>
+				<ChatTimeline
+					snapshot={snapshot}
+					loadingOlder={conversation.loadingOlder}
+					onLoadOlder={conversation.loadOlder}
+					approvalPending={conversation.pendingActions.includes("approval")}
+					inputPending={conversation.pendingActions.includes("input")}
+					onDecide={conversation.resolveApproval}
+					onResolveInput={conversation.resolveInput}
+					onRollback={conversation.rollback}
+					jumpToSequence={jumpToSequence}
+					onJumpHandled={clearJumpToSequence}
+					answeredBelow={answeredBelow}
+				/>
+			</ChatLinkProvider>
 			<ChatComposer
 				sessionId={session.id}
 				snapshot={snapshot}

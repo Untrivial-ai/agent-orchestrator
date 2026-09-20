@@ -8472,6 +8472,33 @@ func TestReconcileLive_AliveSessionAdoptedNoop(t *testing.T) {
 	}
 }
 
+// TestReconcileLive_InterruptedSpawnSeedRowIsRemoved covers a daemon that died
+// between Spawn's CreateSession and its MarkSpawned commit (e.g. the desktop
+// app was closed while "Preparing the worker terminal" was still creating the
+// workspace). The seed row has no workspace and never will: the next daemon
+// must remove it instead of leaving a non-terminated phantom in the sidebar
+// forever, since nothing observable (worktree, runtime) was ever built.
+func TestReconcileLive_InterruptedSpawnSeedRowIsRemoved(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	rec := domain.SessionRecord{
+		ID: "s-interrupted", ProjectID: "p1", Harness: domain.HarnessClaudeCode, IsTerminated: false,
+	}
+	st.sessions[rec.ID] = rec
+	m := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if _, ok := st.sessions[rec.ID]; ok {
+		t.Fatalf("interrupted seed row should have been removed, still present: %+v", st.sessions[rec.ID])
+	}
+}
+
 func TestReconcile_LivePassUsesConfiguredConcurrency(t *testing.T) {
 	st := newFakeStore()
 	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}

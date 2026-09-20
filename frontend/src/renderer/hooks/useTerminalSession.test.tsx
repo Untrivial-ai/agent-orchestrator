@@ -109,7 +109,6 @@ function createFakeTerminal(): FakeTerminal {
 		cols: 80,
 		rows: 24,
 		activeBufferType: "normal",
-		bufferType: () => terminal.activeBufferType,
 		autoCompleteWrites: true,
 		lines: [],
 		pendingWriteCallbacks: [],
@@ -1056,34 +1055,45 @@ describe("useTerminalSession", () => {
 		expect(muxes).toHaveLength(1);
 	});
 
-	describe("predictive local echo (cloud sessions)", () => {
+	describe("line-buffered local input (cloud sessions)", () => {
 		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
 
-		it("renders a predicted keystroke immediately and strips the server echo", () => {
+		it("renders typing immediately and sends the complete line on Enter", () => {
 			const { terminal, muxes } = setup({ attachedSession: cloudSession });
 			act(() => muxes[0].emitConnection("open"));
 			act(() => muxes[0].emitOpened("handle-1"));
-			terminal.typeKeys("a");
-			// The prediction landed locally before any server round trip…
-			expect(terminal.lines).toEqual(["a"]);
-			// …while the wire got the raw keystroke.
-			expect(muxes[0].inputs).toEqual([["handle-1", "a"]]);
+			act(() => terminal.typeKeys("a"));
+			act(() => terminal.typeKeys("b"));
+			// The draft landed locally before any server round trip…
+			expect(terminal.lines).toEqual(["\x1b[Ka", "b"]);
+			// …while nothing was streamed character by character.
+			expect(muxes[0].inputs).toEqual([]);
+			act(() => terminal.typeKeys("\r"));
+			expect(muxes[0].inputs).toEqual([
+				["handle-1", "ab"],
+				["handle-1", "\r"],
+			]);
 			// The authoritative echo of what is already on screen renders nothing.
-			act(() => muxes[0].emitData("handle-1", "a"));
-			expect(terminal.lines).toEqual(["a"]);
+			act(() => muxes[0].emitData("handle-1", "ab"));
+			expect(terminal.lines).toEqual(["\x1b[Ka", "b"]);
 			// Output beyond the echo flows through verbatim.
 			act(() => muxes[0].emitData("handle-1", "$ "));
-			expect(terminal.lines).toEqual(["a", "$ "]);
+			expect(terminal.lines).toEqual(["\x1b[Ka", "b", "$ "]);
 		});
 
-		it("never predicts while the pane is on the alternate buffer", () => {
+		it("buffers input inside alternate-buffer agent TUIs", () => {
 			const { terminal, muxes } = setup({ attachedSession: cloudSession });
 			terminal.activeBufferType = "alternate";
 			act(() => muxes[0].emitConnection("open"));
 			act(() => muxes[0].emitOpened("handle-1"));
-			terminal.typeKeys("a");
-			expect(terminal.lines).toEqual([]);
-			expect(muxes[0].inputs).toEqual([["handle-1", "a"]]);
+			act(() => terminal.typeKeys("a"));
+			expect(terminal.lines).toEqual(["\x1b[Ka"]);
+			expect(muxes[0].inputs).toEqual([]);
+			act(() => terminal.typeKeys("\r"));
+			expect(muxes[0].inputs).toEqual([
+				["handle-1", "a"],
+				["handle-1", "\r"],
+			]);
 		});
 
 		it("does not locally echo keystrokes on local sessions", () => {

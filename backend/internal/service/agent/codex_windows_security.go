@@ -59,10 +59,27 @@ const codexWindowsMutationMask = codexWindowsWriteData | codexWindowsAppendData 
 	codexWindowsDeleteChild | codexWindowsWriteAttributes | codexWindowsDelete | codexWindowsWriteDAC |
 	codexWindowsWriteOwner | codexWindowsGenericAll | codexWindowsGenericWrite
 
+// codexWindowsAncestorMutationMask drops the specific rights present in the
+// standard Windows Write permission from the vault mask. On a directory,
+// FILE_WRITE_DATA is FILE_ADD_FILE and FILE_APPEND_DATA is
+// FILE_ADD_SUBDIRECTORY. FILE_WRITE_EA and FILE_WRITE_ATTRIBUTES affect
+// metadata. These rights do not grant DELETE, FILE_DELETE_CHILD, WRITE_DAC,
+// WRITE_OWNER, or a generic right, which all stay disqualifying. Ancestors are
+// also opened without following reparse points and checked for reparse-point
+// metadata separately.
+//
+// Stock Windows grants exactly FILE_ADD_SUBDIRECTORY to Authenticated Users on
+// the system drive root ("Authenticated Users:(AD)" in icacls). Treating that
+// default as an unsafe ancestor made every ancestor walk fail on every Windows
+// machine, so Codex account storage could never be created.
+const codexWindowsAncestorMutationMask = codexWindowsMutationMask &^ (codexWindowsWriteData | codexWindowsAppendData | codexWindowsWriteEA | codexWindowsWriteAttributes)
+
 type codexWindowsACE struct {
-	Allowed          bool
-	PrincipalTrusted bool
-	Mask             uint32
+	Allowed           bool
+	PrincipalTrusted  bool
+	PrincipalUnmapped bool
+	PrincipalSandbox  bool
+	Mask              uint32
 }
 
 func codexWindowsVaultACLIsSafe(ownerTrusted bool, aces []codexWindowsACE) bool {
@@ -80,14 +97,62 @@ func codexWindowsVaultACLIsSafe(ownerTrusted bool, aces []codexWindowsACE) bool 
 	return true
 }
 
-func codexWindowsAncestorACLIsSafe(ownerTrusted bool, aces []codexWindowsACE) bool {
-	if !ownerTrusted {
-		return false
-	}
+func codexWindowsAncestorACLIsSafe(aces []codexWindowsACE) bool {
 	for _, ace := range aces {
-		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&codexWindowsMutationMask != 0 {
+		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&codexWindowsAncestorMutationMask != 0 {
 			return false
 		}
 	}
 	return true
+}
+
+// codexWindowsDeviceCredentialACLIsSafe validates Codex's device-global
+// auth.json. Unlike AO-owned vault files, Codex deliberately grants its local
+// sandbox group read access so sandboxed Codex processes can authenticate.
+// Keep that exception read-only and reject every other effective untrusted
+// allow ACE (including read-only access and principals whose names no longer
+// resolve). Windows access checks operate on SID bytes, not account names.
+func codexWindowsDeviceCredentialACLIsSafe(ownerTrusted bool, aces []codexWindowsACE) bool {
+	if !ownerTrusted {
+		return false
+	}
+	for _, ace := range aces {
+		if !ace.Allowed || ace.Mask == 0 || ace.PrincipalTrusted {
+			continue
+		}
+		if ace.PrincipalSandbox && ace.Mask&codexWindowsMutationMask == 0 {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// codexWindowsLegacyStaleSIDMask is the inherited Windows "Write,
+// ReadAndExecute, Synchronize" mask left by older Codex sandbox profiles on
+// the affected machines. An unmapped SID with only a subset of these rights
+// may be removed from a current-user-owned device credential before it is read.
+const codexWindowsLegacyStaleSIDMask uint32 = 0x001201BF
+
+func codexWindowsDeviceCredentialACLIsRepairable(ownerCurrent bool, aces []codexWindowsACE) bool {
+	if !ownerCurrent {
+		return false
+	}
+	repairNeeded := false
+	for _, ace := range aces {
+		if !ace.Allowed || ace.Mask == 0 || ace.PrincipalTrusted {
+			continue
+		}
+		if ace.PrincipalSandbox {
+			if ace.Mask&codexWindowsMutationMask != 0 {
+				return false
+			}
+			continue
+		}
+		if !ace.PrincipalUnmapped || ace.Mask&^codexWindowsLegacyStaleSIDMask != 0 {
+			return false
+		}
+		repairNeeded = true
+	}
+	return repairNeeded
 }

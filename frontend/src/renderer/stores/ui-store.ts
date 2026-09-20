@@ -31,7 +31,13 @@ export type GlobalSettingsSection =
 	| "help";
 
 export type SettingsModal =
-	| { scope: "global"; section?: GlobalSettingsSection }
+	| {
+			scope: "global";
+			section?: GlobalSettingsSection;
+			focusAgentId?: string;
+			/** Preserve the project form while global recovery settings is above it. */
+			returnTo?: Extract<SettingsModal, { scope: "project" }>;
+	}
 	| {
 			scope: "project";
 			projectId: string;
@@ -128,7 +134,7 @@ export type UiState = {
 	updateInstallPromptOpen: boolean;
 	openUpdateInstallPrompt: () => void;
 	closeUpdateInstallPrompt: () => void;
-	openGlobalSettings: (section?: GlobalSettingsSection) => void;
+	openGlobalSettings: (section?: GlobalSettingsSection, options?: { focusAgentId?: string; preserveProject?: boolean }) => void;
 	openProjectSettings: (projectId: string) => void;
 	closeSettings: () => void;
 	/** Refresh resolvedTheme from OS without writing light/dark to storage. */
@@ -258,9 +264,22 @@ export const useUiStore = create<UiState>((set, get) => ({
 	updateInstallPromptOpen: false,
 	openUpdateInstallPrompt: () => set({ updateInstallPromptOpen: true }),
 	closeUpdateInstallPrompt: () => set({ updateInstallPromptOpen: false }),
-	openGlobalSettings: (section) => set({ settingsModal: { scope: "global", section } }),
+	openGlobalSettings: (section, options) => set((state) => ({
+		settingsModal: {
+			scope: "global",
+			section,
+			...(options?.focusAgentId ? { focusAgentId: options.focusAgentId } : {}),
+			...(options?.preserveProject && state.settingsModal?.scope === "project"
+				? { returnTo: state.settingsModal }
+				: options?.preserveProject && state.settingsModal?.scope === "global" && state.settingsModal.returnTo
+					? { returnTo: state.settingsModal.returnTo }
+					: {}),
+		},
+	})),
 	openProjectSettings: (projectId) => set({ settingsModal: { scope: "project", projectId } }),
-	closeSettings: () => set({ settingsModal: null }),
+	closeSettings: () => set((state) => ({
+		settingsModal: state.settingsModal?.scope === "global" ? state.settingsModal.returnTo ?? null : null,
+	})),
 	syncSystemTheme: () => {
 		const { themePreference, resolvedTheme } = get();
 		if (themePreference !== "system") return;

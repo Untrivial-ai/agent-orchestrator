@@ -69,6 +69,7 @@ type CodexAccountLoginTerminalStart struct {
 type codexAccountLoginTerminalService interface {
 	OpenCommandTerminal(context.Context, shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error)
 	CloseShellTerminal(context.Context, string) error
+	IsShellTerminalChildAlive(context.Context, string) (bool, error)
 }
 
 type accountAuthCall struct {
@@ -558,7 +559,7 @@ func (m *codexAccountManager) globalCredentialMissingFor(account ports.CodexAcco
 	if canonicalPath(account.Home) != m.globalHome {
 		return false
 	}
-	_, state, err := readCodexFileState(m.globalCredentialPath(), true)
+	_, state, err := readCodexDeviceFileState(m.globalCredentialPath(), true)
 	return err == nil && !state.exists
 }
 
