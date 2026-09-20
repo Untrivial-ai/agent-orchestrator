@@ -4586,22 +4586,31 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	order: -1;
 }
 
-/* Annotation mode replaces navigation chrome with a quiet, fixed control
-   strip. Keep its actions spatially stable: feedback comes from tone and
-   contrast, never from lifting, scaling, or reshaping controls on hover. */
+/* Annotation mode adds a second chrome row below tabs. Match the tab row's
+   flat chrome — no inset card surface. Keep actions spatially stable. */
+.browser-panel__annotation-row {
+	container-name: browser-annotation;
+	container-type: inline-size;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+	min-width: 0;
+	overflow: hidden;
+	padding: 0 var(--space-1);
+	background: var(--bg);
+}
+
 .browser-panel__toolbar--annotation {
 	position: relative;
 	display: flex;
 	width: 100%;
-	height: 32px;
 	min-width: 0;
-	flex: 1 1 auto;
+	height: calc(var(--size-control-md) + 2 * var(--space-1));
 	align-items: center;
-	gap: 6px;
-	padding: 2px 4px;
-	border-radius: var(--radius-md);
-	background: color-mix(in srgb, var(--surface) 94%, var(--bg));
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-border) 70%, transparent);
+	gap: 2px;
+	padding-block: var(--space-1);
+	background: transparent;
 }
 
 .browser-panel__annotation-actions {
@@ -4609,7 +4618,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	display: flex;
 	min-width: 0;
 	align-items: center;
-	gap: 2px;
+	gap: var(--space-1);
 }
 
 .browser-panel__annotation-actions--leading {
@@ -4629,9 +4638,9 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	min-width: 0;
 	translate: -50% -50%;
 	align-items: center;
-	gap: 5px;
+	gap: var(--space-1_5);
 	pointer-events: none;
-	font-size: 12px;
+	font-size: var(--font-size-sm);
 	line-height: 1;
 }
 
@@ -4643,15 +4652,12 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: var(--color-status-needs-you);
 }
 
-.browser-panel__annotation-label {
-	color: var(--muted-foreground);
-}
-
-.browser-panel__annotation-host {
+.browser-panel__annotation-count {
 	min-width: 0;
 	overflow: hidden;
 	color: var(--foreground);
-	font-weight: 500;
+	font-weight: var(--font-weight-medium);
+	font-variant-numeric: tabular-nums;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -4659,12 +4665,12 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__annotation-separator {
 	width: 1px;
 	height: 16px;
-	margin: 0 3px;
+	margin: 0 var(--space-1);
 	background: color-mix(in srgb, var(--color-border) 78%, transparent);
 }
 
-.browser-panel__toolbar.browser-panel__toolbar--annotation button {
-	border-radius: 6px;
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send) {
+	border-radius: var(--radius-md);
 	box-shadow: none;
 	transform: none;
 	translate: none;
@@ -4676,8 +4682,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 		opacity var(--duration-fast) ease;
 }
 
-.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(:disabled):hover,
-.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(:disabled):active {
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send):not(:disabled):hover,
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send):not(:disabled):active {
 	box-shadow: none;
 	transform: none;
 	translate: none;
@@ -4698,37 +4704,44 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	top: 1px;
 	right: 2px;
 	color: var(--color-status-needs-you);
-	font-family: var(--font-mono);
-	font-size: 9px;
-	font-weight: 600;
+	font-size: var(--font-size-nano);
+	font-weight: var(--font-weight-semibold);
+	font-variant-numeric: tabular-nums;
 	line-height: 1;
 }
 
 .browser-panel__toolbar--annotation .browser-panel__annotation-send {
-	min-width: 52px;
-	border-radius: 6px;
-	box-shadow: none;
+	height: var(--size-control-md);
+	gap: var(--space-1_5);
+	padding-inline: var(--space-2_5);
+	color: var(--primary-foreground);
+	font-size: var(--font-size-sm);
+	font-weight: var(--font-weight-medium);
+}
+
+/* The shared primary hover is a translucent wash (bg-primary/80). Over the
+   dark annotation toolbar that reads as a half-disabled button, so the Send
+   control steps its tone instead and stays solid. */
+.browser-panel__toolbar--annotation .browser-panel__annotation-send:not(:disabled):hover {
+	background-color: color-mix(in oklch, var(--primary) 90%, var(--background));
+}
+
+.browser-panel__toolbar--annotation .browser-panel__annotation-send:disabled {
+	opacity: 0.72;
 }
 
 .browser-panel__annotation-send-count {
-	margin-left: 1px;
-	padding-left: 6px;
-	border-left: 1px solid color-mix(in srgb, currentColor 28%, transparent);
-	font-family: var(--font-mono);
-	font-size: 10px;
+	color: inherit;
+	font-variant-numeric: tabular-nums;
 }
 
-@container browser-toolbar (max-width: 30rem) {
+@container browser-annotation (max-width: 30rem) {
 	.browser-panel__annotation-context {
 		max-width: 26%;
 	}
-
-	.browser-panel__annotation-label {
-		display: none;
-	}
 }
 
-@container browser-toolbar (max-width: 23rem) {
+@container browser-annotation (max-width: 23rem) {
 	.browser-panel__annotation-context {
 		display: none;
 	}
@@ -4779,7 +4792,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-actions button:not(:disabled):hover,
-.browser-panel__toolbar button:not(:disabled):hover,
+.browser-panel__toolbar button:not(.browser-panel__annotation-send):not(:disabled):hover,
 .browser-panel__address-bar button:not(:disabled):hover {
 	color: var(--fg);
 }

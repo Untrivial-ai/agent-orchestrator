@@ -256,8 +256,11 @@ export function keepLatestNotificationsPage(
 }
 
 /**
- * A `needs_input` toast is redundant only when the user can already see the
- * prompt, which takes three things: the agent's terminal for that session is
+ * Whether the user can already see a `needs_input` prompt. Main still plays
+ * the sound for it (an agent asking is worth hearing even mid-glance) but
+ * skips the toast, which would only repeat what is on screen.
+ *
+ * "Can see it" takes three things: the agent's terminal for that session is
  * the one on screen, this window is visible, and this window has focus.
  *
  * Each check covers a way "looks visible" lies. Visibility alone is not enough
@@ -267,11 +270,11 @@ export function keepLatestNotificationsPage(
  * reviewer tab hides the agent while the URL still names that session. The
  * caller resolves that, passing the session only while its agent pane shows.
  *
- * Only `needs_input` is suppressed. PR outcomes (`ready_to_merge`,
- * `pr_merged`, `pr_closed_unmerged`) are not visible in the terminal pane, so
- * they still deserve a toast even for the session in the foreground.
+ * Only `needs_input` counts. PR outcomes (`ready_to_merge`, `pr_merged`,
+ * `pr_closed_unmerged`) are not visible in the terminal pane, so they still
+ * deserve a toast even for the session in the foreground.
  */
-function suppressToastForWatchedSession(
+function isWatchingNeedsInputSession(
 	notification: NotificationDTO,
 	visibleAgentSessionId: string | undefined,
 ): boolean {
@@ -333,12 +336,13 @@ export function createNotificationsTransport(
 						if (!notification) return;
 						const inserted = mergeUnreadNotification(queryClient, notification);
 						mergeRecentNotification(queryClient, notification);
-						if (inserted && !suppressToastForWatchedSession(notification, getVisibleAgentSessionId())) {
+						if (inserted) {
 							void aoBridge.notifications.show({
 								id: notification.id,
 								title: notification.title,
 								body: notification.body || undefined,
 								type: notification.type,
+								watched: isWatchingNeedsInputSession(notification, getVisibleAgentSessionId()),
 							});
 						}
 					});

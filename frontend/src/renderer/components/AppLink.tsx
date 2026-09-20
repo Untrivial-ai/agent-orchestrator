@@ -1,8 +1,10 @@
-import { createContext, useContext, type ComponentProps } from "react";
+import { createContext, useContext, useState, type ComponentProps } from "react";
 import { Copy, ExternalLink, Globe } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { aoBridge } from "../lib/bridge";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { useLinkPreview } from "../hooks/useLinkPreview";
+import { LinkPreviewCard, LinkPreviewCardLoading } from "./LinkPreviewCard";
 import {
 	ContextMenu,
 	ContextMenuTrigger,
@@ -10,6 +12,7 @@ import {
 	ContextMenuItem,
 	ContextMenuSeparator,
 } from "./ui/context-menu";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 
 export const AppBrowserLinkContext = createContext<((url: string) => void) | undefined>(undefined);
 
@@ -23,6 +26,8 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, ...props }: C
 	const openBrowser = onBrowserOpen ?? sessionBrowserOpen;
 	const webLink = !!href && isWebLink(href);
 	const browserLink = !!href && (inAppLink?.(href) ?? webLink);
+	const [previewOpen, setPreviewOpen] = useState(false);
+	const previewQuery = useLinkPreview(href ?? "", previewOpen && webLink);
 	const anchor = (
 		<a
 			{...props}
@@ -37,9 +42,16 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, ...props }: C
 		/>
 	);
 	if (!href || href.startsWith("#") || href.startsWith("/")) return anchor;
-	return (
+	const trigger = webLink ? (
+		<ContextMenuTrigger asChild>
+			<HoverCardTrigger asChild>{anchor}</HoverCardTrigger>
+		</ContextMenuTrigger>
+	) : (
+		<ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
+	);
+	const menu = (
 		<ContextMenu>
-			<ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
+			{trigger}
 			<ContextMenuContent className="min-w-52">
 				{webLink && (
 					<>
@@ -60,5 +72,20 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, ...props }: C
 				</ContextMenuItem>
 			</ContextMenuContent>
 		</ContextMenu>
+	);
+	if (!webLink) return menu;
+	return (
+		<HoverCard onOpenChange={setPreviewOpen}>
+			{menu}
+			{previewOpen && !previewQuery.isError && (
+				<HoverCardContent collisionPadding={8}>
+					{previewQuery.data ? (
+						<LinkPreviewCard url={href} preview={previewQuery.data} />
+					) : (
+						<LinkPreviewCardLoading />
+					)}
+				</HoverCardContent>
+			)}
+		</HoverCard>
 	);
 }

@@ -11,6 +11,7 @@ import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { toReviewerHarnessId } from "../lib/reviewer-harnesses";
 import { captureRendererEvent } from "../lib/telemetry";
 import { agentSwitchVisibility } from "../lib/agent-switch-visibility";
+import { appI18n } from "../i18n";
 import {
 	type AgentSwitchSummary,
 	type PRState,
@@ -29,7 +30,9 @@ import {
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 
-const AD_HOC_AGENTS_WORKSPACE_NAME = "Ad hoc agents";
+function standaloneWorkspaceName(): string {
+	return appI18n.t("standalone.workspaceName");
+}
 
 function placeStandaloneWorkspaceLast(workspaces: WorkspaceSummary[]): WorkspaceSummary[] {
 	const standalone = workspaces.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
@@ -223,6 +226,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	agentSwitchVisibility.setQueryHealthy("history", true, "workspaces");
 
 	const sessions = sessionsData?.sessions ?? [];
+	const standaloneName = standaloneWorkspaceName();
 	const projects = (projectsData?.projects ?? []).map((project) => {
 		const kind = toProjectKind(project.kind);
 		return {
@@ -239,12 +243,12 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	});
 	const standalone: WorkspaceSummary = {
 		id: STANDALONE_WORKSPACE_ID,
-		name: AD_HOC_AGENTS_WORKSPACE_NAME,
+		name: standaloneName,
 		kind: STANDALONE_PROJECT_KIND,
 		path: "Not attached to a project",
 		sessions: sessions
 			.filter((session) => !session.projectId)
-			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, AD_HOC_AGENTS_WORKSPACE_NAME)),
+			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, standaloneName)),
 	};
 	return standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
 }
@@ -428,7 +432,7 @@ export function useWorkspaceSession(sessionId: string) {
 			const project = session.projectId
 				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
 					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
-				: ({ id: STANDALONE_WORKSPACE_ID, name: AD_HOC_AGENTS_WORKSPACE_NAME } satisfies Pick<WorkspaceSummary, "id" | "name">);
+				: ({ id: STANDALONE_WORKSPACE_ID, name: standaloneWorkspaceName() } satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});

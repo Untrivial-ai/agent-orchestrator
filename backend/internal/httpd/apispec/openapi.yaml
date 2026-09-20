@@ -1352,6 +1352,50 @@ paths:
       summary: Validate a selected folder for project import onboarding
       tags:
       - import
+  /api/v1/link-preview:
+    get:
+      operationId: getLinkPreview
+      parameters:
+      - description: Absolute http(s) URL of the page to preview.
+        in: query
+        name: url
+        schema:
+          description: Absolute http(s) URL of the page to preview.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkPreviewResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+      summary: Fetch link-preview metadata (Open Graph) for an external URL
+      tags:
+      - link-preview
   /api/v1/mobile/devices:
     get:
       operationId: listMobileDevices
@@ -9837,6 +9881,23 @@ components:
       - ok
       - sessionId
       type: object
+    LinkPreviewResponse:
+      properties:
+        description:
+          type: string
+        faviconUrl:
+          type: string
+        imageUrl:
+          type: string
+        siteName:
+          type: string
+        title:
+          type: string
+        url:
+          type: string
+      required:
+      - url
+      type: object
     ListAgentAuthPlansResponse:
       properties:
         plans:
@@ -12744,3 +12805,5 @@ tags:
 - description: Local machine readiness checks the desktop app runs before showing
     the board
   name: system
+- description: Server-side unfurl of external links for the CSP-locked renderer
+  name: link-preview

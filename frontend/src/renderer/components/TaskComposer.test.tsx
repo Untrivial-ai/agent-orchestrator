@@ -102,6 +102,18 @@ afterEach(() => {
 });
 
 describe("TaskComposer", () => {
+	it("prompts for an agent instead of loading models forever in a standalone task", () => {
+		render(
+			<Wrap>
+				<TaskComposer projectId="__standalone__" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		expect(screen.queryByRole("status", { name: "Loading models…" })).not.toBeInTheDocument();
+		expect(screen.getByLabelText("Model")).toHaveTextContent("Select agent");
+		expect(screen.getByLabelText("Model")).toHaveAttribute("aria-disabled", "true");
+	});
+
 	it("starts a standalone worker without loading or sending a project", async () => {
 		const onCreated = vi.fn();
 		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });

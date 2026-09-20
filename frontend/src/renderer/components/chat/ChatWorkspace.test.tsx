@@ -690,6 +690,65 @@ describe("ChatWorkspace timeline", () => {
 		expect(selection?.isCollapsed).toBe(false);
 	});
 
+	function withUserInput(status: "pending" | "completed") {
+		const snapshot = structuredClone(chatFixture);
+		snapshot.turns[0] = { ...snapshot.turns[0], state: "running" };
+		snapshot.items = snapshot.items.filter(
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
+		);
+		snapshot.items.push({
+			kind: "activity",
+			id: "input-1",
+			sequence: 100,
+			revision: 1,
+			turnId: "turn-1",
+			activityKind: "user_input",
+			status,
+			summary: "Choose a direction",
+			requestId: "input-1",
+			detail: {
+				inputMode: "form",
+				message: "Choose a direction",
+				schema: {
+					type: "object",
+					properties: {
+						question_0: {
+							type: "string",
+							title: "Which harness?",
+							oneOf: [{ const: "acp", title: "ACP" }],
+						},
+					},
+				},
+			},
+			createdAt: "2026-08-24T00:00:00Z",
+		});
+		return snapshot;
+	}
+
+	it("docks a pending question on the composer instead of the transcript", () => {
+		render(<ChatWorkspace snapshot={withUserInput("pending")} onResolveInput={vi.fn()} />);
+
+		expect(screen.getByTestId("elicitation-composer-dock")).toBeInTheDocument();
+		expect(screen.getByRole("group", { name: "Agent question" })).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("log", { name: "Conversation" })).queryByText("Which harness?"),
+		).not.toBeInTheDocument();
+	});
+
+	it("leaves nothing behind once a question is answered", () => {
+		render(<ChatWorkspace snapshot={withUserInput("completed")} onResolveInput={vi.fn()} />);
+
+		expect(screen.queryByTestId("elicitation-composer-dock")).not.toBeInTheDocument();
+		expect(screen.queryByRole("group", { name: "Agent question" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Which harness?")).not.toBeInTheDocument();
+		expect(screen.queryByText("Choose a direction")).not.toBeInTheDocument();
+	});
+
 	it("does not interrupt while an elicitation is open", () => {
 		const onInterrupt = vi.fn();
 		const snapshot = structuredClone(chatFixture);

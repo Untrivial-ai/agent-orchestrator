@@ -77,6 +77,8 @@ type Plan struct {
 	// example pre-recording workspace trust so a first-run dialog cannot
 	// swallow the login flow).
 	prepareWorkspace func(context.Context, string) error
+	launcher         string
+	launcherArgs     []string
 }
 
 // TerminalOpener opens the daemon-trusted terminal used for a native
@@ -100,10 +102,11 @@ type StartResult struct {
 // dataDir roots the stable per-harness auth workspaces used by plans with a
 // prepareWorkspace hook.
 type Service struct {
-	executables ExecutableFinder
-	agents      AgentBinaryResolver
-	terminals   TerminalOpener
-	dataDir     string
+	executables    ExecutableFinder
+	agents         AgentBinaryResolver
+	terminals      TerminalOpener
+	dataDir        string
+	selfExecutable func() (string, error)
 }
 
 // New creates an authentication-plan service.
@@ -114,7 +117,7 @@ func New(executables ExecutableFinder, terminals TerminalOpener) *Service {
 // NewWithAgentResolver creates a service that uses AO's adapter-aware binary
 // resolver as the authoritative validation and discovery boundary.
 func NewWithAgentResolver(executables ExecutableFinder, agents AgentBinaryResolver, terminals TerminalOpener, dataDir string) *Service {
-	return &Service{executables: executables, agents: agents, terminals: terminals, dataDir: dataDir}
+	return &Service{executables: executables, agents: agents, terminals: terminals, dataDir: dataDir, selfExecutable: os.Executable}
 }
 
 // Plans returns every known harness plan in stable Harness settings order.
@@ -159,8 +162,16 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 	if s.terminals == nil {
 		return StartResult{}, apierr.Internal("AGENT_AUTH_TERMINAL_UNAVAILABLE", "Authentication terminal service is unavailable.")
 	}
+	argv := plan.command
+	if plan.launcher != "" {
+		self, err := s.selfExecutable()
+		if err != nil || strings.TrimSpace(self) == "" {
+			return StartResult{}, apierr.Internal("AGENT_AUTH_TERMINAL_UNAVAILABLE", "Authentication login menu is unavailable.")
+		}
+		argv = append([]string{self, plan.launcher, "--executable", plan.command[0]}, plan.launcherArgs...)
+	}
 	input := shellterm.OpenCommandTerminalInput{
-		Argv:                    plan.command,
+		Argv:                    argv,
 		Title:                   plan.title,
 		InitialInput:            plan.initialInput,
 		InitialInputReadyStates: plan.initialInputReadyStates,
