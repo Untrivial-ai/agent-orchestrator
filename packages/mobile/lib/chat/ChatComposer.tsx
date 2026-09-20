@@ -36,18 +36,23 @@ type Attachment =
 const MAX_EMBEDDED_FILE_BYTES = 500_000;
 
 /**
- * The pill's size, derived — never measured.
+ * The composer's one and only size.
  *
- * The field is one line tall at rest and takes another line's worth of height
- * for each line the message wraps to, up to a cap. The pill and the native
- * material behind it are both computed from that same number, so the two cannot
- * disagree the way they did when the material followed a height measured from
- * layout: a measurement taken while the keyboard was animating stuck at the
- * wrong size, and the composer's contents ended up outside their background.
+ * Constants, not measurements. Three versions of this tried to let the pill grow
+ * with a long message, and each one broke the same way: the native material
+ * behind the pill ended up a different size from the pill itself — 36pt tall
+ * behind a 56pt pill, contents hanging outside their own background — because
+ * every one of those sizes came from something read at runtime (a layout
+ * measurement, the space SwiftUI was proposed mid-animation, a content-height
+ * count) and that reading is taken while the keyboard is still moving.
+ *
+ * A chat field that is one line tall and scrolls is the boring version, and
+ * boring is what this needs: the material has one size to know, so it cannot be
+ * left behind by an animation again.
  */
+export const COMPOSER_HEIGHT = 56;
+export const COMPOSER_FIELD_HEIGHT = 44;
 const COMPOSER_LINE_HEIGHT = type.subheadline.lineHeight;
-const COMPOSER_FIELD_MIN = 44;
-const COMPOSER_MAX_LINES = 5;
 /** The pill's corner, and so also the radius of the glass drawn behind it. */
 const COMPOSER_RADIUS = 28;
 const MAX_ATTACHMENTS = 8;
@@ -127,10 +132,6 @@ export function ChatComposer({
 	const [text, setText] = useState("");
 	const [cursor, setCursor] = useState(0);
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
-	// How tall the field is for the current message, in the composer's own terms:
-	// one line, plus a line for each line the text wraps to. Both the field and the
-	// pill are sized from this, so neither can drift from the other.
-	const [fieldHeight, setFieldHeight] = useState(COMPOSER_FIELD_MIN);
 	const [localError, setLocalError] = useState<string>();
 	const [submitting, setSubmitting] = useState(false);
 	const [promotingQueuedTurnId, setPromotingQueuedTurnId] = useState<string>();
@@ -371,9 +372,9 @@ export function ChatComposer({
 				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.restoreAction}>Answer</Text>
 			</Pressable> : null}
 			{requestCard ?? <View
-				style={[styles.composer, { height: fieldHeight + space.xs * 2 }, stopped && { opacity: 0.55 }]}
+				style={[styles.composer, stopped && { opacity: 0.55 }]}
 			>
-				<ComposerGlass height={fieldHeight + space.xs * 2} radius={COMPOSER_RADIUS} />
+				<ComposerGlass height={COMPOSER_HEIGHT} radius={COMPOSER_RADIUS} />
 				<ChatAttachmentMenu disabled={stopped} canAttachFile={Boolean(canEmbedFiles)} onChoosePhoto={() => void addImage()} onChooseFile={() => void addFile()} />
 				<TextInput
 					accessibilityLabel="Message the agent"
@@ -381,13 +382,9 @@ export function ChatComposer({
 					value={text}
 					onChangeText={setText}
 					onSelectionChange={(event) => setCursor(event.nativeEvent.selection.start)}
-					onContentSizeChange={(event) => {
-						const lines = Math.min(COMPOSER_MAX_LINES, Math.max(1, Math.round(event.nativeEvent.contentSize.height / COMPOSER_LINE_HEIGHT)));
-						setFieldHeight(COMPOSER_FIELD_MIN + (lines - 1) * COMPOSER_LINE_HEIGHT);
-					}}
 					placeholder={stopped ? "Agent is stopped" : deliveryPresentation.placeholder}
 					placeholderTextColor={t.textFaint}
-					style={[styles.input, { height: fieldHeight }]}
+					style={styles.input}
 					multiline
 					maxLength={40_000}
 				/>
@@ -413,11 +410,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	// Centred, not bottom-aligned: the field re-measures when it loses focus as the
 	// keyboard closes, and with `flex-end` that measurement moved the controls
 	// relative to the pill instead of the pill growing around them.
-	composer: { flexDirection: "row", alignItems: "center", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
+	composer: { height: COMPOSER_HEIGHT, flexDirection: "row", alignItems: "center", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
 	// 44pt of box around a 20pt line, so one line sits centred in the pill rather
 	// than riding its bottom edge — and a long message scrolls in place instead of
 	// growing the pill and moving the material under it.
-	input: { flex: 1, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: COMPOSER_LINE_HEIGHT, paddingVertical: space.md, textAlignVertical: "top" },
+	input: { flex: 1, height: COMPOSER_FIELD_HEIGHT, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: COMPOSER_LINE_HEIGHT, paddingVertical: space.md, textAlignVertical: "top" },
 	send: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.accent },
 	stop: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.bgSubtle, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
 	attachments: { gap: space.xs, paddingBottom: space.xs },

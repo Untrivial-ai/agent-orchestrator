@@ -31,15 +31,16 @@ describe("chat composer pill", () => {
 	});
 
 	it("lays the glass behind the row, sized by the pill itself", () => {
-		// The pill and the material behind it are handed the same expression, so
-		// neither can be a frame ahead of the other.
-		expect(composer).toContain("<ComposerGlass height={fieldHeight + space.xs * 2} radius={COMPOSER_RADIUS} />");
-		expect(composer).toContain("style={[styles.composer, { height: fieldHeight + space.xs * 2 }, stopped && { opacity: 0.55 }]}");
-		// Heights come from the message, never from layout: a height measured while
-		// the keyboard is animating sticks at the wrong value, which is the composer
-		// ending up with its contents outside their background.
+		// One constant, handed to both. Three attempts at a growing pill ended with
+		// the material a different size from the pill behind it, because every one of
+		// them sized the material from something read at runtime — a layout
+		// measurement, the space SwiftUI was proposed mid-animation, a content-height
+		// count — and all three are read while the keyboard is still moving.
+		expect(composer).toContain("<ComposerGlass height={COMPOSER_HEIGHT} radius={COMPOSER_RADIUS} />");
+		expect(styleRule("composer")).toContain("height: COMPOSER_HEIGHT");
+		expect(styleRule("input")).toContain("height: COMPOSER_FIELD_HEIGHT");
 		expect(composer).not.toContain("onLayout");
-		expect(composer).toContain("onContentSizeChange");
+		expect(composer).not.toContain("onContentSizeChange");
 		// `false`: the material must not take the touch. The field is inside this
 		// pill, and an interactive material only passes taps that land on its own
 		// content — typing would stop working.
