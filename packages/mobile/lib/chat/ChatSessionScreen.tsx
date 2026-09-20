@@ -2,13 +2,12 @@ import { Feather } from "@expo/vector-icons";
 import { useHeaderHeight } from "expo-router/build/react-navigation/elements";
 import { useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useKeyboardState } from "react-native-keyboard-controller";
+import { KeyboardAvoidingView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
 	ActivityIndicator,
 	Alert,
 	Keyboard,
-	KeyboardAvoidingView,
 	Platform,
 	Pressable,
 	StyleSheet,
@@ -416,6 +415,11 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const steerUnsupported = conversationActionUnsupported("steer", conversation.actionCodes.steer);
 
 	return (
+		// keyboard-controller's avoider, not React Native's. Both do the same
+		// arithmetic; this one interpolates the padding with the keyboard's own
+		// animation, so the composer travels with the keys. RN's re-renders once per
+		// keyboard event on the JS thread, which is the single-frame jump up when
+		// the keyboard opens.
 		<KeyboardAvoidingView
 			style={[styles.screen, Platform.OS === "android" ? screenKeyboardAvoidance("android", keyboardHeight, insets.bottom).rootStyle : undefined]}
 			behavior={Platform.OS === "ios" ? "padding" : undefined}

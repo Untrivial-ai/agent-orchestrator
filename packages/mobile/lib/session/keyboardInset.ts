@@ -9,6 +9,16 @@
 /** Minimum breathing room under the dock on a device with no home indicator. */
 export const MIN_DOCK_INSET = 8;
 
+/**
+ * Breathing room between the dock and the top edge of the keyboard.
+ *
+ * Not zero: the root view clears exactly the keyboard's height, so without this
+ * the pill's bottom edge *is* the keyboard's top edge. iOS' own sheets leave a
+ * gap there, and the flush version read as the bar being cut off by the
+ * keyboard rather than sitting above it.
+ */
+export const KEYBOARD_DOCK_GAP = 8;
+
 // KeyboardAvoidingView measures against the window while this screen begins
 // below a native-stack header. Supplying that stack's measured header height
 // reconciles those coordinate spaces without assuming a particular iPhone,
@@ -60,6 +70,6 @@ export function screenKeyboardAvoidance(
 export function dockInset(kbHeight: number, insetsBottom: number, keyboardVisible = kbHeight > 0): number {
 	// `keyboardVisible` covers Android's adjustResize path, where the window may
 	// already have shifted before a non-zero height is reported.
-	if (keyboardVisible) return 0;
+	if (keyboardVisible) return KEYBOARD_DOCK_GAP;
 	return insetsBottom > 0 ? insetsBottom : MIN_DOCK_INSET;
 }

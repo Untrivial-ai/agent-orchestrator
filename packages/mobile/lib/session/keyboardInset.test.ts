@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dockInset, keyboardVerticalOffset, MIN_DOCK_INSET, rootKeyboardPad, screenKeyboardAvoidance } from "./keyboardInset";
+import { dockInset, KEYBOARD_DOCK_GAP, keyboardVerticalOffset, MIN_DOCK_INSET, rootKeyboardPad, screenKeyboardAvoidance } from "./keyboardInset";
 import { CONTROL_KEYS } from "./keys";
 
 describe("dockInset", () => {
@@ -7,9 +7,12 @@ describe("dockInset", () => {
 	// the root view was already padded by the keyboard height, so opening the
 	// keyboard moved the bar twice in opposite directions.
 	it("does not add a second dock gap while the root already clears the keyboard", () => {
-		expect(dockInset(336, 34, true)).toBe(0);
-		expect(dockInset(1, 34, true)).toBe(0);
-		expect(dockInset(0, 34, true)).toBe(0);
+		// The gap is a constant, not the inset: the root already clears the whole
+		// keyboard, and adding the home-indicator inset again is what made the bar
+		// kick twice.
+		expect(dockInset(336, 34, true)).toBe(KEYBOARD_DOCK_GAP);
+		expect(dockInset(1, 34, true)).toBe(KEYBOARD_DOCK_GAP);
+		expect(dockInset(0, 34, true)).toBe(KEYBOARD_DOCK_GAP);
 	});
 
 	it("carries the home-indicator inset while the keyboard is down", () => {
@@ -69,13 +72,13 @@ describe("keyboardVerticalOffset", () => {
 	});
 });
 
-// The dock sits inside the root view, so the root's padding is the only place
-// the keyboard is accounted for. Together they must clear the keyboard exactly.
+// The dock sits inside the root view, so the root's padding is what clears the
+// keyboard. The dock only adds its own gap on top of that.
 describe("root padding and dock inset together", () => {
 	it("clear the full Android keyboard occupancy without double-counting", () => {
 		const kb = 336; // as reported by RN: ime inset minus nav bar
 		const nav = 48;
-		expect(rootKeyboardPad("android", kb, nav) + dockInset(kb, nav)).toBe(kb + nav);
+		expect(rootKeyboardPad("android", kb, nav) + dockInset(kb, nav)).toBe(kb + nav + KEYBOARD_DOCK_GAP);
 	});
 
 	it("fall back to the safe-area inset with the keyboard down", () => {

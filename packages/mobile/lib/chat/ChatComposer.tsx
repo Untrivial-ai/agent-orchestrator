@@ -170,6 +170,10 @@ export function ChatComposer({
 		if (submitting || pending || disabled) return;
 		const trimmed = text.trim();
 		if (!trimmed && attachments.length === 0) return;
+		// Dismissed on the tap, not after the send lands. Waiting for the request
+		// tied the keyboard's exit to the network, so it dropped whenever the
+		// answer arrived — which read as the keyboard being taken away mid-sentence.
+		Keyboard.dismiss();
 		setLocalError(undefined);
 		setSubmitting(true);
 		try {
@@ -181,7 +185,6 @@ export function ChatComposer({
 			setText("");
 			setAttachments([]);
 			void AsyncStorage.removeItem(draftKey);
-			Keyboard.dismiss();
 			haptics.success();
 		} catch (cause) {
 			setLocalError(cause instanceof Error ? cause.message : String(cause));
