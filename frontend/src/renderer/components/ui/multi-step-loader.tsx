@@ -21,7 +21,10 @@ export function MultiStepLoader({
 	useEffect(() => {
 		const step = stepRef.current;
 		if (!step) return;
-		const advance = () => setActiveIndex((current) => (current + 1) % steps.length);
+		const advance = (event: AnimationEvent) => {
+			if (event.target !== step) return;
+			setActiveIndex((current) => (current + 1) % steps.length);
+		};
 		step.addEventListener("animationend", advance);
 		return () => step.removeEventListener("animationend", advance);
 	}, [activeIndex, steps.length]);

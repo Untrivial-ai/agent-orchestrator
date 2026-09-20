@@ -18,4 +18,21 @@ describe("MultiStepLoader", () => {
 		fireEvent(within(activity).getByTestId("multi-step-loader-step"), new window.Event("animationend", { bubbles: true }));
 		expect(within(activity).getByText("Orchestrating")).toBeInTheDocument();
 	});
+
+	it("advances only when the phrase animation ends", () => {
+		render(<MultiStepLoader ariaLabel="Session setup activity" duration={1_000} steps={steps} />);
+		const activity = screen.getByRole("status", { name: "Session setup activity" });
+		const animatedStep = within(activity).getByTestId("multi-step-loader-step");
+		const dot = animatedStep.querySelector<HTMLElement>(".multi-step-loader__dot");
+		const check = animatedStep.querySelector<HTMLElement>(".multi-step-loader__check");
+
+		expect(dot).not.toBeNull();
+		expect(check).not.toBeNull();
+		fireEvent(dot!, new window.Event("animationend", { bubbles: true }));
+		fireEvent(check!, new window.Event("animationend", { bubbles: true }));
+		expect(within(activity).getByText("Orchestrating")).toBeInTheDocument();
+
+		fireEvent(animatedStep, new window.Event("animationend", { bubbles: true }));
+		expect(within(activity).getByText("Coordinating")).toBeInTheDocument();
+	});
 });
