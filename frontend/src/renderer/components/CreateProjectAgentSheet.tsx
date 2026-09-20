@@ -43,6 +43,7 @@ export type CreateProjectAgentSelection = {
 };
 
 const EMPTY_INTAKE: IntakeForm = { enabled: false, repo: "", assignee: "" };
+const AGENT_MENU_WIDTH = "w-56! min-w-56! max-w-56!";
 type CreateProjectAgentSheetProps = {
 	error?: string | null;
 	action?: "create" | "clone";
@@ -445,7 +446,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					disabled={disabled}
 					onChange={onChange}
 					triggerClassName={invalid ? "text-error" : undefined}
-					menuClassName="settings-agent-menu-surface w-(--radix-dropdown-menu-trigger-width)! min-w-(--radix-dropdown-menu-trigger-width)! max-w-(--radix-dropdown-menu-trigger-width)!"
+					menuClassName={cn("settings-agent-menu-surface", AGENT_MENU_WIDTH)}
 					menuItemClassName="settings-agent-menu-item"
 					renderTrigger={() => (
 						<>
@@ -504,7 +505,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					triggerClassName,
 				)}
 				menuClassName={cn(
-					"w-(--radix-dropdown-menu-trigger-width)! min-w-(--radix-dropdown-menu-trigger-width)! max-w-(--radix-dropdown-menu-trigger-width)!",
+					AGENT_MENU_WIDTH,
 					contentClassName,
 				)}
 				renderTrigger={() => (
