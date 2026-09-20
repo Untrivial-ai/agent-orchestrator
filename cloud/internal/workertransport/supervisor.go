@@ -308,7 +308,7 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	}
 	if err := s.writeTerminal(worker.TerminalCommand{
 		TerminalID: agentTerminalID,
-		Data:       []byte(turn.Prompt + "\r"),
+		Data:       worker.EncodeTerminalInput(turn.Prompt),
 	}); err != nil {
 		if failErr := s.Control.FailTurn(
 			ctx, turn.ID, turn.Attempt, err.Error(),
@@ -348,6 +348,18 @@ func (s *Supervisor) handle(
 		}
 	case "workspace.diff":
 		response, err = workspace.Diff(ctx)
+	case "harness.inspect":
+		var input worker.HarnessInspectRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = inspectHarnesses(ctx, input)
+		}
+	case "harness.install":
+		var input worker.HarnessInstallRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = installHarness(ctx, input)
+		}
 	case "browser.fetch":
 		var input worker.BrowserFetchRequest
 		err = decodePayload(request.Payload, &input)

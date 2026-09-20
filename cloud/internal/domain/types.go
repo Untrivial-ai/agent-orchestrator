@@ -66,6 +66,7 @@ type Session struct {
 	// ReviewerHarness overrides Harness only for manually-triggered PR review
 	// terminals. An empty value deliberately follows the worker harness.
 	ReviewerHarness    string
+	AutoReviewEnabled  bool
 	AutoInjectCI       bool
 	AutoInjectReview   bool
 	TerminateOnPRMerge bool

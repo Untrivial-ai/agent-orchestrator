@@ -384,6 +384,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviews/{reviewRunId}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                reviewRunId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["sendSessionReviewToWorker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateSessionPreferences"];
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviewer-harnesses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get: operations["inspectSessionReviewerHarnesses"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviewer-harnesses/{harness}/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                harness: components["schemas"]["CloudReviewerHarness"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["installSessionReviewerHarness"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/messages": {
         parameters: {
             query?: never;
@@ -1545,6 +1623,9 @@ export interface components {
                 desiredState: "deleted";
             };
         };
+        SessionResponse: {
+            session: components["schemas"]["Session"];
+        };
         Session: {
             /** Format: uuid */
             id: string;
@@ -1554,6 +1635,11 @@ export interface components {
             projectId: string;
             kind: components["schemas"]["SessionKind"];
             harness: string;
+            reviewerHarness?: string;
+            autoReviewEnabled: boolean;
+            autoInjectCI: boolean;
+            autoInjectReview: boolean;
+            terminateOnPrMerge: boolean;
             displayName: string;
             branch: string;
             mode: components["schemas"]["SessionMode"];
@@ -1584,6 +1670,25 @@ export interface components {
             deniedCommands: string[];
             /** Format: uuid */
             sandboxProviderConnectionId?: string;
+        };
+        UpdateSessionPreferencesInput: {
+            reviewerHarness?: components["schemas"]["CloudReviewerHarness"] | string;
+            autoReviewEnabled?: boolean;
+            autoInjectCI?: boolean;
+            autoInjectReview?: boolean;
+            terminateOnPrMerge?: boolean;
+        };
+        /** @enum {string} */
+        CloudReviewerHarness: "claude-code" | "codex" | "cursor";
+        HarnessStatus: {
+            harness: components["schemas"]["CloudReviewerHarness"];
+            /** @enum {string} */
+            status: "missing" | "ready" | "failed";
+            version?: string;
+            error?: string;
+        };
+        HarnessInspectResponse: {
+            harnesses: components["schemas"]["HarnessStatus"][];
         };
         SessionPage: {
             items: components["schemas"]["Session"][];
@@ -1716,6 +1821,8 @@ export interface components {
             sessionId: string;
             batchId: string;
             harness: string;
+            /** @enum {string} */
+            triggerSource: "manual" | "auto";
             pullRequestUrl: string;
             targetSha: string;
             status: components["schemas"]["AOReviewRunStatus"];
@@ -1743,6 +1850,7 @@ export interface components {
             sessionId: string;
             reviewerHandleId?: string;
             reviewerHarness?: string;
+            availableReviewerHarnesses: components["schemas"]["CloudReviewerHarness"][];
             reviews: components["schemas"]["AOPullRequestReviewState"][];
             runs: components["schemas"]["AOReviewRun"][];
         };
@@ -2725,6 +2833,115 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionReviewState"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    sendSessionReviewToWorker: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key with the same command returns the original result.
+                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+                 *      */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                reviewRunId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored review was accepted and durably queued for the worker agent. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        event: components["schemas"]["UserMessageEvent"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateSessionPreferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSessionPreferencesInput"];
+            };
+        };
+        responses: {
+            /** @description The updated cloud session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    inspectSessionReviewerHarnesses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supported reviewer CLI availability inside the live sandbox. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HarnessInspectResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    installSessionReviewerHarness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                harness: components["schemas"]["CloudReviewerHarness"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The installed and verified reviewer CLI. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HarnessStatus"];
                 };
             };
             default: components["responses"]["Error"];

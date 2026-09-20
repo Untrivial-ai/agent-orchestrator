@@ -78,6 +78,7 @@ type ReviewRun struct {
 	TargetSHA       string
 	// Harness is the coding-agent provider that executed this particular pass.
 	Harness          string
+	TriggerSource    string
 	Status           contract.AOReviewRunStatus
 	Verdict          contract.AOReviewVerdict
 	Body             string

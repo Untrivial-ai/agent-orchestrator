@@ -407,6 +407,47 @@ describe("TerminalPane empty states", () => {
 		}
 	});
 
+	it("refreshes cloud review state without showing a false terminal-ended banner", async () => {
+		const previousAO = window.ao;
+		window.ao = {} as typeof window.ao;
+		terminalState.value = "exited";
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+		const cloudSession = {
+			...worker,
+			cloud: { orgId: "cloud-org" },
+		} satisfies WorkspaceSession;
+		try {
+			render(
+				<QueryClientProvider client={queryClient}>
+					<TerminalPane
+						daemonReady
+						fontSize={12}
+						session={cloudSession}
+						terminalTarget={{
+							handleId: "reviewer-1",
+							harness: "codex",
+							kind: "reviewer",
+							reviewStatus: "running",
+							sessionId: cloudSession.id,
+						}}
+						theme="dark"
+					/>
+				</QueryClientProvider>,
+			);
+
+			await waitFor(() =>
+				expect(invalidateQueries).toHaveBeenCalledWith({
+					queryKey: ["cloud-session-reviews"],
+				}),
+			);
+			expect(screen.queryByText("Terminal ended")).not.toBeInTheDocument();
+			expect(screen.queryByText("Review terminal has ended.")).not.toBeInTheDocument();
+		} finally {
+			window.ao = previousAO;
+		}
+	});
+
 	it("uses the full top, right, and bottom extent for the terminal grid", () => {
 		const view = renderPane({ ...worker, terminalHandleId: "term-1" });
 		try {

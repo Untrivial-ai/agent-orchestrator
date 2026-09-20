@@ -367,7 +367,8 @@ func startInteractiveAgent(
 		if harness == "" {
 			harness = bootstrap.Launch.Harness
 		}
-		if err := verifyHarnessAvailable(harness); err != nil {
+		reviewBinary, err := workertransport.ResolveHarnessBinary(harness)
+		if err != nil {
 			return workerexec.Command{}, err
 		}
 		reviewCredential, err := client.CredentialForProvider(reviewCtx, harness)
@@ -378,13 +379,17 @@ func startInteractiveAgent(
 		reviewLaunch.Harness = harness
 		reviewLaunch.SessionID = uuid.NewString()
 		reviewLaunch.AgentSessionID = ""
-		reviewCommand, err := (workerexec.HarnessBuilder{DataDir: dataDir}).BuildInteractive(reviewLaunch, reviewCredential, workspace)
+		reviewCommand, err := (workerexec.HarnessBuilder{
+			DataDir:  dataDir,
+			Binaries: map[string]string{harness: reviewBinary},
+		}).BuildInteractive(reviewLaunch, reviewCredential, workspace)
 		if err != nil {
 			return workerexec.Command{}, fmt.Errorf("build reviewer command: %w", err)
 		}
 		for key, value := range runtimeEnv {
 			reviewCommand.Env[key] = value
 		}
+		reviewCommand.Env[worker.ReviewTerminalEnv] = "1"
 		return reviewCommand, nil
 	})
 	agentTerminal, err := client.ensureAgentTerminal(ctx)

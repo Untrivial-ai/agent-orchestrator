@@ -14,18 +14,18 @@ type reviewRunRowStub struct {
 func (s reviewRunRowStub) Scan(dest ...any) error {
 	values := []string{
 		"run-id", "org-id", "pr-id", "session-id", "target-sha", "codex",
-		"running", "", "", "", "", // status through last_error
+		"manual", "running", "", "", "", "", // trigger source through last_error
 	}
 	for i, value := range values {
-		if i == 10 { // review_terminal_id is nullable.
+		if i == 11 { // review_terminal_id is nullable.
 			continue
 		}
 		*dest[i].(*string) = value
 	}
-	*dest[10].(**string) = s.terminalID
-	*dest[12].(*time.Time) = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	*dest[13].(**time.Time) = nil
+	*dest[11].(**string) = s.terminalID
+	*dest[13].(*time.Time) = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	*dest[14].(**time.Time) = nil
+	*dest[15].(**time.Time) = nil
 	return nil
 }
 
@@ -72,6 +72,15 @@ func TestReviewTerminalOpenCommandCarriesInitialPrompt(t *testing.T) {
 	}
 	if got, want := string(command.Data), "review this pull request"; got != want {
 		t.Fatalf("initial review prompt = %q, want %q", got, want)
+	}
+}
+
+func TestReviewRunConflictPredicate(t *testing.T) {
+	if got := reviewRunConflictPredicate("auto"); got != "trigger_source = 'auto'" {
+		t.Fatalf("automatic predicate = %q", got)
+	}
+	if got := reviewRunConflictPredicate("manual"); got != "status = 'running'" {
+		t.Fatalf("manual predicate = %q", got)
 	}
 }
 

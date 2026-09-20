@@ -124,6 +124,13 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 	if len(args) != 2 {
 		return nil
 	}
+	// A reviewer is a separate, short-lived harness process inside the same
+	// sandbox. Its hooks inherit the parent worker credential, but publishing
+	// them as parent-agent activity leaves that session stuck active after the
+	// reviewer exits and prevents queued feedback from reaching the real agent.
+	if os.Getenv(worker.ReviewTerminalEnv) == "1" {
+		return nil
+	}
 	// A completed turn (Stop) is the event that drives durable-restore
 	// checkpointing: poke the worker's checkpoint bridge so it captures the
 	// transcript and any uncommitted work. Event-driven, best-effort, and

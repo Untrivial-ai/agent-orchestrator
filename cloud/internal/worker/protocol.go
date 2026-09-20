@@ -2,6 +2,11 @@ package worker
 
 import "time"
 
+// ReviewTerminalEnv marks a dedicated reviewer process. Reviewer harnesses
+// share the parent session's worker credential, but their lifecycle hooks must
+// not overwrite the interactive agent's activity state.
+const ReviewTerminalEnv = "AO_CLOUD_REVIEW_TERMINAL"
+
 // BootstrapRequest is what a worker sends to redeem its one-time ticket.
 type BootstrapRequest struct {
 	BootstrapToken string   `json:"bootstrapToken"`
@@ -216,6 +221,25 @@ type WorkspaceReadRequest struct {
 type WorkspaceWriteRequest struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+}
+
+type HarnessInspectRequest struct {
+	Harnesses []string `json:"harnesses"`
+}
+
+type HarnessInstallRequest struct {
+	Harness string `json:"harness"`
+}
+
+type HarnessStatus struct {
+	Harness string `json:"harness"`
+	Status  string `json:"status"`
+	Version string `json:"version,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type HarnessInspectResponse struct {
+	Harnesses []HarnessStatus `json:"harnesses"`
 }
 
 // BrowserFetchRequest asks the session worker to fetch a browser resource from

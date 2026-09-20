@@ -14,12 +14,15 @@ type Store interface {
 	// OpenPullRequestRefs lists every open pull request across every
 	// organization.
 	OpenPullRequestRefs(ctx context.Context) ([]domain.PullRequestRef, error)
+	AutomaticReviewSession(ctx context.Context, orgID, pullRequestID string) (sessionID, harness string, enabled bool, err error)
+	ApplyPullRequestAutomation(ctx context.Context, pr domain.PullRequest) error
 }
 
 // GitHub fetches one pull request's current state and applies it over its
 // durable record.
 type GitHub interface {
 	RefreshPullRequestStatus(ctx context.Context, ref domain.PullRequestRef) (domain.PullRequest, error)
+	TriggerAutomaticReview(ctx context.Context, orgID, sessionID, harness string, pr domain.PullRequest) (domain.ReviewRun, bool, error)
 }
 
 // Options configures a Scanner. Zero values fall back to the defaults below.
@@ -77,10 +80,29 @@ func (s *Scanner) ScanOnce(ctx context.Context) error {
 		return err
 	}
 	for _, ref := range refs {
-		if _, err := s.github.RefreshPullRequestStatus(ctx, ref); err != nil {
+		pr, err := s.github.RefreshPullRequestStatus(ctx, ref)
+		if err != nil {
 			s.log.Error("pull request status refresh failed",
 				"pull_request_id", ref.ID, "org_id", ref.OrgID, "err", err)
 			continue
+		}
+		if err := s.store.ApplyPullRequestAutomation(ctx, pr); err != nil {
+			s.log.Error("apply pull request automation",
+				"pull_request_id", ref.ID, "org_id", ref.OrgID, "err", err)
+			continue
+		}
+		sessionID, harness, enabled, err := s.store.AutomaticReviewSession(ctx, ref.OrgID, ref.ID)
+		if err != nil {
+			s.log.Error("load automatic review preference",
+				"pull_request_id", ref.ID, "org_id", ref.OrgID, "err", err)
+			continue
+		}
+		if !enabled || pr.Draft || pr.State != "open" || pr.HeadSHA == "" {
+			continue
+		}
+		if _, _, err := s.github.TriggerAutomaticReview(ctx, ref.OrgID, sessionID, harness, pr); err != nil {
+			s.log.Error("automatic pull request review failed",
+				"pull_request_id", ref.ID, "org_id", ref.OrgID, "err", err)
 		}
 	}
 	return nil

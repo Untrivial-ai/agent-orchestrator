@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -151,12 +153,77 @@ func (s *Server) listSessionPullRequests(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"sessionId": sessionID, "pullRequests": items})
 }
 
+func (s *Server) sendReviewToWorker(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	reviewRunID := chi.URLParam(r, "reviewRunId")
+	if requireUUID(orgID, "orgId") != nil ||
+		requireUUID(sessionID, "sessionId") != nil ||
+		requireUUID(reviewRunID, "reviewRunId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId, sessionId, and reviewRunId must be UUIDs.")
+		return
+	}
+	key, err := idempotencyKey(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	runs, err := s.store.ListReviewRunsBySession(r.Context(), principalFrom(r), orgID, sessionID)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	var selected *domain.ReviewRunPullRequest
+	for index := range runs {
+		if runs[index].ID == reviewRunID {
+			selected = &runs[index]
+			break
+		}
+	}
+	if selected == nil {
+		writeError(w, r, http.StatusNotFound, "not_found", "Review run not found.")
+		return
+	}
+	if selected.Status != contract.AOReviewRunDelivered && selected.Status != contract.AOReviewRunComplete {
+		writeError(w, r, http.StatusConflict, "review_not_ready", "The review is not ready to send to the worker.")
+		return
+	}
+	body := strings.TrimSpace(selected.Body)
+	if body == "" {
+		writeError(w, r, http.StatusConflict, "review_not_ready", "The review has no feedback to send to the worker.")
+		return
+	}
+	harness := strings.TrimSpace(selected.Harness)
+	if harness == "" {
+		harness = "reviewer"
+	}
+	message := fmt.Sprintf(
+		"An AO agent review from %s has feedback for your pull request. Address the actionable items, run relevant tests, commit the fixes, and push the branch.\n\nReview summary:\n%s",
+		harness,
+		body,
+	)
+	reviewURL := strings.TrimSpace(selected.PullRequestURL)
+	if providerReviewID := strings.TrimSpace(selected.ProviderReviewID); reviewURL != "" && providerReviewID != "" {
+		reviewURL += "#pullrequestreview-" + providerReviewID
+	}
+	if reviewURL != "" {
+		message += "\n\nReview URL: " + reviewURL
+	}
+	event, err := s.store.SendMessage(r.Context(), principalFrom(r), orgID, sessionID, key, message)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"event": toClientEventResponse(event)})
+}
+
 type aoReviewRunResponse struct {
 	ID                 string     `json:"id"`
 	ReviewID           string     `json:"reviewId"`
 	SessionID          string     `json:"sessionId"`
 	BatchID            string     `json:"batchId"`
 	Harness            string     `json:"harness"`
+	TriggerSource      string     `json:"triggerSource"`
 	PullRequestURL     string     `json:"pullRequestUrl"`
 	TargetSHA          string     `json:"targetSha"`
 	Status             string     `json:"status"`
@@ -182,6 +249,7 @@ func toAOReviewRunResponse(run domain.ReviewRunPullRequest, harness string) aoRe
 		// inspector's history model.
 		BatchID:            run.ID,
 		Harness:            harness,
+		TriggerSource:      run.TriggerSource,
 		PullRequestURL:     run.PullRequestURL,
 		TargetSHA:          run.TargetSHA,
 		Status:             string(run.Status),

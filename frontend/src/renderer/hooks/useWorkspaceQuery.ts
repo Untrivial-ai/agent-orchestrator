@@ -37,15 +37,10 @@ function standaloneWorkspaceName(): string {
 function placeStandaloneWorkspaceLast(workspaces: WorkspaceSummary[]): WorkspaceSummary[] {
 	const standalone = workspaces.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
 	if (!standalone) return workspaces;
-	return [
-		...workspaces.filter((workspace) => workspace.id !== STANDALONE_WORKSPACE_ID),
-		standalone,
-	];
+	return [...workspaces.filter((workspace) => workspace.id !== STANDALONE_WORKSPACE_ID), standalone];
 }
 
-function toAgentSwitchSummary(
-	agentSwitch: components["schemas"]["AgentSwitch"],
-): AgentSwitchSummary {
+function toAgentSwitchSummary(agentSwitch: components["schemas"]["AgentSwitch"]): AgentSwitchSummary {
 	return {
 		agentHandoffStatus: agentSwitch.agentHandoffStatus,
 		errorCode: agentSwitch.errorCode,
@@ -75,8 +70,7 @@ function toWorkspaceSession(
 	project: Pick<WorkspaceSummary, "id" | "name">,
 ): WorkspaceSession {
 	const statusReadiness = session.statusReadiness ?? "ready";
-	const status =
-		statusReadiness === "ready" ? toSessionStatus(session.status, session.isTerminated) : "unknown";
+	const status = statusReadiness === "ready" ? toSessionStatus(session.status, session.isTerminated) : "unknown";
 	const scmStatus = session.scmStatus ? toSessionStatus(session.scmStatus) : undefined;
 	const kanbanColumn = toKanbanColumn(session.kanbanColumn, status);
 	const activity = statusReadiness === "ready" ? toSessionActivity(session.activity) : undefined;
@@ -96,10 +90,10 @@ function toWorkspaceSession(
 		reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
 		reviewerConfig: session.reviewerConfig
 			? {
-				model: session.reviewerConfig.model ?? undefined,
-				mode: session.reviewerConfig.mode ?? undefined,
-				permissions: session.reviewerConfig.permissions ?? undefined,
-			}
+					model: session.reviewerConfig.model ?? undefined,
+					mode: session.reviewerConfig.mode ?? undefined,
+					permissions: session.reviewerConfig.permissions ?? undefined,
+				}
 			: undefined,
 		autoReviewEnabled: session.autoReviewEnabled ?? false,
 		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
@@ -130,7 +124,10 @@ function toWorkspaceSession(
 
 export const workspaceQueryKey = ["workspaces"] as const;
 export function workspaceStatusesChecking(workspaces: WorkspaceSummary[] | undefined): boolean {
-	return workspaces?.some((workspace) => workspace.sessions.some((session) => session.statusReadiness === "checking")) ?? false;
+	return (
+		workspaces?.some((workspace) => workspace.sessions.some((session) => session.statusReadiness === "checking")) ??
+		false
+	);
 }
 const reportedUnknownSessionFields = new Set<string>();
 
@@ -139,7 +136,10 @@ function reportUnknownSessionField(field: "status" | "activity", value?: string)
 	const key = `${field}:${reason}`;
 	if (reportedUnknownSessionFields.has(key)) return;
 	reportedUnknownSessionFields.add(key);
-	void captureRendererEvent("ao.renderer.session_state_unknown", { field, reason });
+	void captureRendererEvent("ao.renderer.session_state_unknown", {
+		field,
+		reason,
+	});
 }
 
 function toLocalWorkspaceSession(
@@ -163,11 +163,13 @@ function toLocalWorkspaceSession(
 		issueId: session.issueId,
 		provider: toAgentProvider(session.harness),
 		reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
-		reviewerConfig: session.reviewerConfig ? {
-			model: session.reviewerConfig.model ?? undefined,
-			mode: session.reviewerConfig.mode ?? undefined,
-			permissions: session.reviewerConfig.permissions ?? undefined,
-		} : undefined,
+		reviewerConfig: session.reviewerConfig
+			? {
+					model: session.reviewerConfig.model ?? undefined,
+					mode: session.reviewerConfig.mode ?? undefined,
+					permissions: session.reviewerConfig.permissions ?? undefined,
+				}
+			: undefined,
 		autoReviewEnabled: session.autoReviewEnabled ?? false,
 		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
 		// Carried through verbatim: the session surface must render from
@@ -260,8 +262,7 @@ export const workspaceQueryOptions = {
 	queryFn: fetchWorkspaces,
 	retry: 1,
 	staleTime: 10_000,
-	refetchInterval: (query: Query<WorkspaceSummary[]>) =>
-		workspaceStatusesChecking(query.state.data) ? 300 : 15_000,
+	refetchInterval: (query: Query<WorkspaceSummary[]>) => (workspaceStatusesChecking(query.state.data) ? 300 : 15_000),
 };
 
 // Cloud projects are a separate query so a control-plane failure can never
@@ -274,11 +275,7 @@ export const cloudSessionsQueryKey = ["cloud-sessions"] as const;
 // Maps one control-plane session onto the board's session shape. Cloud sessions
 // carry the same status/activity/harness vocabulary as local ones, so the same
 // product-ui mappers apply; fields with no cloud analogue take safe defaults.
-function toCloudWorkspaceSession(
-	session: CloudCpSession,
-	project: CloudCpProject,
-	orgId: string,
-): WorkspaceSession {
+function toCloudWorkspaceSession(session: CloudCpSession, project: CloudCpProject, orgId: string): WorkspaceSession {
 	return {
 		id: session.id,
 		// The terminal pane only mounts for a session that has a terminal handle.
@@ -298,6 +295,7 @@ function toCloudWorkspaceSession(
 		title: session.displayName || session.id,
 		provider: toAgentProvider(session.harness),
 		reviewerHarness: toReviewerHarnessId(session.reviewerHarness),
+		autoReviewEnabled: session.autoReviewEnabled ?? false,
 		autoInjectCI: session.autoInjectCI ?? true,
 		autoInjectReview: session.autoInjectReview ?? true,
 		terminateOnPrMerge: session.terminateOnPrMerge ?? false,
@@ -321,11 +319,7 @@ function toCloudWorkspaceSession(
 	};
 }
 
-function toCloudWorkspace(
-	project: CloudCpProject,
-	sessions: CloudCpSession[],
-	orgId: string,
-): WorkspaceSummary {
+function toCloudWorkspace(project: CloudCpProject, sessions: CloudCpSession[], orgId: string): WorkspaceSummary {
 	return {
 		id: project.id,
 		name: project.displayName,
@@ -382,7 +376,10 @@ export function useCloudSessionsQuery(options: WorkspaceSubscriptionOptions = {}
 }
 
 export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
-	const local = useQuery({ ...workspaceQueryOptions, subscribed: options.subscribed });
+	const local = useQuery({
+		...workspaceQueryOptions,
+		subscribed: options.subscribed,
+	});
 	const cloud = useCloudProjectsQuery(options);
 	const cloudSessions = useCloudSessionsQuery(options);
 	const { org, ready } = useCloudOrg();
@@ -419,8 +416,15 @@ export function useWorkspaceSession(sessionId: string) {
 			workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === sessionId),
 		[sessionId],
 	);
-	const local = useQuery({ ...workspaceQueryOptions, select: selectLocalSession });
-	const localWorkspaces = useQuery({ ...workspaceQueryOptions, subscribed: false, enabled: Boolean(sessionId) });
+	const local = useQuery({
+		...workspaceQueryOptions,
+		select: selectLocalSession,
+	});
+	const localWorkspaces = useQuery({
+		...workspaceQueryOptions,
+		subscribed: false,
+		enabled: Boolean(sessionId),
+	});
 	const direct = useQuery({
 		queryKey: ["session", sessionId],
 		enabled: Boolean(sessionId) && local.data === undefined,
@@ -434,9 +438,12 @@ export function useWorkspaceSession(sessionId: string) {
 			const session = data?.session;
 			if (!session) return undefined;
 			const project = session.projectId
-				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
-					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
-				: ({ id: STANDALONE_WORKSPACE_ID, name: standaloneWorkspaceName() } satisfies Pick<WorkspaceSummary, "id" | "name">);
+				? (localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
+					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">))
+				: ({
+						id: STANDALONE_WORKSPACE_ID,
+						name: standaloneWorkspaceName(),
+					} satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});
@@ -465,7 +472,10 @@ export function useWorkspaceSession(sessionId: string) {
 				if (workspace.id !== resolvedDirectSession.workspaceId) return workspace;
 				if (workspace.sessions.some((session) => session.id === resolvedDirectSession.id)) return workspace;
 				changed = true;
-				return { ...workspace, sessions: [...workspace.sessions, resolvedDirectSession] };
+				return {
+					...workspace,
+					sessions: [...workspace.sessions, resolvedDirectSession],
+				};
 			});
 			return changed ? next : current;
 		});
@@ -506,7 +516,8 @@ function selectWorkspaceScope(
 			}
 		: undefined;
 	return {
-		project, session,
+		project,
+		session,
 		hasWorkerSessions: workspace ? workerSessions(workspace.sessions).length > 0 : false,
 		orchestrator: workspace ? newestActiveOrchestrator(workspace.sessions) : undefined,
 	};
@@ -521,7 +532,10 @@ export function useWorkspaceScope(projectId?: string, sessionId?: string) {
 		() => (workspaces: WorkspaceSummary[]) => selectWorkspaceScope(workspaces, projectId, sessionId),
 		[projectId, sessionId],
 	);
-	const local = useQuery({ ...workspaceQueryOptions, select: selectLocalScope });
+	const local = useQuery({
+		...workspaceQueryOptions,
+		select: selectLocalScope,
+	});
 	const cloud = useCloudProjectsQuery();
 	const cloudSessions = useCloudSessionsQuery();
 	const { org, ready } = useCloudOrg();
@@ -532,9 +546,7 @@ export function useWorkspaceScope(projectId?: string, sessionId?: string) {
 	}, [cloud.data, cloudSessions.data, org?.id, projectId, ready, sessionId]);
 	// Match useWorkspaceQuery's local-first semantics: do not reveal cloud
 	// records before the local workspace query has resolved successfully.
-	const data = local.data?.project || local.data?.session || !local.isSuccess
-		? local.data
-		: cloudScope ?? local.data;
+	const data = local.data?.project || local.data?.session || !local.isSuccess ? local.data : (cloudScope ?? local.data);
 	return { ...local, data };
 }
 
@@ -562,7 +574,10 @@ function selectTraySessions(workspaces: WorkspaceSummary[]): TraySessionEntry[] 
  * query boundary so ordinary streamed activity does not wake the runtime.
  */
 export function useWorkspaceTraySessions() {
-	const local = useQuery({ ...workspaceQueryOptions, select: selectTraySessions });
+	const local = useQuery({
+		...workspaceQueryOptions,
+		select: selectTraySessions,
+	});
 	const cloud = useCloudProjectsQuery();
 	const cloudSessions = useCloudSessionsQuery();
 	const { org, ready } = useCloudOrg();

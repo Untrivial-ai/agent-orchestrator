@@ -74,12 +74,19 @@ func TestReservedAgentTerminalBuffersEarlyInputAndResize(t *testing.T) {
 
 type turnClaimSpy struct {
 	Control
-	claims int
+	claims    int
+	turn      *worker.Turn
+	completed int
 }
 
 func (s *turnClaimSpy) ClaimTurn(context.Context) (*worker.Turn, error) {
 	s.claims++
-	return nil, nil
+	return s.turn, nil
+}
+
+func (s *turnClaimSpy) CompleteTurn(context.Context, string, int, bool) error {
+	s.completed++
+	return nil
 }
 
 func TestForwardTurnWaitsForReservedAgentPTY(t *testing.T) {
@@ -109,5 +116,46 @@ func TestForwardTurnWaitsForReservedAgentPTY(t *testing.T) {
 	}
 	if control.claims != 1 {
 		t.Fatalf("claimed %d turns after the agent PTY started, want 1", control.claims)
+	}
+}
+
+func TestForwardTurnEncodesMultilinePromptForAgentPTY(t *testing.T) {
+	t.Parallel()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	prompt := "Review summary:\n- fix the race\n- add a test"
+	control := &turnClaimSpy{turn: &worker.Turn{ID: "turn-1", Prompt: prompt, Attempt: 1}}
+	supervisor := &Supervisor{
+		Control:         control,
+		AgentTerminalID: "agent-1",
+		agentStarted:    true,
+		workspaceReady:  true,
+		terminals: map[string]*terminalProcess{
+			"agent-1": {pty: writer, cancel: func() {}, cleanup: func() {}},
+		},
+	}
+
+	handled, err := supervisor.forwardTurn(context.Background())
+	if err != nil || !handled {
+		t.Fatalf("forward multiline turn = (%v, %v), want (true, nil)", handled, err)
+	}
+	want := worker.EncodeTerminalInput(prompt)
+	got := make([]byte, len(want))
+	if err := reader.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(reader, got); err != nil {
+		t.Fatalf("read forwarded prompt: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("forwarded prompt = %q, want %q", got, want)
+	}
+	if control.completed != 1 {
+		t.Fatalf("completed turns = %d, want 1", control.completed)
 	}
 }

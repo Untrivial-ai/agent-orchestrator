@@ -661,9 +661,7 @@ func createSessionTx(
 		SELECT id, $1, $2, $3, $4, $5, 'ao/' || left(id::text, 8),
 			$6, $7, $8, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid
 		FROM generated
-		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
-			mode, denied_commands, activity_state, is_terminated,
-			false, '', '', '', '', '', 0, created_at, updated_at`,
+		RETURNING `+sessionInsertReturning,
 		orgID,
 		input.ProjectID,
 		input.Kind,
@@ -917,7 +915,8 @@ func (s *Store) GetSession(
 
 const sessionSelect = `
 	SELECT session.id, session.org_id, session.project_id, session.kind,
-		session.harness, session.reviewer_harness, session.auto_inject_ci,
+		session.harness, session.reviewer_harness, session.auto_review_enabled,
+		session.auto_inject_ci,
 		session.auto_inject_review, session.terminate_on_pr_merge,
 		session.display_name, session.branch,
 		session.mode, session.denied_commands,
@@ -951,6 +950,16 @@ const sessionSelect = `
 	LEFT JOIN ao_sandboxes sandbox
 		ON sandbox.org_id = session.org_id AND sandbox.session_id = session.id
 `
+
+// sessionInsertReturning matches scanSession exactly. Keep the persisted
+// preference defaults explicit here: INSERT ... RETURNING cannot use the
+// joined sessionSelect used by subsequent reads.
+const sessionInsertReturning = `id, org_id, project_id, kind, harness,
+	'' AS reviewer_harness, false AS auto_review_enabled,
+	true AS auto_inject_ci, true AS auto_inject_review,
+	false AS terminate_on_pr_merge, display_name, branch,
+	mode, denied_commands, activity_state, is_terminated,
+	false, '', '', '', '', '', 0, created_at, updated_at`
 
 func getSession(
 	ctx context.Context,
@@ -998,6 +1007,7 @@ func scanSession(row scanner, session *domain.Session) error {
 		&session.Kind,
 		&session.Harness,
 		&session.ReviewerHarness,
+		&session.AutoReviewEnabled,
 		&session.AutoInjectCI,
 		&session.AutoInjectReview,
 		&session.TerminateOnPRMerge,

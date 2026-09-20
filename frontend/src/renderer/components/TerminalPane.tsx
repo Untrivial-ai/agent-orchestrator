@@ -1015,6 +1015,21 @@ function AttachedTerminal({
 	useEffect(() => {
 		onTerminalStateChange?.(state);
 	}, [onTerminalStateChange, state]);
+	const cloudReviewExitAwaitingStatus = Boolean(
+		state === "exited" &&
+			session?.cloud &&
+			terminalTarget?.kind === "reviewer" &&
+			(!terminalTarget.reviewStatus ||
+				terminalTarget.reviewStatus === "running" ||
+				terminalTarget.reviewStatus === "complete"),
+	);
+	useEffect(() => {
+		if (!cloudReviewExitAwaitingStatus) return;
+		// A successful Cloud reviewer submits its result immediately before the
+		// dedicated PTY closes. Refresh the durable run state now so the transport
+		// exit is not mistaken for a failed review while the normal poll catches up.
+		void queryClient.invalidateQueries({ queryKey: ["cloud-session-reviews"] });
+	}, [cloudReviewExitAwaitingStatus, queryClient]);
 	// The immediate reconnecting signal a restore/resume sets (terminal-reset
 	// store). Reactive so the "Connecting…" surface shows the instant restore is
 	// clicked, before the polled runtimeConnected catches up; cleared once the
@@ -1216,7 +1231,8 @@ function AttachedTerminal({
 		!showEmptyState &&
 		!showEndedStatePreview &&
 		!cloudRevealedRef.current;
-	const showEndedState = (state === "exited" || canRestoreSession) && !isBoxComingUp;
+	const showEndedState =
+		(state === "exited" || canRestoreSession) && !isBoxComingUp && !cloudReviewExitAwaitingStatus;
 	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"

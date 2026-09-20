@@ -14,7 +14,17 @@ import (
 // claiming a PR intentionally does not invoke it: cloud must follow the same
 // explicit "Run review" action as local sessions.
 func (s *Service) TriggerReview(ctx context.Context, orgID, sessionID, harness string, pr domain.PullRequest) (domain.ReviewRun, bool, error) {
-	run, created, err := s.store.CreateReviewRun(ctx, orgID, pr.ID, sessionID, pr.HeadSHA, harness)
+	return s.triggerReview(ctx, orgID, sessionID, harness, "manual", pr)
+}
+
+// TriggerAutomaticReview uses the manual review lifecycle while preserving
+// the source for status, history, and automatic-failure messaging.
+func (s *Service) TriggerAutomaticReview(ctx context.Context, orgID, sessionID, harness string, pr domain.PullRequest) (domain.ReviewRun, bool, error) {
+	return s.triggerReview(ctx, orgID, sessionID, harness, "auto", pr)
+}
+
+func (s *Service) triggerReview(ctx context.Context, orgID, sessionID, harness, triggerSource string, pr domain.PullRequest) (domain.ReviewRun, bool, error) {
+	run, created, err := s.store.CreateReviewRun(ctx, orgID, pr.ID, sessionID, pr.HeadSHA, harness, triggerSource)
 	if err != nil {
 		return domain.ReviewRun{}, false, err
 	}

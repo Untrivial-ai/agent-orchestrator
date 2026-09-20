@@ -64,7 +64,7 @@ type Store interface {
 		orgID, pullRequestID string,
 		observation domain.PullRequestObservation,
 	) (domain.PullRequest, error)
-	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA, harness string) (domain.ReviewRun, bool, error)
+	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA, harness, triggerSource string) (domain.ReviewRun, bool, error)
 	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt, harness string) (string, error)
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error
 	ReviewRunPullRequest(ctx context.Context, orgID, reviewRunID string) (domain.ReviewRunPullRequest, error)

@@ -189,6 +189,7 @@ export interface CloudCpSession {
 	kind: string;
 	harness: string;
 	reviewerHarness?: string;
+	autoReviewEnabled?: boolean;
 	autoInjectCI?: boolean;
 	autoInjectReview?: boolean;
 	terminateOnPrMerge?: boolean;
@@ -223,6 +224,7 @@ export interface CloudCpSessionResponse {
 
 export interface CloudCpUpdateSessionPreferencesRequest {
 	reviewerHarness?: string;
+	autoReviewEnabled?: boolean;
 	autoInjectCI?: boolean;
 	autoInjectReview?: boolean;
 	terminateOnPrMerge?: boolean;
@@ -295,6 +297,7 @@ export interface CloudCpAOReviewRun {
 	sessionId: string;
 	batchId: string;
 	harness: string;
+	triggerSource: "manual" | "auto";
 	pullRequestUrl: string;
 	targetSha: string;
 	status: CloudCpAOReviewRunStatus;
@@ -324,6 +327,17 @@ export interface CloudCpSessionReviewState {
 	availableReviewerHarnesses: string[];
 	reviews: CloudCpPRReviewState[];
 	runs: CloudCpAOReviewRun[];
+}
+
+export interface CloudCpHarnessStatus {
+	harness: "claude-code" | "codex" | "cursor";
+	status: "missing" | "ready" | "failed";
+	version?: string;
+	error?: string;
+}
+
+export interface CloudCpHarnessInspectResponse {
+	harnesses: CloudCpHarnessStatus[];
 }
 export interface CloudCpListSessionsQuery extends CloudCpListQuery {
 	/** Restrict the listing to one project. */

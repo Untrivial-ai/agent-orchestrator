@@ -17,6 +17,7 @@ type sessionPreferencesStore interface {
 
 type updateSessionPreferencesRequest struct {
 	ReviewerHarness    *string `json:"reviewerHarness"`
+	AutoReviewEnabled  *bool   `json:"autoReviewEnabled"`
 	AutoInjectCI       *bool   `json:"autoInjectCI"`
 	AutoInjectReview   *bool   `json:"autoInjectReview"`
 	TerminateOnPRMerge *bool   `json:"terminateOnPrMerge"`
@@ -39,12 +40,13 @@ func (s *Server) updateSessionPreferences(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "The session controls request is invalid.")
 		return
 	}
-	if request.ReviewerHarness == nil && request.AutoInjectCI == nil && request.AutoInjectReview == nil && request.TerminateOnPRMerge == nil {
+	if request.ReviewerHarness == nil && request.AutoReviewEnabled == nil && request.AutoInjectCI == nil && request.AutoInjectReview == nil && request.TerminateOnPRMerge == nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "At least one session control is required.")
 		return
 	}
 	session, err := store.UpdateSessionPreferences(r.Context(), principalFrom(r), orgID, sessionID, postgres.SessionPreferencesUpdate{
 		ReviewerHarness:    request.ReviewerHarness,
+		AutoReviewEnabled:  request.AutoReviewEnabled,
 		AutoInjectCI:       request.AutoInjectCI,
 		AutoInjectReview:   request.AutoInjectReview,
 		TerminateOnPRMerge: request.TerminateOnPRMerge,

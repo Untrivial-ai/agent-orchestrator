@@ -71,6 +71,7 @@ type sessionResponse struct {
 	Kind               string   `json:"kind"`
 	Harness            string   `json:"harness"`
 	ReviewerHarness    string   `json:"reviewerHarness,omitempty"`
+	AutoReviewEnabled  bool     `json:"autoReviewEnabled"`
 	AutoInjectCI       bool     `json:"autoInjectCI"`
 	AutoInjectReview   bool     `json:"autoInjectReview"`
 	TerminateOnPRMerge bool     `json:"terminateOnPrMerge"`
@@ -813,6 +814,7 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		Kind:               session.Kind,
 		Harness:            session.Harness,
 		ReviewerHarness:    session.ReviewerHarness,
+		AutoReviewEnabled:  session.AutoReviewEnabled,
 		AutoInjectCI:       session.AutoInjectCI,
 		AutoInjectReview:   session.AutoInjectReview,
 		TerminateOnPRMerge: session.TerminateOnPRMerge,
