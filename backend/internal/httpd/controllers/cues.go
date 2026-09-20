@@ -21,7 +21,6 @@ import (
 // CueService is the controller-facing project cue contract.
 type CueService interface {
 	Create(ctx context.Context, projectID domain.ProjectID, input cuesvc.Input) (domain.Cue, error)
-	Get(ctx context.Context, cueID domain.CueID) (domain.Cue, error)
 	List(ctx context.Context, projectID domain.ProjectID) ([]domain.Cue, error)
 	Update(ctx context.Context, cueID domain.CueID, input cuesvc.Input) (domain.Cue, error)
 	Delete(ctx context.Context, cueID domain.CueID) error
@@ -50,7 +49,6 @@ func (b *invokeCueRequestBody) UnmarshalJSON(data []byte) error {
 func (c *CuesController) Register(r chi.Router) {
 	r.Get("/projects/{projectId}/cues", c.list)
 	r.Post("/projects/{projectId}/cues", c.create)
-	r.Get("/cues/{cueId}", c.get)
 	r.Patch("/cues/{cueId}", c.update)
 	r.Delete("/cues/{cueId}", c.delete)
 	r.Post("/cues/{cueId}/invoke", c.invoke)
@@ -76,11 +74,11 @@ func (c *CuesController) create(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/projects/{projectId}/cues")
 		return
 	}
-	var req CreateCueRequest
+	var req CueDefinitionRequest
 	if !decodeCueBody(w, r, &req, 128<<10) {
 		return
 	}
-	cue, err := c.Svc.Create(r.Context(), projectCueID(r), cueInput(UpdateCueRequest(req)))
+	cue, err := c.Svc.Create(r.Context(), projectCueID(r), cueInput(req))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -90,32 +88,12 @@ func (c *CuesController) create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (c *CuesController) get(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/cues/{cueId}")
-		return
-	}
-	cueID, err := url.PathUnescape(chi.URLParam(r, "cueId"))
-	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "CUE_ID_INVALID", "Invalid cue id", nil)
-		return
-	}
-	cue, err := c.Svc.Get(r.Context(), domain.CueID(cueID))
-	if err != nil {
-		envelope.WriteError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, CueEnvelope{
-		Cue: cueResponse(cue),
-	})
-}
-
 func (c *CuesController) update(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
 		apispec.NotImplemented(w, r, "PATCH", "/api/v1/cues/{cueId}")
 		return
 	}
-	var req UpdateCueRequest
+	var req CueDefinitionRequest
 	if !decodeCueBody(w, r, &req, 128<<10) {
 		return
 	}
@@ -212,7 +190,7 @@ func projectCueID(r *http.Request) domain.ProjectID {
 	return domain.ProjectID(chi.URLParam(r, "projectId"))
 }
 
-func cueInput(req UpdateCueRequest) cuesvc.Input {
+func cueInput(req CueDefinitionRequest) cuesvc.Input {
 	return cuesvc.Input{
 		Name:        req.Name,
 		Description: req.Description,

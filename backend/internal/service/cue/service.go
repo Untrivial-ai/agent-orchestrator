@@ -72,24 +72,6 @@ func (s *Service) Create(ctx context.Context, projectID domain.ProjectID, input 
 	return cue, nil
 }
 
-// Get returns one cue by id, reporting CUE_NOT_FOUND for an unknown id.
-func (s *Service) Get(ctx context.Context, cueID domain.CueID) (domain.Cue, error) {
-	if s == nil || s.store == nil {
-		return domain.Cue{}, errors.New("cue: store is required")
-	}
-	if strings.TrimSpace(string(cueID)) == "" {
-		return domain.Cue{}, apierr.Invalid("INVALID_CUE_ID", "Cue id is required", nil)
-	}
-	cue, ok, err := s.store.SelectCueByID(ctx, cueID)
-	if err != nil {
-		return domain.Cue{}, err
-	}
-	if !ok {
-		return domain.Cue{}, apierr.NotFound("CUE_NOT_FOUND", "Unknown cue")
-	}
-	return cue, nil
-}
-
 // List returns one project's cues in name order.
 func (s *Service) List(ctx context.Context, projectID domain.ProjectID) ([]domain.Cue, error) {
 	if s == nil || s.store == nil {

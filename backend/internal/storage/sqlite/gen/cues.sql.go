@@ -25,12 +25,11 @@ func (q *Queries) DeleteCueByID(ctx context.Context, id domain.CueID) (int64, er
 	return result.RowsAffected()
 }
 
-const insertCue = `-- name: InsertCue :one
+const insertCue = `-- name: InsertCue :exec
 
 INSERT INTO cues (
     id, project_id, name, description, type, command, prompt, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, name, description, type, command, prompt, created_at, updated_at
 `
 
 type InsertCueParams struct {
@@ -48,8 +47,8 @@ type InsertCueParams struct {
 // User-managed reusable quick actions (Cues) scoped to a project. The
 // (project_id, name) UNIQUE constraint enforces per-project name uniqueness;
 // duplicates surface as domain.ErrCueNameExists in the store.
-func (q *Queries) InsertCue(ctx context.Context, arg InsertCueParams) (Cue, error) {
-	row := q.db.QueryRowContext(ctx, insertCue,
+func (q *Queries) InsertCue(ctx context.Context, arg InsertCueParams) error {
+	_, err := q.db.ExecContext(ctx, insertCue,
 		arg.ID,
 		arg.ProjectID,
 		arg.Name,
@@ -60,19 +59,7 @@ func (q *Queries) InsertCue(ctx context.Context, arg InsertCueParams) (Cue, erro
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
-	var i Cue
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.Name,
-		&i.Description,
-		&i.Type,
-		&i.Command,
-		&i.Prompt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
+	return err
 }
 
 const selectCueByID = `-- name: SelectCueByID :one

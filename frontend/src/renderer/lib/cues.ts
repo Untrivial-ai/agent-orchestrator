@@ -2,8 +2,7 @@ import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "./api-client";
 
 export type CueDTO = components["schemas"]["CueResponse"];
-export type CreateCueInput = components["schemas"]["CreateCueRequest"];
-export type UpdateCueInput = components["schemas"]["UpdateCueRequest"];
+export type CueInput = components["schemas"]["CueDefinitionRequest"];
 
 export const CUE_LIMITS = {
 	name: 64,
@@ -22,7 +21,7 @@ export async function fetchProjectCues(projectId: string): Promise<CueDTO[]> {
 	return data?.cues ?? [];
 }
 
-export async function createCue(projectId: string, input: CreateCueInput): Promise<CueDTO> {
+export async function createCue(projectId: string, input: CueInput): Promise<CueDTO> {
 	const { data, error } = await apiClient.POST("/api/v1/projects/{projectId}/cues", {
 		params: { path: { projectId } },
 		body: input,
@@ -31,7 +30,7 @@ export async function createCue(projectId: string, input: CreateCueInput): Promi
 	return data.cue;
 }
 
-export async function updateCue(cueId: string, input: UpdateCueInput): Promise<CueDTO> {
+export async function updateCue(cueId: string, input: CueInput): Promise<CueDTO> {
 	const { data, error } = await apiClient.PATCH("/api/v1/cues/{cueId}", {
 		params: { path: { cueId } },
 		body: input,

@@ -187,23 +187,6 @@ func TestCreateUnknownProject(t *testing.T) {
 	wantCode(t, err, apierr.KindNotFound, "PROJECT_NOT_FOUND")
 }
 
-func TestGet(t *testing.T) {
-	store := newFakeStore()
-	store.cues[domain.CueID("cue-a")] = domain.Cue{ID: "cue-a", ProjectID: "mer", Name: "Test", Type: domain.CueTypeAgent, Prompt: "run"}
-	svc := newTestService(store)
-
-	got, err := svc.Get(context.Background(), "cue-a")
-	if err != nil || got.Name != "Test" {
-		t.Fatalf("get = %+v, err=%v", got, err)
-	}
-
-	_, err = svc.Get(context.Background(), "cue-missing")
-	wantCode(t, err, apierr.KindNotFound, "CUE_NOT_FOUND")
-
-	_, err = svc.Get(context.Background(), "")
-	wantCode(t, err, apierr.KindInvalid, "INVALID_CUE_ID")
-}
-
 func TestList(t *testing.T) {
 	store := newFakeStore()
 	store.cues[domain.CueID("cue-a")] = domain.Cue{ID: "cue-a", ProjectID: "mer", Name: "Test"}

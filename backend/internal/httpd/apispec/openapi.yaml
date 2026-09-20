@@ -1125,50 +1125,6 @@ paths:
       summary: Delete a cue
       tags:
       - cues
-    get:
-      operationId: getCue
-      parameters:
-      - description: Cue identifier.
-        in: path
-        name: cueId
-        required: true
-        schema:
-          description: Cue identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CueEnvelope'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Get one cue
-      tags:
-      - cues
     patch:
       operationId: updateCue
       parameters:
@@ -1183,7 +1139,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateCueRequest'
+              $ref: '#/components/schemas/CueDefinitionRequest'
         required: true
       responses:
         "200":
@@ -2572,7 +2528,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateCueRequest'
+              $ref: '#/components/schemas/CueDefinitionRequest'
         required: true
       responses:
         "201":
@@ -9802,7 +9758,7 @@ components:
       - cachedTokens
       - totalTokens
       type: object
-    CreateCueRequest:
+    CueDefinitionRequest:
       properties:
         command:
           description: Shell command for a command cue. At most 4096 bytes; cleared
@@ -12934,35 +12890,6 @@ components:
       required:
       - token
       - deleted
-      type: object
-    UpdateCueRequest:
-      properties:
-        command:
-          description: Shell command for a command cue. At most 4096 bytes; cleared
-            when saving agent cues.
-          maxLength: 4096
-          type: string
-        description:
-          description: Optional human note about the cue, at most 240 bytes.
-          maxLength: 240
-          type: string
-        name:
-          description: Short cue name, unique within the project. Trimmed; must be
-            non-empty and at most 64 bytes.
-          maxLength: 64
-          type: string
-        prompt:
-          description: Agent instruction for an agent cue. At most 16384 bytes; cleared
-            when saving command cues.
-          maxLength: 16384
-          type: string
-        type:
-          description: 'Cue kind: command asks an agent to run a shell command; agent
-            sends an authored prompt. Definition body limit: 128 KiB.'
-          type: string
-      required:
-      - name
-      - type
       type: object
     UpdateProjectSettingsInput:
       properties:

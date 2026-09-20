@@ -471,8 +471,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get one cue */
-        get: operations["getCue"];
+        get?: never;
         put?: never;
         post?: never;
         /** Delete a cue */
@@ -3353,7 +3352,7 @@ export interface components {
             /** Format: int64 */
             totalTokens: number;
         };
-        CreateCueRequest: {
+        CueDefinitionRequest: {
             /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
             command?: string;
             /** @description Optional human note about the cue, at most 240 bytes. */
@@ -4550,18 +4549,6 @@ export interface components {
         UnregisterPushDeviceResponse: {
             deleted: boolean;
             token: string;
-        };
-        UpdateCueRequest: {
-            /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
-            command?: string;
-            /** @description Optional human note about the cue, at most 240 bytes. */
-            description?: string;
-            /** @description Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes. */
-            name: string;
-            /** @description Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues. */
-            prompt?: string;
-            /** @description Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB. */
-            type: string;
         };
         UpdateProjectSettingsInput: {
             config: components["schemas"]["ProjectConfig"];
@@ -6188,65 +6175,6 @@ export interface operations {
             };
         };
     };
-    getCue: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cue identifier. */
-                cueId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CueEnvelope"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Implemented */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-        };
-    };
     deleteCue: {
         parameters: {
             query?: never;
@@ -6316,7 +6244,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateCueRequest"];
+                "application/json": components["schemas"]["CueDefinitionRequest"];
             };
         };
         responses: {
@@ -8168,7 +8096,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateCueRequest"];
+                "application/json": components["schemas"]["CueDefinitionRequest"];
             };
         };
         responses: {

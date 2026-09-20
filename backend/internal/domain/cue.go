@@ -22,12 +22,7 @@ const (
 
 // Valid reports whether t is a supported cue type.
 func (t CueType) Valid() bool {
-	switch t {
-	case CueTypeCommand, CueTypeAgent:
-		return true
-	default:
-		return false
-	}
+	return t == CueTypeCommand || t == CueTypeAgent
 }
 
 // Cue definition size bounds. Byte lengths are used consistently with the

@@ -18,7 +18,7 @@ import (
 func (s *Store) InsertCue(ctx context.Context, cue domain.Cue) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err := s.qw.InsertCue(ctx, gen.InsertCueParams{
+	err := s.qw.InsertCue(ctx, gen.InsertCueParams{
 		ID:          cue.ID,
 		ProjectID:   cue.ProjectID,
 		Name:        cue.Name,

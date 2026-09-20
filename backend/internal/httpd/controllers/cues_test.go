@@ -25,7 +25,6 @@ type fakeCueService struct {
 	gotCreateIn cuesvc.Input
 	gotUpdateIn cuesvc.Input
 	created     domain.Cue
-	fetched     domain.Cue
 	listed      []domain.Cue
 	updated     domain.Cue
 	invoked     domain.SessionID
@@ -36,11 +35,6 @@ func (f *fakeCueService) Create(_ context.Context, projectID domain.ProjectID, i
 	f.gotProject = projectID
 	f.gotCreateIn = input
 	return f.created, f.err
-}
-
-func (f *fakeCueService) Get(_ context.Context, cueID domain.CueID) (domain.Cue, error) {
-	f.gotCueID = cueID
-	return f.fetched, f.err
 }
 
 func (f *fakeCueService) List(_ context.Context, projectID domain.ProjectID) ([]domain.Cue, error) {
@@ -170,39 +164,6 @@ func TestCuesAPI_CreateSurfacesServiceErrors(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", status, tc.want, body)
 			}
 		})
-	}
-}
-
-func TestCuesAPI_GetReturnsCue(t *testing.T) {
-	svc := &fakeCueService{fetched: sampleCue()}
-	srv := newCueTestServer(t, svc)
-
-	body, status, _ := doRequest(t, srv, "GET", "/api/v1/cues/cue-def456", "")
-	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", status, body)
-	}
-	if svc.gotCueID != "cue-def456" {
-		t.Errorf("cue id = %q, want cue-def456", svc.gotCueID)
-	}
-	var resp struct {
-		Cue struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"cue"`
-	}
-	mustJSON(t, body, &resp)
-	if resp.Cue.ID != "cue-def456" {
-		t.Errorf("cue = %+v", resp.Cue)
-	}
-}
-
-func TestCuesAPI_GetUnknownCueReturnsNotFound(t *testing.T) {
-	svc := &fakeCueService{err: apierr.NotFound("CUE_NOT_FOUND", "Unknown cue")}
-	srv := newCueTestServer(t, svc)
-
-	body, status, _ := doRequest(t, srv, "GET", "/api/v1/cues/cue-ghost", "")
-	if status != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404; body=%s", status, body)
 	}
 }
 
@@ -415,7 +376,6 @@ func TestCuesAPI_NotImplementedWithoutService(t *testing.T) {
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/api/v1/projects/portfolio/cues"},
 		{"POST", "/api/v1/projects/portfolio/cues"},
-		{"GET", "/api/v1/cues/cue-def456"},
 		{"PATCH", "/api/v1/cues/cue-def456"},
 		{"DELETE", "/api/v1/cues/cue-def456"},
 		{"POST", "/api/v1/cues/cue-def456/invoke"},

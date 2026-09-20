@@ -273,7 +273,6 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 							{isBodyReady ? (
 								displaySettings?.scope === "project" && activeProjectSection === "cues" ? (
 									<CuesSettings
-										key={displaySettings.projectId}
 										projectId={displaySettings.projectId}
 										onBusyChange={setCueBusy}
 									/>

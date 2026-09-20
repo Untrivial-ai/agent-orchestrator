@@ -6,8 +6,7 @@ import {
 	invokeCue,
 	projectCuesQueryKey,
 	updateCue,
-	type CreateCueInput,
-	type UpdateCueInput,
+	type CueInput,
 } from "../lib/cues";
 
 export function useProjectCuesQuery(projectId: string, enabled = true) {
@@ -30,7 +29,7 @@ function useInvalidateCues(projectId: string) {
 export function useCreateCueMutation(projectId: string) {
 	const invalidate = useInvalidateCues(projectId);
 	return useMutation({
-		mutationFn: (input: CreateCueInput) => createCue(projectId, input),
+		mutationFn: (input: CueInput) => createCue(projectId, input),
 		onSuccess: invalidate,
 	});
 }
@@ -38,7 +37,7 @@ export function useCreateCueMutation(projectId: string) {
 export function useUpdateCueMutation(projectId: string) {
 	const invalidate = useInvalidateCues(projectId);
 	return useMutation({
-		mutationFn: ({ cueId, input }: { cueId: string; input: UpdateCueInput }) => updateCue(cueId, input),
+		mutationFn: ({ cueId, input }: { cueId: string; input: CueInput }) => updateCue(cueId, input),
 		onSuccess: invalidate,
 	});
 }

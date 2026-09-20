@@ -10,7 +10,7 @@ import {
 	useUpdateCueMutation,
 } from "../hooks/useCuesQuery";
 import { CUE_LIMITS } from "../lib/cues";
-import type { CreateCueInput, CueDTO } from "../lib/cues";
+import type { CueDTO, CueInput } from "../lib/cues";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -84,11 +84,6 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 		mounted.current = true;
 		return () => { mounted.current = false; };
 	}, []);
-	useEffect(() => {
-		setFormOpen(null);
-		setDeletingCue(null);
-	}, [projectId]);
-
 	const busy = saving || deleting;
 	useEffect(() => {
 		onBusyChange?.(busy);
@@ -116,7 +111,7 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 			setFormError(t("cues.nameRequired"));
 			return;
 		}
-		const input: CreateCueInput = {
+		const input: CueInput = {
 			name: trimmedName,
 			type: draft.type,
 			description: draft.description || undefined,
@@ -260,8 +255,10 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 		);
 	};
 
-	const renderForm = () => (
-		<div className="flex flex-col gap-3">
+	const renderForm = () => {
+		const command = draft.type === "command";
+		const contentId = command ? "cue-command" : "cue-prompt";
+		return <div className="flex flex-col gap-3">
 			<div className="flex flex-col gap-1.5">
 				<Label htmlFor="cue-name" className="text-xs font-medium text-muted-foreground">
 					{t("cues.nameLabel")}
@@ -309,45 +306,31 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 				</Select>
 			</div>
 
-			{draft.type === "command" ? (
-				<div className="flex flex-col gap-1.5">
-					<Label htmlFor="cue-command" className="text-xs font-medium text-muted-foreground">
-						{t("cues.commandLabel")}
-					</Label>
-					<textarea
-						id="cue-command"
-						value={draft.command}
-						onChange={(event) => setDraft((d) => ({ ...d, command: event.target.value }))}
-						placeholder={t("cues.commandPlaceholder")}
-						className={composerTextareaClass}
-						rows={2}
-					/>
-					<p className="text-xs leading-4 text-passive">{t("cues.commandHelp")}</p>
-				</div>
-			) : (
-				<div className="flex flex-col gap-1.5">
-					<Label htmlFor="cue-prompt" className="text-xs font-medium text-muted-foreground">
-						{t("cues.agentLabel")}
-					</Label>
-					<textarea
-						id="cue-prompt"
-						value={draft.prompt}
-						onChange={(event) => setDraft((d) => ({ ...d, prompt: event.target.value }))}
-						placeholder={t("cues.promptPlaceholder")}
-						className={composerTextareaClass}
-						rows={4}
-					/>
-					<p className="text-xs leading-4 text-passive">{t("cues.promptHelp")}</p>
-				</div>
-			)}
+			<div className="flex flex-col gap-1.5">
+				<Label htmlFor={contentId} className="text-xs font-medium text-muted-foreground">
+					{t(command ? "cues.commandLabel" : "cues.agentLabel")}
+				</Label>
+				<textarea
+					id={contentId}
+					value={command ? draft.command : draft.prompt}
+					onChange={(event) => {
+						const value = event.target.value;
+						setDraft((d) => command ? { ...d, command: value } : { ...d, prompt: value });
+					}}
+					placeholder={t(command ? "cues.commandPlaceholder" : "cues.promptPlaceholder")}
+					className={composerTextareaClass}
+					rows={command ? 2 : 4}
+				/>
+				<p className="text-xs leading-4 text-passive">{t(command ? "cues.commandHelp" : "cues.promptHelp")}</p>
+			</div>
 
 			{formError ? (
 				<p role="alert" className="text-caption leading-4 text-error">
 					{formError}
 				</p>
 			) : null}
-		</div>
-	);
+		</div>;
+	};
 
 	return (
 		<div className="flex min-h-full flex-col gap-4 pb-5">

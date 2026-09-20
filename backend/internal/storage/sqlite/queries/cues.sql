@@ -2,11 +2,10 @@
 -- (project_id, name) UNIQUE constraint enforces per-project name uniqueness;
 -- duplicates surface as domain.ErrCueNameExists in the store.
 
--- name: InsertCue :one
+-- name: InsertCue :exec
 INSERT INTO cues (
     id, project_id, name, description, type, command, prompt, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING *;
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: SelectCueByID :one
 SELECT *
