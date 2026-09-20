@@ -335,10 +335,11 @@ func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh
 		if ok {
 			cached.Catalog = applyCustomModelEntryPolicy(cached.Catalog, s.discoverer.Manual(agentID))
 			due := catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
-			cached.Catalog.RefreshRecommended = due || cached.RefreshState == "error" || cached.RefreshState == "queued"
-			if due && (cached.RetryAt.IsZero() || !s.now().Before(cached.RetryAt)) {
+			retriesExhausted := modelCatalogRetriesExhausted(cached)
+			cached.Catalog.RefreshRecommended = !retriesExhausted && (due || cached.RefreshState == "error" || cached.RefreshState == "queued")
+			if !retriesExhausted && due && (cached.RetryAt.IsZero() || !s.now().Before(cached.RetryAt)) {
 				go func() { _, _ = s.RevalidateModels(s.ctx, agentID, projectID) }()
-			} else if !due {
+			} else if !due || retriesExhausted {
 				go s.revalidateChangedInputs(agentID, projectID, cached.BinaryVersion)
 			}
 			return cached.Catalog, nil
@@ -538,10 +539,14 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		// cache-first clients to revalidate in the background once the catalog is
 		// old enough, so staleness resolves itself instead of waiting for someone
 		// to press a refresh button.
-		cached.Catalog.RefreshRecommended = catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
+		cached.Catalog.RefreshRecommended = !modelCatalogRetriesExhausted(cached) && catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
 		return cached.Catalog, nil
 	}
 
+	if mode != modelLoadRefresh && hasCached && !inputsChanged && !explicitlyInvalidated && modelCatalogRetriesExhausted(cached) {
+		cached.Catalog.RefreshRecommended = false
+		return cached.Catalog, nil
+	}
 	if mode != modelLoadRefresh && hasCached && !inputsChanged && !explicitlyInvalidated && !cached.RetryAt.IsZero() && s.now().Before(cached.RetryAt) {
 		cached.Catalog.RefreshState = "error"
 		cached.Catalog.RefreshError = cached.RefreshError
@@ -549,7 +554,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		cached.Catalog.RefreshRecommended = true
 		return cached.Catalog, nil
 	}
-	if inputsChanged || explicitlyInvalidated {
+	if mode == modelLoadRefresh || inputsChanged || explicitlyInvalidated {
 		cached.RetryCount = 0
 		cached.RetryAt = time.Time{}
 		cached.RefreshError = ""
@@ -802,6 +807,7 @@ func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previ
 	catalog.InputFingerprint = catalog.BinaryVersion
 	catalog.Metadata = previous.Catalog.Metadata
 	catalog.RetryAt = nil
+	catalog.RefreshRecommended = retryCount <= int64(modelCatalogMaxRetries)
 	var retryDelay time.Duration
 	if retryCount <= int64(modelCatalogMaxRetries) {
 		retryDelay = modelCatalogRetryDelays[retryCount-1]
@@ -825,6 +831,10 @@ func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previ
 		})
 	}
 	return nil
+}
+
+func modelCatalogRetriesExhausted(cached decodedCatalog) bool {
+	return cached.RefreshState == "error" && cached.RetryCount > int64(modelCatalogMaxRetries)
 }
 
 func modelCatalogRetryAt(value time.Time) *time.Time {

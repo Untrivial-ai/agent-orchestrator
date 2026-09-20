@@ -258,11 +258,22 @@ func TestManualRefreshBypassesPersistedRetryBackoff(t *testing.T) {
 	record := cachedModelRecord(t, "codex", "project-a", now.Add(-24*time.Hour), true)
 	record.BinaryVersion = "v1"
 	record.InputFingerprint = "v1"
-	record.RetryAt = now.Add(time.Hour)
+	var catalog ports.AgentModelCatalog
+	if err := json.Unmarshal([]byte(record.CatalogJSON), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	catalog.BinaryVersion = "v1"
+	catalog.InputFingerprint = "v1"
+	data, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.CatalogJSON = string(data)
 	record.RefreshState = "error"
-	record.RetryCount = 1
+	record.RetryCount = int64(modelCatalogMaxRetries + 1)
 	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{"codex\x00project-a": record}}
 	discoverer := successfulModelDiscoverer()
+	discoverer.err = errors.New("offline")
 	svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
 	if _, err := svc.RevalidateModels(context.Background(), "codex", "project-a"); err != nil {
 		t.Fatal(err)
@@ -275,6 +286,13 @@ func TestManualRefreshBypassesPersistedRetryBackoff(t *testing.T) {
 	}
 	if discoverer.discoverCalls.Load() != 1 {
 		t.Fatal("manual refresh did not bypass retry backoff")
+	}
+	updated, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", "project-a")
+	if err != nil || !ok {
+		t.Fatalf("updated cache = (%#v, %v, %v)", updated, ok, err)
+	}
+	if updated.RetryCount != 1 || updated.RetryAt.IsZero() {
+		t.Fatalf("retry state = count:%d at:%s, want manual refresh to start a new retry sequence", updated.RetryCount, updated.RetryAt)
 	}
 }
 
@@ -315,9 +333,8 @@ func TestChangedInputsStartANewRetrySequence(t *testing.T) {
 	record := cachedModelRecord(t, "codex", "project-a", now, true)
 	record.BinaryVersion = "v1"
 	record.InputFingerprint = "v1"
-	record.RetryAt = now.Add(time.Hour)
 	record.RefreshState = "error"
-	record.RetryCount = int64(modelCatalogMaxRetries)
+	record.RetryCount = int64(modelCatalogMaxRetries + 1)
 	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{"codex\x00project-a": record}}
 	discoverer := successfulModelDiscoverer()
 	discoverer.version = "v2"
@@ -340,18 +357,34 @@ func TestChangedInputsStartANewRetrySequence(t *testing.T) {
 func TestModelDiscoveryRetryBackoffStopsAfterBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	cache := &fakeModelCache{}
+	now := time.Now().UTC()
+	record := cachedModelRecord(t, "codex", "project-a", now.Add(-24*time.Hour), true)
+	record.BinaryVersion = "v1"
+	record.InputFingerprint = "v1"
+	var catalog ports.AgentModelCatalog
+	if err := json.Unmarshal([]byte(record.CatalogJSON), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	catalog.BinaryVersion = "v1"
+	catalog.InputFingerprint = "v1"
+	data, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.CatalogJSON = string(data)
+	record.RefreshState = "error"
+	record.RefreshError = "offline"
+	record.RetryCount = int64(modelCatalogMaxRetries)
+	record.RetryAt = now.Add(-time.Second)
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{"codex\x00project-a": record}}
 	discoverer := successfulModelDiscoverer()
 	discoverer.err = errors.New("offline")
 	svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
 	svc.ctx = ctx
-	var got ports.AgentModelCatalog
-	for range modelCatalogMaxRetries + 1 {
-		var err error
-		got, err = svc.Models(context.Background(), "codex", "project-a", true)
-		if err != nil {
-			t.Fatal(err)
-		}
+	svc.now = func() time.Time { return now }
+	got, err := svc.RevalidateModels(context.Background(), "codex", "project-a")
+	if err != nil {
+		t.Fatal(err)
 	}
 	record, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", "project-a")
 	if err != nil || !ok {
@@ -366,12 +399,34 @@ func TestModelDiscoveryRetryBackoffStopsAfterBound(t *testing.T) {
 	if got.RetryAt != nil {
 		t.Fatalf("response retryAt = %s after retry bound, want absent", got.RetryAt)
 	}
+	if got.RefreshRecommended {
+		t.Fatal("final failed retry recommended another automatic refresh")
+	}
 	wire, err := json.Marshal(got)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(wire), `"retryAt"`) {
 		t.Fatalf("response serialized an absent retry time: %s", wire)
+	}
+	exhaustedCalls := discoverer.discoverCalls.Load()
+	fingerprintRequests := discoverer.fingerprintRequests.Load()
+	cached, err := svc.Models(context.Background(), "codex", "project-a", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.RefreshRecommended {
+		t.Fatal("cached read recommended another refresh after retries were exhausted")
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for discoverer.fingerprintRequests.Load() == fingerprintRequests && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if discoverer.fingerprintRequests.Load() == fingerprintRequests {
+		t.Fatal("cached read did not check whether exhausted discovery inputs changed")
+	}
+	if calls := discoverer.discoverCalls.Load(); calls != exhaustedCalls {
+		t.Fatalf("discoveries = %d after exhausted cached read, want %d", calls, exhaustedCalls)
 	}
 }
 
