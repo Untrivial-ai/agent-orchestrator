@@ -186,6 +186,13 @@ func TestValidateTurnSettingsRejectsCursorProcessModeTransitions(t *testing.T) {
 				t.Fatalf("validateTurnSettings(%q, %q) error = %v, wantErr %v",
 					test.initial, test.turn, err, test.wantErr)
 			}
+			if test.wantErr && !errors.Is(err, ports.ErrChatPermissionRestartRequired) {
+				t.Fatalf("error = %v, want ErrChatPermissionRestartRequired", err)
+			}
+			if test.turn != "" && PermissionProcessRestartRequired(test.initial, test.turn) != test.wantErr {
+				t.Fatalf("PermissionProcessRestartRequired(%q, %q) = %v, want %v",
+					test.initial, test.turn, !test.wantErr, test.wantErr)
+			}
 		})
 	}
 }

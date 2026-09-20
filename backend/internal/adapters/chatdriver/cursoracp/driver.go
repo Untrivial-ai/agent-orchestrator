@@ -45,16 +45,25 @@ func validateTurnSettings(initial ports.PermissionMode, settings ports.ChatTurnS
 	}
 	initial = ports.NormalizePermissionMode(initial)
 	requested := ports.NormalizePermissionMode(settings.Approval)
-	if initial == requested {
+	if !PermissionProcessRestartRequired(initial, requested) {
 		return nil
 	}
-	if cursorProcessPermissionMode(initial) || cursorProcessPermissionMode(requested) {
-		return fmt.Errorf(
-			"cursor ACP permission mode change from %q to %q requires restarting Chat",
-			initial, requested,
-		)
+	return fmt.Errorf(
+		"%w: cursor ACP maps %q and %q onto process launch flags",
+		ports.ErrChatPermissionRestartRequired, initial, requested,
+	)
+}
+
+// PermissionProcessRestartRequired reports whether changing from→to needs new
+// cursor-agent process flags (--auto-review / --force). default↔accept-edits
+// stays in-process via permissionPolicy().
+func PermissionProcessRestartRequired(from, to ports.PermissionMode) bool {
+	from = ports.NormalizePermissionMode(from)
+	to = ports.NormalizePermissionMode(to)
+	if from == to {
+		return false
 	}
-	return nil
+	return cursorProcessPermissionMode(from) || cursorProcessPermissionMode(to)
 }
 
 func cursorProcessPermissionMode(mode ports.PermissionMode) bool {

@@ -1675,8 +1675,9 @@ func (s *Service) RetryTurn(
 
 // SetTurnSettings records the provider choices for this session's next turn.
 //
-// Applied per turn, so nothing restarts: the running turn keeps whatever it was
-// dispatched with, and the choice takes effect on the next one.
+// Applied per turn when the live process can honor them. Providers that bake
+// approval into process launch flags (Cursor) transparently replace that process
+// inside the same AO session so the picker never surfaces a raw restart error.
 func (s *Service) SetTurnSettings(
 	ctx context.Context,
 	id domain.SessionID,
@@ -1690,9 +1691,40 @@ func (s *Service) SetTurnSettings(
 		return domain.ConversationSettings{}, err
 	}
 	controller.configMu.Lock()
-	defer controller.configMu.Unlock()
 	// The turn-settings endpoint does not own provider session mode choices.
 	settings.OpenCodeMode = controller.Settings().OpenCodeMode
+	needsRestart := false
+	if validator, ok := controller.conv.(ports.ChatTurnSettingsValidator); ok {
+		probe := ports.ChatTurnSettings{
+			Model: settings.Model, Effort: settings.ReasoningEffort, Approval: settings.ApprovalMode,
+		}
+		if err := validator.ValidateTurnSettings(probe); errors.Is(err, ports.ErrChatPermissionRestartRequired) {
+			needsRestart = true
+		} else if err != nil {
+			controller.configMu.Unlock()
+			return domain.ConversationSettings{}, err
+		}
+	}
+	if needsRestart {
+		// Release before the gate-locked host swap so we never nest configMu under
+		// the controller gate or write durable settings onto a process we are about
+		// to discard mid-failure.
+		controller.configMu.Unlock()
+		if err := s.restartProviderForPermissions(ctx, id, settings); err != nil {
+			return domain.ConversationSettings{}, err
+		}
+		replacement, err := s.Controller(id)
+		if err != nil {
+			return domain.ConversationSettings{}, err
+		}
+		replacement.configMu.Lock()
+		defer replacement.configMu.Unlock()
+		if err := replacement.SetSettings(ctx, settings); err != nil {
+			return domain.ConversationSettings{}, err
+		}
+		return replacement.Settings(), nil
+	}
+	defer controller.configMu.Unlock()
 	if err := controller.SetSettings(ctx, settings); err != nil {
 		return domain.ConversationSettings{}, err
 	}

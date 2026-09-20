@@ -314,7 +314,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	);
 	// A provider config catalog may cover only model, only mode, or both.
 	// Suppress native controls only for dimensions the provider catalog replaces;
-	// a model-only catalog must not hide the Approvals control.
+	// Cursor's agent/plan/ask execution modes must not hide Approvals.
 	const providerOptions = configOptions.options ?? [];
 	const hasProviderMode = hasProviderPermissionMode(providerOptions);
 	const hasProviderModel = providerOptions.some(

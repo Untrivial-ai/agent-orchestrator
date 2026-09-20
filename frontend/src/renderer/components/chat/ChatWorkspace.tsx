@@ -1130,6 +1130,7 @@ function ChatWorkspaceContent({
 					onChangeConfigOption={newWorkDisabled ? undefined : onChooseConfigOption}
 					configPending={configOptionPending}
 					error={configOptionError}
+					agentBusy={turn?.state === "running"}
 					disabled={
 						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || newWorkDisabled
 					}
@@ -1151,6 +1152,7 @@ function ChatWorkspaceContent({
 			snapshot.controller.state,
 			stableModelReroute,
 			stableSettings,
+			turn?.state,
 		],
 	);
 	const composerApproval = useMemo(

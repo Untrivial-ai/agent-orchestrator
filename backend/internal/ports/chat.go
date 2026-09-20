@@ -67,6 +67,12 @@ var (
 	// no enforced mapping in this provider. Drivers must return it instead of
 	// silently running with a different permission policy.
 	ErrChatPermissionModeUnsupported = errors.New("chat permission mode is unsupported")
+	// ErrChatPermissionRestartRequired means the requested approval change cannot
+	// be applied to the live provider process (for example Cursor's --auto-review
+	// / --force launch flags). Callers should replace the process in place —
+	// ideally via session/load or resume — rather than surface the raw validator
+	// text to the user.
+	ErrChatPermissionRestartRequired = errors.New("chat permission mode change requires provider restart")
 	// ErrChatHistoryUnsettled means the native conversation history is not safe
 	// to project as complete. Only a ChatHistoryRefresher promises that another
 	// provider observation may make progress; rereading a snapshot need not.
@@ -501,6 +507,14 @@ type ChatConfigOption struct {
 type ChatConfigOptionController interface {
 	ListConfigOptions(ctx context.Context) ([]ChatConfigOption, error)
 	SetConfigOption(ctx context.Context, id string, value ChatConfigOptionValue) ([]ChatConfigOption, error)
+}
+
+// ChatTurnSettingsValidator is optionally implemented by conversations whose
+// provider bakes some turn settings into the live process. Returning
+// ErrChatPermissionRestartRequired tells Chat to replace that process before
+// the next turn instead of failing mid-send.
+type ChatTurnSettingsValidator interface {
+	ValidateTurnSettings(settings ChatTurnSettings) error
 }
 
 // ChatUsage is token accounting for a conversation.
