@@ -178,10 +178,28 @@ describe("SettingsDialog", () => {
 		renderSettingsDialog();
 
 		await screen.findByRole("dialog");
-		fireEvent.keyDown(document.body, { key: "Escape" });
+		const nestedMenu = document.createElement("div");
+		nestedMenu.setAttribute("role", "menu");
+		const nestedItem = document.createElement("button");
+		nestedItem.setAttribute("role", "menuitem");
+		nestedMenu.append(nestedItem);
+		document.body.append(nestedMenu);
+		nestedItem.focus();
+		fireEvent.keyDown(nestedItem, { key: "Escape" });
 		expect(useUiStore.getState().settingsModal).not.toBeNull();
+		nestedMenu.remove();
 
 		fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
+	});
+
+	it("closes from Escape when a Harness focus target has not moved focus inside", async () => {
+		useUiStore.getState().openGlobalSettings("harness", { focusAgentId: "stale-agent" });
+		renderSettingsDialog();
+
+		await screen.findByRole("dialog");
+		document.body.focus();
+		fireEvent.keyDown(document.body, { key: "Escape" });
 		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
 	});
 });

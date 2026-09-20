@@ -251,7 +251,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
 		await waitFor(() => expect(openGlobalSettingsMock).toHaveBeenCalled());
 
-		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: selectedAgent });
+		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: selectedAgent, preserveProject: true });
 		expect(trigger).toHaveTextContent(selectedLabel);
 	});
 

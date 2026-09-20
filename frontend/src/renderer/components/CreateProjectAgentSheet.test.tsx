@@ -150,6 +150,18 @@ describe("CreateProjectAgentSheet", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
+	it("keeps fallback agents usable until a readiness snapshot arrives", async () => {
+		render(<RequiredAgentField id="agent" label="Agent" placeholder="Choose agent" value="codex" variant="settings-row" onChange={() => undefined} />);
+
+		const trigger = screen.getByRole("button", { name: "Agent" });
+		expect(trigger).toHaveTextContent("Codex");
+		expect(trigger).not.toHaveTextContent("Needs setup");
+		await userEvent.click(trigger);
+		expect(screen.getByRole("menuitem", { name: /Claude Code/ })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeInTheDocument();
+		expect(screen.queryByText("No agents ready")).not.toBeInTheDocument();
+	});
+
 	it("opens management for a selected create-project agent without losing the selection", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(agentReadinessQueryKey, {

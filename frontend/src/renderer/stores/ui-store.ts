@@ -134,7 +134,7 @@ export type UiState = {
 	updateInstallPromptOpen: boolean;
 	openUpdateInstallPrompt: () => void;
 	closeUpdateInstallPrompt: () => void;
-	openGlobalSettings: (section?: GlobalSettingsSection, options?: { focusAgentId?: string }) => void;
+	openGlobalSettings: (section?: GlobalSettingsSection, options?: { focusAgentId?: string; preserveProject?: boolean }) => void;
 	openProjectSettings: (projectId: string) => void;
 	closeSettings: () => void;
 	/** Refresh resolvedTheme from OS without writing light/dark to storage. */
@@ -269,9 +269,11 @@ export const useUiStore = create<UiState>((set, get) => ({
 			scope: "global",
 			section,
 			...(options?.focusAgentId ? { focusAgentId: options.focusAgentId } : {}),
-			...(state.settingsModal?.scope === "project"
+			...(options?.preserveProject && state.settingsModal?.scope === "project"
 				? { returnTo: state.settingsModal }
-				: state.settingsModal?.returnTo ? { returnTo: state.settingsModal.returnTo } : {}),
+				: options?.preserveProject && state.settingsModal?.scope === "global" && state.settingsModal.returnTo
+					? { returnTo: state.settingsModal.returnTo }
+					: {}),
 		},
 	})),
 	openProjectSettings: (projectId) => set({ settingsModal: { scope: "project", projectId } }),

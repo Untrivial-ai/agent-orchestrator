@@ -24,16 +24,29 @@ describe("ReviewerSelect", () => {
 		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness", focusAgentId: "codex" }));
 		expect(onChange).not.toHaveBeenCalled();
 	});
-	it("does not offer an unauthorized default reviewer as a selectable default", async () => {
+	it("keeps the project-default reset available when its resolved reviewer needs setup", async () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		render(<QueryClientProvider client={client}><ReviewerSelect
 			ariaLabel="Reviewer" value="" defaultHarness="codex" defaultOptionLabel="Project default" onChange={() => undefined}
 			agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
 		/></QueryClientProvider>);
 		await userEvent.click(screen.getByRole("button", { name: "Reviewer" }));
-		expect(screen.queryByRole("menuitem", { name: /Project default/ })).not.toBeInTheDocument();
-		expect(screen.getByText("No agents ready")).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Project default/ })).toBeInTheDocument();
+		expect(screen.queryByText("No agents ready")).not.toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
+	});
+
+	it("keeps fallback reviewers usable until a readiness snapshot arrives", async () => {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		render(<QueryClientProvider client={client}><ReviewerSelect
+			ariaLabel="Reviewer" value="codex" onChange={() => undefined}
+		/></QueryClientProvider>);
+
+		const trigger = screen.getByRole("button", { name: "Reviewer" });
+		expect(trigger).not.toHaveTextContent("Needs setup");
+		await userEvent.click(trigger);
+		expect(screen.getByRole("menuitem", { name: /Claude Code/ })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeInTheDocument();
 	});
 
 });

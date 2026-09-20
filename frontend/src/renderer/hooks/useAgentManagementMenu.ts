@@ -14,7 +14,7 @@ export function useAgentManagementMenu(focusAgentId?: string) {
 			pending.current = false;
 			event.preventDefault();
 			triggerRef.current?.focus({ preventScroll: true });
-			openGlobalSettings("harness", focusAgentId ? { focusAgentId } : undefined);
+			openGlobalSettings("harness", { focusAgentId, preserveProject: true });
 		},
 	};
 }

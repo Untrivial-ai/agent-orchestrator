@@ -99,15 +99,14 @@ export function ReviewerSelect({
 		fallbackAgents,
 	});
 	const selectableOptions = options.filter((agent) => {
-		if (!isReadyAgent(agent)) return false;
+		if (agents !== undefined && !isReadyAgent(agent)) return false;
 		if (agent.id === excludedHarness) return false;
 		if (showDefaultOption && defaultHarness && agent.id === defaultHarness) return false;
 		return true;
 	});
 	const effectiveHarness = value || defaultHarness || "";
-	const needsSetup = Boolean(effectiveHarness && !options.some((agent) => agent.id === effectiveHarness && isReadyAgent(agent)));
+	const needsSetup = agents !== undefined && Boolean(effectiveHarness && !options.some((agent) => agent.id === effectiveHarness && isReadyAgent(agent)));
 	const management = useAgentManagementMenu(needsSetup ? effectiveHarness : undefined);
-	const defaultAvailable = !defaultHarness || options.some((agent) => agent.id === defaultHarness && isReadyAgent(agent));
 	const menuProjectID = projectId ?? "";
 	const triggerCatalog = useQuery(agentModelsQueryOptions(effectiveHarness, menuProjectID));
 
@@ -147,7 +146,7 @@ export function ReviewerSelect({
 				</span>
 			</OptionMenuTrigger>
 			<OptionMenuContent onCloseAutoFocus={management.onCloseAutoFocus} align={contentAlign === "end" ? "end" : "start"} className="reviews-agent-menu-surface w-[18rem]">
-				{showDefaultOption && defaultOptionLabel && defaultAvailable ? (
+				{showDefaultOption && defaultOptionLabel ? (
 					<ReviewerHarnessOption
 						agent={{ id: "__default__", label: defaultOptionLabel, disabled: false, status: "", statusTone: "success" }}
 						currentHarness={value}
@@ -182,7 +181,7 @@ export function ReviewerSelect({
 						closeMenu={() => setMenuOpen(false)}
 					/>
 				))}
-				{selectableOptions.length === 0 && !(showDefaultOption && defaultOptionLabel && defaultAvailable) && <p className="px-3 py-2 text-xs text-muted-foreground">{t("agentSelector.noneReady")}</p>}
+				{selectableOptions.length === 0 && !(showDefaultOption && defaultOptionLabel) && <p className="px-3 py-2 text-xs text-muted-foreground">{t("agentSelector.noneReady")}</p>}
 				<OptionMenuItem className="mt-1 border-t border-border" onSelect={management.requestManagement}>{t("agentSelector.manage")}</OptionMenuItem>
 			</OptionMenuContent>
 		</OptionMenu>
