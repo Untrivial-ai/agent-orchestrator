@@ -34,6 +34,18 @@ type CuesController struct {
 	Svc CueService
 }
 
+type invokeCueRequestBody struct {
+	SessionID json.RawMessage `json:"sessionId"`
+}
+
+func (b *invokeCueRequestBody) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return errors.New("invoke request body must be a JSON object")
+	}
+	type rawInvokeCueRequestBody invokeCueRequestBody
+	return json.Unmarshal(data, (*rawInvokeCueRequestBody)(b))
+}
+
 // Register mounts the bounded cue REST routes.
 func (c *CuesController) Register(r chi.Router) {
 	r.Get("/projects/{projectId}/cues", c.list)
@@ -144,28 +156,15 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/cues/{cueId}/invoke")
 		return
 	}
-	var raw json.RawMessage
-	if !decodeCueBody(w, r, &raw, 4<<10) {
+	var payload invokeCueRequestBody
+	if !decodeCueBody(w, r, &payload, 4<<10) {
 		return
 	}
 	var req InvokeCueRequest
-	if len(raw) > 0 {
-		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Request body must be a JSON object or absent", nil)
+	if payload.SessionID != nil {
+		if err := json.Unmarshal(payload.SessionID, &req.SessionID); err != nil || strings.TrimSpace(req.SessionID) == "" {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_SESSION_ID", "Session id must not be blank when supplied", nil)
 			return
-		}
-		var payload struct {
-			SessionID json.RawMessage `json:"sessionId"`
-		}
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-			return
-		}
-		if payload.SessionID != nil {
-			if err := json.Unmarshal(payload.SessionID, &req.SessionID); err != nil || strings.TrimSpace(req.SessionID) == "" {
-				envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_SESSION_ID", "Session id must not be blank when supplied", nil)
-				return
-			}
 		}
 	}
 	cueID, err := url.PathUnescape(chi.URLParam(r, "cueId"))
