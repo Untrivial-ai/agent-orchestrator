@@ -114,9 +114,6 @@ export function ChatComposer({
 	const [text, setText] = useState("");
 	const [cursor, setCursor] = useState(0);
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
-	// Measured, because the pill grows with the message and the glass behind it has
-	// to grow with it.
-	const [pillHeight, setPillHeight] = useState(COMPOSER_RADIUS * 2);
 	const [localError, setLocalError] = useState<string>();
 	const [submitting, setSubmitting] = useState(false);
 	const [promotingQueuedTurnId, setPromotingQueuedTurnId] = useState<string>();
@@ -358,14 +355,8 @@ export function ChatComposer({
 			</Pressable> : null}
 			{requestCard ?? <View
 				style={[styles.composer, stopped && { opacity: 0.55 }]}
-				// The glass follows the pill, so a message that wraps to three lines
-				// grows one rounded panel rather than leaving the material behind.
-				onLayout={(event) => {
-					const { height } = event.nativeEvent.layout;
-					setPillHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
-				}}
 			>
-				<ComposerGlass height={pillHeight} radius={COMPOSER_RADIUS} />
+				<ComposerGlass radius={COMPOSER_RADIUS} />
 				<ChatAttachmentMenu disabled={stopped} canAttachFile={Boolean(canEmbedFiles)} onChoosePhoto={() => void addImage()} onChooseFile={() => void addFile()} />
 				<TextInput
 					accessibilityLabel="Message the agent"
@@ -397,7 +388,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	//
 	// The fill goes transparent where the glass layer is drawing behind it: an
 	// opaque pill under a material is the one arrangement that turns glass grey.
-	composer: { minHeight: 56, maxHeight: 164, flexDirection: "row", alignItems: "flex-end", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
+	//
+	// Centred, not bottom-aligned: the field re-measures when it loses focus as the
+	// keyboard closes, and with `flex-end` that measurement moved the controls
+	// relative to the pill instead of the pill growing around them.
+	composer: { minHeight: 56, maxHeight: 164, flexDirection: "row", alignItems: "center", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
 	// 44pt of box around a 20pt line, so one line sits centred in the pill rather
 	// than riding its bottom edge.
 	input: { flex: 1, minHeight: 44, maxHeight: 152, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, paddingVertical: space.md, textAlignVertical: "top" },

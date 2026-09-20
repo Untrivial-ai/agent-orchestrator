@@ -30,12 +30,17 @@ describe("chat composer pill", () => {
 		expect(pill).toContain('backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated');
 	});
 
-	it("lays the glass behind the row, sized to the pill", () => {
-		expect(composer).toContain("<ComposerGlass height={pillHeight} radius={COMPOSER_RADIUS} />");
+	it("lays the glass behind the row, sized by the pill itself", () => {
+		expect(composer).toContain("<ComposerGlass radius={COMPOSER_RADIUS} />");
+		// No height measured in JS: a measurement that arrives late leaves the
+		// material drawn at the pill's previous size, which is the composer looking
+		// like its contents came loose from their background.
+		expect(composer).not.toContain("pillHeight");
 		// `false`: the material must not take the touch. The field is inside this
 		// pill, and an interactive material only passes taps that land on its own
 		// content — typing would stop working.
 		expect(source("./composer-glass.ios.tsx")).toContain("glassPanel(radius, undefined, false)");
+		expect(source("./composer-glass.ios.tsx")).toContain("frame({ maxWidth: 2000, maxHeight: 2000 })");
 	});
 
 	// Two discs side by side have no hierarchy; the send button is the only shape

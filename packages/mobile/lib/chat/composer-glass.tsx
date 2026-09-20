@@ -7,6 +7,6 @@ import type { ReactElement } from "react";
  */
 export const composerGlassSupported = false;
 
-export function ComposerGlass(_props: { height: number; radius: number }): ReactElement | null {
+export function ComposerGlass(_props: { radius: number }): ReactElement | null {
 	return null;
 }
