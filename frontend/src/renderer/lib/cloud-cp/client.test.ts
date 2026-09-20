@@ -30,4 +30,31 @@ describe("cloud control-plane session lifecycle", () => {
 			expect.objectContaining({ method: "POST" }),
 		);
 	});
+
+	it("posts restore intent for one deleted, encoded session", async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response(
+				JSON.stringify({
+					session: {
+						id: "session/1",
+						desiredState: "running",
+					},
+				}),
+				{ status: 202, headers: { "Content-Type": "application/json" } },
+			),
+		);
+		const client = createCloudCpClient({
+			baseUrl: "https://cloud.example.test/",
+			getToken: async () => "token",
+			fetchImpl: fetchMock as typeof fetch,
+		});
+
+		const response = await client.restoreSession("org/1", "session/1");
+
+		expect(response.session.desiredState).toBe("running");
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/sessions/session%2F1/restore",
+			expect.objectContaining({ method: "POST" }),
+		);
+	});
 });

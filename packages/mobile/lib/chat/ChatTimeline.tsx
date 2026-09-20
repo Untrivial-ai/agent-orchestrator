@@ -25,8 +25,15 @@ import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { HighlightedCodeText } from "./HighlightedCodeText";
 import { caretNotation, commandOutputText } from "./ansi";
-import { jumpToLatestColors } from "./chatChrome";
+import { jumpToLatestColors, userMessageSurfaceStyle } from "./chatChrome";
+import { actionControlWidth, requestPresentation } from "./chatPresentation";
+import { workingElapsedLabel } from "./conversationChrome";
+import { errorActivityDuplicatesTurn, providerErrorCopy } from "./providerError";
+import { ElicitationAction, ElicitationChoiceList, ElicitationTextField } from "./elicitation-native-controls";
 import {
+	elicitationPromptCopy,
+	elicitationStepPresentation,
+	groupedQuestionInputs,
 	humanizeInputName,
 	initialInputValue,
 	inputOptions,
@@ -72,6 +79,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 	onRollback,
 	jumpToSequence,
 	onJumpHandled,
+	answeredBelow,
 }: {
 	snapshot: ConversationSnapshot;
 	loadingOlder: boolean;
@@ -83,6 +91,12 @@ export const ChatTimeline = memo(function ChatTimeline({
 	onRollback(turnId: string): Promise<number>;
 	jumpToSequence?: number;
 	onJumpHandled?(): void;
+	/**
+	 * The request the composer is currently answering. Its card here collapses to
+	 * a record of what was asked, so the same decision never has two live sets of
+	 * controls that could disagree.
+	 */
+	answeredBelow?: number;
 }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
@@ -97,7 +111,10 @@ export const ChatTimeline = memo(function ChatTimeline({
 
 	useEffect(() => {
 		if (jumpToSequence === undefined) return;
-		const index = groups.findIndex((group) => group.anchor === jumpToSequence);
+		// Match the group that CONTAINS the sequence, not one whose anchor equals
+		// it: a group's anchor is its first item, so an activity partway through a
+		// turn never matched and the jump silently did nothing.
+		const index = groups.findIndex((group) => group.anchor === jumpToSequence || group.items.some((item) => item.sequence === jumpToSequence));
 		if (index >= 0) {
 			followsTail.current = index === 0;
 			setShowJump(!followsTail.current);
@@ -165,6 +182,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 					onDecide={onDecide}
 					onResolveInput={onResolveInput}
 					onRollback={onRollback}
+					answeredBelow={answeredBelow}
 				/>}
 			/>
 			{showJump ? <Pressable accessibilityRole="button" accessibilityLabel="Jump to latest message" onPress={() => { haptics.tap(); followsTail.current = true; setShowJump(false); listRef.current?.scrollToOffset({ offset: 0, animated: true }); }} style={styles.jump}><Feather name="arrow-down" size={14} color={jumpToLatestColors(t).foregroundColor} /><Text style={styles.jumpText}>Latest</Text></Pressable> : null}
@@ -172,7 +190,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 	);
 });
 
-function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending, onDecide, onResolveInput, onRollback }: {
+function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending, onDecide, onResolveInput, onRollback, answeredBelow }: {
 	group: ConversationGroup;
 	snapshot: ConversationSnapshot;
 	approvalPending: boolean;
@@ -180,11 +198,19 @@ function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending,
 	onDecide(requestId: string, decisionId: string): Promise<void>;
 	onResolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
 	onRollback(turnId: string): Promise<number>;
+	answeredBelow?: number;
 }) {
-	const rows = activityRuns(group.items);
+	// A provider failure arrives twice: as an error activity, and again as the
+	// turn's errorMessage below it. The turn keeps it — that line carries the
+	// outcome and the rollback — so the activity restating it is dropped.
+	const turnError = group.turn?.state === "failed" ? group.turn.errorMessage : undefined;
+	const items = turnError
+		? group.items.filter((item) => !(item.kind === "activity" && errorActivityDuplicatesTurn(item, turnError)))
+		: group.items;
+	const rows = activityRuns(items);
 	return <View>{rows.map((row) => row.kind === "activities"
 		? <ActivityRun key={row.key} activities={row.items} />
-		: <TimelineItem key={row.key} item={row.items[0]} sessionId={snapshot.sessionId} approvalPending={approvalPending} inputPending={inputPending} onDecide={onDecide} onResolveInput={onResolveInput} />)}
+		: <TimelineItem key={row.key} item={row.items[0]} sessionId={snapshot.sessionId} approvalPending={approvalPending} inputPending={inputPending} onDecide={onDecide} onResolveInput={onResolveInput} answeredBelow={answeredBelow} />)}
 		{group.turn ? <TurnSummary turn={group.turn} onRollback={canRollbackTurn(snapshot, group.turn) ? onRollback : undefined} /> : null}
 	</View>;
 }
@@ -196,6 +222,7 @@ const TimelineItem = memo(function TimelineItem({
 	inputPending,
 	onDecide,
 	onResolveInput,
+	answeredBelow,
 }: {
 	item: ConversationItem;
 	sessionId: string;
@@ -203,7 +230,9 @@ const TimelineItem = memo(function TimelineItem({
 	inputPending: boolean;
 	onDecide(requestId: string, decisionId: string): Promise<void>;
 	onResolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
+	answeredBelow?: number;
 }) {
+	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	if (item.kind === "message") {
 		if (item.role === "user" && item.origin === "human") {
@@ -225,17 +254,16 @@ const TimelineItem = memo(function TimelineItem({
 		return (
 			<View style={styles.assistantRow}>
 				{item.senderLabel ? <Text style={styles.sender}>{item.senderLabel}</Text> : null}
-				<ChatMarkdown text={item.text || (item.streaming ? "…" : "")} streaming={item.streaming} />
-				{item.streaming ? <View style={styles.streamingDot} /> : null}
-				{!item.streaming && item.text ? <Pressable accessibilityRole="button" accessibilityLabel="Copy response" hitSlop={9} onPress={() => { void Clipboard.setStringAsync(item.text); haptics.success(); }} style={styles.copy}><Feather name="copy" size={12} /><Text style={styles.copyText}>Copy</Text></Pressable> : null}
+				<ChatMarkdown text={item.streaming ? `${item.text || ""} ▍` : item.text} streaming={item.streaming} />
+				{!item.streaming && item.text ? <Pressable accessibilityRole="button" accessibilityLabel="Copy response" hitSlop={10} onPress={() => { void Clipboard.setStringAsync(item.text); haptics.success(); }} style={styles.copy}><Feather name="copy" size={13} color={t.textFaint} /></Pressable> : null}
 			</View>
 		);
 	}
 	if (item.activityKind === "approval") {
-		return <ApprovalCard activity={item} busy={approvalPending} onDecide={onDecide} />;
+		return <ApprovalCard activity={item} busy={approvalPending} onDecide={onDecide} handledBelow={item.sequence === answeredBelow} />;
 	}
 	if (item.activityKind === "user_input") {
-		return <UserInputCard activity={item} busy={inputPending} onResolve={onResolveInput} />;
+		return <UserInputCard activity={item} busy={inputPending} onResolve={onResolveInput} handledBelow={item.sequence === answeredBelow} />;
 	}
 	if (item.activityKind === "system" && item.detail?.event === "compaction") {
 		return <CompactionMarker activity={item} />;
@@ -598,16 +626,32 @@ function TurnSummary({ turn, onRollback }: { turn: ConversationTurn; onRollback?
 	const [confirming, setConfirming] = useState(false);
 	const [rollingBack, setRollingBack] = useState(false);
 	const [rollbackError, setRollbackError] = useState<string>();
+	const running = turn.state === "running";
+	const [nowMs, setNowMs] = useState(() => Date.now());
+	useEffect(() => {
+		if (!running) return;
+		setNowMs(Date.now());
+		const timer = setInterval(() => setNowMs(Date.now()), 1_000);
+		return () => clearInterval(timer);
+	}, [running, turn.id]);
 	const duration = elapsed(turn.startedAt ?? turn.requestedAt, turn.completedAt);
+	const workingDuration = running ? workingElapsedLabel(turn.startedAt ?? turn.requestedAt, nowMs) : undefined;
 	const settled = turn.state !== "running" && turn.state !== "queued";
+	const summary = turn.rolledBack
+		? "Rolled back"
+		: turn.state === "completed"
+			? duration ? `Worked for ${duration}` : "Work completed"
+			: turn.state === "failed"
+				? duration ? `Failed after ${duration}` : "Turn failed"
+				: turn.state === "interrupted"
+					? duration ? `Stopped after ${duration}` : "Turn stopped"
+					: turn.state === "queued" ? "Queued" : workingDuration ? `Working · ${workingDuration}` : "Working";
 	return (
 		<View style={styles.turnWrap}>
 			{turn.plan?.steps.length ? <TurnPlan turn={turn} /> : null}
 			{turn.diff?.files.length ? <ChangedFiles turn={turn} /> : null}
 			<View style={styles.turnLine}>
-				<View style={styles.ruleHalf} />
-				<Text style={[styles.turnState, turn.state === "failed" && { color: t.red }]}>{turn.rolledBack ? "ROLLED BACK" : turn.state.toUpperCase()}</Text>
-				{duration ? <Text style={styles.turnDuration}>{duration}</Text> : null}
+				<Text style={[styles.turnState, turn.state === "failed" && { color: t.red }]}>{summary}</Text>
 				{onRollback && settled && turn.providerTurnId && !turn.rolledBack ? (
 					<Pressable accessibilityLabel="Roll back to before this turn" hitSlop={8} onPress={() => { haptics.warning(); setConfirming(true); }}>
 						<Feather name="rotate-ccw" size={13} color={t.textTertiary} />
@@ -685,27 +729,55 @@ function ChangedFiles({ turn }: { turn: ConversationTurn }) {
 	</View>;
 }
 
-function ApprovalCard({ activity, busy, onDecide }: { activity: ConversationActivity; busy: boolean; onDecide(requestId: string, decisionId: string): Promise<void> }) {
+/**
+ * What was asked, with no way to answer it — for a request whose controls live
+ * in the composer. The timeline stays the record; the composer is the surface.
+ */
+function RequestEcho({ title, detail }: { title: string; detail?: string }) {
+	const t = useTheme();
+	const styles = useThemedStyles(makeStyles);
+	return <View style={styles.approvalResolved}>
+		<View style={[styles.approvalDot, { backgroundColor: t.amber }]} />
+		<Text style={styles.approvalResolvedLabel}>{title}</Text>
+		{detail ? <Text selectable numberOfLines={1} style={styles.approvalResolvedCommand}>{detail}</Text> : null}
+	</View>;
+}
+
+function ApprovalCard({ activity, busy, onDecide, handledBelow }: { activity: ConversationActivity; busy: boolean; onDecide(requestId: string, decisionId: string): Promise<void>; handledBelow?: boolean }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const [submitting, setSubmitting] = useState<string>();
 	const [submitError, setSubmitError] = useState<string>();
 	const pending = activity.status === "pending";
-	return <View style={[styles.requestCard, pending && { borderColor: t.amber }]}>
-		<View style={styles.requestTitle}><Feather name="shield" size={15} color={pending ? t.amber : t.textTertiary} /><Text style={styles.requestHeading}>{pending ? "Approval required" : "Approval resolved"}</Text>{activity.requestId ? <Text style={styles.requestId}>req {activity.requestId}</Text> : null}</View>
-		{activity.detail?.reason ? <Text style={styles.requestCopy}>{activity.detail.reason}</Text> : null}
-		<Text selectable style={styles.requestCommand}>{activity.detail?.command ?? activity.summary}</Text>
+	const presentation = requestPresentation("approval", pending);
+	const command = activity.detail?.command ?? activity.summary;
+	if (pending && handledBelow) return <RequestEcho title={presentation.title} detail={command} />;
+	if (!pending) return <View style={styles.approvalResolved}>
+		<Feather name={presentation.icon} size={13} color={t.textFaint} />
+		<Text style={styles.approvalResolvedLabel}>{presentation.title}</Text>
+		<Text selectable numberOfLines={1} style={styles.approvalResolvedCommand}>{command}</Text>
+	</View>;
+	return <View style={styles.approvalRequest}>
+		<View style={styles.approvalStatus}><View style={styles.approvalDot} /><Text style={styles.approvalStatusText}>{presentation.title}</Text></View>
+		{activity.detail?.reason ? <Text selectable style={styles.requestCopy}>{activity.detail.reason}</Text> : null}
+		<View style={styles.approvalCommandSurface}>
+			<Feather name="terminal" size={13} color={t.textTertiary} />
+			<Text selectable style={styles.requestCommand}>{command}</Text>
+		</View>
 		{activity.detail?.cwd ? <LabelValue label="cwd" value={activity.detail.cwd} /> : null}
-		{pending ? (activity.decisions?.length ? <View style={styles.actions}>{activity.decisions.map((decision, index) => <Action key={decision.id} label={submitting === decision.id ? "Sending…" : decision.label} primary={index === 0} disabled={busy || Boolean(submitting) || !activity.requestId} onPress={() => {
-			setSubmitting(decision.id);
-			setSubmitError(undefined);
-			void onDecide(activity.requestId ?? "", decision.id).catch((cause) => setSubmitError(cause instanceof Error ? cause.message : String(cause))).finally(() => setSubmitting(undefined));
-		}} />)}</View> : <Text style={[styles.partial, { color: t.amber }]}>The agent offered no decisions AO can present. Open diagnostics from the host.</Text>) : <Text style={styles.partial}>Already answered. This card is kept for the record.</Text>}
-		{submitError ? <Text accessibilityRole="alert" style={styles.validation}>{submitError}</Text> : null}
+		{activity.decisions?.length ? <View style={styles.approvalActions}>{activity.decisions.map((decision, index) => {
+			const label = submitting === decision.id ? "Sending…" : decision.label;
+			return <ElicitationAction key={decision.id} label={label} width={actionControlWidth(label, index === 0)} primary={index === 0} disabled={busy || Boolean(submitting) || !activity.requestId} onPress={() => {
+				setSubmitting(decision.id);
+				setSubmitError(undefined);
+				void onDecide(activity.requestId ?? "", decision.id).catch((cause) => setSubmitError(cause instanceof Error ? cause.message : String(cause))).finally(() => setSubmitting(undefined));
+			}} />;
+		})}</View> : <Text style={[styles.partial, { color: t.amber }]}>The agent offered no decisions AO can present. Open diagnostics from the host.</Text>}
+		{submitError ? <Text accessibilityRole="alert" selectable style={styles.validation}>{submitError}</Text> : null}
 	</View>;
 }
 
-function UserInputCard({ activity, busy, onResolve }: { activity: ConversationActivity; busy: boolean; onResolve(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void> }) {
+function UserInputCard({ activity, busy, onResolve, handledBelow }: { activity: ConversationActivity; busy: boolean; onResolve(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>; handledBelow?: boolean }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const schema = activity.detail?.schema;
@@ -713,8 +785,17 @@ function UserInputCard({ activity, busy, onResolve }: { activity: ConversationAc
 	const [validationError, setValidationError] = useState<string>();
 	const [submitting, setSubmitting] = useState(false);
 	const [submitError, setSubmitError] = useState<string>();
+	const [activeQuestion, setActiveQuestion] = useState(0);
 	const pending = activity.status === "pending";
 	const url = activity.detail?.inputMode === "url" ? safeHttpURL(activity.detail.url) : undefined;
+	const properties = Object.entries(schema?.properties ?? {});
+	const questionGroups = groupedQuestionInputs(properties);
+	const visibleProperties = questionGroups?.[activeQuestion] ?? properties;
+	const hasPreviousQuestion = Boolean(questionGroups && activeQuestion > 0);
+	const hasNextQuestion = Boolean(questionGroups && activeQuestion < questionGroups.length - 1);
+	const step = elicitationStepPresentation(activeQuestion, questionGroups?.length ?? 1);
+	const promptCopy = elicitationPromptCopy(activity.detail?.message || schema?.description || activity.summary);
+	if (pending && handledBelow) return <RequestEcho title={step.status} detail={promptCopy} />;
 	const resolve = async (action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) => {
 		if (submitting || !activity.requestId) return;
 		setSubmitting(true);
@@ -724,31 +805,40 @@ function UserInputCard({ activity, busy, onResolve }: { activity: ConversationAc
 		finally { setSubmitting(false); }
 	};
 	const submit = () => {
-		const missing = missingRequiredInputs(schema?.required, values);
+		const visibleRequired = visibleProperties.flatMap(([name]) => schema?.required?.includes(name) ? [name] : []);
+		const missing = missingRequiredInputs(visibleRequired, values);
 		if (missing.length) { setValidationError(`Complete ${missing.join(", ")} before continuing.`); return; }
-		for (const [name, property] of Object.entries(schema?.properties ?? {})) {
+		for (const [name, property] of visibleProperties) {
 			const problem = validateInput(property, values[name]);
 			if (problem) { setValidationError(`${property.title || humanizeInputName(name)} ${problem}.`); return; }
 		}
 		setValidationError(undefined);
+		if (hasNextQuestion) {
+			setActiveQuestion((current) => current + 1);
+			return;
+		}
 		void resolve("accept", values);
 	};
-	return <View style={[styles.requestCard, pending && { borderColor: t.blue }]}>
-		<View style={styles.requestTitle}><Feather name="message-square" size={15} color={pending ? t.blue : t.textTertiary} /><Text style={styles.requestHeading}>{schema?.title || (pending ? "Agent needs input" : "Input resolved")}</Text></View>
-		<Text style={styles.requestCopy}>{activity.detail?.message || schema?.description || activity.summary}</Text>
+	return <View style={pending ? styles.inputRequest : [styles.requestCard, styles.requestCardResolved]}>
+		<View style={styles.inputRequestStatus}><View style={[styles.inputRequestDot, { backgroundColor: pending ? t.amber : t.textFaint }]} /><Text style={styles.inputRequestStatusText}>{pending ? step.status : "Input resolved"}</Text></View>
+		{promptCopy ? <Text style={styles.requestCopy}>{promptCopy}</Text> : null}
 		{pending && activity.detail?.inputMode === "url" ? <View style={styles.urlBox}><Text selectable style={styles.urlText}>{url?.href ?? "The provider supplied an unsafe or invalid URL."}</Text></View> : null}
-		{pending && activity.detail?.inputMode !== "url" && schema?.properties ? <View style={styles.form}>{Object.entries(schema.properties).map(([name, property]) => <InputField key={name} name={name} property={property} required={schema.required?.includes(name) ?? false} value={values[name]} onChange={(value) => { setValidationError(undefined); setValues((old) => ({ ...old, [name]: value })); }} />)}</View> : null}
+		{pending && activity.detail?.inputMode !== "url" && schema?.properties ? <View style={styles.form}>
+			{visibleProperties.map(([name, property]) => <InputField key={name} name={name} property={property} required={schema.required?.includes(name) ?? false} value={values[name]} onChange={(value) => { setValidationError(undefined); setValues((old) => ({ ...old, [name]: value })); }} />)}
+		</View> : null}
 		{validationError ? <Text accessibilityRole="alert" style={styles.validation}>{validationError}</Text> : null}
 		{submitError ? <Text accessibilityRole="alert" style={styles.validation}>{submitError}</Text> : null}
-		{pending && activity.requestId ? <View style={styles.actions}>
-			<Action label="Cancel" disabled={busy || submitting} onPress={() => void resolve("cancel")} />
-			<Action label={activity.detail?.inputMode === "url" ? "Decline" : "Skip"} disabled={busy || submitting} onPress={() => void resolve("decline")} />
-			{activity.detail?.inputMode === "url" ? <Action label={submitting ? "Opening…" : "Open link"} primary disabled={busy || submitting || !url} onPress={() => {
+		{pending && activity.requestId ? <View style={styles.inputActions}>
+			<ElicitationAction label="Cancel" disabled={busy || submitting} onPress={() => void resolve("cancel")} />
+			<ElicitationAction label={activity.detail?.inputMode === "url" ? "Decline" : "Skip"} disabled={busy || submitting} onPress={() => void resolve("decline")} />
+			<View style={{ flex: 1 }} />
+			{activity.detail?.inputMode !== "url" && hasPreviousQuestion ? <ElicitationAction label="Back" disabled={busy || submitting} onPress={() => { setValidationError(undefined); setActiveQuestion((current) => Math.max(0, current - 1)); }} /> : null}
+			{activity.detail?.inputMode === "url" ? <ElicitationAction label={submitting ? "Opening…" : "Open link"} primary disabled={busy || submitting || !url} onPress={() => {
 				if (!url) return;
 				void Linking.openURL(url.href)
 					.then(() => resolve("accept"))
 					.catch(() => setValidationError("This link could not be opened on this device."));
-			}} /> : <Action label={submitting ? "Sending…" : "Continue"} primary disabled={busy || submitting} onPress={submit} />}
+			}} /> : <ElicitationAction label={submitting ? "Sending…" : step.primaryLabel} primary disabled={busy || submitting} onPress={submit} />}
 		</View> : pending ? <Text style={[styles.partial, { color: t.amber }]}>This request has no provider identity, so AO cannot answer it safely. Open diagnostics on the host.</Text> : <Text style={styles.partial}>Already answered. This card is kept for the record.</Text>}
 	</View>;
 }
@@ -762,39 +852,35 @@ function InputField({ name, property, required, value, onChange }: { name: strin
 	if (options.length) {
 		const multi = property.type === "array";
 		return <View style={styles.field}>
-			<Text style={styles.inputLabel}>{label}</Text>
-			{property.description ? <Text style={styles.inputHint}>{property.description}</Text> : null}
-			<View style={styles.choiceWrap}>{options.map((choice) => {
-				const checked = multi ? Array.isArray(value) && value.includes(choice.value) : value === choice.value;
-				return <Action
-					key={choice.value}
-					label={choice.label}
-					hint={choice.description}
-					primary={checked}
-					onPress={() => { haptics.select(); onChange(multi ? toggleInputValue(Array.isArray(value) ? value : [], choice.value) : choice.value); }}
-				/>;
-			})}</View>
+			<Text style={styles.inputEyebrow}>{label}</Text>
+			{property.description ? <Text style={styles.inputQuestion}>{property.description}</Text> : null}
+			<ElicitationChoiceList choices={options} multi={multi} selected={(choice) => multi ? Array.isArray(value) && value.includes(choice) : value === choice} onChange={(choice) => onChange(multi ? toggleInputValue(Array.isArray(value) ? value : [], choice) : choice)} />
 		</View>;
 	}
 	return <View style={styles.field}>
 		<Text style={styles.inputLabel}>{label}</Text>
 		{property.description ? <Text style={styles.inputHint}>{property.description}</Text> : null}
-		<TextInput accessibilityLabel={label} value={value === undefined ? "" : String(value)} onChangeText={(text) => onChange(property.type === "number" || property.type === "integer" ? (text === "" ? "" : Number(text)) : text)} keyboardType={property.type === "number" || property.type === "integer" ? "numeric" : "default"} maxLength={property.maxLength} style={styles.formInput} placeholderTextColor={t.textFaint} />
+		<ElicitationTextField label={label} value={value} numeric={property.type === "number" || property.type === "integer"} maxLength={property.maxLength} onChange={onChange} />
 	</View>;
 }
 
 
 function CompactionMarker({ activity }: { activity: ConversationActivity }) {
+	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const after = activity.detail?.tokensAfter;
 	const window = activity.detail?.contextWindow;
-	return <View style={styles.compaction}><View style={styles.ruleHalf} /><Feather name="archive" size={12} /><Text style={styles.compactionText}>HISTORY COMPACTED{activity.detail?.tokensReclaimed ? `  −${formatTokens(activity.detail.tokensReclaimed)}` : ""}{after && window ? `  ${Math.round((after / window) * 100)}% FULL` : ""}</Text><View style={styles.ruleHalf} /></View>;
+	return <View style={styles.compaction}><Feather name="archive" size={12} color={t.textFaint} /><Text style={styles.compactionText}>HISTORY COMPACTED{activity.detail?.tokensReclaimed ? `  −${formatTokens(activity.detail.tokensReclaimed)}` : ""}{after && window ? `  ${Math.round((after / window) * 100)}% FULL` : ""}</Text></View>;
 }
 
 function ErrorActivity({ activity }: { activity: ConversationActivity }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	return <View style={[styles.errorCard, { borderColor: t.tintRed }]}><Feather name="alert-triangle" size={14} color={t.red} /><View style={{ flex: 1 }}><Text style={styles.errorTitle}>{activity.summary || "Agent error"}</Text>{activity.detail?.error || activity.detail?.message ? <Text selectable style={styles.errorCopy}>{String(activity.detail.error ?? activity.detail.message)}</Text> : null}</View></View>;
+	// Providers set several fields to the same sentence — Codex sends the
+	// usage-limit text as both summary and detail.error — so rendering each in
+	// turn printed one failure twice inside this card. Same rule as the renderer.
+	const { headline, detail } = providerErrorCopy(activity);
+	return <View style={[styles.errorCard, { borderColor: t.tintRed }]}><Feather name="alert-triangle" size={14} color={t.red} /><View style={{ flex: 1 }}><Text style={styles.errorTitle}>{headline}</Text>{detail ? <Text selectable style={styles.errorCopy}>{detail}</Text> : null}</View></View>;
 }
 
 function EmptyConversation({ harness, controller }: { harness: string; controller: string }) {
@@ -869,13 +955,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	timelineWrap: { flex: 1, position: "relative", backgroundColor: t.bgBase },
 	emptySurface: { flex: 1, justifyContent: "center" },
 	list: { flex: 1, backgroundColor: t.bgBase },
-	content: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28 },
+	content: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 30 },
 	older: { alignSelf: "center", flexDirection: "row", gap: 7, alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, marginBottom: 14 },
 	olderText: { color: t.textTertiary, fontSize: 12 },
 	beginning: { alignSelf: "center", color: t.textFaint, fontSize: 10, letterSpacing: 1, textTransform: "uppercase", marginBottom: 16 },
-	userRow: { alignItems: "flex-end", paddingVertical: 10 },
-	userBubble: { maxWidth: "86%", backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.borderDefault, borderRadius: 17, borderBottomRightRadius: 5, paddingHorizontal: 14, paddingVertical: 10 },
-	userText: { color: t.textPrimary, fontSize: 16, lineHeight: 22 },
+	userRow: { alignItems: "flex-end", paddingTop: 16, paddingBottom: 10 },
+	userBubble: { maxWidth: "88%", backgroundColor: userMessageSurfaceStyle(t).backgroundColor, borderWidth: StyleSheet.hairlineWidth, borderColor: userMessageSurfaceStyle(t).borderColor, borderRadius: 20, borderCurve: "continuous", paddingHorizontal: 15, paddingVertical: 11 },
+	userText: { color: userMessageSurfaceStyle(t).foregroundColor, fontSize: 16, lineHeight: 22 },
 	delivery: { marginTop: 5, color: t.amber, fontSize: 10 },
 	attachments: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
 	attachmentsSpaced: { marginTop: 8 },
@@ -894,13 +980,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	originText: { color: t.textSecondary, fontSize: 14, lineHeight: 20 },
 	originMore: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 4 },
 	originMoreText: { color: t.blue, fontSize: 11, fontWeight: "600" },
-	steerBubble: { backgroundColor: t.tintBlue, borderColor: t.borderSubtle },
-	steerLabel: { color: t.blue, fontSize: 8, letterSpacing: 1, fontWeight: "700", marginBottom: 3 },
-	assistantRow: { paddingVertical: 14, paddingHorizontal: 1 },
+	steerBubble: { backgroundColor: t.bgSubtle },
+	steerLabel: { color: t.textTertiary, fontSize: 8, letterSpacing: 1, fontWeight: "700", marginBottom: 3 },
+	assistantRow: { paddingVertical: 18 },
 	sender: { color: t.textTertiary, fontSize: 11, fontWeight: "600", marginBottom: 5 },
-	streamingDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: t.orange, marginTop: 8 },
-	copy: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 7, paddingHorizontal: 2 },
-	copyText: { color: t.textFaint, fontSize: 10 },
+	copy: { alignSelf: "flex-start", alignItems: "center", justifyContent: "center", width: 28, height: 28, marginTop: 3, marginLeft: -7 },
 	jump: { position: "absolute", right: 14, bottom: 12, minHeight: 36, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, borderRadius: 18, backgroundColor: jumpToLatestColors(t).backgroundColor, borderWidth: 1, borderColor: t.borderStrong },
 	jumpText: { color: t.textPrimary, fontSize: 11, fontWeight: "700" },
 	systemSignal: { marginVertical: 7, flexDirection: "row", alignItems: "flex-start", gap: 9, borderWidth: 1, borderColor: t.borderDefault, borderRadius: 10, backgroundColor: t.bgSurface, padding: 10 },
@@ -933,17 +1017,15 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	detailValue: { flex: 1, color: t.textSecondary, fontSize: 11, fontFamily: t.fontMono },
 	output: { color: t.textSecondary, backgroundColor: t.bgColumn, borderRadius: 8, padding: 10, fontFamily: t.fontMono, fontSize: 11, lineHeight: 17 },
 	partial: { color: t.textFaint, fontSize: 10 },
-	turnWrap: { paddingTop: 8, paddingBottom: 16, gap: 8 },
-	turnLine: { flexDirection: "row", alignItems: "center", gap: 8 },
-	ruleHalf: { height: 1, flex: 1, backgroundColor: t.borderSubtle },
-	turnState: { color: t.textTertiary, fontSize: 10, letterSpacing: 1.2, fontWeight: "700" },
-	turnDuration: { color: t.textFaint, fontSize: 10, fontFamily: t.fontMono },
+	turnWrap: { paddingTop: 8, paddingBottom: 18, gap: 8 },
+	turnLine: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+	turnState: { color: t.textTertiary, fontSize: 12, fontWeight: "500" },
 	turnError: { color: t.red, fontSize: 12, lineHeight: 17, textAlign: "right" },
 	rollbackConfirm: { marginTop: 4, backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.borderDefault, borderRadius: 12, padding: 12, gap: 7 },
 	rollbackTitle: { color: t.textPrimary, fontWeight: "700", fontSize: 13 },
 	rollbackCopy: { color: t.textSecondary, fontSize: 12, lineHeight: 17 },
-	planCard: { backgroundColor: t.bgSubtle, borderRadius: 10, overflow: "hidden" },
-	planHeader: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10 },
+	planCard: { backgroundColor: t.bgSurface, borderRadius: 14, borderCurve: "continuous", borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, overflow: "hidden" },
+	planHeader: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12 },
 	planTitle: { flex: 1, color: t.textSecondary, fontSize: 12, fontWeight: "600" },
 	planLive: { color: t.orange, fontSize: 8, letterSpacing: 0.7, fontWeight: "700" },
 	planCount: { color: t.textFaint, fontFamily: t.fontMono, fontSize: 10 },
@@ -957,29 +1039,46 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	fileMark: { width: 13, fontFamily: t.fontMono, fontSize: 10, fontWeight: "700" },
 	filePath: { flex: 1, color: t.textSecondary, fontFamily: t.fontMono, fontSize: 11, lineHeight: 16 },
 	fileStat: { color: t.textFaint, fontFamily: t.fontMono, fontSize: 10 },
-	requestCard: { marginVertical: 8, backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.borderDefault, borderRadius: 13, padding: 13, gap: 10 },
+	approvalRequest: { marginVertical: 12, paddingHorizontal: 2, paddingTop: 6, paddingBottom: 18, gap: 11 },
+	approvalStatus: { flexDirection: "row", alignItems: "center", gap: 8 },
+	approvalDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: t.amber },
+	approvalStatusText: { color: t.textPrimary, fontSize: 13, fontWeight: "700" },
+	approvalCommandSurface: { flexDirection: "row", alignItems: "flex-start", gap: 9, borderRadius: 14, borderCurve: "continuous", backgroundColor: t.bgSubtle, paddingHorizontal: 12, paddingVertical: 11 },
+	approvalActions: { minHeight: 36, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, paddingTop: 1 },
+	approvalResolved: { minHeight: 38, marginVertical: 8, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 2 },
+	approvalResolvedLabel: { color: t.textTertiary, fontSize: 11, fontWeight: "600" },
+	approvalResolvedCommand: { flex: 1, color: t.textFaint, fontSize: 11, fontFamily: t.fontMono },
+	requestCard: { marginVertical: 10, backgroundColor: t.bgSurface, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, borderRadius: 16, borderCurve: "continuous", padding: 14, gap: 11 },
+	requestCardResolved: { backgroundColor: t.bgSubtle },
 	requestTitle: { flexDirection: "row", alignItems: "center", gap: 8 },
+	requestIcon: { width: 32, height: 32, borderRadius: 10, alignItems: "center", justifyContent: "center" },
 	requestHeading: { flex: 1, color: t.textPrimary, fontSize: 13, fontWeight: "700" },
-	requestId: { color: t.textFaint, fontFamily: t.fontMono, fontSize: 9 },
+	requestBadge: { borderRadius: 10, paddingHorizontal: 8, paddingVertical: 5 },
+	requestBadgeText: { fontSize: 10, fontWeight: "700" },
 	requestCopy: { color: t.textSecondary, fontSize: 13, lineHeight: 19 },
-	requestCommand: { color: t.textPrimary, backgroundColor: t.bgColumn, borderRadius: 8, padding: 9, fontFamily: t.fontMono, fontSize: 11, lineHeight: 16 },
-	actions: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" },
-	action: { minHeight: 36, justifyContent: "center", borderRadius: 10, paddingHorizontal: 13, borderWidth: 1, borderColor: t.borderSubtle },
+	inputRequest: { marginVertical: 12, paddingHorizontal: 2, paddingTop: 6, paddingBottom: 20, gap: 12 },
+	inputRequestStatus: { flexDirection: "row", alignItems: "center", gap: 8 },
+	inputRequestDot: { width: 7, height: 7, borderRadius: 4 },
+	inputRequestStatusText: { color: t.textTertiary, fontSize: 12, fontWeight: "600" },
+	inputActions: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: 2, paddingTop: 2 },
+	requestCommand: { flex: 1, color: t.textPrimary, fontFamily: t.fontMono, fontSize: 11, lineHeight: 16 },
+	actions: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flexWrap: "wrap", paddingTop: 2 },
+	action: { minHeight: 44, justifyContent: "center", borderRadius: 12, borderCurve: "continuous", paddingHorizontal: 15, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
 	actionLabel: { fontSize: 12, fontWeight: "700" },
 	actionHint: { maxWidth: 180, color: t.textTertiary, fontSize: 9, lineHeight: 12, marginTop: 2 },
-	form: { gap: 12 },
-	field: { gap: 5 },
+	form: { gap: 10 },
+	field: { gap: 6 },
+	inputEyebrow: { color: t.textTertiary, fontSize: 11, fontWeight: "700", letterSpacing: 0.7, textTransform: "uppercase" },
+	inputQuestion: { color: t.textPrimary, fontSize: 16, lineHeight: 24, fontWeight: "500" },
 	inputLabel: { color: t.textPrimary, fontSize: 12, fontWeight: "600" },
 	inputHint: { color: t.textTertiary, fontSize: 11, lineHeight: 15 },
-	formInput: { minHeight: 42, borderRadius: 9, borderWidth: 1, borderColor: t.borderDefault, color: t.textPrimary, paddingHorizontal: 11, paddingVertical: 8, fontSize: 14, backgroundColor: t.bgColumn },
 	switchRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-	choiceWrap: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
 	urlBox: { backgroundColor: t.bgColumn, borderRadius: 8, padding: 9 },
 	urlText: { color: t.textSecondary, fontFamily: t.fontMono, fontSize: 10, lineHeight: 15 },
 	validation: { color: t.red, fontSize: 11, lineHeight: 15 },
-	compaction: { flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 14 },
+	compaction: { alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 7, marginVertical: 10, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 12, backgroundColor: t.bgSubtle },
 	compactionText: { color: t.textFaint, fontSize: 9, letterSpacing: 1 },
-	errorCard: { marginVertical: 7, flexDirection: "row", gap: 9, backgroundColor: t.tintRed, borderRadius: 11, borderWidth: 1, padding: 11 },
+	errorCard: { marginVertical: 8, flexDirection: "row", gap: 10, backgroundColor: t.tintRed, borderRadius: 14, borderCurve: "continuous", borderWidth: StyleSheet.hairlineWidth, padding: 12 },
 	errorTitle: { color: t.red, fontSize: 12, fontWeight: "700" },
 	errorCopy: { marginTop: 4, color: t.textSecondary, fontSize: 11, lineHeight: 16 },
 	empty: { paddingVertical: 90, alignItems: "center", paddingHorizontal: 25 },

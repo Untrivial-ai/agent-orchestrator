@@ -36,6 +36,26 @@ type Control interface {
 // worker degrades to a slow poll rather than a tight spin.
 const workWaitFallback = 2 * time.Second
 
+// Fallback PTY geometry when an open request carries no client dimensions. The
+// agent terminal is spawned at worker boot (StartAgent), autonomously, long
+// before any human attaches — so there is no viewer width to honor yet, and the
+// coding agent draws its full-screen intro (the welcome box, "What's new") once,
+// committing that fixed-layout box art to scrollback. Committed scrollback never
+// reflows: a viewer whose pane is NARROWER than the boot width sees every line
+// overflow and wrap, garbling the banner permanently (the live region still
+// repaints correctly on the client's resize — only history is stuck).
+//
+// So the fallback must be a width the viewer is essentially always at least as
+// wide as. 80 is the canonical terminal width every agent TUI is designed to
+// render at, and every realistic AO viewer pane is >= 80 columns, so the banner
+// renders cleanly (under-filling at worst, never overflowing). The client's
+// authoritative resize immediately expands the live UI to the full pane width.
+// A client-provided size, when present, always wins over these.
+const (
+	fallbackTerminalColumns = 80
+	fallbackTerminalRows    = 24
+)
+
 type Supervisor struct {
 	Control         Control
 	Workspace       string
@@ -54,12 +74,14 @@ type Supervisor struct {
 	terminals                map[string]*terminalProcess
 	holdAgentInput           bool
 	workspaceReady           bool
+	agentStarting            bool
+	agentStarted             bool
 	pendingAgentTerminalData [][]byte
+	pendingAgentTerminalSize *worker.TerminalCommand
 }
 
-// HoldAgentInputUntilWorkspaceReady permits the agent PTY to start while the
-// checkout runs, but preserves user input and durable turns until the checkout
-// has completed. Call this before Run.
+// HoldAgentInputUntilWorkspaceReady preserves user input and durable turns
+// until the checkout has completed. Call this before Run.
 func (s *Supervisor) HoldAgentInputUntilWorkspaceReady() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -67,24 +89,14 @@ func (s *Supervisor) HoldAgentInputUntilWorkspaceReady() {
 	s.workspaceReady = false
 }
 
-// MarkWorkspaceReady releases prompts collected while the agent was booting
-// against an empty workspace.
+// MarkWorkspaceReady releases prompts collected while the agent was waiting for
+// its checkout. If the agent PTY has not started yet, the prompts remain queued
+// until StartAgent makes the terminal live.
 func (s *Supervisor) MarkWorkspaceReady() {
 	s.mu.Lock()
 	s.workspaceReady = true
-	pending := s.pendingAgentTerminalData
-	s.pendingAgentTerminalData = nil
-	terminal := s.terminals[s.AgentTerminalID]
 	s.mu.Unlock()
-	if terminal == nil {
-		return
-	}
-	for _, data := range pending {
-		if _, err := terminal.pty.Write(data); err != nil {
-			s.Logger.Warn("flush queued agent terminal input", "error", err)
-			return
-		}
-	}
+	s.flushReadyAgentTerminal()
 }
 
 type terminalProcess struct {
@@ -180,29 +192,77 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
+// ConfigureAgent reserves an agent terminal before its PTY may be started. A
+// browser can attach during checkout, so keeping this identity lets the worker
+// buffer its early input and latest viewport instead of acknowledging requests
+// that no process can handle yet.
+func (s *Supervisor) ConfigureAgent(command workerexec.Command, terminalID string) error {
+	if terminalID == "" {
+		return errors.New("agent terminal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.AgentTerminalID != "" || s.agentStarting || s.agentStarted {
+		return errors.New("interactive agent terminal is already configured")
+	}
+	s.AgentCommand = command
+	s.AgentTerminalID = terminalID
+	s.agentStarting = true
+	return nil
+}
+
+// DiscardConfiguredAgent releases the command cleanup when checkout fails
+// before the reserved agent terminal could start.
+func (s *Supervisor) DiscardConfiguredAgent(terminalID string) {
+	s.mu.Lock()
+	if !s.agentStarting || s.agentStarted || s.AgentTerminalID != terminalID {
+		s.mu.Unlock()
+		return
+	}
+	cleanup := s.AgentCommand.Cleanup
+	s.AgentCommand = workerexec.Command{}
+	s.AgentTerminalID = ""
+	s.agentStarting = false
+	s.pendingAgentTerminalData = nil
+	s.pendingAgentTerminalSize = nil
+	s.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+}
+
 // StartAgent adds the coding-agent PTY after the workspace transport is already
-// serving. This lets a browser attach to a usable workspace shell while a
-// repository checkout and agent credential setup continue in the background.
+// serving. ConfigureAgent may have reserved its identity while checkout ran;
+// otherwise this method keeps the original one-step setup behavior.
 func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command, terminalID string) error {
 	if terminalID == "" {
 		return errors.New("agent terminal id is required")
 	}
 	s.mu.Lock()
-	if s.AgentTerminalID != "" {
+	if s.AgentTerminalID == "" {
+		s.AgentCommand = command
+		s.AgentTerminalID = terminalID
+		s.agentStarting = true
+	} else if s.AgentTerminalID != terminalID || !s.agentStarting || s.agentStarted {
 		s.mu.Unlock()
 		return errors.New("interactive agent terminal is already configured")
 	}
-	s.AgentCommand = command
 	s.mu.Unlock()
 	if err := s.openTerminal(ctx, worker.TerminalCommand{TerminalID: terminalID, Kind: "agent"}); err != nil {
 		s.mu.Lock()
 		s.AgentCommand = workerexec.Command{}
+		s.AgentTerminalID = ""
+		s.agentStarting = false
+		s.pendingAgentTerminalData = nil
+		s.pendingAgentTerminalSize = nil
 		s.mu.Unlock()
 		return err
 	}
 	s.mu.Lock()
-	s.AgentTerminalID = terminalID
+	s.agentStarting = false
+	s.agentStarted = true
 	s.mu.Unlock()
+	s.flushReadyAgentTerminal()
 	return nil
 }
 
@@ -213,8 +273,9 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	agentTerminalID := s.AgentTerminalID
 	workspaceReady := !s.holdAgentInput || s.workspaceReady
+	agentStarted := s.agentStarted
 	s.mu.Unlock()
-	if agentTerminalID == "" || !workspaceReady {
+	if agentTerminalID == "" || !agentStarted || !workspaceReady {
 		return false, nil
 	}
 	turn, err := s.Control.ClaimTurn(ctx)
@@ -342,10 +403,10 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 	}
 	columns, rows := input.Columns, input.Rows
 	if columns == 0 {
-		columns = 120
+		columns = fallbackTerminalColumns
 	}
 	if rows == 0 {
-		rows = 40
+		rows = fallbackTerminalRows
 	}
 	terminalPTY, err := pty.StartWithSize(command, &pty.Winsize{
 		Cols: columns,
@@ -480,7 +541,7 @@ func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
 		return errors.New("invalid terminal input request")
 	}
 	s.mu.Lock()
-	if s.holdAgentInput && !s.workspaceReady && input.TerminalID == s.AgentTerminalID {
+	if s.agentStarting && input.TerminalID == s.AgentTerminalID {
 		s.pendingAgentTerminalData = append(s.pendingAgentTerminalData, append([]byte(nil), input.Data...))
 		s.mu.Unlock()
 		return nil
@@ -499,6 +560,12 @@ func (s *Supervisor) resizeTerminal(input worker.TerminalCommand) error {
 		return errors.New("invalid terminal resize request")
 	}
 	s.mu.Lock()
+	if s.agentStarting && input.TerminalID == s.AgentTerminalID {
+		pending := input
+		s.pendingAgentTerminalSize = &pending
+		s.mu.Unlock()
+		return nil
+	}
 	terminal := s.terminals[input.TerminalID]
 	s.mu.Unlock()
 	if terminal == nil {
@@ -508,6 +575,42 @@ func (s *Supervisor) resizeTerminal(input worker.TerminalCommand) error {
 		Cols: input.Columns,
 		Rows: input.Rows,
 	})
+}
+
+// flushReadyAgentTerminal delivers the input and viewport collected while the
+// agent terminal was reserved but its checkout/PTY was not ready. Keep only the
+// newest size: intermediate resizes are stale by definition and sending them
+// would needlessly redraw the TUI before its first prompt.
+func (s *Supervisor) flushReadyAgentTerminal() {
+	s.mu.Lock()
+	if !s.workspaceReady || !s.agentStarted {
+		s.mu.Unlock()
+		return
+	}
+	terminal := s.terminals[s.AgentTerminalID]
+	if terminal == nil {
+		s.mu.Unlock()
+		return
+	}
+	pendingSize := s.pendingAgentTerminalSize
+	pendingData := s.pendingAgentTerminalData
+	s.pendingAgentTerminalSize = nil
+	s.pendingAgentTerminalData = nil
+	s.mu.Unlock()
+	if pendingSize != nil {
+		if err := pty.Setsize(terminal.pty, &pty.Winsize{
+			Cols: pendingSize.Columns,
+			Rows: pendingSize.Rows,
+		}); err != nil {
+			s.Logger.Warn("flush queued agent terminal resize", "error", err)
+		}
+	}
+	for _, data := range pendingData {
+		if _, err := terminal.pty.Write(data); err != nil {
+			s.Logger.Warn("flush queued agent terminal input", "error", err)
+			return
+		}
+	}
 }
 
 func (s *Supervisor) closeTerminal(id string) {

@@ -1881,18 +1881,18 @@ export interface components {
             /** @enum {string} */
             target?: "us" | "eu";
             /** @enum {string} */
-            credentialType?: "oauth_token" | "api_key" | "access_token";
+            credentialType?: "oauth_token" | "api_key" | "access_token" | "auth_json";
         };
         PutAgentProviderConnectionInput: {
             /** @enum {string} */
-            credentialType: "oauth_token" | "api_key" | "access_token";
+            credentialType: "oauth_token" | "api_key" | "access_token" | "auth_json";
             secret: string;
         };
         WorkerCredentialResponse: {
             /** @enum {string} */
             provider: "claude-code" | "codex" | "cursor";
             /** @enum {string} */
-            credentialType: "oauth_token" | "api_key" | "access_token";
+            credentialType: "oauth_token" | "api_key" | "access_token" | "auth_json";
             /**
              * Format: password
              * @description Decrypted coding-agent secret. Never log or persist this value.

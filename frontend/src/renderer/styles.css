@@ -1000,9 +1000,9 @@ button.settings-row-bar {
 	opacity: 0.75;
 }
 
-/* The composer is one continuous surface. Agent and model share equal, stable
-   tracks so changing provider names never moves the model or the primary action;
-   transparent controls keep the row reading as card padding rather than a form. */
+/* The composer is one continuous surface. Agent and model sit as separate
+   equal-width dropdowns in a horizontal row so changing provider names never
+   moves the model or the primary action. */
 .composer-toolbar {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto auto;
@@ -1023,39 +1023,21 @@ button.settings-row-bar {
 .composer-run-controls {
 	display: grid;
 	min-width: 0;
-	grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 	align-items: center;
-	overflow: hidden;
-	border-radius: var(--radius-md);
-	/* Same mix formula as the settings-modal dropdown trigger, but anchored to
-	   --card (an opaque color) instead of --color-bg-settings-row (transparent
-	   by design there, since it always sits inside an already-painted dialog
-	   surface) — this pill floats on its own with nothing painted behind it. */
-	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground));
+	column-gap: var(--space-2);
 }
 
 .composer-toolbar-slot {
 	min-width: 0;
 }
 
-.composer-toolbar-divider {
-	align-self: stretch;
-	width: 1px;
-	height: 100%;
-	background-color: var(--color-border);
-}
-
-/* The divider is the shared edge between the two segments — when either one
-   is focused, it becomes part of that segment's own border/focus ring
-   instead of staying a disconnected neutral line. */
-.composer-run-controls:has(.composer-toolbar-slot :focus-within) .composer-toolbar-divider {
-	background-color: var(--bridge-accent);
-}
-
 .composer-toolbar .composer-toolbar-option {
 	height: var(--size-settings-action-height);
-	border-radius: 0 !important;
-	background-color: transparent !important;
+	/* Same mix formula as the settings-modal dropdown trigger, but anchored to
+	   --card (an opaque color) instead of --color-bg-settings-row. */
+	border-radius: var(--radius-md) !important;
+	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground)) !important;
 }
 
 .composer-toolbar .composer-toolbar-option:hover:not(:disabled),
@@ -1067,8 +1049,8 @@ button.settings-row-bar {
 	box-shadow: none;
 }
 
-/* Inline value control inside the task composer's bottom toolbar. Reads as a
-   value you can change, not as a form field: no visible chrome until hover/focus. */
+/* Inline value control inside the task composer's bottom toolbar. Each chip is
+   its own dropdown trigger with the quiet filled chrome settings uses. */
 @utility composer-chip {
 	display: inline-flex;
 	width: auto;
@@ -1078,11 +1060,8 @@ button.settings-row-bar {
 	align-items: center;
 	gap: calc(var(--spacing) * 2);
 	border: 1px solid transparent;
-	/* SelectTrigger and settings-option-trigger bring different radii. The
-	   shared container now owns the rounding, so each segment stays square and
-	   only the outer edge reads as one pill. */
-	border-radius: 0 !important;
-	background-color: transparent;
+	border-radius: var(--radius-md);
+	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground));
 	padding-inline: var(--space-2);
 	font-size: var(--font-size-base);
 	color: var(--color-foreground);
@@ -2033,14 +2012,12 @@ textarea,
 	}
 }
 
-/* ── Global resize state (sidebar drag) ─────────────────────────────────── */
+/* ── Global resize state (sidebar / inspector drag) ─────────────────────── */
+/* Grip paint lives on ResizeHandle's fixed span — DO NOT restore
+   `body.is-resizing-x [data-slot="resize-handle"]::after` (rejected chrome). */
 body.is-resizing-x {
 	cursor: col-resize;
 	user-select: none;
-}
-
-body.is-resizing-x [data-slot="resize-handle"]::after {
-	background: var(--color-border);
 }
 
 body.is-resizing-x [data-slot="sidebar-gap"],
@@ -2074,8 +2051,10 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	}
 }
 
-/* Keep keyboard focus visible without adding a ring to the sidebar chrome. */
-.sidebar-focusless :focus-visible {
+/* Keep keyboard focus visible without adding a ring to the sidebar chrome.
+   Opt out elements that own their own fill (icon actions, brand, folder toggle,
+   NavRowHighlight hosts) so each new control does not need another !important. */
+.sidebar-focusless :focus-visible:not(.sidebar-icon-action):not([data-sidebar-brand]):not([data-project-folder]) {
 	background-color: var(--color-interactive-hover) !important;
 	outline: none !important;
 	box-shadow: none !important;
@@ -2098,6 +2077,15 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
    never paint the sidebar focus fill on it. */
 .sidebar-focusless [data-project-folder]:focus-visible {
 	background-color: transparent !important;
+}
+
+/* Brand → home is opted out of the wash above; still needs a keyboard cue.
+   Beats the global `:focus-visible { outline: none !important }` via specificity. */
+.sidebar-focusless [data-sidebar-brand]:focus-visible {
+	outline: 2px solid color-mix(in oklab, var(--color-ring) 55%, transparent) !important;
+	outline-offset: 2px !important;
+	background-color: transparent !important;
+	box-shadow: none !important;
 }
 
 /* Keyboard focus for the growing pill: focus-visible only (not focus-within),
@@ -2743,9 +2731,21 @@ html.sidebar-reordering * {
 	box-shadow: none;
 }
 
-:root[data-theme="light"] .cursor-chat-human-message {
-	background: color-mix(in srgb, var(--color-bg-secondary) 78%, var(--color-bg-tertiary));
+/* Light theme collapses the surface stack the dark bubble relies on: `--card`
+   and `--background` are the same near-white, so `--color-bg-secondary` cannot
+   sit above the canvas. Take the unwashed tertiary step and paint the hairline
+   this rule has always declared, so the message still reads as enclosed. */
+:root[data-theme="light"] .cursor-chat-human-message:not([data-queued]) {
+	border-width: 1px;
+	background: var(--color-bg-tertiary);
 	border-color: color-mix(in oklch, var(--color-text-primary) 14%, transparent);
+}
+
+/* Queued keeps its dashed, unfilled outline: the agent has not seen it yet, and
+   a fill would make it read as sent. */
+:root[data-theme="light"] .cursor-chat-human-message[data-queued] {
+	background: transparent;
+	border-color: color-mix(in oklch, var(--color-text-primary) 22%, transparent);
 }
 
 :root[data-theme="light"] .cursor-chat-origin-message,
@@ -4586,22 +4586,31 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	order: -1;
 }
 
-/* Annotation mode replaces navigation chrome with a quiet, fixed control
-   strip. Keep its actions spatially stable: feedback comes from tone and
-   contrast, never from lifting, scaling, or reshaping controls on hover. */
+/* Annotation mode adds a second chrome row below tabs. Match the tab row's
+   flat chrome — no inset card surface. Keep actions spatially stable. */
+.browser-panel__annotation-row {
+	container-name: browser-annotation;
+	container-type: inline-size;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+	min-width: 0;
+	overflow: hidden;
+	padding: 0 var(--space-1);
+	background: var(--bg);
+}
+
 .browser-panel__toolbar--annotation {
 	position: relative;
 	display: flex;
 	width: 100%;
-	height: 32px;
 	min-width: 0;
-	flex: 1 1 auto;
+	height: calc(var(--size-control-md) + 2 * var(--space-1));
 	align-items: center;
-	gap: 6px;
-	padding: 2px 4px;
-	border-radius: var(--radius-md);
-	background: color-mix(in srgb, var(--surface) 94%, var(--bg));
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-border) 70%, transparent);
+	gap: 2px;
+	padding-block: var(--space-1);
+	background: transparent;
 }
 
 .browser-panel__annotation-actions {
@@ -4609,7 +4618,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	display: flex;
 	min-width: 0;
 	align-items: center;
-	gap: 2px;
+	gap: var(--space-1);
 }
 
 .browser-panel__annotation-actions--leading {
@@ -4629,9 +4638,9 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	min-width: 0;
 	translate: -50% -50%;
 	align-items: center;
-	gap: 5px;
+	gap: var(--space-1_5);
 	pointer-events: none;
-	font-size: 12px;
+	font-size: var(--font-size-sm);
 	line-height: 1;
 }
 
@@ -4643,15 +4652,12 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: var(--color-status-needs-you);
 }
 
-.browser-panel__annotation-label {
-	color: var(--muted-foreground);
-}
-
-.browser-panel__annotation-host {
+.browser-panel__annotation-count {
 	min-width: 0;
 	overflow: hidden;
 	color: var(--foreground);
-	font-weight: 500;
+	font-weight: var(--font-weight-medium);
+	font-variant-numeric: tabular-nums;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -4659,12 +4665,12 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-panel__annotation-separator {
 	width: 1px;
 	height: 16px;
-	margin: 0 3px;
+	margin: 0 var(--space-1);
 	background: color-mix(in srgb, var(--color-border) 78%, transparent);
 }
 
-.browser-panel__toolbar.browser-panel__toolbar--annotation button {
-	border-radius: 6px;
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send) {
+	border-radius: var(--radius-md);
 	box-shadow: none;
 	transform: none;
 	translate: none;
@@ -4676,8 +4682,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 		opacity var(--duration-fast) ease;
 }
 
-.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(:disabled):hover,
-.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(:disabled):active {
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send):not(:disabled):hover,
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send):not(:disabled):active {
 	box-shadow: none;
 	transform: none;
 	translate: none;
@@ -4698,37 +4704,44 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	top: 1px;
 	right: 2px;
 	color: var(--color-status-needs-you);
-	font-family: var(--font-mono);
-	font-size: 9px;
-	font-weight: 600;
+	font-size: var(--font-size-nano);
+	font-weight: var(--font-weight-semibold);
+	font-variant-numeric: tabular-nums;
 	line-height: 1;
 }
 
 .browser-panel__toolbar--annotation .browser-panel__annotation-send {
-	min-width: 52px;
-	border-radius: 6px;
-	box-shadow: none;
+	height: var(--size-control-md);
+	gap: var(--space-1_5);
+	padding-inline: var(--space-2_5);
+	color: var(--primary-foreground);
+	font-size: var(--font-size-sm);
+	font-weight: var(--font-weight-medium);
+}
+
+/* The shared primary hover is a translucent wash (bg-primary/80). Over the
+   dark annotation toolbar that reads as a half-disabled button, so the Send
+   control steps its tone instead and stays solid. */
+.browser-panel__toolbar--annotation .browser-panel__annotation-send:not(:disabled):hover {
+	background-color: color-mix(in oklch, var(--primary) 90%, var(--background));
+}
+
+.browser-panel__toolbar--annotation .browser-panel__annotation-send:disabled {
+	opacity: 0.72;
 }
 
 .browser-panel__annotation-send-count {
-	margin-left: 1px;
-	padding-left: 6px;
-	border-left: 1px solid color-mix(in srgb, currentColor 28%, transparent);
-	font-family: var(--font-mono);
-	font-size: 10px;
+	color: inherit;
+	font-variant-numeric: tabular-nums;
 }
 
-@container browser-toolbar (max-width: 30rem) {
+@container browser-annotation (max-width: 30rem) {
 	.browser-panel__annotation-context {
 		max-width: 26%;
 	}
-
-	.browser-panel__annotation-label {
-		display: none;
-	}
 }
 
-@container browser-toolbar (max-width: 23rem) {
+@container browser-annotation (max-width: 23rem) {
 	.browser-panel__annotation-context {
 		display: none;
 	}
@@ -4779,7 +4792,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-actions button:not(:disabled):hover,
-.browser-panel__toolbar button:not(:disabled):hover,
+.browser-panel__toolbar button:not(.browser-panel__annotation-send):not(:disabled):hover,
 .browser-panel__address-bar button:not(:disabled):hover {
 	color: var(--fg);
 }

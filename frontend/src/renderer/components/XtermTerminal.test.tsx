@@ -415,6 +415,20 @@ describe("XtermTerminal", () => {
 		sessionButton.remove();
 	});
 
+	it("allows a PTY-launching button to hand focus to the opened terminal", async () => {
+		const { rerender } = render(<XtermTerminal theme="dark" />);
+		const loginButton = document.createElement("button");
+		loginButton.dataset.terminalFocusHandoff = "true";
+		document.body.appendChild(loginButton);
+		loginButton.focus();
+		state.lastTerminal!.focus.mockClear();
+
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+		loginButton.remove();
+	});
+
 	it("allows an in-pane terminal tab to hand focus to the destination TUI", async () => {
 		const { rerender } = render(<XtermTerminal theme="dark" />);
 		const topbar = document.createElement("div");

@@ -408,6 +408,7 @@ describe("createNotificationsTransport", () => {
 			title: "checkout-flow needs input",
 			body: "The agent is waiting for your response.",
 			type: "needs_input",
+			watched: false,
 		});
 	});
 
@@ -429,7 +430,7 @@ describe("createNotificationsTransport", () => {
 		expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(0);
 	});
 
-	it("suppresses the needs_input toast for the session the user is already watching", () => {
+	it("marks the needs_input notification watched for the session the user is already looking at", () => {
 		setWindowState({ focused: true, visible: true });
 		const qc = queryClient();
 		createNotificationsTransport(qc, () => "mer-1").connect();
@@ -437,7 +438,8 @@ describe("createNotificationsTransport", () => {
 		EventSourceStub.instances[0].dispatch("notification_created", notification());
 
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toHaveLength(1);
-		expect(showNotificationMock).not.toHaveBeenCalled();
+		expect(showNotificationMock).toHaveBeenCalledTimes(1);
+		expect(showNotificationMock).toHaveBeenCalledWith(expect.objectContaining({ watched: true }));
 	});
 
 	it.each([
@@ -450,17 +452,18 @@ describe("createNotificationsTransport", () => {
 		{ activeSessionId: "mer-1", focused: true, reason: "the window is hidden", visible: false },
 		{ activeSessionId: "mer-1", focused: false, reason: "the window is visible but unfocused", visible: true },
 		{ activeSessionId: undefined, focused: true, reason: "no session is open", visible: true },
-	])("still shows the needs_input toast when $reason", ({ activeSessionId, focused, visible }) => {
+	])("leaves the needs_input notification unwatched when $reason", ({ activeSessionId, focused, visible }) => {
 		setWindowState({ focused, visible });
 		createNotificationsTransport(queryClient(), () => activeSessionId).connect();
 
 		EventSourceStub.instances[0].dispatch("notification_created", notification());
 
 		expect(showNotificationMock).toHaveBeenCalledTimes(1);
+		expect(showNotificationMock).toHaveBeenCalledWith(expect.objectContaining({ watched: false }));
 	});
 
 	it.each(["ready_to_merge", "pr_merged", "pr_closed_unmerged"] as const)(
-		"still shows the %s toast for the focused active session",
+		"leaves the %s notification unwatched for the focused active session",
 		(type) => {
 			setWindowState({ focused: true, visible: true });
 			createNotificationsTransport(queryClient(), () => "mer-1").connect();
@@ -468,6 +471,7 @@ describe("createNotificationsTransport", () => {
 			EventSourceStub.instances[0].dispatch("notification_created", notification({ type }));
 
 			expect(showNotificationMock).toHaveBeenCalledTimes(1);
+			expect(showNotificationMock).toHaveBeenCalledWith(expect.objectContaining({ watched: false }));
 		},
 	);
 

@@ -253,6 +253,8 @@ register_api_task() {
 		--region "$REGION"
 		--sandbox-provider "$SANDBOX_PROVIDER"
 		--set-environment AO_CLOUD_PUBLIC_URL=https://api.aoagents.dev
+		--set-environment AO_CLOUD_TERMINAL_STREAM=1
+		--set-environment AO_CLOUD_TERMINAL_RELAY=1
 		--set-secret "AO_CLOUD_GITHUB_APP_ID=${github_secret_arn}:app_id::"
 		--set-secret "AO_CLOUD_GITHUB_APP_SLUG=${github_secret_arn}:app_slug::"
 		--set-secret "AO_CLOUD_GITHUB_CLIENT_ID=${github_secret_arn}:client_id::"

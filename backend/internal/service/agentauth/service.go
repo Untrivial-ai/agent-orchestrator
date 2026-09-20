@@ -6,6 +6,8 @@ package agentauth
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
@@ -64,6 +66,8 @@ type Plan struct {
 	command          []string
 	title            string
 	terminalInput    string
+	launcher         string
+	launcherArgs     []string
 }
 
 // TerminalOpener opens the daemon-trusted terminal used for a native
@@ -85,9 +89,10 @@ type StartResult struct {
 // Service resolves the fixed authentication registry through AO's registered
 // harness adapters, with direct PATH lookup only for callers without one.
 type Service struct {
-	executables ExecutableFinder
-	agents      AgentBinaryResolver
-	terminals   TerminalOpener
+	executables    ExecutableFinder
+	agents         AgentBinaryResolver
+	terminals      TerminalOpener
+	selfExecutable func() (string, error)
 }
 
 // New creates an authentication-plan service.
@@ -98,7 +103,7 @@ func New(executables ExecutableFinder, terminals TerminalOpener) *Service {
 // NewWithAgentResolver creates a service that uses AO's adapter-aware binary
 // resolver as the authoritative validation and discovery boundary.
 func NewWithAgentResolver(executables ExecutableFinder, agents AgentBinaryResolver, terminals TerminalOpener) *Service {
-	return &Service{executables: executables, agents: agents, terminals: terminals}
+	return &Service{executables: executables, agents: agents, terminals: terminals, selfExecutable: os.Executable}
 }
 
 // Plans returns every known harness plan in stable Harness settings order.
@@ -141,8 +146,16 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 	if s.terminals == nil {
 		return StartResult{}, apierr.Internal("AGENT_AUTH_TERMINAL_UNAVAILABLE", "Authentication terminal service is unavailable.")
 	}
+	argv := plan.command
+	if plan.launcher != "" {
+		self, err := s.selfExecutable()
+		if err != nil || strings.TrimSpace(self) == "" {
+			return StartResult{}, apierr.Internal("AGENT_AUTH_TERMINAL_UNAVAILABLE", "Authentication login menu is unavailable.")
+		}
+		argv = append([]string{self, plan.launcher, "--executable", plan.command[0]}, plan.launcherArgs...)
+	}
 	terminal, err := s.terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{
-		Argv:  plan.command,
+		Argv:  argv,
 		Title: plan.title,
 	})
 	if err != nil {

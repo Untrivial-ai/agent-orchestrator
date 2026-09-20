@@ -21,7 +21,7 @@ export function ProjectPickerSheet({
 	onSelect,
 	includeAll = true,
 	title = "Active project",
-	subtitle = "Scopes the Agents and PRs tabs.",
+	subtitle = "Scopes Pull Requests.",
 }: {
 	/** Dismisses the sheet route. */
 	onClose: () => void;

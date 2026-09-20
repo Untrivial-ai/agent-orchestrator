@@ -57,7 +57,7 @@ export function FeaturePreviewShell({
 					<span className="size-2.5 rounded-full bg-[#28c840]" />
 				</div>
 				<div className="ml-4 flex min-w-0 items-center gap-2">
-					<img src="/ao-logo.svg" alt="" className="size-4" draggable="false" />
+					<img src="/ao-logo.svg" alt="" className="size-4" draggable="false" loading="lazy" decoding="async" />
 					<span className="truncate text-[11px] font-semibold tracking-[-0.4px] text-[var(--preview-muted-foreground)]">
 						{title}
 					</span>

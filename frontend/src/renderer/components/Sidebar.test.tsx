@@ -486,6 +486,16 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText("Signed in as user@example.com")).not.toBeInTheDocument();
 	});
 
+	it("navigates home from the brand row", async () => {
+		const user = userEvent.setup();
+		mockParams.projectId = "proj-1";
+		renderSidebar();
+
+		await user.click(screen.getByRole("button", { name: "Go to home" }));
+
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
+	});
+
 	it("suppresses focus chrome without removing keyboard focusability", () => {
 		renderSidebar();
 
@@ -660,7 +670,7 @@ describe("Sidebar", () => {
 			workspaces: [
 				{
 					id: STANDALONE_WORKSPACE_ID,
-					name: "Ad hoc agents",
+					name: "Scratchpad",
 					kind: STANDALONE_PROJECT_KIND,
 					path: "",
 					sessions: [],
@@ -669,7 +679,7 @@ describe("Sidebar", () => {
 		});
 		const before = useUiStore.getState().newTaskRequest?.nonce ?? 0;
 
-		expect(screen.queryByLabelText("Project actions for Ad hoc agents")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Project actions for Scratchpad")).not.toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Open a new agent" }));
 
 		const request = useUiStore.getState().newTaskRequest;
@@ -1891,34 +1901,21 @@ describe("Sidebar", () => {
 		).toBe(`${SIDEBAR_MIN_WIDTH}px`);
 	});
 
-	it("flushes any queued rAF frame on pointer-up and persists the clamped width", async () => {
-		let queuedFrame: FrameRequestCallback | undefined;
-		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-			queuedFrame = callback;
-			return 1;
-		});
-		const cancelAnimationFrameSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+	it("persists the clamped width on pointer-up (sync apply during drag)", async () => {
+		renderSidebar();
 
-		try {
-			renderSidebar();
+		const resizeHandle = screen.getByTestId("resize-handle");
 
-			const resizeHandle = screen.getByTestId("resize-handle");
+		fireEvent.pointerDown(resizeHandle, { clientX: SIDEBAR_DEFAULT_WIDTH });
+		fireEvent.pointerMove(window, { clientX: SIDEBAR_MIN_WIDTH + 5 });
+		expect(
+			document
+				.querySelector<HTMLElement>('[data-slot="sidebar-gap"]')
+				?.style.getPropertyValue("--ao-sidebar-w"),
+		).toBe(`${SIDEBAR_MIN_WIDTH + 5}px`);
 
-			fireEvent.pointerDown(resizeHandle, { clientX: SIDEBAR_DEFAULT_WIDTH });
-			fireEvent.pointerMove(window, { clientX: SIDEBAR_MIN_WIDTH + 5 });
-			fireEvent.pointerUp(window);
-
-			// rAF was queued; pointerUp should flush it via cancelAnimationFrame.
-			expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(1);
-			expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
-
-			// Firing the stale frame after cancellation should not overwrite width.
-			queuedFrame?.(performance.now());
-			expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
-		} finally {
-			requestAnimationFrameSpy.mockRestore();
-			cancelAnimationFrameSpy.mockRestore();
-		}
+		fireEvent.pointerUp(window);
+		expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
 	});
 
 	it("paints the dot from its board section while activity drives the pulse", () => {
@@ -2418,7 +2415,7 @@ describe("Sidebar", () => {
 				{ ...workspace, id: "bravo", name: "Bravo" },
 				{
 					id: STANDALONE_WORKSPACE_ID,
-					name: "Ad hoc agents",
+					name: "Scratchpad",
 					kind: STANDALONE_PROJECT_KIND,
 					path: "",
 					sessions: [],
@@ -2432,20 +2429,20 @@ describe("Sidebar", () => {
 		fireDrag("dragStart", alphaRow, {});
 		fireDrag("dragOver", standaloneTarget, { clientY: 40 });
 		fireDrag("drop", standaloneTarget, {});
-		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+		expect(labels()).toEqual(["Alpha", "Bravo", "Scratchpad"]);
 
 		const standaloneRow = document.querySelector(`[data-project-drag-row][data-project-id="${STANDALONE_WORKSPACE_ID}"]`)!;
 		const alphaTarget = document.querySelector('li[data-project-drop-target][data-project-id="alpha"]')!;
 		fireDrag("dragStart", standaloneRow, {});
 		fireDrag("dragOver", alphaTarget, { clientY: 0 });
 		fireDrag("drop", alphaTarget, {});
-		expect(labels()).toEqual(["Alpha", "Bravo", "Ad hoc agents"]);
+		expect(labels()).toEqual(["Alpha", "Bravo", "Scratchpad"]);
 
 		const bravoRow = document.querySelector('[data-project-drag-row][data-project-id="bravo"]')!;
 		fireDrag("dragStart", bravoRow, {});
 		fireDrag("dragOver", alphaTarget, { clientY: 0 });
 		fireDrag("drop", alphaTarget, {});
-		expect(labels()).toEqual(["Bravo", "Alpha", "Ad hoc agents"]);
+		expect(labels()).toEqual(["Bravo", "Alpha", "Scratchpad"]);
 	});
 
 	it("commits a session drop within its project", () => {
@@ -2489,5 +2486,11 @@ describe("Sidebar", () => {
 		} finally {
 			document.documentElement.classList.remove("dark");
 		}
+	});
+
+	it("marks the brand with a dev badge in dev builds so the unpackaged window is distinguishable", () => {
+		renderSidebar();
+
+		expect(screen.getByTestId("sidebar-dev-badge")).toHaveTextContent("dev");
 	});
 });

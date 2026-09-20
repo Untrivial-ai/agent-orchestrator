@@ -530,6 +530,7 @@ func (m *Manager) runInterfaceTransition(
 	err = m.startTransitionTarget(ctx, rec.ID, transition.NativeConversationID == "", true, transition.HistoryPolicy)
 	if errors.Is(err, ports.ErrChatHistoryUnsettled) &&
 		!errors.Is(err, ports.ErrChatRecoveryInconclusive) &&
+		!errors.Is(err, ports.ErrChatHistoryLoadFailed) &&
 		len(ports.ChatHistoryMismatchDimensions(err)) == 0 && transition.TargetMode == domain.SessionModeChat {
 		// An ACP history reader may expose an immutable snapshot for one provider
 		// session. Its unsettled result is authoritative for that controller, but
@@ -537,6 +538,8 @@ func (m *Manager) runInterfaceTransition(
 		// starting the target once more obtains a fresh provider observation. Keep
 		// the retry inside this durable transition, after the source was stopped,
 		// so the source is not relaunched and two target controllers never overlap.
+		// A provider that rejected the load outright is not retried: a second
+		// target would spend another full settle budget on the same refusal.
 		if stopErr := m.stopTransitionTargetConclusive(ctx, transition); stopErr != nil {
 			_ = m.retainUnconfirmedTransitionTarget(transition, errors.Join(err, stopErr))
 			return
@@ -546,6 +549,8 @@ func (m *Manager) runInterfaceTransition(
 	if err != nil {
 		code := "TARGET_RESUME_FAILED"
 		switch {
+		case errors.Is(err, ports.ErrChatHistoryLoadFailed):
+			code = "TARGET_HISTORY_LOAD_FAILED"
 		case errors.Is(err, ports.ErrChatHistoryUnavailable):
 			code = "TARGET_HISTORY_UNAVAILABLE"
 		case ports.ChatHistoryMismatchOnlyUntrustedText(err):
@@ -638,9 +643,10 @@ func (m *Manager) nativeConversationID(
 // nativeConversationNotStarted is the only evidence that may turn a missing
 // provider history into an intentional fresh handoff. A missing file or a
 // reserved native id is not enough: both are also observable when persistence
-// is lagging or broken after real work. Chat requires a durable empty root
-// conversation; TUI requires an untouched initial composer. AO must have no
-// hook-derived conversation facts that contradict either proof.
+// is lagging or broken after real work. Chat requires durable emptiness — an
+// empty root conversation, or no conversation at all; TUI requires an
+// untouched initial composer. AO must have no hook-derived conversation facts
+// that contradict either proof.
 func (m *Manager) nativeConversationNotStarted(
 	ctx context.Context,
 	rec domain.SessionRecord,
@@ -687,7 +693,15 @@ func (m *Manager) nativeConversationNotStarted(
 		// Zero proves no message or activity was ever accepted; an empty visible
 		// timeline would not. Startup settings do not consume this sequence.
 		conversation, err := store.ConversationForSession(ctx, rec.ID)
-		if err != nil || conversation.SessionID != rec.ID || conversation.LatestSequence != 0 {
+		switch {
+		case errors.Is(err, domain.ErrNoConversation):
+			// The Chat lifecycle never began: no conversation row means no
+			// branches, turns, or provider history could exist for this
+			// session. A switch into Chat materializes that row only once the
+			// controller starts, so its absence is fresh, not broken. Any other
+			// read failure stays fail-closed below.
+			return true
+		case err != nil || conversation.SessionID != rec.ID || conversation.LatestSequence != 0:
 			return false
 		}
 		branch, err := store.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
@@ -786,7 +800,7 @@ func (m *Manager) preflightInterfaceTarget(
 		if err != nil {
 			return err
 		}
-		permissions := effectiveAgentConfig(rec.Kind, project.Config).Permissions
+		permissions := effectiveAgentConfig(rec.Harness, rec.Kind, project.Config).Permissions
 		return m.chat.PreflightChat(ctx, rec.Harness, permissions)
 	}
 	agent, ok := m.agents.Agent(rec.Harness)
@@ -801,7 +815,7 @@ func (m *Manager) preflightInterfaceTarget(
 	if err != nil {
 		return err
 	}
-	config := effectiveAgentConfig(rec.Kind, project.Config)
+	config := effectiveAgentConfig(rec.Harness, rec.Kind, project.Config)
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
@@ -915,6 +929,7 @@ func (m *Manager) prepareSourceHandoff(
 	defer ticker.Stop()
 	idleSince := time.Time{}
 	idleSamples := 0
+	draftSamples := 0
 	unverifiedIdleSince := time.Time{}
 	for {
 		current, ok, err := m.store.GetSession(ctx, rec.ID)
@@ -966,6 +981,8 @@ func (m *Manager) prepareSourceHandoff(
 				unverifiedIdle = current.Activity.State == domain.ActivityIdle && !idleProven
 			} else if outputErr == nil {
 				observation := surfaceInspector.InspectTerminalSurface(output)
+				draftObserved := observation.Composer == ports.TerminalComposerDraft &&
+					current.Activity.State == domain.ActivityIdle
 				switch {
 				case observation.Work == ports.TerminalSurfaceWorkWaitingInput,
 					observation.Work == ports.TerminalSurfaceWorkBlocked:
@@ -977,22 +994,31 @@ func (m *Manager) prepareSourceHandoff(
 						cancelProbe()
 					}
 					return errDrainDecisionPending
-				case observation.Composer == ports.TerminalComposerDraft &&
-					current.Activity.State == domain.ActivityIdle:
-					// A positively identified draft is sufficient to preserve the
-					// source. Work markers are provider chrome heuristics and may
-					// also occur in transcript or draft text, so they cannot hide
-					// unsent input when the durable provider state is idle.
-					if cancelProbe != nil {
-						cancelProbe()
+				case draftObserved:
+					// A stable positively identified draft is sufficient to
+					// preserve the source. Work markers are provider chrome
+					// heuristics and may also occur in transcript or draft text, so
+					// they cannot hide unsent input when the durable provider state
+					// is idle. Single captures are not enough: providers repaint
+					// non-dim chrome (banner, queue, update rows) through the
+					// composer borders mid-frame, so require the same repeated
+					// evidence as the idle decision before blocking the switch.
+					draftSamples++
+					if draftSamples >= interfaceTransitionSurfaceIdleSamples {
+						if cancelProbe != nil {
+							cancelProbe()
+						}
+						return errDrainDraftPresent
 					}
-					return errDrainDraftPresent
 				case current.Activity.State == domain.ActivityIdle &&
 					observation.Work == ports.TerminalSurfaceWorkIdle &&
 					observation.Composer == ports.TerminalComposerEmpty:
 					idleProven = true
 				case observation.Work == ports.TerminalSurfaceWorkActive:
 					surfaceKnownBusy = true
+				}
+				if !draftObserved {
+					draftSamples = 0
 				}
 			}
 		}

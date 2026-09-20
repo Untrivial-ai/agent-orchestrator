@@ -1,6 +1,5 @@
 "use client";
 
-import * as Sentry from "@sentry/nextjs";
 import NextError from "next/error";
 import { useEffect } from "react";
 
@@ -10,7 +9,13 @@ export default function GlobalError({
 	error: Error & { digest?: string };
 }) {
 	useEffect(() => {
-		Sentry.captureException(error);
+		// Imported lazily: a static import pulls the whole @sentry/nextjs browser
+		// SDK (~60 KB br) into the first-load bundle of every route, to report a
+		// crash that almost never happens. The dynamic import costs one request on
+		// the error path only.
+		import("@sentry/nextjs").then((Sentry) => {
+			Sentry.captureException(error);
+		});
 	}, [error]);
 
 	return (

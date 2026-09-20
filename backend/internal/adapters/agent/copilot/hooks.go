@@ -20,8 +20,7 @@ const (
 	copilotHooksDir      = ".github/hooks"
 	copilotHooksFileName = "ao.json"
 
-	copilotAgentsDir     = ".github/agents"
-	copilotAgentSentinel = "<!-- managed by agent-orchestrator: copilot agent profile -->"
+	copilotAgentsDir = ".github/agents"
 
 	// copilotHooksVersion is the schema version of the hooks file (Copilot uses 1).
 	copilotHooksVersion = 1
@@ -166,7 +165,7 @@ func installCopilotAgent(workspacePath, sessionID, inlinePrompt, promptFile stri
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read %s: %w", agentPath, err)
 	}
-	if err == nil && !strings.Contains(string(existing), copilotAgentSentinel) {
+	if err == nil && !strings.Contains(string(existing), hookutil.CopilotAgentProfileSentinel) {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(agentPath), 0o750); err != nil {
@@ -188,7 +187,7 @@ func copilotAgentProfile(agentName, sessionID, systemPrompt string) string {
 		"description: Agent Orchestrator role profile for AO session " + strings.TrimSpace(sessionID) + ". Use for all work in this session.\n" +
 		"target: github-copilot\n" +
 		"---\n\n" +
-		copilotAgentSentinel + "\n\n" +
+		hookutil.CopilotAgentProfileSentinel + "\n\n" +
 		strings.TrimRight(systemPrompt, "\n") + "\n"
 }
 

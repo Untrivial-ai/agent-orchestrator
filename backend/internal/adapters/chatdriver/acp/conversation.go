@@ -142,6 +142,11 @@ type conversation struct {
 	historyEvents []ports.ChatEvent
 	historyErr    error
 	historyLoaded bool
+	// replayMu protects only the replay inbox and its transition to live
+	// delivery; normalization of replay batches does not hold it.
+	replayMu      sync.Mutex
+	replaying     bool
+	replayUpdates []acpsdk.SessionNotification
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
