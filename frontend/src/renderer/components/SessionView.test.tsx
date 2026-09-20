@@ -906,7 +906,7 @@ describe("SessionView", () => {
 		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses generic copy while a cloud workspace is connecting", () => {
+	it("shows only the multi-step loader while a cloud workspace is connecting", () => {
 		const session = workerSession("sess-2");
 		session.runtimeConnected = false;
 		session.cloud = {

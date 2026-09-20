@@ -241,6 +241,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setBadge: async (_count: number) => undefined,
 					devBounce: async () => undefined,
 					onClick: unsubscribe,
+					onPlaySound: unsubscribe,
+					reportSoundFailure: () => undefined,
 				},
 				tray: {
 					setAttentionState: () => undefined,
@@ -804,6 +806,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					setBadge: async (_count: number) => undefined,
 					devBounce: async () => undefined,
 					onClick: unsubscribe,
+					onPlaySound: unsubscribe,
+					reportSoundFailure: () => undefined,
 				},
 				tray: { setAttentionState: () => undefined, onOpenSession: unsubscribe },
 				appState: { getMigration: async () => ({ status: "completed" }), setMigration: async () => undefined },

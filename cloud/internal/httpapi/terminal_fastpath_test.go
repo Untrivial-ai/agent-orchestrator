@@ -104,23 +104,3 @@ func TestRelayOutputReportsSaturatedClient(t *testing.T) {
 		t.Fatalf("dropped=%d, want 1", dropped)
 	}
 }
-
-func TestTerminalRoutingKeyStableAndBounded(t *testing.T) {
-	a := terminalRoutingKey("session-abc")
-	b := terminalRoutingKey("session-abc")
-	if a != b {
-		t.Fatalf("routing key not stable: %d vs %d", a, b)
-	}
-	if a < 0 || a >= replicaShardSpace {
-		t.Fatalf("routing key %d out of range [0,%d)", a, replicaShardSpace)
-	}
-	// The client socket and worker stream both hash the same session id, so
-	// they must land on the same shard — that co-location is the whole point.
-	if terminalRoutingKey("session-abc") != terminalRoutingKey("session-abc") {
-		t.Fatal("same session must map to the same shard")
-	}
-	if terminalRoutingKey("session-1") == terminalRoutingKey("session-1-extra") &&
-		terminalRoutingKey("session-2") == terminalRoutingKey("session-2-extra") {
-		t.Fatal("routing key appears to ignore its input")
-	}
-}

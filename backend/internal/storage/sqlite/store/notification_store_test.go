@@ -206,6 +206,181 @@ func TestNotificationStore_MarkAllRead(t *testing.T) {
 	}
 }
 
+func TestNotificationStore_ClearAll(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	for _, id := range []string{"ntf_1", "ntf_2"} {
+		rec := domain.NotificationRecord{ID: id, SessionID: sess.ID, ProjectID: sess.ProjectID, Type: domain.NotificationNeedsInput, Title: id, Status: domain.NotificationUnread, CreatedAt: time.Now()}
+		if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+			t.Fatalf("CreateNotification %s inserted=%v err=%v", id, inserted, err)
+		}
+		_, _ = s.ResolveSessionNotifications(ctx, sess.ID, domain.NotificationNeedsInput, time.Now())
+		_, _, _ = s.MarkNotificationRead(ctx, id)
+	}
+	count, err := s.ClearAllNotifications(ctx)
+	if err != nil || count != 2 {
+		t.Fatalf("ClearAllNotifications count=%d err=%v", count, err)
+	}
+	rows, err := s.ListNotifications(ctx, domain.NotificationListAll, time.Time{}, "", 10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+	if count, err := s.ClearAllNotifications(ctx); err != nil || count != 0 {
+		t.Fatalf("second ClearAllNotifications count=%d err=%v, want 0 nil", count, err)
+	}
+}
+
+// A repeated ready SCM observation is not a new transition. Clear-all must
+// retain the open dedupe fact until the PR stops being ready, then allow a
+// later ready transition to create a fresh notification.
+func TestNotificationStore_ClearAllRetainsDedupeUntilResolution(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	prURL := "https://github.com/o/r/pull/1"
+	rec := domain.NotificationRecord{
+		ID: "ntf_1", SessionID: sess.ID, ProjectID: sess.ProjectID, PRURL: prURL,
+		Type: domain.NotificationReadyToMerge, Title: "ready", Status: domain.NotificationUnread, CreatedAt: now,
+	}
+	if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+		t.Fatalf("initial CreateNotification inserted=%v err=%v", inserted, err)
+	}
+	if count, err := s.ClearAllNotifications(ctx); err != nil || count != 1 {
+		t.Fatalf("ClearAllNotifications count=%d err=%v, want 1 nil", count, err)
+	}
+
+	repeated := rec
+	repeated.ID = "ntf_repeat"
+	repeated.CreatedAt = now.Add(time.Minute)
+	if _, inserted, err := s.CreateNotification(ctx, repeated); err != nil || inserted {
+		t.Fatalf("repeated ready observation inserted=%v err=%v, want false nil", inserted, err)
+	}
+	for _, status := range []domain.NotificationListStatus{
+		domain.NotificationListUnread,
+		domain.NotificationListUnresolved,
+		domain.NotificationListAll,
+	} {
+		rows, err := s.ListNotifications(ctx, status, time.Time{}, "", 10)
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("ListNotifications(%s) rows=%+v err=%v, want none", status, rows, err)
+		}
+	}
+	if unread, err := s.CountUnreadNotifications(ctx); err != nil || unread != 0 {
+		t.Fatalf("CountUnreadNotifications=%d err=%v, want 0 nil", unread, err)
+	}
+	if unresolved, err := s.CountUnresolvedNotifications(ctx); err != nil || unresolved != 0 {
+		t.Fatalf("CountUnresolvedNotifications=%d err=%v, want 0 nil", unresolved, err)
+	}
+
+	resolvedAt := now.Add(2 * time.Minute)
+	resolved, err := s.ResolvePRNotifications(ctx, prURL, domain.NotificationReadyToMerge, resolvedAt)
+	if err != nil || len(resolved) != 0 {
+		t.Fatalf("ResolvePRNotifications=%+v err=%v, want no visible resolved event", resolved, err)
+	}
+	fresh := rec
+	fresh.ID = "ntf_fresh"
+	fresh.CreatedAt = now.Add(3 * time.Minute)
+	if _, inserted, err := s.CreateNotification(ctx, fresh); err != nil || !inserted {
+		t.Fatalf("ready observation after resolution inserted=%v err=%v, want true nil", inserted, err)
+	}
+	rows, err := s.ListNotifications(ctx, domain.NotificationListAll, time.Time{}, "", 10)
+	if err != nil || len(rows) != 1 || rows[0].ID != fresh.ID {
+		t.Fatalf("visible rows=%+v err=%v, want fresh notification", rows, err)
+	}
+}
+
+func TestNotificationStore_Delete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	rec := domain.NotificationRecord{
+		ID: "ntf_1", SessionID: sess.ID, ProjectID: sess.ProjectID, Type: domain.NotificationNeedsInput,
+		Title: "one", Status: domain.NotificationUnread, CreatedAt: time.Now(),
+	}
+	if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+		t.Fatalf("CreateNotification inserted=%v err=%v", inserted, err)
+	}
+
+	deleted, ok, err := s.DeleteNotification(ctx, rec.ID)
+	if err != nil || !ok || deleted.ID != rec.ID || deleted.ProjectID != rec.ProjectID {
+		t.Fatalf("DeleteNotification deleted=%+v ok=%v err=%v", deleted, ok, err)
+	}
+	if _, ok, err := s.DeleteNotification(ctx, rec.ID); err != nil || ok {
+		t.Fatalf("second DeleteNotification ok=%v err=%v, want false nil", ok, err)
+	}
+	rows, err := s.ListNotifications(ctx, domain.NotificationListAll, time.Time{}, "", 10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+}
+
+// A repeated ready SCM observation is not a new transition. Per-item delete
+// must retain the open dedupe fact until the PR stops being ready, then allow a
+// later ready transition to create a fresh notification.
+func TestNotificationStore_DeleteRetainsDedupeUntilResolution(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	prURL := "https://github.com/o/r/pull/1"
+	rec := domain.NotificationRecord{
+		ID: "ntf_1", SessionID: sess.ID, ProjectID: sess.ProjectID, PRURL: prURL,
+		Type: domain.NotificationReadyToMerge, Title: "ready", Status: domain.NotificationUnread, CreatedAt: now,
+	}
+	if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+		t.Fatalf("initial CreateNotification inserted=%v err=%v", inserted, err)
+	}
+	deleted, ok, err := s.DeleteNotification(ctx, rec.ID)
+	if err != nil || !ok || deleted.ID != rec.ID || deleted.Status != domain.NotificationUnread {
+		t.Fatalf("DeleteNotification deleted=%+v ok=%v err=%v", deleted, ok, err)
+	}
+
+	repeated := rec
+	repeated.ID = "ntf_repeat"
+	repeated.CreatedAt = now.Add(time.Minute)
+	if _, inserted, err := s.CreateNotification(ctx, repeated); err != nil || inserted {
+		t.Fatalf("repeated ready observation inserted=%v err=%v, want false nil", inserted, err)
+	}
+	rows, err := s.ListNotifications(ctx, domain.NotificationListAll, time.Time{}, "", 10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("visible rows=%+v err=%v, want none", rows, err)
+	}
+	if unread, err := s.CountUnreadNotifications(ctx); err != nil || unread != 0 {
+		t.Fatalf("CountUnreadNotifications=%d err=%v, want 0 nil", unread, err)
+	}
+	if unresolved, err := s.CountUnresolvedNotifications(ctx); err != nil || unresolved != 0 {
+		t.Fatalf("CountUnresolvedNotifications=%d err=%v, want 0 nil", unresolved, err)
+	}
+
+	resolvedAt := now.Add(2 * time.Minute)
+	resolved, err := s.ResolvePRNotifications(ctx, prURL, domain.NotificationReadyToMerge, resolvedAt)
+	if err != nil || len(resolved) != 0 {
+		t.Fatalf("ResolvePRNotifications=%+v err=%v, want no visible resolved event", resolved, err)
+	}
+	fresh := rec
+	fresh.ID = "ntf_fresh"
+	fresh.CreatedAt = now.Add(3 * time.Minute)
+	if _, inserted, err := s.CreateNotification(ctx, fresh); err != nil || !inserted {
+		t.Fatalf("ready observation after resolution inserted=%v err=%v, want true nil", inserted, err)
+	}
+	rows, err = s.ListNotifications(ctx, domain.NotificationListAll, time.Time{}, "", 10)
+	if err != nil || len(rows) != 1 || rows[0].ID != fresh.ID {
+		t.Fatalf("visible rows=%+v err=%v, want fresh notification", rows, err)
+	}
+}
+
 func TestNotificationStore_ListUnreadNewestFirstAcrossProjects(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

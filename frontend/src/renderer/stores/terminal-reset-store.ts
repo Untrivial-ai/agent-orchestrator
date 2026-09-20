@@ -28,6 +28,7 @@ type TerminalResetState = {
 	reconnecting: Record<string, boolean>;
 	baselineEpoch: Record<string, number>;
 	bump: (sessionId: string, currentEpoch: number) => void;
+	advanceEpoch: (sessionId: string) => void;
 	markConnected: (sessionId: string) => void;
 };
 
@@ -40,6 +41,18 @@ export const useTerminalResetStore = create<TerminalResetState>((set) => ({
 			nonces: { ...state.nonces, [sessionId]: (state.nonces[sessionId] ?? 0) + 1 },
 			reconnecting: { ...state.reconnecting, [sessionId]: true },
 			baselineEpoch: { ...state.baselineEpoch, [sessionId]: currentEpoch },
+		})),
+	// Like `bump`, but WITHOUT the "Connecting" reconnecting signal. Used when the
+	// worker epoch advances between two known values on its own (an idle-resume or
+	// a silent re-provision the user did not trigger): the pane must rebuild its
+	// cache entry and mux (fresh cursor at 0) against the live box, exactly as a
+	// restore does, but there is no user action to explain a full-screen reconnect
+	// surface, so the normal per-mount connecting cover is enough. The unknown ->
+	// first-known transition of a brand-new session is NOT an advance and must not
+	// call this (it would remount the just-attached pane and blank it).
+	advanceEpoch: (sessionId) =>
+		set((state) => ({
+			nonces: { ...state.nonces, [sessionId]: (state.nonces[sessionId] ?? 0) + 1 },
 		})),
 	markConnected: (sessionId) =>
 		set((state) =>

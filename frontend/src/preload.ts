@@ -540,7 +540,7 @@ const api = {
 		},
 	},
 	notifications: {
-		show: (notification: { id: string; title: string; body?: string; type?: string }) =>
+		show: (notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) =>
 			ipcRenderer.invoke("notifications:show", notification) as Promise<void>,
 		setBadge: (count: number) => ipcRenderer.invoke("notifications:setBadge", count) as Promise<void>,
 		devBounce: () => ipcRenderer.invoke("notifications:devBounce") as Promise<void>,
@@ -551,6 +551,14 @@ const api = {
 				ipcRenderer.off("notifications:click", wrapped);
 			};
 		},
+		onPlaySound: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on("notifications:playSound", wrapped);
+			return () => {
+				ipcRenderer.off("notifications:playSound", wrapped);
+			};
+		},
+		reportSoundFailure: () => ipcRenderer.send("notifications:soundFailed"),
 	},
 	tray: {
 		setAttentionState: (state: TrayAttentionState) => ipcRenderer.send(TRAY_SET_ATTENTION_STATE_CHANNEL, state),

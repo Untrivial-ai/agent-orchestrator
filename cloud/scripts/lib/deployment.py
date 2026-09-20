@@ -418,8 +418,8 @@ def validate_service(
     expected_task_definition: str | None = None,
 ) -> None:
     desired = service.get("desiredCount", 0)
-    if desired < 2:
-        raise ValueError(f"desired task count is {desired}, expected at least 2")
+    if desired != 1:
+        raise ValueError(f"desired task count is {desired}, expected exactly 1")
     if service.get("pendingCount") != 0:
         raise ValueError("service has pending tasks")
     if service.get("runningCount") != desired:

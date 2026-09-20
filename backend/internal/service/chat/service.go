@@ -1749,21 +1749,49 @@ func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatCo
 	for i := range out {
 		out[i].Choices = append([]ports.ChatConfigOptionChoice(nil), out[i].Choices...)
 		for j := range out[i].Choices {
-			out[i].Choices[j].PermissionMode = ""
-			if harness != domain.HarnessClaudeCode || out[i].ID != "mode" {
+			choice := &out[i].Choices[j]
+			choice.PermissionMode = ""
+			if out[i].ID != "mode" {
 				continue
 			}
-			switch out[i].Choices[j].Value {
-			case "manual", "default":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeDefault
-			case "acceptEdits":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAcceptEdits
-			case "auto":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAuto
-			case "bypassPermissions":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeBypassPermissions
+			switch harness {
+			case domain.HarnessClaudeCode:
+				switch choice.Value {
+				case "manual", "default":
+					choice.PermissionMode = domain.PermissionModeDefault
+				case "acceptEdits":
+					choice.PermissionMode = domain.PermissionModeAcceptEdits
+				case "auto":
+					choice.PermissionMode = domain.PermissionModeAuto
+				case "bypassPermissions":
+					choice.PermissionMode = domain.PermissionModeBypassPermissions
+				}
+			case domain.HarnessOpenCode:
+				// AO's own permission tiers, injected as OpenCode agents. OpenCode
+				// reports an agent's key as its display name, so they are relabelled
+				// here into the vocabulary the rest of AO uses. Its native build and
+				// plan agents are execution modes and stay unannotated.
+				if mode, label, ok := openCodeApprovalTier(choice.Value); ok {
+					choice.PermissionMode = mode
+					choice.Name = label
+				}
 			}
 		}
 	}
 	return out
+}
+
+func openCodeApprovalTier(value string) (domain.PermissionMode, string, bool) {
+	switch value {
+	case "ao-default":
+		return domain.PermissionModeDefault, "Default approvals", true
+	case "ao-accept-edits":
+		return domain.PermissionModeAcceptEdits, "Accept edits", true
+	case "ao-auto":
+		return domain.PermissionModeAuto, "Auto-approve", true
+	case "ao-bypass":
+		return domain.PermissionModeBypassPermissions, "Bypass permissions", true
+	default:
+		return "", "", false
+	}
 }
