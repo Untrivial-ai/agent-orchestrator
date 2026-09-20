@@ -19,7 +19,6 @@ export function composerSurfaceStyle(t: Theme) {
 export function userMessageSurfaceStyle(t: Theme) {
 	return {
 		backgroundColor: t.bgElevated,
-		borderColor: t.borderDefault,
 		foregroundColor: t.textPrimary,
 	};
 }

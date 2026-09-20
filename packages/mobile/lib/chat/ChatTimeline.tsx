@@ -173,7 +173,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 							{loadingOlder ? <ActivityIndicator size="small" /> : <Feather name="clock" size={12} />}
 							<Text style={styles.olderText}>{loadingOlder ? "Loading history…" : "Load earlier messages"}</Text>
 						</Pressable>
-					) : items.length ? <Text style={styles.beginning}>Beginning of conversation</Text> : null
+					) : null
 				}
 				renderItem={({ item: group }) => <ConversationTurnGroup
 					group={group}
@@ -959,9 +959,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	content: { paddingHorizontal: space.xl, paddingTop: space.md, paddingBottom: space.xxxl },
 	older: { alignSelf: "center", flexDirection: "row", gap: space.xs, alignItems: "center", paddingHorizontal: space.md, paddingVertical: space.sm, marginBottom: space.md },
 	olderText: { color: t.textTertiary, fontSize: type.caption1.fontSize },
-	beginning: { alignSelf: "center", color: t.textFaint, fontSize: type.caption2.fontSize, letterSpacing: 1, textTransform: "uppercase", marginBottom: space.lg },
 	userRow: { alignItems: "flex-end", paddingTop: space.lg, paddingBottom: space.sm },
-	userBubble: { maxWidth: "88%", backgroundColor: userMessageSurfaceStyle(t).backgroundColor, borderWidth: StyleSheet.hairlineWidth, borderColor: userMessageSurfaceStyle(t).borderColor, borderRadius: 20, borderCurve: "continuous", paddingHorizontal: space.lg, paddingVertical: space.md },
+	userBubble: { maxWidth: "88%", backgroundColor: userMessageSurfaceStyle(t).backgroundColor, borderRadius: 20, borderCurve: "continuous", paddingHorizontal: space.lg, paddingVertical: space.md },
 	userText: { color: userMessageSurfaceStyle(t).foregroundColor, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight },
 	delivery: { marginTop: space.xxs, color: t.amber, fontSize: type.caption2.fontSize },
 	attachments: { flexDirection: "row", flexWrap: "wrap", gap: space.xs },
