@@ -444,7 +444,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					disabled={disabled}
 					onChange={onChange}
 					triggerClassName={invalid ? "text-error" : undefined}
-					menuClassName="settings-agent-menu-surface"
+					menuClassName="settings-agent-menu-surface w-(--radix-dropdown-menu-trigger-width)! min-w-(--radix-dropdown-menu-trigger-width)! max-w-(--radix-dropdown-menu-trigger-width)!"
 					menuItemClassName="settings-agent-menu-item"
 					renderTrigger={() => (
 						<>

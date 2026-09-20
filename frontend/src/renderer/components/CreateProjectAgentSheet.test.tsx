@@ -82,7 +82,7 @@ describe("CreateProjectAgentSheet", () => {
 		expect(await screen.findByRole("listbox")).toHaveClass("max-h-select-menu-max!");
 	});
 
-	it("matches the chip agent menu width to its trigger", async () => {
+	it.each(["chip", "settings-row"] as const)("matches the %s agent menu width to its trigger", async (variant) => {
 		render(
 			<RequiredAgentField
 				id="agent"
@@ -90,7 +90,7 @@ describe("CreateProjectAgentSheet", () => {
 				onChange={() => undefined}
 				placeholder="Choose agent"
 				value="claude-code"
-				variant="chip"
+				variant={variant}
 			/>,
 		);
 
