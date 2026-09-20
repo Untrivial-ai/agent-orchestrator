@@ -194,12 +194,12 @@ describe("HarnessSettingsSection", () => {
 		expect(document.activeElement).toBe(document.body);
 	});
 
-	it("does not show a redundant installed status action", async () => {
+	it("does not show separate installed or reinstall actions", async () => {
 		renderSection();
 		const claudeRow = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		const codexRow = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		expect(within(claudeRow).queryByRole("button", { name: "Installed" })).not.toBeInTheDocument();
-		expect(within(claudeRow).getByRole("button", { name: "Reinstall" })).toBeInTheDocument();
+		expect(within(claudeRow).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
 		expect(within(codexRow).getByRole("button", { name: "Install" })).toBeInTheDocument();
 		expect(screen.queryByText(/sign in/i)).not.toBeInTheDocument();
 	});
@@ -222,9 +222,11 @@ describe("HarnessSettingsSection", () => {
 		expect(openExternal).toHaveBeenCalledWith("https://example.test/login");
 	});
 
-	it("shows a disabled checking state while authentication is being refreshed", async () => {
+	it("shows checking instead of authenticated while an authorized observation is refreshing", async () => {
 		const checking = catalogWithInstalled("claude-code");
+		checking.agents[0].authentication.state = "authorized";
 		checking.agents[0].authentication.freshness = "checking";
+		checking.agents[0].effectiveReadiness = "ready";
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: checking } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
@@ -242,7 +244,36 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		expect(await within(row).findByRole("button", { name: "Checking…" })).toBeDisabled();
+		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
 		expect(within(row).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
+	});
+
+	it("shows login instead of authenticated after an authorization check fails", async () => {
+		const failedCheck = catalogWithInstalled("claude-code");
+		failedCheck.agents[0].authentication.state = "authorized";
+		failedCheck.agents[0].authentication.freshness = "stale";
+		failedCheck.agents[0].authentication.reasonCode = "auth_check_failed";
+		failedCheck.agents[0].authentication.reason = "Authentication check failed.";
+		failedCheck.agents[0].effectiveReadiness = "ready";
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: failedCheck } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [
+				{ agentId: "claude-code", action: "login", launchMode: "terminal", available: true },
+			] } } as never;
+			return { data: undefined } as never;
+		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness/ensure") return { data: failedCheck } as never;
+			return { data: undefined } as never;
+		});
+
+		renderSection();
+		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
+		expect(await within(row).findByRole("button", { name: "Login" })).toBeEnabled();
+		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
+		expect(within(row).getByText("Authentication check failed.")).toHaveClass("text-error");
 	});
 
 	it("ensures and caches readiness when the page opens", async () => {
@@ -274,7 +305,7 @@ describe("HarnessSettingsSection", () => {
 			resolveEnsure({ data: refreshed });
 		});
 		await waitFor(() => {
-			expect(within(row).getByRole("button", { name: "Ready" })).toBeDisabled();
+			expect(within(row).getByRole("button", { name: "Authenticated" })).toBeDisabled();
 		});
 	});
 
@@ -408,10 +439,10 @@ describe("HarnessSettingsSection", () => {
 		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", {
 			params: { path: { agent: "claude-code" } },
 		}));
-		await within(row).findByRole("button", { name: "Ready" });
+		await within(row).findByRole("button", { name: "Authenticated" });
 	});
 
-	it("uses Set up for a completed setup action", async () => {
+	it("uses Authenticated for a completed setup action", async () => {
 		const authorized = catalogWithInstalled("codex");
 		authorized.agents[1].authentication.state = "authorized";
 		authorized.agents[1].effectiveReadiness = "ready";
@@ -433,7 +464,8 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 
-		await within(row).findByText("Set up");
+		expect(await within(row).findByRole("button", { name: "Authenticated" })).toBeDisabled();
+		expect(within(row).queryByText("Set up")).not.toBeInTheDocument();
 	});
 
 	it("shows exactly one global harness refresh control", async () => {
@@ -522,21 +554,22 @@ describe("HarnessSettingsSection", () => {
 		}));
 	});
 
-	it("does not offer reinstall actions for installed harnesses", async () => {
+	it("shows only the login action for an installed unauthenticated harness", async () => {
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
-			if (path === "/api/v1/agents/readiness") return { data: catalogWithInstalled("claude-code", "cursor") } as never;
+			if (path === "/api/v1/agents/readiness") return { data: catalogWithInstalled("claude-code") } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
 			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [
+				{ agentId: "claude-code", action: "login", launchMode: "terminal", available: true },
+			] } } as never;
 			return { data: undefined } as never;
 		});
 		renderSection();
 		const claudeRow = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
-		const cursorRow = (await screen.findByText("Cursor")).closest('[data-agent="cursor"]') as HTMLElement;
 
-		expect(claudeRow).toHaveTextContent("Installed");
+		expect(await within(claudeRow).findByRole("button", { name: "Login" })).toBeEnabled();
+		expect(within(claudeRow).getAllByRole("button")).toHaveLength(1);
 		expect(within(claudeRow).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
-		expect(within(cursorRow).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
-		expect(within(cursorRow).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
 	});
 
 	it("starts an official vendor installer with one click and no instructions dialog", async () => {
@@ -616,7 +649,8 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", { params: { path: { agent: "codex" } } }), { timeout: 3_000 });
-		await waitFor(() => expect(within(row).getByRole("button", { name: "Reinstall" })).toBeInTheDocument());
+		await waitFor(() => expect(row).toHaveTextContent("Unknown"));
+		expect(within(row).queryByRole("button", { name: "Install" })).not.toBeInTheDocument();
 		await waitFor(() => expect(installerFetches).toBe(2));
 	});
 

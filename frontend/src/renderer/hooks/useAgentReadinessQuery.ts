@@ -11,8 +11,8 @@ export const agentReadinessQueryKey = ["agent-readiness"] as const;
 const settingsReadinessPollQueryKey = ["agent-readiness-ensure", "settings"] as const;
 export const SETTINGS_READINESS_POLL_INTERVAL_MS = 15_000;
 
-async function fetchAgentReadiness(): Promise<AgentReadiness> {
-	const { data, error } = await apiClient.GET("/api/v1/agents/readiness");
+async function fetchAgentReadiness(signal?: AbortSignal): Promise<AgentReadiness> {
+	const { data, error } = await apiClient.GET("/api/v1/agents/readiness", { signal });
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as AgentReadiness;
 }
@@ -20,9 +20,11 @@ async function fetchAgentReadiness(): Promise<AgentReadiness> {
 export async function ensureAgentReadiness(
 	agentIds: string[] = [],
 	purpose: AgentReadinessPurpose = "display",
+	signal?: AbortSignal,
 ): Promise<AgentReadiness> {
 	const { data, error } = await apiClient.POST("/api/v1/agents/readiness/ensure", {
 		body: { agentIds, purpose },
+		...(signal ? { signal } : {}),
 	});
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as AgentReadiness;
@@ -83,7 +85,9 @@ export function cacheAgentReadiness(queryClient: QueryClient, next: AgentReadine
 
 export const agentReadinessQueryOptions = {
 	queryKey: agentReadinessQueryKey,
-	queryFn: fetchAgentReadiness,
+	queryFn: ({ signal }: { signal: AbortSignal }) => fetchAgentReadiness(signal),
+	structuralSharing: (current: AgentReadiness | undefined, next: AgentReadiness) =>
+		mergeAgentReadiness(current, next),
 	retry: 1,
 	// Freshness belongs to the daemon coordinator. React Query only retains the
 	// latest display copy and must never decide whether native work is required.
@@ -143,8 +147,8 @@ export function useSettingsAgentReadinessPolling({
 
 	return useQuery({
 		queryKey: [...settingsReadinessPollQueryKey, agentIDsKey],
-		queryFn: async () => {
-			const next = await ensureAgentReadiness(normalizedIDs, "settings");
+		queryFn: async ({ signal }) => {
+			const next = await ensureAgentReadiness(normalizedIDs, "settings", signal);
 			cacheAgentReadiness(queryClient, next);
 			return next;
 		},

@@ -1856,6 +1856,7 @@
 	"settings.harness.installed": "Installed",
 	"settings.harness.authorized": "Authorized",
 	"settings.harness.ready": "Listo",
+	"settings.harness.authenticated": "Autenticado",
 	"settings.harness.installedVia": "Installed via {{method}}",
 	"settings.harness.installing": "Installing…",
 	"settings.harness.instructions": "Instructions",

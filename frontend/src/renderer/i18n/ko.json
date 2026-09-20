@@ -1828,6 +1828,7 @@
 	"settings.harness.installed": "Installed",
 	"settings.harness.authorized": "Authorized",
 	"settings.harness.ready": "준비됨",
+	"settings.harness.authenticated": "인증됨",
 	"settings.harness.installedVia": "Installed via {{method}}",
 	"settings.harness.installing": "Installing…",
 	"settings.harness.instructions": "Instructions",
