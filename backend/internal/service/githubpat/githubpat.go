@@ -142,7 +142,7 @@ func (s *Service) ListRepos(ctx context.Context) ([]Repo, error) {
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		if err := s.deleteTokenIfMatches(token); err != nil {
-			return nil, fmt.Errorf("%w: removing rejected credential: %v", ErrInvalidCredentials, err)
+			return nil, fmt.Errorf("%w: removing rejected credential: %w", ErrInvalidCredentials, err)
 		}
 		return nil, ErrInvalidCredentials
 	}
