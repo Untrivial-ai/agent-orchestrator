@@ -71,7 +71,7 @@ export const WorkerDock = memo(function WorkerDock({
 							borderColor: t.borderDefault,
 							paddingHorizontal: space.lg,
 						}}
-						textStyle={{ color: t.textPrimary, fontSize: type.callout.fontSize }}
+						textStyle={{ fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: type.callout.fontSize }}
 						placeholderTextColor={t.textTertiary}
 					/>
 				}

@@ -131,7 +131,7 @@ const makeStyles = (t: Theme) =>
 		paddingLeft: space.md,
 		paddingRight: space.xxs,
 	},
-	input: {
+	input: { fontFamily: "Geist_400Regular",
 		flex: 1,
 		color: t.textPrimary,
 		fontSize: type.subheadline.fontSize,

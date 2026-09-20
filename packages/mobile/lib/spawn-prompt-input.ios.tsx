@@ -25,7 +25,7 @@ export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPro
 				maxLength={4096}
 				autoFocus
 				style={{ height, paddingHorizontal: space.lg, paddingVertical: space.md }}
-				textStyle={{ color: t.textPrimary, fontSize: type.callout.fontSize }}
+				textStyle={{ fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: type.callout.fontSize }}
 				placeholderTextColor={t.textTertiary}
 				modifiers={[textFieldStyle("plain")]}
 			/>

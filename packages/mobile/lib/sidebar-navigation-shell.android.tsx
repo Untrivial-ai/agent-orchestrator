@@ -305,7 +305,7 @@ function DestinationRow({ destination, active, badge, onPress }: {
 			]}
 		>
 			<SidebarDestinationIcon destination={destination} active={active} color={active ? t.accent : t.textSecondary} />
-			<Text numberOfLines={1} style={[styles.destinationLabel, active && { color: t.accent, fontWeight: "700" }]}>
+			<Text numberOfLines={1} style={[styles.destinationLabel, active && { fontFamily: "Geist_600SemiBold", color: t.accent, fontWeight: "600" }]}>
 				{destination.label}
 			</Text>
 			{/* No check: the tinted row and the blue label already say which
@@ -389,17 +389,17 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 		gap: space.md,
 		overflow: "hidden",
 	},
-	destinationLabel: { flex: 1, color: t.textPrimary, fontSize: type.body.fontSize, lineHeight: type.body.lineHeight, fontWeight: "600" },
+	destinationLabel: { fontFamily: "Geist_600SemiBold", flex: 1, color: t.textPrimary, fontSize: type.body.fontSize, lineHeight: type.body.lineHeight, fontWeight: "600" },
 	// Amber, not the selection blue: this is attention owed, and it must read
 	// the same whether or not you are standing on that destination.
-	destinationBadge: { minWidth: 22, textAlign: "center", color: t.amber, fontSize: type.footnote.fontSize, fontWeight: "700", fontVariant: ["tabular-nums"] },
-	sectionLabel: {
+	destinationBadge: { fontFamily: "Geist_600SemiBold", minWidth: 22, textAlign: "center", color: t.amber, fontSize: type.footnote.fontSize, fontWeight: "600", fontVariant: ["tabular-nums"] },
+	sectionLabel: { fontFamily: "Geist_600SemiBold",
 		paddingTop: space.sm,
 		paddingBottom: space.sm,
 		paddingHorizontal: space.md,
 		color: t.textTertiary,
 		fontSize: type.caption1.fontSize,
-		fontWeight: "700",
+		fontWeight: "600",
 		letterSpacing: 0.7,
 	},
 	sectionLabelStale: { color: t.amber },
@@ -407,7 +407,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	sessionListStale: { opacity: 0.55 },
 	sessionListContent: { paddingBottom: space.sm },
 	emptySessionList: { flexGrow: 1 },
-	emptySessions: { paddingHorizontal: space.md, paddingTop: space.sm, color: t.textTertiary, fontSize: type.subheadline.fontSize },
+	emptySessions: { fontFamily: "Geist_400Regular", paddingHorizontal: space.md, paddingTop: space.sm, color: t.textTertiary, fontSize: type.subheadline.fontSize },
 	sessionRow: {
 		minHeight: 58,
 		paddingHorizontal: space.md,
@@ -421,10 +421,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	},
 	sessionRowPressed: { backgroundColor: t.bgSubtle },
 	sessionText: { flex: 1, minWidth: 0 },
-	sessionTitle: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
+	sessionTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
 	sessionMetaRow: { marginTop: space.xxs, flexDirection: "row", alignItems: "center", gap: space.xs },
 	statusDot: { width: 6, height: 6, borderRadius: 4 },
-	sessionMeta: { flex: 1, color: t.textTertiary, fontSize: type.caption1.fontSize },
+	sessionMeta: { fontFamily: "Geist_400Regular", flex: 1, color: t.textTertiary, fontSize: type.caption1.fontSize },
 	sidebarActions: {
 		position: "absolute",
 		left: 28,

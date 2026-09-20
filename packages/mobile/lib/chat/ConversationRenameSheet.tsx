@@ -54,6 +54,6 @@ export function ConversationRenameSheet({
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgSurface, paddingHorizontal: space.xl, paddingTop: space.xl },
 	field: { marginTop: space.xl },
-	error: { color: t.red, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, marginTop: space.sm },
+	error: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, marginTop: space.sm },
 	actions: { flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: space.xs, marginTop: space.md },
 });

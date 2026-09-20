@@ -380,7 +380,7 @@ const makeStyles = (t: Theme) =>
 		promptHost: { width: "100%", height: 112 },
 		attachments: { gap: space.sm },
 		attachment: { maxWidth: 190, height: 36, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, borderRadius: 12, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderSubtle },
-		attachmentName: { flexShrink: 1, color: t.textSecondary, fontSize: type.caption1.fontSize },
-		warn: { color: t.amber, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
-		error: { color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+		attachmentName: { fontFamily: "Geist_400Regular", flexShrink: 1, color: t.textSecondary, fontSize: type.caption1.fontSize },
+		warn: { fontFamily: "Geist_400Regular", color: t.amber, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+		error: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 	});

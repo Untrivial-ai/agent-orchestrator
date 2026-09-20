@@ -36,11 +36,11 @@ export function ModelPickerSheet({ catalog, selected, loading, refreshing, error
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	list: { flex: 1, backgroundColor: t.bgSurface },
-	refresh: { flexDirection: "row", alignItems: "center", gap: space.xxs }, refreshText: { color: t.accent, fontSize: type.footnote.fontSize, fontWeight: "600" },
-	error: { color: t.amber, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, marginBottom: space.sm },
+	refresh: { flexDirection: "row", alignItems: "center", gap: space.xxs }, refreshText: { fontFamily: "Geist_600SemiBold", color: t.accent, fontSize: type.footnote.fontSize, fontWeight: "600" },
+	error: { fontFamily: "Geist_400Regular", color: t.amber, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, marginBottom: space.sm },
 	option: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: space.sm, paddingVertical: space.sm, paddingHorizontal: space.hair },
-	label: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" }, hint: { color: t.textTertiary, fontSize: type.caption2.fontSize, marginTop: space.hair },
-	custom: { marginTop: space.md, paddingTop: space.md, borderTopWidth: 1, borderTopColor: t.borderSubtle }, customLabel: { color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "700", letterSpacing: 1, marginBottom: space.sm },
+	label: { fontFamily: "Geist_500Medium", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" }, hint: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, marginTop: space.hair },
+	custom: { marginTop: space.md, paddingTop: space.md, borderTopWidth: 1, borderTopColor: t.borderSubtle }, customLabel: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "600", letterSpacing: 1, marginBottom: space.sm },
 	customRow: { flexDirection: "row", gap: space.sm }, input: { flex: 1, minHeight: 44, borderWidth: 1, borderColor: t.borderDefault, backgroundColor: t.bgElevated, borderRadius: 8, borderCurve: "continuous", color: t.textPrimary, paddingHorizontal: space.md },
-	use: { minWidth: 58, alignItems: "center", justifyContent: "center", borderRadius: 8, borderCurve: "continuous", backgroundColor: t.accent }, useText: { color: t.onAccent, fontWeight: "700" },
+	use: { minWidth: 58, alignItems: "center", justifyContent: "center", borderRadius: 8, borderCurve: "continuous", backgroundColor: t.accent }, useText: { fontFamily: "Geist_600SemiBold", color: t.onAccent, fontWeight: "600" },
 });

@@ -33,10 +33,10 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 						key={choice.value}
 						testID={`elicitation-choice-${choice.value}`}
 						onPress={() => { haptics.select(); onChange(choice.value); }}
-						leading={<NativeText textStyle={{ color: checked ? t.accent : t.textTertiary, fontSize: type.title3.fontSize }}>{checked ? (multi ? "✓" : "●") : "○"}</NativeText>}
+						leading={<NativeText textStyle={{ fontFamily: "Geist_400Regular", color: checked ? t.accent : t.textTertiary, fontSize: type.title3.fontSize }}>{checked ? (multi ? "✓" : "●") : "○"}</NativeText>}
 						supportingText={choice.description}
 					>
-						<NativeText textStyle={{ color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: checked ? "700" : "600" }}>{choice.label}</NativeText>
+						<NativeText textStyle={{ fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: checked ? "700" : "600" }}>{choice.label}</NativeText>
 					</ListItem>;
 				})}
 			</Column>

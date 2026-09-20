@@ -47,12 +47,12 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	web: { flex: 1, backgroundColor: t.bgBase },
 	webLoading: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center", backgroundColor: t.bgBase },
 	webError: { position: "absolute", left: 12, right: 12, bottom: 16, minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.sm, borderRadius: 12, borderCurve: "continuous", borderWidth: 1, borderColor: t.tintRed, backgroundColor: t.bgElevated, paddingHorizontal: space.md, paddingVertical: space.sm },
-	webErrorText: { flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
+	webErrorText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 	center: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.md, paddingHorizontal: space.xxxl, backgroundColor: t.bgBase },
-	title: { color: t.textPrimary, fontSize: type.body.fontSize, fontWeight: "700", textAlign: "center" },
-	copy: { color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, textAlign: "center" },
+	title: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.body.fontSize, fontWeight: "600", textAlign: "center" },
+	copy: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, textAlign: "center" },
 	retry: { marginTop: space.xxs, minHeight: 40, justifyContent: "center", borderRadius: 8, borderCurve: "continuous", backgroundColor: t.accent, paddingHorizontal: space.md },
-	retryText: { color: t.onAccent, fontSize: type.caption1.fontSize, fontWeight: "700" },
+	retryText: { fontFamily: "Geist_600SemiBold", color: t.onAccent, fontSize: type.caption1.fontSize, fontWeight: "600" },
 });
 
 export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

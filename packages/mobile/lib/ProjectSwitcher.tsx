@@ -65,11 +65,11 @@ const makeStyles = (t: Theme) =>
 		paddingHorizontal: space.lg,
 		paddingBottom: space.xxs,
 	},
-	label: {
+	label: { fontFamily: "Geist_600SemiBold",
 		color: t.textSecondary,
 		fontSize: type.footnote.fontSize,
 		letterSpacing: 0.8,
-		fontWeight: "700",
+		fontWeight: "600",
 		flex: 1,
 	},
 	trigger: {
@@ -83,5 +83,5 @@ const makeStyles = (t: Theme) =>
 		borderRadius: 8, borderCurve: "continuous",
 	},
 	triggerPressed: { backgroundColor: t.bgElevated },
-	value: { color: t.textTertiary, fontSize: type.footnote.fontSize, fontWeight: "600", flexShrink: 1 },
+	value: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.footnote.fontSize, fontWeight: "600", flexShrink: 1 },
 });

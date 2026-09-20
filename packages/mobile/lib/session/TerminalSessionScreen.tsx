@@ -1262,7 +1262,7 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 	}, [restore, id, terminalHandleId, projectId]);
 
 	const xtermOptions = useMemo(
-		() => ({
+		() => ({ fontFamily: "Geist_400Regular",
 			fontSize: FONT_SIZE,
 			cursorBlink: true,
 			scrollback: 5000,
@@ -1580,7 +1580,7 @@ const makeStyles = (t: Theme) =>
 		borderBottomColor: t.borderSubtle,
 	},
 	statusDot: { width: 8, height: 8, borderRadius: 4, borderCurve: "continuous", marginRight: space.sm },
-	statusText: { color: t.textSecondary, fontSize: type.caption1.fontSize, flex: 1 },
+	statusText: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.caption1.fontSize, flex: 1 },
 	dims: { color: t.textTertiary, fontSize: type.caption2.fontSize, fontFamily: t.fontMono },
 	zoomGroup: {
 		flexDirection: "row",
@@ -1601,7 +1601,7 @@ const makeStyles = (t: Theme) =>
 		borderBottomWidth: 1,
 		borderBottomColor: t.borderDefault,
 	},
-	bannerText: { color: t.amber, fontSize: type.caption1.fontSize },
+	bannerText: { fontFamily: "Geist_400Regular", color: t.amber, fontSize: type.caption1.fontSize },
 	interfaceFailureActions: {
 		marginTop: space.sm,
 		flexDirection: "row",
@@ -1609,8 +1609,8 @@ const makeStyles = (t: Theme) =>
 		justifyContent: "flex-end",
 		gap: space.lg,
 	},
-	interfaceFailureActionText: { color: t.red, fontSize: type.caption1.fontSize, fontWeight: "700" },
-	interfaceFailureDismissText: { color: t.textSecondary, fontSize: type.caption1.fontSize, fontWeight: "600" },
+	interfaceFailureActionText: { fontFamily: "Geist_600SemiBold", color: t.red, fontSize: type.caption1.fontSize, fontWeight: "600" },
+	interfaceFailureDismissText: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.caption1.fontSize, fontWeight: "600" },
 	termWrap: { flex: 1, backgroundColor: t.bgBase },
 	dock: {
 		borderTopWidth: 1,
@@ -1657,8 +1657,8 @@ const makeStyles = (t: Theme) =>
 		borderColor: t.borderDefault,
 		backgroundColor: t.bgSurface,
 	},
-	interfaceTitle: { color: t.textPrimary, fontSize: type.callout.fontSize, fontWeight: "700" },
-	interfaceCopy: { color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, textAlign: "center" },
+	interfaceTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.callout.fontSize, fontWeight: "600" },
+	interfaceCopy: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, textAlign: "center" },
 	interfaceCancel: {
 		marginTop: space.xxs,
 		borderRadius: 8, borderCurve: "continuous",
@@ -1667,8 +1667,8 @@ const makeStyles = (t: Theme) =>
 		paddingHorizontal: space.md,
 		paddingVertical: space.sm,
 	},
-	interfaceCancelText: { color: t.textPrimary, fontSize: type.caption1.fontSize, fontWeight: "600" },
-	interfaceError: { color: t.red, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, textAlign: "center" },
+	interfaceCancelText: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.caption1.fontSize, fontWeight: "600" },
+	interfaceError: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, textAlign: "center" },
 	// Small green badge on the globe when a real preview is available. Offsets are
 	// from the square's centre, so it rides the glyph rather than the button frame.
 	browserReadyDot: {
@@ -1706,7 +1706,7 @@ const makeStyles = (t: Theme) =>
 		paddingVertical: space.xxs,
 		marginLeft: space.md,
 	},
-	restoreText: { color: t.accent, fontWeight: "700", fontSize: type.caption1.fontSize },
+	restoreText: { fontFamily: "Geist_600SemiBold", color: t.accent, fontWeight: "600", fontSize: type.caption1.fontSize },
 	deadOverlay: {
 		...StyleSheet.absoluteFill,
 		alignItems: "center",
@@ -1726,8 +1726,8 @@ const makeStyles = (t: Theme) =>
 		justifyContent: "center",
 		marginBottom: space.xs,
 	},
-	deadTitle: { color: t.textPrimary, fontSize: type.body.fontSize, fontWeight: "700", textAlign: "center" },
-	deadMsg: { color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, textAlign: "center", maxWidth: 300 },
+	deadTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.body.fontSize, fontWeight: "600", textAlign: "center" },
+	deadMsg: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, textAlign: "center", maxWidth: 300 },
 	restoreCta: {
 		flexDirection: "row",
 		alignItems: "center",
@@ -1738,7 +1738,7 @@ const makeStyles = (t: Theme) =>
 		paddingHorizontal: space.xl,
 		marginTop: space.sm,
 	},
-	restoreCtaText: { color: t.onAccent, fontSize: type.subheadline.fontSize, fontWeight: "700" },
+	restoreCtaText: { fontFamily: "Geist_600SemiBold", color: t.onAccent, fontSize: type.subheadline.fontSize, fontWeight: "600" },
 	// Accent-blue like the rest of the chrome. Red is reserved for the mic button
 	// alone: one small saturated element reads as "recording", a whole red panel
 	// reads as an error. It sits at the top of the dock, so it divides itself from
@@ -1756,5 +1756,5 @@ const makeStyles = (t: Theme) =>
 	// Muted while the mic warms up, so "ready to speak" is a visible state change
 	// and not just a wording difference.
 	voiceStripWarmup: { backgroundColor: t.bgElevated, borderBottomColor: t.borderDefault },
-	voiceText: { flex: 1, color: t.textPrimary, fontSize: type.footnote.fontSize },
+	voiceText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textPrimary, fontSize: type.footnote.fontSize },
 });

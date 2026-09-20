@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
 		justifyContent: "center",
 	},
 	spawnButtonPressed: { opacity: press.opacity, transform: [{ scale: press.scale }] },
-	spawnLabel: { fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	spawnLabel: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
 });
 
 function HarnessImage({ uri }: { uri?: string }) {

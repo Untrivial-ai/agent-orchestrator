@@ -92,6 +92,6 @@ const makeStyles = (t: Theme) =>
 			borderBottomWidth: 1,
 			borderBottomColor: t.borderSubtle,
 		},
-		bannerText: { flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
-		bannerAction: { fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, fontWeight: "700" },
+		bannerText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
+		bannerAction: { fontFamily: "Geist_600SemiBold", fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, fontWeight: "600" },
 	});

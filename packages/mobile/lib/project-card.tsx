@@ -223,37 +223,37 @@ const makeStyles = (t: Theme) =>
 		main: { flex: 1, minWidth: 0, gap: space.xs },
 
 		titleRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
-		project: { flex: 1, color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
+		project: { fontFamily: "Geist_600SemiBold", flex: 1, color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
 		timestamp: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontVariant: ["tabular-nums"], fontFamily: t.fontMono },
 
 		summaryRow: { flexDirection: "row", alignItems: "center", minWidth: 0 },
-		summaryStrong: { flexShrink: 0, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600" },
+		summaryStrong: { fontFamily: "Geist_600SemiBold", flexShrink: 0, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600" },
 		statusLabel: { marginLeft: space.xs },
-		summary: { flexShrink: 1, color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
+		summary: { fontFamily: "Geist_400Regular", flexShrink: 1, color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
 
 		blockerRow: { flexDirection: "row", alignItems: "center", minWidth: 0 },
-		blocker: { flexShrink: 0, color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
-		blockerWorker: { flexShrink: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600" },
+		blocker: { fontFamily: "Geist_400Regular", flexShrink: 0, color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
+		blockerWorker: { fontFamily: "Geist_600SemiBold", flexShrink: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600" },
 
 		// Height matches the pill so the strip's text centres on it; the right
 		// padding keeps the status clear of the pill laid over this edge.
 		footer: { flexDirection: "row", alignItems: "center", minHeight: 28, marginTop: space.sm, paddingRight: 150 },
-		footerLabel: { flexShrink: 1, color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
+		footerLabel: { fontFamily: "Geist_400Regular", flexShrink: 1, color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
 		pillSlot: { position: "absolute", right: 18, bottom: 12, height: 28, justifyContent: "center" },
 		pill: { flexDirection: "row", alignItems: "center", gap: space.xs, height: 28, paddingHorizontal: space.md, borderRadius: 12 },
 		pillSolid: { backgroundColor: t.textPrimary },
 		pillOutline: { borderWidth: 1, borderColor: t.borderStrong },
 		buttonPressed: { opacity: 0.8 },
-		pillLabel: { fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, fontWeight: "600" },
+		pillLabel: { fontFamily: "Geist_600SemiBold", fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, fontWeight: "600" },
 
 		stats: { flexDirection: "row", marginHorizontal: space.lg, marginTop: space.xxs, borderTopWidth: rowDividerWidth, borderBottomWidth: rowDividerWidth, borderColor: t.borderSubtle },
 		stat: { flex: 1, alignItems: "center", paddingVertical: space.sm, gap: space.none },
 		statValue: { color: t.textPrimary, fontSize: type.body.fontSize, lineHeight: type.body.lineHeight, fontWeight: "600", fontFamily: t.fontMono, fontVariant: ["tabular-nums"] },
-		statLabel: { color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
+		statLabel: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 		orchestratorRow: { minHeight: 76, flexDirection: "row", alignItems: "center", gap: space.md, paddingLeft: space.lg, paddingRight: 120, paddingVertical: space.sm, borderBottomWidth: rowDividerWidth, borderBottomColor: t.borderSubtle },
 		orchestratorPillSlot: { position: "absolute", right: 18, top: 0, bottom: 0, justifyContent: "center" },
 		orchestratorMain: { gap: space.hair },
 		orchestratorEyebrow: { flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: 17 },
-		orchestratorEyebrowText: { flex: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
-		orchestratorTitle: { color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
+		orchestratorEyebrowText: { fontFamily: "Geist_500Medium", flex: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		orchestratorTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
 	});

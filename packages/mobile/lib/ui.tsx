@@ -779,11 +779,11 @@ const makeStyles = (t: Theme) =>
 			paddingTop: space.lg,
 			paddingBottom: space.xxs,
 		},
-		listSectionLabel: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		listSectionLabel: { fontFamily: "Geist_500Medium", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
 		// Mono and tabular so a count changing from 9 to 10 does not shift the rule.
-		listSectionCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "700", fontFamily: t.fontMono },
+		listSectionCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "600", fontFamily: t.fontMono },
 		badge: { flexDirection: "row", alignItems: "center", gap: space.xs },
-		badgeText: { fontSize: type.caption1.fontSize, fontWeight: "600" },
+		badgeText: { fontFamily: "Geist_600SemiBold", fontSize: type.caption1.fontSize, fontWeight: "600" },
 
 		pill: {
 			paddingHorizontal: space.md,
@@ -794,7 +794,7 @@ const makeStyles = (t: Theme) =>
 			backgroundColor: t.bgElevated,
 		},
 		pillActive: { backgroundColor: t.accentTint, borderColor: t.accent },
-		pillText: { color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+		pillText: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
 		pillTextActive: { color: t.accent },
 
 		chip: {
@@ -804,7 +804,7 @@ const makeStyles = (t: Theme) =>
 			paddingVertical: space.hair,
 			borderRadius: 4,
 		},
-		chipText: { fontSize: type.caption2.fontSize, fontWeight: "600" },
+		chipText: { fontFamily: "Geist_600SemiBold", fontSize: type.caption2.fontSize, fontWeight: "600" },
 
 		card: {
 			backgroundColor: t.bgElevated,
@@ -827,17 +827,17 @@ const makeStyles = (t: Theme) =>
 			gap: space.sm,
 		},
 		sectionBar: { width: 3, height: 13, borderRadius: 2 },
-		sectionLabel: {
+		sectionLabel: { fontFamily: "Geist_600SemiBold",
 			color: t.textSecondary,
 			fontSize: type.caption2.fontSize,
 			letterSpacing: 1.2,
-			fontWeight: "700",
+			fontWeight: "600",
 			flex: 1,
 		},
 		sectionCount: {
 			color: t.textTertiary,
 			fontSize: type.caption1.fontSize,
-			fontWeight: "700",
+			fontWeight: "600",
 			fontFamily: t.fontMono,
 		},
 
@@ -876,13 +876,13 @@ const makeStyles = (t: Theme) =>
 			shadowRadius: 6,
 			shadowOffset: { width: 0, height: 0 },
 		},
-		screenTitle: {
+		screenTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textPrimary,
 			fontSize: type.title1.fontSize,
-			fontWeight: "800",
+			fontWeight: "600",
 			letterSpacing: -0.5,
 		},
-		screenSubtitle: { color: t.textTertiary, fontSize: type.caption1.fontSize, marginTop: space.none },
+		screenSubtitle: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption1.fontSize, marginTop: space.none },
 		headerIconBtn: {
 			alignItems: "center",
 			justifyContent: "center",
@@ -914,7 +914,7 @@ const makeStyles = (t: Theme) =>
 			backgroundColor: t.bgElevated,
 		},
 		btnDanger: { borderColor: t.tintRed, backgroundColor: t.tintRed },
-		btnText: { fontSize: type.subheadline.fontSize, fontWeight: "700" },
+		btnText: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, fontWeight: "600" },
 
 		step: {
 			flexDirection: "row",
@@ -934,11 +934,11 @@ const makeStyles = (t: Theme) =>
 			justifyContent: "center",
 		},
 		stepBadgeCompact: { width: 23, height: 23, borderRadius: 12 },
-		stepNum: { color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "700" },
-		stepNumCompact: { fontSize: type.caption2.fontSize },
-		stepTitle: { color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "700" },
-		stepTitleCompact: { fontSize: type.subheadline.fontSize, fontWeight: "600" },
-		stepHint: {
+		stepNum: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+		stepNumCompact: { fontFamily: "Geist_400Regular", fontSize: type.caption2.fontSize },
+		stepTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
+		stepTitleCompact: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, fontWeight: "600" },
+		stepHint: { fontFamily: "Geist_400Regular",
 			color: t.textTertiary,
 			fontSize: type.footnote.fontSize,
 			lineHeight: type.footnote.lineHeight,
@@ -959,13 +959,13 @@ const makeStyles = (t: Theme) =>
 		// sheet's list can run edge to edge while its rows keep the same inset.
 		sheetHeader: { paddingBottom: space.hair },
 		sheetTitleRow: { flexDirection: "row", alignItems: "center", gap: space.md },
-		sheetTitle: {
+		sheetTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textPrimary,
 			fontSize: type.title3.fontSize,
-			fontWeight: "800",
+			fontWeight: "600",
 			letterSpacing: -0.3,
 		},
-		sheetSubtitle: {
+		sheetSubtitle: { fontFamily: "Geist_400Regular",
 			color: t.textSecondary,
 			fontSize: type.footnote.fontSize,
 			lineHeight: type.footnote.lineHeight,
@@ -973,11 +973,11 @@ const makeStyles = (t: Theme) =>
 		},
 
 		group: { marginBottom: space.xxl },
-		groupTitle: {
+		groupTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textTertiary,
 			fontSize: type.caption2.fontSize,
 			letterSpacing: 1.2,
-			fontWeight: "700",
+			fontWeight: "600",
 			marginBottom: space.sm,
 			marginLeft: space.xxs,
 		},
@@ -988,7 +988,7 @@ const makeStyles = (t: Theme) =>
 			borderColor: t.borderSubtle,
 			overflow: "hidden",
 		},
-		groupFooter: {
+		groupFooter: { fontFamily: "Geist_400Regular",
 			color: t.textTertiary,
 			fontSize: type.caption1.fontSize,
 			lineHeight: type.caption1.lineHeight,
@@ -1013,14 +1013,14 @@ const makeStyles = (t: Theme) =>
 		rowPressed: { backgroundColor: t.bgElevatedHover },
 		rowDisabled: { opacity: 0.45 },
 		rowIcon: { width: 17, marginRight: space.xxs },
-		rowLabel: {
+		rowLabel: { fontFamily: "Geist_500Medium",
 			flex: 1,
 			minWidth: 0,
 			color: t.textPrimary,
 			fontSize: type.subheadline.fontSize,
 			fontWeight: "500",
 		},
-		rowValue: { color: t.textTertiary, fontSize: type.subheadline.fontSize, flexShrink: 1 },
+		rowValue: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.subheadline.fontSize, flexShrink: 1 },
 		rowChevron: { marginRight: -3 },
 		rowAccessory: { flexShrink: 0, flexDirection: "row", alignItems: "center" },
 
@@ -1055,13 +1055,13 @@ const makeStyles = (t: Theme) =>
 			justifyContent: "center",
 			marginBottom: space.lg,
 		},
-		emptyTitle: {
+		emptyTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textPrimary,
 			fontSize: type.body.fontSize,
-			fontWeight: "700",
+			fontWeight: "600",
 			textAlign: "center",
 		},
-		emptyMsg: {
+		emptyMsg: { fontFamily: "Geist_400Regular",
 			color: t.textSecondary,
 			fontSize: type.footnote.fontSize,
 			lineHeight: type.footnote.lineHeight,

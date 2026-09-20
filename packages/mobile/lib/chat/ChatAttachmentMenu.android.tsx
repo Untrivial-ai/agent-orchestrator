@@ -98,9 +98,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	disabled: { opacity: 0.55 },
 	sheet: { paddingHorizontal: space.lg, backgroundColor: t.bgSurface },
 	header: { minHeight: 54, paddingHorizontal: space.xxs, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-	title: { color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "700" },
+	title: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "600" },
 	choices: { borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated, overflow: "hidden" },
 	choice: { minHeight: 54, paddingHorizontal: space.lg, flexDirection: "row", alignItems: "center", gap: space.md },
 	choiceBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
-	choiceLabel: { flex: 1, color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600" },
+	choiceLabel: { fontFamily: "Geist_600SemiBold", flex: 1, color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600" },
 });

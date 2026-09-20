@@ -303,8 +303,8 @@ const makeStyles = (t: Theme) =>
 	cBR: { bottom: 14, right: 14, borderBottomWidth: CORNER_W, borderRightWidth: CORNER_W, borderBottomRightRadius: 6 },
 
 	gate: { flex: 1, alignItems: "center", justifyContent: "center", padding: space.xxl },
-	gateTitle: { color: t.textPrimary, fontSize: type.callout.fontSize, fontWeight: "700", marginTop: space.md },
-	gateHint: {
+	gateTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.callout.fontSize, fontWeight: "600", marginTop: space.md },
+	gateHint: { fontFamily: "Geist_400Regular",
 		color: t.textSecondary,
 		fontSize: type.footnote.fontSize,
 		lineHeight: type.footnote.lineHeight,
@@ -323,7 +323,7 @@ const makeStyles = (t: Theme) =>
 		marginHorizontal: space.lg,
 		marginTop: space.md,
 	},
-	errorText: { color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+	errorText: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 	errorActions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, marginTop: space.sm },
 
 	manual: {
@@ -333,7 +333,7 @@ const makeStyles = (t: Theme) =>
 		gap: space.sm,
 		paddingTop: space.lg,
 	},
-	manualText: { color: t.textSecondary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
+	manualText: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
 });
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";

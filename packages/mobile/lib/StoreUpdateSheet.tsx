@@ -31,8 +31,8 @@ export function StoreUpdateSheet({
 				<Host matchContents={{ vertical: true }} style={{ width: "100%" }} colorScheme={scheme} seedColor={t.accent}>
 					<Column spacing={22} style={{ width: "100%" }}>
 						<Column spacing={8} style={{ width: "100%" }}>
-							<NativeText textStyle={{ color: t.textPrimary, fontSize: type.title3.fontSize, fontWeight: "700" }}>A newer AO is ready</NativeText>
-							<NativeText textStyle={{ color: t.textSecondary, fontSize: type.subheadline.fontSize }}>
+							<NativeText textStyle={{ fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.title3.fontSize, fontWeight: "600" }}>A newer AO is ready</NativeText>
+							<NativeText textStyle={{ fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.subheadline.fontSize }}>
 								Update the native app for the latest compatibility, fixes, and system integrations.
 							</NativeText>
 						</Column>

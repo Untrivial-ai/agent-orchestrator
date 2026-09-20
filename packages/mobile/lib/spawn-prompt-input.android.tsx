@@ -36,7 +36,7 @@ export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps)
 }
 
 const styles = StyleSheet.create({
-	input: {
+	input: { fontFamily: "Geist_400Regular",
 		flex: 1,
 		height: 112,
 		paddingHorizontal: space.lg,

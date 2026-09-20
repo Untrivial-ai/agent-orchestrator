@@ -178,7 +178,7 @@ function ThemeChoices({ preference, onSelect }: { preference: ThemePreference; o
 						style={({ pressed }) => [styles.inlineChoice, pressed && { opacity: 0.6 }]}
 					>
 						<Feather name={option.icon} size={15} color={selected ? t.textPrimary : t.textTertiary} />
-						<Text style={[styles.inlineChoiceLabel, selected && { color: t.textPrimary, fontWeight: "700" }]}>{preferenceLabel(option.value)}</Text>
+						<Text style={[styles.inlineChoiceLabel, selected && { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontWeight: "600" }]}>{preferenceLabel(option.value)}</Text>
 						{selected ? <Feather name="check" size={15} color={t.textPrimary} /> : null}
 					</Pressable>
 				);
@@ -576,34 +576,34 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgBase },
 	center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: t.bgBase },
 	header: { height: 64, alignItems: "center", justifyContent: "center", paddingHorizontal: space.lg },
-	headerTitle: { color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "800", letterSpacing: -0.3 },
+	headerTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "600", letterSpacing: -0.3 },
 	closeButton: { position: "absolute", right: 14, top: 10 },
 	content: { paddingHorizontal: space.lg, paddingTop: space.xs, paddingBottom: space.xxxl, gap: space.lg },
 	section: { gap: space.xs },
-	sectionTitle: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600", paddingHorizontal: space.sm },
-	sectionFooter: { color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, paddingHorizontal: space.sm },
+	sectionTitle: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600", paddingHorizontal: space.sm },
+	sectionFooter: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, paddingHorizontal: space.sm },
 	card: { backgroundColor: t.bgElevated, borderRadius: 16, borderCurve: "continuous", overflow: "hidden" },
 	separator: { height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle, marginLeft: 50 },
 	// Choices that expand inside a row's own card, indented under its label so
 	// they read as belonging to the row above rather than as a new group.
 	inlineChoices: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingVertical: space.hair },
 	inlineChoice: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.sm, paddingLeft: 50, paddingRight: space.md },
-	inlineChoiceLabel: { flex: 1, color: t.textSecondary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
+	inlineChoiceLabel: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
 	inlinePanel: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingHorizontal: space.md, paddingVertical: space.md, gap: space.sm },
-	inlinePanelTitle: { color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "700" },
-	inlinePanelCopy: { color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
+	inlinePanelTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	inlinePanelCopy: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
 	inlinePanelActions: { flexDirection: "row", gap: space.sm },
 	inlinePanelAction: { minHeight: 38, justifyContent: "center", paddingHorizontal: space.md, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
 	inlinePanelPrimary: { backgroundColor: t.textPrimary, borderColor: t.textPrimary },
-	inlinePanelActionLabel: { color: t.textPrimary, fontSize: type.footnote.fontSize, fontWeight: "600" },
-	inlinePanelPrimaryLabel: { color: t.bgBase, fontSize: type.footnote.fontSize, fontWeight: "700" },
+	inlinePanelActionLabel: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+	inlinePanelPrimaryLabel: { fontFamily: "Geist_600SemiBold", color: t.bgBase, fontSize: type.footnote.fontSize, fontWeight: "600" },
 	row: { minHeight: 52, flexDirection: "row", alignItems: "center", paddingHorizontal: space.md, gap: space.sm },
 	rowPressed: { backgroundColor: t.bgElevatedHover },
-	rowIcon: { width: 26, textAlign: "center" },
-	rowLabel: { color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600", flex: 1 },
-	rowValue: { color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, maxWidth: "42%" },
+	rowIcon: { fontFamily: "Geist_400Regular", width: 26, textAlign: "center" },
+	rowLabel: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600", flex: 1 },
+	rowValue: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, maxWidth: "42%" },
 	disabled: { opacity: 0.45 },
 	disconnect: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: space.sm, paddingHorizontal: space.md, borderRadius: 16, borderCurve: "continuous" },
-	disconnectText: { color: t.red, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
-	versionFooter: { color: t.textFaint, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, textAlign: "center", marginTop: -6 },
+	disconnectText: { fontFamily: "Geist_600SemiBold", color: t.red, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	versionFooter: { fontFamily: "Geist_400Regular", color: t.textFaint, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, textAlign: "center", marginTop: -6 },
 });

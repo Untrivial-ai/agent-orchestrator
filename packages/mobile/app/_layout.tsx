@@ -1,5 +1,8 @@
+import { Geist_400Regular, Geist_500Medium, Geist_600SemiBold } from "@expo-google-fonts/geist";
+import { GeistMono_400Regular } from "@expo-google-fonts/geist-mono";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider as NavigationThemeProvider } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { useFonts } from "expo-font";
 import { useMemo } from "react";
 import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -59,6 +62,11 @@ const CONNECT_SHEET_OPTIONS = {
 } as const;
 
 export default function RootLayout() {
+	// The desktop's family, loaded before anything else draws: rendering the tree
+	// first would paint one frame of SF Pro and then swap every label under it.
+	const [fontsReady] = useFonts({ Geist_400Regular, Geist_500Medium, Geist_600SemiBold, GeistMono_400Regular });
+	if (!fontsReady) return null;
+
 	// ThemeProvider sits outside everything that reads a colour, including the
 	// Stack's own screenOptions below — hence the inner component: a hook cannot
 	// consume a provider its own component renders.
@@ -134,7 +142,7 @@ function Shell() {
 					// the back and action buttons on sub-pages came out near-white — brighter
 					// than the identical-looking glass buttons on the board, which use this one.
 					headerTintColor: t.textSecondary,
-					headerTitleStyle: { fontWeight: "700" },
+					headerTitleStyle: { fontFamily: "Geist_600SemiBold", fontWeight: "600" },
 					headerShadowVisible: false,
 					headerBackButtonDisplayMode: "minimal",
 					contentStyle: { backgroundColor: t.bgBase },

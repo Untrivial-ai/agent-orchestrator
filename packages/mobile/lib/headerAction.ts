@@ -18,7 +18,7 @@ export const headerActionStyle: ViewStyle = {
 
 // Constrain vector-icon font glyphs to a square line box. Without an explicit
 // line height, the font's ascender/descender metrics shift the visible glyph.
-export const headerGlyphStyle: TextStyle = {
+export const headerGlyphStyle: TextStyle = { fontFamily: "Geist_400Regular",
 	width: 20,
 	height: 20,
 	lineHeight: 20,

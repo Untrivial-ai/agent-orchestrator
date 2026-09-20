@@ -45,10 +45,10 @@ const styles = StyleSheet.create({
 	content: { paddingTop: space.xl, gap: space.lg },
 	icon: { width: 48, height: 48, borderRadius: 16, borderCurve: "continuous", alignItems: "center", justifyContent: "center" },
 	copy: { gap: space.xs },
-	title: { fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "700" },
-	message: { fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
+	title: { fontFamily: "Geist_600SemiBold", fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "600" },
+	message: { fontFamily: "Geist_400Regular", fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
 	actions: { flexDirection: "row", justifyContent: "flex-end", gap: space.sm, paddingTop: space.xxs },
 	secondaryAction: { height: 44, minWidth: 92, paddingHorizontal: space.lg, borderRadius: 12, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
 	primaryAction: { height: 44, minWidth: 148, paddingHorizontal: space.lg, borderRadius: 12, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
-	actionLabel: { fontSize: type.subheadline.fontSize, fontWeight: "700" },
+	actionLabel: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, fontWeight: "600" },
 });

@@ -125,14 +125,14 @@ const makeS = (t: Theme) =>
 			paddingHorizontal: space.hair,
 		},
 		optionPressed: { opacity: press.opacity },
-		label: { flex: 1, color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
+		label: { fontFamily: "Geist_500Medium", flex: 1, color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
 		hint: {
 			color: t.textFaint,
 			fontSize: type.caption1.fontSize,
 			fontFamily: t.fontMono,
 			flexShrink: 1,
 		},
-		empty: {
+		empty: { fontFamily: "Geist_400Regular",
 			color: t.textTertiary,
 			fontSize: type.footnote.fontSize,
 			lineHeight: type.footnote.lineHeight,

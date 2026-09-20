@@ -84,10 +84,10 @@ export function ElicitationAction({ label, primary, disabled, width, onPress }: 
 const styles = StyleSheet.create({
 	choice: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: space.md, paddingHorizontal: space.xxs },
 	choiceCopy: { flex: 1, gap: space.hair },
-	choiceLabel: { fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
-	choiceLabelSelected: { fontWeight: "700" },
-	choiceDescription: { fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
-	input: {
+	choiceLabel: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	choiceLabelSelected: { fontFamily: "Geist_600SemiBold", fontWeight: "600" },
+	choiceDescription: { fontFamily: "Geist_400Regular", fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+	input: { fontFamily: "Geist_400Regular",
 		flex: 1,
 		height: 54,
 		paddingHorizontal: space.md,
@@ -98,5 +98,5 @@ const styles = StyleSheet.create({
 		fontSize: type.subheadline.fontSize,
 	},
 	action: { height: 44, borderRadius: 12, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
-	actionLabel: { fontSize: type.subheadline.fontSize, fontWeight: "700" },
+	actionLabel: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, fontWeight: "600" },
 });

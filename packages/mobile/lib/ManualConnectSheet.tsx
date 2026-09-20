@@ -192,14 +192,14 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgSurface },
 		field: { marginTop: space.lg },
-		fieldLabel: {
+		fieldLabel: { fontFamily: "Geist_600SemiBold",
 			color: t.textTertiary,
 			fontSize: type.caption2.fontSize,
-			fontWeight: "700",
+			fontWeight: "600",
 			letterSpacing: 1.1,
 			marginBottom: space.xs,
 		},
-		input: {
+		input: { fontFamily: "Geist_400Regular",
 			backgroundColor: t.bgElevated,
 			borderWidth: 1,
 			borderColor: t.borderDefault,
@@ -215,7 +215,7 @@ const makeStyles = (t: Theme) =>
 			justifyContent: "space-between",
 			marginTop: space.lg,
 		},
-		toggleLabel: { color: t.textSecondary, fontSize: type.subheadline.fontSize, flex: 1 },
+		toggleLabel: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.subheadline.fontSize, flex: 1 },
 		errorBox: {
 			flexDirection: "row",
 			gap: space.sm,
@@ -225,5 +225,5 @@ const makeStyles = (t: Theme) =>
 			padding: space.md,
 			marginTop: space.lg,
 		},
-		errorText: { color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+		errorText: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 	});

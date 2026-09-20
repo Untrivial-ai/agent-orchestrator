@@ -48,7 +48,7 @@ export function AgentLogo({ harness, size = 24 }: { harness?: string | null; siz
 				/>
 			) : (
 				<View style={[styles.fallback, { width: size, height: size, borderRadius: Math.round(size * 0.28), borderCurve: "continuous"}]}>
-					<Text style={[styles.initial, { fontSize: Math.round(size * 0.5), color: t.textSecondary }]}>
+					<Text style={[styles.initial, { fontFamily: "Geist_400Regular", fontSize: Math.round(size * 0.5), color: t.textSecondary }]}>
 						{harnessInitial(harness)}
 					</Text>
 				</View>
@@ -67,5 +67,5 @@ const makeStyles = (t: Theme) =>
 			borderWidth: StyleSheet.hairlineWidth,
 			borderColor: t.borderDefault,
 		},
-		initial: { fontWeight: "700" },
+		initial: { fontFamily: "Geist_600SemiBold", fontWeight: "600" },
 	});

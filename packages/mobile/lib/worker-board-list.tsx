@@ -313,6 +313,6 @@ const makeStyles = (t: Theme) =>
 			paddingTop: space.xl,
 			paddingBottom: space.sm,
 		},
-		archiveLabel: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500", flex: 1 },
-		archiveCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "700", fontFamily: t.fontMono },
+		archiveLabel: { fontFamily: "Geist_500Medium", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500", flex: 1 },
+		archiveCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "600", fontFamily: t.fontMono },
 	});

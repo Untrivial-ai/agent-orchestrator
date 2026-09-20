@@ -138,7 +138,7 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		list: { flex: 1, backgroundColor: t.bgSurface },
 		refresh: { flexDirection: "row", alignItems: "center", gap: space.xxs },
-		refreshText: { color: t.accent, fontSize: type.footnote.fontSize, fontWeight: "600" },
+		refreshText: { fontFamily: "Geist_600SemiBold", color: t.accent, fontSize: type.footnote.fontSize, fontWeight: "600" },
 		option: {
 			flexDirection: "row",
 			alignItems: "center",
@@ -150,13 +150,13 @@ const makeStyles = (t: Theme) =>
 		// Desktop's opacity for an unpickable agent. The row still shows its mark
 		// and reason, so it reads as "not yet" rather than missing.
 		optionDisabled: { opacity: 0.45 },
-		label: { flex: 1, color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
-		status: { color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "600" },
-		empty: {
+		label: { fontFamily: "Geist_500Medium", flex: 1, color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
+		status: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "600" },
+		empty: { fontFamily: "Geist_400Regular",
 			color: t.textTertiary,
 			fontSize: type.footnote.fontSize,
 			lineHeight: type.footnote.lineHeight,
 			paddingVertical: space.md,
 		},
-		error: { color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, marginTop: space.sm },
+		error: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, marginTop: space.sm },
 	});

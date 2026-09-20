@@ -74,7 +74,8 @@ export type Theme = {
 	fontMono: string;
 };
 
-const FONT_MONO = "JetBrains Mono, Menlo, ui-monospace, monospace";
+/** The renderer's mono: `--font-family-mono` starts at Geist Mono. */
+const FONT_MONO = "GeistMono_400Regular";
 
 export const darkTheme: Theme = {
 	// Surfaces (no box-in-box; the card is the only bordered surface)

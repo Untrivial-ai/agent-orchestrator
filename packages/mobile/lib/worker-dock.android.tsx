@@ -104,7 +104,7 @@ const styles = StyleSheet.create({
 		borderWidth: StyleSheet.hairlineWidth,
 		overflow: "hidden",
 	},
-	search: {
+	search: { fontFamily: "Geist_400Regular",
 		flex: 1,
 		height: 52,
 		paddingLeft: space.lg,

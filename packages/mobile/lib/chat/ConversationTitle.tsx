@@ -36,8 +36,8 @@ export function ConversationTitle({
 const makeStyles = (t: Theme) => StyleSheet.create({
 	header: { maxWidth: 240, flexDirection: "row", alignItems: "center", gap: space.sm },
 	copy: { minWidth: 0, flexShrink: 1, alignItems: "flex-start", justifyContent: "center" },
-	title: { maxWidth: "100%", color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "700" },
+	title: { fontFamily: "Geist_600SemiBold", maxWidth: "100%", color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
 	subtitleRow: { maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: space.xs },
-	subtitle: { flexShrink: 1, color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
+	subtitle: { fontFamily: "Geist_400Regular", flexShrink: 1, color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 	dot: { width: 7, height: 7, borderRadius: 4, borderCurve: "continuous"},
 });

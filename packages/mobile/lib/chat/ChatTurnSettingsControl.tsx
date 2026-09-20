@@ -16,5 +16,5 @@ export function ChatTurnSettingsControl({ snapshot, models, options, disabled, o
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	control: { alignSelf: "flex-start", maxWidth: "100%", minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm },
-	label: { flexShrink: 1, color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+	label: { fontFamily: "Geist_600SemiBold", flexShrink: 1, color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
 });
