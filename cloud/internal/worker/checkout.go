@@ -124,15 +124,44 @@ func EnsureWorkspaceReviewBase(ctx context.Context, runner GitRunner, workspace,
 	if runner == nil {
 		return errors.New("git runner is required")
 	}
-	if _, err := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", WorkspaceReviewBaseRef); err == nil {
+	existingOutput, existingErr := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", WorkspaceReviewBaseRef)
+	configuredCandidate := ""
+	if branch := strings.TrimSpace(defaultBranch); branch != "" {
+		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "origin/"+branch, "HEAD"); err == nil {
+			configuredCandidate = strings.TrimSpace(output)
+		}
+	}
+	remoteHeadCandidate := ""
+	if configuredCandidate == "" {
+		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "refs/remotes/origin/HEAD", "HEAD"); err == nil {
+			remoteHeadCandidate = strings.TrimSpace(output)
+		}
+	}
+	if existingErr == nil {
+		// Older workers fell straight back to the repository root when a project
+		// called its default branch "main" but the remote used "master" (or vice
+		// versa). Repair only that recognizable legacy fallback; every non-root
+		// baseline remains immutable across fetches and restores.
+		if configuredCandidate != "" || remoteHeadCandidate == "" {
+			return nil
+		}
+		rootOutput, err := runner.Run(ctx, workspace, nil, "rev-list", "--max-parents=0", "--reverse", "HEAD")
+		if err != nil {
+			return nil
+		}
+		root := strings.TrimSpace(strings.SplitN(rootOutput, "\n", 2)[0])
+		if strings.TrimSpace(existingOutput) != root || remoteHeadCandidate == root {
+			return nil
+		}
+		if _, err := runner.Run(ctx, workspace, nil, "update-ref", WorkspaceReviewBaseRef, remoteHeadCandidate); err != nil {
+			return fmt.Errorf("repair workspace review base: %w", err)
+		}
 		return nil
 	}
 
-	candidate := ""
-	if branch := strings.TrimSpace(defaultBranch); branch != "" {
-		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "origin/"+branch, "HEAD"); err == nil {
-			candidate = strings.TrimSpace(output)
-		}
+	candidate := configuredCandidate
+	if candidate == "" {
+		candidate = remoteHeadCandidate
 	}
 	if candidate == "" {
 		output, err := runner.Run(ctx, workspace, nil, "rev-list", "--max-parents=0", "--reverse", "HEAD")

@@ -12,7 +12,7 @@ function metadataForPath(patch: string, path: string): FileDiffMetadata | null {
 	if (!patch) return null;
 	try {
 		const files = parsePatchFiles(patch, path, true).flatMap((entry) => entry.files);
-		return files.find((file) => file.name === path || file.prevName === path) ?? files[0] ?? null;
+		return files.find((file) => file.name === path || file.prevName === path) ?? null;
 	} catch {
 		return null;
 	}

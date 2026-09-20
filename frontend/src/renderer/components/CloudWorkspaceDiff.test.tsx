@@ -26,8 +26,18 @@ describe("Cloud workspace compatibility exports", () => {
 	});
 
 	it("passes scoped view and edit state to the Cloud content pane", () => {
-		render(<CloudFileContentPane annotation={annotation} commitSha="abc" initialEditing initialMode="rendered" initialRequestKey={4} path="README.md" scope="committed" session={session} split />);
+		const { container } = render(<CloudFileContentPane annotation={annotation} commitSha="abc" initialEditing initialMode="rendered" initialRequestKey={4} path="README.md" scope="committed" session={session} split />);
 		expect(screen.getByText("cloud content")).toBeInTheDocument();
+		expect(container.querySelector(".overflow-y-auto")).toContainElement(screen.getByText("cloud content"));
 		expect(contentProps).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://cloud.test", client, orgId: "org-1", sessionId: "session-1", path: "README.md", scope: "committed", commitSha: "abc", initialEditing: true, initialMode: "rendered", initialRequestKey: 4, split: true }));
+	});
+
+	it("keeps the dirty-state callback stable across parent renders", () => {
+		const onDirtyChange = vi.fn();
+		const { rerender } = render(<CloudFileContentPane annotation={annotation} onDirtyChange={onDirtyChange} path="README.md" session={session} />);
+		const firstCallback = contentProps.mock.lastCall?.[0].onDirtyChange;
+		rerender(<CloudFileContentPane annotation={annotation} onDirtyChange={onDirtyChange} path="README.md" session={session} />);
+		const secondCallback = contentProps.mock.lastCall?.[0].onDirtyChange;
+		expect(secondCallback).toBe(firstCallback);
 	});
 });

@@ -121,6 +121,46 @@ func TestEnsureWorkspaceReviewBaseFallsBackToRootCommit(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkspaceReviewBaseUsesRemoteHEADWhenConfiguredBranchIsMissing(t *testing.T) {
+	repo := initReviewBaseRepository(t)
+	os.WriteFile(filepath.Join(repo, "README.md"), []byte("remote head\n"), 0o644)
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "remote head")
+	remoteHead := gitOutput(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "update-ref", "refs/remotes/origin/master", remoteHead)
+	gitRun(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+	gitRun(t, repo, "checkout", "-b", "ao/session")
+	os.WriteFile(filepath.Join(repo, "README.md"), []byte("session change\n"), 0o644)
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "session change")
+
+	if err := EnsureWorkspaceReviewBase(context.Background(), ExecGitRunner{}, repo, "main"); err != nil {
+		t.Fatalf("EnsureWorkspaceReviewBase: %v", err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", WorkspaceReviewBaseRef); got != remoteHead {
+		t.Fatalf("review base = %s, want remote HEAD %s", got, remoteHead)
+	}
+}
+
+func TestEnsureWorkspaceReviewBaseRepairsLegacyRootFallback(t *testing.T) {
+	repo := initReviewBaseRepository(t)
+	root := gitOutput(t, repo, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(repo, "README.md"), []byte("remote head\n"), 0o644)
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "remote head")
+	remoteHead := gitOutput(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "update-ref", "refs/remotes/origin/master", remoteHead)
+	gitRun(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+	gitRun(t, repo, "update-ref", WorkspaceReviewBaseRef, root)
+
+	if err := EnsureWorkspaceReviewBase(context.Background(), ExecGitRunner{}, repo, "main"); err != nil {
+		t.Fatalf("EnsureWorkspaceReviewBase: %v", err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", WorkspaceReviewBaseRef); got != remoteHead {
+		t.Fatalf("repaired review base = %s, want remote HEAD %s", got, remoteHead)
+	}
+}
+
 func initReviewBaseRepository(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

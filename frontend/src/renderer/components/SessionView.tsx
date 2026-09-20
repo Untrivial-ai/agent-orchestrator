@@ -1423,7 +1423,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		) : null,
 		[addShellTerminal, isOrchestrator, newTerminalError, session, t],
 	);
-	const fileAnnotation = useFileAnnotation(sessionId);
+	const sendCloudFileAnnotation = useCallback(async (message: string) => {
+		const orgId = session?.cloud?.orgId;
+		if (!orgId) throw new Error(t("files.feedbackError"));
+		await cloudCpClient.sendSessionMessage(orgId, sessionId, { text: message });
+	}, [cloudCpClient, session?.cloud?.orgId, sessionId, t]);
+	const fileAnnotation = useFileAnnotation(sessionId, session?.cloud ? sendCloudFileAnnotation : undefined);
 	const centerFileTabs = useMemo(
 		() =>
 			fileTabs.openPaths.map((path) => ({

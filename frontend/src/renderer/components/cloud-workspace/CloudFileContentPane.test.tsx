@@ -43,4 +43,23 @@ describe("CloudFileContentPane", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() => expect(updateWorkspaceReviewFile).toHaveBeenCalledWith("org-1", "session-1", { path: "README.md", content: "# Changed", expectedFileFingerprint: "fp-1" }));
 	});
+
+	it("leaves line feedback to the file renderer instead of opening a second header composer", async () => {
+		const client = { getWorkspaceReviewFile: vi.fn().mockResolvedValue(detail) } as unknown as CloudCpClient;
+		const lineAnnotation: FileAnnotationModel = {
+			...annotation,
+			target: {
+				path: "README.md",
+				side: "file",
+				line: 2,
+				lineKind: "context",
+				lineText: "Hello",
+				scope: "combined",
+				surface: "focused",
+			},
+		};
+		renderPane(client, { annotation: lineAnnotation, initialMode: "file" });
+		await screen.findByText("# Hello");
+		expect(screen.queryByRole("textbox", { name: /feedback/i })).not.toBeInTheDocument();
+	});
 });

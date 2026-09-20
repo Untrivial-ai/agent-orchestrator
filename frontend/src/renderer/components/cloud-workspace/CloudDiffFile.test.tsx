@@ -42,4 +42,12 @@ describe("CloudDiffFile", () => {
 		await waitFor(() => expect(getWorkspaceReviewRevision).toHaveBeenCalledTimes(2));
 		expect(getWorkspaceReviewRevision).toHaveBeenCalledWith("org-1", "session-1", expect.objectContaining({ path: file.path, side: "before", scope: "committed", commitSha: "abc" }));
 	});
+
+	it("does not render another file's patch when the requested file has no diff", () => {
+		const unchanged = { ...file, path: "README.md", status: "unmodified" as const, additions: 0, deletions: 0 };
+		const revision = { path: unchanged.path, side: "after", revision: "r1", workspaceVersion: "v1", size: 4, exists: true, binary: false, truncated: false, content: "text" };
+		render(<CloudDiffFile annotation={annotation} baseUrl="https://cloud.test" client={{ getWorkspaceReviewRevision: vi.fn().mockResolvedValue(revision) } as unknown as CloudCpClient} fallback={<div>No diff for this file</div>} file={unchanged} onActiveSelectionChange={vi.fn()} orgId="org-1" patch="multi-file diff" scope="combined" sessionId="session-1" split={false} workspaceVersion="v1" />);
+		expect(screen.getByText("No diff for this file")).toBeInTheDocument();
+		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument();
+	});
 });
