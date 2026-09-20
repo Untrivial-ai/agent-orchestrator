@@ -537,7 +537,7 @@ export function HarnessSettingsSection({
 						) : !authPlan && authPlans.isPending ? (
 							<LoaderCircle className="size-4 animate-spin text-settings-muted" aria-hidden="true" />
 						) : authPlan && authPlan.action !== "instructions" ? (
-							<Button data-terminal-focus-handoff="true" disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
+							<Button data-harness-primary-action="" data-terminal-focus-handoff="true" disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
 								{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
 								{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
 							</Button>

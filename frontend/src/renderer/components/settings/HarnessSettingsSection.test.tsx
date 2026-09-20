@@ -750,7 +750,7 @@ describe("HarnessSettingsSection", () => {
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		await userEvent.click(await within(row).findByRole("button", { name: "Install" }));
 
-		await waitFor(() => expect(row).toHaveTextContent(authentication === "authorized" ? "Authorized" : "Installed"));
+		await waitFor(() => expect(row).toHaveTextContent(authentication === "authorized" ? "Configured" : "Signed out"));
 		await waitFor(() => expect(selector).toHaveTextContent(authentication === "authorized" ? /^ready$/ : /^not_ready$/));
 		expect(client.getQueryData<AgentReadiness>(agentReadinessQueryKey)?.agents).toEqual([initial.agents[0], updated]);
 		expect(screen.getByTestId("originating-selector")).toBe(selector);
