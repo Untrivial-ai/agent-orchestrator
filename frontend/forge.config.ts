@@ -286,6 +286,7 @@ const config: ForgeConfig = {
 				// the real "agent-orchestrator.exe" (not "Agent Orchestrator.exe").
 				executableName: EXECUTABLE_NAME,
 				icon: "assets/icon.ico",
+				nsis: { include: "makers/nsis/ao-cli-path.nsh" },
 			},
 			["win32"],
 		),
