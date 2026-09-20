@@ -67,7 +67,28 @@ jobs:
         # cache is content-aware for Go inputs but not for the things these
         # tests actually touch — subprocesses, PATH contents, the network — so
         # a required check must still run every test. Compilation stays cached.
-        run: go test -race -count=1 -timeout=20m ./...
+        #
+        # The SQLite package is listed first because `go test` launches
+        # packages in import-path order, four at a time on this runner, and
+        # `internal/storage/sqlite` sorts 161st of 170. It is also the longest
+        # by a wide margin, so it used to start 229s into the step and then run
+        # 556s with three cores idle: a 785s step against 523s of work. Running
+        # it first lets the rest of the suite fill the slots behind it.
+        #
+        # The package list is enumerated rather than globbed, so it is checked:
+        # if `go list` fails or the filter over-matches, the count assertion
+        # fails the step instead of quietly testing a subset.
+        run: |
+          set -o pipefail
+          all=$(go list ./...)
+          rest=$(printf '%s\n' "$all" | grep -v '/internal/storage/sqlite$')
+          want=$(printf '%s\n' "$all" | wc -l)
+          got=$(( $(printf '%s\n' "$rest" | wc -l) + 1 ))
+          if [ "$want" -ne "$got" ]; then
+            echo "package list mismatch: go list found $want, about to test $got"
+            exit 1
+          fi
+          go test -race -count=1 -timeout=20m ./internal/storage/sqlite $rest
 
   # The suite above only ever runs on Linux, so the packages whose behaviour is
   # genuinely platform-specific have never been exercised on Windows: worktree
