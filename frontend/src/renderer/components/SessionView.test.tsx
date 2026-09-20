@@ -8,6 +8,7 @@ import { SessionTopbarProvider } from "./SessionTopbarPortal";
 import { TooltipProvider } from "./ui/tooltip";
 import type { SessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
 import { useUiStore, type InspectorView } from "../stores/ui-store";
+import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { setChatDraftBoundary } from "../lib/chat-draft-boundary";
 import { chatDraftScopeKey } from "../lib/chat-drafts";
@@ -707,6 +708,7 @@ describe("SessionView", () => {
 			isSidebarOpen: true,
 			visibleTerminalKindBySession: {},
 		});
+		useTerminalResetStore.setState({ baselineEpoch: {}, nonces: {}, reconnecting: {} });
 		browserDestroy.mockReset();
 		browserViewOptions.current = undefined;
 		browserViewState.url = "";
@@ -944,6 +946,25 @@ describe("SessionView", () => {
 
 		expect(document.querySelector("[data-cloud-lifecycle-stage]")).not.toBeInTheDocument();
 		expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+	});
+
+	it("keeps the multi-step loader visible while a restored cloud session reconnects", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "running",
+		};
+		useTerminalResetStore.setState({ reconnecting: { "sess-2": true } });
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(screen.getByTestId("cloud-session-loader-screen")).toBeInTheDocument();
+		expect(screen.getByRole("status", { name: "Session setup activity" })).toHaveTextContent(
+			"Orchestrating your environment",
+		);
 	});
 
 	it("activates a new terminal opened while a file tab is selected", async () => {

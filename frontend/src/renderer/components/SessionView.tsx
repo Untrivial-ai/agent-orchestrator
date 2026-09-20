@@ -65,6 +65,7 @@ import {
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
+import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
@@ -712,6 +713,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	const session = workspaceQuery.data;
 	const cloudStage = cloudLifecycleStage(session);
+	const cloudReconnecting = useTerminalResetStore((state) => Boolean(state.reconnecting[sessionId]));
 	const cloudResumeRef = useRef("");
 	const requestCloudResume = useCallback(async () => {
 		if (!session?.cloud) return;
@@ -2135,7 +2137,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<NotificationCenter style={noDragStyle} />
 				</div>
 			) : null}
-			{cloudStage && cloudStage !== "paused_by_coder" && cloudStage !== "connected" ? <CloudSessionLifecycleLoader /> : null}
+			{cloudReconnecting || (cloudStage && cloudStage !== "paused_by_coder" && cloudStage !== "connected")
+				? <CloudSessionLifecycleLoader />
+				: null}
 			<SessionInterfaceSwitchDialog
 				open={interfaceSwitchDialogOpen}
 				target={interfaceSwitchDialogScope?.targetMode ?? interfaceTarget}
