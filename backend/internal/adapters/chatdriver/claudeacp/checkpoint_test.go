@@ -110,6 +110,55 @@ func TestNativeCheckpointQueuedSubmissionAndDelayedStops(t *testing.T) {
 	}
 }
 
+func TestNativeCheckpointClaudeTurnCompanionSharesHumanPromptID(t *testing.T) {
+	withCompanion := func(t *testing.T, companion map[string]any) string {
+		t.Helper()
+		lines := strings.Split(strings.TrimSpace(checkpointFixture(t, []string{"A"}, []string{"answer A"})), "\n")
+		companion["type"] = "user"
+		companion["sessionId"] = "native"
+		companion["uuid"] = "companion"
+		companion["parentUuid"] = "user-0"
+		companion["promptId"] = "prompt-0"
+		companion["message"] = map[string]any{"content": "auxiliary context"}
+		encoded, err := json.Marshal(companion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var attachment map[string]any
+		if err := json.Unmarshal([]byte(lines[1]), &attachment); err != nil {
+			t.Fatal(err)
+		}
+		attachment["parentUuid"] = "companion"
+		encodedAttachment, err := json.Marshal(attachment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join([]string{lines[0], string(encoded), string(encodedAttachment), lines[2]}, "\n") + "\n"
+	}
+	evidence := checkpointEvidence(
+		domain.NativeCheckpointObservation{Submission: true, PromptID: "prompt-0", Text: "A"},
+		domain.NativeCheckpointObservation{PromptID: "prompt-0", Text: "answer A"},
+	)
+
+	t.Run("meta turn companion belongs to preceding human turn", func(t *testing.T) {
+		transcript := withCompanion(t, map[string]any{"isMeta": true, "turnCompanion": true})
+		got, err := verifyCheckpointTranscript(context.Background(), strings.NewReader(transcript),
+			ports.NativeCheckpointRequest{ProviderConversationID: "native", Evidence: evidence})
+		if err != nil || got.UserMessageID != "user-0" || got.UserText != "A" || got.AssistantText != "answer A" {
+			t.Fatalf("boundary=%+v error=%v", got, err)
+		}
+	})
+
+	t.Run("ordinary duplicate user remains ambiguous", func(t *testing.T) {
+		transcript := withCompanion(t, map[string]any{})
+		_, err := verifyCheckpointTranscript(context.Background(), strings.NewReader(transcript),
+			ports.NativeCheckpointRequest{ProviderConversationID: "native", Evidence: evidence})
+		if !errors.Is(err, ports.ErrChatHistoryUnsettled) || !strings.Contains(err.Error(), "ambiguous native prompt ID") {
+			t.Fatalf("error=%v", err)
+		}
+	})
+}
+
 func TestNativeCheckpointRejectsUnprovenAncestry(t *testing.T) {
 	source := checkpointFixture(t, []string{"A", "B"}, []string{"answer A", "answer B"})
 	evidence := checkpointEvidence(domain.NativeCheckpointObservation{PromptID: "prompt-1", Text: "answer B"})

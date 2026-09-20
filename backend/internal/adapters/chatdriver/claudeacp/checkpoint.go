@@ -60,6 +60,8 @@ type checkpointRecord struct {
 	Type                  string `json:"type"`
 	Subtype               string `json:"subtype"`
 	Sidechain             bool   `json:"isSidechain"`
+	IsMeta                bool   `json:"isMeta"`
+	TurnCompanion         bool   `json:"turnCompanion"`
 	PreventedContinuation bool   `json:"preventedContinuation"`
 	Attachment            struct {
 		Type      string          `json:"type"`
@@ -140,6 +142,12 @@ func verifyCheckpointTranscript(ctx context.Context, input io.Reader, request po
 	submissions := make(map[string]int)
 	for _, record := range chain {
 		if record.Type == "user" {
+			// Claude may append auxiliary context as a meta turn-companion user
+			// record. It deliberately shares the human turn's prompt ID and remains
+			// on the main ancestry, but it is not a second conversational boundary.
+			if record.IsMeta && record.TurnCompanion {
+				continue
+			}
 			if checkpointToolResults(record.Message.Content) {
 				continue
 			}
