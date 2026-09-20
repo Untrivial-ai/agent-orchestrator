@@ -239,7 +239,7 @@ function Icon({
 	 * A known name autocompletes; a string is accepted because a few call sites
 	 * carry an icon name out of data rather than a literal.
 	 */
-	name: FeatherIconName | (string & {});
+	name: FeatherIconName | (string & {}) | (number & {}) | (symbol & {});
 	size?: number;
 	color?: string;
 	style?: ComponentProps<(typeof glyphs)[FeatherIconName]>["style"];

@@ -1,4 +1,4 @@
-import Feather from "@expo/vector-icons/Feather";
+import { Feather } from "./icons";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { OrchestratorIcon } from "./orchestrator-icon";
 import {
