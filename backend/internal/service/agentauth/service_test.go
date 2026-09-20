@@ -151,8 +151,8 @@ func TestStartPreparesKimiAuthWorkspaceWithSeededTrust(t *testing.T) {
 	if opener.input.InitialInput != "/login" {
 		t.Fatalf("initial input = %q, want automatic /login injection", opener.input.InitialInput)
 	}
-	if got := opener.input.InitialInputReadyStates; !reflect.DeepEqual(got, []shellterm.InitialInputReadyState{{Text: "│ >"}}) {
-		t.Fatalf("initial input ready states = %#v, want Kimi composer marker", got)
+	if got := opener.input.InitialInputReadyStates; !reflect.DeepEqual(got, []shellterm.InitialInputReadyState{{Text: "Run /login or /provider to get started."}}) {
+		t.Fatalf("initial input ready states = %#v, want Kimi unauthenticated ready message", got)
 	}
 	matches, err := filepath.Glob(filepath.Join(home, ".kimi-code", "workspace-trust", "wd_*"))
 	if err != nil || len(matches) != 1 {

@@ -53,15 +53,16 @@ func terminalInputPlan(agentID string, action Action, title string, command []st
 // kimiLoginPlan opens Kimi's TUI and injects /login so the native platform
 // picker (Kimi Code browser login and Kimi Platform API keys) is offered;
 // the bare `kimi login` subcommand only runs the device-code flow. The input
-// is sent automatically once Kimi's composer renders its "│ >" ready marker —
-// initialInput carries no trailing Enter because the terminal delivery
+// is sent automatically once Kimi renders its unauthenticated ready message,
+// without relying on a fixed startup delay. initialInput carries no trailing
+// Enter because terminal delivery
 // (SendMessage) presses it. Kimi's first-run "Trust this folder?" dialog would
 // swallow that input in AO's private auth workspace, so the workspace trust
 // record is seeded first.
 func kimiLoginPlan() Plan {
-	p := plan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi"}, "Kimi opens its login picker after it finishes starting; type /login if it does not", "https://moonshotai.github.io/kimi-code/en/")
+	p := plan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi"}, "Kimi opens its login picker automatically", "https://moonshotai.github.io/kimi-code/en/")
 	p.initialInput = "/login"
-	p.initialInputReadyStates = []shellterm.InitialInputReadyState{{Text: "│ >"}}
+	p.initialInputReadyStates = []shellterm.InitialInputReadyState{{Text: "Run /login or /provider to get started."}}
 	p.prepareWorkspace = kimi.EnsureWorkspaceTrusted
 	return p
 }
