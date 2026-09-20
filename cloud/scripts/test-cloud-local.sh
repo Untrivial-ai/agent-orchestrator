@@ -216,6 +216,12 @@ if mode == "create":
         },
         token=token,
     )
+    request(
+        "PUT",
+        "/api/cloud/v1/me/github-pat",
+        body={"secret": "ao-cloud-smoke-development-only"},
+        token=token,
+    )
     project = request(
         "POST",
         f"/api/cloud/v1/orgs/{org_id}/projects",
@@ -385,6 +391,30 @@ wait_for_git_workspace() {
 	return 1
 }
 
+prepare_workspace_review_fixture() {
+	local container_id="$1"
+	docker exec "$container_id" bash -c '
+		set -euo pipefail
+		cd /workspace/repository
+		git config user.email smoke@ao.local
+		git config user.name "AO Cloud Smoke"
+		printf "unchanged\n" > review-unchanged.txt
+		printf "base committed\n" > review-committed.txt
+		printf "base staged\n" > review-staged.txt
+		printf "base unstaged\n" > review-unstaged.txt
+		git add review-unchanged.txt review-committed.txt review-staged.txt review-unstaged.txt
+		git commit -m "test: establish review baseline" >/dev/null
+		git update-ref refs/ao/diff-base HEAD
+		printf "committed change\n" > review-committed.txt
+		git add review-committed.txt
+		git commit -m "test: committed review change" >/dev/null
+		printf "staged change\n" > review-staged.txt
+		git add review-staged.txt
+		printf "unstaged change\n" > review-unstaged.txt
+		printf "untracked change\n" > review-untracked.txt
+	'
+}
+
 exercise_workspace_diff_api() {
 	python3 - "$AO_CLOUD_PORT" "$state_file" <<'PY'
 import json
@@ -428,6 +458,44 @@ if summary != {"path": ".ao-cloud-smoke-api", "status": "untracked", "additions"
 detail = request("GET", prefix + "/workspace/file/diff?path=.ao-cloud-smoke-api")
 if detail.get("status") != "untracked" or detail.get("content") != "durable-worker-transport\n" or "new file mode 100644" not in detail.get("diff", "") or detail.get("diffTruncated"):
     raise RuntimeError(f"workspace diff-file returned unexpected detail: {detail!r}")
+
+review = request("GET", prefix + "/workspace/review")
+expected = {
+    "committed": "review-committed.txt",
+    "staged": "review-staged.txt",
+    "unstaged": "review-unstaged.txt",
+    "untracked": "review-untracked.txt",
+}
+for section, path in expected.items():
+    if path not in {item.get("path") for item in review["sections"][section]}:
+        raise RuntimeError(f"workspace review omitted {path} from {section}: {review!r}")
+if "review-unchanged.txt" not in {item.get("path") for item in review["files"]}:
+    raise RuntimeError(f"workspace review omitted unchanged tracked file: {review!r}")
+
+tree = request("GET", prefix + "/workspace/tree")
+if "review-unchanged.txt" not in {item.get("path") for item in tree["entries"]}:
+    raise RuntimeError(f"workspace tree omitted unchanged tracked file: {tree!r}")
+search = request("GET", prefix + "/workspace/search?query=review-unstaged")
+if "review-unstaged.txt" not in {item.get("path") for item in search["results"]}:
+    raise RuntimeError(f"workspace search omitted matching path: {search!r}")
+
+diffs = request("POST", prefix + "/workspace/review/diffs", {
+    "scope": "staged", "paths": ["review-staged.txt"], "contextLines": 3,
+    "ignoreWhitespace": False, "workspaceVersion": review["workspaceVersion"],
+})
+if "staged change" not in "".join(group.get("patch", "") for group in diffs["groups"]):
+    raise RuntimeError(f"scoped workspace diff omitted staged content: {diffs!r}")
+revision = request("GET", prefix + "/workspace/review/revision?path=review-staged.txt&scope=staged&side=after")
+if revision.get("content") != "staged change\n":
+    raise RuntimeError(f"workspace revision returned unexpected content: {revision!r}")
+
+editable = request("GET", prefix + "/workspace/review/file?path=review-unstaged.txt&scope=unstaged")
+written = request("PUT", prefix + "/workspace/review/file", {
+    "path": "review-unstaged.txt", "content": "updated through review API\n",
+    "expectedFileFingerprint": editable["fileFingerprint"],
+})
+if written.get("content") != "updated through review API\n" or written.get("fileFingerprint") == editable["fileFingerprint"]:
+    raise RuntimeError(f"fingerprint-checked workspace write failed: {written!r}")
 PY
 }
 
@@ -546,6 +614,7 @@ session="$(session_id)"
 org="$(org_id)"
 first_worker="$(wait_for_worker "$session")"
 wait_for_git_workspace "$first_worker"
+prepare_workspace_review_fixture "$first_worker"
 exercise_workspace_diff_api
 docker exec "$first_worker" ao list >/dev/null
 # ao-worker boot must materialize the cloud using-ao skill where the standing
