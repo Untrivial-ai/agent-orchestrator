@@ -28,5 +28,12 @@ func spawnDetached(ctx context.Context, cfg Config) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("spawn detached chat host: %w", err)
 	}
-	return cmd.Process.Release()
+	// The chat host is intentionally detached from the daemon process group,
+	// but it is still this process's child while the daemon remains alive.
+	// Reap it asynchronously when it exits; Process.Release would discard the
+	// handle without waiting and leave a zombie owned by the long-lived daemon.
+	go func() {
+		_ = cmd.Wait()
+	}()
+	return nil
 }
