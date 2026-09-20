@@ -126,6 +126,13 @@ type WebglLikeContext = (WebGLRenderingContext | WebGL2RenderingContext) & {
 export type RendererController = {
 	/** Follow the pane's visibility: release the GPU context when parked, restore it when shown. */
 	setVisible: (visible: boolean) => void;
+	/**
+	 * Permanently release the renderer on component unmount / terminal destroy.
+	 * term.dispose() disposes the addon but does NOT free the Chromium WebGL
+	 * context, so this force-frees it too — otherwise open/close churn accumulates
+	 * contexts and evicts still-visible panes (#5662).
+	 */
+	dispose: () => void;
 };
 
 // The WebGL renderer appends its own (unclassed) canvas under xterm's
@@ -202,10 +209,12 @@ function createRendererController(term: Terminal, host: HTMLElement): RendererCo
 		return true;
 	};
 
-	const park = () => {
-		// Only a live WebGL renderer holds a context that counts against the cap; a
-		// canvas-fallback pane uses a 2D context and needs no release.
-		if (mode !== "webgl") return;
+	// Dispose the live WebGL addon and force-free its GPU context, returning
+	// whether the slot was provably reclaimed via WEBGL_lose_context. Disposing the
+	// addon FIRST removes its context-loss listener, so losing the context here
+	// cannot re-enter onContextLoss (which would otherwise swap in the canvas
+	// fallback mid-teardown). Caller sets the next mode. Assumes mode === "webgl".
+	const releaseWebglContext = (): boolean => {
 		const gl = capturedGl;
 		const addon = webgl;
 		webgl = null;
@@ -215,19 +224,25 @@ function createRendererController(term: Terminal, host: HTMLElement): RendererCo
 		} catch (error) {
 			// dispose() can throw in some GPU environments; the force-free below is
 			// what actually reclaims the slot, so continue regardless.
-			console.warn("xterm: WebGL dispose failed while parking", error);
+			console.warn("xterm: WebGL dispose failed", error);
 		}
-		let freed = false;
 		try {
 			const ext = gl?.getExtension("WEBGL_lose_context") ?? null;
 			if (ext) {
 				ext.loseContext();
-				freed = true;
+				return true;
 			}
 		} catch (error) {
-			console.warn("xterm: WEBGL_lose_context failed while parking", error);
+			console.warn("xterm: WEBGL_lose_context failed", error);
 		}
-		if (freed) {
+		return false;
+	};
+
+	const park = () => {
+		// Only a live WebGL renderer holds a context that counts against the cap; a
+		// canvas-fallback pane uses a 2D context and needs no release.
+		if (mode !== "webgl") return;
+		if (releaseWebglContext()) {
 			mode = "parked";
 			return;
 		}
@@ -247,6 +262,15 @@ function createRendererController(term: Terminal, host: HTMLElement): RendererCo
 		if (!loadWebgl()) loadCanvasFallback();
 	};
 
+	const dispose = () => {
+		// Component unmount / permanent terminal destroy. Force-free a live WebGL
+		// context here so it does not linger against Chromium's cap until GC (a
+		// parked pane already released it; a canvas pane holds none). The mount
+		// cleanup still runs term.dispose() afterwards to tear down the addon/term.
+		if (mode === "webgl") releaseWebglContext();
+		mode = "none";
+	};
+
 	if (!loadWebgl()) loadCanvasFallback();
 
 	return {
@@ -254,6 +278,7 @@ function createRendererController(term: Terminal, host: HTMLElement): RendererCo
 			if (visible) unpark();
 			else park();
 		},
+		dispose,
 	};
 }
 
@@ -1552,8 +1577,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			host.removeEventListener("focusout", handleFocusOut);
 			delete (host as DevXtermHost).__aoXtermForTest;
 			termRef.current = null;
-			// The renderer's addons are disposed by term.dispose() below; drop the
-			// controller handle so the visibility effect can't touch a dead terminal.
+			// Force-free a live WebGL context on destroy: term.dispose() below tears
+			// down the addon but does NOT reclaim the Chromium context, so without
+			// this, open/close churn accumulates contexts and evicts visible panes
+			// (#5662). Then drop the handle so the visibility effect can't touch a
+			// dead terminal.
+			rendererControllerRef.current?.dispose();
 			rendererControllerRef.current = null;
 			if (searchAddonRef.current === searchAddon) searchAddonRef.current = null;
 			fitRef.current = null;

@@ -481,6 +481,19 @@ describe("XtermTerminal", () => {
 			expect(state.webglAddons).toHaveLength(0);
 			expect(state.canvasAddonLoads).toBe(1);
 		});
+
+		it("force-frees the WebGL context on unmount (terminal destroy)", () => {
+			const view = render(<XtermTerminal isVisible theme="dark" />);
+			expect(state.webglAddons).toHaveLength(1);
+			expect(state.loseContext).not.toHaveBeenCalled();
+
+			// Destroying a visible WebGL terminal must RELEASE its context, not just
+			// dispose the addon: dispose() alone leaves the context counted against
+			// Chromium's cap until GC, so open/close churn would evict live panes.
+			act(() => view.unmount());
+			expect(state.webglAddons[0].disposed).toBe(true);
+			expect(state.loseContext).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	it("focuses the terminal when human input is requested", async () => {
