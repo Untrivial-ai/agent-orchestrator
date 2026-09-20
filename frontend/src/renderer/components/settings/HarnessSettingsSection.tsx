@@ -23,6 +23,7 @@ import { useShellMaybe } from "../../lib/shell-context";
 import { useResolvedTheme } from "../../stores/ui-store";
 import { AgentAvatar } from "../AgentAvatar";
 import { TerminalPane } from "../TerminalPane";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
 import { SettingsSection } from "./SettingsSection";
@@ -500,6 +501,8 @@ export function HarnessSettingsSection({
 
 						const authSummary = readinessChecking
 							? t("settings.harness.checkingLogin")
+							: isReady
+								? null
 							: authState?.error
 								? authState.error
 							: readinessPollError
@@ -530,7 +533,7 @@ export function HarnessSettingsSection({
 						const authControls = readinessChecking ? (
 							<Button type="button" size="sm" variant="ghost" disabled><LoaderCircle className="animate-spin" aria-hidden="true" />{t("settings.harness.checkingLogin")}</Button>
 						) : isReady ? (
-							<Button type="button" size="sm" variant="ghost" disabled>{t("settings.harness.authenticated")}</Button>
+							<Badge className="h-8 rounded-md bg-success/10 px-2.5" role="status" variant="success"><Check aria-hidden="true" />{t("settings.harness.configured")}</Badge>
 						) : !authPlan && authPlans.isPending ? (
 							<LoaderCircle className="size-4 animate-spin text-settings-muted" aria-hidden="true" />
 						) : authPlan && authPlan.action !== "instructions" ? (
@@ -554,8 +557,8 @@ export function HarnessSettingsSection({
 							<AgentAvatar className="size-7 shrink-0" decorative provider={agentId} />
 							<div className="min-w-0 flex-1">
 								<p className="truncate text-sm font-medium text-settings-label" id={`harness-agent-${agentId}`}>{agentLabel(agentId)}</p>
-								{!isInstalled || authSummary ? <p className={cn("truncate text-xs text-settings-muted", rowHasError && "text-error")} title={authState?.error ?? (readinessAuthFailed ? readinessAgent?.authentication.reason : null) ?? actionError ?? job?.error ?? authPlan?.reason ?? plan?.reason}>
-										{isInstalled ? authSummary : actionError ?? (job?.status === "interrupted" ? t("settings.harness.interrupted") : failed ? (job?.error ?? t("settings.harness.installFailed")) : plan?.available ? t("settings.harness.availableWith", { method: availableMethodsLabel }) : (plan?.reason ?? t("settings.harness.manualRequired")))}
+								{!isInstalled || authSummary || isReady ? <p className={cn("truncate text-xs text-settings-muted", rowHasError && "text-error")} title={authState?.error ?? (readinessAuthFailed ? readinessAgent?.authentication.reason : null) ?? actionError ?? job?.error ?? authPlan?.reason ?? plan?.reason}>
+										{isInstalled ? (authSummary ?? t("settings.harness.installed")) : actionError ?? (job?.status === "interrupted" ? t("settings.harness.interrupted") : failed ? (job?.error ?? t("settings.harness.installFailed")) : plan?.available ? t("settings.harness.availableWith", { method: availableMethodsLabel }) : (plan?.reason ?? t("settings.harness.manualRequired")))}
 								</p> : null}
 							</div>
 

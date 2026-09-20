@@ -222,7 +222,7 @@ describe("HarnessSettingsSection", () => {
 		expect(openExternal).toHaveBeenCalledWith("https://example.test/login");
 	});
 
-	it("shows checking instead of authenticated while an authorized observation is refreshing", async () => {
+	it("shows checking instead of configured while an authorized observation is refreshing", async () => {
 		const checking = catalogWithInstalled("claude-code");
 		checking.agents[0].authentication.state = "authorized";
 		checking.agents[0].authentication.freshness = "checking";
@@ -244,11 +244,11 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		expect(await within(row).findByRole("button", { name: "Checking…" })).toBeDisabled();
-		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
+		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
 		expect(within(row).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
 	});
 
-	it("does not show authenticated when the settings readiness refresh fails", async () => {
+	it("does not show configured when the settings readiness refresh fails", async () => {
 		const authorized = catalogWithInstalled("claude-code");
 		authorized.agents[0].authentication.state = "authorized";
 		authorized.agents[0].effectiveReadiness = "ready";
@@ -275,7 +275,7 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		expect(await within(row).findByRole("button", { name: "Checking…" })).toBeDisabled();
-		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
+		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
 
 		await act(async () => {
 			rejectPoll(new Error("Readiness refresh failed."));
@@ -283,10 +283,10 @@ describe("HarnessSettingsSection", () => {
 
 		expect(await within(row).findByText("Readiness refresh failed.", {}, { timeout: 3_000 })).toHaveClass("text-error");
 		expect(within(row).getByRole("button", { name: "Login" })).toBeEnabled();
-		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
+		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
 	});
 
-	it("shows login instead of authenticated after an authorization check fails", async () => {
+	it("shows login instead of configured after an authorization check fails", async () => {
 		const failedCheck = catalogWithInstalled("claude-code");
 		failedCheck.agents[0].authentication.state = "authorized";
 		failedCheck.agents[0].authentication.freshness = "stale";
@@ -310,7 +310,7 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		expect(await within(row).findByRole("button", { name: "Login" })).toBeEnabled();
-		expect(within(row).queryByRole("button", { name: "Authenticated" })).not.toBeInTheDocument();
+		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
 		expect(within(row).getByText("Authentication check failed.")).toHaveClass("text-error");
 	});
 
@@ -342,9 +342,8 @@ describe("HarnessSettingsSection", () => {
 		await act(async () => {
 			resolveEnsure({ data: refreshed });
 		});
-		await waitFor(() => {
-			expect(within(row).getByRole("button", { name: "Authenticated" })).toBeDisabled();
-		});
+		await within(row).findByText("Configured");
+		expect(within(row).getByText("Installed")).toBeInTheDocument();
 	});
 
 	it("forces one global readiness refresh", async () => {
@@ -477,10 +476,10 @@ describe("HarnessSettingsSection", () => {
 		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/probe", {
 			params: { path: { agent: "claude-code" } },
 		}));
-		await within(row).findByRole("button", { name: "Authenticated" });
+		await within(row).findByText("Configured");
 	});
 
-	it("uses Authenticated for a completed setup action", async () => {
+	it("shows Installed and a green Configured status for a completed setup action", async () => {
 		const authorized = catalogWithInstalled("codex");
 		authorized.agents[1].authentication.state = "authorized";
 		authorized.agents[1].effectiveReadiness = "ready";
@@ -502,7 +501,9 @@ describe("HarnessSettingsSection", () => {
 		renderSection();
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 
-		expect(await within(row).findByRole("button", { name: "Authenticated" })).toBeDisabled();
+		const configured = await within(row).findByText("Configured");
+		expect(configured).toHaveClass("bg-success/10", "text-success");
+		expect(within(row).getByText("Installed")).toHaveClass("text-settings-muted");
 		expect(within(row).queryByText("Set up")).not.toBeInTheDocument();
 	});
 
