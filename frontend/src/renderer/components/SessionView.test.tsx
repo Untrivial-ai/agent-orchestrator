@@ -918,8 +918,32 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-2" />);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Connecting");
-		expect(screen.getByRole("status")).not.toHaveTextContent("Coder");
+		const loaderScreen = screen.getByTestId("cloud-session-loader-screen");
+		const loader = within(loaderScreen).getByRole("status", { name: "Session setup activity" });
+		expect(loaderScreen).toHaveClass("absolute", "inset-0", "grid", "place-items-center", "bg-background");
+		expect(loaderScreen.children).toHaveLength(1);
+		expect(loader).toHaveTextContent("Orchestrating your environment");
+		expect(loader).not.toHaveTextContent("Connecting");
+		expect(loader).not.toHaveTextContent("Coder");
+		expect(loader).not.toHaveClass("right-4", "top-4");
+		expect(loader).toHaveClass("-translate-x-8");
+		expect(document.querySelector("[data-cloud-lifecycle-stage]")).not.toBeInTheDocument();
+	});
+
+	it("removes the cloud lifecycle badge once the session is connected", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "running",
+		};
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(document.querySelector("[data-cloud-lifecycle-stage]")).not.toBeInTheDocument();
+		expect(screen.queryByText("Connected")).not.toBeInTheDocument();
 	});
 
 	it("activates a new terminal opened while a file tab is selected", async () => {

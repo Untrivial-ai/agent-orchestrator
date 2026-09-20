@@ -16,6 +16,21 @@ export interface GitHubReposResponse {
 	repos: GitHubRepo[];
 }
 
+export class GitHubDaemonError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+		readonly code?: string,
+	) {
+		super(message);
+		this.name = "GitHubDaemonError";
+	}
+}
+
+export function isGitHubAuthInvalidError(error: unknown): boolean {
+	return error instanceof GitHubDaemonError && error.status === 401 && error.code === "GITHUB_AUTH_INVALID";
+}
+
 async function daemonFetch<T>(path: string, init?: RequestInit): Promise<T> {
 	const baseUrl = getApiBaseUrl();
 	if (!baseUrl) throw new Error("Daemon is not running.");
@@ -23,7 +38,8 @@ async function daemonFetch<T>(path: string, init?: RequestInit): Promise<T> {
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({}));
 		const message = typeof body?.message === "string" ? body.message : typeof body?.error === "string" ? body.error : `Request failed (${res.status})`;
-		throw new Error(message);
+		const code = typeof body?.code === "string" ? body.code : undefined;
+		throw new GitHubDaemonError(message, res.status, code);
 	}
 	return (await res.json()) as T;
 }

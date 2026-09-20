@@ -46,6 +46,7 @@ import { SessionTopbarHost } from "./SessionTopbarPortal";
 import { TerminalSwitchAgentButton } from "./TerminalSwitchAgentButton";
 import { TopbarButton } from "./TopbarButton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { MultiStepLoader } from "./ui/multi-step-loader";
 import { useBrowserView } from "../hooks/useBrowserView";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useResizable } from "../hooks/useResizable";
@@ -63,7 +64,7 @@ import {
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
-import { cloudLifecycleStage, type CloudLifecycleStage } from "../lib/cloud-lifecycle";
+import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
@@ -415,18 +416,32 @@ function SessionInspectorRail({
 // x-transform). Summary/Reviews/Files share a utility width, while Browser
 // automatically grows into a co-work canvas. Chat readability clamps either
 // profile before the conversation can become unusably narrow.
-function CloudLifecycleStatus({ stage }: { stage: CloudLifecycleStage }) {
+function CloudSessionLifecycleLoader() {
 	const { t } = useTranslation();
-	const label = {
-		paused_by_coder: t("cloud.lifecycle.pausedByCoder"),
-		resuming_workspace: t("cloud.lifecycle.resumingWorkspace"),
-		waiting_for_coder_agent: t("cloud.lifecycle.connecting"),
-		starting_ao_worker: t("cloud.lifecycle.startingAoWorker"),
-		restoring_agent: t("cloud.lifecycle.restoringAgent"),
-		connected: t("cloud.lifecycle.connected"),
-	}[stage];
-	const settled = stage === "connected";
-	const paused = stage === "paused_by_coder";
+	const steps = useMemo(() => [
+		t("terminal.sessionLoader.orchestrating"),
+		t("terminal.sessionLoader.coordinating"),
+		t("terminal.sessionLoader.arranging"),
+		t("terminal.sessionLoader.synchronizing"),
+		t("terminal.sessionLoader.preparing"),
+		t("terminal.sessionLoader.finishing"),
+	], [t]);
+	return (
+		<div
+			className="absolute inset-0 z-[200] grid place-items-center bg-background"
+			data-testid="cloud-session-loader-screen"
+		>
+			<MultiStepLoader
+				ariaLabel={t("terminal.sessionLoader.label")}
+				className="-translate-x-8"
+				steps={steps}
+			/>
+		</div>
+	);
+}
+
+function CloudPausedStatus() {
+	const { t } = useTranslation();
 	return (
 		<motion.div
 			animate={{ opacity: 1, y: 0 }}
@@ -434,20 +449,17 @@ function CloudLifecycleStatus({ stage }: { stage: CloudLifecycleStage }) {
 			className={cn(
 				"absolute right-3 top-3 z-20 flex h-7 items-center gap-2 rounded-sm border px-2.5",
 				"bg-background/92 font-mono text-[11px] tracking-tight shadow-sm backdrop-blur-sm",
-				settled ? "border-success/30 text-passive" : "border-border/80 text-foreground",
+				"border-border/80 text-foreground",
 			)}
-			data-cloud-lifecycle-stage={stage}
+			data-cloud-lifecycle-stage="paused_by_coder"
 			initial={{ opacity: 0, y: -4 }}
 			role="status"
 		>
 			<span
 				aria-hidden="true"
-				className={cn(
-					"size-1.5 rounded-full",
-					settled ? "bg-success" : paused ? "bg-warning" : "animate-pulse bg-primary",
-				)}
+				className="size-1.5 rounded-full bg-warning"
 			/>
-			{label}
+			{t("cloud.lifecycle.pausedByCoder")}
 		</motion.div>
 	);
 }
@@ -1899,7 +1911,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							data-testid="session-topbar-host"
 						/>
 						<div className="relative min-h-0 flex-1" ref={bindHandoffDialogContainer}>
-							{cloudStage ? <CloudLifecycleStatus stage={cloudStage} /> : null}
+							{cloudStage === "paused_by_coder" ? <CloudPausedStatus /> : null}
 							{session && handoffDialogContainer ? (
 								<SwitchAgentDialog
 									agentSwitch={handoffAgentSwitch}
@@ -2123,6 +2135,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<NotificationCenter style={noDragStyle} />
 				</div>
 			) : null}
+			{cloudStage && cloudStage !== "paused_by_coder" && cloudStage !== "connected" ? <CloudSessionLifecycleLoader /> : null}
 			<SessionInterfaceSwitchDialog
 				open={interfaceSwitchDialogOpen}
 				target={interfaceSwitchDialogScope?.targetMode ?? interfaceTarget}

@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -82,6 +83,10 @@ func (c *GitHubController) listRepos(w http.ResponseWriter, r *http.Request) {
 	}
 	repos, err := c.Svc.ListRepos(r.Context())
 	if err != nil {
+		if errors.Is(err, githubpat.ErrInvalidCredentials) {
+			envelope.WriteAPIError(w, r, http.StatusUnauthorized, "unauthorized", "GITHUB_AUTH_INVALID", "GitHub authorization expired. Reconnect GitHub to continue.", nil)
+			return
+		}
 		envelope.WriteError(w, r, err)
 		return
 	}

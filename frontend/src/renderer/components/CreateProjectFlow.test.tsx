@@ -18,6 +18,7 @@ const bridgeMocks = vi.hoisted(() => ({
 	refreshGitHubOwners: vi.fn(),
 	getRepositoryBranch: vi.fn(),
 	scanImportFolder: vi.fn(),
+	connectProviderAuth: vi.fn(),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -42,7 +43,7 @@ vi.mock("../lib/bridge", () => ({
 			openExternal: vi.fn().mockResolvedValue(undefined),
 		},
 		cloud: {
-			connectProviderAuth: vi.fn().mockRejectedValue(new Error("No browser auth flow for github in tests")),
+			connectProviderAuth: bridgeMocks.connectProviderAuth,
 		},
 	},
 }));
@@ -64,6 +65,8 @@ vi.mock("../lib/github-daemon", () => ({
 	getGitHubStatus: githubDaemonMocks.getGitHubStatus,
 	listGitHubRepos: githubDaemonMocks.listGitHubRepos,
 	saveGitHubPAT: githubDaemonMocks.saveGitHubPAT,
+	isGitHubAuthInvalidError: (error: unknown) =>
+		typeof error === "object" && error !== null && "code" in error && error.code === "GITHUB_AUTH_INVALID",
 }));
 
 // Cloud stand-ins: the flow only consumes the gate flag, the session status,
@@ -286,6 +289,7 @@ beforeEach(() => {
 	bridgeMocks.refreshGitHubOwners.mockReset().mockResolvedValue([{ login: "username", avatarUrl: "https://avatars.example/username" }, { login: "acme", avatarUrl: "https://avatars.example/acme" }]);
 	bridgeMocks.getRepositoryBranch.mockReset().mockResolvedValue(undefined);
 	bridgeMocks.scanImportFolder.mockReset().mockImplementation(async ({ path }: { path: string }) => okScan(path));
+	bridgeMocks.connectProviderAuth.mockReset().mockRejectedValue(new Error("No browser auth flow for github in tests"));
 	apiMocks.POST.mockReset();
 	apiMocks.apiErrorMessage.mockClear();
 	cloudMocks.cloudEnabled = false;
@@ -602,6 +606,7 @@ describe("CreateProjectFlow droppedPath", () => {
 		await act(async () => finishCreate());
 		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Creating the project" })).not.toBeInTheDocument());
 	});
+
 });
 
 describe("CreateProjectFlow project import validation", () => {
@@ -1525,6 +1530,9 @@ describe("CreateProjectFlow project import validation", () => {
 
 		const cloud = screen.getByRole("button", { name: "New cloud project" });
 		const local = screen.getByRole("button", { name: "Import an existing project" });
+		expect(cloud.closest(".rounded-md")).toHaveClass("border-[var(--color-border-import-modal)]", "bg-[var(--color-bg-import-modal)]");
+		expect(local.closest(".rounded-md")).toHaveClass("border-[var(--color-border-import-modal)]", "bg-[var(--color-bg-import-modal)]");
+		expect(local).toHaveClass("border-[var(--color-border-import-modal)]");
 		expect(screen.queryByText("Local")).not.toBeInTheDocument();
 		expect(cloud.closest(".rounded-md")).not.toBe(local.closest(".rounded-md"));
 		expect(cloud.compareDocumentPosition(local) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -1579,9 +1587,9 @@ describe("CreateProjectFlow project import validation", () => {
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
 		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.type(screen.getByLabelText("Project name"), "private-repo");
 		const privateRepo = await screen.findByRole("option", { name: /acme\/private-repo/ });
 		await user.selectOptions(screen.getAllByRole("combobox")[0], privateRepo);
+		expect(screen.getByLabelText("Project name")).toHaveValue("private-repo");
 		await user.click(await screen.findByRole("button", { name: "Create cloud project" }));
 
 		await waitFor(() =>
@@ -1611,6 +1619,43 @@ describe("CreateProjectFlow project import validation", () => {
 
 		expect(await screen.findByRole("button", { name: /^Connect GitHub/ })).toBeInTheDocument();
 		expect(githubDaemonMocks.listGitHubRepos).not.toHaveBeenCalled();
+	});
+
+	it("reconnects GitHub after the stored credential is revoked", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		githubDaemonMocks.getGitHubStatus.mockResolvedValue({ connected: true });
+		cloudMocks.listUserProviderConnections.mockResolvedValue({
+			providerConnections: [{
+				id: "github-1",
+				provider: "github",
+				label: "default",
+				config: {},
+				validationState: "valid",
+				createdAt: "",
+				updatedAt: "",
+			}],
+		});
+		const invalidCredential = Object.assign(new Error("GitHub authorization expired."), {
+			status: 401,
+			code: "GITHUB_AUTH_INVALID",
+		});
+		githubDaemonMocks.listGitHubRepos.mockRejectedValue(invalidCredential);
+		bridgeMocks.connectProviderAuth.mockResolvedValue("replacement-token");
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		const reconnect = await screen.findByRole("button", { name: "Reconnect GitHub" });
+		await user.click(reconnect);
+
+		await waitFor(() => expect(bridgeMocks.connectProviderAuth).toHaveBeenCalledWith({
+			baseUrl: "https://cp.example.com",
+			orgId: "org-1",
+			provider: "github",
+		}));
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith("replacement-token"));
+		await waitFor(() => expect(cloudMocks.putGitHubPAT).toHaveBeenCalledWith({ secret: "replacement-token" }));
 	});
 
 	it("advances to the agent step, then creates a cloud project with the selected agents", async () => {

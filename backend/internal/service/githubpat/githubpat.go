@@ -3,6 +3,7 @@ package githubpat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,9 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrInvalidCredentials reports that GitHub rejected the stored credential.
+var ErrInvalidCredentials = errors.New("GitHub credentials are invalid")
 
 // Repo represents a GitHub repository returned by the GitHub API.
 type Repo struct {
@@ -23,13 +27,33 @@ type Repo struct {
 
 // Service manages the locally stored GitHub PAT and proxies GitHub API calls.
 type Service struct {
-	dataDir string
-	mu      sync.Mutex
+	dataDir    string
+	httpClient *http.Client
+	apiURL     string
+	mu         sync.Mutex
 }
 
 // New returns a Service rooted at dataDir.
 func New(dataDir string) *Service {
-	return &Service{dataDir: dataDir}
+	return newWithClient(dataDir, http.DefaultClient, "https://api.github.com")
+}
+
+func newWithClient(dataDir string, client *http.Client, apiURL string) *Service {
+	return &Service{dataDir: dataDir, httpClient: client, apiURL: apiURL}
+}
+
+func (s *Service) deleteTokenIfMatches(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.loadToken()
+	if err != nil || current != token {
+		return nil
+	}
+	err = os.Remove(s.patPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *Service) patPath() string {
@@ -103,19 +127,25 @@ func (s *Service) ListRepos(ctx context.Context) ([]Repo, error) {
 		return nil, fmt.Errorf("no GitHub token stored: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/repos?per_page=100&sort=updated&direction=desc", http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/user/repos?per_page=100&sort=updated&direction=desc", http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("github api: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		if err := s.deleteTokenIfMatches(token); err != nil {
+			return nil, fmt.Errorf("%w: removing rejected credential: %v", ErrInvalidCredentials, err)
+		}
+		return nil, ErrInvalidCredentials
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("github api %d: %s", resp.StatusCode, string(body))

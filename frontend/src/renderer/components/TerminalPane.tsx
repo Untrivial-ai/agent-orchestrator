@@ -1208,7 +1208,7 @@ function AttachedTerminal({
 				)}
 				{showReplayCover && <ReplayCover message={attachSession?.cloud ? t("terminal.connecting") : undefined} />}
 				{isCloudConnectError && <CloudConnectError onRetry={handleRetry} />}
-				{banner && (
+				{banner && !showEndedState && (
 					<div className="absolute inset-x-3 top-2 rounded-md border border-border bg-surface/95 px-3 py-1.5 font-mono text-caption text-muted-foreground">
 						{banner}
 					</div>

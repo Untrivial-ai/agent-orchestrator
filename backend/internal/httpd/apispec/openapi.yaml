@@ -1289,6 +1289,12 @@ paths:
                   type: array
                 type: object
           description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unauthorized
         "500":
           content:
             application/json:

@@ -36,7 +36,7 @@ import { agentLabel } from "../lib/agent-options";
 import type { AgentInfo } from "../lib/agent-select-options";
 import { aoBridge } from "../lib/bridge";
 import { CloudCpError, type CloudCpProviderConnection } from "../lib/cloud-cp";
-import { getGitHubStatus, listGitHubRepos, saveGitHubPAT } from "../lib/github-daemon";
+import { getGitHubStatus, isGitHubAuthInvalidError, listGitHubRepos, saveGitHubPAT } from "../lib/github-daemon";
 import { useCloudSession } from "../lib/cloud-session";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { useUiStore } from "../stores/ui-store";
@@ -1404,6 +1404,7 @@ function CloudProjectCard({
 		queryKey: ["github-repos"],
 		enabled: hasGithubConnection,
 		staleTime: 60_000,
+		retry: (failureCount, error) => !isGitHubAuthInvalidError(error) && failureCount < 3,
 		queryFn: async () => {
 			const { repos } = await listGitHubRepos();
 			return repos.map((r) => ({
@@ -1443,6 +1444,38 @@ function CloudProjectCard({
 			setGithubTokenError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
 		} finally {
 			setGithubTokenBusy(false);
+		}
+	};
+
+	const connectGitHub = async () => {
+		if (githubOAuthBusy) return;
+		if (!org) {
+			onAuthRequired();
+			return;
+		}
+		setGithubOAuthBusy(true);
+		setGithubOAuthError(null);
+		try {
+			const token = await aoBridge.cloud.connectProviderAuth({
+				baseUrl,
+				orgId: org.id,
+				provider: "github",
+			});
+			if (typeof token === "string" && token) {
+				await Promise.all([
+					saveGitHubPAT(token),
+					client.putGitHubPAT({ secret: token }),
+				]);
+			}
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: ["github-status"] }),
+				queryClient.invalidateQueries({ queryKey: ["cloud-user-providers"] }),
+				queryClient.invalidateQueries({ queryKey: ["github-repos"] }),
+			]);
+		} catch (err) {
+			setGithubOAuthError(err instanceof Error ? err.message : t("createProject.githubAuthFailed", { defaultValue: "GitHub authentication failed" }));
+		} finally {
+			setGithubOAuthBusy(false);
 		}
 	};
 
@@ -1562,38 +1595,7 @@ function CloudProjectCard({
 							type="button"
 							className="flex w-full items-center gap-3 rounded-lg border border-border/50 bg-[var(--color-bg-import-card)] px-4 py-3 text-left transition-colors hover:bg-accent/50 active:bg-accent disabled:opacity-60"
 							disabled={isCreating || githubOAuthBusy}
-							onClick={() => {
-								if (!org) {
-									onAuthRequired();
-									return;
-								}
-								setGithubOAuthBusy(true);
-								void aoBridge.cloud.connectProviderAuth({
-									baseUrl,
-									orgId: org.id,
-									provider: "github",
-								}).then((token) => {
-									if (typeof token === "string" && token) {
-										return Promise.all([
-											saveGitHubPAT(token),
-											client.putGitHubPAT({ secret: token }),
-										]);
-									}
-									return undefined;
-								}).then(() => {
-									return Promise.all([
-										queryClient.invalidateQueries({ queryKey: ["github-status"] }),
-										queryClient.invalidateQueries({ queryKey: ["cloud-user-providers"] }),
-										queryClient.invalidateQueries({ queryKey: ["github-repos"] }),
-									]);
-								}).then(() => {
-									setGithubOAuthBusy(false);
-									setGithubOAuthError(null);
-								}).catch((err) => {
-									setGithubOAuthBusy(false);
-									setGithubOAuthError(err instanceof Error ? err.message : "GitHub auth failed");
-								});
-							}}
+							onClick={() => void connectGitHub()}
 						>
 							<span className="grid size-9 shrink-0 place-items-center text-muted-foreground">
 								<GitHubIcon className="size-5" />
@@ -1625,7 +1627,7 @@ function CloudProjectCard({
 										setUseManualPat(true);
 									}}
 								>
-									Manually setup instead
+									{t("createProject.manualSetupInstead", { defaultValue: "Manually setup instead" })}
 								</button>
 							</div>
 						) : null}
@@ -1643,7 +1645,13 @@ function CloudProjectCard({
 											disabled={isCreating || githubRepos.isLoading}
 											value={repositoryUrl}
 											onChange={(event) => {
-												setRepositoryUrl(event.target.value);
+												const nextRepositoryUrl = event.target.value;
+												const selectedRepository = githubRepos.data?.find((repo) => repo.cloneUrl === nextRepositoryUrl);
+												setRepositoryUrl(nextRepositoryUrl);
+												if (selectedRepository) {
+													setProjectName(selectedRepository.name);
+													if (nameSubmitted) setNameSubmitted(false);
+												}
 												if (projectSubmitted) setProjectSubmitted(false);
 											}}
 										>
@@ -1661,12 +1669,32 @@ function CloudProjectCard({
 										</span>
 									</div>
 									{githubRepos.isError ? (
-										<p className="text-[12px] leading-5 text-destructive" role="alert">
-											Failed to load repos.{" "}
-											<button type="button" className="underline" onClick={() => void githubRepos.refetch()}>
-												Retry
-											</button>
-										</p>
+										<div className="flex items-center gap-2 text-[12px] leading-5 text-destructive" role="alert">
+											<span>
+												{isGitHubAuthInvalidError(githubRepos.error)
+													? t("createProject.githubAuthorizationExpired", { defaultValue: "GitHub authorization expired." })
+													: t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}
+											</span>
+											{isGitHubAuthInvalidError(githubRepos.error) ? (
+												<button
+													type="button"
+													className="shrink-0 rounded-md border border-destructive/30 px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-60"
+													disabled={githubOAuthBusy}
+													onClick={() => void connectGitHub()}
+												>
+													{githubOAuthBusy
+														? t("createProject.openingGitHub", { defaultValue: "Opening GitHub..." })
+														: t("createProject.reconnectGitHub", { defaultValue: "Reconnect GitHub" })}
+												</button>
+											) : (
+												<button type="button" className="underline" onClick={() => void githubRepos.refetch()}>
+													{t("createProject.retry")}
+												</button>
+											)}
+										</div>
+									) : null}
+									{githubOAuthError ? (
+										<p className="text-[12px] leading-5 text-destructive" role="alert">{githubOAuthError}</p>
 									) : null}
 									{urlError ? (
 										<p id="cloudRepositoryUrlError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
@@ -1741,7 +1769,7 @@ function CloudProjectCard({
 												className="underline decoration-border underline-offset-2 hover:text-foreground"
 												onClick={() => void aoBridge.app.openExternal(GITHUB_TOKEN_SETTINGS_URL)}
 											>
-												Open settings
+												{t("createProject.openGitHubSettings", { defaultValue: "Open settings" })}
 											</button>
 										</p>
 									</div>
@@ -1909,7 +1937,7 @@ function ImportSourcePicker({
 			)}
 			<div className="mx-4 mb-4 flex flex-col gap-3">
 				{cloudEnabled && onCloudSelect ? (
-					<div className="overflow-hidden rounded-md border border-border/50 bg-[var(--color-bg-import-modal)]">
+					<div className="overflow-hidden rounded-md border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)]">
 						<button
 							type="button"
 							className="group flex min-h-[76px] w-full items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50"
@@ -1927,13 +1955,13 @@ function ImportSourcePicker({
 						</button>
 					</div>
 				) : null}
-				<div className="overflow-hidden rounded-md border border-border/50 bg-[var(--color-bg-import-modal)]">
+				<div className="overflow-hidden rounded-md border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)]">
 					<div className="flex flex-col">
 						{localSources.map(({ source, icon, label, description }) => (
 							<button
 								key={source}
 								type="button"
-								className="group flex min-h-[76px] items-center gap-3 border-b border-border/50 px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50 last:border-b-0"
+								className="group flex min-h-[76px] items-center gap-3 border-b border-[var(--color-border-import-modal)] px-3.5 py-3 text-left hover:bg-accent/50 active:bg-accent disabled:pointer-events-none disabled:opacity-50 last:border-b-0"
 								aria-label={label}
 								disabled={disabled}
 								onClick={() => onSelect(source)}

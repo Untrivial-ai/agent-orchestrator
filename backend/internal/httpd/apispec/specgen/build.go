@@ -2571,7 +2571,7 @@ func prOperations() []operation {
 		{
 			method: http.MethodGet, path: "/api/v1/github/repos", id: "listGitHubRepos", tag: "github",
 			summary: "List repositories accessible with the stored GitHub token",
-			resps:   []respUnit{{http.StatusOK, map[string]any{"repos": []githubpat.Repo{}}}, {http.StatusInternalServerError, envelope.APIError{}}},
+			resps:   []respUnit{{http.StatusOK, map[string]any{"repos": []githubpat.Repo{}}}, {http.StatusUnauthorized, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
 		},
 	}
 }
