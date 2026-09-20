@@ -19,3 +19,14 @@ describe("worker board list identity", () => {
 		expect(board).toContain("identityKey={`${workerProjectId}|${query.trim()}`}");
 	});
 });
+
+describe("worker dock keyboard lift", () => {
+	// The library's animated `height` is the keyboard's frame origin, which is
+	// negative while the keyboard is up — its own avoiding view negates it before
+	// use. Feeding it to a `max(…, 0)` gave a lift of exactly zero, which parked
+	// the search field under the keyboard instead of above it.
+	it("drives the lift from progress, not from the animated height", () => {
+		expect(board).toContain("-keyboardAnimation.progress.value * workerDockLift(keyboardHeight, insets.bottom)");
+		expect(board).not.toContain("keyboardAnimation.height.value");
+	});
+});

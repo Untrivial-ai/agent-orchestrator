@@ -121,8 +121,12 @@ export default function FleetScreen() {
 	}, [refresh]);
 
 	const keyboardLayout = workerDockKeyboardLayout(keyboardHeight, insets.bottom, keyboardVisible);
+	// `progress`, not the animated `height`: that value is the keyboard's frame
+	// origin, which is negative while the keyboard is up (the library's own
+	// avoiding view negates it before use). Feeding it to a `max(…, 0)` produced a
+	// lift of exactly nothing, which parked the search field under the keyboard.
 	const dockRise = useAnimatedStyle(() => ({
-		transform: [{ translateY: -workerDockLift(keyboardAnimation.height.value, insets.bottom) }],
+		transform: [{ translateY: -keyboardAnimation.progress.value * workerDockLift(keyboardHeight, insets.bottom) }],
 	}));
 
 	if (!configured) {
