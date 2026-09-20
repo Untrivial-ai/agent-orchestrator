@@ -222,4 +222,3 @@ frontend typecheck/build, generated cloud API drift checks, repository lint,
 and the Docker cloud smoke flow. NodeOps/Coder live provisioning is reported as
 a verification gap unless provider credentials are available; their common
 protocol and image contracts remain covered locally.
-
