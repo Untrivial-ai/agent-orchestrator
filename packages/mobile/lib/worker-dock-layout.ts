@@ -23,11 +23,6 @@ export function workerListBottomInset(dockBottom: number): number {
 	return dockBottom + DOCK_HEIGHT + LIST_GAP;
 }
 
-export function keyboardOverlap(windowHeight: number, keyboardScreenY: number, keyboardHeight: number): number {
-	if (keyboardScreenY >= windowHeight) return 0;
-	return Math.min(keyboardHeight, Math.max(0, windowHeight - keyboardScreenY));
-}
-
 export function workerDockVisibility(searchOpen: boolean) {
 	return searchOpen
 		? { showControls: false, showSearch: true, showSpawn: false }

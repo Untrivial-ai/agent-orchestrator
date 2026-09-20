@@ -25,8 +25,11 @@ describe("sidebar page separation", () => {
 
 	it("scales the drawer contents into place with the drawer's native animation", () => {
 		for (const shell of [source, androidSource]) {
-			expect(shell).toContain("const [reduceMotion, setReduceMotion] = useState(false);");
-			expect(shell).toContain("AccessibilityInfo.isReduceMotionEnabled()");
+			// Both shells carried an identical copy of the AccessibilityInfo effect;
+			// it now lives in useReducedMotion, which Dot consumes too, so the
+			// setting reaches every animation rather than only the drawer.
+			expect(shell).toContain("const reduceMotion = useReducedMotion();");
+			expect(shell).not.toContain("AccessibilityInfo");
 			expect(shell).toContain("const sidebarContentTransform = {");
 			expect(shell).toContain("outputRange: [0.86, 1]");
 			expect(shell).toContain("outputRange: [0.96, 1]");

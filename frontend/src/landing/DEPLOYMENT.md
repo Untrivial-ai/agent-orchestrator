@@ -65,6 +65,38 @@ old-domain Worker routes without a cross-origin redirect. If those routes are
 later replaced by redirects, first make the combined Worker accept both
 explicitly allowed origins during that transition.
 
+## Asset caching
+
+GitHub Pages sends `cache-control: max-age=600` for HTML and `max-age=14400`
+for every other file, and it has no way to override that: Actions-based Pages
+deployments ignore a `_headers` file, so this cannot be fixed in the repo. The
+effect is that a visitor returning after four hours re-downloads the entire
+JS bundle, the fonts, and all artwork even though none of it changed.
+
+Cloudflare proxies the apex, so the headers are fixed there. Two rules, both
+under the `orchestrator.inc` zone:
+
+1. **Cache Rule** — "Next static assets", expression
+   `(http.host eq "orchestrator.inc" and starts_with(http.request.uri.path, "/_next/static/"))`,
+   Edge TTL *Override origin* 1 year, Browser TTL *Override origin* 1 year.
+   Turbopack content-hashes every filename under `/_next/static/`, so a changed
+   file is always a new URL and can never be served stale.
+2. **Response Header Transform Rule** — same expression, set
+   `cache-control: public, max-age=31536000, immutable`. The Cache Rule alone
+   cannot emit `immutable`, which is what stops a reload from revalidating.
+
+Artwork under `/optimized/`, `/app-icons/` and `/docs/logos/` is *not*
+content-hashed (`optimize-images.mjs` writes stable names), so give it its own
+Transform Rule with `public, max-age=86400, stale-while-revalidate=604800`
+rather than a year.
+
+Verify after a deploy:
+
+```bash
+curl -sI https://orchestrator.inc/_next/static/chunks/<hashed>.js | grep -i cache-control
+# expect: cache-control: public, max-age=31536000, immutable
+```
+
 ## Cutover and verification
 
 Add the domain to Cloudflare and change its Porkbun nameservers first. Prepare

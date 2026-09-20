@@ -708,6 +708,18 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 	// that difference. This is the ONLY place the keyboard height is applied — the
 	// dock adds nothing on top of it (see dockInset), because doing both is what
 	// made the bar kick.
+	// Deliberately still on the platform listeners, unlike the spawn sheet, the
+	// Workers board and the chat screen, which all moved to keyboard-controller's
+	// useKeyboardState.
+	//
+	// That hook subscribes to keyboardWillShow and keyboardDidHide only. This
+	// screen needs keyboardDidShow as well — see the corrector below, which exists
+	// because willShow reports a height that still includes the accessory bar we
+	// hide. Migrating here would reinstate exactly the gap that corrector removes,
+	// and would lose the iOS-only didHide backup whose absence on Android is itself
+	// a fix (registering it there subscribed the same handler twice and collapsed
+	// the dock). The gain would be earlier Android events on the one screen that
+	// reserves keyboard space by hand, which is not worth reopening two fixed bugs.
 	useEffect(() => {
 		const isIOS = Platform.OS === "ios";
 		const showEvt = isIOS ? "keyboardWillShow" : "keyboardDidShow";

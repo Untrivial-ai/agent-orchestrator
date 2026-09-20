@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
@@ -89,6 +90,10 @@ func (s *reconnectStore) WorkerLaunchSpec(context.Context, string, string) (doma
 func TestWorkerReconnectReturnsLaunchContext(t *testing.T) {
 	store := &reconnectStore{launch: domain.WorkerLaunch{
 		SessionID:     testOrchestratorID,
+		ProjectID:     "project-1",
+		ProjectName:   "Widgets",
+		ProjectConfig: json.RawMessage(`{"orchestratorRules":"Keep workers focused."}`),
+		Kind:          "orchestrator",
 		Harness:       "claude-code",
 		Branch:        "ao/abc",
 		RepositoryURL: "https://github.com/octo/widgets.git",
@@ -110,6 +115,9 @@ func TestWorkerReconnectReturnsLaunchContext(t *testing.T) {
 	if resp.Launch.Harness != "claude-code" || resp.Launch.Branch != "ao/abc" ||
 		resp.Launch.RepositoryURL != "https://github.com/octo/widgets.git" {
 		t.Fatalf("launch context not projected: %+v", resp.Launch)
+	}
+	if !strings.Contains(resp.Launch.SystemPrompt, "Keep workers focused.") {
+		t.Fatalf("reconnect launch context omitted project rules: %q", resp.Launch.SystemPrompt)
 	}
 	if resp.WorkerToken != "" {
 		t.Fatal("reconnect must not mint a new token; the worker keeps its rotating one")

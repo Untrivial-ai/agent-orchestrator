@@ -1195,6 +1195,12 @@ func TestInterfaceTransitionReportsNativeHistoryReplayFailure(t *testing.T) {
 		wantStarts int
 	}{
 		{name: "unavailable", err: ports.ErrChatHistoryUnavailable, code: "TARGET_HISTORY_UNAVAILABLE", wantStarts: 1},
+		{name: "load rejected", err: ports.ErrChatHistoryLoadFailed, code: "TARGET_HISTORY_LOAD_FAILED", wantStarts: 1},
+		// The reporter's shape: AO's settle deadline expired while the provider
+		// kept answering session/load with -32603. Not retried with a second target.
+		{name: "load rejected after unsettled wait", err: fmt.Errorf("wait for settled native conversation history: %w: %w",
+			ports.ErrChatHistoryUnsettled, fmt.Errorf("%w: %w", context.DeadlineExceeded, ports.ErrChatHistoryLoadFailed)),
+			code: "TARGET_HISTORY_LOAD_FAILED", wantStarts: 1},
 		{name: "unsettled", err: ports.ErrChatHistoryUnsettled, code: "TARGET_HISTORY_UNSETTLED", wantStarts: 2},
 		{name: "legacy text mismatch", err: &ports.ChatHistoryUnsettledError{Dimensions: []ports.ChatHistoryMismatchDimension{
 			ports.ChatHistoryMismatchUntrustedUserText,

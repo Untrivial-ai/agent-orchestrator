@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -215,5 +217,98 @@ func TestSearchWorkspaceFilesReturnsPaginatedPathMatches(t *testing.T) {
 	}
 	if len(second.Results) != 1 || second.Results[0].Path == first.Results[0].Path || second.NextCursor != "" {
 		t.Fatalf("second page = %#v", second)
+	}
+}
+
+func workspaceChildRepo(t *testing.T, root, name, content string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "ao@example.com")
+	runGit(t, dir, "config", "user.name", "AO Tests")
+	writeWorkspaceFile(t, dir, "service.go", content)
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "initial "+name)
+	return dir
+}
+
+// A workspace project leaves Sections and Commits zero-valued, so its review
+// pane can only request the combined scope. A file an agent just created is
+// untracked, and git diff never reports one — the group came back empty and the
+// Files inspector sat on "Loading diff..." against successful responses.
+func TestGetWorkspaceDiffsIncludesUntrackedChildRepoFile(t *testing.T) {
+	root := newWorkspaceRepo(t)
+	rootBase := strings.TrimSpace(runGit(t, root, "rev-parse", "HEAD"))
+	alpha := workspaceChildRepo(t, root, "alpha", "package alpha\n")
+	alphaBase := strings.TrimSpace(runGit(t, alpha, "rev-parse", "HEAD"))
+	beta := workspaceChildRepo(t, root, "beta", "package beta\n")
+	betaBase := strings.TrimSpace(runGit(t, beta, "rev-parse", "HEAD"))
+	writeWorkspaceFile(t, alpha, "workspace-test.txt", "alpha workspace test\n")
+	writeWorkspaceFile(t, beta, "service.go", "package beta\n\nfunc Added() {}\n")
+
+	st := newFakeStore()
+	st.projects["ws"] = domain.ProjectRecord{ID: "ws", Kind: domain.ProjectKindWorkspace}
+	st.sessions["ws-1"] = domain.SessionRecord{ID: "ws-1", ProjectID: "ws", Metadata: domain.SessionMetadata{WorkspacePath: root}}
+	st.worktrees["ws-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "ws-1", RepoName: domain.RootWorkspaceRepoName, WorktreePath: root, BaseSHA: rootBase},
+		{SessionID: "ws-1", RepoName: "alpha", WorktreePath: alpha, BaseSHA: alphaBase},
+		{SessionID: "ws-1", RepoName: "beta", WorktreePath: beta, BaseSHA: betaBase},
+	}
+	svc := &Service{store: st}
+	files, err := svc.ListWorkspaceFiles(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetWorkspaceDiffs(context.Background(), "ws-1", WorkspaceDiffInput{
+		Scope: WorkspaceDiffCombined, Paths: []string{"alpha/workspace-test.txt", "beta/service.go"},
+		ContextLines: 3, WorkspaceVersion: files.WorkspaceVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patches := map[string]string{}
+	for _, group := range got.Groups {
+		if len(group.Errors) > 0 || len(group.Deferred) > 0 {
+			t.Fatalf("group %q = errors:%#v deferred:%#v", group.Repository, group.Errors, group.Deferred)
+		}
+		patches[group.Repository] = group.Patch
+	}
+	// The renderer keys its diffs by "<repository>/<path>", so an empty patch
+	// leaves the file with nothing to render at all.
+	if !strings.Contains(patches["alpha"], "+++ b/workspace-test.txt") || !strings.Contains(patches["alpha"], "+alpha workspace test") {
+		t.Fatalf("untracked child repo patch = %q", patches["alpha"])
+	}
+	if !strings.Contains(patches["beta"], "+func Added() {}") {
+		t.Fatalf("tracked child repo patch = %q", patches["beta"])
+	}
+}
+
+func TestGetWorkspaceDiffsCombinesUntrackedAndTrackedPathsInOneRepo(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "README.md", "goodbye\n")
+	writeWorkspaceFile(t, repo, "notes.txt", "new notes\n")
+	svc := workspaceReviewService(t, repo)
+	files, err := svc.ListWorkspaceFiles(context.Background(), "ao-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetWorkspaceDiffs(context.Background(), "ao-1", WorkspaceDiffInput{
+		Scope: WorkspaceDiffCombined, Paths: []string{"README.md", "notes.txt"}, ContextLines: 3,
+		WorkspaceVersion: files.WorkspaceVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Groups) != 1 {
+		t.Fatalf("groups = %#v", got.Groups)
+	}
+	patch := got.Groups[0].Patch
+	if !strings.Contains(patch, "+goodbye") || !strings.Contains(patch, "+new notes") {
+		t.Fatalf("patch did not contain both the tracked and untracked change:\n%s", patch)
 	}
 }

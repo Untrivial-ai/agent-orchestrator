@@ -452,7 +452,7 @@ describe("ShellTopbar orchestrator actions", () => {
 			[
 				sessionWith({
 					workspaceId: STANDALONE_WORKSPACE_ID,
-					workspaceName: "Ad hoc agents",
+					workspaceName: "Scratchpad",
 					branch: undefined,
 				}),
 			],

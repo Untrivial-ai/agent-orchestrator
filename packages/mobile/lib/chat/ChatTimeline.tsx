@@ -28,6 +28,7 @@ import { caretNotation, commandOutputText } from "./ansi";
 import { jumpToLatestColors, userMessageSurfaceStyle } from "./chatChrome";
 import { actionControlWidth, requestPresentation } from "./chatPresentation";
 import { workingElapsedLabel } from "./conversationChrome";
+import { errorActivityDuplicatesTurn, providerErrorCopy } from "./providerError";
 import { ElicitationAction, ElicitationChoiceList, ElicitationTextField } from "./elicitation-native-controls";
 import {
 	elicitationPromptCopy,
@@ -78,6 +79,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 	onRollback,
 	jumpToSequence,
 	onJumpHandled,
+	answeredBelow,
 }: {
 	snapshot: ConversationSnapshot;
 	loadingOlder: boolean;
@@ -89,6 +91,12 @@ export const ChatTimeline = memo(function ChatTimeline({
 	onRollback(turnId: string): Promise<number>;
 	jumpToSequence?: number;
 	onJumpHandled?(): void;
+	/**
+	 * The request the composer is currently answering. Its card here collapses to
+	 * a record of what was asked, so the same decision never has two live sets of
+	 * controls that could disagree.
+	 */
+	answeredBelow?: number;
 }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
@@ -103,7 +111,10 @@ export const ChatTimeline = memo(function ChatTimeline({
 
 	useEffect(() => {
 		if (jumpToSequence === undefined) return;
-		const index = groups.findIndex((group) => group.anchor === jumpToSequence);
+		// Match the group that CONTAINS the sequence, not one whose anchor equals
+		// it: a group's anchor is its first item, so an activity partway through a
+		// turn never matched and the jump silently did nothing.
+		const index = groups.findIndex((group) => group.anchor === jumpToSequence || group.items.some((item) => item.sequence === jumpToSequence));
 		if (index >= 0) {
 			followsTail.current = index === 0;
 			setShowJump(!followsTail.current);
@@ -171,6 +182,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 					onDecide={onDecide}
 					onResolveInput={onResolveInput}
 					onRollback={onRollback}
+					answeredBelow={answeredBelow}
 				/>}
 			/>
 			{showJump ? <Pressable accessibilityRole="button" accessibilityLabel="Jump to latest message" onPress={() => { haptics.tap(); followsTail.current = true; setShowJump(false); listRef.current?.scrollToOffset({ offset: 0, animated: true }); }} style={styles.jump}><Feather name="arrow-down" size={14} color={jumpToLatestColors(t).foregroundColor} /><Text style={styles.jumpText}>Latest</Text></Pressable> : null}
@@ -178,7 +190,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 	);
 });
 
-function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending, onDecide, onResolveInput, onRollback }: {
+function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending, onDecide, onResolveInput, onRollback, answeredBelow }: {
 	group: ConversationGroup;
 	snapshot: ConversationSnapshot;
 	approvalPending: boolean;
@@ -186,11 +198,19 @@ function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending,
 	onDecide(requestId: string, decisionId: string): Promise<void>;
 	onResolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
 	onRollback(turnId: string): Promise<number>;
+	answeredBelow?: number;
 }) {
-	const rows = activityRuns(group.items);
+	// A provider failure arrives twice: as an error activity, and again as the
+	// turn's errorMessage below it. The turn keeps it — that line carries the
+	// outcome and the rollback — so the activity restating it is dropped.
+	const turnError = group.turn?.state === "failed" ? group.turn.errorMessage : undefined;
+	const items = turnError
+		? group.items.filter((item) => !(item.kind === "activity" && errorActivityDuplicatesTurn(item, turnError)))
+		: group.items;
+	const rows = activityRuns(items);
 	return <View>{rows.map((row) => row.kind === "activities"
 		? <ActivityRun key={row.key} activities={row.items} />
-		: <TimelineItem key={row.key} item={row.items[0]} sessionId={snapshot.sessionId} approvalPending={approvalPending} inputPending={inputPending} onDecide={onDecide} onResolveInput={onResolveInput} />)}
+		: <TimelineItem key={row.key} item={row.items[0]} sessionId={snapshot.sessionId} approvalPending={approvalPending} inputPending={inputPending} onDecide={onDecide} onResolveInput={onResolveInput} answeredBelow={answeredBelow} />)}
 		{group.turn ? <TurnSummary turn={group.turn} onRollback={canRollbackTurn(snapshot, group.turn) ? onRollback : undefined} /> : null}
 	</View>;
 }
@@ -202,6 +222,7 @@ const TimelineItem = memo(function TimelineItem({
 	inputPending,
 	onDecide,
 	onResolveInput,
+	answeredBelow,
 }: {
 	item: ConversationItem;
 	sessionId: string;
@@ -209,6 +230,7 @@ const TimelineItem = memo(function TimelineItem({
 	inputPending: boolean;
 	onDecide(requestId: string, decisionId: string): Promise<void>;
 	onResolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
+	answeredBelow?: number;
 }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
@@ -238,10 +260,10 @@ const TimelineItem = memo(function TimelineItem({
 		);
 	}
 	if (item.activityKind === "approval") {
-		return <ApprovalCard activity={item} busy={approvalPending} onDecide={onDecide} />;
+		return <ApprovalCard activity={item} busy={approvalPending} onDecide={onDecide} handledBelow={item.sequence === answeredBelow} />;
 	}
 	if (item.activityKind === "user_input") {
-		return <UserInputCard activity={item} busy={inputPending} onResolve={onResolveInput} />;
+		return <UserInputCard activity={item} busy={inputPending} onResolve={onResolveInput} handledBelow={item.sequence === answeredBelow} />;
 	}
 	if (item.activityKind === "system" && item.detail?.event === "compaction") {
 		return <CompactionMarker activity={item} />;
@@ -707,7 +729,21 @@ function ChangedFiles({ turn }: { turn: ConversationTurn }) {
 	</View>;
 }
 
-function ApprovalCard({ activity, busy, onDecide }: { activity: ConversationActivity; busy: boolean; onDecide(requestId: string, decisionId: string): Promise<void> }) {
+/**
+ * What was asked, with no way to answer it — for a request whose controls live
+ * in the composer. The timeline stays the record; the composer is the surface.
+ */
+function RequestEcho({ title, detail }: { title: string; detail?: string }) {
+	const t = useTheme();
+	const styles = useThemedStyles(makeStyles);
+	return <View style={styles.approvalResolved}>
+		<View style={[styles.approvalDot, { backgroundColor: t.amber }]} />
+		<Text style={styles.approvalResolvedLabel}>{title}</Text>
+		{detail ? <Text selectable numberOfLines={1} style={styles.approvalResolvedCommand}>{detail}</Text> : null}
+	</View>;
+}
+
+function ApprovalCard({ activity, busy, onDecide, handledBelow }: { activity: ConversationActivity; busy: boolean; onDecide(requestId: string, decisionId: string): Promise<void>; handledBelow?: boolean }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const [submitting, setSubmitting] = useState<string>();
@@ -715,6 +751,7 @@ function ApprovalCard({ activity, busy, onDecide }: { activity: ConversationActi
 	const pending = activity.status === "pending";
 	const presentation = requestPresentation("approval", pending);
 	const command = activity.detail?.command ?? activity.summary;
+	if (pending && handledBelow) return <RequestEcho title={presentation.title} detail={command} />;
 	if (!pending) return <View style={styles.approvalResolved}>
 		<Feather name={presentation.icon} size={13} color={t.textFaint} />
 		<Text style={styles.approvalResolvedLabel}>{presentation.title}</Text>
@@ -740,7 +777,7 @@ function ApprovalCard({ activity, busy, onDecide }: { activity: ConversationActi
 	</View>;
 }
 
-function UserInputCard({ activity, busy, onResolve }: { activity: ConversationActivity; busy: boolean; onResolve(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void> }) {
+function UserInputCard({ activity, busy, onResolve, handledBelow }: { activity: ConversationActivity; busy: boolean; onResolve(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>; handledBelow?: boolean }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const schema = activity.detail?.schema;
@@ -758,6 +795,7 @@ function UserInputCard({ activity, busy, onResolve }: { activity: ConversationAc
 	const hasNextQuestion = Boolean(questionGroups && activeQuestion < questionGroups.length - 1);
 	const step = elicitationStepPresentation(activeQuestion, questionGroups?.length ?? 1);
 	const promptCopy = elicitationPromptCopy(activity.detail?.message || schema?.description || activity.summary);
+	if (pending && handledBelow) return <RequestEcho title={step.status} detail={promptCopy} />;
 	const resolve = async (action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) => {
 		if (submitting || !activity.requestId) return;
 		setSubmitting(true);
@@ -838,7 +876,11 @@ function CompactionMarker({ activity }: { activity: ConversationActivity }) {
 function ErrorActivity({ activity }: { activity: ConversationActivity }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	return <View style={[styles.errorCard, { borderColor: t.tintRed }]}><Feather name="alert-triangle" size={14} color={t.red} /><View style={{ flex: 1 }}><Text style={styles.errorTitle}>{activity.summary || "Agent error"}</Text>{activity.detail?.error || activity.detail?.message ? <Text selectable style={styles.errorCopy}>{String(activity.detail.error ?? activity.detail.message)}</Text> : null}</View></View>;
+	// Providers set several fields to the same sentence — Codex sends the
+	// usage-limit text as both summary and detail.error — so rendering each in
+	// turn printed one failure twice inside this card. Same rule as the renderer.
+	const { headline, detail } = providerErrorCopy(activity);
+	return <View style={[styles.errorCard, { borderColor: t.tintRed }]}><Feather name="alert-triangle" size={14} color={t.red} /><View style={{ flex: 1 }}><Text style={styles.errorTitle}>{headline}</Text>{detail ? <Text selectable style={styles.errorCopy}>{detail}</Text> : null}</View></View>;
 }
 
 function EmptyConversation({ harness, controller }: { harness: string; controller: string }) {

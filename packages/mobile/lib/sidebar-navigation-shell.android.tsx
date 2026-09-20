@@ -12,10 +12,8 @@ import {
 } from "react";
 import {
 	Animated,
-	AccessibilityInfo,
 	BackHandler,
 	FlatList,
-	Image,
 	PanResponder,
 	Pressable,
 	StyleSheet,
@@ -24,13 +22,15 @@ import {
 	View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import MASCOT from "../assets/mascot.png";
 import { AgentLogo } from "./AgentLogo";
+import { SidebarDestinationIcon } from "./sidebar-destination-icon";
+import { MascotLamp } from "./ui";
 import type { DashboardSession } from "./api";
 import { haptics } from "./haptics";
 import { sessionTitle } from "./sessionStatus";
 import {
 	activeSidebarDestination,
+	sidebarDestinationBadge,
 	RECENT_WORKERS_LABEL,
 	selectedPrimarySidebarDestination,
 	sidebarNavigationSettled,
@@ -43,6 +43,7 @@ import {
 import { sidebarGestureTarget, shouldCaptureSidebarGesture } from "./sidebar-gesture";
 import { SidebarSettingsButton } from "./sidebar-settings-button";
 import { SidebarSpawnButton } from "./sidebar-spawn-button";
+import { useReducedMotion } from "./useReducedMotion";
 import { useApp } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
@@ -68,13 +69,16 @@ export function useOptionalSidebarNavigation() {
 
 export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 	const styles = useThemedStyles(makeStyles);
-	const { sessions, projects } = useApp();
+	const { sessions, projects, connection } = useApp();
+	// See the iOS shell: cached sessions outlive a failed poll by design, so the
+	// drawer has to admit when what it is showing is no longer live.
+	const sessionsStale = connection !== "open";
 	const router = useRouter();
 	const pathname = usePathname();
 	const insets = useSafeAreaInsets();
 	const { width } = useWindowDimensions();
 	const [open, setOpen] = useState(retainedDrawerOpen);
-	const [reduceMotion, setReduceMotion] = useState(false);
+	const reduceMotion = useReducedMotion();
 	const progress = useRef(new Animated.Value(retainedDrawerOpen ? 1 : 0)).current;
 	const gestureStartedOpen = useRef(false);
 	const pendingClosePath = useRef<string | null>(null);
@@ -92,20 +96,6 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 		() => new Map(projects.map((project) => [project.id, project.name])),
 		[projects],
 	);
-
-	useEffect(() => {
-		let mounted = true;
-		void AccessibilityInfo.isReduceMotionEnabled()
-			.then((enabled) => {
-				if (mounted) setReduceMotion(enabled);
-			})
-			.catch(() => {});
-		const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
-		return () => {
-			mounted = false;
-			subscription.remove();
-		};
-	}, []);
 
 	const animateSidebar = useCallback((nextOpen: boolean) => {
 		retainedDrawerOpen = nextOpen;
@@ -239,7 +229,7 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 		>
 			<View style={styles.sidebarTop}>
 				<View style={styles.brandMascotSlot}>
-					<Image source={MASCOT} resizeMode="contain" style={styles.brandMascot} accessibilityLabel="AO mascot" />
+					<MascotLamp status={connection} size={55} />
 				</View>
 				<View style={styles.destinations}>
 					{sidebarDestinations.slice(0, -1).map((destination) => (
@@ -247,17 +237,21 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 							key={destination.id}
 							destination={destination}
 							active={destination.id === selectedPrimaryDestination}
+							badge={sidebarDestinationBadge(destination.id, sessions)}
 							onPress={() => selectDestination(destination)}
 						/>
 					))}
 				</View>
 			</View>
 
-			<Text style={styles.sectionLabel}>{RECENT_WORKERS_LABEL.toUpperCase()}</Text>
+			<Text style={styles.sectionLabel}>
+				{RECENT_WORKERS_LABEL.toUpperCase()}
+				{sessionsStale ? <Text style={styles.sectionLabelStale}>{"  ·  DISCONNECTED"}</Text> : null}
+			</Text>
 			<FlatList
 				data={liveSessions}
 				keyExtractor={(session) => `${session.projectId}:${session.id}`}
-				style={styles.sessionList}
+				style={[styles.sessionList, sessionsStale && styles.sessionListStale]}
 			contentContainerStyle={[
 				liveSessions.length === 0 ? styles.emptySessionList : styles.sessionListContent,
 				{ paddingBottom: insets.bottom + 76 },
@@ -305,9 +299,10 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 	);
 }
 
-function DestinationRow({ destination, active, onPress }: {
+function DestinationRow({ destination, active, badge, onPress }: {
 	destination: SidebarDestination;
 	active: boolean;
+	badge?: number;
 	onPress: () => void;
 }) {
 	const t = useTheme();
@@ -324,11 +319,15 @@ function DestinationRow({ destination, active, onPress }: {
 				(active || pressed) && { backgroundColor: t.tintBlue },
 			]}
 		>
-			<Feather name={destination.icon} size={21} color={active ? t.blue : t.textSecondary} />
+			<SidebarDestinationIcon destination={destination} active={active} color={active ? t.blue : t.textSecondary} />
 			<Text numberOfLines={1} style={[styles.destinationLabel, active && { color: t.blue, fontWeight: "700" }]}>
 				{destination.label}
 			</Text>
-			{active ? <Feather name="check" size={21} color={t.blue} /> : null}
+			{/* No check: the tinted row and the blue label already say which
+			    destination you are on, and every drawer worth copying settles for
+			    one or two such signals. The slot carries a count instead — the
+			    workers waiting on a person, which is why you opened the app. */}
+			{badge ? <Text style={styles.destinationBadge}>{badge}</Text> : null}
 		</Pressable>
 	);
 }
@@ -406,6 +405,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 		overflow: "hidden",
 	},
 	destinationLabel: { flex: 1, color: t.textPrimary, fontSize: 17, lineHeight: 22, fontWeight: "600" },
+	// Amber, not the selection blue: this is attention owed, and it must read
+	// the same whether or not you are standing on that destination.
+	destinationBadge: { minWidth: 22, textAlign: "center", color: t.amber, fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"] },
 	sectionLabel: {
 		paddingTop: 8,
 		paddingBottom: 8,
@@ -415,7 +417,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 		fontWeight: "700",
 		letterSpacing: 0.7,
 	},
+	sectionLabelStale: { color: t.amber },
 	sessionList: { flex: 1 },
+	sessionListStale: { opacity: 0.55 },
 	sessionListContent: { paddingBottom: 8 },
 	emptySessionList: { flexGrow: 1 },
 	emptySessions: { paddingHorizontal: 12, paddingTop: 8, color: t.textTertiary, fontSize: 14 },

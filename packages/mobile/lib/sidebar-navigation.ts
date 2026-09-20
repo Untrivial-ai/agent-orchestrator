@@ -1,3 +1,4 @@
+import { boardZoneOf } from "./agentsView";
 import type { DashboardSession } from "./api";
 
 export type SidebarDestinationId = "projects" | "agents" | "prs" | "settings";
@@ -6,18 +7,33 @@ export type PrimarySidebarDestinationId = Exclude<SidebarDestinationId, "setting
 export type SidebarDestination = {
 	id: SidebarDestinationId;
 	label: string;
-	icon: "folder" | "activity" | "git-pull-request" | "settings";
 	href: "/projects" | "/" | "/prs" | "/settings";
 };
 
 export const RECENT_WORKERS_LABEL = "Recent Workers";
 
 export const sidebarDestinations: readonly SidebarDestination[] = [
-	{ id: "projects", label: "Projects", icon: "folder", href: "/projects" },
-	{ id: "agents", label: "Workers", icon: "activity", href: "/" },
-	{ id: "prs", label: "Pull Requests", icon: "git-pull-request", href: "/prs" },
-	{ id: "settings", label: "Settings", icon: "settings", href: "/settings" },
+	{ id: "projects", label: "Projects", href: "/projects" },
+	{ id: "agents", label: "Workers", href: "/" },
+	{ id: "prs", label: "Pull Requests", href: "/prs" },
+	{ id: "settings", label: "Settings", href: "/settings" },
 ];
+
+/**
+ * The count a destination is worth badging.
+ *
+ * Only the number someone would open the app for: workers waiting on a person.
+ * A total would be decoration — the board already says how many sessions exist,
+ * and a badge that never drops to zero stops being read.
+ */
+export function sidebarDestinationBadge(
+	id: SidebarDestinationId,
+	sessions: readonly DashboardSession[],
+): number | undefined {
+	if (id !== "agents") return undefined;
+	const waiting = sidebarSessions(sessions).filter((session) => boardZoneOf(session) === "needs_you").length;
+	return waiting || undefined;
+}
 
 export function sidebarSessions(sessions: readonly DashboardSession[]): DashboardSession[] {
 	return sessions

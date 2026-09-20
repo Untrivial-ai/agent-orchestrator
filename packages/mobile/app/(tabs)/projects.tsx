@@ -1,18 +1,21 @@
 import { useRouter } from "expo-router";
-import { useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Platform, RefreshControl, SectionList, StyleSheet, Text, View } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, Platform, RefreshControl, SectionList, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ApiError } from "../../lib/api";
-import { chatErrorCopy, isChatPreflightError } from "../../lib/chatError";
 import { classifyConnectionFailure, describeConnectionFailure } from "../../lib/connectionError";
 import { haptics } from "../../lib/haptics";
-import { OrchestratorProjectRowView } from "../../lib/orchestrator-project-row";
 import { orchestratorProjectSections, type OrchestratorProjectRow } from "../../lib/orchestratorView";
+import { ProjectCard } from "../../lib/project-card";
+import { StaleBanner } from "../../lib/StaleBanner";
 import { useApp } from "../../lib/store";
+import { UnpairedState } from "../../lib/UnpairedState";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
+import { useOrchestratorLauncher } from "../../lib/useOrchestratorLauncher";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
-import { Button, EmptyState, HeaderIconButton, ScreenHeader } from "../../lib/ui";
+import { Button, EmptyState, HeaderIconButton, ListSectionHeader, ScreenHeader } from "../../lib/ui";
+
+export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
 export default function ProjectsScreen() {
 	const t = useTheme();
@@ -24,18 +27,15 @@ export default function ProjectsScreen() {
 		loading,
 		error,
 		errorStatus,
-		connection,
 		config,
 		projects,
 		sessions,
 		orchestrators,
 		notificationsUnread,
 		refresh,
-		launchConductor,
 	} = useApp();
 	const [refreshing, setRefreshing] = useState(false);
-	const [busyProjects, setBusyProjects] = useState<ReadonlySet<string>>(() => new Set());
-	const launchingProjects = useRef(new Set<string>());
+	const { busyProjects, openOrchestrator } = useOrchestratorLauncher();
 	const listRef = useTabScrollToTop<SectionList<OrchestratorProjectRow>>();
 	const sections = useMemo(
 		() => orchestratorProjectSections(projects, sessions, orchestrators),
@@ -51,19 +51,6 @@ export default function ProjectsScreen() {
 		[errorStatus, config?.host, config?.httpPort],
 	);
 
-	const setProjectBusy = (projectId: string, busy: boolean) => {
-		setBusyProjects((current) => {
-			const next = new Set(current);
-			if (busy) next.add(projectId);
-			else next.delete(projectId);
-			return next;
-		});
-	};
-
-	const openSession = (row: OrchestratorProjectRow, id: string) => {
-		router.push({ pathname: "/session/[id]", params: { id, projectId: row.project.id } });
-	};
-
 	const onRefresh = async () => {
 		haptics.tap();
 		setRefreshing(true);
@@ -74,61 +61,17 @@ export default function ProjectsScreen() {
 		}
 	};
 
-	const runLaunch = async (row: OrchestratorProjectRow, mode: "chat" | "tui" = "chat") => {
-		if (launchingProjects.current.has(row.project.id)) return;
-		launchingProjects.current.add(row.project.id);
-		setProjectBusy(row.project.id, true);
-		try {
-			const next = await launchConductor(row.project.id, false, mode);
-			if (next?.id) openSession(row, next.id);
-			else await refresh();
-		} catch (cause) {
-			haptics.error();
-			if (mode === "chat" && isChatPreflightError(cause)) {
-				Alert.alert("Chat is unavailable", chatErrorCopy(cause), [
-					{ text: "Cancel", style: "cancel" },
-					{ text: "Start Terminal UI", onPress: () => void runLaunch(row, "tui") },
-				]);
-				return;
-			}
-			const httpStatus = cause instanceof ApiError ? cause.status : undefined;
-			const copy = describeConnectionFailure(classifyConnectionFailure(httpStatus), {
-				host: config?.host ?? "",
-				port: config?.httpPort ?? "",
-				platform: Platform.OS,
-			});
-			Alert.alert(copy.title, copy.message);
-		} finally {
-			launchingProjects.current.delete(row.project.id);
-			setProjectBusy(row.project.id, false);
-		}
-	};
-
-	const openOrchestrator = (row: OrchestratorProjectRow) => {
-		if (!row.link?.id) {
-			void refresh();
-			return;
-		}
+	const openProject = (row: OrchestratorProjectRow) => {
 		haptics.select();
-		openSession(row, row.link.id);
-	};
-
-	const openWorker = (row: OrchestratorProjectRow, workerId: string) => {
-		haptics.select();
-		openSession(row, workerId);
-	};
-
-	const launchOrchestrator = (row: OrchestratorProjectRow) => {
-		haptics.tap();
-		void runLaunch(row);
+		router.push({ pathname: "/project/[id]", params: { id: row.project.id } });
 	};
 
 	if (!configured) {
 		return (
 			<View style={styles.screen}>
 				<View style={{ height: insets.top }} />
-				<ScreenHeader title="Projects" status={connection} />
-				<EmptyState icon="share-2" title="No server" message="Connect to AO in Settings." />
+				<ScreenHeader title="Projects" />
+				<UnpairedState />
 			</View>
 		);
 	}
@@ -138,8 +81,6 @@ export default function ProjectsScreen() {
 			<View style={{ height: insets.top }} />
 			<ScreenHeader
 				title="Projects"
-				subtitle="Ordered by attention"
-				status={connection}
 				right={
 					<HeaderIconButton
 						icon="bell"
@@ -149,6 +90,7 @@ export default function ProjectsScreen() {
 					/>
 				}
 			/>
+			<StaleBanner error={!!error} onRetry={onRefresh} />
 
 			{loading && projects.length === 0 ? (
 				<View style={styles.center}>
@@ -163,14 +105,15 @@ export default function ProjectsScreen() {
 					contentContainerStyle={{ paddingBottom: insets.bottom + 92 }}
 					stickySectionHeadersEnabled={false}
 					refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.blue} />}
-					renderSectionHeader={({ section }) => <ProjectSectionHeader label={section.title} />}
+					renderSectionHeader={({ section }) => (
+						<ListSectionHeader label={section.title} count={section.data.length} />
+					)}
 					renderItem={({ item }) => (
-						<OrchestratorProjectRowView
+						<ProjectCard
 							row={item}
 							busy={busyProjects.has(item.project.id)}
-							onOpen={openOrchestrator}
-							onOpenWorker={openWorker}
-							onLaunch={launchOrchestrator}
+							onOpenProject={openProject}
+							onOrchestrator={openOrchestrator}
 						/>
 					)}
 					ListEmptyComponent={
@@ -191,28 +134,8 @@ export default function ProjectsScreen() {
 	);
 }
 
-function ProjectSectionHeader({ label }: { label: string }) {
-	const styles = useThemedStyles(makeStyles);
-	return (
-		<View style={styles.sectionHeader}>
-			<Text style={styles.sectionLabel}>{label}</Text>
-			<View style={styles.sectionRule} />
-		</View>
-	);
-}
-
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
-		sectionHeader: {
-			flexDirection: "row",
-			alignItems: "center",
-			gap: 10,
-			paddingHorizontal: 18,
-			paddingTop: 18,
-			paddingBottom: 5,
-		},
-		sectionLabel: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
-		sectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle },
 	});
