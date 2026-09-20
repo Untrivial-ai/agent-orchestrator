@@ -93,7 +93,7 @@ func derivePRKanbanColumn(session KanbanSessionFacts, pr KanbanPRFacts) KanbanCo
 		return KanbanReady
 	case pr.Draft:
 		return KanbanValidating
-	case externallyApproved(pr) || pr.Mergeability == MergeMergeable:
+	case externallyApproved(pr):
 		return KanbanReady
 	case aoOwnsNextStep(session, pr):
 		return KanbanValidating
@@ -106,6 +106,8 @@ func derivePRKanbanColumn(session KanbanSessionFacts, pr KanbanPRFacts) KanbanCo
 	// release the PR from Validating -- see aoOwnsNextStep above.
 	case session.AutoReview && !approvedByAO(pr):
 		return KanbanValidating
+	case pr.Mergeability == MergeMergeable:
+		return KanbanReady
 	// Fallthrough: the PR is in its review cycle and no AO loop is turning it,
 	// so the next turn is a person's -- give the review, answer the feedback
 	// already on it, or decide what to do about a failing check.

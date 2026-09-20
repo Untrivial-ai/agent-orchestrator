@@ -196,11 +196,32 @@ func TestDeriveKanbanColumnSinglePR(t *testing.T) {
 			want: contract.KanbanNeedsReview,
 		},
 		{
-			name:    "auto review does not keep a mergeable pr in validating over a stale changes request",
+			name:    "auto review keeps a mergeable pr validating until its pass approves",
 			session: contract.KanbanSessionFacts{AutoReview: true},
 			pr: contract.KanbanPRFacts{
 				URL: "pr/1", Mergeability: contract.MergeMergeable,
 				ReviewRun: contract.KanbanReviewRunFacts{Present: true, Outcome: true, ChangesRequested: true},
+			},
+			want: contract.KanbanValidating,
+		},
+		{
+			name:    "auto review keeps a mergeable pr validating after its pass fails",
+			session: contract.KanbanSessionFacts{AutoReview: true},
+			pr: contract.KanbanPRFacts{
+				URL:          "pr/1",
+				Mergeability: contract.MergeMergeable,
+				ReviewRun:    contract.KanbanReviewRunFacts{Present: true, Failed: true},
+			},
+			want: contract.KanbanValidating,
+		},
+		{
+			name:    "human approval releases a failed auto review",
+			session: contract.KanbanSessionFacts{AutoReview: true},
+			pr: contract.KanbanPRFacts{
+				URL:            "pr/1",
+				Review:         contract.ReviewApproved,
+				ExternalReview: contract.KanbanExternalReviewFacts{Approved: true},
+				ReviewRun:      contract.KanbanReviewRunFacts{Present: true, Failed: true},
 			},
 			want: contract.KanbanReady,
 		},
