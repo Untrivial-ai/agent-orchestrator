@@ -50,7 +50,7 @@ export async function deleteCue(cueId: string): Promise<void> {
 export async function invokeCue(cueId: string, sessionId?: string): Promise<string> {
 	const { data, error } = await apiClient.POST("/api/v1/cues/{cueId}/invoke", {
 		params: { path: { cueId } },
-		body: sessionId ? { sessionId } : {},
+		body: sessionId === undefined ? {} : { sessionId },
 	});
 	if (error) throw new Error(apiErrorMessage(error, "Could not run cue"));
 	return data.sessionId;
