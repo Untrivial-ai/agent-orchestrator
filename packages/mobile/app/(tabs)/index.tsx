@@ -1,7 +1,8 @@
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Keyboard, Platform, StyleSheet, View } from "react-native";
-import { useKeyboardState } from "react-native-keyboard-controller";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { useKeyboardState, useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { classifyConnectionFailure, describeConnectionFailure } from "../../lib/connectionError";
 import { tunnelMayHaveRotated } from "../../lib/staleTunnel";
@@ -15,7 +16,7 @@ import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
 import { Button, EmptyState, HeaderIconButton, ScreenHeader } from "../../lib/ui";
 import { WorkerBoardList, type BoardRow } from "../../lib/worker-board-list";
 import { WorkerDock } from "../../lib/worker-dock";
-import { workerDockKeyboardLayout, workerListBottomInset } from "../../lib/worker-dock-layout";
+import { workerDockKeyboardLayout, workerDockLift, workerListBottomInset } from "../../lib/worker-dock-layout";
 import { WorkerControlsSheet } from "../../lib/worker-controls-sheet";
 import {
 	ALL_WORKER_PROJECTS,
@@ -68,6 +69,10 @@ export default function FleetScreen() {
 	// the dock and the list inset arrived a beat after the keyboard had landed.
 	const keyboardHeight = useKeyboardState((state) => state.height);
 	const keyboardVisible = useKeyboardState((state) => state.isVisible);
+	// The keyboard's own animated height, for the dock. The `isVisible` flag above
+	// turns over when the keyboard has *finished* moving, so anything positioned
+	// from it arrives late — see `workerDockLift`.
+	const keyboardAnimation = useReanimatedKeyboardAnimation();
 	const listRef = useTabScrollToTop<FlatList<BoardRow>>();
 
 	const projectSessions = useMemo(
@@ -116,6 +121,9 @@ export default function FleetScreen() {
 	}, [refresh]);
 
 	const keyboardLayout = workerDockKeyboardLayout(keyboardHeight, insets.bottom, keyboardVisible);
+	const dockRise = useAnimatedStyle(() => ({
+		transform: [{ translateY: -workerDockLift(keyboardAnimation.height.value, insets.bottom) }],
+	}));
 
 	if (!configured) {
 		return (
@@ -193,7 +201,9 @@ export default function FleetScreen() {
 				/>
 			)}
 
-			<View style={[styles.dock, { bottom: keyboardLayout.dockBottom }]}>
+			{/* Resting position plus the keyboard's lift, animated: the dock travels with
+			    the keys instead of jumping once they have finished moving. */}
+			<Animated.View style={[styles.dock, { bottom: keyboardLayout.restingBottom }, dockRise]}>
 				<WorkerDock
 					query={query}
 					onQueryChange={setQuery}
@@ -207,7 +217,7 @@ export default function FleetScreen() {
 					onSelectProject={setWorkerProjectId}
 					onSpawn={spawnWorker}
 				/>
-			</View>
+			</Animated.View>
 
 			<WorkerControlsSheet
 				open={controlsOpen}

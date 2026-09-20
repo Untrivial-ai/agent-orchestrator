@@ -10,6 +10,7 @@ import {
 	controlSize,
 	frame,
 	labelStyle,
+	menuOrder,
 	opacity,
 	padding,
 	scaleEffect,
@@ -78,11 +79,16 @@ export const WorkerDock = memo(function WorkerDock({
 						buttonStyle("plain"),
 						controlSize("large"),
 						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
+						// The dock sits at the bottom of the screen, so both of its menus
+						// open upward — and a menu that opens upward draws its items in
+						// reverse under the default `automatic` order. That is what put
+						// "All projects" last and the project list above Search.
+						menuOrder("fixed"),
 						accessibilityLabel("Worker options"),
 						accessibilityIdentifier("worker-controls"),
 					]}
 				>
-					<Section title="Worker list options">
+					<Section>
 						<Button
 							label="Search"
 							systemImage="magnifyingglass"
@@ -91,7 +97,10 @@ export const WorkerDock = memo(function WorkerDock({
 								onSearchOpen();
 							}}
 						/>
-						<Menu label={`Projects · ${selectedProjectLabel}`} systemImage="folder">
+						{/* The label is the selection on its own: naming the menu in front
+						    of it pushed the row past the width the menu reserves, and it
+						    wrapped. */}
+						<Menu label={selectedProjectLabel} systemImage="folder" modifiers={[menuOrder("fixed")]}>
 							{projectOptions.map((project) => (
 								<Button
 									key={project.id}
