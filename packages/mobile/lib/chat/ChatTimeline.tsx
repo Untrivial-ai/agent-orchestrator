@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import * as Clipboard from "expo-clipboard";
 import * as Linking from "expo-linking";
 import { memo, useEffect, useMemo, useRef, useState } from "react";

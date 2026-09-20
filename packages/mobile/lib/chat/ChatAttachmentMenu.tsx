@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { MenuView, type MenuAction, type NativeActionEvent } from "@expo/ui/community/menu";
 import { StyleSheet, View } from "react-native";
 import { haptics } from "../haptics";

@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";

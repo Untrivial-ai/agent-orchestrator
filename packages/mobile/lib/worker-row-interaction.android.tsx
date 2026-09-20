@@ -1,4 +1,4 @@
-import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -213,9 +213,6 @@ export function WorkerRowInteraction({
  */
 function MenuGlyph({ id, color }: { id: WorkerActionId; color: string }) {
 	const glyph = workerActionGlyph(id);
-	if (glyph.family === "material") {
-		return <MaterialCommunityIcons name={glyph.name} size={21} color={color} style={{ transform: [{ rotate: "28deg" }] }} />;
-	}
 	return <Feather name={glyph.name} size={20} color={color} />;
 }
 

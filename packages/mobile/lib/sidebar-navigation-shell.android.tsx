@@ -1,4 +1,5 @@
-import { Feather, FontAwesome } from "@expo/vector-icons";
+import { Feather } from "./icons";
+import { FontAwesome } from "@expo/vector-icons";
 import { usePathname, useRouter } from "expo-router";
 import {
 	createContext,

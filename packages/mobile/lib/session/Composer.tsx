@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { MicKey } from "../voice/MicKey";
 import type { VoiceMode, VoiceState } from "../voice/types";

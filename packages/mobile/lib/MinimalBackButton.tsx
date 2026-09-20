@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useRouter } from "expo-router";
 import { Platform, Pressable } from "react-native";
 import { haptics } from "./haptics";

@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../lib/icons";
 import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";

@@ -44,6 +44,7 @@
 		"expo-system-ui": "~57.0.4",
 		"expo-updates": "~57.0.19",
 		"expo-web-browser": "~57.0.3",
+		"lucide-react-native": "^1.47.0",
 		"posthog-react-native": "^4.62.0",
 		"react": "19.2.3",
 		"react-native": "0.86.3",

@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text } from "react-native";
 import { AgentLogo } from "./AgentLogo";
 import type { RankedAgent } from "./agentPicker";

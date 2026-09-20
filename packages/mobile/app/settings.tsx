@@ -1,5 +1,5 @@
 import { Host, Picker, Switch } from "@expo/ui";
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../lib/icons";
 import * as Application from "expo-application";
 import * as Clipboard from "expo-clipboard";
 import * as Device from "expo-device";

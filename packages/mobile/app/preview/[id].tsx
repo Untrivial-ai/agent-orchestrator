@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../../lib/icons";
 import { useLocalSearchParams, useNavigation } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";

@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";

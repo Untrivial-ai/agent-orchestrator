@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useEffect, useState } from "react";
 import { Linking, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { ApiError, pingServer } from "./api";

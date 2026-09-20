@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useTheme } from "./ThemeProvider";
 import { workerDockVisibility } from "./worker-dock-layout";

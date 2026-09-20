@@ -1,4 +1,4 @@
-import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Pressable, StyleSheet, View } from "react-native";
 import { type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
@@ -60,9 +60,9 @@ function PinAction({
 				onPress={onPress}
 				style={({ pressed }) => [styles.control, styles.pinControl, pressed && styles.pressed]}
 			>
-				<MaterialCommunityIcons
-					name={pinned ? "pin" : "pin-outline"}
-					size={21}
+				<Feather
+					name={pinned ? "pin-off" : "pin"}
+					size={20}
 					color={pinned ? t.amber : t.accent}
 					style={{ transform: [{ rotate: "28deg" }] }}
 				/>

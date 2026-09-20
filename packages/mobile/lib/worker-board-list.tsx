@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useCallback, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
 import { Alert, FlatList, Platform, Pressable, RefreshControl, StyleSheet, Text } from "react-native";
 import { LayoutAnimationConfig } from "react-native-reanimated";

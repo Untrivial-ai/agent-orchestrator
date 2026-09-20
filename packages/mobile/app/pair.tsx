@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../lib/icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
