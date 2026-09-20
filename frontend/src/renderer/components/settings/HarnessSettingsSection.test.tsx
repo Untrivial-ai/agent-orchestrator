@@ -408,6 +408,28 @@ describe("HarnessSettingsSection", () => {
 		expect(screen.getAllByRole("button", { name: "Refresh harness status" })).toHaveLength(1);
 	});
 
+	it("sorts harnesses by authentication state while preserving catalog order within each group", async () => {
+		const readiness = catalogWithInstalled("claude-code", "codex", "cursor", "goose");
+		readiness.agents[0].authentication.state = "unknown";
+		readiness.agents[1].authentication.state = "authorized";
+		readiness.agents[2].authentication.state = "unauthorized";
+		readiness.agents[3].authentication.state = "not_applicable";
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: readiness } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			return { data: undefined } as never;
+		});
+
+		renderSection();
+
+		await waitFor(() => {
+			const agentIds = Array.from(document.querySelectorAll<HTMLElement>("[data-agent]"))
+				.map((row) => row.dataset.agent);
+			expect(agentIds.slice(0, 4)).toEqual(["codex", "goose", "cursor", "claude-code"]);
+		});
+	});
+
 	it("starts the fixed daemon install route and exposes retry after failure", async () => {
 		const user = userEvent.setup();
 		renderSection();
@@ -603,7 +625,7 @@ describe("HarnessSettingsSection", () => {
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
 		await userEvent.click(await within(row).findByRole("button", { name: "Install" }));
 
-		await waitFor(() => expect(row).toHaveTextContent("Installed"));
+		await waitFor(() => expect(row).toHaveTextContent(authentication === "authorized" ? "Authorized" : "Installed"));
 		await waitFor(() => expect(selector).toHaveTextContent(authentication === "authorized" ? /^ready$/ : /^not_ready$/));
 		expect(client.getQueryData<AgentReadiness>(agentReadinessQueryKey)?.agents).toEqual([initial.agents[0], updated]);
 		expect(screen.getByTestId("originating-selector")).toBe(selector);

@@ -40,6 +40,12 @@ const FOCUS_HIGHLIGHT_MS = 2_000;
 type AgentAuthState = { pending: boolean; checking: boolean; error: string | null };
 type AgentAuthStates = Partial<Record<AgentId, AgentAuthState>>;
 type AgentAuthProbeResult = Awaited<ReturnType<typeof probeAgentAuth>>;
+const AUTH_STATE_RANK = {
+	authorized: 0,
+	not_applicable: 0,
+	unauthorized: 1,
+	unknown: 2,
+} as const;
 type AuthTerminalWorkflow = {
 	agentId: AgentId;
 	action: string;
@@ -143,7 +149,13 @@ export function HarnessSettingsSection({
 	);
 	const normalizedSearch = search.trim().toLowerCase();
 	const targetAgentId = AGENT_OPTIONS.find((agentId) => agentId === focusAgentId) ?? null;
-	const rows = AGENT_OPTIONS.filter((agentId) => agentId === targetAgentId || agentId === authWorkflow?.agentId || agentLabel(agentId).toLowerCase().includes(normalizedSearch));
+	const rows = AGENT_OPTIONS
+		.filter((agentId) => agentId === targetAgentId || agentId === authWorkflow?.agentId || agentLabel(agentId).toLowerCase().includes(normalizedSearch))
+		.sort((left, right) => {
+			const leftState = readinessAgents.get(left)?.authentication.state ?? "unknown";
+			const rightState = readinessAgents.get(right)?.authentication.state ?? "unknown";
+			return AUTH_STATE_RANK[leftState] - AUTH_STATE_RANK[rightState];
+		});
 	const updateAuthState = useCallback((agentId: AgentId, patch: Partial<AgentAuthState>) => {
 		setAuthStates((current) => ({
 			...current,
@@ -154,6 +166,25 @@ export function HarnessSettingsSection({
 		() => (jobs.data ?? []).filter((job) => isActive(job)).map((job) => job.target).sort().join(","),
 		[jobs.data],
 	);
+	const refreshInstalledAgent = useCallback((agentId: AgentId) => {
+		setActionErrors((current) => ({ ...current, [agentId]: undefined }));
+		void apiClient.POST("/api/v1/agents/{agent}/probe", {
+			params: { path: { agent: agentId } },
+		}).finally(async () => {
+			try {
+				const readiness = await ensureAgentReadiness([agentId], "display");
+				cacheAgentReadiness(queryClient, readiness);
+			} catch {
+				await queryClient.invalidateQueries({ queryKey: agentReadinessQueryKey });
+			} finally {
+				await Promise.all([
+					queryClient.invalidateQueries({ queryKey: installerQueryKey }),
+					queryClient.invalidateQueries({ queryKey: agentAuthPlansQueryKey }),
+					queryClient.invalidateQueries({ queryKey: agentModelsQueryPrefix(agentId) }),
+				]);
+			}
+		});
+	}, [queryClient]);
 	useEffect(() => {
 		if (focusHandledRef.current || !targetAgentId) return;
 		if (agents.isPending || installers.isPending || jobs.isPending || authPlans.isPending) return;
@@ -188,25 +219,9 @@ export function HarnessSettingsSection({
 			}
 			const completedWhileMounted = activeInstallJobs.current.delete(agentId);
 			if (job.status !== "succeeded" || !completedWhileMounted) continue;
-			setActionErrors((current) => ({ ...current, [agentId]: undefined }));
-			void apiClient.POST("/api/v1/agents/{agent}/probe", {
-				params: { path: { agent: agentId } },
-			}).finally(async () => {
-				try {
-					const readiness = await ensureAgentReadiness([agentId], "display");
-					cacheAgentReadiness(queryClient, readiness);
-				} catch {
-					await queryClient.invalidateQueries({ queryKey: agentReadinessQueryKey });
-				} finally {
-					await Promise.all([
-						queryClient.invalidateQueries({ queryKey: installerQueryKey }),
-						queryClient.invalidateQueries({ queryKey: agentAuthPlansQueryKey }),
-						queryClient.invalidateQueries({ queryKey: agentModelsQueryPrefix(agentId) }),
-					]);
-				}
-			});
+			refreshInstalledAgent(agentId);
 		}
-	}, [jobs.data, queryClient]);
+	}, [jobs.data, refreshInstalledAgent]);
 
 	useEffect(() => {
 		setExpandedDiagnostics((current) => {
@@ -252,6 +267,7 @@ export function HarnessSettingsSection({
 				return;
 			}
 			updateJob(data);
+			if (data.status === "succeeded") refreshInstalledAgent(agentId);
 		} finally {
 			endAction(agentId);
 		}

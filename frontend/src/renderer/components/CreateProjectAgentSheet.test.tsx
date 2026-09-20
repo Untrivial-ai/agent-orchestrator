@@ -82,6 +82,27 @@ describe("CreateProjectAgentSheet", () => {
 		expect(await screen.findByRole("listbox")).toHaveClass("max-h-select-menu-max!");
 	});
 
+	it("matches the chip agent menu width to its trigger", async () => {
+		render(
+			<RequiredAgentField
+				id="agent"
+				label="Agent"
+				onChange={() => undefined}
+				placeholder="Choose agent"
+				value="claude-code"
+				variant="chip"
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Agent" }));
+
+		expect(screen.getByRole("menu")).toHaveClass(
+			"w-(--radix-dropdown-menu-trigger-width)!",
+			"min-w-(--radix-dropdown-menu-trigger-width)!",
+			"max-w-(--radix-dropdown-menu-trigger-width)!",
+		);
+	});
+
 	it.each(["stacked", "chip", "settings-row"] as const)("%s lists only ready agents and opens Harness without changing a saved selection", async (variant) => {
 		const onChange = vi.fn();
 		useUiStore.setState({ settingsModal: null });

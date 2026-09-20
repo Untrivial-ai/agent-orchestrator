@@ -502,7 +502,10 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					invalid && "text-error",
 					triggerClassName,
 				)}
-				menuClassName={contentClassName}
+				menuClassName={cn(
+					"w-(--radix-dropdown-menu-trigger-width)! min-w-(--radix-dropdown-menu-trigger-width)! max-w-(--radix-dropdown-menu-trigger-width)!",
+					contentClassName,
+				)}
 				renderTrigger={() => (
 					<span className="flex min-w-0 items-center gap-2">
 						{selectedOption ? (

@@ -127,10 +127,13 @@ export function SettingsOptionMenu<T extends string>({
 						/>
 					</div>
 				)}
-				<div className="relative min-h-0">
+				<div
+					data-slot="settings-option-menu-scroll-region"
+					className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden"
+				>
 					<div
 						ref={scrollRef}
-						className="model-menu-scroll max-h-select-menu-max overflow-y-auto overscroll-contain"
+						className="model-menu-scroll min-h-0 overflow-y-auto overscroll-contain"
 						onScroll={updateScrollCue}
 					>
 						{visibleOptions.map((option) => (
@@ -163,10 +166,12 @@ export function SettingsOptionMenu<T extends string>({
 						aria-hidden="true"
 					/>
 				</div>
-				{action && <>
-					<DropdownMenuSeparator />
-					<DropdownMenuItem onSelect={action.onSelect} className={SETTINGS_MENU_ITEM}>{action.label}</DropdownMenuItem>
-				</>}
+				{action && (
+					<div data-slot="settings-option-menu-action" className="shrink-0">
+						<DropdownMenuSeparator />
+						<DropdownMenuItem onSelect={action.onSelect} className={SETTINGS_MENU_ITEM}>{action.label}</DropdownMenuItem>
+					</div>
+				)}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
