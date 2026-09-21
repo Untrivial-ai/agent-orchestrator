@@ -173,6 +173,8 @@ type Server struct {
 	terminalRelayEnabled    bool
 	terminalStreams         *terminalStreams
 	workWaiters             *workWaiters
+	notificationWake        func()
+	notificationWaiters     *notificationWaiters
 	// workerBinariesBySHA serves the content-addressed worker/helper binaries
 	// so a worker with a stale baked copy can heal itself to this exact build.
 	workerBinariesBySHA map[string][]byte
@@ -208,6 +210,7 @@ type Options struct {
 	WebhookMaxBody            int64
 	TerminalStreamEnabled     bool
 	TerminalRelayEnabled      bool
+	NotificationWake          func()
 }
 
 func New(options Options) *Server {
@@ -282,6 +285,8 @@ func New(options Options) *Server {
 		terminalRelayEnabled:      options.TerminalRelayEnabled,
 		terminalStreams:           newTerminalStreams(),
 		workWaiters:               newWorkWaiters(),
+		notificationWake:          options.NotificationWake,
+		notificationWaiters:       newNotificationWaiters(),
 	}
 	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
@@ -361,6 +366,7 @@ func New(options Options) *Server {
 			// ticket for a sandbox it is already registered on.
 			router.Get("/worker/reconnect", server.workerReconnect)
 			router.Post("/worker/events", server.workerEvent)
+			router.Post("/worker/notification-events", server.workerNotificationEvent)
 			router.Post("/worker/turns/claim", server.workerClaimTurn)
 			router.Get("/worker/turns/{turnId}/cancellation", server.workerTurnCancellation)
 			router.Post("/worker/turns/{turnId}/complete", server.workerCompleteTurn)
@@ -405,6 +411,10 @@ func New(options Options) *Server {
 				router.Post("/projects/scratch", server.createGitHubScratchProject)
 			}
 			router.Get("/projects", server.listProjects)
+			router.Get("/notifications", server.listNotifications)
+			router.Get("/notification-events", server.notificationEvents)
+			router.Patch("/notifications/{notificationId}", server.markNotificationRead)
+			router.Post("/notifications/read-all", server.markAllNotificationsRead)
 			router.Post("/projects", server.createProject)
 			router.Patch("/projects/{projectId}", server.updateProject)
 			router.Delete("/projects/{projectId}", server.deleteProject)

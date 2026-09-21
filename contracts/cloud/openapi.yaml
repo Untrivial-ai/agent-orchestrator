@@ -1431,6 +1431,138 @@ paths:
           $ref: "#/components/responses/WorkerScopeRequired"
         "409":
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/notification-events:
+    post:
+      operationId: publishWorkerNotificationEvent
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: Durably accepts one agent notification event for the authenticated worker epoch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentNotificationEvent"
+      responses:
+        "200":
+          description: The exact event was already durably accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationAcceptance"
+        "202":
+          description: The event was durably accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationAcceptance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/notifications:
+    get:
+      operationId: listCloudNotifications
+      tags: [Events]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [all, unread, read]
+            default: all
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Recipient-scoped cloud notification inbox.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPage"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/notification-events:
+    get:
+      operationId: listCloudNotificationEvents
+      tags: [Events]
+      description: Returns durable events as JSON, or an SSE replay/live stream when requested with Accept text/event-stream.
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: after
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 9007199254740991
+      responses:
+        "200":
+          description: Ordered durable cloud notification events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationEventPage"
+            text/event-stream:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/notifications/{notificationId}:
+    patch:
+      operationId: markCloudNotificationRead
+      tags: [Events]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: notificationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  const: read
+      responses:
+        "200":
+          description: The notification was marked read.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/notifications/read-all:
+    post:
+      operationId: markAllCloudNotificationsRead
+      tags: [Events]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Every unread notification for the current recipient was marked read.
+        default:
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     bearerAuth:
@@ -1452,7 +1584,8 @@ components:
         `worker:turn:complete` for turn execution,
         `worker:credential:read` for the agent secret, `worker:git` for a
         checkout grant, `worker:orchestrate` for child controls, and
-        `worker:transport` for workspace and terminal transport.
+        `worker:transport` for workspace and terminal transport, and
+        `worker:notification` for durable agent notification intake.
   parameters:
     OrgId:
       name: orgId
@@ -1599,6 +1732,141 @@ components:
     EmptyObject:
       type: object
       additionalProperties: false
+    AgentNotificationEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, type, occurredAt, payload]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        type:
+          type: string
+          enum: [needs_input, agent_failed, agent_completed]
+        occurredAt:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          maxProperties: 128
+    NotificationAcceptance:
+      type: object
+      additionalProperties: false
+      required: [accepted, eventId, duplicate]
+      properties:
+        accepted:
+          type: boolean
+          const: true
+        eventId:
+          type: string
+        duplicate:
+          type: boolean
+    CloudNotification:
+      type: object
+      additionalProperties: false
+      required: [id, orgId, recipientUserId, source, type, title, body, status, metadata, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        recipientUserId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        source:
+          type: string
+          const: cloud
+        type:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        status:
+          type: string
+          enum: [unread, read]
+        eventId:
+          type: string
+        metadata:
+          type: object
+        resolvedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CloudNotificationEvent:
+      type: object
+      additionalProperties: false
+      required: [sequence, orgId, recipientUserId, kind, eventId, notification, createdAt]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+        orgId:
+          type: string
+          format: uuid
+        recipientUserId:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [notification_created, notification_updated, notification_resolved]
+        eventId:
+          type: string
+        notification:
+          $ref: "#/components/schemas/CloudNotification"
+        createdAt:
+          type: string
+          format: date-time
+    NotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, unreadCount, latestSequence]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CloudNotification"
+        page:
+          type: object
+          additionalProperties: false
+          required: [hasMore]
+          properties:
+            hasMore:
+              type: boolean
+            nextCursor:
+              type: string
+        unreadCount:
+          type: integer
+          minimum: 0
+        latestSequence:
+          type: integer
+          format: int64
+          minimum: 0
+    NotificationEventPage:
+      type: object
+      additionalProperties: false
+      required: [items, hasMore]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CloudNotificationEvent"
+        hasMore:
+          type: boolean
     AuthProvider:
       type: string
       enum: [workos, local]

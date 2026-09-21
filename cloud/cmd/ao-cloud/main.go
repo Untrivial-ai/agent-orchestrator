@@ -401,6 +401,7 @@ func run(logger *slog.Logger) error {
 		WebhookMaxBody:            cfg.GitHub.WebhookMaxBody,
 		TerminalStreamEnabled:     cfg.TerminalStreamEnabled,
 		TerminalRelayEnabled:      cfg.TerminalRelayEnabled,
+		NotificationWake:          notificationProcessor.Wake,
 	}
 	if cfg.Environment == "development" &&
 		os.Getenv("AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION") == "true" {
@@ -420,6 +421,7 @@ func run(logger *slog.Logger) error {
 	if reconciler != nil {
 		notifyListener := postgres.NewListener(cfg.DatabaseURL, logger)
 		notifyListener.Handle("ao_worker_work", api.HandleWorkerWorkNotify)
+		notifyListener.Handle("ao_notification_event", api.HandleNotificationEventNotify)
 		if cfg.TerminalStreamEnabled {
 			notifyListener.Handle("ao_terminal_output", api.HandleTerminalOutputNotify)
 			notifyListener.Handle("ao_terminal_input", api.HandleTerminalInputNotify)

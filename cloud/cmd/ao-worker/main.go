@@ -60,6 +60,7 @@ var workerCapabilities = []string{
 	"workspace.files",
 	"terminal.workspace",
 	"terminal.agent",
+	"notification.events",
 }
 
 func main() {

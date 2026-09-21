@@ -380,14 +380,20 @@ func (s *Store) MarkNotificationsRead(
 ) (int64, error) {
 	var changed int64
 	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
-		if len(ids) == 0 {
+		if ids != nil && len(ids) == 0 {
 			return nil
 		}
-		tag, err := tx.Exec(ctx, `
+		query := `
 			UPDATE ao_notifications
 			SET status = 'read', updated_at = now()
 			WHERE org_id = $1 AND recipient_user_id = $2
-			  AND id = ANY($3::uuid[]) AND status = 'unread'`, orgID, principal.UserID, ids)
+			  AND status = 'unread'`
+		args := []any{orgID, principal.UserID}
+		if ids != nil {
+			query += ` AND id = ANY($3::uuid[])`
+			args = append(args, ids)
+		}
+		tag, err := tx.Exec(ctx, query, args...)
 		if err != nil {
 			return normalizeConstraintError(err)
 		}
