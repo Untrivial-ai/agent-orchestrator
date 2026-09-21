@@ -46,6 +46,36 @@ describe("MobileAppDemo", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it("treats the open navigation as a modal and contains keyboard focus", async () => {
+    await act(async () => root.render(<MobileAppDemo />));
+
+    const trigger = button("Open navigation");
+    await click(trigger);
+
+    const dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
+    if (!(dialog instanceof HTMLElement)) throw new Error("Navigation dialog not found");
+    const navigation = dialog.querySelector('nav[aria-label="Mobile app"]');
+    if (!(navigation instanceof HTMLElement)) throw new Error("Navigation not found");
+    const close = navigation.querySelector('button[aria-label="Close navigation"]');
+    const settings = [...navigation.querySelectorAll("button")].find(
+      (element) => element.textContent?.trim() === "Settings",
+    );
+    if (!(close instanceof HTMLButtonElement) || !(settings instanceof HTMLButtonElement)) {
+      throw new Error("Navigation boundary controls not found");
+    }
+
+    expect(document.activeElement).toBe(close);
+    expect(trigger.closest('[aria-hidden="true"]')).not.toBeNull();
+
+    settings.focus();
+    await keydown("Tab");
+    expect(document.activeElement).toBe(close);
+
+    close.focus();
+    await keydown("Tab", { shiftKey: true });
+    expect(document.activeElement).toBe(settings);
+  });
+
   it("keeps spawn compact and gives every project a text-only orchestrator action", async () => {
     await act(async () => root.render(<MobileAppDemo />));
 
@@ -94,5 +124,14 @@ describe("MobileAppDemo", () => {
 
   async function settle() {
     await act(async () => new Promise((resolve) => setTimeout(resolve, 400)));
+  }
+
+  async function keydown(key: string, init: KeyboardEventInit = {}) {
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    })));
   }
 });

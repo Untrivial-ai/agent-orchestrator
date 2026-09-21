@@ -92,13 +92,6 @@ export function MobileAppDemo() {
     requestAnimationFrame(() => navigationTrigger.current?.focus());
   };
 
-  useEffect(() => {
-    if (!navigationOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => event.key === "Escape" && closeNavigation();
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [navigationOpen]);
-
   const selectDestination = (next: Destination) => {
     setDestination(next);
     setNavigationOpen(false);
@@ -119,6 +112,8 @@ export function MobileAppDemo() {
                 animate={{ opacity: 1, x: 0 }}
                 exit={reduceMotion ? undefined : { opacity: 0, x: -8 }}
                 transition={reduceMotion ? { duration: 0 } : MOTION.screen}
+                aria-hidden={navigationOpen}
+                inert={navigationOpen}
                 className="absolute inset-0 flex flex-col"
               >
                 {destination === "workers" ? (
@@ -224,14 +219,48 @@ function PullRequestsScreen(props: ScreenProps) {
 
 function NavigationDrawer({ active, reduceMotion, onClose, onSelect }: { active: Destination; reduceMotion: boolean; onClose: () => void; onSelect: (next: Destination) => void }) {
   const recent = workerSections.slice(0, 2).map((section) => section.rows[0]);
+  const drawer = useRef<HTMLElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeButton.current?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !drawer.current) return;
+
+      const focusable = [...drawer.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      )];
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
-    <div className="absolute inset-0 z-30">
-      <motion.button type="button" aria-label="Close navigation" tabIndex={-1} onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.15 }} className="absolute inset-0 cursor-default bg-black/65 outline-none" />
-      <motion.nav aria-label="Mobile app" initial={reduceMotion ? false : { x: "-100%" }} animate={{ x: 0 }} exit={reduceMotion ? undefined : { x: "-100%" }} transition={reduceMotion ? { duration: 0 } : MOTION.drawer} className="absolute inset-y-0 left-0 flex w-[218px] flex-col border-r px-[12px] pb-[16px] pt-[12px] shadow-[18px_0_40px_rgba(0,0,0,0.45)]" style={{ backgroundColor: t.bgSurface, borderColor: t.border }}>
+    <div role="dialog" aria-modal="true" aria-label="Navigation menu" className="absolute inset-0 z-30">
+      <motion.button type="button" aria-label="Close navigation" aria-hidden="true" tabIndex={-1} onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.15 }} className="absolute inset-0 cursor-default bg-black/65 outline-none" />
+      <motion.nav ref={drawer} aria-label="Mobile app" initial={reduceMotion ? false : { x: "-100%" }} animate={{ x: 0 }} exit={reduceMotion ? undefined : { x: "-100%" }} transition={reduceMotion ? { duration: 0 } : MOTION.drawer} className="absolute inset-y-0 left-0 flex w-[218px] flex-col border-r px-[12px] pb-[16px] pt-[12px] shadow-[18px_0_40px_rgba(0,0,0,0.45)]" style={{ backgroundColor: t.bgSurface, borderColor: t.border }}>
         <div className="flex items-center gap-[9px] px-[7px] pb-[12px] pt-[4px]">
           <span className="relative grid size-[43px] place-items-center rounded-[13px]" style={{ backgroundColor: t.bgElevated }}><img src="/ao-logo.svg" alt="" className="size-[34px]" /><Dot color={t.green} className="absolute bottom-[3px] right-[3px] ring-2 ring-[#121317]" /></span>
           <span className="min-w-0 flex-1"><b className="block truncate text-[12px]">Agent Orchestrator</b><span className="text-[9px] font-semibold" style={{ color: t.green }}>Connected</span></span>
-          <RoundButton label="Close navigation" icon={X} onClick={onClose} />
+          <RoundButton ref={closeButton} label="Close navigation" icon={X} onClick={onClose} />
         </div>
         <div className="space-y-[3px]">{destinations.map((item) => {
           const SelectedIcon = item.icon; const selected = item.id === active;
