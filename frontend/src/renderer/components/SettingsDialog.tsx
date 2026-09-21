@@ -19,7 +19,12 @@ import {
 	settingsDialogContentClass,
 	settingsDialogHeaderClass,
 } from "./ui/dialog";
-import { type GlobalSettingsSection, type SettingsModal, useUiStore } from "../stores/ui-store";
+import {
+	type GlobalSettingsSection,
+	type ProjectSettingsSection,
+	type SettingsModal,
+	useUiStore,
+} from "../stores/ui-store";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { globalSettingsItem, visibleGlobalSettings } from "./settings/settingsCatalog";
@@ -27,8 +32,6 @@ import { globalSettingsItem, visibleGlobalSettings } from "./settings/settingsCa
 function initialProjectSaveState(): ProjectSettingsSaveState {
 	return { phase: "idle" };
 }
-
-type ProjectSettingsSection = ProjectFormSection | "cues";
 
 export function SettingsDialog() {
 	const settingsModal = useUiStore((state) => state.settingsModal);
@@ -112,7 +115,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 			setActiveSection(globalSettingsItem(settingsModal.section ?? "general", { cloudEnabled }).id);
 		}
 		if (settingsModal?.scope === "project") {
-			setActiveProjectSection("general");
+			setActiveProjectSection(settingsModal.section ?? "general");
 			setProjectSaveState(initialProjectSaveState());
 			setCueBusy(false);
 		}

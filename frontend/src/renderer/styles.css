@@ -2914,6 +2914,22 @@ html.sidebar-reordering * {
 	transform: scale(0.96);
 }
 
+/* A control that anchors a popover must not transform while pressed. The menu is
+   positioned from the trigger's rect, so scaling the trigger drags the open menu
+   along with it. Press feedback moves to the glyph, which the menu does not
+   measure. */
+.workspace-topbar-actions .topbar-control--static-press:active:not(:disabled) {
+	transform: none;
+}
+
+.workspace-topbar-actions .topbar-control--static-press > svg {
+	transition: transform var(--duration-fast) ease-out;
+}
+
+.workspace-topbar-actions .topbar-control--static-press:active:not(:disabled) > svg {
+	transform: scale(0.96);
+}
+
 .workspace-topbar-actions .topbar-control--labeled,
 .workspace-topbar-actions .topbar-control--feature {
 	padding-inline: var(--space-2_5);

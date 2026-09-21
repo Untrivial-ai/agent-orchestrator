@@ -390,6 +390,7 @@
 	"cues.descriptionPlaceholder": "Briefly describe what this cue does",
 	"cues.edit": "Edit",
 	"cues.empty": "No cues yet. Create one to run a prompt or command on demand.",
+	"cues.emptyMenu": "No cues in this project",
 	"cues.invokeFailed": "Could not run the cue.",
 	"cues.invokeSent": "Enviado a la sesión",
 	"cues.invokeSentBody": "{{name}} enviado a la sesión",

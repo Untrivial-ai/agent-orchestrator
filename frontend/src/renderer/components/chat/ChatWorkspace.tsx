@@ -352,8 +352,6 @@ export interface ChatWorkspaceProps {
 	daemonReady?: boolean;
 	/** Resolved color theme for the reviewer terminal pane. */
 	theme?: "light" | "dark";
-	/** Extra composer message-tools controls rendered ahead of settings. */
-	cueTrigger?: ReactNode;
 	onChooseSettings?: (settings: TurnSettings) => void;
 	onRememberPermissions?: (mode: ApprovalMode) => Promise<unknown> | void;
 	rememberPermissionsPending?: boolean;
@@ -616,7 +614,6 @@ function ChatWorkspaceContent({
 	onReloadMcpServers,
 	reloadingMcpServers,
 	mcpReloadError,
-	cueTrigger,
 	draftScope,
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
@@ -1458,7 +1455,6 @@ function ChatWorkspaceContent({
 									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
 									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 									settings={composerSettings}
-									cueTrigger={cueTrigger}
 									busy={busy}
 									willQueue={Boolean(turn)}
 									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}

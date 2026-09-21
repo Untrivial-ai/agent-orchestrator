@@ -363,6 +363,14 @@ describe("ShellTopbar status pill", () => {
 });
 
 describe("ShellTopbar orchestrator actions", () => {
+	it("shows the play-icon cue runner for a worker session", () => {
+		renderTopbar(sessionWith());
+
+		const runner = screen.getByRole("button", { name: "Run a cue" });
+		expect(runner.querySelector(".lucide-play")).not.toBeNull();
+		expect(screen.getByTestId("workspace-topbar-actions")).toContainElement(runner);
+	});
+
 	it("owns the responsive action container on the full board topbar", () => {
 		renderTopbarSessions([orchestrator], "");
 

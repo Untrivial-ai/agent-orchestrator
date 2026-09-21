@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { aoBridge } from "../lib/bridge";
+import type { ProjectSettingsSection as ProjectFormSection } from "../components/ProjectSettingsForm";
 import type { TerminalTarget } from "../types/terminal";
 import type { FilesSource } from "../hooks/useSessionWorkspaceFiles";
 import {
@@ -31,6 +32,9 @@ export type GlobalSettingsSection =
 	| "updates"
 	| "help";
 
+/** Project settings pages: the project form sections plus the cues manager. */
+export type ProjectSettingsSection = ProjectFormSection | "cues";
+
 export type SettingsModal =
 	| {
 			scope: "global";
@@ -42,6 +46,8 @@ export type SettingsModal =
 	| {
 			scope: "project";
 			projectId: string;
+			/** Page to open on, so callers can deep-link a project setting. */
+			section?: ProjectSettingsSection;
 	};
 
 /** Worker detail view toggles — Changes (Git rail) is the default. */
@@ -138,7 +144,7 @@ export type UiState = {
 	openUpdateInstallPrompt: () => void;
 	closeUpdateInstallPrompt: () => void;
 	openGlobalSettings: (section?: GlobalSettingsSection, options?: { focusAgentId?: string; preserveProject?: boolean }) => void;
-	openProjectSettings: (projectId: string) => void;
+	openProjectSettings: (projectId: string, options?: { section?: ProjectSettingsSection }) => void;
 	closeSettings: () => void;
 	/** Refresh resolvedTheme from OS without writing light/dark to storage. */
 	syncSystemTheme: () => void;
@@ -280,7 +286,13 @@ export const useUiStore = create<UiState>((set, get) => ({
 					: {}),
 		},
 	})),
-	openProjectSettings: (projectId) => set({ settingsModal: { scope: "project", projectId } }),
+	openProjectSettings: (projectId, options) => set({
+		settingsModal: {
+			scope: "project",
+			projectId,
+			...(options?.section ? { section: options.section } : {}),
+		},
+	}),
 	closeSettings: () => set((state) => ({
 		settingsModal: state.settingsModal?.scope === "global" ? state.settingsModal.returnTo ?? null : null,
 	})),

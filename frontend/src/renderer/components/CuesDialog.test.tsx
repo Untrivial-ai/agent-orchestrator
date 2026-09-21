@@ -3,12 +3,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ReactNode } from "react";
 import { CuesSettings } from "./CuesDialog";
-import { CueComposerMenu, ProjectCueMenu } from "./chat/CueComposerMenu";
+import { CueRunMenu } from "./chat/CueRunMenu";
 import { TooltipProvider } from "./ui/tooltip";
 import * as cues from "../lib/cues";
 
-const { toast, navigate } = vi.hoisted(() => ({ toast: vi.fn(), navigate: vi.fn() }));
-vi.mock("../stores/ui-store", () => ({ useUiStore: (select: (s: unknown) => unknown) => select({ showGlobalToast: toast }) }));
+const { toast, navigate, openProjectSettings } = vi.hoisted(() => ({
+	toast: vi.fn(),
+	navigate: vi.fn(),
+	openProjectSettings: vi.fn(),
+}));
+vi.mock("../stores/ui-store", () => ({
+	useUiStore: (select: (s: unknown) => unknown) => select({ showGlobalToast: toast, openProjectSettings }),
+}));
 vi.mock("../lib/navigate-to-session", () => ({ useNavigateToSession: () => navigate }));
 vi.mock("../lib/cues", async (original) => ({
 	...await original<typeof import("../lib/cues")>(),
@@ -24,7 +30,12 @@ function deferred<T>() {
 }
 function setup(node: ReactNode) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 }, mutations: { retry: false } } });
-	const wrap = (child: ReactNode) => <QueryClientProvider client={client}><TooltipProvider>{child}</TooltipProvider></QueryClientProvider>;
+	const wrap = (child: ReactNode) => (
+		<QueryClientProvider client={client}>
+			{/* No delay so a hovertip assertion does not wait on the provider's timing. */}
+			<TooltipProvider delayDuration={0}>{child}</TooltipProvider>
+		</QueryClientProvider>
+	);
 	const view = render(wrap(node));
 	return { ...view, rerender: (child: ReactNode) => view.rerender(wrap(child)) };
 }
@@ -121,7 +132,7 @@ test("failed deletion stays open for retry and pending deletion cannot be dismis
 test("project topbar invocation creates a worker once and navigates after dispatch", async () => {
 	const invocation = deferred<string>();
 	vi.mocked(cues.invokeCue).mockReturnValue(invocation.promise);
-	setup(<ProjectCueMenu projectId="project" />);
+	setup(<CueRunMenu projectId="project" />);
 	expect(screen.getByRole("button", { name: "Run a cue" }).querySelector(".lucide-play")).not.toBeNull();
 	openMenu();
 	const run = await screen.findByRole("menuitem", { name: "Tests" });
@@ -135,12 +146,103 @@ test("project topbar invocation creates a worker once and navigates after dispat
 function openMenu() {
 	fireEvent.keyDown(screen.getByRole("button", { name: "Run a cue" }), { key: "ArrowDown" });
 }
-test("composer remains discoverable when empty and sees externally created cues on reopening", async () => {
+test("hovering the runner opens the menu and leaving closes it, with no tooltip", async () => {
+	setup(<CueRunMenu projectId="project" sessionId="session" />);
+	const trigger = screen.getByRole("button", { name: "Run a cue" });
+	expect(screen.queryByRole("menu")).toBeNull();
+
+	fireEvent.pointerOver(trigger, { pointerType: "mouse" });
+	await screen.findByRole("menuitem", { name: "Tests" });
+	expect(screen.queryByRole("tooltip")).toBeNull();
+
+	fireEvent.pointerOut(trigger, { pointerType: "mouse" });
+	await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+});
+
+test("reopening the menu keeps cached cues visible while the refresh runs", async () => {
+	const refresh = deferred<cues.CueDTO[]>();
+	setup(<CueRunMenu projectId="project" sessionId="session" />);
+	const trigger = screen.getByRole("button", { name: "Run a cue" });
+	fireEvent.pointerOver(trigger, { pointerType: "mouse" });
+	await screen.findByRole("menuitem", { name: "Tests" });
+	fireEvent.pointerOut(trigger, { pointerType: "mouse" });
+	await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+	vi.mocked(cues.fetchProjectCues).mockReturnValueOnce(refresh.promise);
+	fireEvent.pointerOver(trigger, { pointerType: "mouse" });
+
+	await screen.findByRole("menuitem", { name: "Tests" });
+	expect(screen.queryByRole("menuitem", { name: /Loading/ })).toBeNull();
+	await act(async () => refresh.resolve([cue]));
+});
+
+test("menu rows stay on the cue name and reveal the description on hover", async () => {
+	vi.mocked(cues.fetchProjectCues).mockResolvedValue([{ ...cue, description: "just runs the app" }]);
+	setup(<CueRunMenu projectId="project" />);
+	fireEvent.pointerOver(screen.getByRole("button", { name: "Run a cue" }), { pointerType: "mouse" });
+	const item = await screen.findByRole("menuitem", { name: "Tests" });
+	expect(screen.queryByText("just runs the app")).toBeNull();
+
+	fireEvent.pointerMove(item, { pointerType: "mouse" });
+
+	expect(await screen.findByRole("tooltip")).toHaveTextContent("just runs the app");
+});
+
+test("offers the create action even when the project already has cues", async () => {
+	setup(<CueRunMenu projectId="project" />);
+	fireEvent.pointerOver(screen.getByRole("button", { name: "Run a cue" }), { pointerType: "mouse" });
+	await screen.findByRole("menuitem", { name: "Tests" });
+
+	fireEvent.click(screen.getByRole("menuitem", { name: "New cue" }));
+
+	await waitFor(() => expect(openProjectSettings).toHaveBeenCalledExactlyOnceWith("project", { section: "cues" }));
+});
+
+test("an empty project offers cue setup from the menu", async () => {
+	vi.mocked(cues.fetchProjectCues).mockResolvedValue([]);
+	setup(<CueRunMenu projectId="project" sessionId="session" />);
+
+	fireEvent.pointerOver(screen.getByRole("button", { name: "Run a cue" }), { pointerType: "mouse" });
+	fireEvent.click(await screen.findByRole("menuitem", { name: "New cue" }));
+
+	await waitFor(() => expect(openProjectSettings).toHaveBeenCalledExactlyOnceWith("project", { section: "cues" }));
+});
+test("clicking the trigger runs the primary cue and leaves the hover menu up", async () => {
+	setup(<CueRunMenu projectId="project" sessionId="session" />);
+	const trigger = screen.getByRole("button", { name: "Run a cue" });
+	fireEvent.pointerOver(trigger, { pointerType: "mouse" });
+	await screen.findByRole("menuitem", { name: "Tests" });
+
+	fireEvent.click(trigger, { detail: 1 });
+
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session"));
+	expect(screen.getByRole("menuitem", { name: "Tests" })).toBeInTheDocument();
+	expect(navigate).not.toHaveBeenCalled();
+});
+test("keyboard activation opens the menu without running a cue", async () => {
+	setup(<CueRunMenu projectId="project" />);
+	const trigger = screen.getByRole("button", { name: "Run a cue" });
+
+	fireEvent.keyDown(trigger, { key: "Enter" });
+
+	await screen.findByRole("menuitem", { name: "Tests" });
+	expect(cues.invokeCue).not.toHaveBeenCalled();
+});
+test("clicking with no cues set up keeps the empty menu open", async () => {
+	vi.mocked(cues.fetchProjectCues).mockResolvedValue([]);
+	setup(<CueRunMenu projectId="project" />);
+
+	fireEvent.click(screen.getByRole("button", { name: "Run a cue" }), { detail: 1 });
+
+	expect(await screen.findByRole("menuitem", { name: "New cue" })).toBeInTheDocument();
+	expect(cues.invokeCue).not.toHaveBeenCalled();
+});
+test("session-targeted runner remains discoverable when empty and sees externally created cues on reopening", async () => {
 	vi.mocked(cues.fetchProjectCues).mockResolvedValueOnce([]);
-	setup(<CueComposerMenu projectId="project" sessionId="session" />);
+	setup(<CueRunMenu projectId="project" sessionId="session" />);
 	expect(cues.fetchProjectCues).not.toHaveBeenCalled();
 	openMenu();
-	await screen.findByText(/No cues yet/);
+	await screen.findByText(/No cues in this project/);
 	fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 	openMenu();
 	const item = await screen.findByRole("menuitem", { name: "Tests" });
@@ -149,23 +251,23 @@ test("composer remains discoverable when empty and sees externally created cues 
 	expect(navigate).not.toHaveBeenCalled();
 });
 
-test("composer displays refresh errors and retries without closing", async () => {
+test("session-targeted runner displays refresh errors and retries without closing", async () => {
 	vi.mocked(cues.fetchProjectCues).mockRejectedValueOnce(new Error("offline"));
-	setup(<CueComposerMenu projectId="project" sessionId="session" />);
+	setup(<CueRunMenu projectId="project" sessionId="session" />);
 	openMenu();
 	await screen.findByRole("alert");
 	fireEvent.click(screen.getByRole("menuitem", { name: "Try again" }));
 	await screen.findByRole("menuitem", { name: "Tests" });
 });
 
-test("composer ignores late responses after switching sessions and never retries dispatch", async () => {
+test("session-targeted runner ignores late responses after switching sessions and never retries dispatch", async () => {
 	const invocation = deferred<string>();
 	vi.mocked(cues.invokeCue).mockReturnValueOnce(invocation.promise);
-	const view = setup(<CueComposerMenu projectId="project" sessionId="session" />);
+	const view = setup(<CueRunMenu projectId="project" sessionId="session" />);
 	openMenu();
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Tests" }));
 	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledTimes(1));
-	view.rerender(<CueComposerMenu projectId="project" sessionId="other" />);
+	view.rerender(<CueRunMenu projectId="project" sessionId="other" />);
 	await act(async () => invocation.reject(new Error("unavailable")));
 	expect(toast).not.toHaveBeenCalled();
 	expect(cues.invokeCue).toHaveBeenCalledTimes(1);
@@ -174,7 +276,7 @@ test("composer ignores late responses after switching sessions and never retries
 test("unmounting the project menu isolates an earlier invocation response", async () => {
 	const invocation = deferred<string>();
 	vi.mocked(cues.invokeCue).mockReturnValue(invocation.promise);
-	const view = setup(<ProjectCueMenu projectId="project" />);
+	const view = setup(<CueRunMenu projectId="project" />);
 	openMenu();
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Tests" }));
 	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledTimes(1));

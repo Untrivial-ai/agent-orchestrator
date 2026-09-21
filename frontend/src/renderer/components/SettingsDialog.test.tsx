@@ -116,6 +116,14 @@ describe("SettingsDialog", () => {
 		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
 	});
 
+	it("opens project settings on the cues page when the caller asks for it", async () => {
+		useUiStore.getState().openProjectSettings("proj-1", { section: "cues" });
+		renderSettingsDialog();
+
+		expect(await screen.findByTestId("project-cues-settings")).toHaveTextContent("proj-1");
+		expect(screen.getByRole("button", { name: "Cues" })).toHaveAttribute("aria-current", "page");
+	});
+
 	it("opens the requested global settings page", async () => {
 		useUiStore.getState().openGlobalSettings("mobile");
 		renderSettingsDialog();

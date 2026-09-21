@@ -45,7 +45,7 @@ import {
 	BoardSessionCardAdapter,
 	sessionsBoardLabels,
 } from "./SessionsBoardAdapters";
-import { ProjectCueMenu } from "./chat/CueComposerMenu";
+import { CueRunMenu } from "./chat/CueRunMenu";
 
 type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
@@ -152,7 +152,10 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 		<>
 			<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} />
 			<span className="inline-flex">
-				<ProjectCueMenu projectId={projectId} disabled={isProjectRestarting || isProvisioning} />
+				<CueRunMenu
+					projectId={projectId}
+					disabled={isProjectRestarting || isProvisioning}
+				/>
 			</span>
 			{boardOwnsNotificationCenter ? (
 				<>
