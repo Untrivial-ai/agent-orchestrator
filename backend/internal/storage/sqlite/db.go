@@ -1783,7 +1783,7 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	}
 	if needsGemini {
 		// Goose runs before reconciliation. A legacy constraint can therefore
-		// miss migration 0148, then reach the OMP shape through repairs above.
+		// miss migration 0149, then reach the OMP shape through repairs above.
 		// Widen both known variants here without dropping the legacy QM value.
 		for _, old := range []string{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP} {
 			repairs = append(repairs, replacement{old, strings.Replace(old, "'omp'", "'gemini', 'omp'", 1)})
