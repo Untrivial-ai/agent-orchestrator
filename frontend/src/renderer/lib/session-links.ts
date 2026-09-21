@@ -8,6 +8,19 @@ export type SessionLinkWorkspace = {
 const SESSION_LINK_PREFIX = "ao://sessions/";
 const RAW_SESSION_LINK = /ao:\/\/sessions\/\S+/g;
 const TRAILING_PUNCTUATION = /[.,;:!?]+$/;
+const TRAILING_DELIMITERS = [
+	["(", ")"],
+	["[", "]"],
+	["{", "}"],
+	["<", ">"],
+	["\"", "\""],
+	["'", "'"],
+	["`", "`"],
+	["“", "”"],
+	["‘", "’"],
+	["«", "»"],
+	["‹", "›"],
+] as const;
 
 /** Strictly parse the only in-app URL route AO supports. */
 export function parseSessionLink(value: string): SessionLinkTarget | undefined {
@@ -40,12 +53,30 @@ export function resolveSessionLink(value: string, workspaces: SessionLinkWorkspa
 export function findSessionLinks(text: string): Array<{ start: number; end: number; text: string }> {
 	const matches: Array<{ start: number; end: number; text: string }> = [];
 	for (const match of text.matchAll(RAW_SESSION_LINK)) {
-		let candidate = match[0].replace(TRAILING_PUNCTUATION, "");
-		while (candidate.endsWith(")") && count(candidate, "(") < count(candidate, ")")) candidate = candidate.slice(0, -1);
+		const candidate = trimSessionLinkCandidate(match[0], text.slice(0, match.index));
 		if (!parseSessionLink(candidate)) continue;
 		matches.push({ start: match.index, end: match.index + candidate.length, text: candidate });
 	}
 	return matches;
+}
+
+function trimSessionLinkCandidate(value: string, precedingText: string): string {
+	let candidate = value;
+	let previous = "";
+	while (candidate !== previous) {
+		previous = candidate;
+		if (precedingText.endsWith("&lt;") && candidate.endsWith("&gt;")) {
+			candidate = candidate.slice(0, -"&gt;".length);
+		}
+		candidate = candidate.replace(TRAILING_PUNCTUATION, "");
+		for (const [opening, closing] of TRAILING_DELIMITERS) {
+			if (!candidate.endsWith(closing)) continue;
+			const wrapsLink = precedingText.endsWith(opening);
+			const unbalanced = opening !== closing && count(candidate, opening) < count(candidate, closing);
+			if (wrapsLink || unbalanced) candidate = candidate.slice(0, -closing.length);
+		}
+	}
+	return candidate;
 }
 
 function count(value: string, character: string): number {

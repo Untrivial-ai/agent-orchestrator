@@ -22,6 +22,20 @@ describe("session links", () => {
 		]);
 	});
 
+	it.each([
+		['"ao://sessions/proj/sess"', "ao://sessions/proj/sess"],
+		["'ao://sessions/proj/sess'", "ao://sessions/proj/sess"],
+		["[ao://sessions/proj/sess]", "ao://sessions/proj/sess"],
+		["«ao://sessions/proj/sess»", "ao://sessions/proj/sess"],
+		["<ao://sessions/proj/sess>", "ao://sessions/proj/sess"],
+		["&lt;ao://sessions/proj/sess&gt;", "ao://sessions/proj/sess"],
+		['"ao://sessions/proj/sess").', "ao://sessions/proj/sess"],
+	])("does not include a wrapping delimiter in %s", (text, expected) => {
+		expect(findSessionLinks(text)).toEqual([
+			{ start: text.indexOf("ao://"), end: text.indexOf("ao://") + expected.length, text: expected },
+		]);
+	});
+
 	it("resolves by stable project and session IDs with termination state", () => {
 		const workspaces = [{ id: "p", sessions: [{ id: "s", title: "renamed", status: "terminated" }] }];
 		expect(resolveSessionLink("ao://sessions/p/s", workspaces)).toEqual({ projectId: "p", sessionId: "s", isTerminated: true });
