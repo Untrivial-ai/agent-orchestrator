@@ -58,6 +58,11 @@ PROVIDER_SECRET_ENV = {
     "nodeops": NODEOPS_SECRET_ENV,
     "coder": CODER_SECRET_ENV,
 }
+# Providers valid in AO_CLOUD_SANDBOX_PROVIDERS that carry NO hosted secrets:
+# their credentials come from the control-plane task role (IAM), not Secrets
+# Manager. ecs (ECS-on-EC2) authenticates with RunTask permissions on the role.
+SECRETLESS_PROVIDERS = {"ecs"}
+KNOWN_PROVIDERS = set(PROVIDER_SECRET_ENV) | SECRETLESS_PROVIDERS
 PROVIDER_ENV_NAMES = set(NODEOPS_SECRET_ENV) | set(CODER_SECRET_ENV) | {
     "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS",
 }
@@ -83,7 +88,7 @@ def resolve_sandbox_providers(
     providers = list(sandbox_providers) if sandbox_providers else [sandbox_provider]
     seen: list[str] = []
     for provider in providers:
-        if provider not in PROVIDER_SECRET_ENV:
+        if provider not in KNOWN_PROVIDERS:
             raise ValueError(f"unsupported hosted sandbox provider: {provider}")
         if provider not in seen:
             seen.append(provider)
@@ -104,7 +109,8 @@ def _inactive_provider_env_names(providers: list[str]) -> set[str]:
     """
     keep: set[str] = set()
     for provider in providers:
-        keep |= set(PROVIDER_SECRET_ENV[provider])
+        if provider in PROVIDER_SECRET_ENV:
+            keep |= set(PROVIDER_SECRET_ENV[provider])
     if "nodeops" in providers:
         keep |= NODEOPS_PLAINTEXT_ENV
     return PROVIDER_ENV_NAMES - keep
@@ -113,7 +119,9 @@ def _inactive_provider_env_names(providers: list[str]) -> set[str]:
 def _required_provider_secrets(providers: list[str]) -> set[str]:
     required: set[str] = set()
     for provider in providers:
-        required |= set(PROVIDER_SECRET_ENV[provider])
+        # Secretless providers (ecs) contribute no required hosted secrets.
+        if provider in PROVIDER_SECRET_ENV:
+            required |= set(PROVIDER_SECRET_ENV[provider])
     return required
 
 
@@ -416,7 +424,7 @@ def validate_task_artifacts(
         if provider.strip()
     ] or [sandbox_provider]
     for provider in providers:
-        if provider not in PROVIDER_SECRET_ENV:
+        if provider not in KNOWN_PROVIDERS:
             raise ValueError("task definition uses an unsupported sandbox provider")
     if sandbox_provider not in providers:
         raise ValueError(

@@ -63,11 +63,40 @@ func TestResolveAvailableProvidersAllowsCoderAndNodeOpsWhenHosted(t *testing.T) 
 	}
 }
 
-func TestProvidersRequireWorkerHome(t *testing.T) {
-	if providersRequireWorkerHome([]string{"ecs"}) {
-		t.Fatal("ecs does not require a worker home")
+func TestResolveDefaultProviderFallsBackToPrimary(t *testing.T) {
+	got, err := resolveDefaultProvider("", "coder", []string{"coder", "ecs"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !providersRequireWorkerHome([]string{"ecs", "coder"}) {
+	if got != "coder" {
+		t.Fatalf("got %q, want coder", got)
+	}
+}
+
+func TestResolveDefaultProviderHonorsAvailableOverride(t *testing.T) {
+	got, err := resolveDefaultProvider("ecs", "coder", []string{"coder", "ecs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ecs" {
+		t.Fatalf("got %q, want ecs", got)
+	}
+}
+
+func TestResolveDefaultProviderRejectsUnavailableOverride(t *testing.T) {
+	if _, err := resolveDefaultProvider("ecs", "coder", []string{"coder"}); err == nil {
+		t.Fatal("expected an error: ecs is not an available provider")
+	}
+}
+
+func TestProvidersRequireWorkerHome(t *testing.T) {
+	if providersRequireWorkerHome([]string{"daytona"}) {
+		t.Fatal("daytona does not require a worker home")
+	}
+	if !providersRequireWorkerHome([]string{"daytona", "coder"}) {
 		t.Fatal("coder requires a worker home")
+	}
+	if !providersRequireWorkerHome([]string{"ecs"}) {
+		t.Fatal("ecs bakes and self-updates a worker and requires a worker home")
 	}
 }

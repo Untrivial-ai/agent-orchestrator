@@ -9,12 +9,13 @@ import { SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
 
 // Proper nouns; deliberately not translated (matches CloudCredentialsSection's
-// AGENT_LABELS convention).
+// AGENT_LABELS convention). ECS is our own AWS infra, so it carries a short
+// qualifier to set it apart from the external NodeOps and Coder providers.
 const PROVIDER_LABELS: Record<string, string> = {
 	nodeops: "NodeOps",
 	coder: "Coder",
 	docker: "Docker",
-	ecs: "ECS",
+	ecs: "ECS (self-hosted)",
 	daytona: "Daytona",
 };
 

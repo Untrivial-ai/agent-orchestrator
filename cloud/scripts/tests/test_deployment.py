@@ -456,6 +456,43 @@ class TaskDefinitionTests(unittest.TestCase):
             worker_image=WORKER_IMAGE,
         )
 
+    def test_validate_accepts_secretless_ecs_in_available_providers(self):
+        # ecs is a secretless provider (task-role IAM). It rides in
+        # AO_CLOUD_SANDBOX_PROVIDERS via an env override and must be accepted by
+        # validate_task_artifacts without requiring any ecs secrets, while the
+        # secret-bearing providers (nodeops, coder) still have their secrets.
+        payload = build_task_definition(
+            task_source("staging"),
+            family="ao-cloud-staging-api",
+            container_name="control-plane",
+            image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+            release="abc123",
+            environment="staging",
+            log_group="/ao-cloud/staging/control-plane",
+            region="eu-north-1",
+            sandbox_provider="nodeops",
+            sandbox_providers=["nodeops", "coder"],
+            environment_overrides={
+                "AO_CLOUD_SANDBOX_PROVIDERS": "nodeops,coder,ecs",
+                "AO_CLOUD_SANDBOX_DEFAULT_PROVIDER": "ecs",
+            },
+            secret_overrides={
+                **hosted_secret_overrides("staging"),
+                **secret_environment("arn:secret:ao-cloud/staging/coder", CODER_SECRET_ENV),
+            },
+        )
+        # Must not raise: ecs is a known secretless provider.
+        validate_task_artifacts(
+            {"taskDefinition": payload, "tags": payload["tags"]},
+            container_name="control-plane",
+            control_image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+        )
+        env = {e["name"]: e["value"] for e in payload["containerDefinitions"][0]["environment"]}
+        self.assertEqual(env["AO_CLOUD_SANDBOX_PROVIDERS"], "nodeops,coder,ecs")
+        self.assertEqual(env["AO_CLOUD_SANDBOX_DEFAULT_PROVIDER"], "ecs")
+
     def test_resolve_sandbox_providers_dedups_and_defaults(self):
         self.assertEqual(resolve_sandbox_providers("nodeops", None), ["nodeops"])
         self.assertEqual(

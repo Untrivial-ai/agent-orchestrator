@@ -24,6 +24,7 @@ import (
 	coderprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/coder"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/createos"
 	dockerprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/docker"
+	ecsprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/ecs"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandboxresolve"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -54,7 +55,9 @@ func readSSHPubKeys(path string) ([]string, error) {
 // a user's first session.
 func provisioningDefaults(cfg config.Config) sandbox.ProvisioningDefaults {
 	return sandbox.ProvisioningDefaults{
-		Provider: cfg.SandboxProvider,
+		// A session with no explicit provider lands on the deployment's default
+		// provider, which may differ from the secret-plumbing primary.
+		Provider: cfg.SandboxDefaultProvider,
 		Release:  cfg.Release,
 		NodeOps: sandbox.NodeOpsConfig{
 			BaseURL:          cfg.NodeOpsBaseURL,
@@ -83,6 +86,15 @@ func provisioningDefaults(cfg config.Config) sandbox.ProvisioningDefaults {
 			DurableRoot:    cfg.CoderDurableRoot,
 			WorkerTokenTTL: cfg.CoderWorkerTokenTTL,
 		},
+		ECS: sandbox.ECSConfig{
+			Region:           cfg.ECSRegion,
+			Cluster:          cfg.ECSCluster,
+			TaskDefinition:   cfg.ECSTaskDefinition,
+			ContainerName:    cfg.ECSContainerName,
+			CapacityProvider: cfg.ECSCapacityProvider,
+			Namespace:        cfg.ECSNamespace,
+			WorkerTokenTTL:   cfg.ECSWorkerTokenTTL,
+		},
 	}
 }
 
@@ -91,6 +103,7 @@ func provisioningDefaults(cfg config.Config) sandbox.ProvisioningDefaults {
 // no sandbox provider still serves the API, and the worker routes report 404
 // rather than failing open.
 func newSandboxReconciler(
+	ctx context.Context,
 	cfg config.Config,
 	store *postgres.Store,
 	logger *slog.Logger,
@@ -103,11 +116,12 @@ func newSandboxReconciler(
 		nodeOpsProvider sandbox.Provider
 		dockerProvider  sandbox.Provider
 		coderProvider   sandbox.Provider
+		ecsProvider     sandbox.Provider
 		buildsProvider  bool
 	)
 	for _, provider := range cfg.AvailableSandboxProviders {
 		switch provider {
-		case sandbox.ProviderNodeOps, sandbox.ProviderDocker, sandbox.ProviderCoder:
+		case sandbox.ProviderNodeOps, sandbox.ProviderDocker, sandbox.ProviderCoder, sandbox.ProviderECS:
 			buildsProvider = true
 		}
 	}
@@ -157,9 +171,22 @@ func newSandboxReconciler(
 				return nil, err
 			}
 			coderProvider = provider
+		case sandbox.ProviderECS:
+			provider, err := ecsprovider.New(ctx, ecsprovider.Config{
+				Region:           cfg.ECSRegion,
+				Cluster:          cfg.ECSCluster,
+				TaskDefinition:   cfg.ECSTaskDefinition,
+				ContainerName:    cfg.ECSContainerName,
+				CapacityProvider: cfg.ECSCapacityProvider,
+				Namespace:        cfg.ECSNamespace,
+			})
+			if err != nil {
+				return nil, err
+			}
+			ecsProvider = provider
 		}
 	}
-	return reconcile.New(store, sandboxresolve.New(nodeOpsProvider, dockerProvider, coderProvider), reconcile.Options{
+	return reconcile.New(store, sandboxresolve.New(nodeOpsProvider, dockerProvider, coderProvider, ecsProvider), reconcile.Options{
 		PublicURL:              cfg.PublicURL,
 		TerminalStreamEnabled:  cfg.TerminalStreamEnabled,
 		WorkerBinary:           workerBinary,
@@ -173,14 +200,17 @@ func newSandboxReconciler(
 }
 
 // loadWorkerBinaries reads the worker and helper binaries once at startup, but
-// only where a provider that runs hosted workers (nodeops or coder) is offered.
-// Docker-only deployments bake the worker into their image and need neither.
-// Both the reconciler (to advertise the expected hashes) and the API server (to
-// serve the content-addressed self-update endpoint) read the same bytes.
+// only where a provider that runs hosted workers (nodeops, coder or ecs) is
+// offered. Docker-only deployments bake the worker into their image and need
+// neither. Both the reconciler (to advertise the expected hashes) and the API
+// server (to serve the content-addressed self-update endpoint) read the same
+// bytes. An ECS worker is baked into its task image but still self-updates to the
+// hash the control plane advertises, exactly as nodeops and coder do.
 func loadWorkerBinaries(cfg config.Config) (workerBinary, workerHelperBinary []byte, err error) {
 	needs := false
 	for _, provider := range cfg.AvailableSandboxProviders {
-		if provider == sandbox.ProviderNodeOps || provider == sandbox.ProviderCoder {
+		if provider == sandbox.ProviderNodeOps || provider == sandbox.ProviderCoder ||
+			provider == sandbox.ProviderECS {
 			needs = true
 		}
 	}
@@ -336,7 +366,7 @@ func run(logger *slog.Logger) error {
 			githubapp.NewRESTClient("", nil), store,
 		)
 	}
-	reconciler, err := newSandboxReconciler(cfg, store, logger)
+	reconciler, err := newSandboxReconciler(ctx, cfg, store, logger)
 	if err != nil {
 		return err
 	}
@@ -374,12 +404,15 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	apiOptions := httpapi.Options{
-		Store:                     store,
-		Transcripts:               store.SessionTranscripts(),
-		WorkOS:                    workosVerifier,
-		LocalAuthEnabled:          cfg.LocalAuthEnabled,
-		LocalSessionTTL:           cfg.LocalSessionTTL,
-		SandboxProvider:           cfg.SandboxProvider,
+		Store:            store,
+		Transcripts:      store.SessionTranscripts(),
+		WorkOS:           workosVerifier,
+		LocalAuthEnabled: cfg.LocalAuthEnabled,
+		LocalSessionTTL:  cfg.LocalSessionTTL,
+		// The server advertises this as the /me default and uses it as the
+		// no-override provisioning fallback, so it is the deployment default
+		// provider, which may differ from the secret-plumbing primary.
+		SandboxProvider:           cfg.SandboxDefaultProvider,
 		AvailableSandboxProviders: cfg.AvailableSandboxProviders,
 		Provisioning:              provisioningDefaults(cfg),
 		WorkerTokens:              workerTokens,

@@ -15,6 +15,7 @@ type Resolver struct {
 	nodeOps sandbox.Provider
 	docker  sandbox.Provider
 	coder   sandbox.Provider
+	ecs     sandbox.Provider
 }
 
 type sessionScopedProvider interface {
@@ -22,8 +23,8 @@ type sessionScopedProvider interface {
 }
 
 // New creates a resolver backed by the providers enabled for this deployment.
-func New(nodeOps, docker, coder sandbox.Provider) *Resolver {
-	return &Resolver{nodeOps: nodeOps, docker: docker, coder: coder}
+func New(nodeOps, docker, coder, ecs sandbox.Provider) *Resolver {
+	return &Resolver{nodeOps: nodeOps, docker: docker, coder: coder, ecs: ecs}
 }
 
 // Resolve returns the provider authorized for sandbox. The reconciler never
@@ -64,7 +65,15 @@ func (r *Resolver) Resolve(_ context.Context, record domain.Sandbox) (sandbox.Pr
 			return nil, fmt.Errorf("coder sandbox provider does not support durable session profiles")
 		}
 		return scoped.ForSandbox(record)
-	case sandbox.ProviderDaytona, sandbox.ProviderECS:
+	case sandbox.ProviderECS:
+		if record.ProviderConnectionID != "" {
+			return nil, fmt.Errorf("per-organization ECS connections are not supported")
+		}
+		if r.ecs == nil {
+			return nil, fmt.Errorf("ecs sandbox provider is not configured")
+		}
+		return r.ecs, nil
+	case sandbox.ProviderDaytona:
 		return nil, fmt.Errorf("sandbox provider %q is not configured", record.Provider)
 	default:
 		return nil, fmt.Errorf("unsupported sandbox provider %q", record.Provider)

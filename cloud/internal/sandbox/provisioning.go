@@ -54,6 +54,42 @@ type DockerConfig struct {
 	WorkerTokenTTL time.Duration
 }
 
+// ECSConfig configures the ECS-on-EC2 sandbox provider. The worker image and its
+// resource sizing live in the ECS task definition; this config only names the
+// cluster, task definition and correlation namespace, plus the region the client
+// talks to.
+type ECSConfig struct {
+	Region           string
+	Cluster          string
+	TaskDefinition   string
+	ContainerName    string
+	CapacityProvider string
+	Namespace        string
+	WorkerTokenTTL   time.Duration
+}
+
+func (c ECSConfig) Validate() error {
+	if strings.TrimSpace(c.Region) == "" {
+		return errors.New("AO_CLOUD_ECS_REGION is required")
+	}
+	if strings.TrimSpace(c.Cluster) == "" {
+		return errors.New("AO_CLOUD_ECS_CLUSTER is required")
+	}
+	if strings.TrimSpace(c.TaskDefinition) == "" {
+		return errors.New("AO_CLOUD_ECS_TASK_DEFINITION is required")
+	}
+	if strings.TrimSpace(c.ContainerName) == "" {
+		return errors.New("AO_CLOUD_ECS_CONTAINER_NAME is required")
+	}
+	if strings.TrimSpace(c.Namespace) == "" {
+		return errors.New("AO_CLOUD_ECS_NAMESPACE is required")
+	}
+	if c.WorkerTokenTTL <= 0 {
+		return errors.New("AO_CLOUD_ECS_WORKER_TOKEN_TTL must be positive")
+	}
+	return nil
+}
+
 type CoderConfig struct {
 	BaseURL        string
 	Owner          string
@@ -260,6 +296,7 @@ type ProvisioningDefaults struct {
 	NodeOps  NodeOpsConfig
 	Docker   DockerConfig
 	Coder    CoderConfig
+	ECS      ECSConfig
 }
 
 type Plan struct {
@@ -361,6 +398,24 @@ func (d ProvisioningDefaults) SessionPlanForProvider(harness, providerOverride s
 			"templateId":  strings.TrimSpace(d.Coder.TemplateID),
 			"agentName":   strings.TrimSpace(d.Coder.AgentName),
 			"durableRoot": strings.TrimSpace(d.Coder.DurableRoot),
+		}
+	} else if provider == ProviderECS {
+		if err := d.ECS.Validate(); err != nil {
+			return Plan{}, err
+		}
+		resourceProfile["ecs"] = map[string]any{
+			"region":                strings.TrimSpace(d.ECS.Region),
+			"cluster":               strings.TrimSpace(d.ECS.Cluster),
+			"taskDefinition":        strings.TrimSpace(d.ECS.TaskDefinition),
+			"containerName":         strings.TrimSpace(d.ECS.ContainerName),
+			"capacityProvider":      strings.TrimSpace(d.ECS.CapacityProvider),
+			"namespace":             strings.TrimSpace(d.ECS.Namespace),
+			"workerTokenTtlSeconds": int64(d.ECS.WorkerTokenTTL / time.Second),
+		}
+		bootstrapContext["ecs"] = map[string]any{
+			"cluster":        strings.TrimSpace(d.ECS.Cluster),
+			"taskDefinition": strings.TrimSpace(d.ECS.TaskDefinition),
+			"namespace":      strings.TrimSpace(d.ECS.Namespace),
 		}
 	}
 	resourceJSON, err := json.Marshal(resourceProfile)

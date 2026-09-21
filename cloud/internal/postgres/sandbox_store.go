@@ -488,13 +488,18 @@ func (s *Store) WakePausedSessions(
 }
 
 // RunningSandboxSessions lists running session sandboxes across organizations.
+// ECS sandboxes are excluded: that provider runs on ephemeral tasks with no
+// resume (a stopped task is terminal and its filesystem does not survive), so it
+// deliberately has no idle-pause. Those sessions run until a user terminates
+// them, and pausing one would silently destroy in-progress work.
 func (s *Store) RunningSandboxSessions(ctx context.Context) ([]domain.SandboxRef, error) {
 	var refs []domain.SandboxRef
 	err := s.withService(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(
 			ctx,
 			`SELECT session_id, org_id FROM ao_sandboxes
-			WHERE desired_state = 'running' AND observed_state = 'running'`,
+			WHERE desired_state = 'running' AND observed_state = 'running'
+				AND provider <> 'ecs'`,
 		)
 		if err != nil {
 			return fmt.Errorf("list running sandbox sessions: %w", err)

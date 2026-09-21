@@ -299,6 +299,34 @@ func TestWorkerSpecAdvertisesWorkerBinaryHashes(t *testing.T) {
 	}
 }
 
+func TestWorkerSpecOmitsHashesForECS(t *testing.T) {
+	t.Parallel()
+	// ECS sandboxes run on Graviton (arm64) while the control plane and the
+	// worker binary it serves are amd64. Advertising the amd64 hash would make
+	// the arm64 worker self-update to an incompatible binary, so the reconciler
+	// must never set it for ECS even when a worker binary is configured.
+	reconciler := New(&workerSpecStore{}, nil, Options{
+		PublicURL:          "https://cloud.example.com",
+		WorkerBinary:       []byte("fake amd64 ao-worker binary"),
+		WorkerHelperBinary: []byte("fake amd64 ao helper binary"),
+	})
+	spec, err := reconciler.workerSpec(context.Background(), domain.Sandbox{
+		SessionID: "session-ecs", OrgID: "org-1", Provider: sandbox.ProviderECS,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"AO_WORKER_EXPECTED_SHA256",
+		"AO_WORKER_HELPER_EXPECTED_SHA256",
+		"AO_WORKER_HELPER_PATH",
+	} {
+		if _, ok := spec.Environment[key]; ok {
+			t.Fatalf("ECS worker spec must not advertise %s (cross-architecture self-update)", key)
+		}
+	}
+}
+
 func TestWorkerSpecOmitsHashesWithoutBinary(t *testing.T) {
 	t.Parallel()
 	reconciler := New(&workerSpecStore{}, nil, Options{PublicURL: "https://cloud.example.com"})

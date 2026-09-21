@@ -1218,12 +1218,21 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 	// a stale baked copy heals itself from /worker/binary/{sha} instead of the
 	// reconciler uploading megabytes on every provision. Absent hashes (no worker
 	// binary configured) leave self-update inert.
-	if r.workerBinarySHA256 != "" {
-		workerEnvironment["AO_WORKER_EXPECTED_SHA256"] = r.workerBinarySHA256
-	}
-	if r.workerHelperBinarySHA256 != "" {
-		workerEnvironment["AO_WORKER_HELPER_EXPECTED_SHA256"] = r.workerHelperBinarySHA256
-		workerEnvironment["AO_WORKER_HELPER_PATH"] = r.options.WorkerHelperDestination
+	//
+	// ECS sandboxes run on Graviton (arm64) while the control plane and the
+	// worker binary it serves are amd64, so a self-update would replace the baked
+	// arm64 worker with an amd64 one and break the box. The ECS task image bakes
+	// the correct arm64 worker and is rebuilt from the same commit on every
+	// deploy, so the baked binary is authoritative: never advertise a
+	// cross-architecture hash to it.
+	if record.Provider != sandbox.ProviderECS {
+		if r.workerBinarySHA256 != "" {
+			workerEnvironment["AO_WORKER_EXPECTED_SHA256"] = r.workerBinarySHA256
+		}
+		if r.workerHelperBinarySHA256 != "" {
+			workerEnvironment["AO_WORKER_HELPER_EXPECTED_SHA256"] = r.workerHelperBinarySHA256
+			workerEnvironment["AO_WORKER_HELPER_PATH"] = r.options.WorkerHelperDestination
+		}
 	}
 	return sandbox.Spec{
 		Name:             "ao-" + record.SessionID,
