@@ -359,6 +359,38 @@ func (s *Store) UpdatePullRequestObservation(
 	return record, nil
 }
 
+// PullRequestByGitHubReference resolves a tracked PR through the repository
+// bound to its project. orgID is derived from the installation route, never
+// from webhook payload data.
+func (s *Store) PullRequestByGitHubReference(
+	ctx context.Context,
+	orgID string,
+	repositoryID int64,
+	number int,
+) (domain.PullRequest, error) {
+	var record domain.PullRequest
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		record, err = scanPullRequest(tx.QueryRow(ctx,
+			`SELECT `+pullRequestColumns+`
+			FROM ao_pull_requests
+			WHERE org_id = $1 AND number = $3 AND session_id IN (
+				SELECT session.id FROM ao_sessions session
+				JOIN ao_projects project
+				  ON project.org_id = session.org_id AND project.id = session.project_id
+				WHERE session.org_id = $1 AND project.github_repository_id = $2
+			)
+			ORDER BY updated_at DESC LIMIT 1`,
+			orgID, repositoryID, number,
+		))
+		return err
+	})
+	if err != nil {
+		return domain.PullRequest{}, err
+	}
+	return record, nil
+}
+
 type pullRequestRow interface {
 	Scan(dest ...any) error
 }

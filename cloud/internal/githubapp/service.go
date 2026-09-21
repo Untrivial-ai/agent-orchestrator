@@ -59,6 +59,7 @@ type Store interface {
 	) (domain.PullRequest, error)
 	ClaimPullRequestRecord(context.Context, string, string, domain.PullRequest) (domain.PullRequest, error)
 	GitHubInstallationForRepository(ctx context.Context, orgID, repository string) (installationID, repositoryID int64, err error)
+	PullRequestByGitHubReference(ctx context.Context, orgID string, repositoryID int64, number int) (domain.PullRequest, error)
 	UpdatePullRequestObservation(
 		ctx context.Context,
 		orgID, pullRequestID string,
@@ -725,6 +726,8 @@ func (s *Service) processWebhook(
 		return err
 	}
 	switch delivery.Event {
+	case "pull_request", "check_suite", "check_run", "pull_request_review":
+		return s.processSCMWebhook(ctx, orgID, delivery)
 	case "installation":
 		action := "unsuspend"
 		providerInstallation, err := s.client.GetInstallation(
