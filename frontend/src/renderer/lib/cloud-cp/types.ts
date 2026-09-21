@@ -246,7 +246,8 @@ export interface CloudCpSession {
 	runtimeState?: string;
 	runtimeError?: string;
 	isTerminated: boolean;
-	autoInjectCI: boolean;
+	autoInjectCI?: boolean;
+	prs: CloudCpSessionPullRequest[];
 	/**
 	 * Highest worker epoch the session has minted for its agent terminal. It
 	 * advances on every fresh worker connection (resume from idle-pause,

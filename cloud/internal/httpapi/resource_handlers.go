@@ -65,25 +65,26 @@ type createSessionRequest struct {
 }
 
 type sessionResponse struct {
-	ID               string   `json:"id"`
-	OrgID            string   `json:"orgId"`
-	ProjectID        string   `json:"projectId"`
-	Kind             string   `json:"kind"`
-	Harness          string   `json:"harness"`
-	DisplayName      string   `json:"displayName"`
-	Branch           string   `json:"branch"`
-	Mode             string   `json:"mode"`
-	DeniedCommands   []string `json:"deniedCommands"`
-	ActivityState    string   `json:"activityState"`
-	Status           string   `json:"status"`
-	RuntimeConnected bool     `json:"runtimeConnected"`
-	SandboxProvider  string   `json:"sandboxProvider,omitempty"`
-	DesiredState     string   `json:"desiredState,omitempty"`
-	ObservedState    string   `json:"observedState,omitempty"`
-	RuntimeState     string   `json:"runtimeState,omitempty"`
-	RuntimeError     string   `json:"runtimeError,omitempty"`
-	IsTerminated     bool     `json:"isTerminated"`
-	AutoInjectCI     bool     `json:"autoInjectCI"`
+	ID               string                   `json:"id"`
+	OrgID            string                   `json:"orgId"`
+	ProjectID        string                   `json:"projectId"`
+	Kind             string                   `json:"kind"`
+	Harness          string                   `json:"harness"`
+	DisplayName      string                   `json:"displayName"`
+	Branch           string                   `json:"branch"`
+	Mode             string                   `json:"mode"`
+	DeniedCommands   []string                 `json:"deniedCommands"`
+	ActivityState    string                   `json:"activityState"`
+	Status           string                   `json:"status"`
+	RuntimeConnected bool                     `json:"runtimeConnected"`
+	SandboxProvider  string                   `json:"sandboxProvider,omitempty"`
+	DesiredState     string                   `json:"desiredState,omitempty"`
+	ObservedState    string                   `json:"observedState,omitempty"`
+	RuntimeState     string                   `json:"runtimeState,omitempty"`
+	RuntimeError     string                   `json:"runtimeError,omitempty"`
+	IsTerminated     bool                     `json:"isTerminated"`
+	AutoInjectCI     bool                     `json:"autoInjectCI"`
+	PRs              []sessionPRFactsResponse `json:"prs"`
 	// WorkerEpoch advances on every fresh worker connection (resume, restore,
 	// re-provision). Clients key their terminal on it so a resumed session
 	// re-attaches to the live agent instead of the dead epoch's terminal.
@@ -525,9 +526,16 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, sessionIDs)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
 	items := make([]sessionResponse, 0, len(sessions))
 	for _, session := range sessions {
-		items = append(items, toSessionResponse(session, prFacts[session.ID]))
+		response := toSessionResponse(session, prFacts[session.ID])
+		response.PRs = toSessionPRFactsResponses(pullRequests[session.ID])
+		items = append(items, response)
 	}
 	page := pageInfo{HasMore: hasMore}
 	if hasMore && len(sessions) > 0 {
@@ -639,7 +647,48 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": toSessionResponse(session, prFacts[sessionID])})
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	response := toSessionResponse(session, prFacts[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID])
+	writeJSON(w, http.StatusOK, map[string]any{"session": response})
+}
+
+func (s *Server) setCloudSessionAutoInjectCI(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	var input struct {
+		AutoInjectCI *bool `json:"autoInjectCI"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil || input.AutoInjectCI == nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "autoInjectCI must be a boolean.")
+		return
+	}
+	session, err := s.store.SetCloudSessionAutoInjectCI(r.Context(), principalFrom(r), orgID, sessionID, *input.AutoInjectCI)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	prFacts, err := s.store.PRFactsBySession(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	response := toSessionResponse(session, prFacts[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID])
+	writeJSON(w, http.StatusOK, map[string]any{"session": response})
 }
 
 // deleteSession records the intent to tear a session's sandbox down. It does
@@ -826,7 +875,24 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		WorkerEpoch:      session.WorkerEpoch,
 		CreatedAt:        session.CreatedAt,
 		UpdatedAt:        session.UpdatedAt,
+		PRs:              []sessionPRFactsResponse{},
 	}
+}
+
+func toSessionPRFactsResponses(prs []domain.PullRequest) []sessionPRFactsResponse {
+	items := make([]sessionPRFactsResponse, 0, len(prs))
+	for _, pr := range prs {
+		state := string(pr.State)
+		if pr.Draft && state == "open" {
+			state = "draft"
+		}
+		items = append(items, sessionPRFactsResponse{
+			URL: pr.URL, Number: pr.Number, State: state, CI: string(pr.CIState),
+			Review: string(pr.ReviewState), Mergeability: string(pr.Mergeability),
+			SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch, UpdatedAt: pr.UpdatedAt,
+		})
+	}
+	return items
 }
 
 func decimalID(id *int64) string {

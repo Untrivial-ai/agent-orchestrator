@@ -915,6 +915,26 @@ func (s *Store) GetSession(
 	return session, err
 }
 
+func (s *Store) SetCloudSessionAutoInjectCI(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+	enabled bool,
+) (domain.Session, error) {
+	var session domain.Session
+	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE ao_sessions SET auto_inject_ci = $3, updated_at = now() WHERE org_id = $1 AND id = $2`, orgID, sessionID, enabled)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrNotFound
+		}
+		return getSession(ctx, tx, orgID, sessionID, &session)
+	})
+	return session, err
+}
+
 const sessionSelect = `
 	SELECT session.id, session.org_id, session.project_id, session.kind,
 		session.harness, session.display_name, session.branch,

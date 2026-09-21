@@ -78,6 +78,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/t
 import { appI18n } from "../i18n";
 import type { MessageKey } from "../i18n";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
+import { useCloudCp } from "../hooks/useCloudCp";
 import {
 	openReviewStatesFor,
 	reviewHasLiveActivity,
@@ -305,7 +306,7 @@ const SummaryView = memo(function SummaryView({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
-	const query = useSessionScmSummary(session.id);
+	const query = useSessionScmSummary(session.id, session.cloud === undefined);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
 	const showUsage =
@@ -572,6 +573,7 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectCI ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectCI ?? true);
@@ -579,6 +581,10 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const save = useMutation({
 		mutationFn: async (autoInjectCI: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.setSessionAutoInjectCI(session.cloud.orgId, session.id, autoInjectCI);
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-ci", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectCI },
@@ -1665,7 +1671,7 @@ function ReviewsSection({
 	});
 	const reviewStates = reviewsQuery.data?.reviews ?? [];
 	const autoReviewEnabled = session.autoReviewEnabled === true;
-	const scmSummary = useSessionScmSummary(session.id);
+	const scmSummary = useSessionScmSummary(session.id, session.cloud === undefined);
 	const prSummaries = sessionPRDisplaySummaries(session, scmSummary.data);
 	const githubReviews = prSummaries.filter(
 		(pr) =>

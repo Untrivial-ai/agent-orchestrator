@@ -56,6 +56,7 @@ type Store interface {
 	CreateSession(context.Context, domain.Principal, string, string, int, domain.CreateSession) (domain.Session, error)
 	ListSessions(context.Context, domain.Principal, string, string, *domain.Cursor, int) ([]domain.Session, bool, error)
 	GetSession(context.Context, domain.Principal, string, string) (domain.Session, error)
+	SetCloudSessionAutoInjectCI(context.Context, domain.Principal, string, string, bool) (domain.Session, error)
 	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
@@ -432,6 +433,7 @@ func New(options Options) *Server {
 			router.Get("/sessions", server.listSessions)
 			router.Post("/sessions", server.createSession)
 			router.Get("/sessions/{sessionId}", server.getSession)
+			router.Patch("/sessions/{sessionId}/auto-inject-ci", server.setCloudSessionAutoInjectCI)
 			router.Post("/sessions/wake", server.wakePausedSessions)
 			router.Post("/sessions/{sessionId}/resume", server.resumeSession)
 			router.Post("/sessions/{sessionId}/restore", server.restoreSession)

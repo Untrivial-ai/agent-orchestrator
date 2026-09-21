@@ -132,6 +132,7 @@ export interface CloudCpClient {
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	setSessionAutoInjectCI(orgId: string, sessionId: string, autoInjectCI: boolean, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
 	/** Lists the sessions an orchestrator spawned, with each child's pull requests. */
 	listSessionChildren(
 		orgId: string,
@@ -429,6 +430,8 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		getSession: (orgId, sessionId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
+		setSessionAutoInjectCI: (orgId, sessionId, autoInjectCI, o) =>
+			requestJson("PATCH", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/auto-inject-ci`, { body: { autoInjectCI }, signal: o?.signal }),
 		listSessionChildren: (orgId, sessionId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/children`, {
 				query: { limit: query?.limit, cursor: query?.cursor },
