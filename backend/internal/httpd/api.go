@@ -135,10 +135,12 @@ type API struct {
 // per-request timeout so the REST group can apply it without re-reading the
 // environment.
 func NewAPI(cfg config.Config, deps APIDeps) *API {
-	return newAPI(cfg, deps, loggerOrDefault(nil))
+	return newAPIWithLogger(cfg, deps, loggerOrDefault(nil))
 }
 
-func newAPI(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
+// newAPIWithLogger carries the daemon logger to controllers that emit service
+// errors, so their logs use the same configured handler as the rest of HTTP.
+func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 	return &API{
 		cfg:  cfg,
 		deps: deps,

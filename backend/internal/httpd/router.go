@@ -58,7 +58,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	log = loggerOrDefault(log)
 	deps = normalizeAPIDeps(deps, log)
 	r := chi.NewRouter()
-	api := newAPI(cfg, deps, log)
+	api := newAPIWithLogger(cfg, deps, log)
 
 	r.Use(middleware.RequestID)
 	r.Use(requestLogger(log, deps.Telemetry))
