@@ -821,6 +821,35 @@ func TestOpenShellTerminalStartsInSessionWorkspaceOverProjectRoot(t *testing.T) 
 	}
 }
 
+// A standalone session has no project row. Its session identity must clear any
+// UI-only project sentinel supplied by a caller; otherwise the shell row's
+// project foreign key rejects the insert after the PTY has briefly opened.
+func TestOpenShellTerminalStandaloneSessionClearsRequestedProject(t *testing.T) {
+	rt := newFakeShellRuntime()
+	st := &fakeShellTerminalStore{}
+	sessions := &fakeSessionWorkspaceLocator{sessions: map[domain.SessionID]fakeSessionWorkspace{
+		"standalone-1": {workspacePath: "/scratch/standalone-1"},
+	}}
+	svc := newTestServiceWithSessions(rt, st, &fakeProjectRootLocator{}, sessions)
+
+	term, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{
+		ProjectID: "__standalone__",
+		SessionID: "standalone-1",
+	})
+	if err != nil {
+		t.Fatalf("OpenShellTerminal: %v", err)
+	}
+	if term.ProjectID != "" {
+		t.Fatalf("standalone terminal project = %q, want empty", term.ProjectID)
+	}
+	if len(st.records) != 1 || st.records[0].ProjectID != "" {
+		t.Fatalf("persisted standalone terminal = %+v, want no project", st.records)
+	}
+	if term.WorkingDir != "/scratch/standalone-1" {
+		t.Fatalf("working dir = %q, want standalone workspace", term.WorkingDir)
+	}
+}
+
 // A session that has no workspace of its own yet (or an orchestrator that
 // simply runs at the project root) falls back to the project root rather than
 // failing the open.

@@ -1,7 +1,6 @@
 "use client";
 
 import { AnimatePresence, domAnimation, LazyMotion, m, motion } from "motion/react";
-import { GeistMono } from "geist/font/mono";
 import {
 	ArrowUpRight,
 	Bell,
@@ -522,6 +521,8 @@ function SessionTopbar({ phase }: { phase: Phase }) {
 								aria-hidden="true"
 								className="size-[13px] shrink-0 object-contain"
 								draggable={false}
+								loading="lazy"
+								decoding="async"
 							/>
 							<span className="inline-flex items-center gap-1.5 text-[10.5px] font-medium leading-none text-[var(--preview-foreground)]">
 								<span className="truncate">github-auth</span>
@@ -576,7 +577,7 @@ function TerminalPane({ lines, typingText, streamingText }: { lines: DisplayLine
 	return (
 		<main
 			ref={scrollRef}
-			className={`${GeistMono.className} flex min-h-0 min-w-0 flex-1 flex-col justify-end overflow-hidden bg-[var(--preview-terminal)] px-3 py-2.5`}
+			className="flex min-h-0 min-w-0 flex-1 flex-col justify-end overflow-hidden bg-[var(--preview-terminal)] px-3 py-2.5 font-mono"
 			style={{ fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace", fontVariantEmoji: "text" }}
 		>
 			{/* Claude Code header */}
@@ -587,6 +588,8 @@ function TerminalPane({ lines, typingText, streamingText }: { lines: DisplayLine
 					aria-hidden="true"
 					className="mt-0.5 size-[22px] shrink-0"
 					draggable={false}
+					loading="lazy"
+					decoding="async"
 				/>
 				<div className="min-w-0 text-[10px] leading-[1.5]">
 					<div>

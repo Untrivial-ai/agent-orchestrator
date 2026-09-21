@@ -5,10 +5,13 @@ import { Keyboard, Pressable, StyleSheet, Text, TextInput, View } from "react-na
 import type { DashboardSession } from "./api";
 import { AgentLogo } from "./AgentLogo";
 import { haptics } from "./haptics";
-import { prLine, workerRowPresentation } from "./agentsView";
+import { prLine, workerRowPresentation, workerStatusGlyph } from "./agentsView";
 import { toneColor } from "./prView";
 import { statusVisual, type Theme } from "./theme";
+import { rowDividerWidth } from "./divider";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
+import { openGitHub } from "./openGitHub";
+import { workerContextActions, type WorkerActionId } from "./worker-action-model";
 import { WorkerRowActions } from "./worker-row-actions";
 import { WorkerRowInteraction } from "./worker-row-interaction";
 import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
@@ -26,6 +29,8 @@ export function WorkerListRow({
 	onRename,
 	onSetPinned,
 	onDelete,
+	onResume,
+	onRestore,
 }: {
 	session: DashboardSession;
 	projectName?: string;
@@ -38,6 +43,10 @@ export function WorkerListRow({
 	onRename(title: string): Promise<void>;
 	onSetPinned(pinned: boolean): Promise<void>;
 	onDelete(): void;
+	/** Restart a stopped agent without resurrecting a terminated session. */
+	onResume(): void;
+	/** Bring a terminated session back. */
+	onRestore(): void;
 }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
@@ -48,6 +57,7 @@ export function WorkerListRow({
 	const [renameError, setRenameError] = useState<string>();
 	const row = workerRowPresentation(t, session, projectName);
 	const visual = statusVisual(t, session.status);
+	const glyph = workerStatusGlyph(session.status);
 	const prs = prLine(session);
 	const details = [row.branch, prs?.text].filter(Boolean).join("  ·  ");
 	useEffect(() => {
@@ -102,6 +112,44 @@ export function WorkerListRow({
 		});
 	};
 
+	// prLine returns display text, not a link, so the url comes off the session.
+	const prUrl = (session.prs?.length ? session.prs[0] : session.pr)?.url ?? null;
+	const terminated = session.isTerminated === true || session.status === "terminated";
+	const contextActions = workerContextActions({
+		pinned: Boolean(session.isPinned),
+		terminated,
+		// A live session whose agent has stopped: exited or crashed, but the AO
+		// session around it is still intact, so resuming is the lighter fix.
+		stopped: !terminated && (session.status === "exited" || session.status === "errored"),
+		hasPr: Boolean(prUrl),
+	});
+
+	const runAction = useCallback((id: WorkerActionId) => {
+		switch (id) {
+			case "open":
+				return openSession();
+			case "pin":
+				return void onSetPinned(true);
+			case "unpin":
+				return void onSetPinned(false);
+			case "rename":
+				haptics.tap();
+				setRenameTitle(row.title);
+				setRenameError(undefined);
+				return onRenameStart();
+			case "resume":
+				return onResume();
+			case "restore":
+				return onRestore();
+			case "openPr":
+				if (prUrl) void openGitHub(prUrl);
+				return;
+			default:
+				return onDelete();
+		}
+	// openSession closes over router and session, both stable enough for a row.
+	}, [onDelete, onRenameStart, onResume, onRestore, onSetPinned, prUrl, row.title]);
+
 	return (
 		<WorkerRowInteraction
 			sessionId={session.id}
@@ -113,14 +161,10 @@ export function WorkerListRow({
 			rowStyle={styles.row}
 			pressedStyle={styles.rowPressed}
 			accessibilityLabel={`${row.title}. ${visual.label}. ${row.project}.`}
-			accessibilityHint="Swipe left for pin and delete actions. Long press to rename."
+			accessibilityHint="Swipe left for pin and delete actions. Long press for more."
 			onPress={openSession}
-			onRenameRequest={() => {
-				haptics.tap();
-				setRenameTitle(row.title);
-				setRenameError(undefined);
-				onRenameStart();
-			}}
+			actions={contextActions}
+			onAction={runAction}
 			onSwipeOpen={onSwipeOpen}
 			onSwipeClose={onSwipeClose}
 			onReady={(close) => { closeActionRailRef.current = close; }}
@@ -129,6 +173,7 @@ export function WorkerListRow({
 				<WorkerRowContents
 					row={row}
 					visual={visual}
+					glyph={glyph}
 					details={details}
 					prsTone={prs?.tone}
 					harness={session.harness}
@@ -146,6 +191,7 @@ export function WorkerListRow({
 				<WorkerRowContents
 					row={row}
 					visual={visual}
+					glyph={glyph}
 					details={details}
 					prsTone={prs?.tone}
 					harness={session.harness}
@@ -160,6 +206,7 @@ export function WorkerListRow({
 function WorkerRowContents({
 	row,
 	visual,
+	glyph,
 	details,
 	prsTone,
 	harness,
@@ -175,6 +222,7 @@ function WorkerRowContents({
 }: {
 	row: ReturnType<typeof workerRowPresentation>;
 	visual: ReturnType<typeof statusVisual>;
+	glyph: ReturnType<typeof workerStatusGlyph>;
 	details: string;
 	prsTone?: Parameters<typeof toneColor>[1];
 	harness: DashboardSession["harness"];
@@ -196,6 +244,12 @@ function WorkerRowContents({
 				<Text style={styles.project} numberOfLines={1}>
 					{row.project}
 				</Text>
+				{/* Paired with the tinted label so status reads by shape as well as
+				    colour. Only shown alongside a real status — when the row is
+				    showing an elapsed time instead, there is no state to depict. */}
+				{glyph && row.trailingKind === "status" ? (
+					<Feather name={glyph} size={12} color={visual.color} />
+				) : null}
 				<Text
 					style={[styles.trailing, { color: row.trailingKind === "status" ? visual.color : t.textTertiary }]}
 					numberOfLines={1}
@@ -258,7 +312,7 @@ const makeStyles = (t: Theme) =>
 		shell: {
 			minHeight: 76,
 			overflow: "hidden",
-			borderBottomWidth: StyleSheet.hairlineWidth,
+			borderBottomWidth: rowDividerWidth,
 			borderBottomColor: t.borderSubtle,
 		},
 		actionRail: {

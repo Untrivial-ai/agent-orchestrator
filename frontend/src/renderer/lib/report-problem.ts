@@ -2,6 +2,7 @@ import { aoBridge } from "./bridge";
 import { routeSurface } from "./telemetry";
 
 export type ReportProblemOutput = "github" | "discord" | "email";
+export type ReportProblemEmailProvider = "system" | "gmail" | "outlook";
 
 export type ReportProblemInput = {
 	summary: string;
@@ -21,7 +22,7 @@ export type ReportProblemDiagnostics = {
 const REDACTED_LOCAL_PATH = "[redacted-local-path]";
 const REDACTED_LOCAL_URL = "[redacted-local-url]";
 const REDACTED_SECRET = "[redacted-secret]";
-const DISCORD_INVITE_URL = "https://discord.com/invite/UZv7JjxbwG";
+const DISCORD_SUPPORT_URL = "https://discord.gg/WjKNa7EbB8";
 const GITHUB_NEW_ISSUE_URL = "https://github.com/Untrivial-ai/agent-orchestrator/issues/new";
 const SUPPORT_EMAIL = "prasad@untrivial.ai";
 const SUPPORT_CC_EMAIL = "prateek@untrivial.ai";
@@ -119,13 +120,34 @@ export function reportProblemDestinationUrl(
 	input: ReportProblemInput,
 	diagnostics: ReportProblemDiagnostics,
 	output: ReportProblemOutput,
+	emailProvider: ReportProblemEmailProvider = "system",
 ): string | null {
-	if (output === "discord") return DISCORD_INVITE_URL;
+	if (output === "discord") return DISCORD_SUPPORT_URL;
 	if (output === "email") {
+		const subject = `AO feedback: ${reportTitle(input)}`;
+		const body = formatEmailBody(normalizeInput(input), formatDiagnostics(diagnostics));
+		if (emailProvider === "gmail") {
+			const url = new URL("https://mail.google.com/mail/");
+			url.searchParams.set("view", "cm");
+			url.searchParams.set("fs", "1");
+			url.searchParams.set("to", SUPPORT_EMAIL);
+			url.searchParams.set("cc", SUPPORT_CC_EMAIL);
+			url.searchParams.set("su", subject);
+			url.searchParams.set("body", body);
+			return url.toString();
+		}
+		if (emailProvider === "outlook") {
+			const url = new URL("https://outlook.office.com/mail/deeplink/compose");
+			url.searchParams.set("to", SUPPORT_EMAIL);
+			url.searchParams.set("cc", SUPPORT_CC_EMAIL);
+			url.searchParams.set("subject", subject);
+			url.searchParams.set("body", body);
+			return url.toString();
+		}
 		const url = new URL(`mailto:${SUPPORT_EMAIL}`);
 		url.searchParams.set("cc", SUPPORT_CC_EMAIL);
-		url.searchParams.set("subject", `AO feedback: ${reportTitle(input)}`);
-		url.searchParams.set("body", formatEmailBody(normalizeInput(input), formatDiagnostics(diagnostics)));
+		url.searchParams.set("subject", subject);
+		url.searchParams.set("body", body);
 		// Mail clients treat "+" literally, so encode spaces in the query only; the
 		// recipient must stay untouched or a plus-addressed support address breaks.
 		const query = url.searchParams.toString().replaceAll("+", "%20");

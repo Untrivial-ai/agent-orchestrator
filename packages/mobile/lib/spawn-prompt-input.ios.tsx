@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import type { SpawnPromptInputProps } from "./spawn-prompt-input.android";
 
-export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps) {
+export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPromptInputProps) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const nativeValue = useNativeState(value);
@@ -14,7 +14,7 @@ export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps)
 	}, [nativeValue, value]);
 
 	return (
-		<Host style={{ flex: 1, height: 112 }} colorScheme={scheme} seedColor={t.blue}>
+		<Host style={{ flex: 1, height }} colorScheme={scheme} seedColor={t.blue}>
 			<TextInput
 				value={nativeValue}
 				onChangeText={onChangeText}
@@ -23,7 +23,7 @@ export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps)
 				numberOfLines={3}
 				maxLength={4096}
 				autoFocus
-				style={{ height: 112, paddingHorizontal: 16, paddingVertical: 14 }}
+				style={{ height, paddingHorizontal: 16, paddingVertical: 14 }}
 				textStyle={{ color: t.textPrimary, fontSize: 16 }}
 				placeholderTextColor={t.textTertiary}
 				modifiers={[textFieldStyle("plain")]}

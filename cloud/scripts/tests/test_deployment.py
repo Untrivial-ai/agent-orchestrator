@@ -10,6 +10,7 @@ from lib.deployment import (
     NODEOPS_SECRET_ENV,
     WORKER_SECRET_ENV,
     build_task_definition,
+    resolve_sandbox_providers,
     secret_environment,
     validate_hosted_settings,
     validate_service,
@@ -35,6 +36,20 @@ def coder_secret_overrides(environment="production"):
         f"arn:secret:ao-cloud/{environment}/coder", CODER_SECRET_ENV
     ) | secret_environment(
         f"arn:secret:ao-cloud/{environment}/worker", WORKER_SECRET_ENV
+    )
+
+
+def multi_provider_secret_overrides(environment="staging"):
+    return (
+        secret_environment(
+            f"arn:secret:ao-cloud/{environment}/nodeops", NODEOPS_SECRET_ENV
+        )
+        | secret_environment(
+            f"arn:secret:ao-cloud/{environment}/coder", CODER_SECRET_ENV
+        )
+        | secret_environment(
+            f"arn:secret:ao-cloud/{environment}/worker", WORKER_SECRET_ENV
+        )
     )
 
 
@@ -114,8 +129,8 @@ def healthy_service():
     task = "arn:task-definition:production:7"
     return (
         {
-            "desiredCount": 2,
-            "runningCount": 2,
+            "desiredCount": 1,
+            "runningCount": 1,
             "pendingCount": 0,
             "taskDefinition": task,
             "deployments": [
@@ -126,11 +141,8 @@ def healthy_service():
                 }
             ],
         },
-        [{"taskDefinitionArn": task}, {"taskDefinitionArn": task}],
-        [
-            {"TargetHealth": {"State": "healthy"}},
-            {"TargetHealth": {"State": "healthy"}},
-        ],
+        [{"taskDefinitionArn": task}],
+        [{"TargetHealth": {"State": "healthy"}}],
     )
 
 
@@ -297,6 +309,164 @@ class TaskDefinitionTests(unittest.TestCase):
             worker_image=WORKER_IMAGE,
         )
 
+    def test_multi_provider_keeps_both_provider_secrets(self):
+        source = task_source("staging")
+        container = source["taskDefinition"]["containerDefinitions"][0]
+        # A source that already carries both providers' secrets (the shape of a
+        # live multi-provider task) must keep them, not prune one.
+        container["environment"].append(
+            {
+                "name": "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS",
+                "value": '{"claude-code":"template"}',
+            }
+        )
+        container["secrets"].extend(
+            {"name": name, "valueFrom": value}
+            for name, value in multi_provider_secret_overrides("staging").items()
+        )
+        payload = build_task_definition(
+            source,
+            family="ao-cloud-staging-api",
+            container_name="control-plane",
+            image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+            release="abc123",
+            environment="staging",
+            log_group="/ao-cloud/staging/control-plane",
+            region="eu-north-1",
+            sandbox_provider="nodeops",
+            sandbox_providers=["nodeops", "coder"],
+            secret_overrides=multi_provider_secret_overrides("staging"),
+        )
+        rendered = payload["containerDefinitions"][0]
+        environment = {item["name"]: item["value"] for item in rendered["environment"]}
+        secrets = {item["name"]: item["valueFrom"] for item in rendered["secrets"]}
+        self.assertEqual(environment["AO_CLOUD_SANDBOX_PROVIDER"], "nodeops")
+        self.assertEqual(environment["AO_CLOUD_SANDBOX_PROVIDERS"], "nodeops,coder")
+        self.assertEqual(
+            environment["AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS"],
+            '{"claude-code":"template"}',
+        )
+        self.assertTrue(set(NODEOPS_SECRET_ENV) <= secrets.keys())
+        self.assertTrue(set(CODER_SECRET_ENV) <= secrets.keys())
+        validate_task_artifacts(
+            {"taskDefinition": payload, "tags": payload["tags"]},
+            container_name="control-plane",
+            control_image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+        )
+
+    def test_multi_provider_requires_every_provider_secret(self):
+        with self.assertRaisesRegex(ValueError, "missing hosted secrets"):
+            build_task_definition(
+                task_source("staging"),
+                family="ao-cloud-staging-api",
+                container_name="control-plane",
+                image=CONTROL_IMAGE,
+                worker_image=WORKER_IMAGE,
+                release="abc123",
+                environment="staging",
+                log_group="/ao-cloud/staging/control-plane",
+                region="eu-north-1",
+                sandbox_provider="nodeops",
+                sandbox_providers=["nodeops", "coder"],
+                secret_overrides=hosted_secret_overrides("staging"),
+            )
+
+    def test_rejects_primary_provider_outside_available_set(self):
+        with self.assertRaisesRegex(ValueError, "must be one of the available providers"):
+            build_task_definition(
+                task_source("staging"),
+                family="ao-cloud-staging-api",
+                container_name="control-plane",
+                image=CONTROL_IMAGE,
+                worker_image=WORKER_IMAGE,
+                release="abc123",
+                environment="staging",
+                log_group="/ao-cloud/staging/control-plane",
+                region="eu-north-1",
+                sandbox_provider="nodeops",
+                sandbox_providers=["coder"],
+                secret_overrides=coder_secret_overrides("staging"),
+            )
+
+    def test_validate_rejects_secret_outside_available_providers(self):
+        payload = build_task_definition(
+            task_source("staging"),
+            family="ao-cloud-staging-api",
+            container_name="control-plane",
+            image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+            release="abc123",
+            environment="staging",
+            log_group="/ao-cloud/staging/control-plane",
+            region="eu-north-1",
+            sandbox_provider="nodeops",
+            sandbox_providers=["nodeops"],
+            secret_overrides=hosted_secret_overrides("staging"),
+        )
+        rendered = payload["containerDefinitions"][0]
+        # A coder secret leaks in although the available set is nodeops-only.
+        rendered["secrets"].append(
+            {
+                "name": "AO_CLOUD_CODER_URL",
+                "valueFrom": "arn:secret:ao-cloud/staging/coder:url::",
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError, "retains inactive provider secrets"
+        ):
+            validate_task_artifacts(
+                {"taskDefinition": payload, "tags": payload["tags"]},
+                container_name="control-plane",
+                control_image=CONTROL_IMAGE,
+                worker_image=WORKER_IMAGE,
+            )
+
+    def test_validate_backward_compat_without_providers_env(self):
+        # An older task-def rendered before AO_CLOUD_SANDBOX_PROVIDERS existed
+        # carries only AO_CLOUD_SANDBOX_PROVIDER. validate_task_artifacts must
+        # fall back to that single provider and still accept the task (the
+        # first-promote-after-upgrade case).
+        payload = build_task_definition(
+            task_source("staging"),
+            family="ao-cloud-staging-api",
+            container_name="control-plane",
+            image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+            release="abc123",
+            environment="staging",
+            log_group="/ao-cloud/staging/control-plane",
+            region="eu-north-1",
+            sandbox_provider="nodeops",
+            sandbox_providers=["nodeops"],
+            secret_overrides=hosted_secret_overrides("staging"),
+        )
+        rendered = payload["containerDefinitions"][0]
+        rendered["environment"] = [
+            item
+            for item in rendered["environment"]
+            if item["name"] != "AO_CLOUD_SANDBOX_PROVIDERS"
+        ]
+        # Must not raise: the fallback derives [AO_CLOUD_SANDBOX_PROVIDER].
+        validate_task_artifacts(
+            {"taskDefinition": payload, "tags": payload["tags"]},
+            container_name="control-plane",
+            control_image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+        )
+
+    def test_resolve_sandbox_providers_dedups_and_defaults(self):
+        self.assertEqual(resolve_sandbox_providers("nodeops", None), ["nodeops"])
+        self.assertEqual(
+            resolve_sandbox_providers("nodeops", ["nodeops", "coder", "nodeops"]),
+            ["nodeops", "coder"],
+        )
+        with self.assertRaises(ValueError):
+            resolve_sandbox_providers("nodeops", ["coder"])
+        with self.assertRaises(ValueError):
+            resolve_sandbox_providers("nodeops", ["nodeops", "bogus"])
+
 
 class HostedSettingsTests(unittest.TestCase):
     def test_accepts_complete_environment_scoped_settings(self):
@@ -364,10 +534,24 @@ class ServiceValidationTests(unittest.TestCase):
                 alarm_state="OK",
             )
 
-    def test_rejects_mixed_task_revisions(self):
+    def test_rejects_more_than_one_replica(self):
+        service, tasks, targets = healthy_service()
+        service["desiredCount"] = 2
+        service["runningCount"] = 2
+        tasks.append(copy.deepcopy(tasks[0]))
+        targets.append(copy.deepcopy(targets[0]))
+        with self.assertRaisesRegex(ValueError, "expected exactly 1"):
+            validate_service(
+                service=service,
+                tasks=tasks,
+                targets=targets,
+                alarm_state="OK",
+            )
+
+    def test_rejects_unexpected_task_revision(self):
         service, tasks, targets = healthy_service()
         changed = copy.deepcopy(tasks)
-        changed[1]["taskDefinitionArn"] = "arn:task-definition:production:6"
+        changed[0]["taskDefinitionArn"] = "arn:task-definition:production:6"
         with self.assertRaisesRegex(ValueError, "mixed"):
             validate_service(
                 service=service,

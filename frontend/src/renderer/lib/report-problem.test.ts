@@ -129,7 +129,7 @@ describe("report problem drafts", () => {
 		expect(github.searchParams.get("body")).toContain("[redacted-local-url]");
 
 		expect(reportProblemDestinationUrl(completeInput, diagnostics, "discord")).toBe(
-			"https://discord.com/invite/UZv7JjxbwG",
+			"https://discord.gg/WjKNa7EbB8",
 		);
 
 		const email = new URL(reportProblemDestinationUrl(completeInput, diagnostics, "email")!);
@@ -139,6 +139,25 @@ describe("report problem drafts", () => {
 		expect(email.searchParams.get("subject")).toBe("AO feedback: Terminal keeps reconnecting after daemon restart");
 		expect(email.searchParams.get("body")).toContain("AO feedback");
 		expect(email.searchParams.get("body")).toContain("AO version: 1.2.3-test");
+	});
+
+	it("builds provider-specific web compose URLs for Windows email choices", () => {
+		const gmail = new URL(reportProblemDestinationUrl(completeInput, diagnostics, "email", "gmail")!);
+		expect(gmail.origin).toBe("https://mail.google.com");
+		expect(gmail.pathname).toBe("/mail/");
+		expect(gmail.searchParams.get("view")).toBe("cm");
+		expect(gmail.searchParams.get("to")).toBe("prasad@untrivial.ai");
+		expect(gmail.searchParams.get("cc")).toBe("prateek@untrivial.ai");
+		expect(gmail.searchParams.get("su")).toContain("Terminal keeps reconnecting");
+		expect(gmail.searchParams.get("body")).toContain("AO version: 1.2.3-test");
+
+		const outlook = new URL(reportProblemDestinationUrl(completeInput, diagnostics, "email", "outlook")!);
+		expect(outlook.origin).toBe("https://outlook.office.com");
+		expect(outlook.pathname).toBe("/mail/deeplink/compose");
+		expect(outlook.searchParams.get("to")).toBe("prasad@untrivial.ai");
+		expect(outlook.searchParams.get("cc")).toBe("prateek@untrivial.ai");
+		expect(outlook.searchParams.get("subject")).toContain("Terminal keeps reconnecting");
+		expect(outlook.searchParams.get("body")).toContain("AO version: 1.2.3-test");
 	});
 
 	it("percent-encodes mailto spaces instead of serializing them as plus signs", () => {

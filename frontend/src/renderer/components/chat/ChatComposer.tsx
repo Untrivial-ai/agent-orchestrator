@@ -145,6 +145,7 @@ export const ChatComposer = memo(function ChatComposer({
 	disabledPlaceholder,
 	settings,
 	approval,
+	elicitation,
 	skills = [],
 	filePaths = [],
 	filePathsTruncated,
@@ -187,6 +188,8 @@ export const ChatComposer = memo(function ChatComposer({
 	settings?: ReactNode;
 	/** A provider decision that temporarily replaces ordinary message entry. */
 	approval?: ReactNode;
+	/** A provider question, docked above the composer until it is answered. */
+	elicitation?: ReactNode;
 	/** A send is in flight. */
 	busy?: boolean;
 	/** The agent is mid-turn, so this message is held until the turn ends. */
@@ -1369,6 +1372,14 @@ export const ChatComposer = memo(function ChatComposer({
 					{queuedDockWithSteer}
 				</div>
 				) : null}
+				{elicitation ? (
+					<div
+						className="queue-dock-enter relative z-10 mx-auto mb-2 w-[calc(100%-2rem)]"
+						data-testid="elicitation-composer-dock"
+					>
+						{elicitation}
+					</div>
+				) : null}
 				{form}
 			</div>
 		);
@@ -1377,7 +1388,7 @@ export const ChatComposer = memo(function ChatComposer({
 		return withQueueStack(
 			<form
 				onSubmit={(event) => event.preventDefault()}
-				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-attached-top={attachedTop && !queuedDock && !elicitation ? true : undefined}
 				className="cursor-chat-composer relative flex flex-col gap-1.5 border px-3 py-3"
 			>
 				{approval}
@@ -1405,7 +1416,7 @@ export const ChatComposer = memo(function ChatComposer({
 				// on one surface, so they are declared together in CSS rather than half
 				// here and half there.
 				data-dragging={dragging || undefined}
-				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-attached-top={attachedTop && !queuedDock && !elicitation ? true : undefined}
 				onClick={(e) => {
 					if (controlsDisabled) return;
 					if (

@@ -121,6 +121,12 @@ function agentStatus(agent: AgentInfo): Pick<RankedAgentOption, "status" | "stat
 	return { status: "", statusTone: "success" };
 }
 
+/** Cached known-good agents remain usable while the daemon refreshes them. */
+export function isReadyAgent(agent: AgentInfo): boolean {
+	return agent.installation.state === "installed" &&
+		(agent.authentication.state === "authorized" || agent.authentication.state === "not_applicable");
+}
+
 export function buildRankedAgentOptions({
 	agents,
 	priorityRank,

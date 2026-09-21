@@ -4,6 +4,13 @@ import { useTheme } from "./ThemeProvider";
 export type SpawnPromptInputProps = {
 	value: string;
 	onChangeText: (value: string) => void;
+	/**
+	 * How tall the field should be. iOS passes the room the sheet has left so the
+	 * whole empty area is the field — at a fixed 112 only the top of the sheet
+	 * took a tap. Android's sheet sizes itself to its content, so it leaves this
+	 * unset and keeps the compact field.
+	 */
+	height?: number;
 };
 
 export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps) {

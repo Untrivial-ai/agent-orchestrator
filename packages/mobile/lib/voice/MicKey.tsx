@@ -5,6 +5,7 @@ import type { Theme } from "../theme";
 import { haptics } from "../haptics";
 import type { VoiceMode, VoiceState } from "./types";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
+import { MicGlass } from "./mic-glass";
 
 // The dictation control, with two gestures:
 //
@@ -17,10 +18,10 @@ import { useTheme, useThemedStyles } from "../ThemeProvider";
 // talk to an agent from a phone, and as one more outlined grey pill in the key
 // row it was indistinguishable from `zoom-out`.
 //
-// Tonal rather than solid, though. Two identical solid-blue buttons side by side
-// have no hierarchy — the eye can't tell which one commits. Mic is tinted, send
-// is filled; the mic only goes solid (red) while it is actually recording, which
-// is the one moment it should outrank everything on screen.
+// Glass rather than solid, though. Two identical solid buttons side by side have
+// no hierarchy — the eye can't tell which one commits. Mic is glass, send is
+// filled; the mic only goes solid (red) while it is actually recording, which is
+// the one moment it should outrank everything on screen.
 //
 /** Matches the send button so the two controls are the same size. */
 export const MIC_SIZE = 40;
@@ -70,8 +71,12 @@ export function MicKey({
 		return () => loop.stop();
 	}, [live, pulse]);
 
-	const fill = live ? t.red : denied ? t.tintRed : unavailable ? t.bgElevated : t.tintBlue;
-	const ink = live ? t.textPrimary : denied ? t.red : unavailable ? t.textFaint : t.blue;
+	// Idle is the only glass state: recording, denied and unavailable each keep a
+	// fill that says something the material would soften.
+	const glass = !live && !denied && !unavailable;
+	const fill = live ? t.red : denied ? t.tintRed : unavailable ? t.bgElevated : "transparent";
+	const ink = live ? t.textPrimary : denied ? t.red : unavailable ? t.textFaint : t.textPrimary;
+	const radius = circular ? size / 2 : MIC_RADIUS;
 
 	return (
 		<View style={[styles.slot, { width: size, height: size }]}>
@@ -88,6 +93,7 @@ export function MicKey({
 					]}
 				/>
 			) : null}
+			{glass ? <MicGlass size={size} radius={radius} /> : null}
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel={
@@ -103,7 +109,7 @@ export function MicKey({
 					styles.mic,
 					controlShape,
 					{ backgroundColor: fill },
-					circular && styles.circular,
+					circular && !glass && styles.circular,
 					latched && styles.latched,
 					unavailable && styles.unavailable,
 					pressed && !disabled && { opacity: 0.85 },

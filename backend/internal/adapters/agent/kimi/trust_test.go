@@ -107,6 +107,49 @@ func TestKimiWorkdirKeyMatchesKimiCodeLayout(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkspaceTrustedSeedsRealKimiHome(t *testing.T) {
+	// Not parallel: isolates HOME/KIMI_CODE_HOME so the seed lands in a
+	// throwaway home instead of the developer's real one.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KIMI_CODE_HOME", "")
+
+	workspace := filepath.Join(t.TempDir(), "auth-workspace", "kimi")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureWorkspaceTrusted(context.Background(), workspace); err != nil {
+		t.Fatalf("EnsureWorkspaceTrusted: %v", err)
+	}
+
+	trustPath := filepath.Join(home, ".kimi-code", kimiTrustDirName, kimiWorkdirKey(workspace))
+	data, err := os.ReadFile(trustPath)
+	if err != nil {
+		t.Fatalf("read trust record: %v", err)
+	}
+	var trust kimiWorkspaceTrust
+	if err := json.Unmarshal(data, &trust); err != nil {
+		t.Fatalf("decode trust record: %v", err)
+	}
+	if trust.Root != workspace {
+		t.Fatalf("root = %q, want %q", trust.Root, workspace)
+	}
+}
+
+func TestEnsureWorkspaceTrustedHonorsKimiCodeHomeEnv(t *testing.T) {
+	// Not parallel: isolates KIMI_CODE_HOME.
+	home := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", home)
+
+	workspace := filepath.Join(t.TempDir(), "ws")
+	if err := EnsureWorkspaceTrusted(context.Background(), workspace); err != nil {
+		t.Fatalf("EnsureWorkspaceTrusted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, kimiTrustDirName, kimiWorkdirKey(workspace))); err != nil {
+		t.Fatalf("trust record missing under KIMI_CODE_HOME: %v", err)
+	}
+}
+
 func TestKimiWorkdirSlug(t *testing.T) {
 	cases := []struct {
 		name string

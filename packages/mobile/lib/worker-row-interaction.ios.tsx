@@ -4,7 +4,7 @@ import type { GestureType } from "react-native-gesture-handler";
 import Swipeable from "react-native-gesture-handler/Swipeable";
 import { haptics } from "./haptics";
 import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
-import { WorkerRenameContextMenu } from "./worker-rename-context-menu";
+import { WorkerRowContextMenu } from "./worker-rename-context-menu";
 import type { WorkerRowInteractionProps } from "./worker-row-interaction.types";
 
 // Keep the established native iOS menu and swipe implementation untouched.
@@ -22,7 +22,8 @@ export function WorkerRowInteraction({
 	accessibilityLabel,
 	accessibilityHint,
 	onPress,
-	onRenameRequest,
+	actions,
+	onAction,
 	onSwipeOpen,
 	onSwipeClose,
 	onReady,
@@ -63,12 +64,15 @@ export function WorkerRowInteraction({
 			renderRightActions={() => rightActions}
 		>
 			{enabled ? (
-				<WorkerRenameContextMenu
+				<WorkerRowContextMenu
 					gestureRef={renameGestureRef}
 					onPress={onPress}
-					onRename={() => {
+					actions={actions}
+					onAction={(id) => {
+						// Close the swipe rail first: leaving it open behind a sheet or an
+						// alert strands it there once the action's own UI takes over.
 						close();
-						onRenameRequest();
+						onAction(id);
 					}}
 					accessibilityLabel={accessibilityLabel}
 					accessibilityHint={accessibilityHint}
@@ -76,7 +80,7 @@ export function WorkerRowInteraction({
 					pressedStyle={pressedStyle}
 				>
 					{children}
-				</WorkerRenameContextMenu>
+				</WorkerRowContextMenu>
 			) : (
 				<View style={rowStyle}>{children}</View>
 			)}

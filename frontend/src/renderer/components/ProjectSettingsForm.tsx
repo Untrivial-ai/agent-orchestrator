@@ -285,7 +285,7 @@ function SettingsBody({
 						message:
 							error instanceof Error ? error.message : t("settings.project.replaceOrchestratorFailed"),
 						...(error instanceof OrchestratorSpawnError
-							? { code: error.code, requestId: error.requestId }
+							? { code: error.code, requestId: error.requestId, details: error.details }
 							: {}),
 					};
 					return {

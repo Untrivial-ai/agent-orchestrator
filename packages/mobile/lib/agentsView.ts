@@ -5,61 +5,148 @@
 // Mirrors the desktop board (frontend/src/renderer/components/SessionsBoard.tsx
 // and lib/session-presentation.ts) so the two speak the same language: same
 // zone names, same archive rule, same "PR #12, #13 open" phrasing.
-import type { DashboardPR, DashboardSession } from "./api";
+import type { DashboardPR, DashboardSession, KanbanColumn } from "./api";
 import { relativeTime } from "./notificationView";
 import { prLifecycle, type Tone } from "./prView";
 import { attentionOf, sessionTitle } from "./sessionStatus";
 import { statusVisual, type Theme } from "./theme";
 
-/** The live board sections, separating active-but-idle workers from work in progress. */
-export type BoardZone = "active" | "working" | "action" | "pending" | "merge";
-
-/** Mobile's action-first section order. */
-export const BOARD_ZONES: BoardZone[] = ["action", "merge", "working", "pending", "active"];
+/**
+ * The board's sections: desktop's delivery lanes, plus one mobile-only section
+ * above them.
+ *
+ * Four of these are the daemon's own Kanban columns, so the two apps place a
+ * session identically. `needs_you` is deliberately mobile's: a worker blocked
+ * on a person has no PR yet, so desktop files it under Building alongside every
+ * other agent that happens to be running. That is right for a pipeline view and
+ * wrong for a phone, which is opened to find what is stuck.
+ */
+export type BoardZone = "needs_you" | "needs_review" | "ready" | "building" | "validating";
 
 /**
- * Which column a session belongs in.
+ * Mobile's order: the three sections a person owns, then the two a machine does.
  *
- * A presentation mapping over `attentionOf`, not a replacement for it — the
- * orchestrator tab's zone pills use its finer six-bucket taxonomy, and changing
- * that would change them too.
- *
- * `respond` and `review` both fold into `action`: desktop files `ci_failed` and
- * `changes_requested` under "Needs you" rather than giving review its own
- * column, and a phone has even less room to split them.
+ * Desktop orders its lanes by delivery progress (building → validating →
+ * needs_review → ready) because a board is read left to right as a pipeline. A
+ * phone is read top down as a queue, so the order is by who is blocked.
  */
-export function boardZoneOf(session: DashboardSession): BoardZone {
+export const BOARD_ZONES: BoardZone[] = ["needs_you", "needs_review", "ready", "building", "validating"];
+
+/**
+ * Statuses where the agent itself is waiting on a person.
+ *
+ * Deliberately agent-level only. `ci_failed` and `changes_requested` are PR
+ * facts, and the daemon already decides whether AO or a person owns their next
+ * turn — lifting them here would second-guess that and split one PR's lifecycle
+ * across two sections.
+ */
+const AGENT_BLOCKED = new Set(["needs_input", "stuck", "errored", "exited"]);
+
+export function agentBlocked(session: Pick<DashboardSession, "status" | "displayStatus">): boolean {
+	return AGENT_BLOCKED.has(session.status ?? "") || session.displayStatus === "Blocked";
+}
+
+/**
+ * The daemon's column, falling back to deriving one.
+ *
+ * Mirrors desktop's `toKanbanColumn`: trust the server's placement when it sends
+ * one, because it is derived from durable delivery facts that the client cannot
+ * see — whether AO's review pass is mid-run, whether auto-inject is configured.
+ * The fallback only covers a daemon too old to send the field.
+ */
+export function kanbanColumnOf(session: DashboardSession): KanbanColumn {
+	if (session.kanbanColumn) return session.kanbanColumn;
 	switch (attentionOf(session)) {
 		case "merge":
-			return "merge";
+			return "ready";
 		case "pending":
-			return "pending";
+			return "validating";
 		case "respond":
 		case "action":
 		case "review":
-			return "action";
+			return "needs_review";
+		case "done":
+			return "archive";
 		default:
-			// Attention deliberately folds all healthy runtimes into `working`.
-			// The board still needs to distinguish an agent executing right now from
-			// a live runtime waiting for its next request.
-			return session.status === "working" || session.status === "detecting" || session.status === "spawning"
-				? "working"
-				: "active";
+			return "building";
+	}
+}
+
+/**
+ * Which section a session belongs in.
+ *
+ * Agent-level blockage outranks delivery placement: a worker waiting on your
+ * reply is the reason the app was opened, whether or not it has produced a PR.
+ */
+export function boardZoneOf(session: DashboardSession): BoardZone {
+	if (agentBlocked(session)) return "needs_you";
+	const column = kanbanColumnOf(session);
+	// `archive` never reaches a section — isArchived routes terminated runtimes
+	// to the archive strip before grouping.
+	return column === "archive" ? "building" : column;
+}
+
+/**
+ * Section labels, taken from desktop's own strings so the two apps name the
+ * same thing identically (product-ui session-presentation.ts, `column.*`).
+ */
+/**
+ * A shape for each status, so state does not rest on colour alone.
+ *
+ * The row already tints its trailing label by status, which is invisible to a
+ * colour-blind reader and weak in bright sun. A glyph adds a second channel
+ * carrying the same fact.
+ *
+ * Feather names rather than an icon component, so this stays a pure mapping the
+ * row can render however it likes — and so it is testable without React Native.
+ */
+export type WorkerStatusGlyph = "alert-circle" | "message-square" | "x-octagon" | "check-circle" | "git-pull-request" | "loader" | "moon";
+
+export function workerStatusGlyph(status?: string | null): WorkerStatusGlyph | null {
+	switch (status) {
+		case "needs_input":
+			return "message-square";
+		case "changes_requested":
+			return "message-square";
+		case "stuck":
+		case "errored":
+		case "exited":
+			return "alert-circle";
+		case "ci_failed":
+			return "x-octagon";
+		case "mergeable":
+		case "approved":
+			return "check-circle";
+		case "merged":
+		case "pr_open":
+		case "draft":
+		case "review_pending":
+			return "git-pull-request";
+		case "working":
+		case "detecting":
+		case "spawning":
+			return "loader";
+		case "idle":
+			return "moon";
+		default:
+			// No glyph beats a meaningless one: an unknown status has nothing
+			// specific to say, and a generic dot would only add noise.
+			return null;
 	}
 }
 
 export function zoneMeta(t: Theme, zone: BoardZone): { label: string; color: string } {
 	switch (zone) {
-		case "merge":
-			return { label: "Ready to merge", color: t.green };
-		case "action":
+		case "needs_you":
 			return { label: "Needs you", color: t.amber };
-		case "pending":
-			return { label: "In review", color: t.textTertiary };
-		case "active":
-			return { label: "Active", color: t.textTertiary };
+		case "needs_review":
+			return { label: "In review", color: t.purple };
+		case "ready":
+			return { label: "Ready", color: t.green };
+		case "validating":
+			return { label: "Validating", color: t.textTertiary };
 		default:
-			return { label: "Working", color: t.orange };
+			return { label: "Building", color: t.orange };
 	}
 }
 
@@ -114,7 +201,9 @@ export function workerRowPresentation(
 
 	return {
 		title,
-		project: projectName?.trim() || compactProjectLabel(session.projectId),
+		// A standalone agent session has no project at all, so there is nothing to
+		// abbreviate — say what it is rather than showing an empty slot.
+		project: projectName?.trim() || (session.projectId ? compactProjectLabel(session.projectId) : "Standalone"),
 		branch: showBranch(session.branch, title) ? session.branch : null,
 		trailing: useElapsed ? elapsed : visual.label,
 		trailingKind: useElapsed ? "time" : "status",
@@ -132,7 +221,10 @@ function compareActivity(a: DashboardSession, b: DashboardSession, newestFirst: 
 }
 
 function compareInZone(zone: BoardZone, a: DashboardSession, b: DashboardSession): number {
-	return compareActivity(a, b, zone === "working" || zone === "active");
+	// Sections a machine is turning read newest-first, because the interesting
+	// one is whatever just moved. Sections a person owns read oldest-first, so
+	// what has been waiting longest is at the top.
+	return compareActivity(a, b, zone === "building" || zone === "validating");
 }
 
 /**
