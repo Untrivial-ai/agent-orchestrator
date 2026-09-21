@@ -33,6 +33,7 @@ import type {
 	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
 	CloudCpSendMessageResponse,
+	CloudCpSteerTurnResponse,
 	CloudCpSessionChildrenResponse,
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
@@ -181,6 +182,13 @@ export interface CloudCpClient {
 		turnId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpCancelTurnResponse>;
+	steerTurn(
+		orgId: string,
+		sessionId: string,
+		turnId: string,
+		body: CloudCpSendMessageRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpSteerTurnResponse>;
 	listChatEvents(
 		orgId: string,
 		sessionId: string,
@@ -456,6 +464,12 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 		cancelTurn: (orgId, sessionId, turnId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/cancel`, {
 				signal: o?.signal,
+			}),
+		steerTurn: (orgId, sessionId, turnId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/steer`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
 		listChatEvents: (orgId, sessionId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/chat-events`, {

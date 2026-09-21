@@ -26,6 +26,11 @@ type chatRunnerStub struct{ idle bool }
 func (s chatRunnerStub) Run(context.Context) error { return nil }
 func (s chatRunnerStub) Idle() bool                { return s.idle }
 
+type interruptibleChatRunner struct{ interrupted bool }
+
+func (s *interruptibleChatRunner) Run(context.Context) error { return nil }
+func (s *interruptibleChatRunner) Interrupt() bool           { s.interrupted = true; return true }
+
 type blockingChatRunner struct{ started chan struct{} }
 
 func (r blockingChatRunner) Run(ctx context.Context) error {
@@ -309,6 +314,31 @@ func TestInspectInterfaceDrainsOnlyActiveChatWork(t *testing.T) {
 				t.Fatalf("idle = %v, want %v", inspection.Idle, test.want)
 			}
 		})
+	}
+}
+
+func TestInspectInterfaceDoesNotTreatOpenTUIAsIdle(t *testing.T) {
+	supervisor := &Supervisor{AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	result, err := supervisor.inspectInterface()
+	if err != nil {
+		t.Fatalf("inspect interface: %v", err)
+	}
+	inspection := result.(interfaceInspectResult)
+	if inspection.Idle || !inspection.QuiescenceUnverified {
+		t.Fatalf("inspection = %+v, want active/unverified", inspection)
+	}
+}
+
+func TestInterruptInterfaceUsesActiveChatController(t *testing.T) {
+	runner := &interruptibleChatRunner{}
+	supervisor := &Supervisor{ChatRunner: runner}
+	supervisor.iface.current = InterfaceChat
+	if err := supervisor.interruptInterface(context.Background()); err != nil {
+		t.Fatalf("interrupt chat: %v", err)
+	}
+	if !runner.interrupted {
+		t.Fatal("chat runner was not interrupted")
 	}
 }
 

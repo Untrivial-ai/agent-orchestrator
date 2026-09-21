@@ -86,7 +86,7 @@ func sendMessageTx(
 	if err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
 	}
-	event, err := appendUserMessage(ctx, tx, orgID, sessionID, text, model, reasoningEffort, modeCap, deniedCommands)
+	event, err := appendUserMessage(ctx, tx, orgID, sessionID, idempotencyKey, text, model, reasoningEffort, modeCap, deniedCommands)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -326,6 +326,7 @@ func appendUserMessage(
 	tx pgx.Tx,
 	orgID string,
 	sessionID string,
+	clientMessageID string,
 	text string,
 	model string,
 	reasoningEffort string,
@@ -349,6 +350,32 @@ func appendUserMessage(
 		if _, err := tx.Exec(ctx, `UPDATE ao_sessions SET reasoning_effort = $3, updated_at = now() WHERE org_id = $1 AND id = $2`, orgID, sessionID, strings.TrimSpace(reasoningEffort)); err != nil {
 			return domain.ClientEvent{}, err
 		}
+	}
+	// An active handoff owns both controllers. Locking its row makes accepting
+	// a prompt and completing the handoff mutually exclusive, so a message
+	// cannot escape to the old PTY or leapfrog the target controller.
+	var transitionID string
+	transitionErr := tx.QueryRow(ctx, `SELECT id FROM ao_interface_transitions
+		WHERE org_id = $1 AND session_id = $2
+		  AND phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
+		FOR UPDATE`, orgID, sessionID).Scan(&transitionID)
+	if transitionErr == nil {
+		var turnID string
+		if err := tx.QueryRow(ctx, `INSERT INTO ao_interface_transition_messages (
+			org_id, transition_id, client_message_id, message, user_message_sequence,
+			mode_cap, denied_commands
+		) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)
+		RETURNING turn_id`, orgID, transitionID, clientMessageID, text, event.Sequence,
+			modeCap, nonNilStrings(deniedCommands)).Scan(&turnID); err != nil {
+			return domain.ClientEvent{}, normalizeConstraintError(err)
+		}
+		if err := attachTurnID(ctx, tx, orgID, sessionID, event.Sequence, turnID, &event); err != nil {
+			return domain.ClientEvent{}, err
+		}
+		return event, nil
+	}
+	if !errors.Is(transitionErr, pgx.ErrNoRows) {
+		return domain.ClientEvent{}, transitionErr
 	}
 	var terminalID string
 	var workerEpoch int64
@@ -419,18 +446,23 @@ func appendUserMessage(
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.ClientEvent{}, err
 	}
-	if _, err := tx.Exec(
+	var turnID string
+	if err := tx.QueryRow(
 		ctx,
 		`INSERT INTO ao_turns (
 			org_id, session_id, user_message_sequence, mode_cap, denied_commands
-		) VALUES ($1, $2, $3, NULLIF($4, ''), $5)`,
+		) VALUES ($1, $2, $3, NULLIF($4, ''), $5)
+		RETURNING id`,
 		orgID,
 		sessionID,
 		event.Sequence,
 		modeCap,
 		nonNilStrings(deniedCommands),
-	); err != nil {
+	).Scan(&turnID); err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
+	}
+	if err := attachTurnID(ctx, tx, orgID, sessionID, event.Sequence, turnID, &event); err != nil {
+		return domain.ClientEvent{}, err
 	}
 	// Wake a worker blocked in WaitForWork so it claims this queued turn without
 	// busy-polling. Delivered on commit; the durable ao_turns row stays the
@@ -439,6 +471,27 @@ func appendUserMessage(
 		return domain.ClientEvent{}, err
 	}
 	return event, nil
+}
+
+// attachTurnID keeps a queued prompt's transcript item tied to the durable
+// worker turn from the instant it is accepted.
+func attachTurnID(ctx context.Context, tx pgx.Tx, orgID, sessionID string, sequence int64, turnID string, event *domain.ClientEvent) error {
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return err
+	}
+	payload["turnId"] = turnID
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ao_events SET payload = $4
+		WHERE org_id = $1 AND session_id = $2 AND sequence = $3 AND type = 'chat.user_message'`,
+		orgID, sessionID, sequence, raw); err != nil {
+		return err
+	}
+	event.Payload = raw
+	return nil
 }
 
 func appendUserMessageEvent(

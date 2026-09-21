@@ -608,6 +608,35 @@ paths:
                 $ref: "#/components/schemas/WorkerOKResponse"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/steer:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/TurnId"
+    post:
+      operationId: steerTurn
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageInput"
+      responses:
+        "202":
+          description: Active turn interrupted and replacement prompt accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-events:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -3040,6 +3069,9 @@ components:
         prompt:
           type: string
           maxLength: 65536
+        interfaceMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+          default: tui
         mode:
           $ref: "#/components/schemas/SessionMode"
           default: trusted

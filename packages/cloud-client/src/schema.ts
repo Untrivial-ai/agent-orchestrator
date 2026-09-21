@@ -424,6 +424,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/steer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["steerTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-events": {
         parameters: {
             query?: never;
@@ -1618,6 +1638,8 @@ export interface components {
             harness: string;
             displayName: string;
             prompt: string;
+            /** @default tui */
+            interfaceMode: components["schemas"]["SessionInterfaceMode"];
             /** @default trusted */
             mode: components["schemas"]["SessionMode"];
             /** @default [] */
@@ -2878,6 +2900,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkerOKResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    steerTurn: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key with the same command returns the original result.
+                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+                 *      */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessageInput"];
+            };
+        };
+        responses: {
+            /** @description Active turn interrupted and replacement prompt accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        event: components["schemas"]["UserMessageEvent"];
+                    };
                 };
             };
             default: components["responses"]["Error"];

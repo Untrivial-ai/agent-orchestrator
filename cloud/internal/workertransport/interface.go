@@ -77,10 +77,20 @@ func (s *Supervisor) handleInterface(
 func (s *Supervisor) inspectInterface() (any, error) {
 	s.iface.mu.Lock()
 	defer s.iface.mu.Unlock()
-	// TUI work is interactive and the worker has no turn execution to drain.
-	// Chat work is headless, so it must report its actual turn activity. The old
-	// implementation returned idle only for TUI, which made every Chat -> TUI
-	// drain transition wait forever even when no prompt was running.
+	// The interactive TUI has no durable provider-idle signal. An open agent PTY
+	// must therefore fail closed for drain mode: closing it while the provider is
+	// working loses the in-flight interaction. Stop-now uses the explicit
+	// interrupt path instead.
+	if s.iface.current == InterfaceTUI {
+		s.mu.Lock()
+		_, active := s.terminals[s.AgentTerminalID]
+		s.mu.Unlock()
+		return interfaceInspectResult{
+			Idle:                 !active,
+			QuiescenceUnverified: active,
+		}, nil
+	}
+	// Chat work is headless, so it can report its actual turn activity.
 	idle := true
 	if s.iface.current == InterfaceChat {
 		if activity, ok := s.ChatRunner.(chatActivity); ok {
@@ -94,6 +104,13 @@ func (s *Supervisor) inspectInterface() (any, error) {
 }
 
 func (s *Supervisor) interruptInterface(ctx context.Context) error {
+	if s.iface.Current() == InterfaceChat {
+		if runner, ok := s.ChatRunner.(chatInterrupter); ok {
+			runner.Interrupt()
+			return nil
+		}
+		return errors.New("chat controller cannot interrupt the active turn")
+	}
 	agentTerminalID := s.agentTerminalID()
 	s.mu.Lock()
 	terminal := s.terminals[agentTerminalID]

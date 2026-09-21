@@ -75,6 +75,15 @@ func (f *fakeStore) CommitCoordinatedSessionInterface(ctx context.Context, owner
 	f.commitCalls++
 	return true, nil
 }
+func (f *fakeStore) CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error {
+	f.advances = append(f.advances, domain.SessionInterfaceTransitionCompleted)
+	for index := range f.transitions {
+		if f.transitions[index].ID == transitionID {
+			f.transitions[index].Phase = domain.SessionInterfaceTransitionCompleted
+		}
+	}
+	return nil
+}
 func (f *fakeStore) ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error {
 	return nil
 }
@@ -259,9 +268,9 @@ func TestReconcileResumesFromDurablePhaseWithoutReplayingCompletedWork(t *testin
 		commit    int
 		start     int
 	}{
-		{phase: domain.SessionInterfaceTransitionRequested, preflight: 1, inspect: 1, interrupt: 1, stop: 1, nativeID: 1, commit: 1, start: 1},
-		{phase: domain.SessionInterfaceTransitionPreflighting, preflight: 1, inspect: 1, interrupt: 1, stop: 1, nativeID: 1, commit: 1, start: 1},
-		{phase: domain.SessionInterfaceTransitionDraining, inspect: 1, interrupt: 1, stop: 1, nativeID: 1, commit: 1, start: 1},
+		{phase: domain.SessionInterfaceTransitionRequested, preflight: 1, interrupt: 1, stop: 1, nativeID: 1, commit: 1, start: 1},
+		{phase: domain.SessionInterfaceTransitionPreflighting, preflight: 1, interrupt: 1, stop: 1, nativeID: 1, commit: 1, start: 1},
+		{phase: domain.SessionInterfaceTransitionDraining, interrupt: 1, stop: 1, nativeID: 1, commit: 1, start: 1},
 		{phase: domain.SessionInterfaceTransitionSourceStopping, stop: 1, nativeID: 1, commit: 1, start: 1},
 		{phase: domain.SessionInterfaceTransitionSourceStopped, nativeID: 1, commit: 1, start: 1},
 		{phase: domain.SessionInterfaceTransitionTargetStarting, start: 1},

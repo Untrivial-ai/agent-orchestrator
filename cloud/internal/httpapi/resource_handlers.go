@@ -55,6 +55,7 @@ type createSessionRequest struct {
 	Harness                     string   `json:"harness"`
 	DisplayName                 string   `json:"displayName"`
 	Prompt                      string   `json:"prompt"`
+	InterfaceMode               string   `json:"interfaceMode,omitempty"`
 	Mode                        string   `json:"mode,omitempty"`
 	DeniedCommands              []string `json:"deniedCommands,omitempty"`
 	SandboxProviderConnectionID string   `json:"sandboxProviderConnectionId,omitempty"`
@@ -359,11 +360,15 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Harness = strings.TrimSpace(request.Harness)
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
+	request.InterfaceMode = strings.ToLower(strings.TrimSpace(request.InterfaceMode))
 	request.Mode = strings.TrimSpace(request.Mode)
 	request.SandboxProviderConnectionID = strings.TrimSpace(request.SandboxProviderConnectionID)
 	request.Provider = strings.ToLower(strings.TrimSpace(request.Provider))
 	if request.Mode == "" {
 		request.Mode = "trusted"
+	}
+	if request.InterfaceMode == "" {
+		request.InterfaceMode = string(domain.SessionInterfaceTUI)
 	}
 	if !validSessionInput(request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Session project, kind, harness, name, or prompt is invalid.")
@@ -465,6 +470,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			Harness:             request.Harness,
 			DisplayName:         request.DisplayName,
 			Prompt:              request.Prompt,
+			Interface:           domain.SessionInterface(request.InterfaceMode),
 			Mode:                request.Mode,
 			DeniedCommands:      request.DeniedCommands,
 			Provider:            plan.Provider,
@@ -762,6 +768,7 @@ func validProjectUpdate(request updateProjectRequest) bool {
 func validSessionInput(request createSessionRequest) bool {
 	if requireUUID(request.ProjectID, "projectId") != nil ||
 		(request.Kind != "worker" && request.Kind != "orchestrator") ||
+		(request.InterfaceMode != "" && request.InterfaceMode != string(domain.SessionInterfaceTUI) && request.InterfaceMode != string(domain.SessionInterfaceChat)) ||
 		(request.Mode != "read-only" && request.Mode != "standard" && request.Mode != "trusted") ||
 		len(request.Harness) < 1 || len(request.Harness) > 120 ||
 		len(request.DisplayName) < 1 || len(request.DisplayName) > 80 ||

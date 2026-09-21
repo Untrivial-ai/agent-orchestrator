@@ -190,6 +190,20 @@ func (s *Store) RequestTurnCancellation(
 	})
 }
 
+// SteerTurn cancels the active turn and queues its replacement. The explicit
+// cancellation keeps a Cloud steering request from silently becoming an
+// ordinary queued prompt.
+func (s *Store) SteerTurn(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID, turnID, idempotencyKey, text, model, reasoningEffort string,
+) (domain.ClientEvent, error) {
+	if err := s.RequestTurnCancellation(ctx, principal, orgID, sessionID, turnID); err != nil {
+		return domain.ClientEvent{}, err
+	}
+	return s.SendMessage(ctx, principal, orgID, sessionID, idempotencyKey, text, model, reasoningEffort)
+}
+
 // WorkerTurnCancellationRequested observes cancellation only when the caller
 // still owns the exact worker epoch and attempt.
 func (s *Store) WorkerTurnCancellationRequested(

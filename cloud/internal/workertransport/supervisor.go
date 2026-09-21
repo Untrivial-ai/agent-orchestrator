@@ -114,6 +114,14 @@ type chatActivity interface {
 	Idle() bool
 }
 
+// chatInterrupter cancels the active headless turn without stopping the
+// controller itself. A Chat -> TUI stop-now handoff needs this distinction:
+// the coordinator first ends the running turn, then stops the runner only
+// after its provider process has released the native conversation writer.
+type chatInterrupter interface {
+	Interrupt() bool
+}
+
 // HoldAgentInputUntilWorkspaceReady preserves user input and durable turns
 // until the checkout has completed. Call this before Run.
 func (s *Supervisor) HoldAgentInputUntilWorkspaceReady() {

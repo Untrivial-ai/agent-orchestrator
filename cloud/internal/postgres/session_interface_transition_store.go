@@ -325,6 +325,70 @@ func (s *Store) EnqueueSessionInterfaceTransitionMessage(
 	})
 }
 
+// CompleteCoordinatedInterfaceTransition atomically releases every prompt held
+// by an active handoff and marks the transition complete. The transition row is
+// locked first, which pairs with appendUserMessage's lock: a message is either
+// included in this delivery or observes the completed handoff and routes to
+// the committed controller, never an in-between state.
+func (s *Store) CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error {
+	return s.withService(ctx, func(tx pgx.Tx) error {
+		var orgID, sessionID string
+		if err := tx.QueryRow(ctx, `SELECT org_id, session_id
+			FROM ao_interface_transitions
+			WHERE id = $1 AND claimed_by = $2 AND phase = 'activating'
+			FOR UPDATE`, transitionID, owner).Scan(&orgID, &sessionID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrTransitionStale
+			}
+			return err
+		}
+		// The service claim may span tenants; writes remain explicitly scoped to
+		// this transition's tenant before touching tenant-protected turns/events.
+		if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, orgID); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT id, turn_id, user_message_sequence, mode_cap, denied_commands
+			FROM ao_interface_transition_messages
+			WHERE org_id = $1 AND transition_id = $2 AND delivered_at IS NULL
+			ORDER BY id FOR UPDATE`, orgID, transitionID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var messageID int64
+			var turnID string
+			var sequence int64
+			var modeCap string
+			var denied []string
+			if err := rows.Scan(&messageID, &turnID, &sequence, &modeCap, &denied); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO ao_turns (
+				id, org_id, session_id, user_message_sequence, mode_cap, denied_commands
+			) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6)
+			ON CONFLICT (id) DO NOTHING`, turnID, orgID, sessionID, sequence, modeCap, nonNilStrings(denied)); err != nil {
+				return normalizeConstraintError(err)
+			}
+			if _, err := tx.Exec(ctx, `UPDATE ao_interface_transition_messages SET delivered_at = now() WHERE id = $1`, messageID); err != nil {
+				return err
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE ao_interface_transitions
+			SET phase = 'completed', completed_at = now(), updated_at = now()
+			WHERE id = $1 AND claimed_by = $2 AND phase = 'activating'`, transitionID, owner); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, sessionID); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // CoordinatedInterfaceTransition is the service-context view the coordinator
 // needs: the durable row plus the session interface values it must transition.
 type CoordinatedInterfaceTransition struct {

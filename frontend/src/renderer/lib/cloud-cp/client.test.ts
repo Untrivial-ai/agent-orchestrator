@@ -2,6 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { createCloudCpClient } from "./client";
 
 describe("Cloud control-plane interface transitions", () => {
+	it("preserves caller message ids for Cloud send retries and steering", async () => {
+		const fetchImpl = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ event: {} }), { status: 202, headers: { "Content-Type": "application/json" } }));
+		const client = createCloudCpClient({ baseUrl: "https://cloud.example.test", getToken: async () => "token", fetchImpl });
+		await client.sendSessionMessage("org", "session", { text: "retry me" }, { idempotencyKey: "stable-message-id" });
+		await client.steerTurn("org", "session", "turn", { text: "change course" }, { idempotencyKey: "stable-steer-id" });
+		expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).headers).toBeInstanceOf(Headers);
+		expect(((fetchImpl.mock.calls[0]?.[1] as RequestInit).headers as Headers).get("Idempotency-Key")).toBe("stable-message-id");
+		expect(fetchImpl.mock.calls[1]?.[0]).toContain("/turns/turn/steer");
+		expect(((fetchImpl.mock.calls[1]?.[1] as RequestInit).headers as Headers).get("Idempotency-Key")).toBe("stable-steer-id");
+	});
+
 	it("cancels an active interface transition through the Cloud API", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ ok: true }), {

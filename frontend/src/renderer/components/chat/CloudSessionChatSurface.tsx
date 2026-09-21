@@ -34,7 +34,7 @@ const CLOUD_MODELS: Record<string, ChatModel[]> = {
 };
 
 /** Builds the shared ChatWorkspace projection from Cloud's durable event log. */
-function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
+export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
 	const turns = new Map<string, ConversationTurn>();
 	const assistant = new Map<string, ConversationMessage>();
 	const items: ConversationMessage[] = [];
@@ -60,7 +60,7 @@ function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): Co
 		if (event.type === "chat.user_message") {
 			items.push({
 				kind: "message", id: `cloud-event-${event.sequence}`, sequence: event.sequence, revision: 1,
-				role: "user", origin: "human", text, streaming: false, delivery: "accepted", createdAt: event.createdAt,
+				turnId: turnID, role: "user", origin: "human", text, streaming: false, delivery: "accepted", createdAt: event.createdAt,
 			});
 			continue;
 		}
@@ -146,9 +146,9 @@ export function CloudSessionChatSurface({
 	const invalidate = () =>
 		queryClient.invalidateQueries({ queryKey: ["cloud-chat-events", cloud?.orgId ?? "", session.id] });
 	const send = useMutation({
-		mutationFn: async (text: string) => {
+		mutationFn: async ({ text, clientMessageId }: { text: string; clientMessageId?: string }) => {
 			if (!cloud) throw new Error("Cloud session context is unavailable.");
-			return client.sendSessionMessage(cloud.orgId, session.id, { text, model: selectedModel, reasoningEffort: selectedEffort });
+			return client.sendSessionMessage(cloud.orgId, session.id, { text, model: selectedModel, reasoningEffort: selectedEffort }, { idempotencyKey: clientMessageId });
 		},
 		onSuccess: () => void invalidate(),
 	});
@@ -172,6 +172,13 @@ export function CloudSessionChatSurface({
 		},
 		onSettled: () => void invalidate(),
 	});
+	const steer = useMutation({
+		mutationFn: async ({ text, clientMessageId }: { text: string; clientMessageId?: string }) => {
+			if (!cloud || !activeTurn) throw new Error("There is no active Cloud turn to steer.");
+			return client.steerTurn(cloud.orgId, session.id, activeTurn.id, { text, model: selectedModel, reasoningEffort: selectedEffort }, { idempotencyKey: clientMessageId });
+		},
+		onSettled: () => void invalidate(),
+	});
 
 	return (
 		<ChatWorkspace
@@ -188,7 +195,8 @@ export function CloudSessionChatSurface({
 			}
 			headerActions={headerActions}
 			onInterrupt={activeTurn ? () => interrupt.mutate() : undefined}
-			onSend={(text) => send.mutateAsync(text)}
+			onSend={(text, _attachments, clientMessageId) => send.mutateAsync({ text, clientMessageId })}
+			onSteer={activeTurn ? (text, _attachments, clientMessageId) => steer.mutateAsync({ text, clientMessageId }).then(() => ({ status: "accepted" as const })) : undefined}
 			models={models}
 			onChooseSettings={(settings: TurnSettings) => {
 				setSelectedModel(settings.model);

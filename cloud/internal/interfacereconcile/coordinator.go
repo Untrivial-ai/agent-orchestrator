@@ -22,6 +22,7 @@ type Store interface {
 	RenewCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string, lease time.Duration) error
 	AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string) error
 	CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, transitionID string, interfaceValue domain.SessionInterface) (bool, error)
+	CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error
 	ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error
 	EnqueueSessionInterfaceTransitionMessage(ctx context.Context, orgID, transitionID, clientMessageID, message string) error
 }
@@ -272,7 +273,14 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 				return err
 			}
 		case domain.SessionInterfaceTransitionActivating:
-			return c.advance(runCtx, transition, domain.SessionInterfaceTransitionCompleted, "", "")
+			if err := c.store.CompleteCoordinatedInterfaceTransition(runCtx, c.owner, transition.ID); err != nil {
+				if errors.Is(err, postgres.ErrTransitionStale) {
+					return errCoordinationLost
+				}
+				return fmt.Errorf("complete interface transition: %w", err)
+			}
+			transition.Phase = domain.SessionInterfaceTransitionCompleted
+			return nil
 		default:
 			return nil
 		}
@@ -327,9 +335,10 @@ func isRetryable(err error) bool {
 // cancels in-flight work first.
 func (c *Coordinator) drain(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error {
 	if transition.Policy == domain.SessionInterfaceTransitionInterrupt {
-		if err := c.driver.InterruptSource(ctx, transition); err != nil {
-			return err
-		}
+		// Stop-now is the explicit opt-in to ending a source that cannot prove it
+		// is idle (notably an interactive TUI). The worker stop step waits for the
+		// controller process to exit before starting the target.
+		return c.driver.InterruptSource(ctx, transition)
 	}
 	for {
 		inspection, err := c.driver.InspectSource(ctx, transition)
@@ -341,6 +350,9 @@ func (c *Coordinator) drain(ctx context.Context, transition postgres.Coordinated
 		}
 		if inspection.DraftPresent {
 			return errors.New("source controller has unsent text; submit or clear it in the source interface")
+		}
+		if inspection.QuiescenceUnverified {
+			return errors.New("source controller activity cannot be verified; use stop now to interrupt it")
 		}
 		if inspection.Idle {
 			return nil

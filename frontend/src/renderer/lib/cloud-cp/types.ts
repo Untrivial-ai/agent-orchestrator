@@ -171,6 +171,8 @@ export interface CloudCpCreateSessionRequest {
 	displayName: string;
 	/** Up to 65536 bytes. */
 	prompt: string;
+	/** Defaults to `tui`; set `chat` to create a ChatUI-first Cloud session. */
+	interfaceMode?: CloudCpInterfaceMode;
 	/** Defaults to "trusted" on the control plane when omitted. */
 	mode?: CloudCpSessionMode;
 	deniedCommands?: string[];
@@ -371,6 +373,11 @@ export interface CloudCpSendMessageResponse {
 /** POST /orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/cancel responds 202. */
 export interface CloudCpCancelTurnResponse {
 	ok: boolean;
+}
+
+/** POST steering response; the replacement prompt was accepted. */
+export interface CloudCpSteerTurnResponse {
+	event: CloudCpClientEvent;
 }
 
 export interface CloudCpChatEventsQuery {

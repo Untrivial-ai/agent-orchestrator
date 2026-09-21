@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,11 +44,33 @@ type Supervisor struct {
 	// an individual turn, so a TUI handoff never mistakes a running headless
 	// provider process for an idle controller.
 	busy atomic.Bool
+
+	activeMu sync.Mutex
+	active   *activeExecution
+}
+
+type activeExecution struct {
+	cancel      context.CancelFunc
+	interrupted atomic.Bool
 }
 
 // Idle reports whether the Chat controller has no currently executing turn.
 func (s *Supervisor) Idle() bool {
 	return !s.busy.Load()
+}
+
+// Interrupt stops only the running Chat turn. It returns false when the
+// controller is between turns, which is still a successful stop-now boundary.
+func (s *Supervisor) Interrupt() bool {
+	s.activeMu.Lock()
+	active := s.active
+	s.activeMu.Unlock()
+	if active == nil {
+		return false
+	}
+	active.interrupted.Store(true)
+	active.cancel()
+	return true
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
@@ -126,6 +149,17 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	}
 	executionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	active := &activeExecution{cancel: cancel}
+	s.activeMu.Lock()
+	s.active = active
+	s.activeMu.Unlock()
+	defer func() {
+		s.activeMu.Lock()
+		if s.active == active {
+			s.active = nil
+		}
+		s.activeMu.Unlock()
+	}()
 	projector := newChatOutputProjector(turn.Harness)
 	publish := func(output Output) error {
 		for _, projected := range projector.Project(output) {
@@ -201,7 +235,7 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	}
 	close(done)
 
-	if cancellation.Load() {
+	if cancellation.Load() || active.interrupted.Load() {
 		return s.retryComplete(ctx, turn.ID, turn.Attempt, true)
 	}
 	if ctx.Err() != nil {

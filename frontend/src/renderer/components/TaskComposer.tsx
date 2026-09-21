@@ -149,6 +149,7 @@ export function TaskComposer({
 					harness: input.agent ?? "claude-code",
 					displayName: input.brief.trim().slice(0, 80) || (input.agent ?? "claude-code"),
 					prompt: input.brief,
+					interfaceMode: "chat",
 					...(selectedProvider ? { provider: selectedProvider } : {}),
 				});
 				// The control plane provisions the sandbox asynchronously; surface the

@@ -76,6 +76,7 @@ type Store interface {
 	AppendSessionEvent(ctx context.Context, orgID, sessionID, eventType string, payload json.RawMessage) (domain.ClientEvent, error)
 	ClaimWorkerTurn(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (domain.WorkerTurn, bool, error)
 	RequestTurnCancellation(ctx context.Context, principal domain.Principal, orgID, sessionID, turnID string) error
+	SteerTurn(ctx context.Context, principal domain.Principal, orgID, sessionID, turnID, idempotencyKey, text, model, reasoningEffort string) (domain.ClientEvent, error)
 	WorkerTurnCancellationRequested(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int) (bool, error)
 	AppendWorkerTurnOutput(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, stream, text string) error
 	FinishWorkerTurn(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, outcome, errorMessage string) (bool, error)
@@ -436,6 +437,7 @@ func New(options Options) *Server {
 			router.Delete("/sessions/{sessionId}", server.deleteSession)
 			router.Post("/sessions/{sessionId}/messages", server.sendMessage)
 			router.Post("/sessions/{sessionId}/turns/{turnId}/cancel", server.cancelTurn)
+			router.Post("/sessions/{sessionId}/turns/{turnId}/steer", server.steerTurn)
 			router.Get("/sessions/{sessionId}/chat-events", server.replayClientEvents)
 			router.Get("/sessions/{sessionId}/events", server.streamClientEvents)
 			router.Post("/sessions/{sessionId}/terminal-ticket", server.createTerminalTicket)

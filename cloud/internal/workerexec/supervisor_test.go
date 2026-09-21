@@ -274,6 +274,35 @@ func (f runnerFunc) Run(ctx context.Context, command Command, emit func(Output) 
 	return f(ctx, command, emit)
 }
 
+func TestInterruptCancelsTheActiveChatExecution(t *testing.T) {
+	started := make(chan struct{})
+	control := &controlStub{credential: worker.CredentialResponse{}}
+	supervisor := &Supervisor{
+		Control: control,
+		Builder: builderStub{command: Command{}},
+		Runner: runnerFunc(func(ctx context.Context, _ Command, _ func(Output) error) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		}),
+		Workspace:       t.TempDir(),
+		CancelInterval:  time.Millisecond,
+		CompletionRetry: time.Millisecond,
+	}
+	done := make(chan error, 1)
+	go func() { done <- supervisor.execute(context.Background(), worker.Turn{ID: "turn-1", Attempt: 1}) }()
+	<-started
+	if !supervisor.Interrupt() {
+		t.Fatal("Interrupt = false, want active execution")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !control.completed || !control.cancelled {
+		t.Fatalf("completion = %v cancelled = %v, want cancelled completion", control.completed, control.cancelled)
+	}
+}
+
 // Process-level integration: the real OSRunner streams each harness's NDJSON
 // protocol through the projector, so chunked stdout (the OS does not guarantee
 // line-aligned reads) still produces exactly one projected reply and one
