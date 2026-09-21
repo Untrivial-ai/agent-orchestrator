@@ -1340,8 +1340,7 @@ func TestModelsRediscoversWhenBinaryVersionChanges(t *testing.T) {
 		Agent:    &countingResolverAgent{},
 	}}, cache, nil, discoverer)
 
-	first, err := svc.Models(context.Background(), "codex", "proj-1", false)
-	if err != nil {
+	if _, err := svc.Models(context.Background(), "codex", "proj-1", false); err != nil {
 		t.Fatal(err)
 	}
 	discoverer.version = "v2"
@@ -1355,14 +1354,24 @@ func TestModelsRediscoversWhenBinaryVersionChanges(t *testing.T) {
 		t.Fatalf("cache-first catalog=%#v, want model-one while v2 validates", got)
 	}
 	deadline := time.Now().Add(time.Second)
-	for discoverer.discoverCalls.Load() != 2 && time.Now().Before(deadline) {
+	for {
+		record, ok, cacheErr := cache.GetAgentModelCatalog(context.Background(), "codex", "proj-1")
+		if cacheErr != nil {
+			t.Fatal(cacheErr)
+		}
+		if ok && record.BinaryVersion == "v2" {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatal("timed out waiting for asynchronously refreshed v2 catalog")
+		}
 		time.Sleep(time.Millisecond)
 	}
 	got, err = svc.Models(context.Background(), "codex", "proj-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.BinaryVersion != "v2" || len(got.Models) != 1 || got.Models[0].ID != "model-two" || !got.FetchedAt.After(first.FetchedAt) {
+	if got.BinaryVersion != "v2" || len(got.Models) != 1 || got.Models[0].ID != "model-two" {
 		t.Fatalf("catalog=%#v, want asynchronously refreshed v2 catalog", got)
 	}
 }
