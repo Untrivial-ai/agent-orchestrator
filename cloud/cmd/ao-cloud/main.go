@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/auth"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/cifeedback"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/config"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/githubapp"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/httpapi"
@@ -410,6 +411,8 @@ func run(logger *slog.Logger) error {
 	}
 	api := httpapi.New(apiOptions)
 	go notificationProcessor.Run(ctx)
+	feedbackDispatcher := cifeedback.New(store, cifeedback.Config{Logger: logger})
+	go feedbackDispatcher.Run(ctx)
 	if cfg.TerminalRelayEnabled {
 		logger.Info("experimental terminal relay enabled",
 			"terminal_stream_enabled", cfg.TerminalStreamEnabled,
