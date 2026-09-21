@@ -4338,9 +4338,12 @@ func (m *Manager) recordCleanupFacts(ctx context.Context, rec domain.SessionReco
 		RuntimeReleasedAt: runtimeReleasedAt, WorkspaceDisposition: disposition,
 		AttemptCount: attempts, LastAttemptAt: now, FailureCode: failureCode,
 	}
-	if disposition == domain.DispositionPending {
+	retryNeeded := disposition == domain.DispositionPending || runtimeReleasedAt.IsZero()
+	if retryNeeded {
 		if attempts >= cleanupMaxAutoAttempts {
-			next.WorkspaceDisposition = domain.DispositionFailed
+			if disposition == domain.DispositionPending {
+				next.WorkspaceDisposition = domain.DispositionFailed
+			}
 		} else {
 			next.NextAttemptAt = now.Add(min(time.Duration(attempts)*15*time.Minute, 6*time.Hour))
 		}

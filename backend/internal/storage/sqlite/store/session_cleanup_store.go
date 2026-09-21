@@ -54,11 +54,13 @@ func (s *Store) GetSessionCleanupFacts(ctx context.Context, id domain.SessionID)
 // `sessions LEFT JOIN facts` (NOT a facts-only `WHERE disposition='pending'`) so
 // the pre-existing leaked backlog — terminated sessions with NO facts row — is
 // still surfaced. A candidate is a terminated session with no facts row yet,
-// facts stale relative to the session's cleanup_generation, or a pending cleanup
-// due for retry at or before now. Terminal dispositions (removed / preserved_dirty
-// / failed / not_applicable) are excluded; only a user-triggered retry revisits
-// preserved_dirty / failed. The restorable-marker exclusion and terminal re-check
-// are applied by the Go finalizer under the per-session lock, not in SQL.
+// facts stale relative to the session's cleanup_generation, a new pending
+// cleanup, or a scheduled workspace/runtime retry due at or before now. A
+// terminal workspace disposition is revisited automatically only while an
+// unresolved runtime release has a scheduled retry. Once the retry budget is
+// exhausted next_attempt_at is cleared, so only a user-triggered cleanup can
+// revisit it. The restorable-marker exclusion and terminal re-check are applied
+// by the Go finalizer under the per-session lock, not in SQL.
 //
 // It runs as raw SQL rather than a sqlc query because sqlc 1.31's SQLite parser
 // truncates the trailing clause after the final `?` placeholder — the scan's
@@ -72,10 +74,13 @@ WHERE s.is_terminated = 1
   AND (
       f.session_id IS NULL
       OR f.session_generation < s.cleanup_generation
-      OR f.runtime_released_at IS NULL
       OR (
           f.workspace_disposition = 'pending'
-          AND (f.next_attempt_at IS NULL OR f.next_attempt_at <= ?)
+          AND f.next_attempt_at IS NULL
+      )
+      OR (
+          (f.workspace_disposition = 'pending' OR f.runtime_released_at IS NULL)
+          AND f.next_attempt_at <= ?
       )
   )
 ORDER BY s.project_id, s.num;`

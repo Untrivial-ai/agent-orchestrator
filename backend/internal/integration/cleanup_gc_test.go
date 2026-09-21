@@ -263,13 +263,69 @@ func TestCleanupFactsTrackRuntimeReleaseIndependently(t *testing.T) {
 	if !facts.RuntimeReleasedAt.IsZero() || facts.FailureCode != "runtime_release_failed" {
 		t.Fatalf("facts after runtime failure = %+v", facts)
 	}
+	if facts.NextAttemptAt.IsZero() {
+		t.Fatalf("runtime failure did not schedule a bounded retry: %+v", facts)
+	}
+	if facts.WorkspaceDisposition != domain.DispositionRemoved {
+		t.Fatalf("runtime failure changed completed workspace disposition: %+v", facts)
+	}
 
 	st.rt.destroyErr = nil
+	destroyed := st.rt.destroyed
 	if _, err := st.mgr.RunTerminalResourceGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st.rt.destroyed != destroyed {
+		t.Fatalf("runtime retried before next_attempt_at: destroys=%d want %d", st.rt.destroyed, destroyed)
+	}
+	facts, _, _ = st.store.GetSessionCleanupFacts(ctx, sess.ID)
+	if !facts.RuntimeReleasedAt.IsZero() {
+		t.Fatalf("early periodic pass recorded runtime release: %+v", facts)
+	}
+
+	// Explicit cleanup bypasses the automatic schedule so a user can recover
+	// immediately after repairing the runtime backend.
+	if _, err := st.mgr.Cleanup(ctx, "mer"); err != nil {
 		t.Fatal(err)
 	}
 	facts, _, _ = st.store.GetSessionCleanupFacts(ctx, sess.ID)
 	if facts.RuntimeReleasedAt.IsZero() {
 		t.Fatalf("runtime release was not recorded after retry: %+v", facts)
+	}
+}
+
+func TestCleanupRuntimeRetryBudgetStopsAutomaticGC(t *testing.T) {
+	ctx := context.Background()
+	st := newStack(t)
+	st.ws.root = t.TempDir()
+
+	sess, _, _, err := st.sm.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Branch: "b", Prompt: "do it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminateWithoutTeardown(t, st, sess.ID)
+	st.rt.destroyErr = errors.New("runtime unavailable")
+	for range 5 {
+		if _, err := st.mgr.Cleanup(ctx, "mer"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	facts, ok, err := st.store.GetSessionCleanupFacts(ctx, sess.ID)
+	if err != nil || !ok {
+		t.Fatalf("cleanup facts: ok=%v err=%v", ok, err)
+	}
+	if facts.AttemptCount != 5 || !facts.NextAttemptAt.IsZero() {
+		t.Fatalf("exhausted runtime retry facts = %+v, want attempts=5 and no next attempt", facts)
+	}
+	if facts.WorkspaceDisposition != domain.DispositionRemoved {
+		t.Fatalf("runtime retry exhaustion changed workspace disposition: %+v", facts)
+	}
+
+	destroyed := st.rt.destroyed
+	if _, err := st.mgr.RunTerminalResourceGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st.rt.destroyed != destroyed {
+		t.Fatalf("automatic GC retried exhausted runtime: destroys=%d want %d", st.rt.destroyed, destroyed)
 	}
 }

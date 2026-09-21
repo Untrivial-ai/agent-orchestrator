@@ -143,10 +143,16 @@ func TestListTerminalCleanupCandidates(t *testing.T) {
 	// E: terminal, pending but not yet due -> excluded.
 	e := terminalSession(t, s, "cand", 0)
 	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: e.ID, WorkspaceDisposition: domain.DispositionPending, RuntimeReleasedAt: now, NextAttemptAt: now.Add(time.Hour)})
-	// F: terminal, workspace removed but runtime release unresolved -> candidate.
+	// F: terminal, workspace removed and runtime retry due -> candidate.
 	f := terminalSession(t, s, "cand", 0)
-	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: f.ID, WorkspaceDisposition: domain.DispositionRemoved})
-	// G: live (not terminated) -> excluded.
+	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: f.ID, WorkspaceDisposition: domain.DispositionRemoved, NextAttemptAt: now.Add(-time.Hour)})
+	// G: terminal, workspace removed but runtime retry not yet due -> excluded.
+	g := terminalSession(t, s, "cand", 0)
+	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: g.ID, WorkspaceDisposition: domain.DispositionRemoved, NextAttemptAt: now.Add(time.Hour)})
+	// H: terminal, runtime retry exhausted (no next attempt) -> excluded.
+	h := terminalSession(t, s, "cand", 0)
+	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: h.ID, WorkspaceDisposition: domain.DispositionRemoved, AttemptCount: 5})
+	// I: live (not terminated) -> excluded.
 	if _, err := s.CreateSession(ctx, sampleRecord("cand")); err != nil {
 		t.Fatalf("create live session: %v", err)
 	}
@@ -168,7 +174,7 @@ func TestListTerminalCleanupCandidates(t *testing.T) {
 			t.Fatalf("candidates = %v, missing %s", ids, id)
 		}
 	}
-	for _, id := range []domain.SessionID{b.ID, e.ID} {
+	for _, id := range []domain.SessionID{b.ID, e.ID, g.ID, h.ID} {
 		if got[id] {
 			t.Fatalf("candidates = %v, should exclude %s", ids, id)
 		}
