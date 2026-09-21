@@ -156,8 +156,15 @@ func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFile
 		return worker.WorkspaceDiffFile{}, err
 	}
 
-	baseRef, _ := w.comparisonBase(ctx)
-	status, err := w.fileStatus(ctx, path, baseRef)
+	baseRef, base := w.comparisonBase(ctx)
+	// Compare against the merge-base SHA, not the symbolic branch tip (see Diff):
+	// diffing against the tip surfaces spurious upstream changes after a fetch and
+	// disagrees with the review.summary view.
+	diffBase := base
+	if diffBase == "" {
+		diffBase = baseRef
+	}
+	status, err := w.fileStatus(ctx, path, diffBase)
 	if err != nil {
 		return worker.WorkspaceDiffFile{}, err
 	}
@@ -183,12 +190,12 @@ func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFile
 		return file, nil
 	}
 
-	numstat, _, err := w.git(ctx, "diff", "--numstat", baseRef, "--", path)
+	numstat, _, err := w.git(ctx, "diff", "--numstat", diffBase, "--", path)
 	if err != nil {
 		return worker.WorkspaceDiffFile{}, err
 	}
 	file.Additions, file.Deletions, file.Binary = diffNumstat(numstat, file.Binary)
-	diff, truncated, err := w.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", baseRef, "--", path)
+	diff, truncated, err := w.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", diffBase, "--", path)
 	if err != nil {
 		return worker.WorkspaceDiffFile{}, err
 	}
@@ -342,15 +349,25 @@ func (w *workspace) Diff(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	baseRef, base := w.comparisonBase(ctx)
-	baseStatus, baseStatusTruncated, err := w.git(ctx, "diff", "--name-status", "--find-renames", baseRef, "--")
+	// Diff against the merge-base SHA, not the symbolic ref (branch tip). Once a
+	// fetch advances origin/<defaultBranch> past this session's fork point,
+	// diffing against the tip renders upstream commits as spurious deletions and
+	// disagrees with both the reported diffBaseSha (the merge-base) and the
+	// review.summary view. Comparing against the merge-base shows only this
+	// session's own changes.
+	diffBase := base
+	if diffBase == "" {
+		diffBase = baseRef
+	}
+	baseStatus, baseStatusTruncated, err := w.git(ctx, "diff", "--name-status", "--find-renames", diffBase, "--")
 	if err != nil {
 		return nil, err
 	}
-	combined, combinedTruncated, err := w.git(ctx, "diff", "--no-ext-diff", baseRef, "--")
+	combined, combinedTruncated, err := w.git(ctx, "diff", "--no-ext-diff", diffBase, "--")
 	if err != nil {
 		return nil, err
 	}
-	numstat, numstatTruncated, err := w.git(ctx, "diff", "--numstat", baseRef, "--")
+	numstat, numstatTruncated, err := w.git(ctx, "diff", "--numstat", diffBase, "--")
 	if err != nil {
 		return nil, err
 	}
@@ -393,13 +410,15 @@ func (w *workspace) Diff(ctx context.Context) (map[string]any, error) {
 		additions, deletions, binary := 0, 0, false
 		if fileStatus == "untracked" {
 			content, _, isBinary, truncated, readErr := w.diffFileContent(filepath.FromSlash(path))
-			if readErr != nil {
-				return nil, readErr
+			if readErr == nil {
+				binary = isBinary
+				if !binary && !truncated {
+					additions = lineCount(content)
+				}
 			}
-			binary = isBinary
-			if !binary && !truncated {
-				additions = lineCount(content)
-			}
+			// On a read error (dangling symlink, FIFO/socket, or a file removed
+			// between git status and the read), still list the untracked file
+			// rather than failing the entire diff view.
 		}
 		files = append(files, map[string]any{
 			"path": path, "status": fileStatus, "additions": additions,

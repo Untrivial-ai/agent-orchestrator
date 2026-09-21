@@ -161,6 +161,22 @@ func TestEnsureWorkspaceReviewBaseRepairsLegacyRootFallback(t *testing.T) {
 	}
 }
 
+// A scratch / no-repo workspace is `git init` with no commit (unborn HEAD).
+// EnsureWorkspaceReviewBase must no-op there rather than error, otherwise every
+// scratch session's worker aborts in prepareWorkspace across all providers.
+func TestEnsureWorkspaceReviewBaseNoOpOnUnbornHEAD(t *testing.T) {
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-b", "main")
+	if err := EnsureWorkspaceReviewBase(context.Background(), ExecGitRunner{}, repo, "main"); err != nil {
+		t.Fatalf("EnsureWorkspaceReviewBase on an empty repo: %v", err)
+	}
+	if _, err := (ExecGitRunner{}).Run(
+		context.Background(), repo, nil, "rev-parse", "--verify", WorkspaceReviewBaseRef,
+	); err == nil {
+		t.Fatalf("review base ref must not be created for an empty repo")
+	}
+}
+
 func initReviewBaseRepository(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

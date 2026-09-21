@@ -111,13 +111,13 @@ The browser calls the authenticated Cloud control plane. The control plane valid
 
 The proposed Cloud routes are:
 
-- `GET /workspace/review` — complete review summary;
-- `GET /workspace/tree` — one lazy tree level;
-- `GET /workspace/search` — bounded search;
-- `GET /workspace/review/file` — scoped or commit-specific detail;
-- `POST /workspace/review/diffs` — batch patches;
-- `GET /workspace/review/revision` — before/after content;
-- `PUT /workspace/review/file` — fingerprint-checked write.
+- `GET /workspace/review` - complete review summary;
+- `GET /workspace/tree` - one lazy tree level;
+- `GET /workspace/search` - bounded search;
+- `GET /workspace/review/file` - scoped or commit-specific detail;
+- `POST /workspace/review/diffs` - batch patches;
+- `GET /workspace/review/revision` - before/after content;
+- `PUT /workspace/review/file` - fingerprint-checked write.
 
 Using `/workspace/review` avoids changing the established meaning of Cloud `/workspace/files`. Existing lightweight `/workspace/diff` and `/workspace/file/diff` routes remain compatibility endpoints until no caller depends on them.
 

@@ -135,6 +135,13 @@ func EnsureWorkspaceReviewBase(ctx context.Context, runner GitRunner, workspace,
 	if runner == nil {
 		return errors.New("git runner is required")
 	}
+	// A scratch / freshly-initialized workspace has an unborn HEAD (git init with
+	// no commit), so there is no history to anchor a review base to. Treat it as a
+	// no-op instead of failing worker startup on the later rev-list HEAD, which
+	// aborts every no-repo session across all providers.
+	if _, err := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", "HEAD"); err != nil {
+		return nil
+	}
 	existingOutput, existingErr := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", WorkspaceReviewBaseRef)
 	configuredCandidate := ""
 	if branch := strings.TrimSpace(defaultBranch); branch != "" {
