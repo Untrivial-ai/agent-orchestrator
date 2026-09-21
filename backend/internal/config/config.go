@@ -160,9 +160,10 @@ type Config struct {
 	// token overrides, loaded once at boot from environment variables.
 	GitLab GitLabConfig
 	// MaxConcurrentSessions caps the daemon-wide number of non-terminated
-	// sessions considered before admitting another worker runtime. Orchestrator
-	// sessions are exempt from admission so recovery remains possible. Zero
-	// explicitly disables the global cap.
+	// sessions considered before admitting another worker runtime. Live
+	// orchestrators consume capacity, but orchestrator starts bypass admission
+	// refusal so recovery remains possible. Zero explicitly disables the global
+	// cap.
 	MaxConcurrentSessions int
 	// Client identifies which client this deployment serves (AO_CLIENT). Empty
 	// means no client identity, which keeps client-gated offerings off.

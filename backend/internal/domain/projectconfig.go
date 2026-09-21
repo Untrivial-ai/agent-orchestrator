@@ -60,10 +60,10 @@ type ProjectConfig struct {
 	TrackerIntake TrackerIntakeConfig `json:"trackerIntake,omitempty"`
 
 	// MaxConcurrentSessions caps how many non-terminated sessions this project
-	// may hold before a new worker spawn is refused (orchestrator spawns are
-	// exempt so a stuck project can always be recovered). 0 means "no
-	// project-level cap"; the daemon-wide AO_MAX_CONCURRENT_SESSIONS cap still
-	// applies either way.
+	// may hold before a new worker spawn is refused. Live orchestrators consume
+	// capacity, but orchestrator starts bypass admission refusal so a stuck
+	// project can always be recovered. 0 means "no project-level cap"; the
+	// daemon-wide AO_MAX_CONCURRENT_SESSIONS cap still applies either way.
 	MaxConcurrentSessions int `json:"maxConcurrentSessions,omitempty"`
 
 	// ContainerReap controls whether AO reaps a worker session's ao.session-

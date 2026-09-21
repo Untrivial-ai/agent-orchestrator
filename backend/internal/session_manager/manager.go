@@ -763,8 +763,10 @@ type Deps struct {
 	// BackgroundContext owns work admitted by request-scoped methods. Nil keeps
 	// focused tests and embedders compatible by defaulting to Background.
 	BackgroundContext context.Context
-	// MaxConcurrentSessions is the daemon-wide worker start cap. Zero disables
-	// the global cap; a project may still define its own cap.
+	// MaxConcurrentSessions is the daemon-wide worker admission cap. All live
+	// sessions occupy capacity, but orchestrator starts bypass refusal so
+	// recovery remains possible. Zero disables the global cap; a project may
+	// still define its own cap.
 	MaxConcurrentSessions int
 	// Logger receives spawn-time diagnostics (e.g. when the session PATH
 	// cannot be pinned to the daemon binary). Nil defaults to slog.Default().
@@ -1186,9 +1188,11 @@ func (m *Manager) createSessionWithinCap(ctx context.Context, cfg ports.SpawnCon
 	return m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock()))
 }
 
-// beginWorkerAdmission atomically evaluates durable live sessions plus starts
-// already admitted by this process. Only workers consume admission slots;
-// orchestrators remain startable for recovery even when the cap is full.
+// beginWorkerAdmission atomically evaluates durable live-session occupancy plus
+// worker starts already admitted by this process. Only worker starts are
+// subject to refusal and transient reservations. Every live session, including
+// an orchestrator, occupies durable capacity; orchestrators nevertheless remain
+// startable for recovery when a cap is full.
 func (m *Manager) beginWorkerAdmission(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID, projectCap int) (func(), error) {
 	if kind != domain.KindWorker {
 		return func() {}, nil
@@ -1209,7 +1213,7 @@ func (m *Manager) beginWorkerAdmission(ctx context.Context, kind domain.SessionK
 		if err != nil {
 			return nil, fmt.Errorf("concurrency check: %w", err)
 		}
-		globalActive := countNonTerminated(all)
+		globalActive := countCapacityOccupants(all)
 		if globalActive+reservedGlobal >= globalCap {
 			return nil, fmt.Errorf("%w: %d active or starting sessions at AO_MAX_CONCURRENT_SESSIONS=%d; wait for a session to finish (or kill one) and retry", ErrConcurrencyLimit, globalActive+reservedGlobal, globalCap)
 		}
@@ -1219,7 +1223,7 @@ func (m *Manager) beginWorkerAdmission(ctx context.Context, kind domain.SessionK
 		if err != nil {
 			return nil, fmt.Errorf("concurrency check: %w", err)
 		}
-		projectActive := countNonTerminated(projectSessions) + m.admissionReservations[projectID]
+		projectActive := countCapacityOccupants(projectSessions) + m.admissionReservations[projectID]
 		if projectActive >= projectCap {
 			return nil, fmt.Errorf("%w: project %s has %d active or starting sessions at maxConcurrentSessions=%d; wait for a session to finish (or kill one) and retry", ErrConcurrencyLimit, projectID, projectActive, projectCap)
 		}
@@ -1239,7 +1243,7 @@ func (m *Manager) beginWorkerAdmission(ctx context.Context, kind domain.SessionK
 	}, nil
 }
 
-func countNonTerminated(recs []domain.SessionRecord) int {
+func countCapacityOccupants(recs []domain.SessionRecord) int {
 	active := 0
 	for _, rec := range recs {
 		if !rec.IsTerminated {

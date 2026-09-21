@@ -49,3 +49,8 @@ When AO is configured with a concurrency cap (`AO_MAX_CONCURRENT_SESSIONS` or
 the project's `maxConcurrentSessions` config), a spawn over the cap fails with
 `SESSION_CONCURRENCY_LIMIT`. That is not an error to work around: wait for a
 running worker to finish (or kill one that is stuck) and retry the spawn.
+
+All live sessions, including orchestrators, consume capacity. An orchestrator
+start itself bypasses admission refusal so AO can always recover a stuck
+project, but that live orchestrator can leave no capacity for another worker
+until a session terminates.

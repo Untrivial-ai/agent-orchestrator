@@ -61,6 +61,45 @@ func TestSpawnOrchestratorExemptFromConcurrencyCap(t *testing.T) {
 	}
 }
 
+func TestSpawnOrchestratorOccupiesGlobalConcurrencyCap(t *testing.T) {
+	m, st := newCappedManager(1)
+
+	orchestrator, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator})
+	if err != nil {
+		t.Fatalf("spawn orchestrator: %v", err)
+	}
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); !errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("spawn worker while orchestrator occupies global cap: err = %v, want ErrConcurrencyLimit", err)
+	}
+	rec := st.sessions[orchestrator.ID]
+	rec.IsTerminated = true
+	st.sessions[orchestrator.ID] = rec
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatalf("spawn worker after orchestrator terminates: %v", err)
+	}
+}
+
+func TestSpawnOrchestratorOccupiesProjectConcurrencyCap(t *testing.T) {
+	m, st := newCappedManager(0)
+	capped := testRoleAgents()
+	capped.MaxConcurrentSessions = 1
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: capped}
+
+	orchestrator, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator})
+	if err != nil {
+		t.Fatalf("spawn orchestrator: %v", err)
+	}
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); !errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("spawn worker while orchestrator occupies project cap: err = %v, want ErrConcurrencyLimit", err)
+	}
+	rec := st.sessions[orchestrator.ID]
+	rec.IsTerminated = true
+	st.sessions[orchestrator.ID] = rec
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatalf("spawn worker after orchestrator terminates: %v", err)
+	}
+}
+
 func TestSpawnEnforcesProjectConcurrencyCap(t *testing.T) {
 	m, st := newCappedManager(0) // no global cap
 	capped := testRoleAgents()
