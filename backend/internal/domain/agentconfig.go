@@ -25,11 +25,15 @@ const (
 type AgentConfig struct {
 	// Model overrides the agent's default model (e.g. claude-opus-4-5).
 	Model string `json:"model,omitempty"`
+	// Effort selects a model-advertised reasoning level. Empty defers to the
+	// provider/model default.
+	Effort string `json:"effort,omitempty"`
 	// Mode selects an agent-owned operating mode when the adapter exposes modes
 	// instead of raw model ids (currently Amp: low|medium|high|ultra).
 	Mode string `json:"mode,omitempty"`
-	// Permissions sets the agent's starting permission mode. Empty is treated
-	// like the adapter's default mode.
+	// Permissions sets the agent's starting permission mode. Empty inherits the
+	// project/role preference; new sessions fall back to Auto when none is saved.
+	// Other adapter callers retain their existing baseline for an empty value.
 	Permissions PermissionMode `json:"permissions,omitempty"`
 }
 

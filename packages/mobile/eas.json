@@ -14,11 +14,16 @@
 		"preview": {
 			"distribution": "internal",
 			"android": {
-				"buildType": "apk"
-			}
+				"buildType": "apk",
+				"env": {
+					"ORG_GRADLE_PROJECT_reactNativeArchitectures": "armeabi-v7a,arm64-v8a"
+				}
+			},
+			"channel": "preview"
 		},
 		"production": {
-			"autoIncrement": true
+			"autoIncrement": true,
+			"channel": "production"
 		}
 	},
 	"submit": {

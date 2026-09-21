@@ -46,6 +46,14 @@ func (f *fakeChatService) Steer(
 	return chatsvc.SteerResult{}, nil
 }
 
+func (f *fakeConversationService) RecoverSteer(context.Context, domain.SessionID, string) (chatsvc.SteerResult, error) {
+	return chatsvc.SteerResult{}, nil
+}
+
+func (f *fakeChatService) RecoverSteer(context.Context, domain.SessionID, string) (chatsvc.SteerResult, error) {
+	return chatsvc.SteerResult{}, nil
+}
+
 func (f *fakeConversationService) PromoteQueuedTurn(
 	context.Context,
 	domain.SessionID,
@@ -54,12 +62,36 @@ func (f *fakeConversationService) PromoteQueuedTurn(
 	return chatsvc.PromoteQueuedTurnResult{}, nil
 }
 
+func (f *fakeConversationService) CancelQueuedTurn(context.Context, domain.SessionID, string) error {
+	return nil
+}
+
+func (f *fakeConversationService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
+	return nil
+}
+
+func (f *fakeConversationService) ReorderQueuedTurns(context.Context, domain.SessionID, []string) error {
+	return nil
+}
+
 func (f *fakeChatService) PromoteQueuedTurn(
 	context.Context,
 	domain.SessionID,
 	string,
 ) (chatsvc.PromoteQueuedTurnResult, error) {
 	return chatsvc.PromoteQueuedTurnResult{}, nil
+}
+
+func (f *fakeChatService) CancelQueuedTurn(context.Context, domain.SessionID, string) error {
+	return nil
+}
+
+func (f *fakeChatService) EditQueuedTurn(context.Context, domain.SessionID, string, chatsvc.QueuedMessageEdit) error {
+	return nil
+}
+
+func (f *fakeChatService) ReorderQueuedTurns(context.Context, domain.SessionID, []string) error {
+	return nil
 }
 
 type promoteQueuedStub struct {
@@ -84,9 +116,14 @@ func (s *promoteQueuedStub) PromoteQueuedTurn(
 type steerStub struct {
 	*fakeConversationService
 
-	result chatsvc.SteerResult
-	err    error
-	seen   []ports.ChatUserMessage
+	result       chatsvc.SteerResult
+	err          error
+	seen         []ports.ChatUserMessage
+	recovered    []string
+	atomicResult chatsvc.SteerOrSendResult
+	atomicErr    error
+	atomicSeen   []ports.ChatUserMessage
+	recoverOnly  []bool
 }
 
 func (s *steerStub) Steer(
@@ -96,6 +133,33 @@ func (s *steerStub) Steer(
 ) (chatsvc.SteerResult, error) {
 	s.seen = append(s.seen, msg)
 	return s.result, s.err
+}
+
+func (s *steerStub) RecoverSteer(_ context.Context, _ domain.SessionID, id string) (chatsvc.SteerResult, error) {
+	s.recovered = append(s.recovered, id)
+	return s.result, s.err
+}
+
+func (s *steerStub) SteerOrSend(
+	_ context.Context,
+	_ domain.SessionID,
+	msg ports.ChatUserMessage,
+	recoverOnly bool,
+) (chatsvc.SteerOrSendResult, error) {
+	s.atomicSeen = append(s.atomicSeen, msg)
+	s.recoverOnly = append(s.recoverOnly, recoverOnly)
+	return s.atomicResult, s.atomicErr
+}
+
+func TestSteerRecoveryRouteOnlyReadsReceipt(t *testing.T) {
+	svc := &steerStub{fakeConversationService: &fakeConversationService{}, result: chatsvc.SteerResult{ProviderTurnID: "original-turn"}}
+	status, body, _ := postSteer(t, svc, map[string]any{"clientMessageId": "image-steer", "recoverOnly": true})
+	if status != http.StatusAccepted || body["providerTurnId"] != "original-turn" {
+		t.Fatalf("recovery status=%d body=%v", status, body)
+	}
+	if len(svc.seen) != 0 || len(svc.recovered) != 1 || svc.recovered[0] != "image-steer" {
+		t.Fatalf("recovery dispatched: %+v", svc)
+	}
 }
 
 func steerRouter(t *testing.T, svc *steerStub) *httptest.Server {
@@ -145,6 +209,50 @@ func postSteer(t *testing.T, svc *steerStub, body any) (int, map[string]any, ste
 	return resp.StatusCode, ok, failure
 }
 
+func postSteerOrSend(t *testing.T, svc *steerStub, body any) (int, map[string]any, steerErrorBody) {
+	t.Helper()
+	srv := steerRouter(t, svc)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	resp, err := http.Post(srv.URL+"/api/v1/sessions/p1-1/conversation/steer-or-send",
+		"application/json", bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("POST steer or send: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var ok map[string]any
+	var failure steerErrorBody
+	_ = json.Unmarshal(raw, &ok)
+	_ = json.Unmarshal(raw, &failure)
+	return resp.StatusCode, ok, failure
+}
+
+func TestSteerOrSendRouteReturnsAtomicOutcome(t *testing.T) {
+	svc := &steerStub{
+		fakeConversationService: &fakeConversationService{},
+		atomicResult: chatsvc.SteerOrSendResult{
+			Steered: true,
+			Steer:   chatsvc.SteerResult{ProviderTurnID: "provider-turn-1", ActivityID: "activity-1"},
+		},
+	}
+	status, body, _ := postSteerOrSend(t, svc, map[string]any{
+		"text": "correct it", "clientMessageId": "atomic-1",
+	})
+	if status != http.StatusAccepted || body["outcome"] != "steered" || body["providerTurnId"] != "provider-turn-1" {
+		t.Fatalf("status=%d body=%v", status, body)
+	}
+	if len(svc.atomicSeen) != 1 || svc.atomicSeen[0].ClientMessageID != "atomic-1" ||
+		len(svc.recoverOnly) != 1 || svc.recoverOnly[0] {
+		t.Fatalf("atomic request = %+v recoverOnly=%v", svc.atomicSeen, svc.recoverOnly)
+	}
+}
+
 // 202, not 200: the provider takes the guidance and acts on it at its next model
 // boundary. The body names the turn it joined so a client can attach it.
 func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
@@ -157,6 +265,7 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	}
 	status, body, _ := postSteer(t, svc, map[string]any{
 		"text": "actually, just summarize", "clientMessageId": "steer-1",
+		"attachments": []map[string]string{{"mimeType": "image/png", "data": "aW1hZ2U="}},
 	})
 
 	if status != http.StatusAccepted {
@@ -178,10 +287,36 @@ func TestSteerRouteAcceptsGuidanceAndNamesTheTurn(t *testing.T) {
 	if svc.seen[0].ClientMessageID != "steer-1" {
 		t.Errorf("clientMessageId = %q", svc.seen[0].ClientMessageID)
 	}
+	if len(svc.seen[0].Content) != 1 || svc.seen[0].Content[0] != (ports.ChatContent{
+		Type: "image", Data: "aW1hZ2U=", MIMEType: "image/png",
+	}) {
+		t.Errorf("content = %#v, want native image", svc.seen[0].Content)
+	}
 	// A steer typed by a person is the person's, and the timeline attributes it that
 	// way rather than as something the daemon said.
 	if svc.seen[0].Origin != domain.MessageOriginHuman {
 		t.Errorf("origin = %q, want human", svc.seen[0].Origin)
+	}
+}
+
+func TestSteerRouteRejectsInvalidAttachmentBeforeCallingService(t *testing.T) {
+	svc := &steerStub{fakeConversationService: &fakeConversationService{}}
+	status, _, failure := postSteer(t, svc, map[string]any{
+		"text": "inspect this",
+		"attachments": []map[string]string{{
+			"mimeType": "image/svg+xml",
+			"data":     "PHN2Zy8+",
+		}},
+	})
+
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+	if failure.Kind != "validation" || failure.Code != "UNSUPPORTED_ATTACHMENT_TYPE" {
+		t.Errorf("error = %#v, want validation/UNSUPPORTED_ATTACHMENT_TYPE", failure)
+	}
+	if len(svc.seen) != 0 {
+		t.Fatalf("service saw %d steers, want 0", len(svc.seen))
 	}
 }
 
@@ -220,6 +355,21 @@ func TestSteerRouteRefusalsAreTypedAndCoded(t *testing.T) {
 			name:       "empty guidance",
 			err:        chatsvc.ErrSteerTextRequired,
 			wantStatus: http.StatusBadRequest, wantCode: "CHAT_STEER_TEXT_REQUIRED",
+		},
+		{
+			name:       "delivery outcome uncertain",
+			err:        chatsvc.ErrSteerDeliveryUncertain,
+			wantStatus: http.StatusConflict, wantCode: "CHAT_STEER_UNCERTAIN",
+		},
+		{
+			name:       "client handle reused for different guidance",
+			err:        chatsvc.ErrSteerIdempotencyConflict,
+			wantStatus: http.StatusConflict, wantCode: "CHAT_STEER_IDEMPOTENCY_CONFLICT",
+		},
+		{
+			name:       "interface transition",
+			err:        chatsvc.ErrControllerHandoff,
+			wantStatus: http.StatusConflict, wantCode: "CHAT_INTERFACE_TRANSITION",
 		},
 		{
 			name:       "terminal-mode session",

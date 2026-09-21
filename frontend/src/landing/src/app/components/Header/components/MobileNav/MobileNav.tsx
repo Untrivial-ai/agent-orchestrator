@@ -1,9 +1,9 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { Menu, X } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useState } from "react";
+import { HashLink } from "../../../HashLink/HashLink";
 import {
 	type NavLink,
 	PRODUCT_LINKS,
@@ -139,14 +139,14 @@ function MobileSection({
 						{link.label}
 					</a>
 				) : (
-					<Link
+					<HashLink
 						key={link.href}
 						href={link.href}
 						onClick={onNavigate}
 						className="flex min-h-11 items-center rounded-md px-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
 					>
 						{link.label}
-					</Link>
+					</HashLink>
 				),
 			)}
 		</div>

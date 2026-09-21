@@ -306,9 +306,3 @@ func formatAutomationTime(value time.Time) string {
 	}
 	return value.Local().Format(time.RFC3339)
 }
-func emptyDash(value string) string {
-	if value == "" {
-		return "-"
-	}
-	return value
-}

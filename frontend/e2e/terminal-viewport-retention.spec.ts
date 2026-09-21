@@ -62,6 +62,7 @@ type TestXterm = {
 	getSelection: () => string;
 	options: { fontSize: number };
 	selectLines: (start: number, end: number) => void;
+	scrollToTop: () => void;
 };
 
 type RevealSample = {
@@ -197,6 +198,57 @@ async function installHarness(page: Page): Promise<void> {
 }
 
 test.describe("retained terminal viewport", () => {
+	test("shows and drags a slim macOS scrollbar for normal-buffer history", async ({ page }) => {
+		await page.addInitScript(() => {
+			Object.defineProperty(window.navigator, "platform", {
+				configurable: true,
+				value: "MacIntel",
+			});
+			Object.defineProperty(window.navigator, "userAgentData", {
+				configurable: true,
+				value: { platform: "macOS" },
+			});
+		});
+		await installHarness(page);
+
+		const host = activeTerminal(page).locator(".terminal-xterm-host");
+		await expect(host).toHaveClass(/terminal-xterm-host--mac/);
+		const scrollbar = activeTerminal(page).locator(".terminal-scrollbar");
+		await expect(scrollbar).toHaveAttribute("data-scrollable", "true");
+		await expect
+			.poll(() => activeViewport(page).evaluate((element) => element.scrollHeight - element.clientHeight))
+			.toBeGreaterThan(500);
+		const metrics = await host.evaluate((element) => {
+			const viewport = element.querySelector<HTMLElement>(".xterm-viewport")!;
+			const terminal = (element as HTMLElement & { __aoXtermForTest?: TestXterm }).__aoXtermForTest!;
+			terminal.scrollToTop();
+			return {
+				reservation: (terminal as unknown as { _core: { viewport: { scrollBarWidth: number } } })._core.viewport
+					.scrollBarWidth,
+				scrollRange: viewport.scrollHeight - viewport.clientHeight,
+			};
+		});
+		expect(metrics).toMatchObject({
+			reservation: 7,
+		});
+		expect(metrics.scrollRange).toBeGreaterThan(500);
+
+		const viewport = activeViewport(page);
+		const thumb = scrollbar.locator(".terminal-scrollbar__thumb");
+		const box = await thumb.boundingBox();
+		expect(box).not.toBeNull();
+		await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height * 3, { steps: 8 });
+		await page.mouse.up();
+		await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
+		await page.evaluate((handleId) => window.__aoFakeTerminalMux!.emit(handleId, "\x1b[?1049hTUI screen"), handleA);
+		await expect(scrollbar).toHaveAttribute("data-scrollable", "false");
+		await page.evaluate((handleId) => window.__aoFakeTerminalMux!.emit(handleId, "\x1b[?1049l"), handleA);
+		await expect(scrollbar).toHaveAttribute("data-scrollable", "true");
+	});
+
 	test("retains the first of six live sessions with zero reopen and reveals its latest output", async ({
 		page,
 	}) => {

@@ -1,5 +1,17 @@
+diff --git a/node_modules/@fressh/react-native-xtermjs-webview/dist/index.d.ts b/node_modules/@fressh/react-native-xtermjs-webview/dist/index.d.ts
+index f7337ec..533c4e8 100644
+--- a/node_modules/@fressh/react-native-xtermjs-webview/dist/index.d.ts
++++ b/node_modules/@fressh/react-native-xtermjs-webview/dist/index.d.ts
+@@ -28,6 +28,7 @@ export type XtermWebViewHandle = {
+         rows: number;
+     }) => void;
+     fit: () => void;
++    injectJavaScript: (script: string) => void;
+ };
+ type UserControllableWebViewProps = StrictOmit<WebViewOptions, 'source' | 'style' | 'injectedJavaScriptBeforeContentLoaded'>;
+ export type XtermJsWebViewProps = {
 diff --git a/node_modules/@fressh/react-native-xtermjs-webview/dist/index.js b/node_modules/@fressh/react-native-xtermjs-webview/dist/index.js
-index 2632d2d..0969b63 100644
+index 2632d2d..1ca13f0 100644
 --- a/node_modules/@fressh/react-native-xtermjs-webview/dist/index.js
 +++ b/node_modules/@fressh/react-native-xtermjs-webview/dist/index.js
 @@ -2,7 +2,7 @@ import { jsx as K } from "react/jsx-runtime";
@@ -11,7 +23,20 @@ index 2632d2d..0969b63 100644
    // WebView behavior that suits terminals
    // ios
    keyboardDisplayRequiresUserAction: !1,
-@@ -201,7 +201,7 @@ function se({
+@@ -121,7 +121,11 @@ function se({
+     resize: (t) => {
+       n({ type: "resize", cols: t.cols, rows: t.rows }), g(), k.current = t;
+     },
+-    fit: E
++    fit: E,
++    injectJavaScript: (t) => {
++      var s;
++      return (s = y.current) == null ? void 0 : s.injectJavaScript(t);
++    }
+   }));
+   const d = P(
+     () => ({
+@@ -201,7 +205,7 @@ function se({
      V,
      {
        ref: y,

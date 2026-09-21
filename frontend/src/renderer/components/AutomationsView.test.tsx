@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("../hooks/useAgentsQuery", () => ({ useAgentsQuery: () => ({ data: { supported: [{ id: "codex", label: "Codex" }] } }) }));
+vi.mock("../hooks/useAgentReadinessQuery", () => ({ useAgentReadinessQuery: () => ({ data: { agents: [{ id: "codex", label: "Codex" }] } }) }));
 vi.mock("../hooks/useWorkspaceQuery", () => ({ useWorkspaceQuery: () => ({ data: [{ id: "demo", name: "Demo" }] }) }));
 vi.mock("../hooks/useAutomations", () => ({
 	useAutomations: () => ({ data: mocks.automations, isLoading: false, error: null }),

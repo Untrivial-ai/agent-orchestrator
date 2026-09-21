@@ -2,7 +2,9 @@ package sentryobs
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -12,9 +14,10 @@ func TestScrubRedactsLocalPaths(t *testing.T) {
 	cases := map[string]string{
 		// A trailing ':' is part of the matched path run (it must be, for C:\...),
 		// so it is redacted along with the path.
-		"open /Users/alice/secret/notes.md: no such file": "open [redacted-path] no such file",
-		"read /home/bob/ao/worktree/x.go failed":          "read [redacted-path] failed",
-		`stat C:\Users\carol\AppData\ao\db failed`:        "stat [redacted-path] failed",
+		"open /Users/alice/secret/notes.md: no such file":             "open [redacted-path] no such file",
+		"read /home/bob/ao/worktree/x.go failed":                      "read [redacted-path] failed",
+		`stat C:\Users\carol\AppData\ao\db failed`:                    "stat [redacted-path] failed",
+		"open /Users/dave/Library/Mobile Documents/report.md: denied": "open [redacted-path] denied",
 		"no paths here": "no paths here",
 	}
 	for in, want := range cases {
@@ -84,6 +87,70 @@ func TestScrubEventStripsPathsAndContext(t *testing.T) {
 	if f.AbsPath != "[redacted-path]" || f.Filename != "[redacted-path]" {
 		t.Fatalf("frame paths not scrubbed: %+v", f)
 	}
+}
+
+func TestPolicyDisableDrainsEnteredProviderCallAndRejectsLaterCapture(t *testing.T) {
+	transport := &blockingTransport{started: make(chan struct{}, 1), release: make(chan struct{})}
+	if err := Init(Config{DSN: "https://public@example.com/1", Transport: transport}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() {
+		SetPolicyEnabled(false)
+		enabled.Store(false)
+	})
+	SetPolicyEnabled(true)
+
+	captured := make(chan struct{})
+	go func() {
+		CaptureHTTPError(context.Background(), errString("before opt-out"), nil, "fp")
+		close(captured)
+	}()
+	select {
+	case <-transport.started:
+	case <-time.After(time.Second):
+		t.Fatal("provider call did not start")
+	}
+
+	SetPolicyEnabled(false)
+	drained := make(chan error, 1)
+	go func() { drained <- Drain(context.Background()) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("drain completed while provider call was active: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(transport.release)
+	select {
+	case <-captured:
+	case <-time.After(time.Second):
+		t.Fatal("capture did not finish")
+	}
+	if err := <-drained; err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	CaptureHTTPError(context.Background(), errString("after opt-out"), nil, "fp")
+	if got := transport.calls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want only the call entered before opt-out", got)
+	}
+}
+
+type blockingTransport struct {
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int64
+}
+
+func (t *blockingTransport) Configure(sentry.ClientOptions) {}
+func (t *blockingTransport) Flush(time.Duration) bool       { return true }
+func (t *blockingTransport) FlushWithContext(context.Context) bool {
+	return true
+}
+func (t *blockingTransport) Close() {}
+func (t *blockingTransport) SendEvent(*sentry.Event) {
+	t.calls.Add(1)
+	t.started <- struct{}{}
+	<-t.release
 }
 
 type errString string

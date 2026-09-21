@@ -1,8 +1,11 @@
-import { useScrollToTop } from "@react-navigation/native";
-import { type RefObject, useRef } from "react";
+import { usePathname } from "expo-router";
+import { useScrollToTop } from "expo-router/react-navigation";
+import { type RefObject, useEffect, useRef } from "react";
+import { activeSidebarDestination, scrollSidebarRefToTop } from "./sidebar-navigation";
+import { useSidebarNavigation } from "./sidebar-navigation-shell";
 
-// The ref shape @react-navigation/native accepts (ScrollView, FlatList,
-// SectionList, ...). The package doesn't export it, so derive it from the hook.
+// The ref shape the hook accepts (ScrollView, FlatList, SectionList, ...).
+// It isn't exported, so derive it from the hook itself.
 type ScrollableRef = Parameters<typeof useScrollToTop>[0];
 
 /**
@@ -15,13 +18,25 @@ type ScrollableRef = Parameters<typeof useScrollToTop>[0];
  *     const scrollRef = useTabScrollToTop<ScrollView>();
  *     <ScrollView ref={scrollRef} ... />
  *
- * This is also the single place we import `@react-navigation/native`, which
- * reaches us transitively through expo-router rather than as a declared
- * dependency - keeping that coupling in one file.
+ * This is also the single place we reach into expo-router's react-navigation
+ * entry point, keeping that coupling in one file. SDK 56+ forbids importing
+ * `@react-navigation/*` directly; `expo-router/react-navigation` is the
+ * supported re-export.
  */
 export function useTabScrollToTop<T>(): RefObject<T | null> {
 	const ref = useRef<T>(null);
+	const pathname = usePathname();
+	const { scrollRequest } = useSidebarNavigation();
+	const handledSequence = useRef(0);
 	// Callers always pass a scrollable; the generic keeps the JSX ref precise.
 	useScrollToTop(ref as ScrollableRef);
+
+	useEffect(() => {
+		if (!scrollRequest || scrollRequest.sequence <= handledSequence.current) return;
+		handledSequence.current = scrollRequest.sequence;
+		if (scrollRequest.destination !== activeSidebarDestination(pathname)) return;
+		scrollSidebarRefToTop(ref.current as Parameters<typeof scrollSidebarRefToTop>[0]);
+	}, [pathname, scrollRequest]);
+
 	return ref;
 }

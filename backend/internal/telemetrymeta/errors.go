@@ -32,6 +32,14 @@ func ErrorKind(kind apierr.Kind) string {
 		return "not_found"
 	case apierr.KindConflict:
 		return "conflict"
+	case apierr.KindForbidden:
+		return "forbidden"
+	case apierr.KindTooManyRequests:
+		return "too_many_requests"
+	case apierr.KindNotImplemented:
+		return "not_implemented"
+	case apierr.KindUnavailable:
+		return "unavailable"
 	default:
 		return "internal"
 	}

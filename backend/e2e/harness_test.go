@@ -360,6 +360,11 @@ func seedProject(t *testing.T, d *daemon, name string) string {
 	}
 	run("git", "add", "-A")
 	run("git", "commit", "-m", "init")
+	// Strict default-branch resolution deliberately refuses a local-only HEAD.
+	// Give the fixture a primary remote with a cached HEAD like a real project.
+	run("git", "remote", "add", "origin", dir)
+	run("git", "fetch", "origin", "main")
+	run("git", "remote", "set-head", "origin", "main")
 
 	var out struct {
 		Project struct{ ID string } `json:"project"`

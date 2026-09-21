@@ -19,7 +19,7 @@ import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Switch } from "./ui/switch";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { useAgentsQuery } from "../hooks/useAgentsQuery";
+import { useAgentReadinessQuery } from "../hooks/useAgentReadinessQuery";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import {
 	useAutomationRuns,
@@ -39,7 +39,7 @@ export function AutomationsView() {
 	const { t } = useTranslation();
 	const query = useAutomations();
 	const workspaces = useWorkspaceQuery().data ?? [];
-	const harnesses = useAgentsQuery().data?.supported ?? [];
+	const harnesses = useAgentReadinessQuery().data?.agents ?? [];
 	const create = useCreateAutomation();
 	const update = useUpdateAutomation();
 	const remove = useDeleteAutomation();
@@ -81,7 +81,7 @@ function AutomationCard({ item, expanded, onExpand, onDelete, onToggle }: { item
 	const frequency = item.rrule.match(/FREQ=([^;\n]+)/)?.[1]?.toLowerCase();
 	const schedule = t(`automations.frequency.${frequency ?? "recurring"}`, { defaultValue: frequency ?? t("automations.frequency.recurring") });
 	return <Card size="sm">
-		<CardHeader><CardTitle className="flex items-center gap-2"><button type="button" className="grid size-6 place-items-center rounded hover:bg-muted" aria-label={t(expanded ? "automations.runs.hide" : "automations.runs.show", { name: item.displayName })} onClick={onExpand}>{expanded ? <ChevronDown /> : <ChevronRight />}</button>{item.displayName}</CardTitle><CardDescription>{item.projectId} · {schedule} · {item.timezone}</CardDescription><CardAction className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs text-muted-foreground"><span>{t(item.enabled ? "automations.enabled" : "automations.disabled")}</span><Switch size="sm" checked={item.enabled} aria-label={t(item.enabled ? "automations.disable" : "automations.enable", { name: item.displayName })} onCheckedChange={(checked) => void onToggle(checked)} /></label><Button variant="ghost" size="icon-sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={t("automations.delete.aria", { name: item.displayName })} onClick={onDelete}><Trash2 /></Button></CardAction></CardHeader>
+		<CardHeader><CardTitle className="flex items-center gap-2"><button type="button" className="grid size-6 place-items-center rounded hover:bg-muted" aria-label={t(expanded ? "automations.runs.hide" : "automations.runs.show", { name: item.displayName })} onClick={onExpand}>{expanded ? <ChevronDown /> : <ChevronRight />}</button>{item.displayName}</CardTitle><CardDescription>{item.projectId} · {schedule} · {item.timezone}</CardDescription><CardAction className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs text-muted-foreground"><span>{t(item.enabled ? "automations.enabled" : "automations.disabled")}</span><Switch checked={item.enabled} aria-label={t(item.enabled ? "automations.disable" : "automations.enable", { name: item.displayName })} onCheckedChange={(checked) => void onToggle(checked)} /></label><Button variant="ghost" size="icon-sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={t("automations.delete.aria", { name: item.displayName })} onClick={onDelete}><Trash2 /></Button></CardAction></CardHeader>
 		<CardContent><div className="grid gap-3 text-sm sm:grid-cols-3"><div><span className="block text-xs text-muted-foreground">{t("automations.nextRun")}</span>{item.enabled ? displayTime(item.nextRunAt, i18n.resolvedLanguage) : t("automations.paused")}</div><div><span className="block text-xs text-muted-foreground">{t("automations.latestState")}</span>{item.latestRun?.status ?? t("automations.neverRun")}</div><div><span className="block text-xs text-muted-foreground">{t("automations.agent")}</span>{item.harness || t("automations.projectDefault")} · {item.kind}</div></div>{item.latestRun?.errorMessage ? <p role="alert" className="mt-3 rounded bg-destructive/10 px-3 py-2 text-xs text-destructive">{item.latestRun.errorMessage}</p> : null}
 		{expanded ? <div className="mt-4 border-t border-border pt-4"><h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("automations.runs.title")}</h3>{runs.isLoading ? <p className="text-sm text-muted-foreground">{t("automations.runs.loading")}</p> : runs.error ? <p role="alert" className="text-sm text-destructive">{runs.error.message}</p> : runs.data?.length ? <div className="space-y-2">{runs.data.map((run) => <div key={run.id} className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-sm"><div><span className="font-medium capitalize">{run.status}</span><span className="ml-2 text-xs text-muted-foreground">{displayTime(run.scheduledFor, i18n.resolvedLanguage)}</span>{run.errorMessage ? <p className="text-xs text-destructive">{run.errorMessage}</p> : null}</div>{run.sessionId ? <Button variant="outline" size="sm" onClick={() => void navigate({ to: "/sessions/$sessionId", params: { sessionId: run.sessionId! } })}>{t("automations.runs.openSession")}</Button> : null}</div>)}</div> : <p className="text-sm text-muted-foreground">{t("automations.runs.empty")}</p>}</div> : null}</CardContent>
 	</Card>;

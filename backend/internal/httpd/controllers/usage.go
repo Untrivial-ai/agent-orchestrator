@@ -47,6 +47,7 @@ func (c *UsageController) listSessions(w http.ResponseWriter, r *http.Request) {
 		out = append(out, CompactSessionUsageResponse{
 			SessionID: item.SessionID, ProcessedTokens: item.ProcessedTokens,
 			TotalTokens: totalTokens, Incomplete: item.Incomplete,
+			EstimatedCost: estimatedCostResponse(item.EstimatedCost),
 		})
 	}
 	envelope.WriteJSON(w, http.StatusOK, ListCompactSessionUsageResponse{Sessions: out})
@@ -85,63 +86,23 @@ func sessionUsageResponse(summary domain.SessionUsageSummary) SessionUsageRespon
 }
 
 func usageTotalsResponse(totals domain.UsageMetricTotals) UsageTotalsResponse {
-	var cacheWriteTokens *int64
-	var cacheWriteTotal int64
-	cacheWriteKnown := false
-	cacheWriteComplete := true
-	if totals.ProviderDetails.OpenAI != nil {
-		if value := totals.ProviderDetails.OpenAI.CacheWriteInputTokens; value != nil {
-			cacheWriteTotal += *value
-			cacheWriteKnown = true
-		} else {
-			cacheWriteComplete = false
-		}
-	}
-	if totals.ProviderDetails.Anthropic != nil {
-		if value := totals.ProviderDetails.Anthropic.CacheCreationInputTokens; value != nil {
-			cacheWriteTotal += *value
-			cacheWriteKnown = true
-		} else {
-			cacheWriteComplete = false
-		}
-	}
-	if cacheWriteKnown && cacheWriteComplete {
-		cacheWriteTokens = &cacheWriteTotal
-	}
-	var reasoningTokens *int64
-	if totals.ProviderDetails.OpenAI != nil {
-		reasoningTokens = totals.ProviderDetails.OpenAI.ReasoningOutputTokens
-	}
 	return UsageTotalsResponse{
 		InputTokens: totals.InputTokens, CachedInputTokens: totals.CachedInputTokens,
 		UncachedInputTokens: totals.UncachedInputTokens,
 		OutputTokens:        totals.OutputTokens, ProcessedTokens: totals.ProcessedTokens,
-		CacheReadTokens: totals.CachedInputTokens, CacheWriteTokens: cacheWriteTokens,
-		ReasoningTokens: reasoningTokens,
-		Provenance: UsageMetricProvenanceResponse{
-			InputTokens: totals.Provenance.InputTokens, CachedInputTokens: totals.Provenance.CachedInputTokens,
-			UncachedInputTokens: totals.Provenance.UncachedInputTokens,
-			OutputTokens:        totals.Provenance.OutputTokens,
-		},
-		ProviderDetails: usageProviderDetailsResponse(totals.ProviderDetails),
+		CacheReadTokens: totals.CachedInputTokens,
+		EstimatedCost:   estimatedCostResponse(totals.EstimatedCost),
 	}
 }
 
-func usageProviderDetailsResponse(details domain.UsageProviderDetails) UsageProviderDetailsResponse {
-	var response UsageProviderDetailsResponse
-	if details.OpenAI != nil {
-		response.OpenAI = &OpenAIUsageDetailsResponse{
-			OpenAIReasoningOutputTokens: details.OpenAI.ReasoningOutputTokens,
-			OpenAICacheWriteInputTokens: details.OpenAI.CacheWriteInputTokens,
-		}
+func estimatedCostResponse(cost *domain.EstimatedCost) *EstimatedCostResponse {
+	if cost == nil {
+		return nil
 	}
-	if details.Anthropic != nil {
-		response.Anthropic = &AnthropicUsageDetailsResponse{
-			AnthropicDirectUncachedInputTokens:  details.Anthropic.DirectUncachedInputTokens,
-			AnthropicCacheCreationInputTokens:   details.Anthropic.CacheCreationInputTokens,
-			AnthropicCacheCreation5mInputTokens: details.Anthropic.CacheCreation5mInputTokens,
-			AnthropicCacheCreation1hInputTokens: details.Anthropic.CacheCreation1hInputTokens,
-		}
+	return &EstimatedCostResponse{
+		TotalNanos: cost.TotalNanos, InputNanos: cost.InputNanos,
+		CachedInputNanos: cost.CachedInputNanos, OutputNanos: cost.OutputNanos,
+		Coverage:            string(cost.Coverage),
+		ProviderAttribution: string(cost.ProviderAttribution),
 	}
-	return response
 }

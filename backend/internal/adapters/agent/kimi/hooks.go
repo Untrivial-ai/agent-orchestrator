@@ -134,8 +134,26 @@ func seedKimiCredentials(targetHome string) error {
 	if !ok {
 		return nil
 	}
-	sourcePath := filepath.Join(sourceHome, "credentials", "kimi-code.json")
-	targetPath := filepath.Join(targetHome, "credentials", "kimi-code.json")
+	sourceConfigPath := filepath.Join(sourceHome, "config.toml")
+	sourcePaths, err := kimiConfigOAuthCredentialPaths(sourceConfigPath)
+	if err != nil {
+		return fmt.Errorf("read source Kimi config %s: %w", sourceConfigPath, err)
+	}
+	if len(sourcePaths) == 0 {
+		// Preserve the legacy credential-only seed path for profiles created by
+		// Kimi versions that did not persist an OAuth reference in config.toml.
+		sourcePaths = []string{filepath.Join(sourceHome, "credentials", "kimi-code.json")}
+	}
+	for _, sourcePath := range sourcePaths {
+		targetPath := filepath.Join(targetHome, "credentials", filepath.Base(sourcePath))
+		if err := seedKimiCredential(sourcePath, targetPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func seedKimiCredential(sourcePath, targetPath string) error {
 	if sameKimiConfigPath(sourcePath, targetPath) {
 		return nil
 	}
@@ -196,9 +214,36 @@ func kimiSeedConfig(targetPath string, existing []byte) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("read source Kimi config %s: %w", sourcePath, err)
 	}
 	if !kimiConfigHasAPIKey(source) {
-		return nil, false, nil
+		// Device-code logins leave api_key empty and keep their tokens in the
+		// credential file. The full config is still required for default_model,
+		// the provider/OAuth mapping, model aliases, services, and permissions.
+		authorized, err := kimiSourceOAuthAuthorized(sourceHome)
+		if err != nil {
+			return nil, false, err
+		}
+		if !authorized {
+			return nil, false, nil
+		}
 	}
 	return source, true, nil
+}
+
+func kimiSourceOAuthAuthorized(sourceHome string) (bool, error) {
+	configPath := filepath.Join(sourceHome, "config.toml")
+	paths, err := kimiConfigOAuthCredentialPaths(configPath)
+	if err != nil {
+		return false, fmt.Errorf("read source Kimi config %s: %w", configPath, err)
+	}
+	for _, path := range paths {
+		status, ok, err := kimiCredentialsAuthStatus(path)
+		if err != nil {
+			return false, fmt.Errorf("read source Kimi credentials %s: %w", path, err)
+		}
+		if ok && status == ports.AgentAuthStatusAuthorized {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func kimiConfigCanSeed(existing []byte) bool {

@@ -23,11 +23,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
@@ -51,6 +54,9 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.AgentBinaryResolutionInvalidator = (*Plugin)(nil)
+var _ ports.AgentInterfaceHandoff = (*Plugin)(nil)
+var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 
 // GetConfigSpec reports the per-project agent config keys Qwen Code
 // understands.
@@ -162,6 +168,95 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	return cmd, true, nil
 }
 
+// NativeConversationID bridges Qwen's terminal session id and ACP session id:
+// both surfaces share the chats store keyed by session UUID.
+func (p *Plugin) NativeConversationID(
+	ctx context.Context,
+	session ports.SessionRef,
+	currentMode domain.SessionMode,
+	providerConversationID string,
+) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if currentMode == domain.SessionModeChat {
+		id := strings.TrimSpace(providerConversationID)
+		return id, id != "", nil
+	}
+	id := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
+	return id, id != "", nil
+}
+
+// NativeConversationExists reports whether a Qwen session UUID has a
+// non-empty chats/<id>.jsonl transcript.
+func (p *Plugin) NativeConversationExists(
+	ctx context.Context,
+	_ ports.SessionRef,
+	nativeConversationID string,
+	env map[string]string,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	id, valid := canonicalQwenSessionID(nativeConversationID)
+	if !valid {
+		return false, nil
+	}
+	qwenHome := strings.TrimSpace(env["QWEN_HOME"])
+	if qwenHome == "" {
+		qwenHome = strings.TrimSpace(os.Getenv("QWEN_HOME"))
+	}
+	if qwenHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false, fmt.Errorf("qwen: resolve chats root: %w", err)
+		}
+		qwenHome = filepath.Join(home, ".qwen")
+	}
+
+	found := false
+	projectsDir := filepath.Join(qwenHome, "projects")
+	err := filepath.WalkDir(projectsDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || !qwenTranscriptNameMatches(entry.Name(), id) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() && info.Size() > 0 {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("qwen: inspect chats root %s: %w", projectsDir, err)
+	}
+	return found, nil
+}
+
+func canonicalQwenSessionID(value string) (string, bool) {
+	parsed, err := uuid.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+func qwenTranscriptNameMatches(name, nativeConversationID string) bool {
+	return name == nativeConversationID+".jsonl"
+}
+
 // Qwen Code's append-system-prompt flag accepts inline text only. The manager
 // normally supplies both inline text and an AO-owned file; if only the file is
 // present, read it and pass the contents inline.
@@ -232,6 +327,14 @@ func (p *Plugin) qwenBinary(ctx context.Context) (string, error) {
 	return binary, nil
 }
 
+// InvalidateBinaryResolution makes the next operation resolve Qwen again, so
+// a reinstall or upgrade that relocates the binary is picked up.
+func (p *Plugin) InvalidateBinaryResolution() {
+	p.binaryMu.Lock()
+	p.resolvedBinary = ""
+	p.binaryMu.Unlock()
+}
+
 // appendApprovalFlags maps AO's four permission modes onto Qwen Code's
 // `--approval-mode` choices (plan|default|auto-edit|auto|yolo). Default emits no
 // flag so Qwen resolves its starting mode from the user's own config.
@@ -253,6 +356,13 @@ func appendModelFlag(cmd *[]string, cfg ports.AgentConfig) {
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		*cmd = append(*cmd, "--model", model)
 	}
+}
+
+// AppendSessionFlags adds the TUI-equivalent approval and model flags so Chat
+// launches the same Qwen process the terminal adapter would, plus ACP.
+func AppendSessionFlags(cmd *[]string, permissions ports.PermissionMode, model string) {
+	appendApprovalFlags(cmd, permissions)
+	appendModelFlag(cmd, ports.AgentConfig{Model: model})
 }
 
 type qwenSubmitCommand struct {

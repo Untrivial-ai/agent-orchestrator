@@ -9,6 +9,8 @@
 
 export type ConnectionFailure =
 	| "not-ao-qr" // the scanned code wasn't an AO pairing payload
+	| "outdated-desktop" // a v1 code: AO on the computer is too old to pair with
+	| "tunnel-rotated" // nothing answered, and the only remote path was a tunnel
 	| "unreachable" // nothing answered (DNS failure, refused, timeout)
 	| "auth" // 401/403 — the password is wrong or was rotated
 	| "rate-limited" // 429 — the daemon's failed-attempt lockout
@@ -43,6 +45,16 @@ export function classifyConnectionFailure(status: number | undefined): Connectio
 export function shouldKeepPolling(status: number | undefined): boolean {
 	const failure = classifyConnectionFailure(status);
 	return failure !== "auth" && failure !== "rate-limited";
+}
+
+/**
+ * Whether a failed request is the daemon's word that the session no longer
+ * exists. Only a 404 or 410 says that. A timeout, a refused connection or a 5xx
+ * is a fact about the link, not the session, and a link comes back — so none of
+ * those may be shown or acted on as "not found".
+ */
+export function isSessionGone(status: number | undefined): boolean {
+	return status === 404 || status === 410;
 }
 
 /**
@@ -105,6 +117,20 @@ export function describeConnectionFailure(
 		reason === "unreachable" && target.platform === "ios" && isLocalNetworkHost(target.host);
 
 	switch (reason) {
+		case "tunnel-rotated":
+			return {
+				title: "This machine's remote address changed",
+				message:
+					"AO on your computer restarted, which gives it a new address. Open Settings \u2192 Connect Mobile there and scan the code again.",
+				showLocalNetworkHint: false,
+			};
+		case "outdated-desktop":
+			return {
+				title: "Update AO on your computer",
+				message:
+					"That code was made by an older version of AO. Update the desktop app, then generate a new code.",
+				showLocalNetworkHint: false,
+			};
 		case "not-ao-qr":
 			return {
 				title: "Not an AO pairing code",

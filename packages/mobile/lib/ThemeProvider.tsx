@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useColorScheme } from "react-native";
+import { Appearance, useColorScheme } from "react-native";
 import { themeFor, type ColorScheme, type Theme } from "./theme";
-import { DEFAULT_PREFERENCE, resolveScheme, type ThemePreference } from "./themePreference";
+import { DEFAULT_PREFERENCE, nativeColorSchemeOverride, resolveScheme, type ThemePreference } from "./themePreference";
 import { loadThemePreference, saveThemePreference } from "./themeStore";
 
 type ThemeState = {
@@ -62,6 +62,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 		setPreferenceState(next);
 		void saveThemePreference(next);
 	}, []);
+
+	useEffect(() => {
+		Appearance.setColorScheme(nativeColorSchemeOverride(preference));
+	}, [preference]);
 
 	// Recomputed whenever the OS scheme changes, so a "system" preference follows
 	// live instead of only at next launch.

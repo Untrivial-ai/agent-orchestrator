@@ -1,6 +1,5 @@
-// Package conpty implements the Windows ConPTY runtime adapter for agent sessions.
-// This file contains the OS-agnostic binary framing protocol codec used by the
-// named-pipe protocol between pty-host.js and this Go client.
+// Package conpty implements the detached PTY-host runtime used by Windows and
+// macOS agent sessions. This file contains its OS-agnostic framing protocol.
 //
 // Frame layout: [1-byte type][4-byte big-endian length][payload]
 package conpty

@@ -106,7 +106,12 @@ func appendSessionHookFlagsForExecutable(cmd *[]string, executable string) {
 
 func shellQuoteHookExecutable(executable string) string {
 	if runtime.GOOS == "windows" {
-		return `"` + executable + `"`
+		// Codex invokes command hooks through PowerShell on Windows. A bare quoted
+		// path (`"C:\...\ao.exe"`) parses as a string expression, not an invocation,
+		// so SessionStart/UserPromptSubmit/Stop all fail before ao.exe runs
+		// ("Unexpected token 'hooks'"). Prefixing the quoted path with the call
+		// operator `& ` turns it into a command invocation that runs the binary.
+		return `& "` + executable + `"`
 	}
 	return `'` + strings.ReplaceAll(executable, `'`, `'"'"'`) + `'`
 }

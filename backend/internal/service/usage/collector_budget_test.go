@@ -385,13 +385,12 @@ func testCollectorCodexBudgetFinalizationWaitsThenPersistsPartialAcrossRestart(t
 		State:           domain.UsageSourceActive,
 		UpdatedAt:       now,
 	}, []domain.ModelUsageEvent{{
-		ProviderID: domain.UsageProviderOpenAI,
-		ModelID:    "gpt-5",
-		Tokens:     testUsageMetrics(10, 0, 10, 2, domain.UsageMetricReported),
-		ProviderDetails: domain.UsageProviderDetails{OpenAI: &domain.OpenAIUsageDetails{
-			ReasoningOutputTokens: int64Pointer(0), CacheWriteInputTokens: int64Pointer(0),
-		}},
-		SourceEventKey: "budget-root-event",
+		ProviderID:        domain.UsageProviderOpenAI,
+		ModelID:           "gpt-5",
+		MeasurementKind:   domain.UsageMeasurementNativeReported,
+		Tokens:            testUsageMetrics(10, 0, 10, 2),
+		ProviderUsageJSON: `{"last_token_usage":{"cache_write_input_tokens":0}}`,
+		SourceEventKey:    "budget-root-event",
 	}}); err != nil {
 		t.Fatal(err)
 	}

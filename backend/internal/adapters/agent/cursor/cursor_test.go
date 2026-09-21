@@ -7,11 +7,37 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestResolveCursorBinaryFindsWinGetLinkOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows install location")
+	}
+	localAppData := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("USERPROFILE", t.TempDir())
+	want := filepath.Join(localAppData, "Microsoft", "WinGet", "Links", "cursor-agent.exe")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveCursorBinary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ResolveCursorBinary() = %q, want %q", got, want)
+	}
+}
 
 func TestGetLaunchCommandBuildsArgv(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "cursor-agent"}
@@ -332,6 +358,14 @@ func TestGetAgentHooksInstallsCursorHooks(t *testing.T) {
 			t.Fatalf("%s command %q count = %d, want 1 in %#v", spec.Event, spec.Command, count, entries)
 		}
 	}
+	for _, event := range []string{"beforeShellExecution", "beforeMCPExecution"} {
+		entries := config.Hooks[event]
+		for _, entry := range entries {
+			if isCursorManagedHook(entry.Command) && !entry.FailClosed {
+				t.Fatalf("%s managed permission hook = %#v, want failClosed", event, entry)
+			}
+		}
+	}
 	stopEntries := config.Hooks["stop"]
 	if countCursorHookCommand(stopEntries, "custom stop hook") != 1 {
 		t.Fatalf("existing stop hook was not preserved: %#v", stopEntries)
@@ -363,6 +397,80 @@ func TestGetAgentHooksInstallsCursorHooks(t *testing.T) {
 	}
 }
 
+func TestGetAgentHooksMigratesLegacyPermissionCallbacksWithoutRewritingUserHooks(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "cursor-agent"}
+	workspace := t.TempDir()
+	hooksDir := filepath.Join(workspace, ".cursor")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(hooksDir, "hooks.json")
+	existing := `{"version":1,"hooks":{"beforeShellExecution":[` +
+		`{"command":"ao hooks cursor permission-request"},` +
+		`{"command":"custom permission hook","failClosed":true,"matcher":"git push","timeout":17},` +
+		`{"type":"prompt","prompt":"Allow this command?","timeout":23}` +
+		`]}}`
+	if err := os.WriteFile(hooksPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
+		DataDir: t.TempDir(), SessionID: "sess-1", WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config cursorHookFile
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	entries := config.Hooks["beforeShellExecution"]
+	if got := countCursorHookCommand(entries, cursorHookCommandPrefix+"permission-request"); got != 0 {
+		t.Fatalf("legacy permission callback count = %d, want 0 in %#v", got, entries)
+	}
+	if got := countCursorHookCommand(entries, cursorHookCommandPrefix+"before-shell-execution"); got != 1 {
+		t.Fatalf("current permission callback count = %d, want 1 in %#v", got, entries)
+	}
+	for _, entry := range entries {
+		if entry.Command == "custom permission hook" && !entry.FailClosed {
+			t.Fatalf("custom hook lost failClosed during migration: %#v", entry)
+		}
+	}
+
+	var rawConfig struct {
+		Hooks map[string][]map[string]any `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &rawConfig); err != nil {
+		t.Fatal(err)
+	}
+	wantCustom := map[string]any{
+		"command": "custom permission hook", "failClosed": true,
+		"matcher": "git push", "timeout": float64(17),
+	}
+	wantPrompt := map[string]any{
+		"type": "prompt", "prompt": "Allow this command?", "timeout": float64(23),
+	}
+	var gotCustom, gotPrompt map[string]any
+	for _, entry := range rawConfig.Hooks["beforeShellExecution"] {
+		if entry["command"] == "custom permission hook" {
+			gotCustom = entry
+		}
+		if entry["type"] == "prompt" {
+			gotPrompt = entry
+		}
+	}
+	if !reflect.DeepEqual(gotCustom, wantCustom) {
+		t.Fatalf("custom command hook = %#v, want %#v", gotCustom, wantCustom)
+	}
+	if !reflect.DeepEqual(gotPrompt, wantPrompt) {
+		t.Fatalf("custom prompt hook = %#v, want %#v", gotPrompt, wantPrompt)
+	}
+}
+
 func TestGetAgentHooksTrustSeedIsBestEffort(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "cursor-agent"}
 	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: t.TempDir()}); err != nil {
@@ -379,6 +487,21 @@ func TestAugmentRuntimeEnvUsesAODataDir(t *testing.T) {
 
 	if got, want := env[cursorDataDirEnv], cursorDataDir(dataDir); got != want {
 		t.Fatalf("%s = %q, want %q", cursorDataDirEnv, got, want)
+	}
+}
+
+func TestAugmentRuntimeEnvAdvertisesTerminalThemeHint(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "terminal-theme"), []byte("dark\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	(&Plugin{resolvedBinary: "cursor-agent"}).AugmentRuntimeEnv(env, dataDir)
+	if env["TERM_THEME"] != "dark" {
+		t.Fatalf("TERM_THEME = %q, want dark", env["TERM_THEME"])
+	}
+	if env["COLORFGBG"] != "15;0" {
+		t.Fatalf("COLORFGBG = %q, want 15;0", env["COLORFGBG"])
 	}
 }
 
@@ -489,11 +612,16 @@ func TestUninstallHooksRemovesOnlyAOHooks(t *testing.T) {
 	ctx := context.Background()
 	cfg := ports.WorkspaceHookConfig{DataDir: t.TempDir(), SessionID: "sess-1", WorkspacePath: workspace}
 
-	// Pre-seed a user's own stop hook; it must survive uninstall.
+	// Pre-seed user-owned hooks, including a command that shares AO's prefix;
+	// every field must survive install and uninstall unchanged.
 	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	existing := `{"version":1,"hooks":{"stop":[{"command":"custom stop hook"}]}}`
+	existing := `{"version":1,"hooks":{"stop":[` +
+		`{"command":"custom stop hook"},` +
+		`{"command":"ao hooks cursor custom-handler","matcher":"Shell","timeout":17},` +
+		`{"type":"prompt","prompt":"Keep this prompt?","timeout":23}` +
+		`]}}`
 	if err := os.WriteFile(hooksPath, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -527,6 +655,21 @@ func TestUninstallHooksRemovesOnlyAOHooks(t *testing.T) {
 	}
 	if countCursorHookCommand(config.Hooks["stop"], "custom stop hook") != 1 {
 		t.Fatalf("user stop hook not preserved: %#v", config.Hooks["stop"])
+	}
+
+	var rawConfig struct {
+		Hooks map[string][]map[string]any `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &rawConfig); err != nil {
+		t.Fatal(err)
+	}
+	wantUserHooks := []map[string]any{
+		{"command": "custom stop hook"},
+		{"command": "ao hooks cursor custom-handler", "matcher": "Shell", "timeout": float64(17)},
+		{"type": "prompt", "prompt": "Keep this prompt?", "timeout": float64(23)},
+	}
+	if got := rawConfig.Hooks["stop"]; !reflect.DeepEqual(got, wantUserHooks) {
+		t.Fatalf("user hooks after uninstall = %#v, want %#v", got, wantUserHooks)
 	}
 }
 

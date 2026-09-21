@@ -293,21 +293,21 @@ export function KeyboardShortcutsContent({
 	return (
 		<>
 			<div className="relative flex flex-col gap-3">
-				<p className="text-xs leading-4 text-settings-muted">{t("shortcut.dialogDescriptionSettings")}</p>
-
-				<label className="relative">
-					<Search
-						className="pointer-events-none absolute left-3 top-1/2 size-icon-base -translate-y-1/2 text-settings-muted"
-						aria-hidden="true"
-					/>
-					<Input
-						type="search"
-						className="h-10 pl-9 pr-3"
-						placeholder={t("shortcut.searchPlaceholder")}
-						value={query}
-						onChange={(event) => setQuery(event.target.value)}
-					/>
-				</label>
+				<div className="sticky top-0 z-10 flex flex-col gap-3 bg-[var(--color-bg-settings-row)] pb-2">
+					<label className="flex h-9! min-w-0 items-center gap-2 rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3">
+						<Search
+							className="size-4 shrink-0 text-settings-muted"
+							aria-hidden="true"
+						/>
+						<Input
+							type="search"
+							className="h-auto min-w-0 flex-1 border-0 bg-transparent p-0 text-sm text-settings-label outline-none ring-0 placeholder:text-settings-muted focus-visible:ring-0"
+							placeholder={t("shortcut.searchPlaceholder")}
+							value={query}
+							onChange={(event) => setQuery(event.target.value)}
+						/>
+					</label>
+				</div>
 
 				<div className="flex flex-col gap-2">
 					{filteredShortcuts.map((shortcut) => {
@@ -317,7 +317,7 @@ export function KeyboardShortcutsContent({
 						return (
 							<div
 								className={cn(
-									"flex min-h-(--size-settings-row) items-center rounded-lg bg-(--color-bg-settings-row) px-3 py-3",
+									"flex min-h-(--size-settings-row) items-center rounded-lg bg-(--color-bg-settings-row) px-0 py-3",
 									isRecording && "bg-settings-row-hover",
 								)}
 								key={shortcut.id}

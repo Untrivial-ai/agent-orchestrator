@@ -14,20 +14,41 @@ export type ConversationEventRegistry = {
 	hasListeners(): boolean;
 };
 
-export function createConversationEventRegistry(): ConversationEventRegistry {
+/**
+ * How long after the last listener leaves the stream keeps taking payloads.
+ *
+ * A skipped payload is unrecoverable: the cursor advances past it and the
+ * stream never resends it. Skipping is right for a cold start with no chat
+ * open, but a chat screen re-subscribing — which a network change causes, since
+ * the config changes and effects re-run — leaves a gap in which live events
+ * would be dropped. The reply then never appears until the screen is closed and
+ * reopened. The grace covers that gap while still letting a genuinely idle app
+ * skip a large backlog.
+ */
+export const LISTENER_GRACE_MS = 30_000;
+
+export function createConversationEventRegistry(
+	now: () => number = Date.now,
+): ConversationEventRegistry {
 	const listeners = new Map<string, Set<(event: ConversationEvent) => void>>();
+	// 0 means nothing has ever subscribed, so a cold start still skips.
+	let lastListenerAt = 0;
 	return {
 		subscribe(sessionId, listener) {
 			const sessionListeners = listeners.get(sessionId) ?? new Set();
 			sessionListeners.add(listener);
 			listeners.set(sessionId, sessionListeners);
+			lastListenerAt = now();
 			return () => {
 				sessionListeners.delete(listener);
 				if (sessionListeners.size === 0) listeners.delete(sessionId);
+				lastListenerAt = now();
 			};
 		},
 		hasListeners() {
-			return listeners.size > 0;
+			if (listeners.size > 0) return true;
+			if (lastListenerAt === 0) return false;
+			return now() - lastListenerAt < LISTENER_GRACE_MS;
 		},
 		publish(event) {
 			if (!event.sessionId) return;

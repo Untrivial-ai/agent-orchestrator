@@ -2,10 +2,12 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const topbarButtonVariants = cva(
-	"topbar-control inline-flex items-center transition-[filter,background,color,border-color] duration-fast disabled:opacity-60",
+	"topbar-control topbar-control--disabled-affordance inline-flex items-center transition-[transform,filter,background-color,color,border-color] duration-fast ease-out active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
 	{
 		variants: {
 			variant: {
+				secondary:
+					"topbar-control--secondary h-control-lg gap-1.5 rounded-md px-3.5 text-sm font-semibold leading-none text-muted-foreground hover:bg-interactive-hover hover:text-foreground",
 				primary:
 					"topbar-control--primary h-control-lg gap-1.5 rounded-md bg-accent-strong px-3.5 text-sm font-semibold leading-none text-accent-foreground hover:brightness-110 active:brightness-95",
 				accent:
@@ -21,12 +23,8 @@ const topbarButtonVariants = cva(
 					"h-control-lg gap-1.5 rounded-md border border-error/40 bg-error/10 px-3 text-control font-semibold leading-none text-error hover:bg-error/16",
 				killCancel:
 					"h-control-lg rounded-md px-2.5 text-control font-semibold leading-none text-muted-foreground hover:text-foreground",
-				// Split-button halves: the same surface as `accent`, but squared on
-				// the joining edge so the pair reads as one control with a divider.
-				// The corner radii and widths live in styles.css alongside the other
-				// topbar controls: `.workspace-topbar-actions .topbar-control` sets a
-				// radius on all four corners at higher specificity than a Tailwind
-				// `rounded-l-md`, so squaring the join has to happen there.
+				// The workspace handoff is one split control. Its joined edges and
+				// token-backed widths live beside the shared topbar rules in styles.css.
 				splitMain:
 					"topbar-control--split-main topbar-control--labeled h-control-lg gap-1.5 rounded-l-md border border-r-0 border-border text-sm font-semibold leading-none bg-raised text-muted-foreground hover:bg-surface hover:text-foreground",
 				splitTrigger:
@@ -51,7 +49,7 @@ export function TopbarActionError({ className, ...props }: React.HTMLAttributes<
 }
 
 export const topbarHeaderClass =
-	"center-panel-titlebar flex h-toolbar shrink-0 items-center gap-3 border-b border-border pr-4 z-chrome";
+	"center-panel-titlebar flex h-toolbar shrink-0 items-center gap-3 border-b border-border-strong pr-4 z-chrome";
 
 export const topbarProjectLabelClass =
 	"text-brand font-semibold tracking-tight leading-none text-foreground whitespace-nowrap";

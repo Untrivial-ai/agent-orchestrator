@@ -2,29 +2,16 @@ package sqlite
 
 import (
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 )
-
-func openTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
 
 // The whole backward-compatibility promise of the Chat feature: a database that
 // already has sessions must come out of the migration with every one of them in
 // TUI mode, so an upgrade changes nobody's workflow.
 func TestMigration0066BackfillsExistingSessionsToTUI(t *testing.T) {
-	db := openTestDB(t)
-
 	// Stop before the Chat migration: sessions exist, session_mode does not.
-	upTo(t, db, 42)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 42)
 
 	now := time.Now().UTC()
 	if _, err := db.Exec(`INSERT INTO projects (id, path, display_name, registered_at)
@@ -74,8 +61,7 @@ func TestMigration0066BackfillsExistingSessionsToTUI(t *testing.T) {
 // A fresh install must also default to TUI: the mode is only ever Chat because
 // something explicitly asked for it.
 func TestMigration0066FreshDatabaseDefaultsToTUI(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 66)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 66)
 
 	now := time.Now().UTC()
 	if _, err := db.Exec(`INSERT INTO projects (id, path, display_name, registered_at)
@@ -97,8 +83,7 @@ func TestMigration0066FreshDatabaseDefaultsToTUI(t *testing.T) {
 }
 
 func TestReconcileSchemaRepairsMissingConversationCurrentSessionID(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 43)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 43)
 
 	mustExec(t, db, `INSERT INTO projects (id, path, display_name, registered_at)
 		VALUES ('p1', '/tmp/p1', 'proj', '2026-08-05T00:00:00Z')`)
@@ -114,9 +99,13 @@ func TestReconcileSchemaRepairsMissingConversationCurrentSessionID(t *testing.T)
 		updated_at TIMESTAMP NOT NULL
 	)`)
 	// reconcileSchema runs after Goose in production, where the chat migration has
-	// also created conversation_turns. Keep this direct repair fixture at that same
-	// boundary so later column repairs can be exercised without a phantom table.
-	mustExec(t, db, `CREATE TABLE conversation_turns (id TEXT PRIMARY KEY)`)
+	// also created conversation_turns with its foundational conversation binding.
+	// Keep retry_of_turn_id absent so the later repair still exercises its column
+	// and index replay against a production-shaped prerequisite.
+	mustExec(t, db, `CREATE TABLE conversation_turns (
+		id TEXT PRIMARY KEY,
+		conversation_id TEXT NOT NULL
+	)`)
 	mustExec(t, db, `INSERT INTO conversations (id, scope, project_id, session_id, latest_sequence, created_at, updated_at)
 		VALUES ('conv-1', 'session', 'p1', 'ao-1', 0, '2026-08-05T00:00:00Z', '2026-08-05T00:00:00Z')`)
 
@@ -137,8 +126,7 @@ func TestReconcileSchemaRepairsMissingConversationCurrentSessionID(t *testing.T)
 }
 
 func TestMigration0066ConversationSchemaConstraints(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 66)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 66)
 
 	now := time.Now().UTC()
 	mustExec(t, db, `INSERT INTO projects (id, path, display_name, registered_at) VALUES ('p1','/tmp/p1','proj',?)`, now)
@@ -233,10 +221,9 @@ func TestMigration0066ConversationSchemaConstraints(t *testing.T) {
 // Chat changes must reach clients through the existing trigger-backed CDC rather
 // than a parallel emission path in store code.
 func TestChatMigrationsEmitConversationCDC(t *testing.T) {
-	db := openTestDB(t)
 	// Exercise the final schema: later activity-kind migrations rebuild the table
 	// and must preserve the trigger introduced with Chat mode.
-	upTo(t, db, 79)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 79)
 
 	now := time.Now().UTC()
 	mustExec(t, db, `INSERT INTO projects (id, path, display_name, registered_at) VALUES ('p1','/tmp/p1','proj',?)`, now)

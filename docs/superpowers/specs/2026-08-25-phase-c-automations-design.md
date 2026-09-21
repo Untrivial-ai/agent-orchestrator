@@ -83,7 +83,7 @@ runtime directly.
 ## Persistence
 
 The next migration on current `origin/main` is
-`backend/internal/storage/sqlite/migrations/0109_automations.sql`. It adds new
+`backend/internal/storage/sqlite/migrations/0149_automations.sql`. It adds new
 tables and the session idempotency link without modifying merged migrations.
 
 ### `automations`

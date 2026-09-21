@@ -9,9 +9,8 @@ import (
 // Removing the run-occurrence uniqueness or the durable enum constraints must
 // make this test fail: they are what let duplicate pollers and restart recovery
 // converge on one logical run instead of spawning independent work.
-func TestMigration0109EnforcesAutomationRunIdentity(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 109)
+func TestMigration0149EnforcesAutomationRunIdentity(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 149)
 
 	now := time.Date(2026, time.August, 25, 9, 0, 0, 0, time.UTC)
 	mustExec(t, db, `
@@ -56,9 +55,8 @@ INSERT INTO automations (
 // Removing the unique session origin or changing its delete action must make
 // this test fail: one run may create at most one session, while deleting
 // automation history must never delete the user's already-created session.
-func TestMigration0109LinksOneSessionAndPreservesItOnAutomationDelete(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 109)
+func TestMigration0149LinksOneSessionAndPreservesItOnAutomationDelete(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 149)
 
 	now := time.Date(2026, time.August, 25, 9, 0, 0, 0, time.UTC)
 	mustExec(t, db, `

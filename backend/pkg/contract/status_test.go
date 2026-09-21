@@ -26,6 +26,9 @@ func TestDeriveStatusPrecedence(t *testing.T) {
 	}{
 		{"terminated", contract.SessionFacts{IsTerminated: true}, nil, contract.StatusTerminated},
 		{"terminated merged", contract.SessionFacts{IsTerminated: true}, []contract.PRFacts{{Merged: true}}, contract.StatusMerged},
+		{"terminated closed only", contract.SessionFacts{IsTerminated: true}, []contract.PRFacts{{Closed: true}}, contract.StatusTerminated},
+		{"terminated merged with open pr", contract.SessionFacts{IsTerminated: true}, []contract.PRFacts{{Merged: true}, {Merged: false}}, contract.StatusTerminated},
+		{"terminated all merged", contract.SessionFacts{IsTerminated: true}, []contract.PRFacts{{Merged: true}, {Merged: true}}, contract.StatusMerged},
 		{"active before PR", session(contract.ActivityActive), []contract.PRFacts{{CI: contract.CIFailing}}, contract.StatusWorking},
 		{"exited before PR", session(contract.ActivityExited), []contract.PRFacts{{Mergeability: contract.MergeMergeable}}, contract.StatusExited},
 		{"waiting before PR", session(contract.ActivityWaitingInput), []contract.PRFacts{{CI: contract.CIFailing}}, contract.StatusNeedsInput},

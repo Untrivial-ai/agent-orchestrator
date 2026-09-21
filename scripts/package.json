@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Daytona pod runner for the stable-release e2e gate (see frontend-release.yml e2e-gate).",
+	"description": "Daytona pod runner used by the private conductor's stable-release e2e gate.",
 	"dependencies": {
 		"@daytona/sdk": "^0.196.0"
 	}

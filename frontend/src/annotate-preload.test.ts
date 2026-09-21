@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrowserAnnotationPageSubmitPayload } from "./shared/browser-annotations";
+import { createBrowserAnnotationSession, type BrowserAnnotationSession } from "./shared/browser-annotations";
 
 const electronMocks = vi.hoisted(() => {
 	const listeners = new Map<string, (...args: unknown[]) => void>();
 	return {
 		listeners,
-		on: vi.fn((channel: string, listener: (...args: unknown[]) => void) => {
-			listeners.set(channel, listener);
-		}),
+		on: vi.fn((channel: string, listener: (...args: unknown[]) => void) => listeners.set(channel, listener)),
 		send: vi.fn(),
 		invoke: vi.fn().mockResolvedValue(undefined),
 	};
@@ -21,59 +19,393 @@ vi.mock("electron", () => ({
 	},
 }));
 
-// jsdom implements neither FontFace nor document.fonts; stub both so
-// registerFonts() runs for real instead of short-circuiting on the
-// "not supported" guard, so tests exercise the actual loading path.
-const fontMocks = vi.hoisted(() => ({
-	families: [] as string[],
-	add: vi.fn(),
+const motionMocks = vi.hoisted(() => ({
+	animate: vi.fn((
+		subject: Element | number,
+		keyframes: { height?: string } | number,
+		options?: { onUpdate?: (latest: unknown) => void },
+	) => {
+		if (typeof subject === "number") {
+			// Plain-value animations (the composer's panel height) report the frame
+			// they are about to write; the caller applies it.
+			options?.onUpdate?.(keyframes);
+		} else {
+			if (subject instanceof HTMLElement && typeof keyframes === "object" && keyframes?.height) {
+				subject.style.height = keyframes.height;
+			}
+			options?.onUpdate?.(undefined);
+		}
+		const controls = { stop: vi.fn() };
+		return Object.assign(Promise.resolve(), controls);
+	}),
 }));
 
-class MockFontFace {
-	family: string;
-	constructor(family: string) {
-		this.family = family;
-		fontMocks.families.push(family);
-	}
-	load(): Promise<MockFontFace> {
-		return Promise.resolve(this);
-	}
-}
+vi.mock("motion", () => ({ animate: motionMocks.animate }));
 
+const fontMocks = vi.hoisted(() => ({ add: vi.fn() }));
+class MockFontFace {
+	constructor(_family: string) {}
+	load(): Promise<MockFontFace> { return Promise.resolve(this); }
+}
 vi.stubGlobal("FontFace", MockFontFace);
-Object.defineProperty(document, "fonts", {
-	configurable: true,
-	value: { add: fontMocks.add },
-});
+Object.defineProperty(document, "fonts", { configurable: true, value: { add: fontMocks.add } });
 
 await import("./annotate-preload");
 
-type Bounds = {
-	left: number;
-	top: number;
-	width: number;
-	height: number;
-};
+type Bounds = { left: number; top: number; width: number; height: number };
 
-function setAnnotationMode(enabled: boolean): void {
+function setMode(enabled: boolean, session?: BrowserAnnotationSession): void {
 	const listener = electronMocks.listeners.get("browser:annotation:setMode");
 	if (!listener) throw new Error("annotation mode listener was not registered");
-	listener({}, { enabled });
-}
-
-function elementWithBounds(id: string, bounds: Bounds): HTMLButtonElement {
-	const element = document.createElement("button");
-	element.id = id;
-	setElementBounds(element, bounds);
-	document.body.appendChild(element);
-	return element;
+	listener({}, { enabled, ...(session ? { session } : {}) });
 }
 
 function setElementBounds<T extends Element>(element: T, bounds: Bounds): T {
 	Object.defineProperty(element, "getBoundingClientRect", {
 		configurable: true,
-		value: () =>
-			({
+		value: () => ({
+			x: bounds.left,
+			y: bounds.top,
+			left: bounds.left,
+			top: bounds.top,
+			right: bounds.left + bounds.width,
+			bottom: bounds.top + bounds.height,
+			width: bounds.width,
+			height: bounds.height,
+			toJSON: () => ({}),
+		}) as DOMRect,
+	});
+	return element;
+}
+
+function clickPage(element: Element): void {
+	element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+}
+
+const elementPrototypeSpies: Array<{ mockRestore: () => void }> = [];
+
+/** jsdom measures no content, so give the adjustment panel a height to travel to. */
+function stubPanelContentHeight(height: number): void {
+	elementPrototypeSpies.push(vi.spyOn(Element.prototype, "scrollHeight", "get").mockReturnValue(height));
+}
+
+function overlayRoot(): ShadowRoot {
+	const host = document.querySelector<HTMLDivElement>("[data-ao-annotation-root]");
+	if (!host?.shadowRoot) throw new Error("annotation overlay was not rendered");
+	return host.shadowRoot;
+}
+
+function openAdjust(element: Element): ShadowRoot {
+	clickPage(element);
+	const root = overlayRoot();
+	root.querySelector<HTMLButtonElement>('[data-action="adjust"]')?.click();
+	return root;
+}
+
+function latestSession(): BrowserAnnotationSession {
+	const call = electronMocks.send.mock.calls.findLast(([channel]) => channel === "browser:annotation:state");
+	if (!call) throw new Error("annotation state was not emitted");
+	return call[1] as BrowserAnnotationSession;
+}
+
+describe("annotation adjustment preload", () => {
+	beforeEach(() => {
+		document.body.innerHTML = "";
+		electronMocks.send.mockClear();
+		electronMocks.invoke.mockClear();
+		setMode(true, createBrowserAnnotationSession(window.location.href));
+	});
+
+	afterEach(() => {
+		setMode(false);
+		document.body.innerHTML = "";
+		for (const spy of elementPrototypeSpies.splice(0)) spy.mockRestore();
+	});
+
+	it("opens a compact adjust panel with native color controls", async () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "primary";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+
+		const root = openAdjust(button);
+		const form = root.querySelector<HTMLFormElement>(".composer--adjustment");
+		const color = root.querySelector<HTMLInputElement>('[data-property="color"]');
+		const styles = root.querySelector("style")?.textContent ?? "";
+
+		expect(form?.style.width).toBe("320px");
+		// The card takes the room the element leaves below it — a 768px viewport
+		// less the gutter, the gap and the element's bottom — not a fixed ceiling.
+		expect(form?.style.maxHeight).toBe(`${window.innerHeight - 14 - 66 - 10}px`);
+		expect(color).toHaveAttribute("type", "color");
+		expect(styles).toContain(".color-picker::-webkit-color-swatch");
+		// Unified chrome: modest radius, equal padding, sans by default; mono only for CSS values.
+		expect(styles).toContain("--radius:8px");
+		expect(styles).toContain("--pad:8px");
+		expect(styles).not.toContain("border-radius:999px");
+		expect(styles).not.toContain('font:700 10px "Geist Mono Variable"');
+		expect(styles).toContain('font:600 10px/1 "Geist Variable"');
+		expect(styles).toMatch(/\.field input,\.field select,\.property-textarea\{[^}]*Geist Variable/);
+		expect(styles).toMatch(/\.field input\[data-unit\]\{[^}]*Geist Mono Variable/);
+		expect(styles).toContain("button:focus-visible{outline:none;box-shadow:inset");
+		// The lock wears the same chrome as the composer's icon buttons.
+		expect(styles).toMatch(/\.link-button:not\(:disabled\):hover,\.link-button--active\{background:var\(--muted\);color:var\(--fg\)\}/);
+		expect(styles).toMatch(/\.link-button:not\(:disabled\):active\{transform:scale\(0\.98\)\}/);
+		// One grid for every row: two field boxes and a trailing action cell, so
+		// fields, values and link buttons all land on the same edges.
+		expect(styles).toMatch(/\.panel-row\{[^}]*grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\) var\(--control\)/);
+		expect(styles).toMatch(/\.field\{[^}]*grid-template-columns:40px minmax\(0,1fr\) auto/);
+		expect(styles).toContain(".field--wide{grid-column:span 2}");
+		// Narrow card (slim browser pane, 200% zoom) stacks the pair instead of
+		// clipping the label, the value and the swatch into one row.
+		expect(styles).toContain("container-type:inline-size");
+		expect(styles).toContain("@container (max-width:296px)");
+		expect(styles).toMatch(/@container \(max-width:296px\)\{\s*\.panel-row\{grid-template-columns:minmax\(0,1fr\) auto\}/);
+		// The query measures the card's *content* box, so a threshold that only
+		// just clears the 320 card (318 minus the borders) can never be met: the
+		// paired layout would be dead code and every palette would stack tall.
+		expect(Number(styles.match(/@container \(max-width:(\d+)px\)/)?.[1])).toBeLessThan(320 - 2);
+		// The panel scrolls without a scrollbar, so the overflowed edge fades.
+		expect(styles).toMatch(/\.adjustment-panel\[data-cue~="bottom"\]::after\{opacity:1\}/);
+		expect(styles).toMatch(/\.adjustment-panel\[data-cue~="top"\]::before\{opacity:1\}/);
+		expect(styles).toMatch(/\.composer--adjustment \.composer-note\{[^}]*padding:4px 0 0/);
+		expect(styles).toMatch(/\.composer\{[^}]*border-radius:16px/);
+		// The comment and adjustment composers are the same box: switching modes
+		// must not resize the card out from under the row (that read as a jerk).
+		expect(styles).toContain(".composer--adjustment{display:flex;flex-direction:column;padding:var(--pad) 0}");
+		expect(styles).toMatch(/\.composer--comment\{padding:var\(--pad\) 10px\}/);
+		expect(styles).not.toMatch(/\.composer--adjustment\{[^}]*border-radius:var\(--radius\)/);
+		expect(styles).not.toMatch(/\.composer--adjustment \.composer-input-row\{[^}]*background:var\(--muted\)/);
+		expect(styles).toContain(".adjust-button:not(:disabled):active{transform:scale(0.98)}");
+		// A changed field swaps its label for its reset, in place.
+		expect(styles).toMatch(/\.field-reset\{[^}]*position:absolute/);
+		expect(styles).toMatch(/\.field:has\(\.field-reset--on\):hover \.field-reset/);
+		// Labels are chrome: dragging across them must not start a selection.
+		expect(styles).toContain(".element-header,.field-label,.panel-section summary{");
+		expect(styles).toMatch(/\.element-header,\.field-label,\.panel-section summary\{[^}]*user-select:none/);
+		expect(root.querySelector("[data-adjustment-panel]")).not.toBeNull();
+		const widthInput = root.querySelector<HTMLInputElement>('[data-property="width"]');
+		const field = widthInput?.closest(".field");
+		const resetButton = field?.querySelector(".field-reset");
+		expect(field).not.toBeNull();
+		expect(resetButton).not.toBeNull();
+		// Untouched fields keep their reset out of the tab order.
+		expect(resetButton).toHaveAttribute("tabindex", "-1");
+		// The panel unfurls from the row of controls: its height and the card's top
+		// are driven from one animated value, so the edge the card shares with the
+		// element cannot shear while it travels.
+		expect(motionMocks.animate).toHaveBeenCalledWith(
+			0,
+			expect.any(Number),
+			expect.objectContaining({ duration: 0.3, ease: [0.22, 1, 0.36, 1], type: "tween" }),
+		);
+		// The flipped layout belongs to the adjustment panel: the comment composer
+		// keeps its own padding when it sits above the element too.
+		expect(styles).toContain(".composer--adjustment.composer--above{flex-direction:column-reverse}");
+		// No bare rule: an unscoped one would restyle the comment composer too.
+		expect(styles).not.toMatch(/(?:^|[};])\.composer--above\{/);
+		expect(styles).not.toMatch(/\.adjustment-scroll\{[^}]*max-height:/);
+
+		motionMocks.animate.mockClear();
+		root.querySelector<HTMLButtonElement>('[data-action="adjust"]')?.click();
+		await vi.waitFor(() => {
+			expect(root.querySelector(".composer--comment")).not.toBeNull();
+		});
+		expect(motionMocks.animate).toHaveBeenCalledWith(
+			expect.any(Number),
+			0,
+			expect.objectContaining({ duration: 0.22, ease: [0.22, 1, 0.36, 1] }),
+		);
+		expect(root.querySelector(".composer--comment")).not.toBeNull();
+		expect(root.querySelector("[data-adjustment-panel]")).toBeNull();
+	});
+
+	it("picks the side the panel opens on before it grows, and holds that edge", async () => {
+		// Near the bottom of the viewport the panel cannot open downwards, so the
+		// card has to flip above the element — decided from the panel's final size
+		// rather than from whatever height it happens to be mid-animation.
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 640, width: 140, height: 36 });
+		button.id = "low-anchor";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+		stubPanelContentHeight(300);
+
+		const root = openAdjust(button);
+		const form = root.querySelector<HTMLFormElement>(".composer")!;
+		const panel = root.querySelector<HTMLElement>("[data-adjustment-panel]")!;
+		const [from, to] = motionMocks.animate.mock.calls.at(-1) as unknown as [number, number];
+
+		expect(from).toBe(0);
+		expect(to).toBe(300);
+		expect(form.classList.contains("composer--above")).toBe(true);
+		// jsdom reports zero-sized boxes, so the card is the panel's height alone and
+		// its bottom lands one gap above the element's top edge (640 - 10).
+		expect(Number.parseFloat(form.style.top) + 300).toBeCloseTo(630, 1);
+		expect(panel.style.height).toBe("300px");
+
+		// Replaying the collapse keeps the card on that edge: the top only travels
+		// between the two ends, never jumping to the other side of the element.
+		root.querySelector<HTMLButtonElement>('[data-action="adjust"]')?.click();
+		const [closeFrom, closeTo, closeOptions] = motionMocks.animate.mock.calls.at(-1) as [
+			number,
+			number,
+			{ onUpdate?: (height: number) => void },
+		];
+		expect(closeFrom).toBe(300);
+		expect(closeTo).toBe(0);
+		const topAt = (height: number): number => {
+			closeOptions.onUpdate?.(height);
+			return Number.parseFloat(form.style.top);
+		};
+		const start = topAt(300);
+		const end = topAt(0);
+		// Collapsing returns the composer below the element (bottom + gap)...
+		expect(end).toBeCloseTo(686, 1);
+		expect(start).not.toBeCloseTo(end, 1);
+		// ...and travels there in step with the panel rather than re-deriving the
+		// card's edge from each intermediate height.
+		expect(topAt(150)).toBeCloseTo((start + end) / 2, 0);
+		await vi.waitFor(() => expect(root.querySelector(".composer--comment")).not.toBeNull());
+	});
+
+	it("keeps the end of a capped panel inside the card's edge", async () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 640, width: 140, height: 36 });
+		button.id = "capped-panel";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+		stubPanelContentHeight(900);
+
+		const root = openAdjust(button);
+		const inner = root.querySelector<HTMLElement>(".adjustment-panel-inner")!;
+		const scroll = root.querySelector<HTMLElement>(".adjustment-scroll")!;
+
+		// The inner is offset from the panel by the divider gap, so a plain 100%
+		// sizes it past the panel's edge and the end of the scroll clips the last
+		// row instead of showing it with the panel's own padding.
+		await vi.waitFor(() => {
+			expect(inner.style.height).toBe("calc(100% - var(--panel-chrome))");
+		});
+		// Opened upwards, the rows nearest the input row are the ones the grow-in
+		// animation left on screen, so a scrollable panel keeps that view.
+		expect(scroll.scrollTop).toBe(900);
+	});
+
+	it("animates spacing accordions open and closed", async () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		document.body.appendChild(button);
+		const root = openAdjust(button);
+		const margin = root.querySelector<HTMLDetailsElement>('.panel-section:not([open])');
+		const panel = root.querySelector<HTMLElement>("[data-adjustment-panel]")!;
+		expect(margin).not.toBeNull();
+
+		motionMocks.animate.mockClear();
+		margin?.querySelector("summary")?.click();
+		await vi.waitFor(() => expect(motionMocks.animate).toHaveBeenCalled());
+		// The group and the panel travel in one motion, so the rows never slide
+		// inside a card that has not resized yet.
+		expect(motionMocks.animate).toHaveBeenCalledWith(
+			0,
+			expect.any(Number),
+			expect.objectContaining({ duration: 0.22, ease: [0.22, 1, 0.36, 1], type: "tween" }),
+		);
+		await vi.waitFor(() => expect(panel.style.height).not.toBe("0px"));
+
+		motionMocks.animate.mockClear();
+		margin?.querySelector("summary")?.click();
+		await vi.waitFor(() => expect(motionMocks.animate).toHaveBeenCalled());
+		expect(motionMocks.animate).toHaveBeenCalledWith(
+			expect.any(Number),
+			0,
+			expect.objectContaining({ duration: 0.22, ease: [0.22, 1, 0.36, 1] }),
+		);
+	});
+
+	it("applies a picked text color live to the element that paints nested text", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "nested-label";
+		const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		const label = document.createElement("span");
+		label.textContent = "Continue";
+		button.append(icon, label);
+		document.body.appendChild(button);
+
+		const root = openAdjust(button);
+		const color = root.querySelector<HTMLInputElement>('[data-property="color"]')!;
+		color.value = "#e34b63";
+		color.dispatchEvent(new Event("input", { bubbles: true }));
+
+		expect(label.style.getPropertyValue("color")).toBe("rgb(227, 75, 99)");
+		expect(label.style.getPropertyPriority("color")).toBe("important");
+		expect(root.querySelector(".color-value")?.textContent).toBe("#E34B63");
+		expect(latestSession().draft?.adjustments).toContainEqual(expect.objectContaining({
+			property: "color",
+			value: "#e34b63",
+		}));
+	});
+
+	it("keeps every field's visible label inside its accessible name", () => {
+		// Compact in-field labels must stay part of the control's name (WCAG 2.5.3),
+		// and each one has to be specific enough to tell sibling fields apart.
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "naming";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+
+		const root = openAdjust(button);
+		const fields = Array.from(root.querySelectorAll<HTMLElement>("[data-field]"));
+		expect(fields.length).toBeGreaterThan(8);
+		const visibleLabels = fields.map((field) => field.querySelector<HTMLElement>(".field-label")?.textContent?.trim() ?? "");
+		for (const [index, field] of fields.entries()) {
+			const name = field.querySelector<HTMLElement>("[data-property]")?.getAttribute("aria-label") ?? "";
+			expect(visibleLabels[index].length).toBeGreaterThan(0);
+			expect(name.toLowerCase()).toContain(visibleLabels[index].toLowerCase());
+		}
+	});
+
+	it("edits only the direct text node and preserves nested markup", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "safe-text";
+		const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		icon.appendChild(path);
+		const label = document.createElement("span");
+		label.textContent = "Continue";
+		button.append(icon, label);
+		document.body.appendChild(button);
+
+		const root = openAdjust(button);
+		const text = root.querySelector<HTMLTextAreaElement>('[data-property="textContent"]')!;
+		text.value = "Launch";
+		text.dispatchEvent(new Event("input", { bubbles: true }));
+
+		expect(label.textContent).toBe("Launch");
+		expect(button.querySelector("svg path")).toBe(path);
+
+		text.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(label.textContent).toBe("Continue");
+		expect(button.querySelector("svg path")).toBe(path);
+	});
+
+	it("does not offer text editing for logos and non-text elements", () => {
+		const image = setElementBounds(document.createElement("img"), { left: 20, top: 30, width: 80, height: 80 });
+		image.id = "logo";
+		document.body.appendChild(image);
+
+		const root = openAdjust(image);
+
+		expect(root.querySelector('[data-property="textContent"]')).toBeNull();
+		expect(root.querySelector('[data-property="color"]')).toBeNull();
+		expect(root.querySelector<HTMLInputElement>('[data-property="backgroundColor"]')).toHaveAttribute("type", "color");
+	});
+
+	it("keeps the inspector anchored while target dimensions change", () => {
+		const bounds = { left: 620, top: 180, width: 160, height: 44 };
+		const button = document.createElement("button");
+		button.id = "resizable";
+		button.textContent = "Resize me";
+		Object.defineProperty(button, "getBoundingClientRect", {
+			configurable: true,
+			value: () => ({
 				x: bounds.left,
 				y: bounds.top,
 				left: bounds.left,
@@ -84,397 +416,225 @@ function setElementBounds<T extends Element>(element: T, bounds: Bounds): T {
 				height: bounds.height,
 				toJSON: () => ({}),
 			}) as DOMRect,
-	});
-	return element;
-}
-
-function dispatchPageEvent(element: Element, type: string): Event {
-	const event = new MouseEvent(type, { bubbles: true, cancelable: true });
-	element.dispatchEvent(event);
-	return event;
-}
-
-function overlayRoot(): ShadowRoot {
-	const host = document.querySelector<HTMLDivElement>("[data-ao-annotation-root]");
-	if (!host?.shadowRoot) throw new Error("annotation overlay was not rendered");
-	return host.shadowRoot;
-}
-
-function highlightStyle(): CSSStyleDeclaration {
-	const highlight = overlayRoot().querySelector<HTMLDivElement>(".highlight");
-	if (!highlight) throw new Error("annotation highlight was not rendered");
-	return highlight.style;
-}
-
-function shiftKeyDown(repeat = false): void {
-	document.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", bubbles: true, cancelable: true, repeat }));
-}
-
-function selectionBoxes(): HTMLDivElement[] {
-	return Array.from(overlayRoot().querySelectorAll<HTMLDivElement>(".selections .highlight--selected"));
-}
-
-function promptForm(): HTMLFormElement | null {
-	return overlayRoot().querySelector<HTMLFormElement>("form");
-}
-
-// Submit now hides the prompt chrome and awaits a double-requestAnimationFrame
-// before invoking (see annotate-preload.ts), so the invoke call lands a real
-// tick after the dispatched submit event — vi.waitFor polls for it instead of
-// asserting synchronously.
-async function submitPrompt(instruction: string): Promise<BrowserAnnotationPageSubmitPayload> {
-	const root = overlayRoot();
-	const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
-	const form = root.querySelector<HTMLFormElement>("form");
-	if (!textarea || !form) throw new Error("annotation prompt was not rendered");
-	textarea.value = instruction;
-	form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-	await vi.waitFor(() => {
-		if (electronMocks.invoke.mock.calls.every(([channel]) => channel !== "browser:annotation:submit")) {
-			throw new Error("annotation submit was not invoked");
-		}
-	});
-	const submitCall = electronMocks.invoke.mock.calls.find(([channel]) => channel === "browser:annotation:submit");
-	if (!submitCall) throw new Error("annotation submit was not invoked");
-	return submitCall[1] as BrowserAnnotationPageSubmitPayload;
-}
-
-describe("annotate preload", () => {
-	beforeEach(() => {
-		document.body.innerHTML = "";
-		electronMocks.send.mockClear();
-		electronMocks.invoke.mockClear();
-		fontMocks.add.mockClear();
-		fontMocks.families.length = 0;
-		setAnnotationMode(true);
-	});
-
-	afterEach(() => {
-		setAnnotationMode(false);
-		document.body.innerHTML = "";
-		electronMocks.send.mockClear();
-		electronMocks.invoke.mockClear();
-	});
-
-	it("keeps the selected highlight locked while the prompt is open", () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-		const second = elementWithBounds("second", { left: 240, top: 160, width: 80, height: 30 });
-
-		dispatchPageEvent(first, "pointermove");
-		dispatchPageEvent(first, "click");
-		dispatchPageEvent(second, "pointermove");
-
-		expect(highlightStyle().left).toBe("12px");
-		expect(highlightStyle().top).toBe("24px");
-		expect(highlightStyle().width).toBe("120px");
-		expect(highlightStyle().height).toBe("40px");
-	});
-
-	it("ignores underlying page clicks while the prompt is open", () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-		const second = elementWithBounds("second", { left: 240, top: 160, width: 80, height: 30 });
-		const secondClick = vi.fn();
-		second.addEventListener("click", secondClick);
-
-		dispatchPageEvent(first, "click");
-		const ignoredClick = dispatchPageEvent(second, "click");
-
-		expect(ignoredClick.defaultPrevented).toBe(true);
-		expect(secondClick).not.toHaveBeenCalled();
-		expect(highlightStyle().left).toBe("12px");
-		expect(highlightStyle().top).toBe("24px");
-	});
-
-	it("submits the captured selected element after an ignored page click", async () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-		const second = elementWithBounds("second", { left: 240, top: 160, width: 80, height: 30 });
-
-		dispatchPageEvent(first, "click");
-		dispatchPageEvent(second, "click");
-
-		const payload = await submitPrompt("Make this button blue.");
-
-		expect(payload.instruction).toBe("Make this button blue.");
-		expect(payload.selection.kind).toBe("element");
-		if (payload.selection.kind !== "element") throw new Error("expected an element selection");
-		expect(payload.selection.context.selector).toBe("button#first");
-	});
-
-	it("selects semantic Markdown blocks instead of the document wrapper", async () => {
-		const markdown = document.createElement("main");
-		markdown.className = "markdown-body";
-		const heading = setElementBounds(document.createElement("h2"), {
-			left: 24,
-			top: 32,
-			width: 320,
-			height: 40,
 		});
-		heading.textContent = "Install";
-		const paragraph = setElementBounds(document.createElement("p"), {
-			left: 24,
-			top: 88,
-			width: 560,
-			height: 56,
-		});
-		const emphasis = document.createElement("strong");
-		emphasis.textContent = "desktop app";
-		paragraph.append("Download the ", emphasis, ".");
-		markdown.append(heading, paragraph);
-		document.body.appendChild(markdown);
+		document.body.appendChild(button);
 
-		shiftKeyDown();
-		dispatchPageEvent(heading, "click");
-		dispatchPageEvent(emphasis, "click");
-		shiftKeyDown();
+		const root = openAdjust(button);
+		const form = root.querySelector<HTMLFormElement>(".composer--adjustment")!;
+		const width = root.querySelector<HTMLInputElement>('[data-property="width"]')!;
+		const initialPosition = { left: form.style.left, top: form.style.top };
 
-		const payload = await submitPrompt("Revise these sections.");
+		bounds.left = 80;
+		bounds.top = 500;
+		width.value = "10";
+		width.dispatchEvent(new Event("input", { bubbles: true }));
+		width.value = "70";
+		width.dispatchEvent(new Event("input", { bubbles: true }));
 
-		expect(payload.selection.kind).toBe("elements");
-		if (payload.selection.kind !== "elements") throw new Error("expected an elements selection");
-		expect(payload.selection.contexts.map((context) => context.tag)).toEqual(["h2", "p"]);
-		expect(payload.selection.contexts.map((context) => context.classes)).toEqual([[], []]);
+		expect(form.style.left).toBe(initialPosition.left);
+		expect(form.style.top).toBe(initialPosition.top);
+		expect(button.style.getPropertyValue("width")).toBe("70px");
 	});
 
-	it("selects a Markdown table cell when hovering nested cell content", async () => {
-		const markdown = document.createElement("main");
-		markdown.className = "markdown-body";
-		const table = setElementBounds(document.createElement("table"), {
-			left: 20,
-			top: 30,
-			width: 600,
-			height: 240,
-		});
-		const body = document.createElement("tbody");
-		const row = document.createElement("tr");
-		const cell = setElementBounds(document.createElement("td"), {
-			left: 220,
-			top: 110,
-			width: 180,
-			height: 52,
-		});
-		const label = document.createElement("strong");
-		label.textContent = "Codex";
-		cell.appendChild(label);
-		row.appendChild(cell);
-		body.appendChild(row);
-		table.appendChild(body);
-		markdown.appendChild(table);
-		document.body.appendChild(markdown);
+	it("normalizes leading zeroes before storing pixel adjustments", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "normalized-size";
+		button.textContent = "Resize me";
+		document.body.appendChild(button);
 
-		dispatchPageEvent(label, "pointermove");
+		const root = openAdjust(button);
+		const width = root.querySelector<HTMLInputElement>('[data-property="width"]')!;
+		width.value = "089";
+		width.dispatchEvent(new Event("input", { bubbles: true }));
+		width.dispatchEvent(new Event("change", { bubbles: true }));
 
-		expect(highlightStyle().left).toBe("220px");
-		expect(highlightStyle().top).toBe("110px");
-		expect(highlightStyle().width).toBe("180px");
-		expect(highlightStyle().height).toBe("52px");
-
-		dispatchPageEvent(label, "click");
-		const payload = await submitPrompt("Change this agent entry.");
-
-		expect(payload.selection.kind).toBe("element");
-		if (payload.selection.kind !== "element") throw new Error("expected an element selection");
-		expect(payload.selection.context.tag).toBe("td");
-		expect(payload.selection.context.visibleText).toBe("Codex");
+		expect(width.value).toBe("89");
+		expect(button.style.getPropertyValue("width")).toBe("89px");
+		expect(latestSession().draft?.adjustments).toContainEqual(expect.objectContaining({
+			property: "width",
+			value: "89px",
+		}));
 	});
 
-	it("keeps the nearest classed component target outside Markdown previews", async () => {
-		const card = setElementBounds(document.createElement("section"), {
-			left: 20,
-			top: 30,
-			width: 400,
-			height: 180,
-		});
-		card.className = "settings-card";
-		const label = document.createElement("span");
-		label.textContent = "Updates";
-		card.appendChild(label);
-		document.body.appendChild(card);
+	it("uses a concentric comment composer aligned on one row without a separate actions row", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "comment-row";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
 
-		dispatchPageEvent(label, "click");
-		const payload = await submitPrompt("Adjust this component.");
-
-		expect(payload.selection.kind).toBe("element");
-		if (payload.selection.kind !== "element") throw new Error("expected an element selection");
-		expect(payload.selection.context.tag).toBe("section");
-		expect(payload.selection.context.classes).toEqual(["settings-card"]);
-	});
-
-	it("renders a compact auto-growing prompt and submits from the embedded action", async () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-
-		dispatchPageEvent(first, "click");
-
+		clickPage(button);
 		const root = overlayRoot();
-		const form = root.querySelector<HTMLFormElement>("form");
-		const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
-		const primaryAction = root.querySelector<HTMLButtonElement>('button[type="submit"]');
+		const form = root.querySelector<HTMLFormElement>(".composer--comment");
+		const row = root.querySelector<HTMLElement>(".composer-input-row");
+		const styles = root.querySelector("style")?.textContent ?? "";
 
-		expect(root.querySelector(".prompt__header")).toBeNull();
-		expect(fontMocks.families).toContain("Geist Variable");
-		expect(fontMocks.families).toContain("Geist Mono Variable");
-		expect(fontMocks.add).toHaveBeenCalledTimes(2);
-		expect(form).toHaveAttribute("aria-label", "Annotate selection");
-		expect(root.querySelector(".prompt__meta")).toBeNull();
-		expect(root.querySelector(".prompt__shortcuts")).toBeNull();
-		expect(root.querySelector('[data-action="cancel"]')).toBeNull();
-		expect(primaryAction).toBeTruthy();
-		expect(primaryAction).toHaveAttribute("aria-label", "Send annotation");
-		expect(primaryAction).toHaveAttribute("title", "Send (Enter)");
-		expect(primaryAction?.disabled).toBe(true);
-		expect(textarea).not.toBeNull();
-		expect(textarea).toHaveAttribute("rows", "1");
-		expect(textarea).toHaveAttribute("placeholder", "Describe the change…");
-		expect(root.querySelector("style")?.textContent).toContain(
-			"max-height: var(--ao-prompt-textarea-max-height, 350px)",
-		);
+		expect(form).not.toBeNull();
+		expect(root.querySelector(".composer-actions")).toBeNull();
+		expect(root.querySelector(".cancel-button")).toBeNull();
+		expect(root.querySelector(".send-button")).toBeNull();
+		expect(styles).toContain("border-radius:16px");
+		expect(styles).toContain(".adjust-button{");
+		expect(styles).toMatch(/\.adjust-button\{[^}]*border-radius:var\(--radius\)/);
+		expect(styles).toContain("--radius:8px");
+		expect(styles).toContain(".composer-input-row{display:flex;min-width:0;align-items:flex-start");
+		expect(styles).toMatch(/\.adjust-button\{[^}]*align-self:flex-start/);
+		expect(row?.querySelector(".adjust-button")).not.toBeNull();
+		expect(row?.querySelector(".composer-note")).not.toBeNull();
+		expect(row?.querySelector(".adjust-button svg")?.innerHTML).toContain("M12 22a1 1 0 0 1 0-20 10 9");
+		const add = row?.querySelector<HTMLButtonElement>('[data-action="add"]');
+		expect(add).not.toBeNull();
+		expect(row?.lastElementChild).toBe(add);
+		expect(add?.disabled).toBe(true);
+		expect(add?.querySelector("svg")?.innerHTML).toContain("M12 19V5m-7 7 7-7 7 7");
+		// Same 28px ghost box as the palette control, not a filled primary button.
+		expect(styles).toMatch(/\.add-button\{[^}]*background:transparent/);
+		expect(styles).toMatch(/\.add-button\{[^}]*align-self:flex-start/);
+	});
 
-		textarea!.value = "Make this button easier to notice.";
-		textarea!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+	it("adds an annotation from the trailing add control instead of Enter", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "add-control";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+
+		clickPage(button);
+		const root = overlayRoot();
+		const textarea = root.querySelector<HTMLTextAreaElement>(".composer-note")!;
+		const add = root.querySelector<HTMLButtonElement>('[data-action="add"]')!;
+
+		textarea.value = "Raise this above the fold";
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(add.disabled).toBe(false);
+
+		add.click();
+
+		const session = latestSession();
+		expect(session.annotations).toHaveLength(1);
+		expect(session.annotations[0]?.body).toBe("Raise this above the fold");
+		expect(session.draft).toBeUndefined();
+		expect(overlayRoot().querySelector(".composer")).toBeNull();
+	});
+
+	it("keeps the add control live for an adjustment with no note", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "adjust-add-control";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+
+		const root = openAdjust(button);
+		const add = root.querySelector<HTMLButtonElement>('[data-action="add"]')!;
+		expect(add.disabled).toBe(true);
+
+		const background = root.querySelector<HTMLInputElement>('[data-property="backgroundColor"]')!;
+		background.value = "#e34b63";
+		background.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(add.disabled).toBe(false);
+
+		add.click();
+
+		const session = latestSession();
+		expect(session.annotations).toHaveLength(1);
+		expect(session.annotations[0]?.kind).toBe("adjustment");
+		expect(session.draft).toBeUndefined();
+	});
+
+	it("discards an open comment when clicking outside the composer", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "outside-dismiss";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+
+		clickPage(button);
+		expect(latestSession().draft).toBeDefined();
+
+		document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+		expect(latestSession().draft).toBeUndefined();
+		expect(overlayRoot().querySelector(".composer")).toBeNull();
+	});
+
+	it("keeps the selection highlight visible with a 6px outset while annotating", async () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "selected-box";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+
+		const styles = overlayRoot().querySelector("style")?.textContent ?? "";
+		expect(styles).toContain("transition:left 180ms ease,top 180ms ease,width 180ms ease,height 180ms ease");
+		expect(styles).not.toContain("transform:scale(1.1)");
+
+		clickPage(button);
+		const highlight = overlayRoot().querySelector<HTMLElement>(".hover");
+		expect(highlight?.hidden).toBe(false);
+		await vi.waitFor(() => {
+			expect(highlight?.classList.contains("hover--selected")).toBe(true);
+			expect(highlight?.style.left).toBe("14px");
+			expect(highlight?.style.top).toBe("24px");
+			expect(highlight?.style.width).toBe("152px");
+			expect(highlight?.style.height).toBe("48px");
+		});
+	});
+
+	it("clears open selection when re-entering annotation mode but keeps batch markers", () => {
+		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
+		button.id = "persist-batch";
+		button.textContent = "Continue";
+		document.body.appendChild(button);
+
+		clickPage(button);
+		const note = overlayRoot().querySelector<HTMLTextAreaElement>(".composer-note")!;
+		note.value = "keep this in the batch";
+		note.dispatchEvent(new Event("input", { bubbles: true }));
+		note.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		expect(latestSession().annotations).toHaveLength(1);
+		expect(latestSession().draft).toBeUndefined();
+		expect(overlayRoot().querySelectorAll(".marker")).toHaveLength(1);
+
+		clickPage(button);
+		expect(overlayRoot().querySelector(".composer")).not.toBeNull();
+		expect(latestSession().draft).toBeDefined();
+
+		// Main strips draft synchronously on disable, then re-sends the batch.
+		const leaving = structuredClone(latestSession());
+		delete leaving.draft;
+		setMode(false, leaving);
+		expect(document.querySelector("[data-ao-annotation-root]")).toBeNull();
+
+		setMode(true, leaving);
+
+		expect(overlayRoot().querySelector(".composer")).toBeNull();
+		expect(latestSession().draft).toBeUndefined();
+		expect(latestSession().annotations).toHaveLength(1);
+		expect(overlayRoot().querySelectorAll(".marker")).toHaveLength(1);
+	});
+
+	it("copies a screenshot to the clipboard instead of adding it to the batch", async () => {
+		electronMocks.invoke.mockResolvedValue(true);
+		const listener = electronMocks.listeners.get("browser:annotation:action");
+		if (!listener) throw new Error("annotation action listener was not registered");
+		listener({}, "capture");
 
 		await vi.waitFor(() => {
-			expect(electronMocks.invoke).toHaveBeenCalledWith(
-				"browser:annotation:submit",
-				expect.objectContaining({ instruction: "Make this button easier to notice." }),
-			);
+			expect(overlayRoot().querySelector<HTMLElement>(".screenshot-notice")?.hidden).toBe(false);
 		});
+		expect(electronMocks.invoke).toHaveBeenCalledWith("browser:annotation:capture");
+		expect(overlayRoot().querySelector<HTMLElement>(".screenshot-notice")?.textContent).toBe(
+			"Screenshot copied to clipboard",
+		);
+		// Nothing joins the annotation batch, so no session state is emitted.
+		expect(electronMocks.send.mock.calls.some(([channel]) => channel === "browser:annotation:state")).toBe(false);
 	});
 
-	it("grows long comments to a viewport-aware limit with invisible scrolling", () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-		dispatchPageEvent(first, "click");
+	it("keeps the screenshot notice hidden when the clipboard copy fails", async () => {
+		electronMocks.invoke.mockResolvedValue(false);
+		const listener = electronMocks.listeners.get("browser:annotation:action");
+		if (!listener) throw new Error("annotation action listener was not registered");
+		listener({}, "capture");
 
-		const root = overlayRoot();
-		const form = root.querySelector<HTMLFormElement>("form")!;
-		const textarea = root.querySelector<HTMLTextAreaElement>("textarea")!;
-		Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 900 });
-		textarea.value = "A very long annotation";
-		textarea.dispatchEvent(new Event("input", { bubbles: true }));
-
-		expect(form).toHaveClass("prompt--expanded");
-		expect(textarea.style.height).toBe("312px");
-		expect(textarea.style.overflowY).toBe("auto");
-		expect(form.style.getPropertyValue("--ao-prompt-textarea-max-height")).toBe("312px");
-		expect(root.querySelector("style")?.textContent).toContain("padding: 6px 9px");
-		expect(root.querySelector("style")?.textContent).toContain("padding: 5px 5px 43px");
-		expect(root.querySelector("style")?.textContent).toContain(".prompt::after");
-		expect(root.querySelector("style")?.textContent).toContain("scrollbar-width: none");
-		expect(root.querySelector("style")?.textContent).toContain("textarea::-webkit-scrollbar");
-	});
-
-	it("uses the room above for a selected element near the viewport bottom", () => {
-		const originalHeight = window.innerHeight;
-		Object.defineProperty(window, "innerHeight", { configurable: true, value: 500 });
-		const first = elementWithBounds("first", { left: 12, top: 420, width: 120, height: 40 });
-		dispatchPageEvent(first, "click");
-
-		const root = overlayRoot();
-		const form = root.querySelector<HTMLFormElement>("form")!;
-		const textarea = root.querySelector<HTMLTextAreaElement>("textarea")!;
-		Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 900 });
-		textarea.value = "A very long annotation";
-		textarea.dispatchEvent(new Event("input", { bubbles: true }));
-
-		expect(form).toHaveClass("prompt--expanded");
-		expect(textarea.style.height).toBe("312px");
-		expect(Number.parseFloat(form.style.top)).toBeLessThan(420);
-
-		Object.defineProperty(window, "innerHeight", { configurable: true, value: originalHeight });
-	});
-
-	it("keeps prompt controls active for escape", () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-
-		dispatchPageEvent(first, "click");
-		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-
-		expect(electronMocks.send).toHaveBeenCalledWith("browser:annotation:cancel", { reason: "escape" });
-		expect(document.querySelector("[data-ao-annotation-root]")).toBeNull();
-	});
-
-	it("reflows and repositions an open prompt when the browser viewport narrows", () => {
-		const originalWidth = window.innerWidth;
-		const originalVisualViewport = window.visualViewport;
-		const first = elementWithBounds("first", { left: 700, top: 24, width: 120, height: 40 });
-
-		dispatchPageEvent(first, "click");
-		const root = overlayRoot();
-		const textarea = root.querySelector<HTMLTextAreaElement>("textarea")!;
-		const form = root.querySelector<HTMLFormElement>("form")!;
-		textarea.value = "Keep this feedback while resizing.";
-
-		Object.defineProperty(window, "innerWidth", { configurable: true, value: 520 });
-		Object.defineProperty(window, "visualViewport", {
-			configurable: true,
-			value: { width: 320, height: window.innerHeight },
+		await vi.waitFor(() => {
+			expect(electronMocks.invoke).toHaveBeenCalledWith("browser:annotation:capture");
 		});
-		window.dispatchEvent(new Event("resize"));
-
-		expect(form.style.width).toBe("292px");
-		expect(form.style.left).toBe("14px");
-		expect(textarea.value).toBe("Keep this feedback while resizing.");
-
-		Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
-		Object.defineProperty(window, "visualViewport", { configurable: true, value: originalVisualViewport });
-	});
-
-	it("accumulates a multi-selection on Shift and toggles a re-clicked element back out", () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-		const second = elementWithBounds("second", { left: 240, top: 160, width: 80, height: 30 });
-
-		shiftKeyDown();
-		dispatchPageEvent(first, "click");
-		dispatchPageEvent(second, "click");
-		expect(selectionBoxes()).toHaveLength(2);
-
-		dispatchPageEvent(first, "click");
-		expect(selectionBoxes()).toHaveLength(1);
-		expect(selectionBoxes()[0].style.left).toBe("240px");
-		expect(promptForm()).toBeNull();
-	});
-
-	it("opens the prompt with every selected element when Shift is pressed again", async () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-		const second = elementWithBounds("second", { left: 240, top: 160, width: 80, height: 30 });
-
-		shiftKeyDown();
-		dispatchPageEvent(first, "click");
-		dispatchPageEvent(second, "click");
-		shiftKeyDown();
-
-		const payload = await submitPrompt("Align these two.");
-
-		expect(payload.selection.kind).toBe("elements");
-		if (payload.selection.kind !== "elements") throw new Error("expected an elements selection");
-		expect(payload.selection.contexts.map((context) => context.selector)).toEqual(["button#first", "button#second"]);
-	});
-
-	it("does not open the prompt when Shift is pressed again with nothing selected", () => {
-		shiftKeyDown();
-		shiftKeyDown();
-
-		expect(promptForm()).toBeNull();
-		expect(electronMocks.send).not.toHaveBeenCalledWith("browser:annotation:submit", expect.anything());
-	});
-
-	it("ignores a held-down Shift key repeat so multi-select mode does not toggle off early", () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-
-		shiftKeyDown();
-		shiftKeyDown(true);
-		dispatchPageEvent(first, "click");
-
-		expect(selectionBoxes()).toHaveLength(1);
-		expect(promptForm()).toBeNull();
-	});
-
-	it("cancels an in-progress multi-selection on Escape", () => {
-		const first = elementWithBounds("first", { left: 12, top: 24, width: 120, height: 40 });
-
-		shiftKeyDown();
-		dispatchPageEvent(first, "click");
-		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-
-		expect(electronMocks.send).toHaveBeenCalledWith("browser:annotation:cancel", { reason: "escape" });
-		expect(document.querySelector("[data-ao-annotation-root]")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(overlayRoot().querySelector<HTMLElement>(".screenshot-notice")?.hidden).toBe(true);
+		expect(electronMocks.send.mock.calls.some(([channel]) => channel === "browser:annotation:state")).toBe(false);
 	});
 });

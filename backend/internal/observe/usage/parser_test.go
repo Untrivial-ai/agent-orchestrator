@@ -33,14 +33,168 @@ func TestParseClaudeFinalUsageAndSkipMainSidechain(t *testing.T) {
 		tokenValue(got.Tokens.OutputTokens) != 4 {
 		t.Fatalf("tokens = %+v", got.Tokens)
 	}
-	if details := got.ProviderDetails.Anthropic; details == nil ||
-		tokenValue(details.DirectUncachedInputTokens) != 10 || tokenValue(details.CacheCreationInputTokens) != 3 ||
-		tokenValue(details.CacheCreation5mInputTokens) != 2 || tokenValue(details.CacheCreation1hInputTokens) != 1 {
-		t.Fatalf("provider details = %+v", details)
+	if providerUsageTokens(t, got.ProviderUsageJSON, "input_tokens") != 10 ||
+		providerUsageTokens(t, got.ProviderUsageJSON, "cache_creation_input_tokens") != 3 ||
+		providerUsageTokens(t, got.ProviderUsageJSON, "cache_creation", "ephemeral_5m_input_tokens") != 2 ||
+		providerUsageTokens(t, got.ProviderUsageJSON, "cache_creation", "ephemeral_1h_input_tokens") != 1 {
+		t.Fatalf("provider usage = %s", got.ProviderUsageJSON)
+	}
+	if got.MeasurementKind != domain.UsageMeasurementNativeReported {
+		t.Fatalf("measurement kind = %q, want native_reported", got.MeasurementKind)
 	}
 	if got.ModelID != "claude-x" {
 		t.Fatalf("event = %+v", got)
 	}
+}
+
+// The stored object is the CLI's usage record verbatim, so a field Anthropic
+// adds after this code was written still reaches pricing and auditing.
+func TestParseClaudeRetainsUnknownProviderUsageFieldsWithinTheBound(t *testing.T) {
+	source := usageSource(domain.UsageSourceClaudeMain)
+	result := parseRecords(source, []jsonlRecord{{Data: []byte(
+		`{"type":"assistant","uuid":"one","message":{"id":"msg-1","model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":8,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":2,"output_tokens_details":{"thinking_tokens":1},"server_tool_use":{"web_search_requests":2},"service_tier":"standard"}}}`,
+	)}}, 400, time.Unix(1700000000, 0).UTC())
+	if len(result.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(result.Events))
+	}
+	stored := result.Events[0].ProviderUsageJSON
+	if providerUsageTokens(t, stored, "output_tokens_details", "thinking_tokens") != 1 ||
+		providerUsageTokens(t, stored, "server_tool_use", "web_search_requests") != 2 {
+		t.Fatalf("provider usage = %s, want unknown fields retained", stored)
+	}
+	if !strings.Contains(stored, `"service_tier":"standard"`) {
+		t.Fatalf("provider usage = %s, want the object compacted verbatim", stored)
+	}
+
+	// An object far larger than the counter record the providers document is
+	// dropped rather than truncated: an absent object is honest, a partial one
+	// would silently misprice.
+	oversized := strings.Repeat("x", maxProviderUsageBytes)
+	huge := parseRecords(source, []jsonlRecord{{Data: []byte(fmt.Sprintf(
+		`{"type":"assistant","uuid":"two","message":{"id":"msg-2","model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":8,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":2,"padding":%q}}}`,
+		oversized,
+	))}}, 40_000, time.Unix(1700000000, 0).UTC())
+	if len(huge.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(huge.Events))
+	}
+	if huge.Events[0].ProviderUsageJSON != "" {
+		t.Fatalf("oversized provider usage was stored: %d bytes", len(huge.Events[0].ProviderUsageJSON))
+	}
+	if tokenValue(huge.Events[0].Tokens.InputTokens) != 8 {
+		t.Fatalf("dropping the object must not drop the neutral counters: %+v", huge.Events[0].Tokens)
+	}
+}
+
+// The transcript writes the same write-once column as the hook, so it earns the
+// same whitelist. A routing string AO cannot name is dropped rather than stored:
+// unattributed is repairable, and a wrong attribution — priced against nothing,
+// invisible to every repair path — is not.
+func TestParseClaudeProviderPrecedenceAndRetention(t *testing.T) {
+	source := usageSource(domain.UsageSourceClaudeMain)
+	source.ProviderHint = "anthropic"
+	records := []jsonlRecord{
+		{Data: []byte(`{"type":"assistant","provider":" record-provider ","uuid":"one","message":{"id":"msg-1","provider":" message-provider ","model":" claude-a ","stop_reason":"end_turn","usage":{"input_tokens":8,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":2}}}`)},
+		{Data: []byte(`{"type":"assistant","uuid":"two","message":{"id":"msg-2","model":"","stop_reason":"end_turn","usage":{"input_tokens":9,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":3}}}`)},
+		{Data: []byte(`{"type":"assistant","provider":" Z.AI ","uuid":"three","message":{"id":"msg-3","model":"claude-b","stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4}}}`)},
+	}
+
+	result := parseRecords(source, records, 500, time.Unix(1700000000, 0).UTC())
+	if len(result.Events) != 3 {
+		t.Fatalf("events = %+v", result.Events)
+	}
+	// The first two records name nothing AO recognises, so the whitelisted hook
+	// hint stands. The third names a route AO does know, canonicalised, and it
+	// takes precedence and persists to the next chunk.
+	if result.Events[0].BillingProviderID != "anthropic" || result.Events[0].ModelID != "claude-a" ||
+		result.Events[1].BillingProviderID != "anthropic" || result.Events[1].ModelID != "claude-a" ||
+		result.Events[2].BillingProviderID != "zai" || result.Events[2].ModelID != "claude-b" {
+		t.Fatalf("billing provider/model sequence = %+v", result.Events)
+	}
+	for index, event := range result.Events {
+		if event.BillingProviderSource != domain.UsageBillingProviderObserved {
+			t.Fatalf("event %d attribution source = %q", index, event.BillingProviderSource)
+		}
+	}
+	state := parserStateFromResult(t, result, domain.UsageSourceClaudeMain)
+	if state.Claude.Provider != "zai" {
+		t.Fatalf("retained provider = %q", state.Claude.Provider)
+	}
+}
+
+func TestParseClaudeProviderFallsBackToTrustedHintThenUnknown(t *testing.T) {
+	record := jsonlRecord{Data: []byte(`{"type":"assistant","uuid":"one","message":{"id":"msg-1","model":"claude-a","stop_reason":"end_turn","usage":{"input_tokens":8,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":2}}}`)}
+	for _, test := range []struct {
+		name string
+		hint string
+		want string
+	}{
+		{name: "trusted hook hint", hint: "zai", want: "zai"},
+		{name: "z.ai alias", hint: "z.ai", want: "zai"},
+		{name: "unattributed", want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := usageSource(domain.UsageSourceClaudeMain)
+			source.ProviderHint = test.hint
+			result := parseRecords(source, []jsonlRecord{record}, 100, time.Unix(1700000000, 0).UTC())
+			if len(result.Events) != 1 || result.Events[0].BillingProviderID != test.want {
+				t.Fatalf("events = %+v, want billing provider %q", result.Events, test.want)
+			}
+		})
+	}
+}
+
+func TestParseClaudeCacheWriteSplitsAreCapturedOrRejected(t *testing.T) {
+	tests := []struct {
+		name          string
+		cacheCreation string
+		want5m        *int64
+		want1h        *int64
+		wantEvents    int
+		wantAnomaly   int64
+	}{
+		{name: "absent", wantEvents: 1},
+		{name: "explicit zero", cacheCreation: `,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}`, want5m: int64Ptr(0), want1h: int64Ptr(0), wantEvents: 1},
+		{name: "valid", cacheCreation: `,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":1}`, want5m: int64Ptr(2), want1h: int64Ptr(1), wantEvents: 1},
+		// An absent TTL member stays absent rather than becoming a known zero,
+		// and splits that do not sum to the generic total are still persisted:
+		// pricing treats either as an unknown input cost rather than rejecting
+		// the tokens.
+		{name: "missing member", cacheCreation: `,"cache_creation":{"ephemeral_5m_input_tokens":3}`, want5m: int64Ptr(3), wantEvents: 1},
+		{name: "negative", cacheCreation: `,"cache_creation":{"ephemeral_5m_input_tokens":4,"ephemeral_1h_input_tokens":-1}`, wantAnomaly: 1},
+		{name: "sum below generic total", cacheCreation: `,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1}`, want5m: int64Ptr(1), want1h: int64Ptr(1), wantEvents: 1},
+		{name: "sum above generic total", cacheCreation: `,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":2}`, wantAnomaly: 1},
+		{name: "malformed member", cacheCreation: `,"cache_creation":{"ephemeral_5m_input_tokens":"three","ephemeral_1h_input_tokens":0}`, wantAnomaly: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			generic := int64(3)
+			if test.name == "explicit zero" {
+				generic = 0
+			}
+			record := jsonlRecord{Data: []byte(fmt.Sprintf(
+				`{"type":"assistant","uuid":"one","message":{"id":"msg-1","model":"claude-a","stop_reason":"end_turn","usage":{"input_tokens":8,"cache_creation_input_tokens":%d,"cache_read_input_tokens":0,"output_tokens":2%s}}}`,
+				generic, test.cacheCreation,
+			))}
+			result := parseRecords(usageSource(domain.UsageSourceClaudeMain), []jsonlRecord{record}, 100, time.Unix(1700000000, 0).UTC())
+			if len(result.Events) != test.wantEvents || result.Cursor.AnomalyCount != test.wantAnomaly {
+				t.Fatalf("events=%+v anomalies=%d, want %d events and %d anomalies",
+					result.Events, result.Cursor.AnomalyCount, test.wantEvents, test.wantAnomaly)
+			}
+			if test.wantEvents == 0 {
+				return
+			}
+			stored := result.Events[0].ProviderUsageJSON
+			got5m := providerUsageValue(t, stored, "cache_creation", "ephemeral_5m_input_tokens")
+			got1h := providerUsageValue(t, stored, "cache_creation", "ephemeral_1h_input_tokens")
+			if !equalInt64Ptr(got5m, test.want5m) || !equalInt64Ptr(got1h, test.want1h) {
+				t.Fatalf("splits = %s, want %v/%v", stored, test.want5m, test.want1h)
+			}
+		})
+	}
+}
+
+func equalInt64Ptr(left, right *int64) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
 func TestParseClaudeSubagentIncludesSidechainTranscript(t *testing.T) {
@@ -98,17 +252,16 @@ func TestParseClaudeReferenceUsageDeduplicatesLogicalResponses(t *testing.T) {
 	assertCanonicalEventTotals(t, result.Events, 148625, 75376, 73249, 24993)
 	var direct, creation, creation5m, creation1h int64
 	for _, event := range result.Events {
-		details := event.ProviderDetails.Anthropic
-		if event.ProviderID != domain.UsageProviderAnthropic || details == nil {
+		if event.ProviderID != domain.UsageProviderAnthropic || event.ProviderUsageJSON == "" {
 			t.Fatalf("provider mapping = %+v", event)
 		}
-		direct += tokenValue(details.DirectUncachedInputTokens)
-		creation += tokenValue(details.CacheCreationInputTokens)
-		creation5m += tokenValue(details.CacheCreation5mInputTokens)
-		creation1h += tokenValue(details.CacheCreation1hInputTokens)
+		direct += providerUsageTokens(t, event.ProviderUsageJSON, "input_tokens")
+		creation += providerUsageTokens(t, event.ProviderUsageJSON, "cache_creation_input_tokens")
+		creation5m += providerUsageTokens(t, event.ProviderUsageJSON, "cache_creation", "ephemeral_5m_input_tokens")
+		creation1h += providerUsageTokens(t, event.ProviderUsageJSON, "cache_creation", "ephemeral_1h_input_tokens")
 	}
 	if direct != 40 || creation != 73209 || creation5m != 0 || creation1h != 73209 {
-		t.Fatalf("Anthropic details = direct:%d creation:%d 5m:%d 1h:%d", direct, creation, creation5m, creation1h)
+		t.Fatalf("Anthropic usage = direct:%d creation:%d 5m:%d 1h:%d", direct, creation, creation5m, creation1h)
 	}
 }
 
@@ -130,20 +283,74 @@ func TestParseCodexCumulativeDeltasAndRepeats(t *testing.T) {
 		tokenValue(got.CachedInputTokens) != 60 || tokenValue(got.OutputTokens) != 20 {
 		t.Fatalf("first tokens = %+v", got)
 	}
-	if details := result.Events[0].ProviderDetails.OpenAI; details == nil ||
-		tokenValue(details.CacheWriteInputTokens) != 10 || tokenValue(details.ReasoningOutputTokens) != 5 {
-		t.Fatalf("first provider details = %+v", details)
-	}
 	if got := result.Events[1].Tokens; tokenValue(got.InputTokens) != 60 || tokenValue(got.UncachedInputTokens) != 30 ||
 		tokenValue(got.CachedInputTokens) != 30 || tokenValue(got.OutputTokens) != 15 {
 		t.Fatalf("delta tokens = %+v", got)
 	}
-	if details := result.Events[1].ProviderDetails.OpenAI; details == nil || tokenValue(details.ReasoningOutputTokens) != 3 {
-		t.Fatalf("delta provider details = %+v", details)
+	// Each event stores payload.info exactly as emitted. These records carry only
+	// cumulative counters, so the stored object holds the running totals the
+	// event was derived from, not the derived delta.
+	for index, wantCumulativeInput := range []int64{100, 160} {
+		stored := result.Events[index].ProviderUsageJSON
+		if providerUsageTokens(t, stored, "total_token_usage", "input_tokens") != wantCumulativeInput {
+			t.Fatalf("event %d provider usage = %s, want cumulative input %d", index, stored, wantCumulativeInput)
+		}
+		if providerUsageValue(t, stored, "last_token_usage") != nil {
+			t.Fatalf("event %d provider usage invented a per-event vector: %s", index, stored)
+		}
 	}
 	state := parserStateFromResult(t, result, domain.UsageSourceCodexRollout)
-	if state.Codex.Baseline.InputTokens != 160 || state.Codex.ModelID != "gpt-5.6" {
+	if state.Codex.Baseline.InputTokens != 160 || state.Codex.ModelID != "gpt-5.6" || state.Codex.Provider != "openai" {
 		t.Fatalf("parser state = %+v", state.Codex)
+	}
+}
+
+// Break caught: rejecting an oversized native object must not leave behind an
+// AO-only fragment that looks like the complete provider usage record.
+func TestParseCodexOversizedCumulativeUsageStaysAbsent(t *testing.T) {
+	source := usageSource(domain.UsageSourceCodexRollout)
+	padding := strings.Repeat("x", maxProviderUsageBytes)
+	records := []jsonlRecord{
+		{Data: codexTokenLine("2026-07-01T10:00:00Z", 100, 60, 10, 20, 5)},
+		{Data: []byte(fmt.Sprintf(
+			`{"timestamp":"2026-07-01T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":90,"cache_write_input_tokens":15,"output_tokens":35,"reasoning_output_tokens":8,"total_tokens":195},"padding":%q}}}`,
+			padding,
+		))},
+	}
+
+	result := parseRecords(source, records, 20_000, time.Unix(1700000000, 0).UTC())
+	if len(result.Events) != 2 {
+		t.Fatalf("events = %d, want 2", len(result.Events))
+	}
+	got := result.Events[1]
+	if got.ProviderUsageJSON != "" {
+		t.Fatalf("oversized provider usage became a partial object: %s", got.ProviderUsageJSON)
+	}
+	if tokenValue(got.Tokens.InputTokens) != 60 || tokenValue(got.Tokens.CachedInputTokens) != 30 ||
+		tokenValue(got.Tokens.UncachedInputTokens) != 30 || tokenValue(got.Tokens.OutputTokens) != 15 {
+		t.Fatalf("dropping the object must not drop the neutral delta: %+v", got.Tokens)
+	}
+}
+
+func TestParseCodexSessionMetaProviderAppliesOnlyToSubsequentEvents(t *testing.T) {
+	source := usageSource(domain.UsageSourceCodexRollout)
+	result := parseRecords(source, []jsonlRecord{
+		{Data: []byte(`{"type":"turn_context","payload":{"model":"gpt-a"}}`)},
+		{Data: codexTokenLine("2026-07-01T10:00:00Z", 10, 5, 0, 2, 1)},
+		{Data: []byte(`{"type":"session_meta","payload":{"model_provider":" openai "}}`)},
+		{Data: codexTokenLine("2026-07-01T10:01:00Z", 20, 10, 0, 4, 2)},
+		{Data: []byte(`{"type":"session_meta","payload":{"model_provider":" azure "}}`)},
+		{Data: codexTokenLine("2026-07-01T10:02:00Z", 30, 15, 0, 6, 3)},
+	}, 500, time.Unix(1700000000, 0).UTC())
+	if len(result.Events) != 3 ||
+		result.Events[0].BillingProviderID != "" ||
+		result.Events[1].BillingProviderID != "openai" ||
+		result.Events[2].BillingProviderID != "azure" {
+		t.Fatalf("billing provider sequence = %+v", result.Events)
+	}
+	state := parserStateFromResult(t, result, domain.UsageSourceCodexRollout)
+	if state.Codex.Provider != "azure" {
+		t.Fatalf("retained provider = %q", state.Codex.Provider)
 	}
 }
 
@@ -161,18 +368,21 @@ func TestParseCodexReferenceUsageReconcilesLastAndCumulativeTotals(t *testing.T)
 		t.Fatalf("result = %+v, want three reconciled events", result)
 	}
 	assertCanonicalEventTotals(t, result.Events, 63566, 30848, 32718, 5058)
-	var reasoning, cacheWrite, reportedTotal int64
+	// last_token_usage is the per-event vector, so the reasoning and cache-write
+	// subsets pricing needs are recoverable from each stored object.
+	var reasoning, cacheWrite int64
 	for _, event := range result.Events {
-		details := event.ProviderDetails.OpenAI
-		if event.ProviderID != domain.UsageProviderOpenAI || details == nil {
+		if event.ProviderID != domain.UsageProviderOpenAI || event.ProviderUsageJSON == "" {
 			t.Fatalf("provider mapping = %+v", event)
 		}
-		reasoning += tokenValue(details.ReasoningOutputTokens)
-		cacheWrite += tokenValue(details.CacheWriteInputTokens)
-		reportedTotal += tokenValue(details.ReportedTotalTokens)
+		reasoning += providerUsageTokens(t, event.ProviderUsageJSON, "last_token_usage", "reasoning_output_tokens")
+		cacheWrite += providerUsageTokens(t, event.ProviderUsageJSON, "last_token_usage", "cache_write_input_tokens")
 	}
-	if reasoning != 1180 || cacheWrite != 0 || reportedTotal != 68624 {
-		t.Fatalf("OpenAI details = reasoning:%d cache-write:%d reported-total:%d", reasoning, cacheWrite, reportedTotal)
+	if reasoning != 1180 || cacheWrite != 0 {
+		t.Fatalf("OpenAI usage = reasoning:%d cache-write:%d", reasoning, cacheWrite)
+	}
+	if last := result.Events[2].ProviderUsageJSON; providerUsageTokens(t, last, "total_token_usage", "total_tokens") != 68624 {
+		t.Fatalf("cumulative counters must survive beside the per-event vector: %s", last)
 	}
 }
 
@@ -190,14 +400,16 @@ func TestParseCodexOptionalReportedTotalDoesNotDropDeltas(t *testing.T) {
 		t.Fatalf("result = %+v, want three clean events", result)
 	}
 	assertCanonicalEventTotals(t, result.Events, 200, 100, 100, 50)
-	if first := result.Events[0].ProviderDetails.OpenAI.ReportedTotalTokens; first == nil || *first != 120 {
+	// An optional field the CLI omitted stays absent rather than being
+	// manufactured as a zero.
+	if first := providerUsageValue(t, result.Events[0].ProviderUsageJSON, "total_token_usage", "total_tokens"); first == nil || *first != 120 {
 		t.Fatalf("first reported total = %v, want 120", first)
 	}
-	if middle := result.Events[1].ProviderDetails.OpenAI.ReportedTotalTokens; middle != nil {
-		t.Fatalf("missing reported total persisted as %v, want nil", *middle)
+	if middle := providerUsageValue(t, result.Events[1].ProviderUsageJSON, "total_token_usage", "total_tokens"); middle == nil || *middle != 0 {
+		t.Fatalf("omitted reported total = %v, want the vector's own zero", middle)
 	}
-	if last := result.Events[2].ProviderDetails.OpenAI.ReportedTotalTokens; last == nil || *last != 55 {
-		t.Fatalf("reported total after missing value = %v, want event delta 55", last)
+	if last := providerUsageValue(t, result.Events[2].ProviderUsageJSON, "total_token_usage", "total_tokens"); last == nil || *last != 250 {
+		t.Fatalf("reported total after missing value = %v, want the cumulative 250", last)
 	}
 	state := parserStateFromResult(t, result, domain.UsageSourceCodexRollout)
 	if state.Codex.Baseline.TotalTokens != 250 {
@@ -244,9 +456,9 @@ func TestParseCodexLastMismatchPrefersLastUsage(t *testing.T) {
 		tokenValue(got.Tokens.UncachedInputTokens) != 30 || tokenValue(got.Tokens.OutputTokens) != 14 {
 		t.Fatalf("mismatched event tokens = %+v, want last_token_usage", got.Tokens)
 	}
-	if details := got.ProviderDetails.OpenAI; details == nil || tokenValue(details.ReasoningOutputTokens) != 2 ||
-		tokenValue(details.ReportedTotalTokens) != 69 {
-		t.Fatalf("mismatched event details = %+v, want last_token_usage", details)
+	if providerUsageTokens(t, got.ProviderUsageJSON, "last_token_usage", "reasoning_output_tokens") != 2 ||
+		providerUsageTokens(t, got.ProviderUsageJSON, "last_token_usage", "total_tokens") != 69 {
+		t.Fatalf("mismatched event usage = %s, want last_token_usage", got.ProviderUsageJSON)
 	}
 	state := parserStateFromResult(t, result, domain.UsageSourceCodexRollout)
 	if state.Codex.Baseline.InputTokens != 160 || state.Codex.Baseline.TotalTokens != 195 {
@@ -359,39 +571,77 @@ func TestDecodeParserStateTreatsWhitespaceOnlyObjectAsFreshState(t *testing.T) {
 	}
 }
 
-func TestDecodeParserStateRetiresPersistedProviderField(t *testing.T) {
+// Break caught: a build before #2928 wrote the harness name — "claude-code",
+// "openai" — into the parser state's "provider" key, and cleared it on decode
+// for exactly that reason. Reusing the key for the billing route would stamp the
+// harness onto every event newly ingested from such a source, marked observed
+// and so beyond every repair path. The route persists under its own key; the
+// retired one is still accepted and still discarded.
+func TestDecodeParserStateIgnoresTheRetiredProviderField(t *testing.T) {
 	tests := []struct {
-		kind domain.UsageSourceKind
-		raw  string
+		kind        domain.UsageSourceKind
+		retired     string
+		current     string
+		wantRoute   string
+		wantPersist string
 	}{
 		{
-			kind: domain.UsageSourceClaudeMain,
-			raw:  `{"version":1,"source_kind":"claude_main","claude":{"model_id":"claude-test","provider":"anthropic"}}`,
+			kind:        domain.UsageSourceClaudeMain,
+			retired:     `{"version":1,"source_kind":"claude_main","claude":{"model_id":"claude-test","provider":"claude-code"}}`,
+			current:     `{"version":1,"source_kind":"claude_main","claude":{"model_id":"claude-test","billing_provider":"anthropic"}}`,
+			wantRoute:   "anthropic",
+			wantPersist: `"billing_provider":"anthropic"`,
 		},
 		{
-			kind: domain.UsageSourceCodexRollout,
-			raw:  `{"version":1,"source_kind":"codex_rollout","codex":{"baseline":{},"provider":"openai","pending_spawn_call_ids":[],"discovered_child_ids":[]}}`,
+			kind:        domain.UsageSourceCodexRollout,
+			retired:     `{"version":1,"source_kind":"codex_rollout","codex":{"baseline":{},"provider":"openai","pending_spawn_call_ids":[],"discovered_child_ids":[]}}`,
+			current:     `{"version":1,"source_kind":"codex_rollout","codex":{"baseline":{},"billing_provider":"openai","pending_spawn_call_ids":[],"discovered_child_ids":[]}}`,
+			wantRoute:   "openai",
+			wantPersist: `"billing_provider":"openai"`,
 		},
 	}
 	for _, test := range tests {
-		state, err := decodeParserState(domain.UsageSourceRecord{Kind: test.kind, ParserStateJSON: test.raw})
+		retired, err := decodeParserState(domain.UsageSourceRecord{Kind: test.kind, ParserStateJSON: test.retired})
 		if err != nil {
 			t.Fatalf("decode %s state with retired provider field: %v", test.kind, err)
+		}
+		if got := persistedRoute(retired); got != "" {
+			t.Fatalf("%s read the retired provider key as a billing route: %q", test.kind, got)
+		}
+		current, err := decodeParserState(domain.UsageSourceRecord{Kind: test.kind, ParserStateJSON: test.current})
+		if err != nil {
+			t.Fatalf("decode %s state: %v", test.kind, err)
+		}
+		if got := persistedRoute(current); got != test.wantRoute {
+			t.Fatalf("%s persisted route = %q, want %q", test.kind, got, test.wantRoute)
 		}
 		parsed := parseRecordsWithState(
 			domain.UsageSourceContext{Source: domain.UsageSourceRecord{Kind: test.kind}},
 			nil,
 			0,
 			time.Unix(1700000000, 0).UTC(),
-			state,
+			current,
 		)
 		if parsed.err != nil {
 			t.Fatalf("encode normalized %s state: %v", test.kind, parsed.err)
 		}
+		if !strings.Contains(parsed.Cursor.ParserStateJSON, test.wantPersist) {
+			t.Fatalf("normalized %s state dropped the route: %s", test.kind, parsed.Cursor.ParserStateJSON)
+		}
 		if strings.Contains(parsed.Cursor.ParserStateJSON, `"provider"`) {
-			t.Fatalf("normalized %s state retained provider: %s", test.kind, parsed.Cursor.ParserStateJSON)
+			t.Fatalf("normalized %s state rewrote the retired key: %s", test.kind, parsed.Cursor.ParserStateJSON)
 		}
 	}
+}
+
+func persistedRoute(state *parserStateEnvelope) string {
+	if state.Claude != nil {
+		return state.Claude.Provider
+	}
+	if state.Codex != nil {
+		return state.Codex.Provider
+	}
+	return ""
 }
 
 func TestDecodeParserStateValidatesV1Integrity(t *testing.T) {
@@ -803,6 +1053,40 @@ func tokenValue(value *int64) int64 {
 	return *value
 }
 
+// providerUsageValue reads one counter back out of a stored bounded provider
+// usage object, so tests assert on exactly what pricing will later read.
+// A missing path returns nil rather than zero.
+func providerUsageValue(t *testing.T, encoded string, path ...string) *int64 {
+	t.Helper()
+	if encoded == "" {
+		return nil
+	}
+	var node any
+	if err := json.Unmarshal([]byte(encoded), &node); err != nil {
+		t.Fatalf("decode provider usage %q: %v", encoded, err)
+	}
+	for _, key := range path {
+		object, ok := node.(map[string]any)
+		if !ok {
+			return nil
+		}
+		if node, ok = object[key]; !ok {
+			return nil
+		}
+	}
+	number, ok := node.(float64)
+	if !ok {
+		return nil
+	}
+	value := int64(number)
+	return &value
+}
+
+func providerUsageTokens(t *testing.T, encoded string, path ...string) int64 {
+	t.Helper()
+	return tokenValue(providerUsageValue(t, encoded, path...))
+}
+
 func osWrite(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
@@ -830,4 +1114,72 @@ func osAppend(path, content string) error {
 	defer func() { _ = file.Close() }()
 	_, err = file.WriteString(content)
 	return err
+}
+
+// Break caught: once usage became a json.RawMessage, an explicit `usage: null`
+// no longer looked absent. It decoded as all-zero counters and produced a
+// synthetic event whose provider object was the literal `null`, which the
+// object-only column constraint rejects — rolling back the chunk without
+// advancing the cursor, so every retry hit the same record and no later usage
+// on that source could ever be collected.
+func TestParseClaudeTreatsNullUsageAsNoUsageWithoutWedgingTheSource(t *testing.T) {
+	source := usageSource(domain.UsageSourceClaudeMain)
+	records := []jsonlRecord{
+		{Offset: 0, Data: []byte(`{"type":"assistant","uuid":"null-usage","timestamp":"2026-07-01T10:00:00Z","message":{"id":"msg-null","model":"claude-x","stop_reason":"end_turn","usage":null}}`)},
+		{Offset: 200, Data: []byte(`{"type":"assistant","uuid":"scalar-usage","timestamp":"2026-07-01T10:00:01Z","message":{"id":"msg-scalar","model":"claude-x","stop_reason":"end_turn","usage":7}}`)},
+		{Offset: 400, Data: []byte(`{"type":"assistant","uuid":"real","timestamp":"2026-07-01T10:00:02Z","message":{"id":"msg-real","model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4}}}`)},
+	}
+
+	result := parseRecords(source, records, 600, time.Unix(1700000000, 0).UTC())
+
+	// A null usage member is skipped exactly like an absent one, a present
+	// non-object member stays a malformed anomaly, and the record after them is
+	// still collected.
+	if len(result.Events) != 1 {
+		t.Fatalf("events = %+v, want only the record carrying real usage", result.Events)
+	}
+	if result.Cursor.AnomalyCount != 1 || result.Cursor.LastErrorCode != domain.UsageErrorMalformedJSONL {
+		t.Fatalf("anomalies = %d (%q), want exactly the scalar usage record",
+			result.Cursor.AnomalyCount, result.Cursor.LastErrorCode)
+	}
+	got := result.Events[0]
+	if got.SourceEventKey == "" || tokenValue(got.Tokens.InputTokens) != 10 || tokenValue(got.Tokens.OutputTokens) != 4 {
+		t.Fatalf("event = %+v, want the real usage record", got)
+	}
+	if got.ProviderUsageJSON == "" || got.ProviderUsageJSON == "null" {
+		t.Fatalf("provider usage = %q, want the emitted object", got.ProviderUsageJSON)
+	}
+	if result.Cursor.ByteOffset != 600 {
+		t.Fatalf("cursor = %d, want the chunk to advance past the unusable records", result.Cursor.ByteOffset)
+	}
+}
+
+// Break caught: `info: null` decoded into an all-zero cumulative vector instead
+// of being ignored. Against an existing baseline that read as a backwards jump,
+// which reset the baseline to zero, so the next real cumulative record was
+// charged from zero and durably double-counted every earlier token.
+func TestParseCodexNullInfoDoesNotResetTheCumulativeBaseline(t *testing.T) {
+	source := usageSource(domain.UsageSourceCodexRollout)
+	records := []jsonlRecord{
+		{Offset: 0, Data: []byte(`{"type":"turn_context","payload":{"model":"gpt-5.6"}}`)},
+		{Offset: 100, Data: codexTokenLine("2026-07-01T10:00:00Z", 100, 60, 0, 20, 5)},
+		{Offset: 200, Data: []byte(`{"timestamp":"2026-07-01T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":null}}`)},
+		{Offset: 300, Data: codexTokenLine("2026-07-01T10:00:02Z", 160, 90, 0, 35, 8)},
+	}
+
+	result := parseRecords(source, records, 400, time.Unix(1700000000, 0).UTC())
+
+	if len(result.Events) != 2 || result.Cursor.AnomalyCount != 0 {
+		t.Fatalf("result = %+v, want two events and no anomaly", result)
+	}
+	// The second event is the delta against the first record's totals. A reset
+	// baseline would charge the full cumulative 160/90/35 again.
+	if got := result.Events[1].Tokens; tokenValue(got.InputTokens) != 60 ||
+		tokenValue(got.CachedInputTokens) != 30 || tokenValue(got.OutputTokens) != 15 {
+		t.Fatalf("delta tokens = %+v, want the baseline preserved across the null record", got)
+	}
+	state := parserStateFromResult(t, result, domain.UsageSourceCodexRollout)
+	if state.Codex.Baseline.InputTokens != 160 {
+		t.Fatalf("baseline = %+v, want the latest cumulative total", state.Codex.Baseline)
+	}
 }

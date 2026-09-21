@@ -1,0 +1,86 @@
+name: Pricing catalog validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - "pricing/**"
+      - "backend/cmd/pricingcatalog/**"
+      - "backend/internal/pricing/**"
+      - ".github/workflows/pricing-catalog-validate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - name: Test catalog tooling
+        run: |
+          set -euo pipefail
+          (cd backend && go test ./cmd/pricingcatalog ./internal/pricing/catalogsync)
+      - name: Validate reviewed catalog
+        run: (cd backend && go run ./cmd/pricingcatalog validate -root ..)
+      - name: Resolve latest LiteLLM catalog revision
+        id: source
+        env:
+          # Unauthenticated api.github.com is 60 requests per hour per IP, and
+          # hosted runners share egress ranges, so without a token this step
+          # fails on someone else's traffic rather than on the change under
+          # review. The sibling sync workflow already calls gh api with one.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          revision="$(gh api repos/BerriAI/litellm/commits/main --jq .sha)"
+          if ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "LiteLLM main did not resolve to a full SHA" >&2
+            exit 1
+          fi
+          curl --fail --location --max-filesize 33554432 \
+            --output "$RUNNER_TEMP/model_prices_and_context_window.json" \
+            "https://raw.githubusercontent.com/BerriAI/litellm/$revision/model_prices_and_context_window.json"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Generate latest catalog preview
+        env:
+          REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          (cd backend && go run ./cmd/pricingcatalog sync -root .. \
+            -source "$RUNNER_TEMP/model_prices_and_context_window.json" \
+            -revision "$REVISION")
+          (cd backend && go run ./cmd/pricingcatalog validate -root ..)
+          {
+            echo "### Pricing catalog preview"
+            echo
+            echo "LiteLLM revision: \`$REVISION\`"
+            echo
+            echo '```text'
+            git status --short -- pricing/catalog/v1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # The generator's own validation cannot see the second supply-chain
+      # boundary. Serve the catalog just generated from the pinned revision,
+      # fetch it with the real runtime fetcher, and install it into a throwaway
+      # cache, so a blob that generates cleanly but cannot be loaded at runtime
+      # fails here rather than on a user's machine.
+      - name: Verify generated catalog through the runtime fetcher and cache
+        env:
+          AO_PRICING_CATALOG_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          (cd backend && go test ./internal/pricing/catalogsync \
+            -run TestGeneratedCatalogLoadsThroughRuntimeFetcherAndCache -count 1)
+      - name: Upload generated catalog preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pricing-catalog-preview-${{ github.event.pull_request.number }}
+          path: pricing/catalog/v1
+          if-no-files-found: error
+          retention-days: 7

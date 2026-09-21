@@ -42,9 +42,17 @@ export function ConfirmDialog({
 	onOpenChange,
 }: ConfirmDialogProps) {
 	const { t } = useTranslation();
+	// Sized for a two-line prompt, not a settings form: the shared settings
+	// frame (575px, 38px footer pills) reads oversized around one question, so
+	// the confirm narrows the dialog and compacts the buttons while keeping the
+	// settings family's colors, borders, and typography.
+	const compactButtonClass = "h-8 rounded-[10px] px-4 text-sm";
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent showCloseButton={false} className={settingsDialogContentClass}>
+			<DialogContent
+				showCloseButton={false}
+				className={cn(settingsDialogContentClass, "w-[min(420px,calc(100vw-24px))]")}
+			>
 				<DialogClose asChild>
 					<button
 						type="button"
@@ -53,35 +61,35 @@ export function ConfirmDialog({
 						aria-label={t("confirm.close")}
 						title={t("confirm.closeEsc")}
 					>
-						<X className="size-5" aria-hidden="true" />
+						<X className="size-4" aria-hidden="true" />
 					</button>
 				</DialogClose>
 
-				<div className={settingsDialogHeaderClass}>
-					<DialogTitle className="settings-dialog-title">{title}</DialogTitle>
+				<div className={cn(settingsDialogHeaderClass, "p-5 pr-12")}>
+					<DialogTitle className="settings-dialog-title text-base">{title}</DialogTitle>
 					<DialogDescription asChild>
-						<div className="text-control leading-4 text-settings-muted">{description}</div>
+						<div className="text-control leading-5 text-settings-muted">{description}</div>
 					</DialogDescription>
 				</div>
 
 				{error ? (
-					<div className={settingsDialogBodyClass}>
+					<div className={cn(settingsDialogBodyClass, "p-5 py-3")}>
 						<p role="alert" className="text-caption leading-4 text-error">
 							{error}
 						</p>
 					</div>
 				) : null}
 
-				<div className={settingsDialogFooterClass}>
+				<div className={cn(settingsDialogFooterClass, "gap-2 p-4")}>
 					<DialogClose asChild>
-						<Button type="button" variant="footer" disabled={busy}>
+						<Button type="button" variant="footer" className={compactButtonClass} disabled={busy}>
 							{t("confirm.cancel")}
 						</Button>
 					</DialogClose>
 					<Button
 						type="button"
 						variant="footer-primary"
-						className={cn(destructive && "bg-danger-strong hover:bg-danger-strong")}
+						className={cn(compactButtonClass, destructive && "bg-danger-strong hover:bg-danger-strong")}
 						disabled={busy}
 						onClick={onConfirm}
 					>

@@ -34,7 +34,7 @@ test("the Reviews tab stays hidden for a session with no reviewable PRs", async 
 	await expect(inspector.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
 });
 
-test("review content stays inside the inspector at its minimum width", async ({ page }) => {
+test("review controls stay aligned and collapse the run action at minimum width", async ({ page }) => {
 	await page.addInitScript(() => {
 		window.localStorage.setItem("ao.inspector.widthPx", "350");
 	});
@@ -52,7 +52,28 @@ test("review content stays inside the inspector at its minimum width", async ({ 
 		reviewerSelect.boundingBox(),
 	]);
 	if (!reviewerLabelBox || !reviewerSelectBox) throw new Error("reviewer controls are not visible");
-	expect(reviewerSelectBox.y).toBeGreaterThanOrEqual(reviewerLabelBox.y + reviewerLabelBox.height);
+	const reviewerLabelCenterY = reviewerLabelBox.y + reviewerLabelBox.height / 2;
+	const reviewerSelectCenterY = reviewerSelectBox.y + reviewerSelectBox.height / 2;
+	expect(Math.abs(reviewerLabelCenterY - reviewerSelectCenterY)).toBeLessThanOrEqual(2);
+
+	const controls = inspector.locator(".review-run-controls-container");
+	const controlsBox = await controls.boundingBox();
+	if (!controlsBox) throw new Error("review controls are not visible");
+	expect(reviewerSelectBox.width).toBeLessThan(controlsBox.width / 2);
+
+	const triggerLabel = inspector.getByText("Trigger review", { exact: true });
+	const runButton = inspector.getByRole("button", { name: "Re-run review" });
+	const [triggerLabelBox, runButtonBox] = await Promise.all([
+		triggerLabel.boundingBox(),
+		runButton.boundingBox(),
+	]);
+	if (!triggerLabelBox || !runButtonBox) throw new Error("review trigger controls are not visible");
+	const triggerLabelCenterY = triggerLabelBox.y + triggerLabelBox.height / 2;
+	const runButtonCenterY = runButtonBox.y + runButtonBox.height / 2;
+	expect(Math.abs(triggerLabelCenterY - runButtonCenterY)).toBeLessThanOrEqual(2);
+	await expect(runButton.locator(".review-run-action-label")).toBeHidden();
+	await runButton.hover();
+	await expect(page.getByRole("tooltip", { name: "Re-run review" })).toBeVisible();
 
 	const prRow = inspector.getByTestId("review-pr-row");
 	await expect(prRow).toHaveAttribute("aria-expanded", "false");

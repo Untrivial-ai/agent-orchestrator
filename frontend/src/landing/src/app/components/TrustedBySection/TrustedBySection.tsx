@@ -41,6 +41,8 @@ function AgentMark({ agent }: { agent: Agent }) {
       title={agent.name}
       className="h-8 w-8 shrink-0 object-contain"
       draggable="false"
+      loading="lazy"
+      decoding="async"
     />
   );
 }
@@ -66,7 +68,10 @@ function AgentGroup({ duplicate = false }: { duplicate?: boolean }) {
 
 export function TrustedBySection() {
   return (
-    <section className="py-16 sm:py-24 bg-background overflow-hidden">
+    <section
+      id="agents"
+      className="py-16 sm:py-24 bg-background overflow-hidden"
+    >
       <div className="max-w-7xl mx-auto text-center">
         <h2 className="mx-auto mb-12 max-w-3xl select-none px-4 text-3xl font-semibold text-foreground sm:px-8 sm:text-4xl lg:max-w-none lg:px-[30px] lg:text-5xl">
           Use the agents you already trust.

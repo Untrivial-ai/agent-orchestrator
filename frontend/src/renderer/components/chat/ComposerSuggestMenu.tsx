@@ -12,7 +12,7 @@
  * rather than a focus move).
  */
 
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDownUp, CornerDownLeft } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { composerFileIcon } from "./composerFileIcon";
@@ -38,6 +38,7 @@ export function ComposerSuggestMenu({
 	const list = useRef<HTMLUListElement>(null);
 	const lastScrollTop = useRef(0);
 	const scrollDirection = useRef<"up" | "down" | null>(null);
+	const previousHighlighted = useRef(highlighted);
 	const [scrollIndicators, setScrollIndicators] = useState({
 		top: false,
 		bottom: true,
@@ -66,12 +67,19 @@ export function ComposerSuggestMenu({
 
 	// Keep the highlighted row visible when it moves by keyboard past the edge of
 	// the scroll area.
-	useLayoutEffect(() => {
+	useEffect(() => {
+		const previous = previousHighlighted.current;
+		previousHighlighted.current = highlighted;
+		// Index zero is visible whenever the menu opens or its results re-rank.
+		// Calling scrollIntoView for it forced a synchronous layout on every typed
+		// character, which made `/` and `@` suggestions hitch the composer. It
+		// still needs a scroll when filtering reset a keyboard selection to zero.
+		if (highlighted === 0 && previous === 0 && (list.current?.scrollTop ?? 0) <= 1) return;
 		const row = list.current?.querySelector<HTMLElement>(`[data-index="${highlighted}"]`);
 		row?.scrollIntoView({ block: "nearest" });
 	}, [highlighted, items]);
 
-	useLayoutEffect(() => {
+	useEffect(() => {
 		const node = list.current;
 		scrollDirection.current = null;
 		lastScrollTop.current = node?.scrollTop ?? 0;

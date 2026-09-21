@@ -127,6 +127,47 @@ type kimiAuthConfig struct {
 	Providers map[string]kimiCredentialSource `json:"providers" toml:"providers"`
 }
 
+func kimiConfigOAuthCredentialPaths(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return nil, nil
+	}
+	var config kimiAuthConfig
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		err = json.Unmarshal(data, &config)
+	} else {
+		err = toml.Unmarshal(data, &config)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	paths := make([]string, 0, len(config.Providers))
+	seen := make(map[string]struct{}, len(config.Providers))
+	for _, provider := range config.Providers {
+		if provider.OAuth == nil {
+			continue
+		}
+		credentialPath := kimiOAuthCredentialPath(filepath.Dir(path), provider.OAuth.Key)
+		if credentialPath == "" {
+			continue
+		}
+		clean := filepath.Clean(credentialPath)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		paths = append(paths, clean)
+	}
+	return paths, nil
+}
+
 func kimiConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {

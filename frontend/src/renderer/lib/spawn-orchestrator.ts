@@ -1,4 +1,4 @@
-import { apiClient, apiErrorCode, apiErrorMessage, apiErrorRequestId } from "./api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId } from "./api-client";
 import type { OrchestratorSpawnSource } from "./orchestrator-spawn-sources";
 import { captureRendererEvent } from "./telemetry";
 import type { SessionMode } from "../types/conversation";
@@ -24,6 +24,7 @@ export class OrchestratorSpawnError extends Error {
 		readonly code?: string,
 		readonly requestId?: string,
 		readonly status?: number,
+		readonly details?: Record<string, unknown>,
 	) {
 		super(message);
 		this.name = "OrchestratorSpawnError";
@@ -32,6 +33,17 @@ export class OrchestratorSpawnError extends Error {
 
 export function isChatPreflightCode(code?: string): boolean {
 	return Boolean(code && CHAT_PREFLIGHT_CODES.has(code));
+}
+
+/** True when the daemon refused Chat only for the missing approvals channel
+ *  and allows retrying without approvals. Mirrors the worker fallback. */
+export function canBypassOrchestratorApprovals(code?: string, details?: Record<string, unknown>): boolean {
+	if (code !== "SESSION_MODE_UNSUPPORTED" || !details) return false;
+	const has = (key: string, value: string) => {
+		const entry = details[key];
+		return entry === value || (Array.isArray(entry) && entry.includes(value));
+	};
+	return has("missingCapabilities", "approvals") && has("allowedApprovalModes", "bypass-permissions");
 }
 
 export function isChatPreflightError(error: unknown): error is OrchestratorSpawnError {
@@ -46,11 +58,12 @@ export async function spawnOrchestrator(
 	source: OrchestratorSpawnSource,
 	clean = false,
 	mode?: SessionMode,
+	approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions",
 ): Promise<string> {
 	void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", { project_id: projectId, source });
 	try {
 		const { data, error, response } = await apiClient.POST("/api/v1/orchestrators", {
-			body: { projectId, clean, ...(mode ? { mode } : {}) },
+			body: { projectId, clean, ...(mode ? { mode } : {}), ...(approvalMode ? { approvalMode } : {}) },
 		});
 
 		if (error || !data?.orchestrator?.id) {
@@ -62,6 +75,7 @@ export async function spawnOrchestrator(
 				apiErrorCode(error),
 				apiErrorRequestId(error),
 				response.status,
+				apiErrorDetails(error),
 			);
 		}
 

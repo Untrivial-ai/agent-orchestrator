@@ -10,6 +10,7 @@ describe("runThemeTransition", () => {
 		Reflect.deleteProperty(document, "startViewTransition");
 		delete document.documentElement.dataset.theme;
 		delete document.documentElement.dataset.styleTheme;
+		delete document.documentElement.dataset.themeTransition;
 		document.documentElement.style.colorScheme = "";
 	});
 
@@ -50,6 +51,20 @@ describe("runThemeTransition", () => {
 		expect(startViewTransition).toHaveBeenCalledOnce();
 		expect(update).toHaveBeenCalledOnce();
 		expect(document.documentElement.dataset.styleTheme).toBe("github");
+		expect(document.documentElement.dataset.themeTransition).toBe("active");
+	});
+
+	it("suppresses per-element transitions while the theme tokens swap", async () => {
+		Reflect.deleteProperty(document, "startViewTransition");
+		const update = vi.fn(() => {
+			applyDocumentTheme("dark");
+		});
+
+		runThemeTransition(update);
+
+		expect(document.documentElement.dataset.themeTransition).toBe("active");
+		await new Promise((resolve) => requestAnimationFrame(resolve));
+		expect(document.documentElement.dataset.themeTransition).toBeUndefined();
 	});
 });
 

@@ -15,6 +15,7 @@ Ask only when the request does not make the desired data source clear.
 - Use **real-data mode** only when the user explicitly asks to see this machine's actual AO projects or sessions. Start the checkout's dev daemon on the isolated dev port/run file while pointing `AO_DATA_DIR` at the real AO data directory. This is a separate daemon process using real data; do not describe it as the installed app's daemon.
 - Never try to attach an unpackaged Electron app directly to a packaged daemon from another checkout. The supervisor intentionally rejects daemon identity mismatches.
 - Warn before actions in real-data mode that create, terminate, rename, or otherwise mutate sessions. Merely opening and inspecting the UI is expected.
+- Real-data mode reads the same database as the installed app, so both windows show the same projects and sessions. Quit the packaged app first where possible: two daemons sharing one SQLite database can cross-talk, and acting on the wrong window runs unmerged code against real sessions. The dev window is marked with an `Agent Orchestrator (dev)` title, the default Electron dock icon, and an in-app `dev` badge — verify those markers before acting.
 
 ## Preflight
 
@@ -127,7 +128,21 @@ Once one PR merges, prefer rebasing the remaining PR onto current `main`; the no
 - `ao preview` controls the AO Browser panel; it does not launch the desktop shell.
 - `npm run dev:web` is useful for browser-only renderer work but does not provide Electron APIs or native chrome.
 - Renderer URLs can move from `5173` when a port is occupied. Trust Forge's printed URL rather than assuming one.
-- Multiple dev instances share `~/.ao/dev/electron`; avoid running them concurrently because Chromium profile state can collide.
+- Multiple dev instances share `~/.ao/dev/electron` by default, and Chromium's
+  singleton lock lives in the profile, so a second checkout's `npm run dev`
+  loses `requestSingleInstanceLock()` and exits immediately with code 0. To run
+  two worktrees at once, give each its own profile, run file, and data dir:
+
+  ```bash
+  env -u AO_PORT \
+    AO_DEV_ELECTRON_DIR="$HOME/.ao/dev/<name>/electron" \
+    AO_RUN_FILE="$HOME/.ao/dev/<name>/running.json" \
+    AO_DATA_DIR="$HOME/.ao/dev/<name>/data" \
+    npm run dev
+  ```
+
+  Without all three the instances still collide, on the profile lock, the run
+  file, or the daemon's SQLite data.
 - An inherited `AO_DATA_DIR` changes dev mode from isolated data to real data. Always choose and report the mode instead of inheriting it accidentally.
 - Repeated `/healthz/` 404 entries from external probes can be noisy; readiness is determined by Electron's daemon status and successful API traffic, not by log volume.
 

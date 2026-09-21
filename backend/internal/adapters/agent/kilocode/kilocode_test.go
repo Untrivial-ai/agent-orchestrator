@@ -23,6 +23,24 @@ func TestManifestIDIsKilocode(t *testing.T) {
 	}
 }
 
+func TestResolveKilocodeBinaryFindsOfficialKiloCommand(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kilo")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("HOME", t.TempDir())
+
+	got, err := ResolveKilocodeBinary(context.Background())
+	if err != nil {
+		t.Fatalf("ResolveKilocodeBinary: %v", err)
+	}
+	if got != path {
+		t.Fatalf("ResolveKilocodeBinary = %q, want %q", got, path)
+	}
+}
+
 func TestGetLaunchCommandBuildsArgv(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "kilocode"}
 

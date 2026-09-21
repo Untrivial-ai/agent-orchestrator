@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   encryptionAvailable: true,
   selectedStorageBackend: "gnome_libsecret",
   getAuthorizationUrlWithPKCE: vi.fn(),
+  ipcHandle: vi.fn(),
+  notifyRenderers: vi.fn(),
   openExternal: vi.fn(),
   showMessageBox: vi.fn(),
 }));
@@ -35,9 +37,12 @@ vi.mock("@workos-inc/node", () => ({
 vi.mock("electron", () => ({
   app: {
     setAsDefaultProtocolClient: vi.fn(),
+    // These tests exercise the packaged deep-link (ao-app://) sign-in flow;
+    // unpackaged builds default to a loopback redirect instead.
+    isPackaged: true,
   },
   dialog: { showMessageBox: mocks.showMessageBox },
-  ipcMain: { handle: vi.fn() },
+  ipcMain: { handle: mocks.ipcHandle },
   safeStorage: {
     decryptString: mocks.decryptString,
     encryptString: mocks.encryptString,
@@ -49,8 +54,10 @@ vi.mock("electron", () => ({
 
 import {
   beginCloudSignIn,
+  getCloudAccessToken,
   getCloudSession,
   handleCloudDeepLink,
+  installCloudIPC,
   showCloudSignInFailure,
   signOutCloud,
 } from "./cloud-auth";
@@ -63,6 +70,7 @@ describe("native WorkOS authentication", () => {
     mocks.encryptionAvailable = true;
     mocks.selectedStorageBackend = "gnome_libsecret";
     dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-cloud-auth-"));
+    installCloudIPC(() => dataDir, mocks.notifyRenderers);
     mocks.getAuthorizationUrlWithPKCE.mockResolvedValue({
       url: "https://workos.example/authorize",
       state: "state_123",
@@ -117,6 +125,20 @@ describe("native WorkOS authentication", () => {
     await expect(getCloudSession(dataDir)).resolves.toMatchObject({
       user: { email: "person@example.com" },
     });
+  });
+
+  it("requires an AO Cloud session before starting provider login", async () => {
+    const handler = mocks.ipcHandle.mock.calls.find(
+      ([channel]) => channel === "cloud:connectProviderAuth",
+    )?.[1] as ((event: unknown, input: unknown) => Promise<void>) | undefined;
+    expect(handler).toBeTypeOf("function");
+    await expect(
+      handler?.({}, {
+        baseUrl: "https://cloud.example",
+        orgId: "org-123",
+        provider: "codex",
+      }),
+    ).rejects.toThrow("Sign in to AO Cloud before connecting a provider.");
   });
 
   it("rejects callbacks whose OAuth state does not match", async () => {
@@ -255,6 +277,19 @@ describe("native WorkOS authentication", () => {
     await expect(getCloudSession(dataDir)).resolves.toBeNull();
     await expect(getCloudSession(dataDir)).resolves.toBeNull();
     expect(mocks.authenticateWithRefreshToken).toHaveBeenCalledOnce();
+    expect(mocks.notifyRenderers).toHaveBeenCalledWith(null);
+  });
+
+  it("publishes signed-out state when a token request finds the auth store missing", async () => {
+    await beginCloudSignIn(dataDir);
+    await handleCloudDeepLink(
+      "ao-app://callback?code=code_123&state=state_123",
+      dataDir,
+    );
+    await rm(path.join(dataDir, "cloud-auth.bin"), { force: true });
+
+    await expect(getCloudAccessToken(dataDir)).resolves.toBeNull();
+    expect(mocks.notifyRenderers).toHaveBeenCalledWith(null);
   });
 
   it("preserves encrypted credentials after a retryable refresh failure", async () => {

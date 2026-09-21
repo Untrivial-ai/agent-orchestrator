@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -13,10 +14,9 @@ import (
 
 // ---- sessions ----
 
-// CreateSession assigns the per-project identity ("{project}-{num}") and inserts
-// the record, returning it with ID populated. The next-num read and the insert
-// run on the writer connection under writeMu, so two concurrent creates in the
-// same project can't collide on num.
+// CreateSession assigns a per-project identity or a global standalone identity
+// and inserts the record. The next-num read and insert share writeMu, so two
+// concurrent creates cannot collide.
 func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -47,11 +47,29 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 		}
 	}
 
-	num, err := s.qw.NextSessionNum(ctx, rec.ProjectID)
+	var num int64
+	var err error
+	prefix := string(rec.ProjectID)
+	if rec.ProjectID == "" {
+		num, err = s.qw.NextStandaloneSessionNum(ctx)
+		prefix = "standalone"
+	} else {
+		num, err = s.qw.NextSessionNum(ctx, optionalProjectID(rec.ProjectID))
+	}
 	if err != nil {
 		return domain.SessionRecord{}, false, fmt.Errorf("next session num for %s: %w", rec.ProjectID, err)
 	}
-	rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", rec.ProjectID, num))
+	for {
+		rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, num))
+		exists, err := s.qw.SessionIDExists(ctx, rec.ID)
+		if err != nil {
+			return domain.SessionRecord{}, false, fmt.Errorf("check session id %s: %w", rec.ID, err)
+		}
+		if !exists {
+			break
+		}
+		num++
+	}
 	if err := s.qw.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
 		if rec.AutomationRunID != nil {
 			existing, reloadErr := s.qw.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
@@ -72,27 +90,85 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
 }
 
+// UpdateSessionModel changes only the selected model, leaving concurrent
+// lifecycle and controller ownership updates intact.
+func (s *Store) UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateSessionModel(ctx, gen.UpdateSessionModelParams{
+		ID:    id,
+		Model: model,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update session model for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// UpdateBrowserCapabilityVerifier rotates only the verifier when the caller's
+// controller-owner snapshot is still current. It deliberately leaves every
+// other mutable session field, including user-visible recency, untouched.
+func (s *Store) UpdateBrowserCapabilityVerifier(
+	ctx context.Context,
+	id domain.SessionID,
+	expected domain.SessionControllerOwner,
+	verifier string,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateBrowserCapabilityVerifier(ctx, gen.UpdateBrowserCapabilityVerifierParams{
+		BrowserCapabilityVerifier:      verifier,
+		ID:                             id,
+		ExpectedHarness:                expected.Harness,
+		ExpectedSessionMode:            domain.NormalizeSessionMode(expected.Mode),
+		ExpectedIsTerminated:           expected.IsTerminated,
+		ExpectedRuntimeLaunchID:        expected.RuntimeLaunchID,
+		ExpectedAgentSessionID:         expected.AgentSessionID,
+		ExpectedAgentSessionIDLaunchID: expected.AgentSessionIDLaunchID,
+		ExpectedProviderConversationID: expected.ProviderConversationID,
+		ExpectedControllerGeneration:   expected.ControllerGeneration,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update browser capability verifier for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateSessionFromActivitySignal projects activity-derived session metadata
 // only when the signal still belongs to the session's active harness launch.
-func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.SessionRecord) (bool, error) {
+func (s *Store) UpdateSessionFromActivitySignal(
+	ctx context.Context,
+	rec domain.SessionRecord,
+	expectedRevision int64,
+) (bool, error) {
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.UpdateSessionFromActivitySignal(ctx, gen.UpdateSessionFromActivitySignalParams{
-		ActivityState:                activity.State,
-		ActivityLastAt:               activity.LastActivityAt,
-		FirstSignalAt:                timeToNullTime(rec.FirstSignalAt),
-		AgentSessionID:               rec.Metadata.AgentSessionID,
-		AgentSessionIDLaunchID:       rec.Metadata.AgentSessionIDLaunchID,
-		LatestUserPrompt:             rec.Metadata.LatestUserPrompt,
-		LatestAssistantUpdate:        rec.Metadata.LatestAssistantUpdate,
-		NativeTranscriptPath:         rec.Metadata.NativeTranscriptPath,
-		UpdatedAt:                    rec.UpdatedAt,
-		ID:                           rec.ID,
-		ExpectedHarness:              rec.Harness,
-		ExpectedSessionMode:          domain.NormalizeSessionMode(rec.Mode),
-		ExpectedRuntimeLaunchID:      rec.Metadata.RuntimeLaunchID,
-		ExpectedControllerGeneration: rec.Metadata.ControllerGeneration,
+		ActivityState:                    activity.State,
+		ActivityLastAt:                   activity.LastActivityAt,
+		FirstSignalAt:                    timeToNullTime(rec.FirstSignalAt),
+		AgentSessionID:                   rec.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID:           rec.Metadata.AgentSessionIDLaunchID,
+		NativeIdentityObservedAt:         timeToNullTime(rec.Metadata.NativeIdentityObservedAt),
+		LatestUserPrompt:                 rec.Metadata.LatestUserPrompt,
+		LatestUserPromptAt:               timeToNullTime(rec.Metadata.LatestUserPromptAt),
+		LatestAssistantUpdate:            rec.Metadata.LatestAssistantUpdate,
+		LatestAssistantUpdateAt:          timeToNullTime(rec.Metadata.LatestAssistantUpdateAt),
+		ConversationCheckpointState:      normalizedConversationCheckpointState(rec.Metadata),
+		ConversationCheckpointGeneration: rec.Metadata.ConversationCheckpointGeneration,
+		ConversationCheckpointNativeID:   rec.Metadata.ConversationCheckpointNativeID,
+		ConversationCheckpointTurnID:     rec.Metadata.ConversationCheckpointTurnID,
+		NativeCheckpointEvidence:         rec.Metadata.NativeCheckpointEvidence,
+		ConversationCheckpointUnsettled:  rec.Metadata.ConversationCheckpointUnsettled,
+		NativeTranscriptPath:             rec.Metadata.NativeTranscriptPath,
+		UpdatedAt:                        rec.UpdatedAt,
+		ID:                               rec.ID,
+		ExpectedRevision:                 expectedRevision,
+		ExpectedHarness:                  rec.Harness,
+		ExpectedSessionMode:              domain.NormalizeSessionMode(rec.Mode),
+		ExpectedRuntimeLaunchID:          rec.Metadata.RuntimeLaunchID,
+		ExpectedControllerGeneration:     rec.Metadata.ControllerGeneration,
 	})
 	if err != nil {
 		return false, fmt.Errorf("update session %s from activity signal: %w", rec.ID, err)
@@ -100,14 +176,17 @@ func (s *Store) UpdateSessionFromActivitySignal(ctx context.Context, rec domain.
 	return rows > 0, nil
 }
 
-// RecordSessionLatestUserPrompt persists the latest real user direction without
-// rewriting lifecycle state that another goroutine may have advanced.
+// RecordSessionLatestUserPrompt persists pane-delivered user direction without
+// rewriting lifecycle ownership. Because the provider hook may be lost, the
+// same atomic write clears any prior assistant pairing and trusted checkpoint
+// provenance. An unresolved Stop boundary remains until a canonical main-turn
+// hook supplies the missing boundary evidence.
 func (s *Store) RecordSessionLatestUserPrompt(ctx context.Context, id domain.SessionID, prompt string, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.RecordSessionLatestUserPrompt(ctx, gen.RecordSessionLatestUserPromptParams{
 		LatestUserPrompt: prompt,
-		UpdatedAt:        updatedAt,
+		UpdatedAt:        timeToNullTime(updatedAt),
 		ID:               id,
 	})
 	if err != nil {
@@ -123,13 +202,11 @@ func (s *Store) ClaimChatControllerGeneration(
 	ctx context.Context,
 	id domain.SessionID,
 	generation string,
-	updatedAt time.Time,
 ) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.ClaimChatControllerGeneration(ctx, gen.ClaimChatControllerGenerationParams{
 		ControllerGeneration: generation,
-		UpdatedAt:            updatedAt,
 		ID:                   id,
 	})
 	if err != nil {
@@ -224,33 +301,62 @@ func (s *Store) SetSessionAutoInjectReview(ctx context.Context, id domain.Sessio
 	return rows > 0, nil
 }
 
-// SetSessionAutoInjectCI persists the default CI-failure injection policy that
-// newly created PRs snapshot. Existing PR rows retain their original value.
+// SetSessionAutoInjectCI persists the CI-failure injection policy for the
+// session and every PR currently owned by it. Future PRs still inherit this
+// value from the session row when first observed.
 func (s *Store) SetSessionAutoInjectCI(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.SetSessionAutoInjectCI(ctx, gen.SetSessionAutoInjectCIParams{
-		ID:           id,
-		AutoInjectCI: autoInject,
-		UpdatedAt:    updatedAt,
+	var updated bool
+	err := s.inTx(ctx, fmt.Sprintf("set auto-inject CI for session %s", id), func(q *gen.Queries) error {
+		rows, err := q.SetSessionAutoInjectCI(ctx, gen.SetSessionAutoInjectCIParams{
+			ID:           id,
+			AutoInjectCI: autoInject,
+			UpdatedAt:    updatedAt,
+		})
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return nil
+		}
+		updated = true
+		if err := q.SetPRAutoInjectCIBySession(ctx, gen.SetPRAutoInjectCIBySessionParams{
+			AutoInjectCI: autoInject,
+			SessionID:    id,
+		}); err != nil {
+			return err
+		}
+		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("set auto-inject CI for session %s: %w", id, err)
+		return false, err
 	}
-	return rows > 0, nil
+	return updated, nil
 }
 
-// SetSessionReviewerHarness persists the reviewer preference for one session.
-func (s *Store) SetSessionReviewerHarness(ctx context.Context, id domain.SessionID, harness domain.ReviewerHarness, updatedAt time.Time) (bool, error) {
+// SetSessionReviewerConfig persists the reviewer preference for one session.
+func (s *Store) SetSessionReviewerConfig(
+	ctx context.Context,
+	id domain.SessionID,
+	harness domain.ReviewerHarness,
+	config domain.AgentConfig,
+	updatedAt time.Time,
+) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.SetSessionReviewerHarness(ctx, gen.SetSessionReviewerHarnessParams{
-		ReviewerHarness: harness,
-		UpdatedAt:       updatedAt,
-		ID:              id,
+	encoded, err := marshalAgentConfig(config)
+	if err != nil {
+		return false, fmt.Errorf("set reviewer config for %s: %w", id, err)
+	}
+	rows, err := s.qw.SetSessionReviewerConfig(ctx, gen.SetSessionReviewerConfigParams{
+		ReviewerHarness:     harness,
+		ReviewerAgentConfig: encoded,
+		UpdatedAt:           updatedAt,
+		ID:                  id,
 	})
 	if err != nil {
-		return false, fmt.Errorf("set reviewer harness for %s: %w", id, err)
+		return false, fmt.Errorf("set reviewer config for %s: %w", id, err)
 	}
 	return rows > 0, nil
 }
@@ -332,6 +438,7 @@ WHERE id = ?
   AND agent_session_id = ''
   AND prompt = ''
   AND latest_user_prompt = ''
+  AND latest_user_prompt_at IS NULL
   AND latest_assistant_update = ''
   AND native_transcript_path = ''`, id)
 	if err != nil {
@@ -374,7 +481,7 @@ func (s *Store) GetSessionByAutomationRunID(ctx context.Context, id domain.Autom
 
 // ListSessions returns every session in a project, ordered by num.
 func (s *Store) ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error) {
-	rows, err := s.qr.ListSessionsByProject(ctx, project)
+	rows, err := s.qr.ListSessionsByProject(ctx, optionalProjectID(project))
 	if err != nil {
 		return nil, fmt.Errorf("list sessions for %s: %w", project, err)
 	}
@@ -408,14 +515,16 @@ func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecor
 
 func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return domain.SessionRecord{
+		Revision:                  row.Revision,
 		ID:                        row.ID,
-		ProjectID:                 row.ProjectID,
+		ProjectID:                 projectIDValue(row.ProjectID),
 		AutomationRunID:           row.AutomationRunID,
 		AutomationLaunchCompleted: row.AutomationLaunchCompleted,
 		IssueID:                   row.IssueID,
 		Kind:                      row.Kind,
 		Harness:                   row.Harness,
 		ReviewerHarness:           row.ReviewerHarness,
+		ReviewerConfig:            unmarshalAgentConfig(row.ReviewerAgentConfig),
 		AutoReviewEnabled:         row.AutoReviewEnabled,
 		DisplayName:               row.DisplayName,
 		Mode:                      domain.NormalizeSessionMode(row.SessionMode),
@@ -431,25 +540,35 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutoInjectReview:   row.AutoInjectReview,
 		AutoInjectCI:       row.AutoInjectCI,
 		Metadata: domain.SessionMetadata{
-			Branch:                    row.Branch,
-			WorkspacePath:             row.WorkspacePath,
-			WorkspaceRepoPath:         row.WorkspaceRepoPath,
-			DiffBaseSHA:               row.DiffBaseSha,
-			DiffBaseRef:               row.DiffBaseRef,
-			RuntimeHandleID:           row.RuntimeHandleID,
-			RuntimeLaunchID:           row.RuntimeLaunchID,
-			AgentSessionID:            row.AgentSessionID,
-			AgentSessionIDLaunchID:    row.AgentSessionIDLaunchID,
-			Prompt:                    row.Prompt,
-			LatestUserPrompt:          row.LatestUserPrompt,
-			LatestAssistantUpdate:     row.LatestAssistantUpdate,
-			NativeTranscriptPath:      row.NativeTranscriptPath,
-			PreviewURL:                row.PreviewURL,
-			PreviewRevision:           row.PreviewRevision,
-			BrowserCapabilityVerifier: row.BrowserCapabilityVerifier,
-			ProviderConversationID:    row.ProviderConversationID,
-			ControllerGeneration:      row.ControllerGeneration,
-			Model:                     row.Model,
+			Branch:                           row.Branch,
+			WorkspacePath:                    row.WorkspacePath,
+			WorkspaceRepoPath:                row.WorkspaceRepoPath,
+			DiffBaseSHA:                      row.DiffBaseSha,
+			DiffBaseRef:                      row.DiffBaseRef,
+			RuntimeHandleID:                  row.RuntimeHandleID,
+			RuntimeLaunchID:                  row.RuntimeLaunchID,
+			AgentSessionID:                   row.AgentSessionID,
+			AgentSessionIDLaunchID:           row.AgentSessionIDLaunchID,
+			NativeIdentityObservedAt:         nullTimeToTime(row.NativeIdentityObservedAt),
+			Prompt:                           row.Prompt,
+			LatestUserPrompt:                 row.LatestUserPrompt,
+			LatestUserPromptAt:               nullTimeToTime(row.LatestUserPromptAt),
+			LatestAssistantUpdate:            row.LatestAssistantUpdate,
+			LatestAssistantUpdateAt:          nullTimeToTime(row.LatestAssistantUpdateAt),
+			ConversationCheckpointState:      row.ConversationCheckpointState,
+			ConversationCheckpointGeneration: row.ConversationCheckpointGeneration,
+			ConversationCheckpointNativeID:   row.ConversationCheckpointNativeID,
+			ConversationCheckpointTurnID:     row.ConversationCheckpointTurnID,
+			NativeCheckpointEvidence:         row.NativeCheckpointEvidence,
+			ConversationCheckpointUnsettled:  row.ConversationCheckpointUnsettled,
+			NativeTranscriptPath:             row.NativeTranscriptPath,
+			PreviewURL:                       row.PreviewURL,
+			PreviewRevision:                  row.PreviewRevision,
+			BrowserCapabilityVerifier:        row.BrowserCapabilityVerifier,
+			ProviderConversationID:           row.ProviderConversationID,
+			ControllerGeneration:             row.ControllerGeneration,
+			Model:                            row.Model,
+			Permissions:                      domain.PermissionMode(row.SessionPermissions),
 		},
 		CleanupGeneration: row.CleanupGeneration,
 		CreatedAt:         row.CreatedAt,
@@ -472,94 +591,157 @@ func listAllSessionsRowToRecord(row gen.ListAllSessionsRow) domain.SessionRecord
 func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams {
 	activity := normalActivity(rec.Activity, rec.CreatedAt)
 	return gen.InsertSessionParams{
-		ID:                        rec.ID,
-		ProjectID:                 rec.ProjectID,
-		Num:                       num,
-		IssueID:                   rec.IssueID,
-		Kind:                      rec.Kind,
-		Harness:                   rec.Harness,
-		ReviewerHarness:           rec.ReviewerHarness,
-		AutoReviewEnabled:         rec.AutoReviewEnabled,
-		DisplayName:               rec.DisplayName,
-		ActivityState:             activity.State,
-		ActivityLastAt:            activity.LastActivityAt,
-		FirstSignalAt:             timeToNullTime(rec.FirstSignalAt),
-		IsTerminated:              rec.IsTerminated,
-		IsPinned:                  rec.IsPinned,
-		PinnedAt:                  timePtrToNullTime(rec.PinnedAt),
-		Branch:                    rec.Metadata.Branch,
-		WorkspacePath:             rec.Metadata.WorkspacePath,
-		WorkspaceRepoPath:         rec.Metadata.WorkspaceRepoPath,
-		DiffBaseSha:               rec.Metadata.DiffBaseSHA,
-		DiffBaseRef:               rec.Metadata.DiffBaseRef,
-		RuntimeHandleID:           rec.Metadata.RuntimeHandleID,
-		RuntimeLaunchID:           rec.Metadata.RuntimeLaunchID,
-		AgentSessionID:            rec.Metadata.AgentSessionID,
-		AgentSessionIDLaunchID:    rec.Metadata.AgentSessionIDLaunchID,
-		Prompt:                    rec.Metadata.Prompt,
-		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
-		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
-		NativeTranscriptPath:      rec.Metadata.NativeTranscriptPath,
-		PreviewURL:                rec.Metadata.PreviewURL,
-		PreviewRevision:           rec.Metadata.PreviewRevision,
-		TerminateOnPRMerge:        rec.TerminateOnPRMerge,
-		AutoInjectReview:          rec.AutoInjectReview,
-		AutoInjectCI:              rec.AutoInjectCI,
-		CleanupGeneration:         rec.CleanupGeneration,
-		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
-		SessionMode:               domain.NormalizeSessionMode(rec.Mode),
-		ProviderConversationID:    rec.Metadata.ProviderConversationID,
-		ControllerGeneration:      rec.Metadata.ControllerGeneration,
-		Model:                     rec.Metadata.Model,
-		CreatedAt:                 rec.CreatedAt,
-		UpdatedAt:                 rec.UpdatedAt,
-		AutomationRunID:           rec.AutomationRunID,
-		AutomationLaunchCompleted: rec.AutomationLaunchCompleted,
+		ID:                               rec.ID,
+		ProjectID:                        optionalProjectID(rec.ProjectID),
+		Num:                              num,
+		IssueID:                          rec.IssueID,
+		Kind:                             rec.Kind,
+		Harness:                          rec.Harness,
+		ReviewerHarness:                  rec.ReviewerHarness,
+		ReviewerAgentConfig:              mustMarshalAgentConfig(rec.ReviewerConfig),
+		AutoReviewEnabled:                rec.AutoReviewEnabled,
+		DisplayName:                      rec.DisplayName,
+		ActivityState:                    activity.State,
+		ActivityLastAt:                   activity.LastActivityAt,
+		FirstSignalAt:                    timeToNullTime(rec.FirstSignalAt),
+		IsTerminated:                     rec.IsTerminated,
+		IsPinned:                         rec.IsPinned,
+		PinnedAt:                         timePtrToNullTime(rec.PinnedAt),
+		Branch:                           rec.Metadata.Branch,
+		WorkspacePath:                    rec.Metadata.WorkspacePath,
+		WorkspaceRepoPath:                rec.Metadata.WorkspaceRepoPath,
+		DiffBaseSha:                      rec.Metadata.DiffBaseSHA,
+		DiffBaseRef:                      rec.Metadata.DiffBaseRef,
+		RuntimeHandleID:                  rec.Metadata.RuntimeHandleID,
+		RuntimeLaunchID:                  rec.Metadata.RuntimeLaunchID,
+		AgentSessionID:                   rec.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID:           rec.Metadata.AgentSessionIDLaunchID,
+		NativeIdentityObservedAt:         timeToNullTime(rec.Metadata.NativeIdentityObservedAt),
+		Prompt:                           rec.Metadata.Prompt,
+		LatestUserPrompt:                 rec.Metadata.LatestUserPrompt,
+		LatestUserPromptAt:               timeToNullTime(rec.Metadata.LatestUserPromptAt),
+		LatestAssistantUpdate:            rec.Metadata.LatestAssistantUpdate,
+		LatestAssistantUpdateAt:          timeToNullTime(rec.Metadata.LatestAssistantUpdateAt),
+		ConversationCheckpointState:      normalizedConversationCheckpointState(rec.Metadata),
+		ConversationCheckpointGeneration: rec.Metadata.ConversationCheckpointGeneration,
+		ConversationCheckpointNativeID:   rec.Metadata.ConversationCheckpointNativeID,
+		ConversationCheckpointTurnID:     rec.Metadata.ConversationCheckpointTurnID,
+		NativeCheckpointEvidence:         rec.Metadata.NativeCheckpointEvidence,
+		ConversationCheckpointUnsettled:  rec.Metadata.ConversationCheckpointUnsettled,
+		NativeTranscriptPath:             rec.Metadata.NativeTranscriptPath,
+		PreviewURL:                       rec.Metadata.PreviewURL,
+		PreviewRevision:                  rec.Metadata.PreviewRevision,
+		TerminateOnPRMerge:               rec.TerminateOnPRMerge,
+		AutoInjectReview:                 rec.AutoInjectReview,
+		AutoInjectCI:                     rec.AutoInjectCI,
+		CleanupGeneration:                rec.CleanupGeneration,
+		BrowserCapabilityVerifier:        rec.Metadata.BrowserCapabilityVerifier,
+		SessionMode:                      domain.NormalizeSessionMode(rec.Mode),
+		ProviderConversationID:           rec.Metadata.ProviderConversationID,
+		ControllerGeneration:             rec.Metadata.ControllerGeneration,
+		Model:                            rec.Metadata.Model,
+		SessionPermissions:               string(rec.Metadata.Permissions),
+		CreatedAt:                        rec.CreatedAt,
+		UpdatedAt:                        rec.UpdatedAt,
+		AutomationRunID:                  rec.AutomationRunID,
+		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 	}
 }
 
+// Permissions are immutable after insertion (or the focused legacy pin), so
+// generic session updates cannot overwrite them with a stale record.
 func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	return gen.UpdateSessionParams{
-		ID:                        rec.ID,
-		IssueID:                   rec.IssueID,
-		Kind:                      rec.Kind,
-		Harness:                   rec.Harness,
-		ReviewerHarness:           rec.ReviewerHarness,
-		AutoReviewEnabled:         rec.AutoReviewEnabled,
-		DisplayName:               rec.DisplayName,
-		ActivityState:             activity.State,
-		ActivityLastAt:            activity.LastActivityAt,
-		FirstSignalAt:             timeToNullTime(rec.FirstSignalAt),
-		IsTerminated:              rec.IsTerminated,
-		IsPinned:                  rec.IsPinned,
-		PinnedAt:                  timePtrToNullTime(rec.PinnedAt),
-		Branch:                    rec.Metadata.Branch,
-		WorkspacePath:             rec.Metadata.WorkspacePath,
-		WorkspaceRepoPath:         rec.Metadata.WorkspaceRepoPath,
-		DiffBaseSha:               rec.Metadata.DiffBaseSHA,
-		DiffBaseRef:               rec.Metadata.DiffBaseRef,
-		RuntimeHandleID:           rec.Metadata.RuntimeHandleID,
-		RuntimeLaunchID:           rec.Metadata.RuntimeLaunchID,
-		AgentSessionID:            rec.Metadata.AgentSessionID,
-		AgentSessionIDLaunchID:    rec.Metadata.AgentSessionIDLaunchID,
-		Prompt:                    rec.Metadata.Prompt,
-		LatestUserPrompt:          rec.Metadata.LatestUserPrompt,
-		LatestAssistantUpdate:     rec.Metadata.LatestAssistantUpdate,
-		NativeTranscriptPath:      rec.Metadata.NativeTranscriptPath,
-		PreviewURL:                rec.Metadata.PreviewURL,
-		PreviewRevision:           rec.Metadata.PreviewRevision,
-		TerminateOnPRMerge:        rec.TerminateOnPRMerge,
-		AutoInjectReview:          rec.AutoInjectReview,
-		AutoInjectCI:              rec.AutoInjectCI,
-		CleanupGeneration:         rec.CleanupGeneration,
-		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
-		ProviderConversationID:    rec.Metadata.ProviderConversationID,
-		ControllerGeneration:      rec.Metadata.ControllerGeneration,
-		Model:                     rec.Metadata.Model,
-		AutomationLaunchCompleted: rec.AutomationLaunchCompleted,
-		UpdatedAt:                 rec.UpdatedAt,
+		ID:                               rec.ID,
+		IssueID:                          rec.IssueID,
+		Kind:                             rec.Kind,
+		Harness:                          rec.Harness,
+		ReviewerHarness:                  rec.ReviewerHarness,
+		ReviewerAgentConfig:              mustMarshalAgentConfig(rec.ReviewerConfig),
+		AutoReviewEnabled:                rec.AutoReviewEnabled,
+		DisplayName:                      rec.DisplayName,
+		ActivityState:                    activity.State,
+		ActivityLastAt:                   activity.LastActivityAt,
+		FirstSignalAt:                    timeToNullTime(rec.FirstSignalAt),
+		IsTerminated:                     rec.IsTerminated,
+		IsPinned:                         rec.IsPinned,
+		PinnedAt:                         timePtrToNullTime(rec.PinnedAt),
+		Branch:                           rec.Metadata.Branch,
+		WorkspacePath:                    rec.Metadata.WorkspacePath,
+		WorkspaceRepoPath:                rec.Metadata.WorkspaceRepoPath,
+		DiffBaseSha:                      rec.Metadata.DiffBaseSHA,
+		DiffBaseRef:                      rec.Metadata.DiffBaseRef,
+		RuntimeHandleID:                  rec.Metadata.RuntimeHandleID,
+		RuntimeLaunchID:                  rec.Metadata.RuntimeLaunchID,
+		AgentSessionID:                   rec.Metadata.AgentSessionID,
+		AgentSessionIDLaunchID:           rec.Metadata.AgentSessionIDLaunchID,
+		NativeIdentityObservedAt:         timeToNullTime(rec.Metadata.NativeIdentityObservedAt),
+		Prompt:                           rec.Metadata.Prompt,
+		LatestUserPrompt:                 rec.Metadata.LatestUserPrompt,
+		LatestUserPromptAt:               timeToNullTime(rec.Metadata.LatestUserPromptAt),
+		LatestAssistantUpdate:            rec.Metadata.LatestAssistantUpdate,
+		LatestAssistantUpdateAt:          timeToNullTime(rec.Metadata.LatestAssistantUpdateAt),
+		ConversationCheckpointState:      normalizedConversationCheckpointState(rec.Metadata),
+		ConversationCheckpointGeneration: rec.Metadata.ConversationCheckpointGeneration,
+		ConversationCheckpointNativeID:   rec.Metadata.ConversationCheckpointNativeID,
+		ConversationCheckpointTurnID:     rec.Metadata.ConversationCheckpointTurnID,
+		NativeCheckpointEvidence:         rec.Metadata.NativeCheckpointEvidence,
+		ConversationCheckpointUnsettled:  rec.Metadata.ConversationCheckpointUnsettled,
+		NativeTranscriptPath:             rec.Metadata.NativeTranscriptPath,
+		PreviewURL:                       rec.Metadata.PreviewURL,
+		PreviewRevision:                  rec.Metadata.PreviewRevision,
+		TerminateOnPRMerge:               rec.TerminateOnPRMerge,
+		AutoInjectReview:                 rec.AutoInjectReview,
+		AutoInjectCI:                     rec.AutoInjectCI,
+		CleanupGeneration:                rec.CleanupGeneration,
+		BrowserCapabilityVerifier:        rec.Metadata.BrowserCapabilityVerifier,
+		ProviderConversationID:           rec.Metadata.ProviderConversationID,
+		ControllerGeneration:             rec.Metadata.ControllerGeneration,
+		Model:                            rec.Metadata.Model,
+		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
+		UpdatedAt:                        rec.UpdatedAt,
 	}
+}
+
+func marshalAgentConfig(cfg domain.AgentConfig) (string, error) {
+	if cfg.IsZero() {
+		return "", nil
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("marshal agent config: %w", err)
+	}
+	return string(data), nil
+}
+
+func mustMarshalAgentConfig(cfg domain.AgentConfig) string {
+	data, err := marshalAgentConfig(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+func unmarshalAgentConfig(data string) domain.AgentConfig {
+	if data == "" {
+		return domain.AgentConfig{}
+	}
+	var cfg domain.AgentConfig
+	if err := json.Unmarshal([]byte(data), &cfg); err != nil {
+		return domain.AgentConfig{}
+	}
+	return cfg
+}
+
+func normalizedConversationCheckpointState(metadata domain.SessionMetadata) domain.ConversationCheckpointState {
+	if metadata.ConversationCheckpointState != "" {
+		return metadata.ConversationCheckpointState
+	}
+	if metadata.LatestUserPrompt != "" || metadata.LatestAssistantUpdate != "" {
+		return domain.ConversationCheckpointLegacy
+	}
+	return domain.ConversationCheckpointEmpty
 }
 
 // nullTimeToTime / timeToNullTime bridge the nullable first_signal_at column
@@ -602,5 +784,13 @@ func normalActivity(a domain.Activity, fallback time.Time) domain.Activity {
 	if a.LastActivityAt.IsZero() {
 		a.LastActivityAt = time.Now().UTC()
 	}
+	// The driver stores a time.Time by its String() form, so the zone and any
+	// monotonic reading survive into the column. Rows written from a local-zone
+	// clock ("… +0700 +07 m=+995.1") then stop comparing as timestamps against
+	// UTC rows, and activity_last_at is compared directly in SQL — the
+	// agent-switch source-stop predicate is one such comparison, and a mismatched
+	// row silently matches zero rows there. Normalize every writer's value here
+	// rather than trusting each caller's clock.
+	a.LastActivityAt = a.LastActivityAt.UTC()
 	return a
 }

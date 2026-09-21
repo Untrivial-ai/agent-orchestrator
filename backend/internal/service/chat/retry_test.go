@@ -358,7 +358,7 @@ func TestRetryTurnRefusesWhileBusy(t *testing.T) {
 }
 
 func TestRetryTurnRefusesFailedTurnOutsideActiveBranch(t *testing.T) {
-	h, _, driver := newEditHarness(t)
+	h, _, driver := newEditHarness(t, false)
 	ctx := context.Background()
 
 	first := completeTurn(t, h, "first prompt", "provider-turn-1")
@@ -398,7 +398,7 @@ func TestRetryTurnRefusesFailedTurnOutsideActiveBranch(t *testing.T) {
 }
 
 func TestRetrySourceRemainsConsumedWhenAttemptIsEditedOntoAnotherBranch(t *testing.T) {
-	h, _, _ := newEditHarness(t)
+	h, _, _ := newEditHarness(t, false)
 	ctx := context.Background()
 
 	source, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{

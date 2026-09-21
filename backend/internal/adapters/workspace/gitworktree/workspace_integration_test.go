@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -59,6 +60,55 @@ func TestWorkspaceIntegrationCreateRestoreDestroy(t *testing.T) {
 	}
 	if err := ws.Destroy(ctx, restored); err != nil {
 		t.Fatalf("destroy restored: %v", err)
+	}
+}
+
+func TestWorkspaceIntegrationMixedWorkspaceContentReachesEverySessionKind(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	if err := os.MkdirAll(filepath.Join(rootRepo, "docs"), 0o755); err != nil {
+		t.Fatalf("create ordinary folder: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootRepo, "docs", "guide.md"), []byte("workspace guide\n"), 0o644); err != nil {
+		t.Fatalf("write ordinary workspace file: %v", err)
+	}
+	runGit(t, git, rootRepo, "add", "docs/guide.md")
+	runGit(t, git, rootRepo, "commit", "-m", "add workspace docs")
+	runGit(t, git, rootRepo, "push", "origin", "HEAD:main")
+
+	ws, err := New(Options{
+		Binary: git, ManagedRoot: filepath.Join(tmp, "managed"),
+		RepoResolver: StaticRepoResolver{"proj": rootRepo},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		t.Run(string(kind), func(t *testing.T) {
+			info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+				ProjectID: "proj", SessionID: domain.SessionID("mixed-" + kind), Kind: kind, Branch: "ao/mixed-" + string(kind),
+				RootRepoPath: rootRepo,
+				Repos: []ports.WorkspaceProjectRepoConfig{{
+					Name: "api", RelativePath: "services/api", RepoPath: childRepo,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("create mixed workspace: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
+					t.Errorf("destroy mixed workspace: %v", err)
+				}
+			})
+			for _, want := range []string{"docs/guide.md", "services/api/README.md"} {
+				if _, err := os.Stat(filepath.Join(info.Root.Path, filepath.FromSlash(want))); err != nil {
+					t.Errorf("%s session missing %s: %v", kind, want, err)
+				}
+			}
+		})
 	}
 }
 
@@ -609,6 +659,45 @@ func TestWorkspaceIntegrationRequestedRemoteBranchKeepsDefaultComparisonBase(t *
 	}
 }
 
+func TestWorkspaceIntegrationRemotelessRootUsesImportedDefaultBranch(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginCloneOnBranch(t, git, filepath.Join(tmp, "root"), "trunk")
+	gitOutput(t, git, rootRepo, "remote", "remove", "origin")
+	childRepo := setupOriginCloneOnBranch(t, git, filepath.Join(tmp, "child"), "dev")
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "orch", Kind: "orchestrator", Branch: "ao/proj-orch",
+		RootRepoPath: rootRepo,
+		BaseBranch:   "trunk",
+		Repos:        []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo}},
+	}
+	info, err := ws.CreateWorkspaceProject(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("spawn with imported root default: %v", err)
+	}
+	defer func() {
+		if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
+			t.Errorf("destroy: %v", err)
+		}
+	}()
+	if len(info.Worktrees) != 2 {
+		t.Fatalf("worktrees = %d, want root and child", len(info.Worktrees))
+	}
+	for _, wt := range info.Worktrees {
+		want := gitOutput(t, git, rootRepo, "rev-parse", "trunk")
+		if wt.RepoName == "api" {
+			want = gitOutput(t, git, childRepo, "rev-parse", "origin/dev")
+		}
+		if got := gitOutput(t, git, wt.Path, "rev-parse", "HEAD"); got != want {
+			t.Errorf("%s HEAD = %s, want %s", wt.RepoName, got, want)
+		}
+	}
+}
+
 func TestWorkspaceIntegrationWorkspaceProjectInfersPerRepoDefaultBranches(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
@@ -648,7 +737,7 @@ func TestWorkspaceIntegrationWorkspaceProjectInfersPerRepoDefaultBranches(t *tes
 		t.Fatalf("worktrees = %d, want root and two children: %#v", len(info.Worktrees), info.Worktrees)
 	}
 	wantRefs := map[string]string{
-		"__root__": "refs/remotes/origin/trunk",
+		"__root__": "refs/heads/trunk",
 		"api":      "refs/remotes/origin/dev",
 		"web":      "refs/remotes/origin/main",
 	}
@@ -684,6 +773,147 @@ func TestWorkspaceIntegrationWorkspaceProjectInfersPerRepoDefaultBranches(t *tes
 	}
 	if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
 		t.Fatalf("destroy workspace project: %v", err)
+	}
+}
+
+func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndCleansSessionCopy(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(rootRepo, "api"))
+	asset := filepath.Join(rootRepo, "notes")
+	if err := os.MkdirAll(filepath.Join(asset, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceFile := filepath.Join(asset, "nested", "context.txt")
+	if err := os.WriteFile(sourceFile, []byte("source context"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, rootRepo, "add", "notes/nested/context.txt")
+	runGit(t, git, rootRepo, "commit", "-m", "track workspace notes")
+	runGit(t, git, rootRepo, "push", "origin", "main")
+	if err := os.Mkdir(filepath.Join(asset, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(asset, ".git", "secret"), []byte("never copy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("nested/context.txt", filepath.Join(asset, "latest")); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "sess", Kind: "worker", Branch: "ao/assets",
+		RootRepoPath: rootRepo,
+		Repos:        []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo}},
+		Assets:       []ports.WorkspaceProjectAssetConfig{{RelativePath: "notes", SourcePath: asset}},
+	})
+	if err != nil {
+		t.Fatalf("create workspace project: %v", err)
+	}
+	copied, err := os.ReadFile(filepath.Join(info.Root.Path, "notes", "nested", "context.txt"))
+	if err != nil || string(copied) != "source context" {
+		t.Fatalf("copied asset = %q, %v", copied, err)
+	}
+	if target, err := os.Readlink(filepath.Join(info.Root.Path, "notes", "latest")); err != nil || target != "nested/context.txt" {
+		t.Fatalf("copied symlink = %q, %v", target, err)
+	}
+	if _, err := os.Stat(filepath.Join(info.Root.Path, "notes", ".git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("asset .git metadata was copied: %v", err)
+	}
+	if len(info.Worktrees) != 2 || info.Worktrees[1].RepoName != "api" {
+		t.Fatalf("worktrees = %#v, want root and independent api child", info.Worktrees)
+	}
+	if _, err := os.Stat(filepath.Join(info.Root.Path, "api", "README.md")); err != nil {
+		t.Fatalf("child worktree missing: %v", err)
+	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
+		t.Fatalf("destroy workspace project: %v", err)
+	}
+	if _, err := os.Stat(info.Root.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("session copy still exists after cleanup: %v", err)
+	}
+	if got, err := os.ReadFile(sourceFile); err != nil || string(got) != "source context" {
+		t.Fatalf("source asset changed during lifecycle: %q, %v", got, err)
+	}
+}
+
+func TestWorkspaceIntegrationWorkspaceProjectRepairsRemotelessRootDefault(t *testing.T) {
+	git := requireGit(t)
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		t.Run(string(kind), func(t *testing.T) {
+			tmp := t.TempDir()
+			rootRepo := filepath.Join(tmp, "root")
+			run(t, git, "init", "-b", "trunk", rootRepo)
+			runGit(t, git, rootRepo, "config", "user.email", "ao@example.com")
+			runGit(t, git, rootRepo, "config", "user.name", "AO Test")
+			if err := os.WriteFile(filepath.Join(rootRepo, "README.md"), []byte("root\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, git, rootRepo, "add", "README.md")
+			runGit(t, git, rootRepo, "commit", "-m", "initial")
+			childRepo := setupOriginClone(t, git, filepath.Join(rootRepo, "api"))
+
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+				ProjectID: "proj", SessionID: domain.SessionID("sess-" + string(kind)), Kind: kind, Branch: "ao/local-root-" + string(kind),
+				RootRepoPath: rootRepo,
+				Repos:        []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo}},
+			})
+			if err != nil {
+				t.Fatalf("create workspace project: %v", err)
+			}
+			defer func() { _ = ws.DestroyWorkspaceProject(context.Background(), info) }()
+			if info.Root.BaseRef != "refs/heads/trunk" {
+				t.Fatalf("root BaseRef = %q, want local trunk", info.Root.BaseRef)
+			}
+			if got := gitOutput(t, git, rootRepo, "config", "--local", "--get", "ao.defaultBranch"); got != "trunk" {
+				t.Fatalf("recorded root default = %q, want trunk", got)
+			}
+			if len(info.Worktrees) != 2 || info.Worktrees[1].RepoName != "api" {
+				t.Fatalf("worktrees = %#v, want repaired root and api child", info.Worktrees)
+			}
+		})
+	}
+}
+
+func TestWorkspaceIntegrationWorkspaceProjectAssetCopyFailureRollsBackRoot(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	asset := filepath.Join(rootRepo, "notes")
+	if err := os.Mkdir(asset, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conflictingFile := filepath.Join(rootRepo, "conflict.txt")
+	if err := os.WriteFile(conflictingFile, []byte("conflict"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "sess", Kind: "worker", Branch: "ao/assets-fail",
+		RootRepoPath: rootRepo,
+		Assets: []ports.WorkspaceProjectAssetConfig{
+			{RelativePath: "notes", SourcePath: asset},
+			{RelativePath: "notes", SourcePath: conflictingFile},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected conflicting asset destination to fail")
+	}
+	rootPath := filepath.Join(tmp, "managed", "proj", "worker", "sess")
+	if _, statErr := os.Stat(rootPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("root worktree was not rolled back: %v", statErr)
 	}
 }
 
@@ -748,6 +978,38 @@ func TestResolveDefaultBranchKeepsSlashBranchOnOriginWithoutMatchingRemote(t *te
 	want := ports.WorkspaceDefaultBranch{Remote: "origin", Branch: "release/2026", BaseRef: "refs/remotes/origin/release/2026"}
 	if target != want {
 		t.Fatalf("target = %#v, want %#v", target, want)
+	}
+}
+
+func TestResolveDefaultBranchFallsBackToLocalHeadWhenExplicitBranchHasNoRemoteTrackingRef(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	run(t, git, "init", "-b", "main", repo)
+	runGit(t, git, repo, "config", "user.email", "ao@example.com")
+	runGit(t, git, repo, "config", "user.name", "Ao Agents")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	runGit(t, git, repo, "add", "README.md")
+	runGit(t, git, repo, "commit", "-m", "seed")
+	runGit(t, git, repo, "remote", "add", "origin", "https://github.com/example/missing.git")
+
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	target, err := ws.ResolveDefaultBranch(context.Background(), repo, "main")
+	if err != nil {
+		t.Fatalf("resolve default branch: %v", err)
+	}
+	want := ports.WorkspaceDefaultBranch{Remote: "origin", Branch: "main", BaseRef: "refs/heads/main"}
+	if target != want {
+		t.Fatalf("target = %#v, want %#v", target, want)
+	}
+	if err := ws.FetchDefaultBranch(context.Background(), repo, target); err != nil {
+		t.Fatalf("fetch default branch local fallback: %v", err)
 	}
 }
 

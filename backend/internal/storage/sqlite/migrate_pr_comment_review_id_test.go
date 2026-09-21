@@ -1,18 +1,11 @@
 package sqlite
 
 import (
-	"database/sql"
-	"path/filepath"
 	"testing"
 )
 
 func TestMigrateRecognizesPreLedgeredPRCommentReviewID(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 104)
+	db := openMigratedDatabaseCopy(t, 104)
 
 	// Reproduce a database opened while this migration was still being
 	// renumbered: the physical column exists, but neither its canonical ledger
@@ -51,6 +44,30 @@ WHERE version_id = 106 AND is_applied = 1`).Scan(&applied106); err != nil {
 		t.Fatalf("default session mode = %q, want chat after migration 105", defaultMode)
 	}
 
+	if err := migrate(db); err != nil {
+		t.Fatalf("repeat migration on repaired schema: %v", err)
+	}
+}
+
+func TestMigrateRepairsMissingPRCommentReviewIDWhenVersionAlreadyClaimed(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 105)
+
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (106, 1)`); err != nil {
+		t.Fatalf("seed claimed review-id migration: %v", err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate database with missing review-id schema: %v", err)
+	}
+
+	var reviewIDColumns int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pr_comment') WHERE name = 'review_id'`,
+	).Scan(&reviewIDColumns); err != nil {
+		t.Fatalf("read review id column: %v", err)
+	}
+	if reviewIDColumns != 1 {
+		t.Fatalf("review_id columns = %d, want 1", reviewIDColumns)
+	}
 	if err := migrate(db); err != nil {
 		t.Fatalf("repeat migration on repaired schema: %v", err)
 	}

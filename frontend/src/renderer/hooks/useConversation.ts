@@ -9,10 +9,18 @@
  * in bounded pages only when the reader asks for it.
  */
 
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import {
+	type InfiniteData,
+	type QueryClient,
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 import type {
 	ActivityKind,
@@ -32,8 +40,11 @@ import type {
 	ChatConfigOptionValue,
 	ChatModel,
 	ChatSkill,
+	ChatEditOutcome,
+	ChatSteerOutcome,
 	PlanStep,
 	PlanStepStatus,
+	QueuedMessageEditOptions,
 	SessionMode,
 	ThreadStatus,
 	TurnSettings,
@@ -50,6 +61,27 @@ export interface ConversationSendInput {
 	text: string;
 	attachments?: WireImageContent[];
 	resources?: WireResourceContent[];
+	/** Caller-owned durable idempotency key used for crash-safe retries. */
+	clientMessageId?: string;
+}
+
+interface ConversationSendMutationInput {
+	targetSessionId: string;
+	clientMessageId: string;
+	input: ConversationSendInput;
+}
+
+interface ConversationSessionMutationInput {
+	targetSessionId: string;
+}
+
+interface ConversationRetryMutationInput extends ConversationSessionMutationInput {
+	requestId: string;
+	sourceTurnId: string;
+}
+
+interface ConversationEditMutationInput extends ConversationRetryMutationInput {
+	text: string;
 }
 
 export const conversationQueryRoot = ["conversation"] as const;
@@ -66,8 +98,179 @@ export function conversationConfigOptionsQueryKey(sessionId: string) {
 	return ["conversation-config-options", sessionId] as const;
 }
 
+const conversationDispatchTrackingQueryKey = ["conversation-dispatch-tracking"] as const;
+const conversationLocalEchosQueryKey = ["conversation-local-echos"] as const;
+type ConversationDispatchOperation = "edit" | "retry" | "send";
+interface ConversationDispatchDescriptor {
+	operation: ConversationDispatchOperation;
+	requestId: string;
+	sourceTurnId?: string;
+}
+type ConversationDispatchTracking =
+	| (ConversationDispatchDescriptor & { state: "pending" })
+	| (ConversationDispatchDescriptor & { state: "accepted"; turnId: string });
+type ConversationDispatchTrackingBySession = Record<string, ConversationDispatchTracking>;
+
+/**
+ * Renderer-only acknowledgement of a human send. It is deliberately separate
+ * from the durable snapshot: CDC identifies a conversation, not one exact new
+ * item, so treating it as a partial server update would make ordering unsafe.
+ */
+export type ConversationLocalEcho = {
+	clientMessageId: string;
+	text: string;
+	createdAt: string;
+	/** Filled after the daemon accepts the send, then used for exact reconciliation. */
+	turnId?: string;
+};
+type ConversationLocalEchosBySession = Record<string, ConversationLocalEcho[]>;
+
+function addConversationLocalEcho(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	echo: ConversationLocalEcho,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => ({
+		...current,
+		[targetSessionId]: [...(current[targetSessionId] ?? []), echo],
+	}));
+}
+
+function acceptConversationLocalEcho(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	clientMessageId: string,
+	turnId: string,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
+		const echoes = current[targetSessionId];
+		if (!echoes) return current;
+		let changed = false;
+		const nextEchoes = echoes.map((echo) => {
+			if (echo.clientMessageId !== clientMessageId || echo.turnId === turnId) return echo;
+			changed = true;
+			return { ...echo, turnId };
+		});
+		return changed ? { ...current, [targetSessionId]: nextEchoes } : current;
+	});
+}
+
+function releaseConversationLocalEcho(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	clientMessageId?: string,
+	turnId?: string,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
+		const echoes = current[targetSessionId];
+		if (!echoes) return current;
+		const nextEchoes = echoes.filter(
+			(echo) =>
+				(clientMessageId === undefined || echo.clientMessageId !== clientMessageId) &&
+				(turnId === undefined || echo.turnId !== turnId),
+		);
+		if (nextEchoes.length === echoes.length) return current;
+		const next = { ...current };
+		if (nextEchoes.length === 0) delete next[targetSessionId];
+		else next[targetSessionId] = nextEchoes;
+		return next;
+	});
+}
+
+function claimConversationDispatch(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	requestId: string,
+	operation: ConversationDispatchOperation,
+	sourceTurnId?: string,
+): boolean {
+	const current =
+		queryClient.getQueryData<ConversationDispatchTrackingBySession>(
+			conversationDispatchTrackingQueryKey,
+		) ?? {};
+	if (current[targetSessionId]?.state === "pending") return false;
+	queryClient.setQueryData<ConversationDispatchTrackingBySession>(
+		conversationDispatchTrackingQueryKey,
+		{
+			...current,
+			[targetSessionId]: { operation, requestId, sourceTurnId, state: "pending" },
+		},
+	);
+	return true;
+}
+
+function acceptConversationDispatch(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	requestId: string,
+	turnId: string,
+): void {
+	queryClient.setQueryData<ConversationDispatchTrackingBySession>(
+		conversationDispatchTrackingQueryKey,
+		(current = {}) => {
+			const tracked = current[targetSessionId];
+			if (tracked?.requestId !== requestId) return current;
+			return {
+				...current,
+				[targetSessionId]: { ...tracked, state: "accepted", turnId },
+			};
+		},
+	);
+}
+
+function releaseConversationDispatch(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	requestId: string,
+): void {
+	queryClient.setQueryData<ConversationDispatchTrackingBySession>(
+		conversationDispatchTrackingQueryKey,
+		(current = {}) => {
+			if (current[targetSessionId]?.requestId !== requestId) return current;
+			const next = { ...current };
+			delete next[targetSessionId];
+			return next;
+		},
+	);
+}
+
+export function conversationSkillsQueryKey(sessionId: string) {
+	return ["conversation-skills", sessionId] as const;
+}
+
+const conversationProviderCatalogEpochs = new WeakMap<QueryClient, Map<string, number>>();
+
+function conversationProviderCatalogEpoch(queryClient: QueryClient, sessionId: string): number {
+	return conversationProviderCatalogEpochs.get(queryClient)?.get(sessionId) ?? 0;
+}
+
+function advanceConversationProviderCatalogEpoch(queryClient: QueryClient, sessionId: string) {
+	let epochs = conversationProviderCatalogEpochs.get(queryClient);
+	if (!epochs) {
+		epochs = new Map();
+		conversationProviderCatalogEpochs.set(queryClient, epochs);
+	}
+	epochs.set(sessionId, conversationProviderCatalogEpoch(queryClient, sessionId) + 1);
+}
+
+/** Drop provider-owned catalogs so a handoff cannot keep showing the outgoing controller's options. */
+export function clearConversationProviderCatalogs(queryClient: QueryClient, sessionId: string) {
+	advanceConversationProviderCatalogEpoch(queryClient, sessionId);
+	queryClient.removeQueries({ queryKey: conversationModelsQueryKey(sessionId) });
+	queryClient.removeQueries({ queryKey: conversationConfigOptionsQueryKey(sessionId) });
+	queryClient.removeQueries({ queryKey: conversationSkillsQueryKey(sessionId) });
+}
+
+/** Refetch provider-owned catalogs after the target controller owns the session again. */
+export function invalidateConversationProviderCatalogs(queryClient: QueryClient, sessionId: string) {
+	void queryClient.invalidateQueries({ queryKey: conversationModelsQueryKey(sessionId) });
+	void queryClient.invalidateQueries({ queryKey: conversationConfigOptionsQueryKey(sessionId) });
+	void queryClient.invalidateQueries({ queryKey: conversationSkillsQueryKey(sessionId) });
+}
+
 const CONVERSATION_PAGE_SIZE = 200;
 const CONFIG_OPTIONS_POLL_INTERVAL_MS = 5_000;
+const SKILLS_POLL_INTERVAL_MS = 60_000;
 
 /**
  * Answers that will never change on a retry. SESSION_MODE_MISMATCH is permanent
@@ -101,7 +304,10 @@ export function useConversation(sessionId: string | undefined): ConversationQuer
 			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/conversation", {
 				params: {
 					path: { sessionId: sessionId as string },
-					query: { beforeSequence: pageParam, limit: CONVERSATION_PAGE_SIZE },
+					query: {
+						beforeSequence: pageParam,
+						limit: CONVERSATION_PAGE_SIZE,
+					},
 				},
 			});
 			if (error) throw error;
@@ -157,30 +363,156 @@ export function useConversation(sessionId: string | undefined): ConversationQuer
 /** Commands against a conversation. Each refetches the snapshot on success. */
 export function useConversationCommands(sessionId: string | undefined) {
 	const queryClient = useQueryClient();
-	const invalidate = useCallback(async () => {
+	const trackedDispatches = useQuery({
+		queryKey: conversationDispatchTrackingQueryKey,
+		queryFn: async (): Promise<ConversationDispatchTrackingBySession> => ({}),
+		initialData: {} as ConversationDispatchTrackingBySession,
+		enabled: false,
+		// Dispatched work is a safety boundary for Chat -> Terminal. Keep both the
+		// in-flight request and its accepted turn until the exact durable row is
+		// observed, even if the Chat surface is unmounted.
+		//
+		// This cache is intentionally renderer-lifetime, not persisted. A full reload
+		// starts with work unknown (which already requires a policy choice) and then a
+		// fresh daemon snapshot; any later direct switch is drain-only, whose daemon
+		// gate atomically rejects new intake or drains work admitted before it. Without
+		// a durable request-reconciliation API, persisting an unresolved HTTP sentinel
+		// would instead leave sessions permanently and incorrectly busy.
+		gcTime: Number.POSITIVE_INFINITY,
+		staleTime: Number.POSITIVE_INFINITY,
+	}).data;
+	const localEchosBySession = useQuery({
+		queryKey: conversationLocalEchosQueryKey,
+		queryFn: async (): Promise<ConversationLocalEchosBySession> => ({}),
+		initialData: {} as ConversationLocalEchosBySession,
+		enabled: false,
+		gcTime: Number.POSITIVE_INFINITY,
+		staleTime: Number.POSITIVE_INFINITY,
+	}).data;
+	const trackedDispatch = sessionId ? trackedDispatches[sessionId] : undefined;
+	const invalidateSession = useCallback(
+		async (targetSessionId: string) => {
+			await queryClient.invalidateQueries({ queryKey: conversationQueryKey(targetSessionId) });
+		},
+		[queryClient],
+	);
+	const invalidate = useCallback(() => {
 		if (sessionId) {
-			// Keep the mutation pending until the active conversation has refreshed. A
-			// queued message or landed steer should be visible before the composer clears,
-			// otherwise the action looks dropped even though the daemon accepted it.
-			await queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
+			// Refresh in the background. Awaiting the refetch in mutation onSuccess kept
+			// steer, queue, and approval mutations pending after the daemon had already
+			// answered, which left the composer spinner stuck and blocked further sends.
+			void invalidateSession(sessionId).catch(() => {});
 		}
-	}, [queryClient, sessionId]);
+	}, [invalidateSession, sessionId]);
+	const refreshSessionInBackground = useCallback(
+		(targetSessionId: string) => {
+			void invalidateSession(targetSessionId).catch(() => {});
+		},
+		[invalidateSession],
+	);
 
 	const send = useMutation({
-		mutationFn: async (input: ConversationSendInput) => {
+		onMutate: (variables: ConversationSendMutationInput) => {
+			addConversationLocalEcho(queryClient, variables.targetSessionId, {
+				clientMessageId: variables.clientMessageId,
+				text: variables.input.text,
+				createdAt: new Date().toISOString(),
+			});
+			queryClient.setQueryData<ConversationDispatchTrackingBySession>(
+				conversationDispatchTrackingQueryKey,
+				(current = {}) => {
+					const tracked = current[variables.targetSessionId];
+					if (tracked && tracked.requestId !== variables.clientMessageId) return current;
+					return {
+						...current,
+						[variables.targetSessionId]: {
+							operation: "send",
+							requestId: variables.clientMessageId,
+							state: "pending",
+						},
+					};
+				},
+			);
+		},
+		mutationFn: async ({
+			targetSessionId,
+			clientMessageId,
+			input,
+		}: ConversationSendMutationInput) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/messages",
 				{
-					params: { path: { sessionId: sessionId as string } },
+					params: { path: { sessionId: targetSessionId } },
 					// A stable id per attempt makes a retry idempotent: the daemon
 					// answers `duplicate` instead of opening a second provider turn.
-					body: { ...input, clientMessageId: crypto.randomUUID() },
+					body: { ...input, clientMessageId },
 				},
 			);
 			if (error) throw error;
 			return data;
 		},
-		onSuccess: invalidate,
+		onSuccess: (data, variables) => {
+			const acceptedTurnId = data?.turnId;
+			if (acceptedTurnId) {
+				acceptConversationLocalEcho(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+					acceptedTurnId,
+				);
+				if (data.state === "queued") {
+					// A queued row is already durable and did not start a new provider turn,
+					// so keeping the accepted-turn safety marker would block the next queue
+					// entry until a refetch observes this id — and the composer would swallow
+					// further Enter presses with no error.
+					releaseConversationDispatch(
+						queryClient,
+						variables.targetSessionId,
+						variables.clientMessageId,
+					);
+				} else {
+					// A refetch can briefly return the pre-send snapshot. Keep the accepted
+					// turn locally visible as pending until that exact durable row arrives.
+					acceptConversationDispatch(
+						queryClient,
+						variables.targetSessionId,
+						variables.clientMessageId,
+						acceptedTurnId,
+					);
+				}
+			} else {
+				// A duplicate response intentionally has no turn id: the daemon already
+				// delivered this idempotency key, so there is no exact new row this
+				// renderer can wait to observe. Release only this request's sentinel.
+				releaseConversationDispatch(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+				);
+				releaseConversationLocalEcho(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+				);
+			}
+			// Delivery is already authoritative at this point. Refresh in the
+			// background so a slow conversation refetch cannot keep send.isPending
+			// true and leave the composer disabled or spinning after the daemon
+			// accepted the message.
+			void refreshSessionInBackground(variables.targetSessionId);
+		},
+		onError: (_error, variables) => {
+			releaseConversationDispatch(
+				queryClient,
+				variables.targetSessionId,
+				variables.clientMessageId,
+			);
+			releaseConversationLocalEcho(
+				queryClient,
+				variables.targetSessionId,
+				variables.clientMessageId,
+			);
+		},
 	});
 
 	const resolve = useMutation({
@@ -188,7 +520,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 			const { error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/approvals/{requestId}/resolve",
 				{
-					params: { path: { sessionId: sessionId as string, requestId: input.requestId } },
+					params: {
+						path: {
+							sessionId: sessionId as string,
+							requestId: input.requestId,
+						},
+					},
 					body: { decisionId: input.decisionId },
 				},
 			);
@@ -206,7 +543,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 			const { error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve",
 				{
-					params: { path: { sessionId: sessionId as string, requestId: input.requestId } },
+					params: {
+						path: {
+							sessionId: sessionId as string,
+							requestId: input.requestId,
+						},
+					},
 					body: { action: input.action, content: input.content },
 				},
 			);
@@ -216,27 +558,30 @@ export function useConversationCommands(sessionId: string | undefined) {
 	});
 
 	const interrupt = useMutation({
-		mutationFn: async () => {
+		mutationFn: async ({ targetSessionId }: ConversationSessionMutationInput) => {
 			const { error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/interrupt",
-				{ params: { path: { sessionId: sessionId as string } } },
+				{ params: { path: { sessionId: targetSessionId } } },
 			);
 			if (error) throw error;
 		},
-		onSuccess: invalidate,
+		onSuccess: (_data, variables) => refreshSessionInBackground(variables.targetSessionId),
 		// A failed interrupt (e.g. CHAT_NO_ACTIVE_TURN) means the cached turn
 		// state is wrong. Refetch so the UI discovers the real state instead of
 		// keeping a Working bar the user cannot dismiss.
-		onError: invalidate,
+		onError: (_error, variables) => refreshSessionInBackground(variables.targetSessionId),
 	});
 
 	const resume = useMutation({
 		mutationFn: async () => {
 			const { data, error, response } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/resume-agent",
-				{ params: { path: { sessionId: sessionId as string } } },
+				{
+					params: { path: { sessionId: sessionId as string } },
+				},
 			);
-			if (error) throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
+			if (error)
+				throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
 			return data;
 		},
 		onSuccess: () => {
@@ -263,7 +608,9 @@ export function useConversationCommands(sessionId: string | undefined) {
 		mutationFn: async () => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/compact",
-				{ params: { path: { sessionId: sessionId as string } } },
+				{
+					params: { path: { sessionId: sessionId as string } },
+				},
 			);
 			if (error) throw error;
 			return data;
@@ -272,16 +619,33 @@ export function useConversationCommands(sessionId: string | undefined) {
 	});
 
 	const chooseSettings = useMutation({
-		mutationFn: async (settings: TurnSettings) => {
-			const { error } = await apiClient.PATCH(
+		mutationFn: async ({ targetSessionId, settings }: { targetSessionId: string; settings: TurnSettings }) => {
+			const { data, error } = await apiClient.PATCH(
 				"/api/v1/sessions/{sessionId}/conversation/settings",
-				{ params: { path: { sessionId: sessionId as string } }, body: settings },
+				{
+					params: { path: { sessionId: targetSessionId } },
+					body: settings,
+				},
 			);
 			if (error) throw error;
+			return data;
 		},
-		// The snapshot carries the selection, so refetching is what confirms it took
-		// rather than the composer trusting its own optimistic state.
-		onSuccess: invalidate,
+		// Confirm from the daemon's response before enabling Remember. A background
+		// snapshot refetch can be slow; it must not expose the previous permission.
+		onSuccess: async (settings, { targetSessionId }) => {
+			const queryKey = conversationQueryKey(targetSessionId);
+			await queryClient.cancelQueries({ queryKey });
+			if (settings) {
+				queryClient.setQueryData<InfiniteData<ConversationSnapshot>>(queryKey, (current) =>
+					current ? {
+						...current,
+						pages: current.pages.map((page, index) => index === 0
+							? { ...page, settings: settings as TurnSettings } : page),
+					} : current,
+				);
+			}
+			refreshSessionInBackground(targetSessionId);
+		},
 	});
 
 	/**
@@ -303,12 +667,12 @@ export function useConversationCommands(sessionId: string | undefined) {
 	 * means "wait and try again", and one means this harness cannot do it at all.
 	 */
 	const steer = useMutation({
-		mutationFn: async (text: string) => {
+		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string; recoverOnly?: boolean }) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
 					params: { path: { sessionId: sessionId as string } },
-					body: { text, clientMessageId: crypto.randomUUID() },
+					body: { ...input, clientMessageId: input.clientMessageId ?? crypto.randomUUID() },
 				},
 			);
 			if (error) throw error;
@@ -321,12 +685,82 @@ export function useConversationCommands(sessionId: string | undefined) {
 		mutationFn: async (turnId: string) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/steer",
-				{ params: { path: { sessionId: sessionId as string, turnId } } },
+				{
+					params: {
+						path: { sessionId: sessionId as string, turnId },
+					},
+				},
 			);
 			if (error) throw error;
 			return data;
 		},
 		onSuccess: invalidate,
+	});
+
+	const cancelQueuedTurn = useMutation({
+		mutationFn: async (turnId: string) => {
+			const { error } = await apiClient.POST(
+				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/cancel",
+				{
+					params: {
+						path: { sessionId: sessionId as string, turnId },
+					},
+				},
+			);
+			if (error) throw error;
+		},
+		onSuccess: invalidate,
+	});
+
+	const editQueuedTurn = useMutation({
+		mutationFn: async ({ turnId, text, ...options }: { turnId: string; text: string } & QueuedMessageEditOptions) => {
+			const { error } = await apiClient.POST(
+				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/queue/edit",
+				{
+					params: {
+						path: { sessionId: sessionId as string, turnId },
+					},
+					body: { text, ...options },
+				},
+			);
+			if (error) throw error;
+		},
+		onSuccess: invalidate,
+	});
+
+	const reorderQueuedTurns = useMutation({
+		mutationFn: async (turnIds: string[]) => {
+			const { error } = await apiClient.POST(
+				"/api/v1/sessions/{sessionId}/conversation/queue/reorder",
+				{
+					params: {
+						path: { sessionId: sessionId as string },
+					},
+					body: { turnIds },
+				},
+			);
+			if (error) throw new Error(apiErrorMessage(error, "Could not reorder queued messages"));
+		},
+		onMutate: async (turnIds) => {
+			if (!sessionId) return;
+			const queryKey = conversationQueryKey(sessionId);
+			await queryClient.cancelQueries({ queryKey });
+			const previous = queryClient.getQueryData<InfiniteData<ConversationSnapshot>>(queryKey);
+			if (previous) {
+				queryClient.setQueryData<InfiniteData<ConversationSnapshot>>(
+					queryKey,
+					applyQueuedTurnOrderToPages(previous, turnIds),
+				);
+			}
+			return { previous };
+		},
+		onError: (_error, _turnIds, context) => {
+			if (!sessionId || !context?.previous) return;
+			queryClient.setQueryData(conversationQueryKey(sessionId), context.previous);
+		},
+		onSettled: () => {
+			invalidate();
+		},
 	});
 
 	/**
@@ -341,7 +775,9 @@ export function useConversationCommands(sessionId: string | undefined) {
 		mutationFn: async () => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/mcp/reload",
-				{ params: { path: { sessionId: sessionId as string } } },
+				{
+					params: { path: { sessionId: sessionId as string } },
+				},
 			);
 			if (error) throw error;
 			return data;
@@ -353,7 +789,11 @@ export function useConversationCommands(sessionId: string | undefined) {
 		mutationFn: async (turnId: string) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/rollback",
-				{ params: { path: { sessionId: sessionId as string, turnId } } },
+				{
+					params: {
+						path: { sessionId: sessionId as string, turnId },
+					},
+				},
 			);
 			if (error) throw error;
 			return data;
@@ -362,24 +802,81 @@ export function useConversationCommands(sessionId: string | undefined) {
 	});
 
 	const retryTurn = useMutation({
-		mutationFn: async (turnId: string) => {
+		mutationFn: async ({ targetSessionId, sourceTurnId }: ConversationRetryMutationInput) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/retry",
-				{ params: { path: { sessionId: sessionId as string, turnId } } },
+				{
+					params: {
+						path: { sessionId: targetSessionId, turnId: sourceTurnId },
+					},
+				},
 			);
 			if (error) throw error;
 			return data;
 		},
-		onSuccess: invalidate,
+		onSuccess: (data, variables) => {
+			if (data?.turnId) {
+				acceptConversationDispatch(
+					queryClient,
+					variables.targetSessionId,
+					variables.requestId,
+					data.turnId,
+				);
+			} else {
+				releaseConversationDispatch(queryClient, variables.targetSessionId, variables.requestId);
+			}
+			void refreshSessionInBackground(variables.targetSessionId);
+		},
+		onError: (_error, variables) => {
+			releaseConversationDispatch(queryClient, variables.targetSessionId, variables.requestId);
+		},
 	});
 
 	const editMessage = useMutation({
-		mutationFn: async ({ turnId, text }: { turnId: string; text: string }) => {
+		mutationFn: async ({
+			targetSessionId,
+			sourceTurnId,
+			requestId,
+			text,
+		}: ConversationEditMutationInput) => {
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/edit",
 				{
-					params: { path: { sessionId: sessionId as string, turnId } },
-					body: { text, clientMessageId: crypto.randomUUID() },
+					params: {
+						path: { sessionId: targetSessionId, turnId: sourceTurnId },
+					},
+					body: { text, clientMessageId: requestId },
+				},
+			);
+			if (error) throw error;
+			return data;
+		},
+		onSuccess: (data, variables) => {
+			if (data?.turnId) {
+				acceptConversationDispatch(
+					queryClient,
+					variables.targetSessionId,
+					variables.requestId,
+					data.turnId,
+				);
+			} else {
+				releaseConversationDispatch(queryClient, variables.targetSessionId, variables.requestId);
+			}
+			void refreshSessionInBackground(variables.targetSessionId);
+		},
+		onError: (_error, variables) => {
+			releaseConversationDispatch(queryClient, variables.targetSessionId, variables.requestId);
+		},
+	});
+
+	const activateBranch = useMutation({
+		mutationFn: async (branchId: string) => {
+			const { data, error } = await apiClient.POST(
+				"/api/v1/sessions/{sessionId}/conversation/branches/{branchId}/activate",
+				{
+					params: {
+						path: { sessionId: sessionId as string, branchId },
+					},
 				},
 			);
 			if (error) throw error;
@@ -387,34 +884,68 @@ export function useConversationCommands(sessionId: string | undefined) {
 		},
 		onSettled: invalidate,
 	});
-
-	const activateBranch = useMutation({
-		mutationFn: async (branchId: string) => {
-			const { data, error } = await apiClient.POST(
-				"/api/v1/sessions/{sessionId}/conversation/branches/{branchId}/activate",
-				{ params: { path: { sessionId: sessionId as string, branchId } } },
+	const acknowledgeAcceptedTurn = useCallback(
+		(turnId: string) => {
+			if (!sessionId) return;
+			queryClient.setQueryData<ConversationDispatchTrackingBySession>(
+				conversationDispatchTrackingQueryKey,
+				(current = {}) => {
+					const tracked = current[sessionId];
+					if (tracked?.state !== "accepted" || tracked.turnId !== turnId) return current;
+					const next = { ...current };
+					delete next[sessionId];
+					return next;
+				},
 			);
-			if (error) throw error;
-			return data;
 		},
-		onSettled: invalidate,
-	});
+		[queryClient, sessionId],
+	);
+	const acknowledgeLocalEcho = useCallback(
+		(turnId: string) => {
+			if (!sessionId) return;
+			releaseConversationLocalEcho(queryClient, sessionId, undefined, turnId);
+		},
+		[queryClient, sessionId],
+	);
+	const sendTargetsCurrentSession = send.variables?.targetSessionId === sessionId;
+	const interruptTargetsCurrentSession = interrupt.variables?.targetSessionId === sessionId;
+	const retryTargetsCurrentSession = retryTurn.variables?.targetSessionId === sessionId;
+	const editTargetsCurrentSession = editMessage.variables?.targetSessionId === sessionId;
 
 	return {
-		send: (input: string | ConversationSendInput) =>
-			send.mutateAsync(typeof input === "string" ? { text: input } : input),
+		send: (input: string | ConversationSendInput) => {
+			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
+			const clientMessageId = (typeof input === "string" ? undefined : input.clientMessageId) ?? crypto.randomUUID();
+			// React cannot disable the composer until its next render. Claim the
+			// session in the shared registry synchronously so two Enter events in the
+			// same tick cannot both cross the transport boundary.
+			if (!claimConversationDispatch(queryClient, sessionId, clientMessageId, "send")) {
+				return Promise.reject(new Error("Conversation work is already being sent for this session."));
+			}
+			return send.mutateAsync({
+				targetSessionId: sessionId,
+				clientMessageId,
+				input: typeof input === "string" ? { text: input } : input,
+			});
+		},
+		pendingAcceptedTurnId:
+			trackedDispatch?.state === "accepted" ? trackedDispatch.turnId : undefined,
+		acknowledgeAcceptedTurn,
+		localEchos: sessionId ? localEchosBySession[sessionId] ?? [] : [],
+		acknowledgeLocalEcho,
 		resolve: (requestId: string, decisionId: string) => resolve.mutate({ requestId, decisionId }),
 		resolveInput: (
 			requestId: string,
 			action: "accept" | "decline" | "cancel",
 			content?: Record<string, unknown>,
 		) => resolveInput.mutateAsync({ requestId, action, content }),
-		interrupt: () => interrupt.mutate(),
+		interrupt: () => interrupt.mutate({ targetSessionId: sessionId as string }),
 		resumeAgent: () => resume.mutateAsync(),
 		resumingAgent: resume.isPending,
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
 		compact: () => compact.mutateAsync(),
-		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate(settings),
+		choosingSettings: chooseSettings.isPending && chooseSettings.variables?.targetSessionId === sessionId,
+		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate({ targetSessionId: sessionId as string, settings }),
 		/** A compaction is in flight provider-side and takes seconds, so it reads as
 		 *  its own state rather than folding into the generic busy flag, which also
 		 *  gates the composer. */
@@ -434,21 +965,88 @@ export function useConversationCommands(sessionId: string | undefined) {
 		rollbackPending: rollback.isPending,
 		rollbackError: rollback.error ? apiErrorMessage(rollback.error) : undefined,
 		retryControl: {
-			retry: (turnId: string) => retryTurn.mutateAsync(turnId),
-			pending: retryTurn.isPending,
-			error: retryTurn.error ? apiErrorMessage(retryTurn.error) : undefined,
-			turnId: retryTurn.variables,
+			retry: (turnId: string) => {
+				if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
+				const requestId = crypto.randomUUID();
+				if (!claimConversationDispatch(queryClient, sessionId, requestId, "retry", turnId)) {
+					return Promise.reject(new Error("Conversation work is already being sent for this session."));
+				}
+				return retryTurn.mutateAsync({
+					requestId,
+					sourceTurnId: turnId,
+					targetSessionId: sessionId,
+				});
+			},
+			pending:
+				trackedDispatch?.operation === "retry" ||
+				(retryTurn.isPending && retryTargetsCurrentSession),
+			error:
+				retryTargetsCurrentSession && retryTurn.error
+					? apiErrorMessage(retryTurn.error)
+					: undefined,
+			turnId:
+				trackedDispatch?.operation === "retry"
+					? trackedDispatch.sourceTurnId
+					: retryTargetsCurrentSession
+						? retryTurn.variables?.sourceTurnId
+						: undefined,
 		},
-		editMessage: (turnId: string, text: string) => editMessage.mutateAsync({ turnId, text }),
-		editMessagePending: editMessage.isPending,
-		editMessageError: editMessage.error ? apiErrorMessage(editMessage.error) : undefined,
+		editMessage: async (turnId: string, text: string, clientMessageId?: string): Promise<ChatEditOutcome> => {
+			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
+			const requestId = clientMessageId ?? crypto.randomUUID();
+			if (!claimConversationDispatch(queryClient, sessionId, requestId, "edit", turnId)) {
+				return Promise.reject(new Error("Conversation work is already being sent for this session."));
+			}
+			try {
+			await editMessage.mutateAsync({
+				requestId,
+				sourceTurnId: turnId,
+				targetSessionId: sessionId,
+				text,
+			});
+			return { status: "accepted" };
+			} catch (error) {
+				const outcome = editNonAcceptance(error);
+				if (outcome) return outcome;
+				throw error;
+			}
+		},
+		editMessagePending:
+			trackedDispatch?.operation === "edit" ||
+			(editMessage.isPending && editTargetsCurrentSession),
+		editMessageError:
+			editTargetsCurrentSession && editMessage.error
+				? apiErrorMessage(editMessage.error)
+				: undefined,
 		activateBranch: (branchId: string) => activateBranch.mutateAsync(branchId),
 		activateBranchPending: activateBranch.isPending,
-		activateBranchError: activateBranch.error
-			? apiErrorMessage(activateBranch.error)
-			: undefined,
-		steer: (text: string) => steer.mutateAsync(text),
+		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
+		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean): Promise<ChatSteerOutcome> => {
+			try {
+				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly });
+				return { status: "accepted" };
+			} catch (error) {
+				const outcome = steerNonAcceptance(error);
+				if (outcome) return outcome;
+				throw error;
+			}
+		},
 		promoteQueuedTurn: (turnId: string) => promoteQueuedTurn.mutateAsync(turnId),
+		cancelQueuedTurn: (turnId: string) => cancelQueuedTurn.mutateAsync(turnId),
+		editQueuedTurn: (turnId: string, text: string, options?: QueuedMessageEditOptions) => {
+			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
+			return editQueuedTurn.mutateAsync({ turnId, text, ...options });
+		},
+		reorderQueuedTurns: (turnIds: string[]) => {
+			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
+			return reorderQueuedTurns.mutateAsync(turnIds);
+		},
+		promoteQueuedTurnPendingTurnId: promoteQueuedTurn.isPending
+			? promoteQueuedTurn.variables
+			: undefined,
+		cancelQueuedTurnPendingTurnId: cancelQueuedTurn.isPending ? cancelQueuedTurn.variables : undefined,
+		editQueuedTurnPendingTurnId: editQueuedTurn.isPending ? editQueuedTurn.variables?.turnId : undefined,
+		sendPending: send.isPending && sendTargetsCurrentSession,
 		steerPending: steer.isPending,
 		/**
 		 * Why the last steer was refused, or undefined. Only the retryable and
@@ -464,17 +1062,27 @@ export function useConversationCommands(sessionId: string | undefined) {
 		steerUnsupported: apiErrorCode(steer.error) === "CHAT_STEER_UNSUPPORTED",
 		reloadMcpServers: () => reloadMcp.mutateAsync(),
 		reloadingMcpServers: reloadMcp.isPending,
-		mcpReloadUnsupported:
-			apiErrorCode(reloadMcp.error) === "CHAT_MCP_RELOAD_UNSUPPORTED",
+		mcpReloadUnsupported: apiErrorCode(reloadMcp.error) === "CHAT_MCP_RELOAD_UNSUPPORTED",
 		mcpReloadError:
 			reloadMcp.error && apiErrorCode(reloadMcp.error) !== "CHAT_MCP_RELOAD_UNSUPPORTED"
 				? apiErrorMessage(reloadMcp.error)
 				: undefined,
-		busy: send.isPending || resolve.isPending || resolveInput.isPending || interrupt.isPending,
+		busy:
+			trackedDispatch?.state === "pending" ||
+			(send.isPending && sendTargetsCurrentSession) ||
+			resolve.isPending ||
+			resolveInput.isPending ||
+			(interrupt.isPending && interruptTargetsCurrentSession),
 		error:
-			send.error || resolve.error || interrupt.error || chooseSettings.error
+			(sendTargetsCurrentSession && send.error) ||
+			resolve.error ||
+			(interruptTargetsCurrentSession && interrupt.error) ||
+			chooseSettings.error
 				? apiErrorMessage(
-						send.error ?? resolve.error ?? interrupt.error ?? chooseSettings.error,
+							(sendTargetsCurrentSession ? send.error : undefined) ??
+							resolve.error ??
+							(interruptTargetsCurrentSession ? interrupt.error : undefined) ??
+							chooseSettings.error,
 					)
 				: undefined,
 	};
@@ -493,6 +1101,8 @@ function steerRefusal(error: unknown): string | undefined {
 	switch (code) {
 		case "CHAT_NO_ACTIVE_TURN":
 			return "The turn finished before this landed. Send it as a message instead.";
+		case "CHAT_INTERFACE_TRANSITION":
+			return "The session is switching interfaces. This guidance was not delivered; send it after the switch finishes.";
 		case "CHAT_TURN_NOT_STEERABLE":
 			return `${apiErrorMessage(error)} Try again once it finishes.`;
 		case "CHAT_STEER_UNSUPPORTED":
@@ -503,6 +1113,47 @@ function steerRefusal(error: unknown): string | undefined {
 		default:
 			return apiErrorMessage(error);
 	}
+}
+
+const DEFINITIVE_STEER_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_NO_ACTIVE_TURN",
+	"CHAT_INTERFACE_TRANSITION",
+	"CHAT_TURN_NOT_STEERABLE",
+	"CHAT_STEER_UNSUPPORTED",
+	"CHAT_STEER_TEXT_REQUIRED",
+	"CHAT_UNSUPPORTED_STEER_CONTENT",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+function steerNonAcceptance(error: unknown): ChatSteerOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_STEER_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return {
+		status: "not-accepted",
+		reason: steerRefusal(error) ?? apiErrorMessage(error),
+	};
+}
+
+const DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES = new Set([
+	"CHAT_EDIT_REJECTED",
+	"CHAT_EDIT_UNSUPPORTED",
+	"CHAT_EDIT_BUSY",
+	"CHAT_EDIT_TURN_INVALID",
+	"CHAT_PROVIDER_REFUSED",
+	"SESSION_MODE_MISMATCH",
+	"SESSION_NOT_FOUND",
+	"CHAT_CONTROLLER_NOT_READY",
+	"CHAT_AUTH_REQUIRED",
+]);
+
+function editNonAcceptance(error: unknown): ChatEditOutcome | undefined {
+	const code = apiErrorCode(error);
+	if (!code || !DEFINITIVE_EDIT_NON_ACCEPTANCE_CODES.has(code)) return undefined;
+	return { status: "not-accepted", reason: apiErrorMessage(error) };
 }
 
 /**
@@ -522,7 +1173,9 @@ export function useConversationModels(sessionId: string | undefined, enabled: bo
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET(
 				"/api/v1/sessions/{sessionId}/conversation/models",
-				{ params: { path: { sessionId: sessionId as string } } },
+				{
+					params: { path: { sessionId: sessionId as string } },
+				},
 			);
 			if (error) throw error;
 			return (data?.models ?? []) as ChatModel[];
@@ -563,7 +1216,9 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET(
 				"/api/v1/sessions/{sessionId}/conversation/config-options",
-				{ params: { path: { sessionId: sessionId as string } } },
+				{
+					params: { path: { sessionId: sessionId as string } },
+				},
 			);
 			if (error) throw error;
 			return (data?.options ?? []) as ChatConfigOption[];
@@ -582,6 +1237,7 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 			optionId: string;
 			value: ChatConfigOptionValue;
 		}) => {
+			const controllerEpoch = conversationProviderCatalogEpoch(queryClient, sessionId as string);
 			// A read already in flight when the user picked would otherwise land
 			// after this mutation's setQueryData and put the pre-change catalog
 			// back, reverting the picker to the old value until the next poll.
@@ -590,23 +1246,35 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 				"/api/v1/sessions/{sessionId}/conversation/config-options/{configId}",
 				{
 					params: {
-						path: { sessionId: sessionId as string, configId: optionId },
+						path: {
+							sessionId: sessionId as string,
+							configId: optionId,
+						},
 					},
 					body: value,
 				},
 			);
 			if (error) throw error;
-			return (data?.options ?? []) as ChatConfigOption[];
+			return {
+				controllerEpoch,
+				options: (data?.options ?? []) as ChatConfigOption[],
+			};
 		},
-		onSuccess: (options) => queryClient.setQueryData(queryKey, options),
+		onSuccess: ({ controllerEpoch, options }) => {
+			if (controllerEpoch !== conversationProviderCatalogEpoch(queryClient, sessionId as string)) {
+				return;
+			}
+			queryClient.setQueryData(queryKey, options);
+		},
 	});
 
 	return {
 		options: query.data ?? [],
-		setOption: (optionId: string, value: ChatConfigOptionValue) =>
-			mutation.mutateAsync({ optionId, value }),
+		loaded: query.isSuccess,
+		setOption: async (optionId: string, value: ChatConfigOptionValue) =>
+			(await mutation.mutateAsync({ optionId, value })).options,
 		pending: mutation.isPending,
-		error: mutation.error ? apiErrorMessage(mutation.error) : undefined,
+		error: mutation.error || query.error ? apiErrorMessage(mutation.error ?? query.error) : undefined,
 	};
 }
 
@@ -623,20 +1291,33 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
  */
 export function useConversationSkills(sessionId: string | undefined, enabled: boolean) {
 	const query = useQuery({
-		queryKey: ["conversation-skills", sessionId ?? ""],
+		queryKey: conversationSkillsQueryKey(sessionId ?? ""),
 		enabled: Boolean(sessionId) && enabled,
 		// ACP agents publish this catalog asynchronously and may replace it later.
 		// Polling also keeps Codex project skills current without introducing a
 		// second renderer event channel solely for ephemeral provider metadata. The
 		// catalog can be large and changes rarely, so it intentionally refreshes much
 		// less often than conversation state.
-		staleTime: 60 * 1000,
-		refetchInterval: 60 * 1000,
+		staleTime: SKILLS_POLL_INTERVAL_MS,
+		// The catalog is only served once a live controller owns the session; before
+		// then the daemon answers 409 CHAT_CONTROLLER_NOT_READY. A cached "ready"
+		// snapshot can outlive the controller (a restart or interface switch), so a
+		// mounted query keeps `enabled` true and would re-request the catalog on every
+		// interval, turning one readiness conflict into a steady 409 stream. Stop the
+		// poll while that conflict stands; readiness returning re-enables the query
+		// (the controller-gated `enabled`) or invalidates it, which refetches once and
+		// resumes polling on success.
+		refetchInterval: (query) =>
+			apiErrorCode(query.state.error) === "CHAT_CONTROLLER_NOT_READY"
+				? false
+				: SKILLS_POLL_INTERVAL_MS,
 		retry: false,
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET(
 				"/api/v1/sessions/{sessionId}/conversation/skills",
-				{ params: { path: { sessionId: sessionId as string } } },
+				{
+					params: { path: { sessionId: sessionId as string } },
+				},
 			);
 			if (error) throw error;
 			return (data?.skills ?? []) as ChatSkill[];
@@ -655,6 +1336,7 @@ export function useConversationSkills(sessionId: string | undefined, enabled: bo
  * complete list.
  */
 export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: boolean) {
+	const queryClient = useQueryClient();
 	const query = useQuery({
 		queryKey: ["workspace-file-paths", sessionId ?? ""],
 		enabled: Boolean(sessionId) && enabled,
@@ -664,10 +1346,9 @@ export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: bo
 		staleTime: 30 * 1000,
 		retry: false,
 		queryFn: async () => {
-			const { data, error } = await apiClient.GET(
-				"/api/v1/sessions/{sessionId}/workspace/files",
-				{ params: { path: { sessionId: sessionId as string } } },
-			);
+			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/workspace/files", {
+				params: { path: { sessionId: sessionId as string } },
+			});
 			if (error) throw error;
 			return {
 				// A deleted path cannot be read, so offering it would insert a
@@ -679,6 +1360,10 @@ export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: bo
 			};
 		},
 	});
+	useEffect(() => {
+		if (!sessionId || !enabled) return;
+		return subscribeWorkspaceFileChanges(sessionId, queryClient);
+	}, [enabled, queryClient, sessionId]);
 	return {
 		paths: query.data?.paths ?? [],
 		truncated: query.data?.truncated ?? false,
@@ -697,10 +1382,10 @@ export function useStageAttachments(sessionId: string | undefined) {
 	return useCallback(
 		async (attachments: { mimeType: string; data: string }[]): Promise<string[]> => {
 			if (!sessionId || attachments.length === 0) return [];
-			const { data, error } = await apiClient.POST(
-				"/api/v1/sessions/{sessionId}/attachments",
-				{ params: { path: { sessionId } }, body: { attachments } },
-			);
+			const { data, error } = await apiClient.POST("/api/v1/sessions/{sessionId}/attachments", {
+				params: { path: { sessionId } },
+				body: { attachments },
+			});
 			if (error) throw error;
 			return data?.paths ?? [];
 		},
@@ -732,6 +1417,7 @@ function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 		latestSequence: wire.latestSequence,
 		oldestSequence: wire.oldestSequence ?? wire.latestSequence + 1,
 		hasMoreBefore: wire.hasMoreBefore ?? false,
+		nativeForkAvailableAfterSequence: wire.nativeForkAvailableAfterSequence ?? 0,
 		settings: {
 			model: wire.settings?.model || undefined,
 			reasoningEffort: wire.settings?.reasoningEffort || undefined,
@@ -786,6 +1472,12 @@ function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 		capabilities: wire.capabilities?.length ? wire.capabilities : undefined,
 		activeBranchId: wire.activeBranchId || undefined,
 		branchedFromEarlierMessage: wire.branchedFromEarlierMessage ?? undefined,
+		branchMaterialization: wire.branchMaterialization
+			? {
+					strategy: wire.branchMaterialization.strategy,
+					replayTruncated: wire.branchMaterialization.replayTruncated,
+				}
+			: undefined,
 		branchPoints: (wire.branchPoints ?? []).map((point) => ({
 			turnId: point.turnId,
 			position: point.position,
@@ -837,10 +1529,50 @@ function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 	};
 }
 
+function applyQueuedTurnOrder(
+	snapshot: ConversationSnapshot,
+	fifoTurnIds: readonly string[],
+): ConversationSnapshot {
+	const queuedTurns = snapshot.turns.filter((turn) => turn.state === "queued");
+	if (queuedTurns.length !== fifoTurnIds.length) return snapshot;
+
+	const queuedById = new Map(queuedTurns.map((turn) => [turn.id, turn]));
+	const requestedAts = [...queuedTurns]
+		.sort((left, right) => left.requestedAt.localeCompare(right.requestedAt))
+		.map((turn) => turn.requestedAt);
+	const reorderedQueued = fifoTurnIds.flatMap((turnId, index) => {
+		const turn = queuedById.get(turnId);
+		return turn
+			? [{ ...turn, requestedAt: requestedAts[index] ?? turn.requestedAt }]
+			: [];
+	});
+	if (reorderedQueued.length !== queuedTurns.length) return snapshot;
+
+	const queuedIds = new Set(fifoTurnIds);
+	const otherTurns = snapshot.turns.filter((turn) => !queuedIds.has(turn.id));
+	return {
+		...snapshot,
+		turns: [...otherTurns, ...reorderedQueued].sort((left, right) =>
+			left.requestedAt.localeCompare(right.requestedAt),
+		),
+	};
+}
+
+function applyQueuedTurnOrderToPages(
+	data: InfiniteData<ConversationSnapshot>,
+	fifoTurnIds: readonly string[],
+): InfiniteData<ConversationSnapshot> {
+	if (data.pages.length === 0) return data;
+	return {
+		...data,
+		pages: data.pages.map((page, index) =>
+			index === 0 ? applyQueuedTurnOrder(page, fifoTurnIds) : page,
+		),
+	};
+}
+
 /** Merge the newest live page with any older pages loaded on demand. */
-function mergeConversationPages(
-	pages: ConversationSnapshot[],
-): ConversationSnapshot | undefined {
+function mergeConversationPages(pages: ConversationSnapshot[]): ConversationSnapshot | undefined {
 	const live = pages[0];
 	if (!live) return undefined;
 
@@ -913,7 +1645,11 @@ function readDecisions(detail: Record<string, unknown>): DecisionOption[] | unde
 	const options: DecisionOption[] = [];
 	for (const entry of raw) {
 		if (entry && typeof entry === "object" && "id" in entry) {
-			const option = entry as { id?: unknown; label?: unknown; kind?: unknown };
+			const option = entry as {
+				id?: unknown;
+				label?: unknown;
+				kind?: unknown;
+			};
 			if (typeof option.id === "string" && option.id !== "") {
 				const kind = isDecisionKind(option.kind) ? option.kind : undefined;
 				options.push({

@@ -34,7 +34,7 @@ describe("initTelemetry recovery", () => {
 					getBootstrap: vi.fn(async () => {
 						calls++;
 						if (calls === 1) throw new Error("transient bootstrap failure");
-						return { appVersion: "1.2.3", platform: "darwin", distinctId: "ins_test", disabledEvents: [] };
+						return { appVersion: "1.2.3", platform: "darwin", distinctId: "ins_test", disabledEvents: [], eventsEnabled: true, consentGeneration: "generation-1" };
 					}),
 				},
 				updateSettings: { get: vi.fn(async () => ({})) },
@@ -66,5 +66,26 @@ describe("initTelemetry recovery", () => {
 		expect(await initTelemetry()).toBe(false);
 		// Memoized: the withheld result is not re-attempted.
 		expect(getBootstrap).toHaveBeenCalledTimes(1);
+	});
+
+	it("initializes PostHog when failure reporting is disabled", async () => {
+		mockPosthog();
+		vi.doMock("./bridge", () => ({
+			aoBridge: {
+				telemetry: {
+					getBootstrap: vi.fn(async () => ({
+						appVersion: "1.2.3", platform: "darwin", distinctId: "ins_test",
+						disabledEvents: [], eventsEnabled: false, consentGeneration: "generation-off",
+					})),
+				},
+				updateSettings: { get: vi.fn(async () => ({})) },
+			},
+		}));
+
+		const { applyRendererTelemetryPolicy, clearRendererTelemetryQueues, initTelemetry } = await import("./telemetry");
+		expect(await initTelemetry()).toBe(true);
+		expect(posthogStub.init).toHaveBeenCalledOnce();
+		expect(() => clearRendererTelemetryQueues()).not.toThrow();
+		expect(() => applyRendererTelemetryPolicy(false)).not.toThrow();
 	});
 });

@@ -17,11 +17,13 @@ func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
 }
 
 // respawnPaneArgs replaces the process in the session's only pane while keeping
-// the tmux session and terminal handle intact.
+// the tmux session and terminal handle intact. The bare session target resolves
+// to the active window/pane regardless of the user's base-index /
+// pane-base-index (a hardcoded :0.0 misses when either is 1, see #4656).
 func respawnPaneArgs(id, cwd, shellPath, launchCmd string) []string {
 	return []string{
 		"respawn-pane", "-k",
-		"-t", id + ":0.0",
+		"-t", id,
 		"-c", cwd,
 		shellPath, "-c", launchCmd,
 	}
@@ -55,10 +57,50 @@ func setWindowSizeLargestArgs(id string) []string {
 	return []string{"set-option", "-t", id, "window-size", "largest"}
 }
 
+// setDetachOnDestroyOnArgs makes tmux detach (exit) the attached client when
+// the session is destroyed instead of moving it onto another session. That is
+// tmux's default, but a user tmux.conf with `set -g detach-on-destroy off`
+// applies to AO's server too, and AO's attach client would then be reparented
+// onto one of the user's own sessions when an AO session is destroyed: the
+// embedded terminal keeps streaming and every keystroke leaks into that
+// session (issue #4223). A session-scoped option overrides the global one for
+// AO-owned sessions only.
+//
+// Unlike the other pane-targeting calls in this file, this one uses the exact-
+// match target `=<id>:` rather than a plain session name. This call can run
+// long after the session was created (on every Destroy, and on first legacy-
+// socket adoption), by which point the session may already be gone: a plain
+// target then falls back to tmux's unique-prefix matching and can silently
+// re-target a different, unrelated session whose name happens to start with
+// this one (verified against real tmux: after killing session "foo", `tmux
+// set-option -t foo ...` silently retargeted the unrelated session "foobar").
+// `=<id>` alone is rejected by pane-targeting commands like set-option (it
+// needs a window/pane component); appending the empty `:` supplies one and
+// keeps the match exact, letting the window/pane default to the current one.
+func setDetachOnDestroyOnArgs(id string) []string {
+	return []string{"set-option", "-t", exactSessionTarget(id) + ":", "detach-on-destroy", "on"}
+}
+
+// showDetachOnDestroyArgs reads back the session-scoped detach-on-destroy
+// value tmux actually holds for id, so callers can confirm setDetachOnDestroyOnArgs
+// took effect instead of trusting its exit code alone (see enforceDetachOnDestroy).
+// Same exact-match target as setDetachOnDestroyOnArgs, for the same reason.
+func showDetachOnDestroyArgs(id string) []string {
+	return []string{"show-options", "-t", exactSessionTarget(id) + ":", "-v", "detach-on-destroy"}
+}
+
 // panePIDArgs returns the pid of tmux's direct pane process. AO walks its
-// descendants to find the exact supervisor for the current launch.
+// descendants to find the exact supervisor for the current launch. The bare
+// session target keeps this independent of base-index / pane-base-index
+// (see respawnPaneArgs, #4656).
 func panePIDArgs(id string) []string {
-	return []string{"display-message", "-p", "-t", id + ":0.0", "#{pane_pid}"}
+	return []string{"display-message", "-p", "-t", id, "#{pane_pid}"}
+}
+
+// paneDeadArgs includes every pane so a retained dead pane cannot hide another
+// running child in the same runtime. Session targeting requires an exact match.
+func paneDeadArgs(id string) []string {
+	return []string{"list-panes", "-s", "-t", exactSessionTarget(id), "-F", "#{pane_dead}"}
 }
 
 // paneCurrentPathArgs prints tmux's cwd for the session's active pane. Create
