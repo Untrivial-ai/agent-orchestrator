@@ -113,6 +113,10 @@ type Store interface {
 	RedeemProjectShareLink(context.Context, domain.Principal, string, string) (domain.SharedProject, error)
 	ListSharedProjects(context.Context, domain.Principal) ([]domain.SharedProject, error)
 	ListSharedProjectSessions(context.Context, domain.Principal, string, string) ([]domain.Session, error)
+	AcceptNotificationEvent(context.Context, string, string, string, int64, domain.AgentNotificationEvent) (domain.NotificationAcceptance, error)
+	ListNotifications(context.Context, domain.Principal, string, domain.NotificationFilter) (domain.NotificationPage, error)
+	ListNotificationEvents(context.Context, domain.Principal, string, int64, int) ([]domain.NotificationEvent, bool, error)
+	MarkNotificationsRead(context.Context, domain.Principal, string, []string) (int64, error)
 }
 
 // WorkerTokens issues and verifies the short-lived credentials sandbox workers
