@@ -421,7 +421,10 @@ func TestAgentCommandFactoryBuildsHarnessResumeCommands(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			dataDir := t.TempDir()
-			builder := workerexec.HarnessBuilder{DataDir: dataDir}
+			builder := workerexec.HarnessBuilder{
+				DataDir:    dataDir,
+				CodexLogin: func(_, _, _, _ string) error { return nil },
+			}
 			nativeID := map[string]string{
 				"codex":       "native-thread-1",
 				"claude-code": "native-claude-1",
