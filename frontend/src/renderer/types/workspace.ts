@@ -313,6 +313,15 @@ export function sessionIsActive(session: WorkspaceSession): boolean {
 	return session.isTerminated !== true && session.status !== "terminated";
 }
 
+/**
+ * Whether the agent PROCESS is gone while the session ROW is still alive —
+ * Ctrl+C, `/exit`, a usage limit. Recovered with `resume-agent`, not `restore`.
+ * Not `sessionIsActive`, which reports row liveness and calls this state alive.
+ */
+export function sessionAgentExited(session: WorkspaceSession | undefined): boolean {
+	return Boolean(session && session.activity?.state === "exited" && sessionIsActive(session));
+}
+
 export function sessionNeedsAttention(session: WorkspaceSession): boolean {
 	return presentationAttentionZone(session) === "action";
 }

@@ -3335,7 +3335,7 @@ export interface components {
         EnsureAgentReadinessRequest: {
             agentIds?: string[];
             /** @enum {string} */
-            purpose: "display" | "launch";
+            purpose: "display" | "settings" | "launch";
         };
         EnsureCodexAccountsRequest: {
             accountIds?: string[];

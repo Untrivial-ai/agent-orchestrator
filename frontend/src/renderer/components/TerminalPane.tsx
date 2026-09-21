@@ -15,7 +15,8 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { terminalTargetBelongsToSession, type TerminalTarget } from "../types/terminal";
-import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
+import { sessionAgentExited, sessionIsActive, type WorkspaceSession } from "../types/workspace";
+import { ResumeAgentControl } from "./ResumeAgentControl";
 import type { Theme } from "../stores/ui-store";
 import {
 	useTerminalSession,
@@ -1216,14 +1217,18 @@ function AttachedTerminal({
 		cloudRevealedRef.current = false;
 	}
 	if (hasAttached && replaySettled && !replayPaintPending) cloudRevealedRef.current = true;
-	const showEndedStatePreview = state === "exited" || canRestoreSession;
+	// Also when the agent exited but its pane survived on a keep-alive: the mux
+	// never reports "exited" there, so without this the strip — and the resume
+	// action on it — stays hidden in exactly the state that needs it (#3875).
+	const showEndedStatePreview =
+		state === "exited" || canRestoreSession || (terminalTarget?.kind === "worker" && sessionAgentExited(session));
 	const isCloudConnecting =
 		Boolean(attachSession?.cloud) &&
 		!isCloudConnectError &&
 		!showEmptyState &&
 		!showEndedStatePreview &&
 		!cloudRevealedRef.current;
-	const showEndedState = (state === "exited" || canRestoreSession) && !isBoxComingUp;
+	const showEndedState = showEndedStatePreview && !isBoxComingUp;
 	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"
@@ -1239,6 +1244,7 @@ function AttachedTerminal({
 					error={restoreError}
 					isRestoring={isRestoring}
 					onRestore={restoreSession}
+					session={session}
 					variant={
 						terminalTarget?.kind === "reviewer" ? "reviewer" : terminalTarget?.kind === "shell" ? "shell" : "session"
 					}
@@ -1350,10 +1356,11 @@ type TerminalEndedStripProps = {
 	error?: string;
 	isRestoring: boolean;
 	onRestore: () => void;
+	session?: WorkspaceSession;
 	variant: "reviewer" | "session" | "shell";
 };
 
-function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, variant }: TerminalEndedStripProps) {
+function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, session, variant }: TerminalEndedStripProps) {
 	const { t } = useTranslation();
 	const message = canRestore
 		? t("terminal.restoreToContinue")
@@ -1373,6 +1380,7 @@ function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, variant
 					<div className="mt-0.5 truncate text-xs text-muted-foreground">{message}</div>
 				</div>
 				{error && <div className="max-w-content-max truncate text-xs text-destructive">{error}</div>}
+				{variant === "session" && session ? <ResumeAgentControl session={session} /> : null}
 				{canRestore && (
 					<Tooltip>
 						<TooltipTrigger asChild>

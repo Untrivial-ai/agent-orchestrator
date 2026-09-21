@@ -164,33 +164,15 @@ export function sessionInterfaceTransitionQueryKey(sessionId: string) {
 	return ["session-interface-transition", sessionId] as const;
 }
 
-/**
- * One bounded durable row drives every client. Polling is intentionally only
- * eager while a handoff is active; idle sessions do not create background
- * traffic and the existing session CDC stream still refreshes the committed
- * mode in the workspace model.
- */
-export function useSessionInterfaceTransition(
+function useSessionInterfaceTransitionStatusQuery(
 	sessionId: string | undefined,
-	// undefined: session row is still resolving; null: resolved local session.
-	// This prevents unresolved Cloud tabs from probing the local daemon.
+	cloudCp: ReturnType<typeof useCloudCp>,
 	cloud?: { orgId: string } | null,
+	hasSessionContext = false,
 ) {
-	const queryClient = useQueryClient();
-	const cloudCp = useCloudCp();
-	// Keep the two-argument call site backwards-compatible for local sessions.
-	// SessionView deliberately passes `undefined` while a tab is unresolved, so
-	// distinguish an omitted context from that explicit unresolved value.
-	const hasSessionContext = arguments.length >= 2;
 	const isCloud = Boolean(cloud && cloudCp.ready);
 	const isLocal = cloud === null || !hasSessionContext;
-	const settledRef = useRef<string>("");
-	const refreshAttemptRef = useRef(0);
-	const [refreshingTransition, setRefreshingTransition] = useState<{
-		attempt: number;
-		key: string;
-	}>();
-	const query = useQuery({
+	return useQuery({
 		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
 		enabled: Boolean(sessionId && (isCloud || (isLocal && hasTrustedApiBaseUrl()))),
 		queryFn: async () => {
@@ -230,6 +212,49 @@ export function useSessionInterfaceTransition(
 		},
 		retry: 1,
 	});
+}
+
+export function useSessionInterfaceTransitionStatus(sessionId: string | undefined) {
+	const query = useSessionInterfaceTransitionStatusQuery(sessionId, useCloudCp());
+	return {
+		status: query.data,
+		transition: query.data?.transition,
+		isLoading: query.isLoading,
+		statusError: query.error ? apiErrorMessage(query.error) : undefined,
+	};
+}
+
+/**
+ * One bounded durable row drives every client. Polling is intentionally only
+ * eager while a handoff is active; idle sessions do not create background
+ * traffic and the existing session CDC stream still refreshes the committed
+ * mode in the workspace model.
+ */
+export function useSessionInterfaceTransition(
+	sessionId: string | undefined,
+	// undefined: session row is still resolving; null: resolved local session.
+	// This prevents unresolved Cloud tabs from probing the local daemon.
+	cloud?: { orgId: string } | null,
+) {
+	const queryClient = useQueryClient();
+	const cloudCp = useCloudCp();
+	// Keep the two-argument call site backwards-compatible for local sessions.
+	// SessionView deliberately passes `undefined` while a tab is unresolved, so
+	// distinguish an omitted context from that explicit unresolved value.
+	const hasSessionContext = arguments.length >= 2;
+	const isCloud = Boolean(cloud && cloudCp.ready);
+	const settledRef = useRef<string>("");
+	const refreshAttemptRef = useRef(0);
+	const [refreshingTransition, setRefreshingTransition] = useState<{
+		attempt: number;
+		key: string;
+	}>();
+	const query = useSessionInterfaceTransitionStatusQuery(
+		sessionId,
+		cloudCp,
+		cloud,
+		hasSessionContext,
+	);
 
 	const start = useMutation({
 		mutationKey: startInterfaceTransitionMutationKey,

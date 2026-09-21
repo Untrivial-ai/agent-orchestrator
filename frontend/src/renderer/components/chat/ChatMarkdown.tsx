@@ -50,6 +50,7 @@ import { AppLink } from "../AppLink";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
+import { ChatImage, ChatImageGallery, ChatImageLinkScope, isImageOnlyParagraph } from "./ChatImage";
 import "./code-theme.css";
 
 // Activity titles live inside disclosure buttons: keep inline formatting, but
@@ -249,7 +250,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 			rel="noreferrer noopener"
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
-			{children}
+			<ChatImageLinkScope>{children}</ChatImageLinkScope>
 		</AppLink>
 	);
 }
@@ -291,7 +292,13 @@ const COMPONENTS: Components = {
 		</h6>
 	),
 
-	p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{compactEmoji(children)}</p>,
+	// A paragraph of nothing but images is a set of pictures, not prose.
+	p: ({ children, node }) =>
+		isImageOnlyParagraph(node) ? (
+			<ChatImageGallery>{children}</ChatImageGallery>
+		) : (
+			<p className="my-2 first:mt-0 last:mb-0">{compactEmoji(children)}</p>
+		),
 
 	ul: ({ children }) => <ul className="my-2 ml-4 list-disc space-y-1 first:mt-0">{children}</ul>,
 	ol: ({ children }) => (
@@ -366,7 +373,5 @@ const COMPONENTS: Components = {
 	// and right-click offers the system browser and copying the address.
 	a: MarkdownLink,
 
-	img: ({ src, alt }) => (
-		<img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} className="my-2 max-w-full rounded-md border border-border" />
-	),
+	img: ChatImage,
 };
