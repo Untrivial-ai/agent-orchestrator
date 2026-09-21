@@ -10,6 +10,7 @@ import { CenterPanelShell } from "../components/CenterPanelShell";
 import { DaemonFailureBanner } from "../components/DaemonFailureBanner";
 import { DaemonStartupLoader } from "../components/DaemonStartupLoader";
 import { NotificationRuntime } from "../components/NotificationCenter";
+import { CloudNotificationRuntime } from "../components/CloudNotificationRuntime";
 import { TrayRuntime } from "../components/TrayRuntime";
 import { GlobalNewTaskDialog } from "../components/GlobalNewTaskDialog";
 import { GlobalToast } from "../components/GlobalToast";
@@ -991,6 +992,7 @@ function ShellLayout() {
 			<AppBrowserLinkContext.Provider value={canOpenBrowserLink ? openBrowserLink : undefined}>
 			<SessionTopbarProvider>
 				<NotificationRuntime />
+				<CloudNotificationRuntime />
 				<TrayRuntime />
 				{isDragActive ? (
 					<div

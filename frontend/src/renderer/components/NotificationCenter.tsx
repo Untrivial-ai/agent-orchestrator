@@ -47,6 +47,7 @@ import { cn } from "../lib/utils";
 import { TopbarButton } from "./TopbarButton";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { CloudNotificationList } from "./CloudNotificationList";
 
 type NotificationCenterProps = {
 	style?: React.CSSProperties;
@@ -423,8 +424,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 					<NotificationEmpty icon={Inbox} message={t("notify.loading")} />
 				) : isEmpty ? (
 					<NotificationEmpty icon={CheckCheck} message={t("notify.emptyAll")} />
-				) : (
-					<div
+					) : (
+						<>
+						<div
 						aria-busy={allQuery.isFetchingNextPage}
 						className="board-scrollbar max-h-notification-max-height overflow-y-auto overscroll-contain py-1.5"
 						onScroll={loadEarlierOnScroll}
@@ -484,6 +486,8 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 							</div>
 						) : null}
 					</div>
+						<CloudNotificationList />
+						</>
 				)}
 						</>
 					)}
