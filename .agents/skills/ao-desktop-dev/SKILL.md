@@ -15,6 +15,7 @@ Ask only when the request does not make the desired data source clear.
 - Use **real-data mode** only when the user explicitly asks to see this machine's actual AO projects or sessions. Start the checkout's dev daemon on the isolated dev port/run file while pointing `AO_DATA_DIR` at the real AO data directory. This is a separate daemon process using real data; do not describe it as the installed app's daemon.
 - Never try to attach an unpackaged Electron app directly to a packaged daemon from another checkout. The supervisor intentionally rejects daemon identity mismatches.
 - Warn before actions in real-data mode that create, terminate, rename, or otherwise mutate sessions. Merely opening and inspecting the UI is expected.
+- Real-data mode reads the same database as the installed app, so both windows show the same projects and sessions. Quit the packaged app first where possible: two daemons sharing one SQLite database can cross-talk, and acting on the wrong window runs unmerged code against real sessions. The dev window is marked with an `Agent Orchestrator (dev)` title, the default Electron dock icon, and an in-app `dev` badge — verify those markers before acting.
 
 ## Preflight
 

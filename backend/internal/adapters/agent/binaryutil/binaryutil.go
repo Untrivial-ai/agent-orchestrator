@@ -54,6 +54,11 @@ type BinarySpec struct {
 	// as nvm, Volta, and fnm. Keep this explicit so non-Node adapters don't pick
 	// up unrelated same-named npm CLIs.
 	NodeManaged bool
+
+	// ValidateIdentity optionally confirms that a resolved executable belongs to
+	// the adapter. It must be bounded and honor ctx; a false result rejects the
+	// candidate and lets ResolveBinary continue through the ordered candidates.
+	ValidateIdentity func(ctx context.Context, path string) bool
 }
 
 // WinBase names the base directory a Windows candidate path is joined onto.
@@ -73,10 +78,11 @@ type WinPath struct {
 }
 
 // ResolveBinary returns the path to spec's binary, searching PATH then the
-// platform's candidate install locations. It returns a wrapped
-// ports.ErrAgentBinaryNotFound when nothing matches, so callers surface a clear
-// "command not found" rather than launching an empty argv. ctx cancellation is
-// honored between probes.
+// platform's candidate install locations. Without identity validation it keeps
+// the immediate PATH fast path used by ordinary callers. When validation is
+// configured, each PATH hit is checked before the slower fallback enumeration
+// so a valid PATH binary still returns promptly and an invalid collision can
+// recover from every supported install location.
 func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -87,21 +93,97 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 		names = spec.WinNames
 	}
 
+	var pathHits map[string]struct{}
+	if spec.ValidateIdentity != nil {
+		pathHits = make(map[string]struct{})
+	}
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 		if path, err := exec.LookPath(name); err == nil && path != "" {
-			return path, nil
+			if spec.ValidateIdentity == nil {
+				return path, nil
+			}
+			pathHits[candidateKey(path)] = struct{}{}
+			if spec.ValidateIdentity(ctx, path) {
+				return path, nil
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 		}
 	}
 
+	candidates, err := resolveBinaryCandidates(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if _, alreadyChecked := pathHits[candidateKey(candidate)]; alreadyChecked {
+			continue
+		}
+		if !hookutil.IsExecutableFile(candidate) {
+			continue
+		}
+		if spec.ValidateIdentity == nil || spec.ValidateIdentity(ctx, candidate) {
+			return candidate, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+	}
+
+	return "", fmt.Errorf("%s: %w", spec.Label, ports.ErrAgentBinaryNotFound)
+}
+
+// resolveBinaryCandidates returns every binary location in the resolver's
+// existing order: PATH hits first, followed by all configured platform and
+// package-manager candidates. Results are deduplicated but are not required to
+// exist; callers decide whether and how to validate each path. ctx cancellation
+// is honored while discovering candidates.
+func resolveBinaryCandidates(ctx context.Context, spec BinarySpec) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var candidates []string
+	for _, name := range namesForPlatform(spec) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if path, err := exec.LookPath(name); err == nil && path != "" {
+			candidates = appendUniqueCandidate(candidates, path)
+		}
+	}
+
+	fallbacks, err := binaryFallbackCandidates(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range fallbacks {
+		candidates = appendUniqueCandidate(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func binaryFallbackCandidates(ctx context.Context, spec BinarySpec) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var candidates []string
 	if runtime.GOOS == "windows" {
 		home, _ := os.UserHomeDir()
 		appData := os.Getenv("APPDATA")
 		localAppData := os.Getenv("LOCALAPPDATA")
 		for _, wp := range spec.WinPaths {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			var base string
 			switch wp.Base {
 			case WinAppData:
@@ -116,32 +198,54 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 			}
 			candidates = append(candidates, filepath.Join(append([]string{base}, wp.Parts...)...))
 		}
-		candidates = append(candidates, WindowsPackageManagerBinCandidates(executableNames(spec)...)...)
-	} else {
-		candidates = append(candidates, spec.UnixPaths...)
-		if home, err := os.UserHomeDir(); err == nil {
-			candidates = append(candidates, joinAll(home, spec.UnixHomePaths)...)
-			candidates = append(candidates, UnixPackageManagerBinCandidates(home, spec.Names...)...)
-			if spec.NodeManaged {
-				nodeManagerCandidates, err := UnixNodeManagerBinCandidates(ctx, home, spec.Names...)
-				if err != nil {
-					return "", err
-				}
-				candidates = append(candidates, nodeManagerCandidates...)
-			}
-		}
-	}
-
-	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return nil, err
 		}
-		if hookutil.IsExecutableFile(candidate) {
-			return candidate, nil
-		}
+		candidates = append(candidates, WindowsPackageManagerBinCandidates(executableNames(spec)...)...)
+		return candidates, nil
 	}
 
-	return "", fmt.Errorf("%s: %w", spec.Label, ports.ErrAgentBinaryNotFound)
+	candidates = append(candidates, spec.UnixPaths...)
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, joinAll(home, spec.UnixHomePaths)...)
+		candidates = append(candidates, UnixPackageManagerBinCandidates(home, spec.Names...)...)
+		if spec.NodeManaged {
+			nodeManagerCandidates, err := UnixNodeManagerBinCandidates(ctx, home, spec.Names...)
+			if err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, nodeManagerCandidates...)
+		}
+	}
+	return candidates, nil
+}
+
+func namesForPlatform(spec BinarySpec) []string {
+	if runtime.GOOS == "windows" {
+		return spec.WinNames
+	}
+	return spec.Names
+}
+
+func appendUniqueCandidate(candidates []string, candidate string) []string {
+	if candidate == "" {
+		return candidates
+	}
+	key := candidateKey(candidate)
+	for _, existing := range candidates {
+		if candidateKey(existing) == key {
+			return candidates
+		}
+	}
+	return append(candidates, candidate)
+}
+
+func candidateKey(candidate string) string {
+	key := filepath.Clean(candidate)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(key)
+	}
+	return key
 }
 
 // UnixPackageManagerBinCandidates returns cheap, deterministic user-level

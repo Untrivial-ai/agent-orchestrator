@@ -116,7 +116,7 @@ function advanceCard(card: Card): Card {
 const INITIAL_CARDS: Card[] = [
 	{
 		id: "c1", title: "Confirm download labels are platform-aware",
-		branch: "landing/platform-copy", icon: "/app-icons/cursor.svg",
+		branch: "landing/platform-copy", icon: "/app-icons/agents/cursor.svg",
 		column: "working", activity: "Editing copy", activityState: "running",
 		pr: "draft", time: "14m ago",
 	},
@@ -303,7 +303,7 @@ function BoardCard({ card, isPulsing }: { card: Card; isPulsing: boolean }) {
 			<div className="flex items-start gap-2 px-2.5 pb-2 pt-2.5">
 				<div className="relative mt-0.5 h-3 w-3 shrink-0">
 					<img src={card.icon} alt="" width={12} height={12}
-						aria-hidden="true" draggable="false" className="h-3 w-3" />
+						aria-hidden="true" draggable="false" loading="lazy" decoding="async" className="h-3 w-3" />
 					{isWaiting ? (
 						<span aria-hidden="true"
 							className={`pointer-events-none absolute -right-0.5 -top-0.5 flex h-2 w-2 items-center justify-center rounded-full ${badgeColor} text-[6px] font-black leading-none text-white shadow-[0_0_0_1px_var(--preview-card)]`}>
@@ -338,7 +338,7 @@ function BoardCard({ card, isPulsing }: { card: Card; isPulsing: boolean }) {
 							<div className="flex -space-x-1">
 								{card.reviewers.slice(0, 3).map((src) => (
 									<img key={src} src={src} alt="" width={14} height={14}
-										aria-hidden="true" draggable="false"
+										aria-hidden="true" draggable="false" loading="lazy" decoding="async"
 										className="h-[14px] w-[14px] rounded-full ring-1 ring-[var(--preview-card)]" />
 								))}
 							</div>
@@ -487,7 +487,7 @@ export function FleetBoardDemo() {
 					const templates = [
 						{ title: "Throttle agent spawn rate under load",      branch: "backend/spawn-throttle",      icon: "/app-icons/coverage-claude-code.svg" },
 						{ title: "Add keyboard shortcut for session focus",    branch: "feat/session-focus-shortcut", icon: "/app-icons/coverage-codex.svg"       },
-						{ title: "Lazy-load session terminal on first open",   branch: "perf/lazy-terminal",          icon: "/app-icons/cursor.svg"               },
+						{ title: "Lazy-load session terminal on first open",   branch: "perf/lazy-terminal",          icon: "/app-icons/agents/cursor.svg"               },
 						{ title: "Fix memory leak in terminal resize handler", branch: "fix/terminal-resize-leak",    icon: "/app-icons/coverage-claude-code.svg" },
 						{ title: "Migrate auth tokens to short-lived JWTs",   branch: "auth/jwt-rotation",           icon: "/app-icons/opencode.svg"             },
 					];

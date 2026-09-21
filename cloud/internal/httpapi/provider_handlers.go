@@ -14,6 +14,8 @@ import (
 
 const defaultAgentConnectionLabel = "default"
 
+const githubPATProvider = "github"
+
 type providerConnectionStore interface {
 	ListProviderConnections(
 		context.Context,
@@ -75,6 +77,18 @@ type putAgentConnectionRequest struct {
 	Secret         string `json:"secret"`
 }
 
+type putGitHubPATRequest struct {
+	Secret string `json:"secret"`
+}
+
+type validateSavedRepositoryRequest struct {
+	RepositoryURL string `json:"repositoryUrl"`
+}
+
+type validateSavedRepositoryResponse struct {
+	WriteAccess bool `json:"writeAccess"`
+}
+
 type providerConnectionResponse struct {
 	ID              string         `json:"id"`
 	Provider        string         `json:"provider"`
@@ -130,7 +144,12 @@ func (s *Server) putAgentConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.CredentialType = strings.TrimSpace(request.CredentialType)
+	// Codex owns its refreshable auth document. Preserve its opaque bytes; the
+	// normal token normalization would corrupt JSON string values.
 	secret := normalizeAgentCredentialSecret(request.Secret)
+	if agent == "codex" && request.CredentialType == "auth_json" {
+		secret = []byte(request.Secret)
+	}
 	defer clear(secret)
 	request.Secret = ""
 	if len(secret) == 0 || len(secret) > 64<<10 ||
@@ -225,6 +244,128 @@ func (s *Server) deleteAgentConnection(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// putGitHubPAT stores the caller's GitHub personal access token for private
+// repository checkout. The token is checked against GitHub before it is
+// stored — a bad token is rejected here, not surfaced later as an opaque
+// checkout failure inside a sandbox — and it is never echoed or logged.
+func (s *Server) putGitHubPAT(w http.ResponseWriter, r *http.Request) {
+	if s.secretCipher == nil || s.credentialValidator == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "provider_connections_unavailable", "GitHub credential storage is not configured.")
+		return
+	}
+	var request putGitHubPATRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
+		return
+	}
+	secret := []byte(strings.TrimSpace(request.Secret))
+	defer clear(secret)
+	request.Secret = ""
+	if len(secret) < 8 || len(secret) > 64<<10 {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "The GitHub personal access token is invalid.")
+		return
+	}
+	if err := s.credentialValidator.Validate(r.Context(), githubPATProvider, "personal_access_token", secret); err != nil {
+		if errors.Is(err, errInvalidAgentCredential) {
+			writeError(w, r, http.StatusUnprocessableEntity, "invalid_credential", "This GitHub token doesn't work — check it hasn't expired or been revoked.")
+			return
+		}
+		s.logger.Warn("validate GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusBadGateway, "provider_unavailable", "GitHub could not be reached to check this token.")
+		return
+	}
+	principal := principalFrom(r)
+	encrypted, nonce, err := s.secretCipher.Encrypt(secret, providerSecretAssociatedData("user:"+principal.UserID, githubPATProvider))
+	if err != nil {
+		s.logger.Error("encrypt GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "The GitHub token could not be stored.")
+		return
+	}
+	store, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	config, err := json.Marshal(map[string]string{"credentialType": "personal_access_token"})
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "The GitHub token could not be stored.")
+		return
+	}
+	connection, err := store.UpsertUserProviderConnection(r.Context(), principal, githubPATProvider, defaultAgentConnectionLabel, encrypted, nonce, config)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providerConnection": toUserProviderConnectionResponse(connection)})
+}
+
+func (s *Server) deleteGitHubPAT(w http.ResponseWriter, r *http.Request) {
+	store, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	if err := store.DeleteUserProviderConnection(r.Context(), principalFrom(r), githubPATProvider, defaultAgentConnectionLabel); err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) validateSavedRepository(w http.ResponseWriter, r *http.Request) {
+	if s.secretCipher == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "provider_connections_unavailable", "GitHub credential storage is not configured.")
+		return
+	}
+	var request validateSavedRepositoryRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
+		return
+	}
+	request.RepositoryURL = strings.TrimSpace(request.RepositoryURL)
+	if request.RepositoryURL == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "Repository URL is required.")
+		return
+	}
+
+	principal := principalFrom(r)
+	store, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+
+	encrypted, nonce, err := store.UserProviderConnectionSecret(r.Context(), principal, githubPATProvider, defaultAgentConnectionLabel)
+	if err != nil {
+		s.logger.Error("fetch GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusUnprocessableEntity, "token_missing", "No GitHub personal access token found. Please add one first.")
+		return
+	}
+
+	secret, err := s.secretCipher.Decrypt(encrypted, nonce, providerSecretAssociatedData("user:"+principal.UserID, githubPATProvider))
+	if err != nil {
+		s.logger.Error("decrypt GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Failed to decrypt the GitHub token.")
+		return
+	}
+	defer clear(secret)
+
+	reachable, writeAccess, err := s.probeRepositoryAccess(r.Context(), request.RepositoryURL, string(secret))
+	if err != nil {
+		s.logger.Error("probe repository access", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusBadGateway, "provider_unavailable", "GitHub is temporarily unavailable. Please try again later.")
+		return
+	}
+	if !reachable {
+		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "Can't reach this repository - it may be private, or the URL may be wrong.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, validateSavedRepositoryResponse{
+		WriteAccess: writeAccess,
+	})
+}
+
 func toProviderConnectionResponse(
 	connection domain.ProviderConnection,
 ) providerConnectionResponse {
@@ -256,6 +397,7 @@ type userProviderConnectionStore interface {
 		json.RawMessage,
 	) (domain.UserProviderConnection, error)
 	DeleteUserProviderConnection(context.Context, domain.Principal, string, string) error
+	UserProviderConnectionSecret(context.Context, domain.Principal, string, string) ([]byte, []byte, error)
 }
 
 type providerConnectionPromotionStore interface {
@@ -338,6 +480,9 @@ func (s *Server) putUserAgentConnection(w http.ResponseWriter, r *http.Request) 
 	}
 	request.CredentialType = strings.TrimSpace(request.CredentialType)
 	secret := normalizeAgentCredentialSecret(request.Secret)
+	if agent == "codex" && request.CredentialType == "auth_json" {
+		secret = []byte(request.Secret)
+	}
 	defer clear(secret)
 	request.Secret = ""
 	if len(secret) == 0 || len(secret) > 64<<10 ||
@@ -505,7 +650,7 @@ func validAgentCredentialType(agent, credentialType string) bool {
 	case "claude-code":
 		return credentialType == "api_key" || credentialType == "oauth_token"
 	case "codex":
-		return credentialType == "api_key" || credentialType == "access_token"
+		return credentialType == "api_key" || credentialType == "access_token" || credentialType == "auth_json"
 	case "cursor":
 		return credentialType == "api_key"
 	default:

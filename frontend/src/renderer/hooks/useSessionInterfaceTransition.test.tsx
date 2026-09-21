@@ -826,6 +826,59 @@ describe("interface switch readiness", () => {
 		expect(getMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("stops progress polling while shutdown is unconfirmed and permits a fresh status read", async () => {
+		const transition = {
+			id: "blocked-transition", sessionId: "session-1", sourceMode: "tui", targetMode: "chat",
+			policy: "drain", phase: "target_starting", errorCode: "TARGET_STOP_UNCONFIRMED",
+			createdAt: "2026-09-13T10:00:00Z", updatedAt: "2026-09-13T10:00:00Z",
+		};
+		getMock.mockResolvedValue({ data: { supported: true, transition }, error: undefined });
+		const { result } = renderHook(() => useSessionInterfaceTransition("session-1"), { wrapper });
+		await waitFor(() => expect(result.current.transition?.errorCode).toBe("TARGET_STOP_UNCONFIRMED"));
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(getMock).toHaveBeenCalledTimes(1);
+		getMock.mockResolvedValue({
+			data: { supported: true, transition: { ...transition, phase: "recovery_required", errorCode: "DAEMON_RESTARTED" } },
+			error: undefined,
+		});
+		await act(async () => { await result.current.refreshStatus(); });
+		await waitFor(() => expect(result.current.transition?.phase).toBe("recovery_required"));
+	});
+
+	it("forces a durable status read when a start response is ambiguous", async () => {
+		const transition = {
+			id: "transition-after-response-loss",
+			sessionId: "session-1",
+			sourceMode: "chat" as const,
+			targetMode: "tui" as const,
+			policy: "interrupt" as const,
+			phase: "requested" as const,
+			createdAt: "2026-08-26T10:00:00Z",
+			updatedAt: "2026-08-26T10:00:00Z",
+		};
+		getMock
+			.mockResolvedValueOnce({
+				data: { supported: true, targetMode: "tui" },
+				error: undefined,
+			})
+			.mockResolvedValueOnce({
+				data: { supported: true, targetMode: "tui", transition },
+				error: undefined,
+			});
+
+		const { result } = renderHook(() => useSessionInterfaceTransition("session-1"), {
+			wrapper,
+		});
+		await waitFor(() => expect(result.current.status?.supported).toBe(true));
+		let status: Awaited<ReturnType<typeof result.current.refreshStatus>> | undefined;
+		await act(async () => {
+			status = await result.current.refreshStatus();
+		});
+
+		expect(status?.transition?.id).toBe(transition.id);
+		expect(getMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("acknowledges the exact transition and replaces the cached notice with the durable response", async () => {
 		const transition = {
 			id: "transition-1",

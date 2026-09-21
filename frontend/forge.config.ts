@@ -7,8 +7,9 @@ import MakerNSIS from "./makers/maker-nsis";
 import MakerDMG, { isSigningConfigured, sealDmg, verifyDmg, verifyMacArtifact } from "./makers/maker-dmg";
 import { machoHasX86_64Slice } from "./makers/macho-archs";
 import MakerAppImage from "./makers/maker-appimage";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 // Default GitHub release target (production). Releases land on Untrivial-ai
@@ -214,6 +215,20 @@ const config: ForgeConfig = {
 				const version = spawnSync(binary, ["-V"], { encoding: "utf8" });
 				if (version.status !== 0 || version.stdout.trim() !== "tmux 3.5a") {
 					throw new Error(`packaged tmux failed verification at ${binary}: ${version.stderr || version.stdout}`);
+				}
+				const socket = path.join(tmpdir(), `ao-tmux-smoke-${process.pid}.sock`);
+				const smoke = spawnSync(binary, ["-S", socket, "-f", "/dev/null", "new-session", "-d", "true"], {
+					encoding: "utf8",
+					timeout: 5_000,
+				});
+				try {
+					if (smoke.error || smoke.status !== 0) {
+						const detail = smoke.error?.message || smoke.stderr || smoke.stdout;
+						throw new Error(`packaged tmux could not create a session at ${binary}: ${detail}`);
+					}
+				} finally {
+					spawnSync(binary, ["-S", socket, "kill-server"], { stdio: "ignore" });
+					rmSync(socket, { force: true });
 				}
 			}
 		},

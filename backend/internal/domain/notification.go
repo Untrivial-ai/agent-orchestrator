@@ -111,12 +111,19 @@ const (
 	// NotificationResolved announces that a stored notification's underlying
 	// issue went away, so open dashboards can drop it from the unresolved list.
 	NotificationResolved NotificationEventKind = "resolved"
+	// NotificationDeleted announces that one stored notification was deleted.
+	NotificationDeleted NotificationEventKind = "deleted"
+	// NotificationCleared announces that notification history was deleted.
+	NotificationCleared NotificationEventKind = "cleared"
 )
 
 // NotificationEvent is one live notification-stream message.
 type NotificationEvent struct {
-	Kind   NotificationEventKind
-	Record NotificationRecord
+	Kind          NotificationEventKind
+	Record        NotificationRecord
+	ClearID       string
+	ClearEpoch    string
+	ClearSequence int64
 }
 
 var (
@@ -130,7 +137,7 @@ var (
 
 // Validate checks the required fields and enum values for a stored notification.
 func (r NotificationRecord) Validate() error {
-	if r.SessionID == "" || r.ProjectID == "" || r.Title == "" || r.CreatedAt.IsZero() {
+	if r.SessionID == "" || r.Title == "" || r.CreatedAt.IsZero() {
 		return ErrInvalidNotificationRecord
 	}
 	if !r.Type.Valid() {

@@ -19,8 +19,20 @@ export async function fetchCodexAccounts(): Promise<CodexAccountsResponse> {
 	return data as CodexAccountsResponse;
 }
 
-export async function ensureCodexAccounts(accountIds: string[] = [], includeUsage = false): Promise<CodexAccountsResponse> {
-	const { data, error } = await apiClient.POST("/api/v1/agents/codex/accounts/ensure", { body: { accountIds, includeUsage } });
+export type EnsureCodexAccountsOptions = {
+	includeUsage?: boolean;
+	forceAuthentication?: boolean;
+	forceDeviceReconciliation?: boolean;
+};
+
+export async function ensureCodexAccounts(accountIds: string[] = [], options: EnsureCodexAccountsOptions = {}): Promise<CodexAccountsResponse> {
+	const body = {
+		accountIds,
+		includeUsage: options.includeUsage ?? false,
+		...(options.forceAuthentication ? { forceAuthentication: true } : {}),
+		...(options.forceDeviceReconciliation ? { forceDeviceReconciliation: true } : {}),
+	};
+	const { data, error } = await apiClient.POST("/api/v1/agents/codex/accounts/ensure", { body });
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountsResponse;
 }
@@ -76,14 +88,16 @@ export async function cancelCodexAccountLogin(operationId: string): Promise<Code
 	return data as CodexAccountLoginOperation;
 }
 
-export async function startCodexAccountSwitch(targetAccountId: string, expectedAccountRevision: number, idempotencyKey: string): Promise<CodexAccountSwitch> {
-	const { data, error } = await apiClient.POST("/api/v1/agents/codex/account-switches", { body: { targetAccountId, expectedAccountRevision, idempotencyKey } });
+export async function startCodexAccountSwitch(targetAccountId: string, idempotencyKey: string): Promise<CodexAccountSwitch> {
+	const { data, error } = await apiClient.POST("/api/v1/agents/codex/account-switches", { body: { targetAccountId, idempotencyKey } });
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountSwitch;
 }
 
-export async function recoverCodexAccountSwitch(switchId: string): Promise<CodexAccountSwitch> {
-	const { data, error } = await apiClient.POST("/api/v1/agents/codex/account-switches/{switchId}/recover", { params: { path: { switchId } } });
+export async function fetchCodexAccountSwitch(switchId: string): Promise<CodexAccountSwitch> {
+	const { data, error } = await apiClient.GET("/api/v1/agents/codex/account-switches/{switchId}", {
+		params: { path: { switchId } },
+	});
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountSwitch;
 }
@@ -99,20 +113,18 @@ export const codexAccountsQueryOptions = {
 };
 export function useCodexAccountsQuery(enabled = true) { return useQuery({ ...codexAccountsQueryOptions, enabled }); }
 
-export function useEnsureCodexAccounts(enabled = true): void {
+export function useEnsureCodexAccounts(): void {
 	const queryClient = useQueryClient();
 	useEffect(() => {
-		if (!enabled) return;
 		let active = true;
 		const ensure = () => {
 			const cached = queryClient.getQueryData(codexAccountsQueryKey);
 			const ready = cached ? Promise.resolve() : queryClient.fetchQuery(codexAccountsQueryOptions).then(() => undefined).catch(() => undefined);
 			void ready.then(() => ensureCodexAccounts()).then((next) => { if (active) writeCodexAccounts(queryClient, next, "replace"); }).catch(() => undefined);
 		};
-		ensure();
 		const onFocus = () => ensure();
 		const onVisibility = () => { if (document.visibilityState === "visible") ensure(); };
 		window.addEventListener("focus", onFocus); document.addEventListener("visibilitychange", onVisibility);
 		return () => { active = false; window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVisibility); };
-	}, [enabled, queryClient]);
+	}, [queryClient]);
 }

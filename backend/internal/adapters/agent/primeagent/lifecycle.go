@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 const (
@@ -29,7 +29,7 @@ type primeSessionSummary struct {
 }
 
 func runPrimeCommand(ctx context.Context, binary, workingDir string, env map[string]string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...) //nolint:gosec // binary is adapter-resolved; args are adapter-owned
+	cmd := aoprocess.CommandContext(ctx, binary, args...) //nolint:gosec // binary is adapter-resolved; args are adapter-owned
 	if strings.TrimSpace(workingDir) != "" {
 		cmd.Dir = workingDir
 	}

@@ -30,10 +30,14 @@ import type {
 	CloudCpProviderConnectionResponse,
 	CloudCpProviderConnectionsResponse,
 	CloudCpPutAgentConnectionRequest,
+	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
 	CloudCpSendMessageResponse,
+	CloudCpSessionChildrenResponse,
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
+	CloudCpResumeSessionResponse,
+	CloudCpRestoreSessionResponse,
 	CloudCpSessionResponse,
 	CloudCpAcknowledgeInterfaceTransitionNoticeResponse,
 	CloudCpCancelInterfaceTransitionResponse,
@@ -43,7 +47,8 @@ import type {
 	CloudCpTerminalTicketRequest,
 	CloudCpTerminalTicketResponse,
 	CloudCpUpdateProjectRequest,
-	CloudCpWakeSessionsResponse,
+	CloudCpValidateRepositoryAccessRequest,
+	CloudCpValidateRepositoryAccessResponse,
 } from "./types";
 
 const API_PREFIX = "/api/cloud/v1";
@@ -140,12 +145,29 @@ export interface CloudCpClient {
 		transitionId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpAcknowledgeInterfaceTransitionNoticeResponse>;
+	/** Lists the sessions an orchestrator spawned, with each child's pull requests. */
+	listSessionChildren(
+		orgId: string,
+		sessionId: string,
+		query?: CloudCpListQuery,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionChildrenResponse>;
 	deleteSession(
 		orgId: string,
 		sessionId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpSessionDeletedResponse>;
-	wakePausedSessions(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpWakeSessionsResponse>;
+	resumeSession(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpResumeSessionResponse>;
+	/** Re-provision a deleted session, keeping its conversation and work intact. */
+	restoreSession(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpRestoreSessionResponse>;
 
 	sendSessionMessage(
 		orgId: string,
@@ -183,6 +205,7 @@ export interface CloudCpClient {
 		orgId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpProviderConnectionsResponse>;
+	listUserProviderConnections(options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionsResponse>;
 	putAgentConnection(
 		orgId: string,
 		agent: CloudCpAgentProvider,
@@ -190,6 +213,12 @@ export interface CloudCpClient {
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpProviderConnectionResponse>;
 	deleteAgentConnection(orgId: string, agent: CloudCpAgentProvider, options?: CloudCpRequestOptions): Promise<void>;
+	putGitHubPAT(body: CloudCpPutGitHubPATRequest, options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionResponse>;
+	deleteGitHubPAT(options?: CloudCpRequestOptions): Promise<void>;
+	validateSavedRepositoryAccess(
+		body: CloudCpValidateRepositoryAccessRequest,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpValidateRepositoryAccessResponse>;
 }
 
 type QueryParams = Record<string, string | number | undefined>;
@@ -402,10 +431,21 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				`/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition/${seg(transitionId)}/notice-acknowledgement`,
 				{ signal: o?.signal },
 			),
+		listSessionChildren: (orgId, sessionId, query, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/children`, {
+				query: { limit: query?.limit, cursor: query?.cursor },
+				signal: o?.signal,
+			}),
 		deleteSession: (orgId, sessionId, o) =>
 			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
-		wakePausedSessions: (orgId, o) =>
-			requestJson("POST", `/orgs/${seg(orgId)}/sessions/wake`, { signal: o?.signal }),
+		resumeSession: (orgId, sessionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/resume`, {
+				signal: o?.signal,
+			}),
+		restoreSession: (orgId, sessionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/restore`, {
+				signal: o?.signal,
+			}),
 
 		sendSessionMessage: (orgId, sessionId, body, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/messages`, {
@@ -432,6 +472,7 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 
 		listProviderConnections: (orgId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/provider-connections`, { signal: o?.signal }),
+		listUserProviderConnections: (o) => requestJson("GET", "/me/providers", { signal: o?.signal }),
 		putAgentConnection: (orgId, agent, body, o) =>
 			requestJson("PUT", `/orgs/${seg(orgId)}/provider-connections/agents/${seg(agent)}`, {
 				body,
@@ -441,5 +482,9 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			requestVoid("DELETE", `/orgs/${seg(orgId)}/provider-connections/agents/${seg(agent)}`, {
 				signal: o?.signal,
 			}),
+		putGitHubPAT: (body, o) => requestJson("PUT", "/me/github-pat", { body, signal: o?.signal }),
+		deleteGitHubPAT: (o) => requestVoid("DELETE", "/me/github-pat", { signal: o?.signal }),
+		validateSavedRepositoryAccess: (body, o) =>
+			requestJson("POST", "/me/github-pat/validate-saved-repository", { body, signal: o?.signal }),
 	};
 }

@@ -5,6 +5,8 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,11 +26,13 @@ type Store interface {
 	ClaimSandboxes(ctx context.Context, owner string, limit int, lease time.Duration) ([]domain.Sandbox, error)
 	RenewSandboxClaim(ctx context.Context, owner, orgID, sessionID string, lease time.Duration) error
 	UpdateSandboxObservation(ctx context.Context, owner, orgID, sessionID, providerEnvironmentID, observedState, lastError string, reconcileAfter time.Time) error
+	AcceptSandboxProviderPause(ctx context.Context, owner, orgID, sessionID, providerEnvironmentID string, reconcileAfter time.Time) (bool, error)
 	RecordSandboxFailure(ctx context.Context, owner, orgID, sessionID, providerEnvironmentID, lastError string) error
 	ReleaseSandboxClaim(ctx context.Context, owner, orgID, sessionID string, reconcileAfter time.Time) error
 	IssueAccessTicket(ctx context.Context, orgID, sessionID, purpose string, scopes []string, ttl time.Duration) (string, error)
 	AppendSessionEvent(ctx context.Context, orgID, sessionID, eventType string, payload json.RawMessage) (domain.ClientEvent, error)
 	MarkSandboxDeletionRequested(ctx context.Context, owner, orgID, sessionID string) error
+	RecordSandboxStartupRepair(ctx context.Context, owner, orgID, sessionID string) (int, error)
 	CompleteSandboxDeletion(ctx context.Context, owner, orgID, sessionID string) error
 	DisconnectSessionWorkers(ctx context.Context, orgID, sessionID string) error
 }
@@ -106,9 +110,14 @@ type Options struct {
 // Reconciler defaults, tuned for a decentralized provider whose provisioning
 // latency is variable by design.
 const (
-	DefaultInterval                = 2 * time.Second
-	DefaultStartupTimeout          = 180 * time.Second
-	DefaultTerminalStartupTimeout  = 10 * time.Minute
+	DefaultInterval               = 2 * time.Second
+	DefaultStartupTimeout         = 180 * time.Second
+	DefaultTerminalStartupTimeout = 10 * time.Minute
+	// maxStartupRepairs bounds how many times a never-checked-in worker is
+	// reinstalled, each with a fresh startup window. Past it the sandbox is
+	// parked (terminate): compute stops, billing stops, and the session shows
+	// the startup-failure message instead of looping forever.
+	maxStartupRepairs              = 3
 	DefaultHeartbeatTimeout        = time.Minute
 	DefaultDeletionDeadline        = 15 * time.Minute
 	DefaultBatchSize               = 20
@@ -126,6 +135,10 @@ const (
 	// supervision.
 	inlineRunningWait = 6 * time.Second
 	inlineRunningPoll = 300 * time.Millisecond
+	// Active work refreshes a provider deadline when it enters the shorter
+	// window, leaving a second window of tolerance for reconcile/API jitter.
+	activeDeadlineRefreshWindow = 5 * time.Minute
+	activeDeadlineExtension     = 10 * time.Minute
 )
 
 // Reconciler converges durable sandbox intent with provider state.
@@ -136,6 +149,19 @@ type Reconciler struct {
 	owner     string
 	lease     time.Duration
 	log       *slog.Logger
+	// workerBinarySHA256 and workerHelperBinarySHA256 are advertised to each
+	// worker in its environment so a stale baked copy can self-update to this
+	// exact build instead of the control plane uploading it on every provision.
+	workerBinarySHA256       string
+	workerHelperBinarySHA256 string
+}
+
+func sha256HexOf(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // New creates a sandbox reconciler.
@@ -189,12 +215,14 @@ func New(store Store, providers Resolver, options Options) *Reconciler {
 		options.Logger = slog.Default()
 	}
 	return &Reconciler{
-		store:     store,
-		providers: providers,
-		options:   options,
-		owner:     uuid.NewString(),
-		lease:     options.LeaseDuration,
-		log:       options.Logger,
+		store:                    store,
+		providers:                providers,
+		options:                  options,
+		owner:                    uuid.NewString(),
+		lease:                    options.LeaseDuration,
+		log:                      options.Logger,
+		workerBinarySHA256:       sha256HexOf(options.WorkerBinary),
+		workerHelperBinarySHA256: sha256HexOf(options.WorkerHelperBinary),
 	}
 }
 
@@ -458,8 +486,13 @@ func (r *Reconciler) reconcileSandbox(ctx context.Context, record domain.Sandbox
 	// A terminated sandbox is parked: repairs have been abandoned, so do not
 	// probe or resume its compute (a probe would resume an auto-paused VM and
 	// restart the very repair storm termination stopped). It stays down until a
-	// deleted desired state, handled above, cleans it up.
-	if record.ObservedState == domain.SandboxObservedTerminated {
+	// deleted desired state, handled above, cleans it up — or until a restore
+	// re-asserts a running intent, in which case it must re-enter provisioning
+	// rather than stay parked. (A deleted-then-restored session already carries
+	// observed_state 'deleted' with no provider id and provisions below; this
+	// also covers un-terminating a session parked by the repair-storm ceiling.)
+	if record.ObservedState == domain.SandboxObservedTerminated &&
+		record.DesiredState != domain.SandboxDesiredRunning {
 		return r.observe(ctx, record, record.ProviderEnvironmentID,
 			domain.SandboxObservedTerminated, record.LastError, 24*time.Hour)
 	}
@@ -490,9 +523,14 @@ func (r *Reconciler) reconcileSandbox(ctx context.Context, record domain.Sandbox
 	// auto-pause timer and billing forever. This is deliberately gated on
 	// "never checked in" so a once-healthy worker that goes silent is still
 	// repaired normally.
+	// Two independent bounds stop the never-checked-in repair loop: the repair
+	// attempt cap (each repair grants a full fresh startup window, so wall
+	// clock alone no longer converges) and the original wall-clock ceiling as
+	// a backstop for a window that never advances at all.
 	if record.DesiredState == domain.SandboxDesiredRunning &&
 		record.WorkerLastSeenAt == nil &&
-		r.terminalStartupDeadlineElapsed(record) {
+		(record.StartupAttempts >= maxStartupRepairs ||
+			r.terminalStartupDeadlineElapsed(record)) {
 		return r.terminate(ctx, record, environment, provider)
 	}
 
@@ -504,9 +542,18 @@ func (r *Reconciler) reconcileSandbox(ctx context.Context, record domain.Sandbox
 			if err := provider.Stop(ctx, environment.ID); err != nil {
 				return r.fail(ctx, record, err)
 			}
+			// A paused sandbox has no live worker. Mark its connection
+			// disconnected so terminal input correctly sees "no worker" and wakes
+			// the box, instead of enqueuing keystrokes to a dead worker that expire
+			// unclaimed. On resume the worker reconnects under a fresh epoch.
+			if err := r.store.DisconnectSessionWorkers(ctx, record.OrgID, record.SessionID); err != nil {
+				r.log.Warn("disconnect worker on pause", "session_id", record.SessionID, "err", err)
+			}
 		}
 		return r.observe(ctx, record, string(environment.ID), domain.SandboxObservedStopped, "", 30*time.Second)
 	}
+
+	r.extendActiveDeadline(ctx, record, environment, provider)
 
 	switch environment.State {
 	case sandbox.StateDeleted:
@@ -515,6 +562,32 @@ func (r *Reconciler) reconcileSandbox(ctx context.Context, record domain.Sandbox
 	case sandbox.StateDeleting:
 		return r.observe(ctx, record, string(environment.ID), domain.SandboxObservedDeleting, "", 2*time.Second)
 	case sandbox.StateStopped, sandbox.StatePaused:
+		// An in-progress bring-up must survive an idle-stop race. A user resume
+		// sets startup_started_at and a short interaction lease, but a slow coder
+		// restore can outlast that lease; if the provider then auto-stops the
+		// still-starting box for idleness we must NOT accept the pause, or the
+		// resume flips back to "resuming" just as the terminal is coming up.
+		// Refusing here falls through to restore, keeping the bring-up alive. The
+		// guard is bounded by the startup window (startingUp), so a box that never
+		// converges ages out and is paused/failed normally rather than looping.
+		if environment.StopCause == sandbox.StopCauseExternalIdle && !record.KeepAlive &&
+			!r.startingUp(record) {
+			accepted, err := r.store.AcceptSandboxProviderPause(
+				ctx, r.owner, record.OrgID, record.SessionID,
+				string(environment.ID), time.Now().Add(30*time.Second),
+			)
+			if err != nil {
+				return err
+			}
+			if accepted {
+				r.log.Info("accepted provider idle stop",
+					"session_id", record.SessionID,
+					"provider", record.Provider,
+					"provider_id", environment.ID,
+				)
+			}
+			return nil
+		}
 		if record.Provider == sandbox.ProviderDocker {
 			// A stopped sandbox already observed as stopped was intentionally
 			// paused. It must be recreated immediately on wake; otherwise a
@@ -582,6 +655,39 @@ func (r *Reconciler) reconcileSandbox(ctx context.Context, record domain.Sandbox
 		// not-yet-ready. Guessing "running" would suppress the startup
 		// deadline and strand the session in silence.
 		return r.observe(ctx, record, string(environment.ID), domain.SandboxObservedProvisioning, "", 5*time.Second)
+	}
+}
+
+func (r *Reconciler) extendActiveDeadline(
+	ctx context.Context,
+	record domain.Sandbox,
+	environment sandbox.Environment,
+	provider sandbox.Provider,
+) {
+	if !record.KeepAlive || environment.Deadline == nil ||
+		(environment.State != sandbox.StateRunning && environment.State != sandbox.StateProvisioning) {
+		return
+	}
+	extender, ok := provider.(sandbox.DeadlineExtender)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if environment.Deadline.After(now.Add(activeDeadlineRefreshWindow)) {
+		return
+	}
+	deadline := now.Add(activeDeadlineExtension)
+	if err := extender.ExtendDeadline(ctx, environment.ID, deadline); err != nil {
+		// Losing a deadline bump must not rewrite a healthy worker as failed or
+		// trigger replacement compute. Keep supervising and retry on the next
+		// provider observation; operators still receive the precise API error.
+		r.log.Warn("extend active sandbox deadline",
+			"session_id", record.SessionID,
+			"provider", record.Provider,
+			"provider_id", environment.ID,
+			"deadline", deadline,
+			"err", err,
+		)
 	}
 }
 
@@ -716,14 +822,9 @@ func (r *Reconciler) superviseRunning(
 				"provider", record.Provider,
 				"provider_id", environment.ID,
 			)
-			if err := bootstrapper.BootstrapWorker(ctx, environment.ID, sandbox.WorkerBootstrap{
-				Binary:            r.options.WorkerBinary,
-				Destination:       r.options.WorkerDestination,
-				HelperBinary:      r.options.WorkerHelperBinary,
-				HelperDestination: r.options.WorkerHelperDestination,
-				User:              r.options.WorkerUser,
-				Environment:       spec.Environment,
-			}); err != nil {
+			if err := bootstrapper.BootstrapWorker(
+				ctx, environment.ID, r.workerBootstrap(record, spec, false),
+			); err != nil {
 				return r.fail(ctx, record, err)
 			}
 			return r.observe(ctx, record, string(environment.ID),
@@ -739,20 +840,29 @@ func (r *Reconciler) superviseRunning(
 			if err != nil {
 				return r.fail(ctx, record, err)
 			}
+			attempts := record.StartupAttempts
+			if startupExpired {
+				// A reinstall kills whatever worker is mid-boot, so the fresh
+				// install must get a full startup window of its own; without the
+				// reset every subsequent tick saw an expired window and killed
+				// the replacement before it could possibly check in.
+				attempts, err = r.store.RecordSandboxStartupRepair(
+					ctx, r.owner, record.OrgID, record.SessionID,
+				)
+				if err != nil {
+					return r.fail(ctx, record, err)
+				}
+			}
 			r.log.Info("reinstalling worker in live sandbox",
 				"session_id", record.SessionID,
 				"provider", record.Provider,
 				"provider_id", environment.ID,
 				"reason", repairReason(record, startupExpired, heartbeatExpired),
+				"startup_attempts", attempts,
 			)
-			if err := bootstrapper.BootstrapWorker(ctx, environment.ID, sandbox.WorkerBootstrap{
-				Binary:            r.options.WorkerBinary,
-				Destination:       r.options.WorkerDestination,
-				HelperBinary:      r.options.WorkerHelperBinary,
-				HelperDestination: r.options.WorkerHelperDestination,
-				User:              r.options.WorkerUser,
-				Environment:       spec.Environment,
-			}); err != nil {
+			if err := bootstrapper.BootstrapWorker(
+				ctx, environment.ID, r.workerBootstrap(record, spec, false),
+			); err != nil {
 				return r.fail(ctx, record, err)
 			}
 			return r.observe(ctx, record, string(environment.ID),
@@ -795,18 +905,25 @@ func (r *Reconciler) refreshRestoredWorker(
 		"provider", record.Provider,
 		"provider_id", environment.ID,
 	)
-	if err := bootstrapper.BootstrapWorker(ctx, environment.ID, sandbox.WorkerBootstrap{
-		Binary:            r.options.WorkerBinary,
-		Destination:       r.options.WorkerDestination,
-		HelperBinary:      r.options.WorkerHelperBinary,
-		HelperDestination: r.options.WorkerHelperDestination,
-		User:              r.options.WorkerUser,
-		Environment:       spec.Environment,
-	}); err != nil {
+	if err := bootstrapper.BootstrapWorker(
+		ctx, environment.ID, r.workerBootstrap(record, spec, true),
+	); err != nil {
 		return r.fail(ctx, record, err)
 	}
 	return r.observe(ctx, record, string(environment.ID),
 		domain.SandboxObservedBootstrapping, "", r.options.Interval)
+}
+
+// startingUp reports whether the sandbox is inside an active bring-up window: a
+// resume or (re)bootstrap stamped startup_started_at and the startup deadline
+// has not yet elapsed. The reconciler uses it to refuse a provider idle-stop
+// mid-resume so a slow restore is not re-paused underneath a user who is
+// attaching. It is deliberately bounded by StartupTimeout: a bring-up that never
+// converges ages out of the window and is then paused or failed normally,
+// instead of holding the box awake (and billed) forever.
+func (r *Reconciler) startingUp(record domain.Sandbox) bool {
+	return record.StartupStartedAt != nil &&
+		time.Since(*record.StartupStartedAt) < r.options.StartupTimeout
 }
 
 func (r *Reconciler) startupDeadlineElapsed(record domain.Sandbox) bool {
@@ -866,7 +983,7 @@ func (r *Reconciler) terminate(
 
 func (r *Reconciler) providerStartupTimeoutError() error {
 	return fmt.Errorf(
-		"The NodeOps VM did not become ready within %s. AO kept the existing VM and will retry.",
+		"The sandbox did not become ready within %s. AO kept the existing environment and will retry.",
 		r.options.StartupTimeout,
 	)
 }
@@ -956,14 +1073,9 @@ func (r *Reconciler) provision(
 				"provider", record.Provider,
 				"provider_id", environment.ID,
 			)
-			if err := bootstrapper.BootstrapWorker(ctx, environment.ID, sandbox.WorkerBootstrap{
-				Binary:            r.options.WorkerBinary,
-				Destination:       r.options.WorkerDestination,
-				HelperBinary:      r.options.WorkerHelperBinary,
-				HelperDestination: r.options.WorkerHelperDestination,
-				User:              r.options.WorkerUser,
-				Environment:       spec.Environment,
-			}); err != nil {
+			if err := bootstrapper.BootstrapWorker(
+				ctx, environment.ID, r.workerBootstrap(record, spec, false),
+			); err != nil {
 				return r.fail(ctx, record, err)
 			}
 			return r.observe(ctx, record, string(environment.ID),
@@ -995,24 +1107,19 @@ func (r *Reconciler) recreate(
 		return r.fail(ctx, record, err)
 	}
 	if bootstrapper, ok := recreator.(sandbox.Bootstrapper); ok && len(r.options.WorkerBinary) > 0 {
-		if err := bootstrapper.BootstrapWorker(ctx, recreated.ID, sandbox.WorkerBootstrap{
-			Binary:            r.options.WorkerBinary,
-			Destination:       r.options.WorkerDestination,
-			HelperBinary:      r.options.WorkerHelperBinary,
-			HelperDestination: r.options.WorkerHelperDestination,
-			User:              r.options.WorkerUser,
-			Environment:       spec.Environment,
-		}); err != nil {
+		if err := bootstrapper.BootstrapWorker(
+			ctx, recreated.ID, r.workerBootstrap(record, spec, false),
+		); err != nil {
 			return r.fail(ctx, record, err)
 		}
 	}
 	return r.observe(ctx, record, string(recreated.ID), domain.SandboxObservedBootstrapping, "", 2*time.Second)
 }
 
-// nodeOpsProfile is the subset of the stored resource profile the provider
-// needs. Reading the shape from the durable row rather than from configuration
-// means a config change never disturbs an in-flight session.
-type nodeOpsProfile struct {
+// providerProfile is the subset of the stored resource profile the reconciler
+// needs. Reading it from the durable row means a configuration change never
+// moves an in-flight session onto a different template or filesystem root.
+type providerProfile struct {
 	NodeOps struct {
 		DefaultShape     string `json:"defaultShape"`
 		DefaultRootFS    string `json:"defaultRootFs"`
@@ -1021,7 +1128,52 @@ type nodeOpsProfile struct {
 	} `json:"nodeOps"`
 }
 
+type workerWorkspaceLayout struct {
+	root         string
+	repository   string
+	workerData   string
+	home         string
+	claudeConfig string
+	codexHome    string
+}
+
+func workspaceLayout(record domain.Sandbox, profile providerProfile) (workerWorkspaceLayout, error) {
+	if record.Provider != sandbox.ProviderCoder {
+		return workerWorkspaceLayout{
+			repository:   "/workspace/repository",
+			workerData:   "/workspace/.ao/worker",
+			home:         "/workspace/.ao/home",
+			claudeConfig: "/workspace/.ao/home/.claude",
+			codexHome:    "/workspace/.ao/home/.codex",
+		}, nil
+	}
+	coderProfile, err := sandbox.DecodeCoderSessionProfile(record.ResourceProfile)
+	if err != nil {
+		return workerWorkspaceLayout{}, fmt.Errorf("coder workspace layout: %w", err)
+	}
+	coderLayout, err := sandbox.NewCoderWorkspaceLayout(coderProfile.DurableRoot)
+	if err != nil {
+		return workerWorkspaceLayout{}, fmt.Errorf("coder workspace layout: %w", err)
+	}
+	return workerWorkspaceLayout{
+		root:         coderLayout.DurableRoot,
+		repository:   coderLayout.Repository,
+		workerData:   coderLayout.WorkerData,
+		home:         coderLayout.Home,
+		claudeConfig: coderLayout.ClaudeConfig,
+		codexHome:    coderLayout.CodexHome,
+	}, nil
+}
+
 func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (sandbox.Spec, error) {
+	var profile providerProfile
+	if len(record.ResourceProfile) > 0 {
+		_ = json.Unmarshal(record.ResourceProfile, &profile)
+	}
+	layout, err := workspaceLayout(record, profile)
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
 	ticket, err := r.store.IssueAccessTicket(
 		ctx,
 		record.OrgID,
@@ -1037,6 +1189,7 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 			"worker:session:read",
 			"worker:git",
 			"worker:orchestrate",
+			"worker:report",
 			"worker:transport",
 		},
 		bootstrapTicketTTL,
@@ -1045,19 +1198,15 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 		return sandbox.Spec{}, err
 	}
 
-	var profile nodeOpsProfile
-	if len(record.ResourceProfile) > 0 {
-		_ = json.Unmarshal(record.ResourceProfile, &profile)
-	}
 	workerEnvironment := map[string]string{
 		"AO_CLOUD_PUBLIC_URL":       r.options.PublicURL,
 		"AO_CLOUD_SESSION_ID":       record.SessionID,
 		"AO_WORKER_BOOTSTRAP_TOKEN": ticket,
-		"AO_WORKSPACE_DIR":          "/workspace/repository",
-		"AO_DATA_DIR":               "/workspace/.ao/worker",
-		"HOME":                      "/workspace/.ao/home",
-		"CLAUDE_CONFIG_DIR":         "/workspace/.ao/home/.claude",
-		"CODEX_HOME":                "/workspace/.ao/home/.codex",
+		"AO_WORKSPACE_DIR":          layout.repository,
+		"AO_DATA_DIR":               layout.workerData,
+		"HOME":                      layout.home,
+		"CLAUDE_CONFIG_DIR":         layout.claudeConfig,
+		"CODEX_HOME":                layout.codexHome,
 		// Never let a provider command block the worker's terminal on an
 		// interactive GitHub credential prompt. Git operations that need
 		// credentials go through the worker's scoped credential helper; when
@@ -1072,6 +1221,17 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 	if r.options.TerminalStreamEnabled {
 		workerEnvironment["AO_CLOUD_TERMINAL_STREAM"] = "1"
 	}
+	// Advertise the exact binary hashes this control plane runs so a worker with
+	// a stale baked copy heals itself from /worker/binary/{sha} instead of the
+	// reconciler uploading megabytes on every provision. Absent hashes (no worker
+	// binary configured) leave self-update inert.
+	if r.workerBinarySHA256 != "" {
+		workerEnvironment["AO_WORKER_EXPECTED_SHA256"] = r.workerBinarySHA256
+	}
+	if r.workerHelperBinarySHA256 != "" {
+		workerEnvironment["AO_WORKER_HELPER_EXPECTED_SHA256"] = r.workerHelperBinarySHA256
+		workerEnvironment["AO_WORKER_HELPER_PATH"] = r.options.WorkerHelperDestination
+	}
 	return sandbox.Spec{
 		Name:             "ao-" + record.SessionID,
 		SessionID:        record.SessionID,
@@ -1082,6 +1242,7 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 		Ingress:          profile.NodeOps.Ingress,
 		AutoPauseSeconds: profile.NodeOps.AutoPauseSeconds,
 		Environment:      workerEnvironment,
+		DurableRoot:      layout.root,
 		Labels: map[string]string{
 			"ao.session_id": record.SessionID,
 			"ao.org_id":     record.OrgID,
@@ -1089,6 +1250,26 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 		},
 		AutoDeleteMinutes: 7 * 24 * 60,
 	}, nil
+}
+
+func (r *Reconciler) workerBootstrap(
+	record domain.Sandbox,
+	spec sandbox.Spec,
+	restoring bool,
+) sandbox.WorkerBootstrap {
+	requireIdentity := record.Provider == sandbox.ProviderCoder &&
+		(restoring || record.WorkerLastSeenAt != nil)
+	return sandbox.WorkerBootstrap{
+		Binary:                 r.options.WorkerBinary,
+		Destination:            r.options.WorkerDestination,
+		HelperBinary:           r.options.WorkerHelperBinary,
+		HelperDestination:      r.options.WorkerHelperDestination,
+		User:                   r.options.WorkerUser,
+		Environment:            spec.Environment,
+		DurableRoot:            spec.DurableRoot,
+		DurableIdentity:        record.SessionID,
+		RequireDurableIdentity: requireIdentity,
+	}
 }
 
 func (r *Reconciler) fail(ctx context.Context, record domain.Sandbox, cause error) error {

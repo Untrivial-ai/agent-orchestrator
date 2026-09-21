@@ -7,11 +7,13 @@ import (
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/jackc/pgx/v5"
 )
 
 var clientEventTypes = []string{
 	"agent.activity",
+	"agent.ready",
 	"worker.connected",
 	"worker.ready",
 	"sandbox.provisioning",
@@ -89,16 +91,21 @@ func sendMessageTx(
 		return domain.ClientEvent{}, err
 	}
 	// A user message is proof of life: wake a sandbox the idle-pause scanner
-	// paused for silence. No-op (0 rows) for a sandbox that was never paused,
-	// or paused for another reason (deleted, user-stopped) — this only ever
-	// widens desired_state from 'paused' to 'running', never overrides a
-	// desired 'stopped' or 'deleted' set explicitly elsewhere.
+	// paused for silence and schedule reconciliation immediately even when the
+	// sandbox was already running, so provider deadline extension cannot wait
+	// for the next ordinary observation. This never overrides a desired
+	// 'stopped' or 'deleted' set explicitly elsewhere.
 	if _, err := tx.Exec(
 		ctx,
 		`UPDATE ao_sandboxes
-		SET desired_state = 'running', startup_started_at = now(),
+		SET desired_state = 'running',
+			startup_started_at = CASE
+				WHEN desired_state = 'paused' THEN now()
+				ELSE startup_started_at
+			END,
 			reconcile_after = now(), updated_at = now()
-		WHERE session_id = $1 AND org_id = $2 AND desired_state = 'paused'`,
+		WHERE session_id = $1 AND org_id = $2
+			AND desired_state IN ('running', 'paused')`,
 		sessionID, orgID,
 	); err != nil {
 		return domain.ClientEvent{}, err
@@ -347,6 +354,11 @@ func appendUserMessage(
 	var workerEpoch int64
 	var sessionMode string
 	var sessionDeniedCommands []string
+	// The direct PTY fast path only applies while the agent is at its prompt:
+	// text typed into a mid-turn harness lands in the composer unsubmitted and
+	// the agent never sees it (a report the orchestrator is actively polling
+	// for would deadlock it). A busy agent's message queues durably below and
+	// is delivered by the worker once the turn ends.
 	err = tx.QueryRow(ctx,
 		`SELECT terminal.id, terminal.worker_epoch, session.mode, session.denied_commands
 		FROM ao_terminal_sessions terminal
@@ -359,6 +371,7 @@ func appendUserMessage(
 		  -- old terminal instead of creating a durable worker turn.
 		  AND session.interface = 'tui'
 		  AND terminal.state = 'open' AND terminal.expires_at > now()
+		  AND session.activity_state <> 'active'
 		ORDER BY terminal.created_at DESC
 		LIMIT 1`,
 		orgID, sessionID,
@@ -371,7 +384,7 @@ func appendUserMessage(
 		}
 		payload, marshalErr := json.Marshal(map[string]any{
 			"terminalId": terminalID,
-			"data":       []byte(text + "\r"),
+			"data":       worker.EncodeTerminalInput(text),
 		})
 		if marshalErr != nil {
 			return domain.ClientEvent{}, marshalErr
@@ -379,7 +392,7 @@ func appendUserMessage(
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO ao_worker_requests (
 				org_id, session_id, worker_epoch, kind, payload, expires_at
-			) VALUES ($1, $2, $3, 'terminal.input', $4, now() + interval '15 seconds')`,
+			) VALUES ($1, $2, $3, 'terminal.input', $4, now() + interval '60 seconds')`,
 			orgID, sessionID, workerEpoch, payload,
 		); err != nil {
 			return domain.ClientEvent{}, err
@@ -393,6 +406,12 @@ func appendUserMessage(
 			WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
 			orgID, sessionID,
 		); err != nil {
+			return domain.ClientEvent{}, err
+		}
+		// Wake a worker blocked in WaitForWork so it claims this terminal.input
+		// request without busy-polling. Delivered on commit; the durable queue
+		// stays authoritative.
+		if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, sessionID); err != nil {
 			return domain.ClientEvent{}, err
 		}
 		return event, nil
@@ -412,6 +431,12 @@ func appendUserMessage(
 		nonNilStrings(deniedCommands),
 	); err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
+	}
+	// Wake a worker blocked in WaitForWork so it claims this queued turn without
+	// busy-polling. Delivered on commit; the durable ao_turns row stays the
+	// source of truth if the notification is ever lost.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, sessionID); err != nil {
+		return domain.ClientEvent{}, err
 	}
 	return event, nil
 }

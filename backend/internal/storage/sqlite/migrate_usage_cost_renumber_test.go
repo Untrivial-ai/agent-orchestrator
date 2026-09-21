@@ -3,7 +3,6 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -12,6 +11,7 @@ import (
 )
 
 func TestMigrateRepairsRenumberedUsageCostHistory(t *testing.T) {
+	fixture := migrationFixture(t, 108)
 	tests := []struct {
 		name          string
 		firstVersion  int64
@@ -23,7 +23,7 @@ func TestMigrateRepairsRenumberedUsageCostHistory(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+			db, err := sql.Open("sqlite", databaseURI(fixture(t))+pragmas)
 			if err != nil {
 				t.Fatalf("open sqlite: %v", err)
 			}

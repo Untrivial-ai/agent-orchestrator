@@ -8,10 +8,11 @@
  */
 
 import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	findActiveAgentSwitch,
+	isTerminalAgentSwitch,
 	selectDurableAgentSwitch,
 	useAgentSwitches,
 } from "../../hooks/useAgentSwitches";
@@ -27,8 +28,10 @@ import {
 	useStageAttachments,
 	useWorkspaceFilePaths,
 } from "../../hooks/useConversation";
+import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProviderCatalogs";
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
+import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
 	deriveAgentSwitchPresentation,
@@ -43,6 +46,7 @@ import type { TerminalTarget } from "../../types/terminal";
 import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace";
 import { AgentSwitchProgressTrack } from "../AgentSwitchProgressTrack";
 import { ChatWorkspace } from "./ChatWorkspace";
+import { hasProviderPermissionMode } from "./TurnSettingsBar";
 
 export interface ConversationWorkState {
 	controllerBusy: boolean;
@@ -50,7 +54,38 @@ export interface ConversationWorkState {
 	queuedTurnCount: number;
 }
 
-export function SessionChatSurface({
+const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
+const autoOpenedLinkSessions = new Set<string>();
+
+interface AssistantLinkState {
+	revision: number;
+	sequence: number;
+	streaming: boolean;
+}
+
+interface ConversationLinkBaseline {
+	latestSequence: number;
+	messages: Map<string, AssistantLinkState>;
+	pendingCompleted: Map<string, number>;
+}
+
+function cleanExtractedLink(value: string): string {
+	return value.replace(/[.,!?;:`\\]+$/, "");
+}
+
+function firstBrowserLink(text: string, workspacePaths: string[]): string | undefined {
+	const candidates: Array<{ index: number; value: string }> = [];
+	const webMatch = HTTP_LINK_PATTERN.exec(text);
+	if (webMatch) candidates.push({ index: webMatch.index, value: cleanExtractedLink(webMatch[0]) });
+	const markdownLink = /\[[^\]]+\]\(([^)\s]+)\)/.exec(text);
+	if (markdownLink?.[1]) candidates.push({ index: markdownLink.index, value: cleanExtractedLink(markdownLink[1]) });
+	for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
+		if (isWebLink(candidate.value) || isWorkspaceHtmlLink(candidate.value, workspacePaths)) return candidate.value;
+	}
+	return undefined;
+}
+
+export const SessionChatSurface = memo(function SessionChatSurface({
 	session,
 	reviewerTerminal,
 	onOpenReviewerTerminal,
@@ -69,8 +104,10 @@ export function SessionChatSurface({
 	shellError,
 	onOpenFiles,
 	onOpenFile,
+	onOpenLinkInBrowser,
 	headerActions,
 	sessionTabAction,
+	sessionTabActionWide = false,
 	tabStripAction,
 	handoffDialogOpen = false,
 	workspaceTabs,
@@ -105,8 +142,11 @@ export function SessionChatSurface({
 	onOpenFiles?: () => void;
 	/** Opens the Files inspector focused on one changed path. */
 	onOpenFile?: (path: string) => void;
+	/** Opens a chat link in the active blank tab or a new tab in this session's AO Browser. */
+	onOpenLinkInBrowser?: (uri: string) => Promise<void>;
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
+	sessionTabActionWide?: boolean;
 	tabStripAction?: ReactNode;
 	handoffDialogOpen?: boolean;
 	workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
@@ -139,7 +179,12 @@ export function SessionChatSurface({
 	const snapshot = queriedSnapshot?.sessionId === session.id ? queriedSnapshot : undefined;
 	const commands = useConversationCommands(session.id);
 	const projectPermissions = useRememberProjectPermissions(session.workspaceId, snapshot?.harness);
-	const { acknowledgeAcceptedTurn, pendingAcceptedTurnId } = commands;
+	const {
+		acknowledgeAcceptedTurn,
+		acknowledgeLocalEcho,
+		localEchos = [],
+		pendingAcceptedTurnId,
+	} = commands;
 	const conversationWorkKnown = Boolean(snapshot);
 	const acceptedLocalTurnObserved = Boolean(
 		pendingAcceptedTurnId && snapshot?.turns.some((turn) => turn.id === pendingAcceptedTurnId),
@@ -155,38 +200,28 @@ export function SessionChatSurface({
 		}
 	}, [acceptedLocalTurnObserved, acknowledgeAcceptedTurn, pendingAcceptedTurnId]);
 	useEffect(() => {
+		if (!snapshot) return;
+		const durableHumanTurnIds = new Set(
+			snapshot.items.flatMap((item) =>
+				item.kind === "message" && item.role === "user" && item.origin === "human" && item.turnId
+					? [item.turnId]
+					: [],
+			),
+		);
+		for (const echo of localEchos) {
+			if (echo.turnId && durableHumanTurnIds.has(echo.turnId)) acknowledgeLocalEcho?.(echo.turnId);
+		}
+	}, [acknowledgeLocalEcho, localEchos, snapshot]);
+	useEffect(() => {
 		if (!conversationWorkKnown) return;
 		onConversationWorkChange?.({ controllerBusy, hasRunningTurn, queuedTurnCount });
 	}, [controllerBusy, conversationWorkKnown, hasRunningTurn, onConversationWorkChange, queuedTurnCount]);
 	const targetChatControllerReady =
-		snapshot?.controller?.state === "ready" || snapshot?.controller?.state === "busy";
+		snapshot?.harness === session.provider &&
+		(snapshot.controller?.state === "ready" || snapshot.controller?.state === "busy");
 	// Mode commits before the target controller starts. A cached ready snapshot
 	// can also outlive the source, so wait for the handoff's final snapshot refresh.
 	const controllerCatalogsEnabled = targetChatControllerReady && !controllerTransitioning && !newWorkDisabled;
-	const configOptions = useConversationConfigOptions(
-		session.id,
-		Boolean(controllerCatalogsEnabled && snapshot && can(snapshot, "config_options")),
-	);
-	// A provider config catalog may cover only model, only mode, or both.
-	// Suppress native controls only for dimensions the provider catalog replaces;
-	// a model-only catalog must not hide the Approvals control.
-	const providerOptions = configOptions.options ?? [];
-	const hasProviderMode = providerOptions.some(
-		(option) => option.category === "mode" || option.id === "mode",
-	);
-	const hasProviderModel = providerOptions.some(
-		(option) => option.category === "model" || option.id === "model",
-	);
-	// Only asked for once the conversation is actually readable: the catalog comes
-	// from the live controller, so there is nothing to fetch before then.
-	const { models } = useConversationModels(
-		session.id,
-		controllerCatalogsEnabled && !hasProviderModel,
-	);
-	const { skills } = useConversationSkills(session.id, controllerCatalogsEnabled);
-	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
-	const stageAttachments = useStageAttachments(session.id);
-	const openLinkInBrowser = useSessionBrowserLink(session);
 	// Agent-switch presentation for the chat surface progress track and input locks.
 	const switchMutation = useSwitchAgentState(session.id);
 	const agentSwitches = useAgentSwitches(session.id).data ?? [];
@@ -195,6 +230,16 @@ export function SessionChatSurface({
 		session.activeAgentSwitch,
 		agentSwitches,
 	);
+	const admissionAgentSwitch: AgentSwitchSummary | undefined =
+		switchMutation.isPending && switchMutation.input
+			? {
+				agentHandoffStatus: "not_attempted",
+				fromHarness: switchMutation.input.session.provider,
+				id: `admission:${switchMutation.input.idempotencyKey}`,
+				state: "preparing_handoff",
+				targetHarness: switchMutation.input.targetHarness,
+			}
+			: undefined;
 	const {
 		dismissFailure: dismissAgentSwitchFailure,
 		dismissedFailureSwitchId,
@@ -211,21 +256,12 @@ export function SessionChatSurface({
 			session.activeAgentSwitch,
 			activeHistorySwitch,
 			selectedDurableAgentSwitch,
+			admissionAgentSwitch,
 		],
 	});
 	const durableAgentSwitch =
 		selectedDurableAgentSwitch && !isAgentSwitchRetired(selectedDurableAgentSwitch.id)
 			? selectedDurableAgentSwitch
-			: undefined;
-	const admissionAgentSwitch: AgentSwitchSummary | undefined =
-		!durableAgentSwitch && switchMutation.isPending && switchMutation.input
-			? {
-				agentHandoffStatus: "not_attempted",
-				fromHarness: switchMutation.input.session.provider,
-				id: `admission:${switchMutation.input.idempotencyKey}`,
-				state: "preparing_handoff",
-				targetHarness: switchMutation.input.targetHarness,
-			}
 			: undefined;
 	const agentSwitch = durableAgentSwitch ?? admissionAgentSwitch ?? observedTerminalSwitch;
 	useAgentSwitchRouteVisibility(`session/${session.id}`, agentSwitch && agentSwitch.state !== "completed" && agentSwitch.state !== "failed" ? "active" : "history", undefined, false);
@@ -241,15 +277,127 @@ export function SessionChatSurface({
 				terminalHandleId: targetChatControllerReady ? "chat-controller" : undefined,
 			})
 		: undefined;
-	const observedSettledSwitch = Boolean(
+	const agentSwitching = Boolean(
+		switchMutation.isPending ||
+			(switchPresentation?.outcome === "in_progress" ||
+				switchPresentation?.outcome === "recovery"),
+	);
+	const observedSettledSwitchId =
 		agentSwitch &&
-			switchPresentation?.outcome === "success" &&
-			isAgentSwitchObserved(agentSwitch.id),
+		(switchPresentation?.outcome === "success" || switchPresentation?.outcome === "failure") &&
+		isAgentSwitchObserved(agentSwitch.id)
+			? agentSwitch.id
+			: undefined;
+	const latestTerminalSwitch = agentSwitches.find(isTerminalAgentSwitch);
+	const controllerOwnedTerminalSwitch =
+		targetChatControllerReady &&
+		latestTerminalSwitch &&
+		((latestTerminalSwitch.state === "completed" &&
+			latestTerminalSwitch.targetHarness === session.provider) ||
+			(latestTerminalSwitch.state === "failed" &&
+				latestTerminalSwitch.fromHarness === session.provider))
+			? latestTerminalSwitch
+			: undefined;
+	// Catalog ownership follows the live controller epoch, not whether this mount
+	// happened to observe the switch in progress. A sub-second switch can arrive
+	// first as terminal history and still needs its outgoing cache reconciled.
+	const providerCatalogSettledSwitchId =
+		observedSettledSwitchId ?? controllerOwnedTerminalSwitch?.id;
+	const catalogsEnabled = useAgentSwitchProviderCatalogs({
+		sessionId: session.id,
+		agentSwitching,
+		settledSwitchId: providerCatalogSettledSwitchId,
+	});
+	const configOptions = useConversationConfigOptions(
+		session.id,
+		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot && can(snapshot, "config_options")),
+	);
+	// A provider config catalog may cover only model, only mode, or both.
+	// Suppress native controls only for dimensions the provider catalog replaces;
+	// a model-only catalog must not hide the Approvals control.
+	const providerOptions = configOptions.options ?? [];
+	const hasProviderMode = hasProviderPermissionMode(providerOptions);
+	const hasProviderModel = providerOptions.some(
+		(option) => option.category === "model" || option.id === "model",
+	);
+	// Only asked for once the conversation is actually readable: the catalog comes
+	// from the live controller, so there is nothing to fetch before then.
+	const { models } = useConversationModels(
+		session.id,
+		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot) && !hasProviderModel,
+	);
+	const { skills } = useConversationSkills(
+		session.id,
+		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot),
+	);
+	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot));
+	const stageAttachments = useStageAttachments(session.id);
+	const openLinkInBrowser = useSessionBrowserLink(session, onOpenLinkInBrowser, paths);
+	const conversationLinkBaselines = useRef(new Map<string, ConversationLinkBaseline>());
+	useEffect(() => {
+		if (!snapshot || isLoading) return;
+		const previous = conversationLinkBaselines.current.get(session.id);
+		const isInitialSnapshot = !previous;
+		const latestUserMessage = snapshot.items
+			.filter((item) => item.kind === "message" && item.role === "user")
+			.at(-1);
+		const messages = new Map<string, AssistantLinkState>();
+		const pendingCompleted = new Map(previous?.pendingCompleted);
+		let latestSequence = Math.max(previous?.latestSequence ?? -1, snapshot.latestSequence);
+		for (const item of snapshot.items) {
+			latestSequence = Math.max(latestSequence, item.sequence);
+			if (item.kind !== "message" || item.role !== "assistant") continue;
+			const prior = previous?.messages.get(item.id);
+			messages.set(item.id, {
+				revision: item.revision,
+				sequence: item.sequence,
+				streaming: item.streaming,
+			});
+			if (item.streaming) {
+				pendingCompleted.delete(item.id);
+				continue;
+			}
+			const completedCurrentTurnOnMount =
+				isInitialSnapshot && latestUserMessage && item.sequence > latestUserMessage.sequence;
+			const newlyCompleted = previous
+				? prior
+					? prior.streaming && item.revision >= prior.revision
+					: item.sequence > previous.latestSequence
+				: completedCurrentTurnOnMount;
+			if (newlyCompleted) pendingCompleted.set(item.id, item.revision);
+			else if (pendingCompleted.get(item.id) !== item.revision) pendingCompleted.delete(item.id);
+		}
+		conversationLinkBaselines.current.set(session.id, { latestSequence, messages, pendingCompleted });
+		if (autoOpenedLinkSessions.has(session.id)) return;
+		// Do not surprise users by opening links from history when a session is first
+		// mounted. The exception is the current turn: a fast agent can finish before
+		// the first conversation request resolves, so its response is already present
+		// in the initial snapshot and must not be mistaken for old history.
+		for (const item of snapshot.items) {
+			if (
+				item.kind !== "message" ||
+				item.role !== "assistant" ||
+				item.streaming ||
+				pendingCompleted.get(item.id) !== item.revision
+			) continue;
+			const url = firstBrowserLink(item.text, paths);
+			if (url) {
+				autoOpenedLinkSessions.add(session.id);
+				pendingCompleted.delete(item.id);
+				openLinkInBrowser(url);
+				break;
+			}
+		}
+	}, [isLoading, openLinkInBrowser, paths, snapshot]);
+	const observedSuccessfulSwitch = Boolean(
+		agentSwitch &&
+			observedSettledSwitchId === agentSwitch.id &&
+			switchPresentation?.outcome === "success",
 	);
 	useEffect(() => {
-		if (!observedSettledSwitch || !agentSwitch || !switchPresentation) return;
+		if (!observedSuccessfulSwitch || !agentSwitch || !switchPresentation) return;
 		settleAgentSwitch(agentSwitch, switchPresentation);
-	}, [agentSwitch, observedSettledSwitch, settleAgentSwitch, switchPresentation]);
+	}, [agentSwitch, observedSuccessfulSwitch, settleAgentSwitch, switchPresentation]);
 	const shownSwitchPresentation =
 		switchPresentation?.outcome === "failure" && dismissedFailureSwitchId === agentSwitch?.id
 			? undefined
@@ -346,6 +494,7 @@ export function SessionChatSurface({
 				theme={theme}
 				headerActions={headerActions}
 				sessionTabAction={sessionTabAction}
+				sessionTabActionWide={sessionTabActionWide}
 				tabStripAction={tabStripAction}
 				workspaceTabs={workspaceTabs}
 				workspaceTabActions={workspaceTabActions}
@@ -357,7 +506,8 @@ export function SessionChatSurface({
 				loadingOlder={isLoadingOlder}
 				onLoadOlder={loadOlder}
 				busy={commands.busy}
-				onSend={(text, attachments) => commands.send({ text, attachments })}
+				onSend={(text, attachments, clientMessageId) =>
+					commands.send({ text, attachments, clientMessageId })}
 				commandError={commands.error}
 				onDecide={commands.resolve}
 				onResolveInput={commands.resolveInput}
@@ -399,6 +549,7 @@ export function SessionChatSurface({
 				skills={skills}
 				filePaths={paths}
 				filePathsTruncated={truncated}
+				localEchos={localEchos}
 				onStageAttachments={stageAttachments}
 				nativeImages={can(renderSnapshot, "images")}
 				// Gated on what the daemon advertises, so the control is never drawn for a
@@ -445,7 +596,7 @@ export function SessionChatSurface({
 			) : null}
 		</div>
 	);
-}
+});
 
 function ChatAgentSwitchStatus({
 	auxiliaryActive,

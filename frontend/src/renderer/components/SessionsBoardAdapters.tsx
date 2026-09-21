@@ -188,6 +188,9 @@ function DesktopSessionCard({
 								onClick={(event) => {
 									event.stopPropagation();
 									clearTerminateSessionState(queryClient, session.id);
+									// Force the confirm open instead of toggling it, so repeated
+									// trash taps keep the dialog up rather than dismissing it.
+									setConfirmOpen(true);
 								}}
 								disabled={termination.isPending}
 								type="button"

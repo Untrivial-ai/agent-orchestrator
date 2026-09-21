@@ -121,7 +121,11 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	// conversation was observed after ChatUI's turn. For a fresh session there
 	// is no identity to resume; keep the plain bootstrap command instead of
 	// manufacturing a resume command for a conversation that does not exist.
-	if nativeConversationID := s.nativeConversationID(ctx, input); nativeConversationID != "" {
+	nativeConversationID := s.nativeConversationID(ctx, input)
+	s.mu.Lock()
+	needsFreshCommand := s.AgentCommand.Path == ""
+	s.mu.Unlock()
+	if nativeConversationID != "" || needsFreshCommand {
 		if err := s.refreshAgentCommand(ctx, nativeConversationID); err != nil {
 			return err
 		}
@@ -142,10 +146,17 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	s.iface.mu.Lock()
 	s.iface.current = InterfaceTUI
 	s.iface.mu.Unlock()
-	return s.openTerminal(ctx, worker.TerminalCommand{
+	if err := s.openTerminal(ctx, worker.TerminalCommand{
 		TerminalID: terminal.TerminalID,
 		Kind:       "agent",
-	})
+	}); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.agentStarted = true
+	s.mu.Unlock()
+	s.flushReadyAgentTerminal()
+	return nil
 }
 
 func (s *Supervisor) agentTerminalID() string {
@@ -228,8 +239,16 @@ func (s *Supervisor) startChat(ctx context.Context) error {
 	s.iface.current = InterfaceChat
 	s.iface.mu.Unlock()
 	go func() {
-		if err := s.ChatRunner.Run(runCtx); err != nil && runCtx.Err() == nil {
-			s.Logger.Warn("chat controller stopped", "error", err)
+		if ready := s.ChatWorkspaceReady; ready != nil {
+			select {
+			case <-runCtx.Done():
+			case <-ready:
+			}
+		}
+		if runCtx.Err() == nil {
+			if err := s.ChatRunner.Run(runCtx); err != nil && runCtx.Err() == nil {
+				s.Logger.Warn("chat controller stopped", "error", err)
+			}
 		}
 		s.iface.mu.Lock()
 		if s.iface.chatGeneration == generation {

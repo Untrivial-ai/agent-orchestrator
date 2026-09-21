@@ -27,9 +27,25 @@ type GitRunner interface {
 type ExecGitRunner struct{}
 
 func (ExecGitRunner) Run(ctx context.Context, dir string, env map[string]string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", args...)
+	// Pin git wire protocol v0. git 2.39 defaults to protocol v2 over HTTP/2,
+	// which is mangled through some sandbox egress paths: the ref-listing
+	// handshake fails with "expected flush after ref listing" plus a spurious
+	// "could not read Username" prompt, crash-looping checkout for public repos.
+	// v0 is universally compatible; the only cost is slightly larger fetches.
+	command := exec.CommandContext(ctx, "git", append([]string{"-c", "protocol.version=0"}, args...)...)
 	command.Dir = dir
 	command.Env = replaceEnvironment(os.Environ(), env)
+	// Abort a stalled HTTP transfer instead of hanging until the whole sandbox is
+	// torn down. If throughput stays under 1 KB/s for 60s, git fails the
+	// clone/fetch/push. A stalled clone otherwise blocks worker startup - and thus
+	// the agent terminal, which is only created after checkout - indefinitely,
+	// which is exactly the multi-minute "terminal never connects" stall we saw.
+	// This targets stalls, not slow-but-progressing transfers, so a large repo
+	// still clones; and it is a no-op for local git ops, which do no HTTP.
+	command.Env = append(command.Env,
+		"GIT_HTTP_LOW_SPEED_LIMIT=1000",
+		"GIT_HTTP_LOW_SPEED_TIME=60",
+	)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Run(); err != nil {
@@ -75,13 +91,22 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 		}
 		if len(entries) == 0 {
 			statErr = os.ErrNotExist
-		} else if err := validateOrigin(ctx, runner, workspace, expected); err != nil {
-			return err
-		} else {
+		} else if _, gitErr := os.Stat(filepath.Join(workspace, ".git")); gitErr == nil {
+			if err := validateOrigin(ctx, runner, workspace, expected); err != nil {
+				return err
+			}
 			return withGitCredential(grant.Token, func(env map[string]string) error {
 				_, err := runner.Run(ctx, workspace, env, "fetch", "--prune", "--", "origin")
 				return err
 			})
+		} else {
+			// The workspace is non-empty but not a Git checkout. This happens
+			// when the coding agent starts first and writes files (for example
+			// .claude) into the workspace before the checkout runs. Clone into a
+			// staging directory and merge the result in, so a bare git clone into
+			// a non-empty directory does not fail and checkout no longer depends
+			// on agent-vs-checkout startup ordering.
+			return cloneIntoNonEmptyWorkspace(ctx, runner, workspace, grant, expected)
 		}
 	}
 	if !errors.Is(statErr, os.ErrNotExist) {
@@ -98,6 +123,56 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 		return err
 	}
 	return validateOrigin(ctx, runner, workspace, expected)
+}
+
+// cloneIntoNonEmptyWorkspace clones the authorized repository into a staging
+// directory and merges the result into a workspace that already contains files
+// the coding agent wrote (for example .claude) before the checkout ran. Files
+// the clone did not produce are preserved; the clone's .git directory and
+// tracked files are moved in. This removes the ordering dependency between
+// agent startup and repository checkout.
+func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace string, grant CheckoutGrantResponse, expected string) error {
+	// Stage inside the workspace itself, not its parent. The parent is the
+	// provider's durable root (e.g. Coder's /home/coder), which is owned by the
+	// provider's own user and is not writable by the AO worker user, so a
+	// staging dir there fails with "permission denied". The workspace, by
+	// contrast, is always writable by the worker (the agent just wrote into it,
+	// which is why this non-empty path runs) and is on the same filesystem, so
+	// the entry moves below stay a same-filesystem rename. The hidden staging
+	// dir is removed before the checkout returns.
+	staging, err := os.MkdirTemp(workspace, ".ao-checkout-")
+	if err != nil {
+		return fmt.Errorf("create checkout staging directory: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	clone := filepath.Join(staging, "repository")
+	if err := withGitCredential(grant.Token, func(env map[string]string) error {
+		_, err := runner.Run(ctx, staging, env,
+			"clone", "--origin", "origin", "--no-tags", "--", grant.CloneURL, clone)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := validateOrigin(ctx, runner, clone, expected); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(clone)
+	if err != nil {
+		return fmt.Errorf("read cloned repository: %w", err)
+	}
+	for _, entry := range entries {
+		destination := filepath.Join(workspace, entry.Name())
+		if _, statErr := os.Stat(destination); statErr == nil {
+			// A pre-existing file the agent wrote (for example .claude) stays.
+			continue
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect workspace entry %s: %w", entry.Name(), statErr)
+		}
+		if err := os.Rename(filepath.Join(clone, entry.Name()), destination); err != nil {
+			return fmt.Errorf("move %s into workspace: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 // ConfigureWorkerGit prepares the assigned branch and a repo-local credential
@@ -131,7 +206,7 @@ func ConfigureWorkerGit(
 set -eu
 [ "${1:-}" = "get" ] || exit 0
 worker_token="$(tr -d '\r\n' < %s)"
-response="$(curl -fsS -X POST \
+response="$(curl -fsS --connect-timeout 10 --max-time 30 -X POST \
   -H "Authorization: Worker ${worker_token}" \
   -H "X-AO-Session-ID: %s" \
   %s)"
@@ -163,7 +238,7 @@ elif [ -n "${GITHUB_TOKEN:-}" ]; then
   github_token="$GITHUB_TOKEN"
 else
   worker_token="$(tr -d '\r\n' < %s)"
-  response="$(curl -fsS -X POST \
+  response="$(curl -fsS --connect-timeout 10 --max-time 30 -X POST \
     -H "Authorization: Worker ${worker_token}" \
     -H "X-AO-Session-ID: %s" \
     %s)"

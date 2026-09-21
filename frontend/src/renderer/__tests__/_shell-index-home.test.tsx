@@ -1,6 +1,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceSummary } from "../types/workspace";
+import {
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 
 const routeMocks = vi.hoisted(() => ({
 	createProjectFlowProps: null as null | {
@@ -61,6 +66,19 @@ vi.mock("../components/BoardEmptyStates", () => ({
 
 import { HomePage } from "../components/HomePage";
 
+const standaloneSession = (overrides: Partial<WorkspaceSession>): WorkspaceSession => ({
+	id: "standalone-1",
+	workspaceId: STANDALONE_WORKSPACE_ID,
+	workspaceName: "Scratchpad",
+	title: "Ad hoc task",
+	provider: "codex",
+	kind: "worker",
+	status: "idle",
+	updatedAt: "2026-06-15T00:00:00Z",
+	prs: [],
+	...overrides,
+});
+
 beforeEach(() => {
 	routeMocks.navigate.mockReset();
 	routeMocks.workspaces = [];
@@ -95,6 +113,8 @@ describe("shell index route", () => {
 		render(<HomePage />);
 
 		expect(screen.getByText("Jump back right in")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "New standalone agent" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Connect mobile" })).not.toBeInTheDocument();
 		expect(routeMocks.navigate).not.toHaveBeenCalled();
 	});
 
@@ -130,6 +150,46 @@ describe("shell index route", () => {
 		expect(routeMocks.navigate).toHaveBeenCalledWith({
 			to: "/projects/$projectId",
 			params: { projectId: "proj-1" },
+		});
+	});
+
+	it("opens the most recent active ad hoc session from the recent-project list", async () => {
+		routeMocks.workspaces = [
+			{
+				id: STANDALONE_WORKSPACE_ID,
+				name: "Scratchpad",
+				kind: STANDALONE_PROJECT_KIND,
+				path: "Scratchpad",
+				sessions: [
+					standaloneSession({
+						id: "standalone-oldest",
+						createdAt: "2026-06-13T00:00:00Z",
+						updatedAt: "2026-06-13T01:00:00Z",
+					}),
+					standaloneSession({
+						id: "standalone-terminated",
+						status: "terminated",
+						isTerminated: true,
+						createdAt: "2026-06-15T00:00:00Z",
+						updatedAt: "2026-06-15T03:00:00Z",
+						lastUserMessageAt: "2026-06-15T04:00:00Z",
+					}),
+					standaloneSession({
+						id: "standalone-newest-active",
+						createdAt: "2026-06-14T00:00:00Z",
+						updatedAt: "2026-06-14T01:00:00Z",
+						lastUserMessageAt: "2026-06-14T02:00:00Z",
+					}),
+				],
+			},
+		];
+
+		render(<HomePage />);
+
+		fireEvent.click(screen.getByRole("button", { name: /Scratchpad/ }));
+		expect(routeMocks.navigate).toHaveBeenCalledWith({
+			to: "/sessions/$sessionId",
+			params: { sessionId: "standalone-newest-active" },
 		});
 	});
 

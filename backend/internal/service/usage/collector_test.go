@@ -259,7 +259,7 @@ func (s *delayedFinalizeStore) FinalizeUsageBindingsForSessionLaunch(
 	ctx context.Context,
 	sessionID domain.SessionID,
 	expectedLaunchID string,
-	expectedSessionRevision time.Time,
+	expectedSessionRevision int64,
 	at time.Time,
 ) ([]domain.UsageBindingRecord, error) {
 	close(s.entered)
@@ -283,7 +283,7 @@ func (s *blockedAfterFinalizeStore) FinalizeUsageBindingsForSessionLaunch(
 	ctx context.Context,
 	sessionID domain.SessionID,
 	expectedLaunchID string,
-	expectedSessionRevision time.Time,
+	expectedSessionRevision int64,
 	at time.Time,
 ) ([]domain.UsageBindingRecord, error) {
 	bindings, err := s.collectorStore.FinalizeUsageBindingsForSessionLaunch(
@@ -311,7 +311,7 @@ func (f *blockedBeforeCollectorFinalizer) FinalizeSession(
 	ctx context.Context,
 	sessionID domain.SessionID,
 	expectedLaunchID string,
-	expectedSessionRevision time.Time,
+	expectedSessionRevision int64,
 ) error {
 	close(f.entered)
 	<-f.release
@@ -332,10 +332,15 @@ func TestCollectorFinalizationSkipsRelaunchCommittedBeforeStorageFence(t *testin
 		entered:        entered,
 		release:        release,
 	}, SourceRoots{}, nil)
+	current, found, readErr := store.GetSession(context.Background(), session.ID)
+	if readErr != nil || !found {
+		t.Fatalf("reload session before finalization: %v %v", found, readErr)
+	}
+	session = current
 
 	done := make(chan error, 1)
 	go func() {
-		done <- collector.FinalizeSession(context.Background(), session.ID, "launch-old", session.UpdatedAt)
+		done <- collector.FinalizeSession(context.Background(), session.ID, "launch-old", session.Revision)
 	}()
 	<-entered
 	session.Metadata.RuntimeLaunchID = "launch-new"
@@ -462,7 +467,12 @@ func TestCollectorSessionStartReactivatesAfterOldGenerationFinalization(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	mustNoError(t, collector.FinalizeSession(context.Background(), session.ID, "launch-old", session.UpdatedAt))
+	current, found, readErr := store.GetSession(context.Background(), session.ID)
+	if readErr != nil || !found {
+		t.Fatalf("reload session before finalization: %v %v", found, readErr)
+	}
+	session = current
+	mustNoError(t, collector.FinalizeSession(context.Background(), session.ID, "launch-old", session.Revision))
 	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
 	if err != nil || len(bindings) != 1 || bindings[0].State != domain.UsageBindingFinalizing {
 		t.Fatalf("finalized bindings=%+v err=%v", bindings, err)
@@ -1791,7 +1801,7 @@ func TestCollectorFinalizationReactivatesOnlyLatestCodexGenerationPerNativeSessi
 		context.Background(),
 		session.ID,
 		session.Metadata.RuntimeLaunchID,
-		session.UpdatedAt,
+		session.Revision,
 	); err != nil {
 		t.Fatalf("finalize relocated rollout: %v", err)
 	}

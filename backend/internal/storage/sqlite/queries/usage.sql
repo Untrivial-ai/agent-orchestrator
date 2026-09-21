@@ -55,7 +55,7 @@ WHERE usage_bindings.session_id = sqlc.arg(session_id)
       FROM sessions
       WHERE sessions.id = usage_bindings.session_id
         AND sessions.runtime_launch_id = sqlc.arg(expected_runtime_launch_id)
-        AND sessions.updated_at = sqlc.arg(expected_session_updated_at)
+        AND sessions.revision = sqlc.arg(expected_session_revision)
         AND sessions.is_terminated = 0
   )
 RETURNING *;

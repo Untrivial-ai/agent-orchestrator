@@ -71,7 +71,7 @@ export const metadata: Metadata = {
     title: COMPANY.NAME,
     description: siteDescription,
     images: ["/og-image.png"],
-    creator: "@aoagents",
+    creator: "@ao_build",
   },
   robots: {
     index: true,
@@ -108,11 +108,6 @@ export default function RootLayout({
         <OrganizationJsonLd />
         <SoftwareApplicationJsonLd />
         <WebsiteJsonLd />
-        <link rel="preload" as="image" href="/optimized/hero-background.webp" type="image/webp" />
-        <link rel="preload" as="image" href="/optimized/feature.webp" type="image/webp" />
-        <link rel="preload" as="image" href="/optimized/feature2.webp" type="image/webp" />
-        <link rel="preload" as="image" href="/optimized/feature3.webp" type="image/webp" />
-        <link rel="preload" as="image" href="/optimized/feature4.webp" type="image/webp" />
         <script
           dangerouslySetInnerHTML={{
             __html: `

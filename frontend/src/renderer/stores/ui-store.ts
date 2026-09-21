@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { aoBridge } from "../lib/bridge";
 import type { TerminalTarget } from "../types/terminal";
 import {
 	applyDocumentTheme,
@@ -30,7 +31,13 @@ export type GlobalSettingsSection =
 	| "help";
 
 export type SettingsModal =
-	| { scope: "global"; section?: GlobalSettingsSection }
+	| {
+			scope: "global";
+			section?: GlobalSettingsSection;
+			focusAgentId?: string;
+			/** Preserve the project form while global recovery settings is above it. */
+			returnTo?: Extract<SettingsModal, { scope: "project" }>;
+	}
 	| {
 			scope: "project";
 			projectId: string;
@@ -47,7 +54,7 @@ export type InspectorSessionState = {
 	browserContentRevealed?: boolean;
 	/** Real browser activity occurred while Browser was not visible. */
 	browserUnseen?: boolean;
-	/** Files tab: show only files the agent has touched. Defaults to false (full tree). */
+	/** Files tab: review changed files directly. Defaults to true; false shows the full tree. */
 	filesChangedOnly?: boolean;
 	/** The session-entry defaulting (Summary tab, baseline browser reveal) has already run once for this session's lifetime. */
 	initialized?: boolean;
@@ -80,6 +87,10 @@ export type UiState = {
 	/** When true, developer-only release controls are available. Default off. */
 	developerMode: boolean;
 	restartingProjectIds: ReadonlySet<string>;
+	// Projects whose initial orchestrator spawn (after import/clone) is still
+	// running in the background. The board renders a progress banner and gates
+	// session actions until the spawn settles, instead of blocking navigation.
+	provisioningProjectIds: ReadonlySet<string>;
 	orchestratorReplacementErrors: Record<string, OrchestratorReplacementFailure>;
 	orchestratorStartupErrors: Record<string, string>;
 	globalToasts: GlobalToast[];
@@ -123,7 +134,7 @@ export type UiState = {
 	updateInstallPromptOpen: boolean;
 	openUpdateInstallPrompt: () => void;
 	closeUpdateInstallPrompt: () => void;
-	openGlobalSettings: (section?: GlobalSettingsSection) => void;
+	openGlobalSettings: (section?: GlobalSettingsSection, options?: { focusAgentId?: string; preserveProject?: boolean }) => void;
 	openProjectSettings: (projectId: string) => void;
 	closeSettings: () => void;
 	/** Refresh resolvedTheme from OS without writing light/dark to storage. */
@@ -145,6 +156,7 @@ export type UiState = {
 	setFilesChangedOnly: (sessionId: string, changedOnly: boolean) => void;
 	setCommandPaletteOpen: (open: boolean) => void;
 	setProjectRestarting: (projectId: string, restarting: boolean) => void;
+	setProjectProvisioning: (projectId: string, provisioning: boolean) => void;
 	setOrchestratorReplacementError: (projectId: string, failure: OrchestratorReplacementFailure | null) => void;
 	setOrchestratorStartupError: (projectId: string, message: string | null) => void;
 	showGlobalToast: (title: string, body?: string, style?: GlobalToast["tone"] | GlobalToast["placement"]) => void;
@@ -163,6 +175,7 @@ export type OrchestratorReplacementFailure = {
 	message: string;
 	code?: string;
 	requestId?: string;
+	details?: Record<string, unknown>;
 };
 
 const sidebarStorageKey = "ao.sidebar.open";
@@ -180,6 +193,11 @@ function initialDeveloperMode() {
 	return getLocalStorage()?.getItem(developerModeStorageKey) === "true";
 }
 
+function syncDeveloperModeToUpdater(enabled: boolean): void {
+	const request = aoBridge.updateSettings?.setMacDifferentialUpdates?.(enabled);
+	void request?.catch(() => undefined);
+}
+
 function inspectorState(sessions: Record<string, InspectorSessionState>, sessionId: string): InspectorSessionState {
 	return sessions[sessionId] ?? { isOpen: true, view: "summary" };
 }
@@ -195,6 +213,7 @@ export function sidebarOccupiesLayout(state: Pick<UiState, "isSidebarOpen">): bo
 
 const initialThemePreference = readStoredThemePreference();
 const initialThemeStyle = readStoredThemeStyle();
+const initialDeveloperModeValue = initialDeveloperMode();
 
 export const useUiStore = create<UiState>((set, get) => ({
 	workbenchTab: "changes",
@@ -205,8 +224,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 	themePreference: initialThemePreference,
 	resolvedTheme: resolveTheme(initialThemePreference),
 	themeStyle: initialThemeStyle,
-	developerMode: initialDeveloperMode(),
+	developerMode: initialDeveloperModeValue,
 	restartingProjectIds: new Set<string>(),
+	provisioningProjectIds: new Set<string>(),
 	orchestratorReplacementErrors: {},
 	orchestratorStartupErrors: {},
 	globalToasts: [],
@@ -239,13 +259,27 @@ export const useUiStore = create<UiState>((set, get) => ({
 	setDeveloperMode: (developerMode) => {
 		getLocalStorage()?.setItem(developerModeStorageKey, String(developerMode));
 		set({ developerMode });
+		syncDeveloperModeToUpdater(developerMode);
 	},
 	updateInstallPromptOpen: false,
 	openUpdateInstallPrompt: () => set({ updateInstallPromptOpen: true }),
 	closeUpdateInstallPrompt: () => set({ updateInstallPromptOpen: false }),
-	openGlobalSettings: (section) => set({ settingsModal: { scope: "global", section } }),
+	openGlobalSettings: (section, options) => set((state) => ({
+		settingsModal: {
+			scope: "global",
+			section,
+			...(options?.focusAgentId ? { focusAgentId: options.focusAgentId } : {}),
+			...(options?.preserveProject && state.settingsModal?.scope === "project"
+				? { returnTo: state.settingsModal }
+				: options?.preserveProject && state.settingsModal?.scope === "global" && state.settingsModal.returnTo
+					? { returnTo: state.settingsModal.returnTo }
+					: {}),
+		},
+	})),
 	openProjectSettings: (projectId) => set({ settingsModal: { scope: "project", projectId } }),
-	closeSettings: () => set({ settingsModal: null }),
+	closeSettings: () => set((state) => ({
+		settingsModal: state.settingsModal?.scope === "global" ? state.settingsModal.returnTo ?? null : null,
+	})),
 	syncSystemTheme: () => {
 		const { themePreference, resolvedTheme } = get();
 		if (themePreference !== "system") return;
@@ -342,7 +376,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 	setFilesChangedOnly: (sessionId, filesChangedOnly) =>
 		set((state) => {
 			const current = inspectorState(state.inspectorSessions, sessionId);
-			if (Boolean(current.filesChangedOnly) === filesChangedOnly) return state;
+			if ((current.filesChangedOnly ?? true) === filesChangedOnly) return state;
 			return {
 				inspectorSessions: {
 					...state.inspectorSessions,
@@ -360,6 +394,16 @@ export const useUiStore = create<UiState>((set, get) => ({
 				restartingProjectIds.delete(projectId);
 			}
 			return { restartingProjectIds };
+		}),
+	setProjectProvisioning: (projectId, provisioning) =>
+		set((state) => {
+			const provisioningProjectIds = new Set(state.provisioningProjectIds);
+			if (provisioning) {
+				provisioningProjectIds.add(projectId);
+			} else {
+				provisioningProjectIds.delete(projectId);
+			}
+			return { provisioningProjectIds };
 		}),
 	setOrchestratorReplacementError: (projectId, failure) =>
 		set((state) => {
@@ -395,8 +439,20 @@ export const useUiStore = create<UiState>((set, get) => ({
 			globalToast: state.globalToast?.nonce === nonce ? null : state.globalToast,
 		})),
 	clearGlobalToast: () => set({ globalToast: null, globalToasts: [], globalToastSequence: 0 }),
-	requestNewTask: (projectId) =>
-		set((state) => ({ newTaskRequest: { projectId, nonce: (state.newTaskRequest?.nonce ?? 0) + 1 } })),
+	requestNewTask: (projectId) => {
+		// Central gate: every New Task entry point (buttons, sidebar menus,
+		// shortcuts) funnels through here, so a project whose orchestrator is
+		// still provisioning cannot start tasks before it exists.
+		if (get().provisioningProjectIds.has(projectId)) {
+			get().showGlobalToast(
+				"Project is still being set up",
+				"The orchestrator is starting. Try again in a moment.",
+				"info",
+			);
+			return;
+		}
+		set((state) => ({ newTaskRequest: { projectId, nonce: (state.newTaskRequest?.nonce ?? 0) + 1 } }));
+	},
 	requestCreateProject: () => set((state) => ({ createProjectNonce: state.createProjectNonce + 1 })),
 	requestCreateProjectFromPath: (path) =>
 		set((state) => ({ folderDropRequest: { path, nonce: (state.folderDropRequest?.nonce ?? 0) + 1 } })),
@@ -416,6 +472,10 @@ export const useUiStore = create<UiState>((set, get) => ({
 			return { visibleTerminalKindBySession };
 		}),
 }));
+
+// Hydration synchronizes legacy renderer-only Developer Mode state into the
+// main-process updater mirror. Until this completes, the updater is fail-closed.
+syncDeveloperModeToUpdater(initialDeveloperModeValue);
 
 export function useResolvedTheme(): Theme {
 	return useUiStore((state) => state.resolvedTheme);
