@@ -49,10 +49,10 @@ type ReviewRunResponse struct {
 // TriggerReviewResponse is the body of trigger (200/201). reviews carries the
 // PR-scoped review state after the trigger.
 type TriggerReviewResponse struct {
-	ReviewerHandleID string                     `json:"reviewerHandleId"`
+	ReviewerHandleID  string                     `json:"reviewerHandleId"`
 	ReviewerTerminals []ReviewerTerminalResponse `json:"reviewerTerminals"`
-	Reviews          []reviewcore.PRReviewState `json:"reviews"`
-	Runs             []domain.ReviewRun         `json:"runs"`
+	Reviews           []reviewcore.PRReviewState `json:"reviews"`
+	Runs              []domain.ReviewRun         `json:"runs"`
 	// Created is true when a new review pass was started (HTTP 201) and false
 	// when an existing run for the same commit was reused (HTTP 200).
 	Created bool `json:"created" description:"True when a new review pass was started; false when an existing run for the same commit was reused."`
@@ -67,20 +67,20 @@ type CancelReviewResponse struct {
 
 // RestoreReviewResponse is the body of reviewer session restore (200).
 type RestoreReviewResponse struct {
-	ReviewerHandleID string                     `json:"reviewerHandleId"`
-	ReviewerHarness  domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
+	ReviewerHandleID  string                     `json:"reviewerHandleId"`
+	ReviewerHarness   domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
 	ReviewerTerminals []ReviewerTerminalResponse `json:"reviewerTerminals"`
-	Reviews          []reviewcore.PRReviewState `json:"reviews"`
-	Runs             []domain.ReviewRun         `json:"runs"`
+	Reviews           []reviewcore.PRReviewState `json:"reviews"`
+	Runs              []domain.ReviewRun         `json:"runs"`
 }
 
 // KillReviewResponse is the body of reviewer session kill (200).
 type KillReviewResponse struct {
-	ReviewerHandleID string                     `json:"reviewerHandleId"`
-	ReviewerHarness  domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
+	ReviewerHandleID  string                     `json:"reviewerHandleId"`
+	ReviewerHarness   domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
 	ReviewerTerminals []ReviewerTerminalResponse `json:"reviewerTerminals"`
-	Reviews          []reviewcore.PRReviewState `json:"reviews"`
-	Runs             []domain.ReviewRun         `json:"runs"`
+	Reviews           []reviewcore.PRReviewState `json:"reviews"`
+	Runs              []domain.ReviewRun         `json:"runs"`
 }
 
 // SubmitReviewItem is one review result in a batched submit request.

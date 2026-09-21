@@ -144,13 +144,13 @@ func (e *Engine) lockWorker(id domain.SessionID) func() {
 // reviewer pane's handle so the UI can attach its terminal, and whether a new
 // pass was started (false when an existing run for the same commit was reused).
 type TriggerResult struct {
-	Run              domain.ReviewRun
-	ReviewerHandleID string
+	Run               domain.ReviewRun
+	ReviewerHandleID  string
 	ReviewerTerminals []ReviewerTerminal
-	Created          bool
-	Reviews          []PRReviewState
-	Runs             []domain.ReviewRun
-	CreatedRuns      []domain.ReviewRun
+	Created           bool
+	Reviews           []PRReviewState
+	Runs              []domain.ReviewRun
+	CreatedRuns       []domain.ReviewRun
 	// SkipReason is set only for a normal automatic-trigger policy race, such
 	// as the worker becoming active after the coordinator's initial read.
 	SkipReason string
@@ -301,7 +301,6 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	// Sequentially trigger each reviewer
 	var allCreated []domain.ReviewRun
 	var allRuns []domain.ReviewRun
-	var allReviews []PRReviewState
 	firstCreated := false
 
 	for _, reviewer := range reviewers {
@@ -315,7 +314,6 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		}
 		allCreated = append(allCreated, result.CreatedRuns...)
 		allRuns = append(allRuns, result.Runs...)
-		allReviews = append(allReviews, result.Reviews...)
 
 		// Refresh runs after each reviewer to see the latest state
 		runs, err = e.store.ListReviewRunsBySession(ctx, workerID)
@@ -340,13 +338,13 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		return TriggerResult{}, err
 	}
 	return TriggerResult{
-		Run:              resultRun,
-		ReviewerHandleID: terminalState.ReviewerHandleID,
+		Run:               resultRun,
+		ReviewerHandleID:  terminalState.ReviewerHandleID,
 		ReviewerTerminals: terminalState.ReviewerTerminals,
-		Created:          firstCreated,
-		Reviews:          aggregateReviews,
-		Runs:             allRuns,
-		CreatedRuns:      allCreated,
+		Created:           firstCreated,
+		Reviews:           aggregateReviews,
+		Runs:              allRuns,
+		CreatedRuns:       allCreated,
 	}, nil
 }
 
@@ -479,8 +477,8 @@ func (e *Engine) triggerForHarness(
 		return TriggerResult{Run: firstReusableRun(reviews), ReviewerHandleID: reviewRow.ReviewerHandleID, Created: false, Reviews: reviews, Runs: runs}, nil
 	}
 
-	failRuns := func(start int, err error) error {
-		for _, run := range created[start:] {
+	failRuns := func(err error) error {
+		for _, run := range created {
 			if _, updateErr := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, err.Error(), "", run.AutoInjectReview); updateErr != nil {
 				return updateErr
 			}
@@ -503,7 +501,7 @@ func (e *Engine) triggerForHarness(
 	if !hasConfigOverride && reviewRow.ReviewerHandleID != "" && reviewerPaneReusable(reviewRow, hadRunningReviewer) {
 		alive, err := e.launcher.Alive(ctx, reviewRow.ReviewerHandleID)
 		if err != nil {
-			return TriggerResult{}, failRuns(0, err)
+			return TriggerResult{}, failRuns(err)
 		}
 		if alive {
 			handleID = reviewRow.ReviewerHandleID
@@ -513,16 +511,16 @@ func (e *Engine) triggerForHarness(
 		// Each pass gets a fresh reviewer process on the same stable terminal
 		// handle when there is no resumable live agent session to notify.
 		if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath); err != nil {
-			return TriggerResult{}, failRuns(0, fmt.Errorf("reviewer preflight: %w", err))
+			return TriggerResult{}, failRuns(fmt.Errorf("reviewer preflight: %w", err))
 		}
 		launchID := e.newID()
 		reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, launchAgentSessionID, launchID, "", now)
 		if err != nil {
-			return TriggerResult{}, failRuns(0, err)
+			return TriggerResult{}, failRuns(err)
 		}
 		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID, launchID))
 		if err != nil {
-			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
+			return TriggerResult{}, failRuns(fmt.Errorf("launch reviewer: %w", err))
 		}
 		handleID = launch.HandleID
 		if launch.LaunchID != "" {
@@ -533,7 +531,7 @@ func (e *Engine) triggerForHarness(
 		}
 	} else {
 		if err := e.launcher.Notify(ctx, handleID, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)); err != nil {
-			return TriggerResult{}, failRuns(0, fmt.Errorf("notify reviewer: %w", err))
+			return TriggerResult{}, failRuns(fmt.Errorf("notify reviewer: %w", err))
 		}
 	}
 	for _, stale := range pendingSupersedes {
@@ -541,7 +539,7 @@ func (e *Engine) triggerForHarness(
 			if handleID != "" {
 				_ = e.launcher.Destroy(ctx, handleID)
 			}
-			return TriggerResult{}, failRuns(0, err)
+			return TriggerResult{}, failRuns(err)
 		}
 	}
 	if hasConfigOverride && persistedAgentSessionID == "" && reviewRow.ID != "" {
@@ -549,7 +547,7 @@ func (e *Engine) triggerForHarness(
 			if handleID != "" {
 				_ = e.launcher.Destroy(ctx, handleID)
 			}
-			return TriggerResult{}, failRuns(0, err)
+			return TriggerResult{}, failRuns(err)
 		}
 	}
 	reviewRow, err = e.upsertReview(ctx, worker, harness, handleID, persistedAgentSessionID, reviewRow.ReviewerLaunchID, "", now)
@@ -562,14 +560,14 @@ func (e *Engine) triggerForHarness(
 	if hasConfigOverride && previousHandleID != "" && previousHandleID != handleID {
 		if err := e.launcher.Destroy(ctx, previousHandleID); err != nil {
 			if _, rollbackErr := e.upsertReview(ctx, worker, harness, previousHandleID, previousAgentSessionID, "", "", now); rollbackErr != nil {
-				return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w; rollback review row: %w", err, rollbackErr))
+				return TriggerResult{}, failRuns(fmt.Errorf("destroy previous reviewer: %w; rollback review row: %w", err, rollbackErr))
 			}
 			if handleID != "" {
 				if destroyNewErr := e.launcher.Destroy(ctx, handleID); destroyNewErr != nil {
-					return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w; cleanup replacement reviewer: %w", err, destroyNewErr))
+					return TriggerResult{}, failRuns(fmt.Errorf("destroy previous reviewer: %w; cleanup replacement reviewer: %w", err, destroyNewErr))
 				}
 			}
-			return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w", err))
+			return TriggerResult{}, failRuns(fmt.Errorf("destroy previous reviewer: %w", err))
 		}
 	}
 	for i := range created {
@@ -1468,43 +1466,6 @@ func (e *Engine) terminateForHarness(ctx stdctx.Context, workerID domain.Session
 		}
 	}
 	return TerminateResult{ReviewerHandleID: destroyedHandle, CancelledRuns: cancelledRuns}, nil
-}
-
-func (e *Engine) currentReviewForCancel(ctx stdctx.Context, workerID domain.SessionID, selected domain.ReviewerHarness, running []domain.ReviewRun) (domain.Review, bool, error) {
-	if len(running) > 0 {
-		if selected != "" {
-			for _, run := range running {
-				if run.Harness != selected && run.Harness != "" {
-					continue
-				}
-				review, ok, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, selected)
-				if err != nil || (ok && review.ReviewerHandleID != "") {
-					return review, ok, err
-				}
-				break
-			}
-		}
-		for _, run := range running {
-			if run.Harness == "" || run.Harness == selected {
-				continue
-			}
-			review, ok, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, run.Harness)
-			if err != nil || (ok && review.ReviewerHandleID != "") {
-				return review, ok, err
-			}
-		}
-	}
-	return e.currentReviewForSession(ctx, workerID, selected)
-}
-
-func (e *Engine) currentReviewForSession(ctx stdctx.Context, workerID domain.SessionID, selected domain.ReviewerHarness) (domain.Review, bool, error) {
-	if selected != "" {
-		review, ok, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, selected)
-		if err != nil || ok {
-			return review, ok, err
-		}
-	}
-	return e.store.GetReviewBySession(ctx, workerID)
 }
 
 // TerminateReviewer destroys the live reviewer pane for a worker and cancels
