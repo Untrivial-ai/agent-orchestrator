@@ -828,7 +828,8 @@ func (s *Store) WorkerLaunchSpec(
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		err := tx.QueryRow(
 			ctx,
-			`SELECT session.id, session.project_id, session.kind, session.harness,
+			`SELECT session.id, session.project_id, project.display_name, project.config,
+				session.kind, session.harness,
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.denied_commands,
 				COALESCE(session.parent_session_id::text, ''),
@@ -841,6 +842,8 @@ func (s *Store) WorkerLaunchSpec(
 		).Scan(
 			&launch.SessionID,
 			&launch.ProjectID,
+			&launch.ProjectName,
+			&launch.ProjectConfig,
 			&launch.Kind,
 			&launch.Harness,
 			&launch.DisplayName,

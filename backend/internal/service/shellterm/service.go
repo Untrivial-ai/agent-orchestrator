@@ -741,9 +741,10 @@ func (s *Service) resolveShellTerminalWorkingDir(ctx context.Context, projectID 
 		if err != nil {
 			return "", "", fmt.Errorf("open shell terminal: resolve session %s: %w", sessionID, err)
 		}
-		if sessionProjectID != "" {
-			projectID = sessionProjectID
-		}
+		// The session is authoritative even when it is standalone. Keeping a
+		// caller-supplied UI sentinel here would violate shell_terminals'
+		// project foreign key after the PTY has already been created.
+		projectID = sessionProjectID
 		if workspacePath != "" {
 			return workspacePath, projectID, nil
 		}

@@ -46,7 +46,11 @@ type Service struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
-	stopProviderHost       func(context.Context, domain.SessionID) error
+	// onModelChanged records a model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes, so a later TUI
+	// rebuild can resume with the same model.
+	onModelChanged   func(domain.SessionID, string)
+	stopProviderHost func(context.Context, domain.SessionID) error
 
 	mu           sync.RWMutex
 	controllers  map[domain.SessionID]*Controller
@@ -102,6 +106,11 @@ type Options struct {
 	// globally active AO Codex account. The callback owns profile-independent
 	// account state; conversation rows are not the authority for Codex capacity.
 	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// OnModelChanged persists a model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes. Nil leaves the
+	// session model unchanged (production always wires it so the choice survives
+	// a later TUI rebuild).
+	OnModelChanged func(domain.SessionID, string)
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
@@ -129,6 +138,7 @@ func New(opts Options) *Service {
 		now:                    now,
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
+		onModelChanged:         opts.OnModelChanged,
 		stopProviderHost:       opts.StopProviderHost,
 		controllers:            make(map[domain.SessionID]*Controller),
 		startConfigs:           make(map[domain.SessionID]StartConfig),
@@ -1535,12 +1545,12 @@ func (s *Service) SetConfigOption(
 	}
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()
+	previous := controller.Settings()
 	options, err := configurer.SetConfigOption(ctx, configID, value)
 	if err != nil {
 		return nil, err
 	}
 	options = permissionConfigOptions(record.Harness, options)
-	previous := controller.Settings()
 	settings, _ := settingsFromConfigOptions(previous, options)
 	if record.Harness == domain.HarnessOpenCode && configID == "mode" {
 		for _, option := range options {
@@ -1553,6 +1563,10 @@ func (s *Service) SetConfigOption(
 		if err := controller.SetSettings(ctx, settings); err != nil {
 			return nil, err
 		}
+		// The config-options route is how provider-owned pickers (e.g. Claude
+		// Code's model menu) change the model; it must persist the pick the same
+		// way the turn-settings route does.
+		s.persistPickedModel(id, previous, settings)
 	}
 	return options, nil
 }
@@ -1692,11 +1706,28 @@ func (s *Service) SetTurnSettings(
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()
 	// The turn-settings endpoint does not own provider session mode choices.
-	settings.OpenCodeMode = controller.Settings().OpenCodeMode
+	previous := controller.Settings()
+	settings.OpenCodeMode = previous.OpenCodeMode
 	if err := controller.SetSettings(ctx, settings); err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	s.persistPickedModel(id, previous, settings)
 	return controller.Settings(), nil
+}
+
+// persistPickedModel records a model the user picked in ChatUI onto the
+// session's durable metadata BEFORE the next prompt routes. The conversation
+// row is the chat-side source of truth; the session metadata is what a later
+// TUI rebuild reads to keep the same model, so a model change must land there
+// too before the user can switch interfaces. Every route that can change the
+// model funnels through here: the turn-settings PATCH and the provider
+// config-options route (e.g. Claude Code's model picker).
+func (s *Service) persistPickedModel(id domain.SessionID, previous, next domain.ConversationSettings) {
+	model := strings.TrimSpace(next.Model)
+	if model == "" || model == strings.TrimSpace(previous.Model) || s.onModelChanged == nil {
+		return
+	}
+	s.onModelChanged(id, model)
 }
 
 // RelayChatTurn delivers a message AO is carrying for someone else.
@@ -1749,21 +1780,49 @@ func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatCo
 	for i := range out {
 		out[i].Choices = append([]ports.ChatConfigOptionChoice(nil), out[i].Choices...)
 		for j := range out[i].Choices {
-			out[i].Choices[j].PermissionMode = ""
-			if harness != domain.HarnessClaudeCode || out[i].ID != "mode" {
+			choice := &out[i].Choices[j]
+			choice.PermissionMode = ""
+			if out[i].ID != "mode" {
 				continue
 			}
-			switch out[i].Choices[j].Value {
-			case "manual", "default":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeDefault
-			case "acceptEdits":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAcceptEdits
-			case "auto":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeAuto
-			case "bypassPermissions":
-				out[i].Choices[j].PermissionMode = domain.PermissionModeBypassPermissions
+			switch harness {
+			case domain.HarnessClaudeCode:
+				switch choice.Value {
+				case "manual", "default":
+					choice.PermissionMode = domain.PermissionModeDefault
+				case "acceptEdits":
+					choice.PermissionMode = domain.PermissionModeAcceptEdits
+				case "auto":
+					choice.PermissionMode = domain.PermissionModeAuto
+				case "bypassPermissions":
+					choice.PermissionMode = domain.PermissionModeBypassPermissions
+				}
+			case domain.HarnessOpenCode:
+				// AO's own permission tiers, injected as OpenCode agents. OpenCode
+				// reports an agent's key as its display name, so they are relabelled
+				// here into the vocabulary the rest of AO uses. Its native build and
+				// plan agents are execution modes and stay unannotated.
+				if mode, label, ok := openCodeApprovalTier(choice.Value); ok {
+					choice.PermissionMode = mode
+					choice.Name = label
+				}
 			}
 		}
 	}
 	return out
+}
+
+func openCodeApprovalTier(value string) (domain.PermissionMode, string, bool) {
+	switch value {
+	case "ao-default":
+		return domain.PermissionModeDefault, "Default approvals", true
+	case "ao-accept-edits":
+		return domain.PermissionModeAcceptEdits, "Accept edits", true
+	case "ao-auto":
+		return domain.PermissionModeAuto, "Auto-approve", true
+	case "ao-bypass":
+		return domain.PermissionModeBypassPermissions, "Bypass permissions", true
+	default:
+		return "", "", false
+	}
 }

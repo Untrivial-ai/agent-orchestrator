@@ -47,7 +47,10 @@ const UTF8PROC = {
 	license: "LICENSE.md",
 };
 const SOURCES = [TMUX, LIBEVENT, NCURSES, UTF8PROC];
-const BUILD_REVISION = 4;
+// Linux intentionally links glibc dynamically. A fully static glibc tmux can
+// enter __libc_early_init with an unset page size and SIGFPE on new-session
+// even though `tmux -V` succeeds (#4616).
+const BUILD_REVISION = 5;
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = resolve(scriptsDir, "..");
@@ -203,7 +206,6 @@ async function build() {
 
 	const tmuxDir = join(sourceRoot, TMUX.directory);
 	const tmuxConfigureArgs = ["--enable-utf8proc"];
-	if (process.platform === "linux") tmuxConfigureArgs.push("--enable-static");
 	const tmuxEnv = {
 		...commonEnv,
 		LIBTINFO_CFLAGS: `-I${join(prefix, "include", "ncursesw")} -I${join(prefix, "include")}`,

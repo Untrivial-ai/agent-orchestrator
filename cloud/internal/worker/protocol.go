@@ -26,6 +26,9 @@ type LaunchContext struct {
 	DeniedCommands  []string `json:"deniedCommands"`
 	RepositoryURL   string   `json:"repositoryUrl"`
 	DefaultBranch   string   `json:"defaultBranch"`
+	// SystemPrompt carries control-plane-authored project context and rules. It
+	// remains separate from Prompt, which is the user's visible task input.
+	SystemPrompt string `json:"systemPrompt"`
 }
 
 // BootstrapResponse is the control plane's answer to a valid bootstrap ticket.

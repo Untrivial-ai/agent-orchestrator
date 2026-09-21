@@ -58,6 +58,21 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
 }
 
+// UpdateSessionModel changes only the selected model, leaving concurrent
+// lifecycle and controller ownership updates intact.
+func (s *Store) UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateSessionModel(ctx, gen.UpdateSessionModelParams{
+		ID:    id,
+		Model: model,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update session model for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateBrowserCapabilityVerifier rotates only the verifier when the caller's
 // controller-owner snapshot is still current. It deliberately leaves every
 // other mutable session field, including user-visible recency, untouched.
