@@ -204,57 +204,92 @@ const codexAuthFlow: ProviderAuthFlow = {
 					'Codex is not installed or could not be found. Install the Codex CLI, or connect with the "API key" credential type instead.',
 				);
 			}
-			await new Promise<void>((resolve, reject) => {
+			// Read + validate codex's auth.json; returns the secret or null if it is
+			// not yet present/valid. Used both while polling and on process exit.
+			const readCodexCredential = async (): Promise<string | null> => {
+				const authPath = await findCodexAuthFile(codexHome).catch(() => null);
+				if (!authPath) return null;
+				let authFile: Buffer;
+				try {
+					authFile = await readFile(authPath);
+				} catch {
+					return null;
+				}
+				if (authFile.byteLength === 0 || authFile.byteLength > MAX_AUTH_DOCUMENT_BYTES) return null;
+				const secret = authFile.toString("utf8");
+				try {
+					const document: unknown = JSON.parse(secret);
+					if (typeof document !== "object" || document === null || Array.isArray(document)) return null;
+				} catch {
+					return null;
+				}
+				return secret;
+			};
+
+			// Resolve as soon as codex writes auth.json, not when the CLI exits: like
+			// `claude setup-token`, `codex login` can leave the process idling after
+			// the browser round-trip, which would otherwise time out at 5 minutes even
+			// though a valid credential is already on disk.
+			const secret = await new Promise<string>((resolve, reject) => {
 				const child = spawnAgentBinary(binary.path, ["-c", 'cli_auth_credentials_store="file"', "login"], {
 					env: { ...process.env, PATH: binary.pathEnv, CODEX_HOME: codexHome },
 					stdio: "ignore",
 				});
-				
+
+				let settled = false;
 				let timeout: NodeJS.Timeout;
+				let poll: NodeJS.Timeout;
 				const cleanup = () => {
 					clearTimeout(timeout);
+					clearInterval(poll);
 					signal?.removeEventListener("abort", onAbort);
+					try {
+						child.kill();
+					} catch {
+						// already gone
+					}
 				};
-
-				const onAbort = () => {
-					child.kill();
+				const succeed = (value: string) => {
+					if (settled) return;
+					settled = true;
 					cleanup();
-					reject(new Error("Login was cancelled."));
+					resolve(value);
+				};
+				const fail = (err: Error) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					reject(err);
 				};
 
+				poll = setInterval(() => {
+					void readCodexCredential().then((value) => {
+						if (value) succeed(value);
+					});
+				}, 1000);
+
+				const onAbort = () => fail(new Error("Login was cancelled."));
 				if (signal?.aborted) return onAbort();
 				signal?.addEventListener("abort", onAbort);
 
-				timeout = setTimeout(() => {
-					child.kill();
-					cleanup();
-					reject(new Error("Login timed out after 5 minutes."));
-				}, 5 * 60 * 1000);
+				timeout = setTimeout(() => fail(new Error("Login timed out after 5 minutes.")), 5 * 60 * 1000);
 
-				child.once("error", () => {
-					cleanup();
-					reject(new Error('Codex could not start. Connect with the "API key" credential type instead.'));
-				});
+				child.once("error", () =>
+					fail(new Error('Codex could not start. Connect with the "API key" credential type instead.')),
+				);
 				child.once("exit", (code) => {
-					cleanup();
-					code === 0 ? resolve() : reject(new Error("Codex sign-in did not complete."));
+					void readCodexCredential().then((value) => {
+						if (value) return succeed(value);
+						fail(
+							new Error(
+								code === 0
+									? 'Codex sign-in did not create a credential. Connect with the "API key" credential type instead.'
+									: "Codex sign-in did not complete.",
+							),
+						);
+					});
 				});
 			});
-			const authPath = await findCodexAuthFile(codexHome);
-			if (!authPath) {
-				throw new Error('Codex sign-in did not create a credential. Connect with the "API key" credential type instead.');
-			}
-			const authFile = await readFile(authPath);
-			if (authFile.byteLength === 0 || authFile.byteLength > MAX_AUTH_DOCUMENT_BYTES) {
-				throw new Error("Codex did not create a valid authentication credential.");
-			}
-			const secret = authFile.toString("utf8");
-			try {
-				const document: unknown = JSON.parse(secret);
-				if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error();
-			} catch {
-				throw new Error("Codex did not create a valid authentication credential.");
-			}
 			return { provider: "codex", credentialType: "auth_json", secret };
 		} finally {
 			await rm(pending, { recursive: true, force: true });
@@ -282,54 +317,92 @@ const claudeAuthFlow: ProviderAuthFlow = {
 			// setup-token opens the browser for OAuth and, on completion, emits the
 			// token; capture stdout/stderr so we can read it.
 			let captured = "";
-			await new Promise<void>((resolve, reject) => {
+			// Resolve as soon as the setup token MATERIALIZES, not when the CLI exits.
+			// `claude setup-token` emits the sk-ant-oat token the instant OAuth
+			// completes, but recent builds do not reliably exit afterward (they can
+			// idle holding the browser session open). Waiting on process `exit` then
+			// timed out at 5 minutes even though the token was already in hand - the
+			// exact failure the browser-login button hit. So watch stdout AND the
+			// isolated config dir, and finish the moment a token appears; the process
+			// `exit` becomes only the terminal-error signal.
+			const secret = await new Promise<string>((resolve, reject) => {
 				const child = spawnAgentBinary(binary.path, ["setup-token"], {
 					env: { ...process.env, PATH: binary.pathEnv, CLAUDE_CONFIG_DIR: pending },
 					stdio: ["ignore", "pipe", "pipe"],
 				});
+
+				let settled = false;
+				let timeout: NodeJS.Timeout;
+				let poll: NodeJS.Timeout;
+				const cleanup = () => {
+					clearTimeout(timeout);
+					clearInterval(poll);
+					signal?.removeEventListener("abort", onAbort);
+					try {
+						child.kill();
+					} catch {
+						// already gone
+					}
+				};
+				const succeed = (token: string) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					resolve(token);
+				};
+				const fail = (err: Error) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					reject(err);
+				};
+
 				const capture = (chunk: Buffer) => {
 					if (captured.length <= MAX_AUTH_DOCUMENT_BYTES) captured += chunk.toString();
+					const token = extractClaudeOAuthToken(captured);
+					if (token) succeed(token);
 				};
 				child.stdout?.on("data", capture);
 				child.stderr?.on("data", capture);
 
-				let timeout: NodeJS.Timeout;
-				const cleanup = () => {
-					clearTimeout(timeout);
-					signal?.removeEventListener("abort", onAbort);
-				};
+				// Some builds write the token to a file in the isolated config dir
+				// instead of stdout; poll for it so that path resolves promptly too.
+				poll = setInterval(() => {
+					void readClaudeOAuthTokenFromDir(pending)
+						.then((token) => {
+							if (token) succeed(token);
+						})
+						.catch(() => {});
+				}, 1000);
 
-				const onAbort = () => {
-					child.kill();
-					cleanup();
-					reject(new Error("Login was cancelled."));
-				};
-
+				const onAbort = () => fail(new Error("Login was cancelled."));
 				if (signal?.aborted) return onAbort();
 				signal?.addEventListener("abort", onAbort);
 
-				timeout = setTimeout(() => {
-					child.kill();
-					cleanup();
-					reject(new Error("Login timed out after 5 minutes."));
-				}, 5 * 60 * 1000);
+				timeout = setTimeout(() => fail(new Error("Login timed out after 5 minutes.")), 5 * 60 * 1000);
 
-				child.once("error", () => {
-					cleanup();
-					reject(new Error('Claude Code could not start. Connect with the "API key" credential type instead.'));
-				});
+				child.once("error", () =>
+					fail(new Error('Claude Code could not start. Connect with the "API key" credential type instead.')),
+				);
 				child.once("exit", (code) => {
-					cleanup();
-					code === 0 ? resolve() : reject(new Error("Claude sign-in did not complete."));
+					// Last-chance check for a token the CLI wrote just before exiting,
+					// then treat the exit as terminal.
+					const token = extractClaudeOAuthToken(captured);
+					if (token) return succeed(token);
+					void readClaudeOAuthTokenFromDir(pending)
+						.then((fileToken) => {
+							if (fileToken) return succeed(fileToken);
+							fail(
+								new Error(
+									code === 0
+										? 'Claude sign-in did not return a token. Connect with the "API key" credential type instead.'
+										: "Claude sign-in did not complete.",
+								),
+							);
+						})
+						.catch(() => fail(new Error("Claude sign-in did not complete.")));
 				});
 			});
-
-			// The token normally arrives on stdout; fall back to any file setup-token
-			// wrote into the isolated config dir so a storage change cannot break this.
-			const secret = extractClaudeOAuthToken(captured) ?? (await readClaudeOAuthTokenFromDir(pending));
-			if (!secret) {
-				throw new Error('Claude sign-in did not return a token. Connect with the "API key" credential type instead.');
-			}
 			return { provider: "claude-code", credentialType: "oauth_token", secret };
 		} finally {
 			await rm(pending, { recursive: true, force: true });

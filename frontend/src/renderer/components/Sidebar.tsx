@@ -72,10 +72,11 @@ import { getSessionStatusDotView } from "../lib/session-presentation";
 import { deriveSessionAgentSwitchPresentation } from "../lib/agent-switch-presentation";
 import { aoBridge } from "../lib/bridge";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
+import { useCanResumeAgent } from "../hooks/useCanResumeAgent";
 import { cloudSessionsQueryKey, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { usePinSession, useUnpinSession } from "../hooks/usePinSession";
 import { spawnCloudOrchestrator } from "../lib/cloud-orchestrator";
-import { spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { resumeOrchestrator, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { formatTimeCompact, formatTimeTerse } from "../lib/format-time";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useResizable } from "../hooks/useResizable";
@@ -1072,6 +1073,7 @@ const ProjectItem = memo(function ProjectItem({
 	const isProjectProvisioning = useUiStore((state) => state.provisioningProjectIds.has(workspace.id));
 	const isProjectRestarting = useUiStore((state) => state.restartingProjectIds.has(workspace.id));
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
+	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const projectIsDragging = isDragged;
 	const isStandaloneWorkspace = workspace.kind === STANDALONE_PROJECT_KIND;
 	// Keep completed PR sessions reachable while their runtime still exists.
@@ -1147,6 +1149,7 @@ const ProjectItem = memo(function ProjectItem({
 	// The project's live orchestrator (if any) backs the hover Orchestrator
 	// button: navigate to it when present, otherwise spawn one first.
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
+	const canResumeOrchestrator = useCanResumeAgent(orchestrator);
 	const toggleDisclosure = () => {
 		hasInteractedWithDisclosure.current = true;
 		onToggle(workspace.id);
@@ -1160,6 +1163,24 @@ const ProjectItem = memo(function ProjectItem({
 		if (isProjectProvisioning || isProjectRestarting) return;
 		if (!expanded) toggleDisclosure();
 		if (orchestrator) {
+			// Mirrors useProjectOrchestratorAction; both launchers must stay in step.
+			if (canResumeOrchestrator && workspace.kind !== "cloud") {
+				setIsSpawning(true);
+				try {
+					await resumeOrchestrator(orchestrator.id);
+					await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+				} catch (err) {
+					console.error("Failed to resume orchestrator:", err);
+					showGlobalToast(
+						t("inspector.resumeAgent"),
+						err instanceof Error ? err.message : t("shell.couldNotSpawn"),
+						"error",
+					);
+					return;
+				} finally {
+					setIsSpawning(false);
+				}
+			}
 			selection.goSession(workspace.id, orchestrator.id);
 			return;
 		}
