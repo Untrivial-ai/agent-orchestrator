@@ -10,10 +10,10 @@ import (
 )
 
 func TestTraeAgentRemainsUnregistered(t *testing.T) {
-	// "trae-agent" follows the official repository/package name. "trae" is
-	// guarded too because AO already uses that spelling for an editor handoff;
-	// neither may silently become an agent capability.
-	for _, harness := range []string{"trae-agent", "trae"} {
+	// "trae-agent" follows the official repository/package name, "trae-cli"
+	// follows the executable, and "trae" is already used for an editor handoff.
+	// None may silently become an agent capability.
+	for _, harness := range []string{"trae-agent", "trae-cli", "trae"} {
 		if domain.AgentHarness(harness).IsKnown() {
 			t.Fatalf("%s must not be a selectable harness before TUI conformance", harness)
 		}

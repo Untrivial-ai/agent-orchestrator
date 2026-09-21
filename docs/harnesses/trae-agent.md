@@ -7,8 +7,9 @@ migration, API enum, installer, product picker, avatar, Chat driver, interface
 handoff, or reviewer entry for Trae Agent.
 
 AO's pre-existing `trae` editor-handoff label is unrelated to an agent harness.
-The registration test guards both `trae-agent` and `trae` so that editor naming
-cannot accidentally be mistaken for worker, Chat, or reviewer support.
+The registration test guards `trae-agent`, `trae-cli`, and `trae` so that
+package, executable, or editor naming cannot accidentally be mistaken for
+worker, Chat, or reviewer support.
 
 ## Pinned upstream evidence
 
@@ -26,11 +27,11 @@ The audit was performed on 2026-09-22 against the official
 
 This is an audited **source snapshot, not an upstream release**. At audit time,
 the official repository had no GitHub releases and no tags, and PyPI returned
-404 for `trae-agent`. The repository declares version `0.1.0`, but that alone
-does not create a released, installable artifact. Two downloads for the exact
-commit produced different GitHub-generated archive bytes during the audit, so
-no archive digest is presented as durable provenance; the commit and tree are
-the source identity.
+404 for both `trae-agent` and `trae-cli`. The repository declares version
+`0.1.0`, but that alone does not create a released, installable artifact. Two
+downloads for the exact commit produced different GitHub-generated archive
+bytes during the audit, so no archive digest is presented as durable
+provenance; the commit and tree are the source identity.
 
 Upstream documents source installation with Python 3.12+, `uv sync
 --all-extras`, and activation of the checkout's virtual environment. The
@@ -136,4 +137,5 @@ or another provider profile in production merely to manufacture isolation.
 - [Pinned commit](https://github.com/bytedance/trae-agent/commit/e839e559ac61bdd0e057c375dd1dee391fee797d)
 - [GitHub releases API](https://api.github.com/repos/bytedance/trae-agent/releases)
 - [GitHub tags API](https://api.github.com/repos/bytedance/trae-agent/tags)
-- [PyPI project API](https://pypi.org/pypi/trae-agent/json)
+- [PyPI `trae-agent` project API](https://pypi.org/pypi/trae-agent/json)
+- [PyPI `trae-cli` project API](https://pypi.org/pypi/trae-cli/json)
