@@ -451,6 +451,7 @@
 	"inspector.review.rerun": "리뷰 다시 실행",
 	"inspector.review.restoreSession": "리뷰 세션 복원",
 	"inspector.review.restoringSession": "리뷰 세션 복원 중...",
+	"inspector.review.inProgressAgent": "리뷰 진행 중 · {{agent}}",
 	"inspector.review.reviewing": "리뷰 중...",
 	"inspector.review.run": "리뷰 실행",
 	"inspector.review.runLatest": "PR 다시 리뷰",

@@ -453,6 +453,7 @@
 	"inspector.review.rerun": "Volver a ejecutar la revisión",
 	"inspector.review.restoreSession": "Restaurar sesión de revisión",
 	"inspector.review.restoringSession": "Restaurando sesión de revisión...",
+	"inspector.review.inProgressAgent": "Revisión en curso · {{agent}}",
 	"inspector.review.reviewing": "Revisando...",
 	"inspector.review.run": "Ejecutar revisión",
 	"inspector.review.runLatest": "Volver a revisar el PR",

@@ -451,6 +451,7 @@
 	"inspector.review.rerun": "レビューを再実行",
 	"inspector.review.restoreSession": "レビューセッションを復元",
 	"inspector.review.restoringSession": "レビューセッションを復元中...",
+	"inspector.review.inProgressAgent": "レビュー進行中 · {{agent}}",
 	"inspector.review.reviewing": "レビュー中...",
 	"inspector.review.run": "レビューを実行",
 	"inspector.review.runLatest": "PRを再レビュー",

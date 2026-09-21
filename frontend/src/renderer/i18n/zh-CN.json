@@ -450,6 +450,7 @@
 	"inspector.review.rerun": "重新运行评审",
 	"inspector.review.restoreSession": "恢复评审会话",
 	"inspector.review.restoringSession": "正在恢复评审会话…",
+	"inspector.review.inProgressAgent": "评审进行中 · {{agent}}",
 	"inspector.review.reviewing": "评审中…",
 	"inspector.review.run": "运行评审",
 	"inspector.review.runLatest": "重新评审 PR",
