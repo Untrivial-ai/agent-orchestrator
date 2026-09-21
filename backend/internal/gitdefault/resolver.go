@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -159,6 +160,7 @@ func (r *Resolver) Resolve(ctx, remoteCtx context.Context, repo string) (Resolut
 				if err := r.setCachedRemoteHead(ctx, repo, remote, branch); err != nil {
 					return Resolution{}, err
 				}
+				slog.Debug("git default: resolved remote HEAD", "repository", repo, "remote", remote, "branch", branch)
 				return Resolution{Branch: branch, Remote: remote, Ref: ref, Source: SourceLiveRemoteHead}, nil
 			}
 			liveErr = fmt.Errorf("fetch remote default %q from %q: %w", branch, remote, fetchErr)
