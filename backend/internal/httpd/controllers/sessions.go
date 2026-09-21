@@ -855,7 +855,7 @@ func (c *SessionsController) setPreview(w http.ResponseWriter, r *http.Request) 
 			}
 		} else if existing := strings.TrimSpace(sess.Metadata.PreviewURL); existing != "" {
 			var resolveErr error
-			previewURL, resolveErr = resolvePreviewTarget(r, sessionID(r), sess.Metadata.WorkspacePath, existing)
+			previewURL, resolveErr = resolvePreviewTarget(r, sessionID(r), sess.Metadata.WorkspacePath, existing, false)
 			if resolveErr != nil {
 				writePreviewResolveError(w, r, resolveErr)
 				return
@@ -866,7 +866,7 @@ func (c *SessionsController) setPreview(w http.ResponseWriter, r *http.Request) 
 		}
 	} else {
 		var resolveErr error
-		previewURL, resolveErr = resolvePreviewTarget(r, sessionID(r), sess.Metadata.WorkspacePath, previewURL)
+		previewURL, resolveErr = resolvePreviewTarget(r, sessionID(r), sess.Metadata.WorkspacePath, previewURL, in.RequireWorkspaceFile)
 		if resolveErr != nil {
 			writePreviewResolveError(w, r, resolveErr)
 			return
@@ -1861,7 +1861,7 @@ func resolveLocalPreview(r *http.Request, id domain.SessionID, workspacePath, ra
 	return resolved, true, err
 }
 
-func resolvePreviewTarget(r *http.Request, id domain.SessionID, workspacePath, raw string) (string, error) {
+func resolvePreviewTarget(r *http.Request, id domain.SessionID, workspacePath, raw string, requireWorkspaceFile bool) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if filePath, isFileURL, err := previewFileURLPath(raw); isFileURL {
 		if err != nil {
@@ -1877,6 +1877,9 @@ func resolvePreviewTarget(r *http.Request, id domain.SessionID, workspacePath, r
 	}
 	if resolved, ok, err := resolveLocalPreview(r, id, workspacePath, raw); ok || err != nil {
 		return resolved, err
+	}
+	if requireWorkspaceFile {
+		return "", errPreviewFileNotFound
 	}
 	return raw, nil
 }

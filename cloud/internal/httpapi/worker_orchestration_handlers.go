@@ -18,6 +18,14 @@ type orchestratorProviderStore interface {
 	OrchestratorSandboxProvider(context.Context, string, string) (string, error)
 }
 
+// orchestratorWorkerAgentStore resolves the worker agent the parent
+// orchestrator's project was configured with (config.worker.agent), so a child
+// spawned without an explicit harness inherits exactly that instead of a
+// hardcoded default. Same narrow-interface pattern as above.
+type orchestratorWorkerAgentStore interface {
+	OrchestratorProjectWorkerAgent(context.Context, string, string) (string, error)
+}
+
 type createWorkerChildRequest struct {
 	Harness                     string   `json:"harness"`
 	DisplayName                 string   `json:"displayName"`
@@ -113,6 +121,26 @@ func (s *Server) createWorkerChild(w http.ResponseWriter, r *http.Request) {
 	request.SandboxProviderConnectionID = strings.TrimSpace(request.SandboxProviderConnectionID)
 	if request.Mode == "" {
 		request.Mode = "trusted"
+	}
+	// The project's configured worker agent (config.worker.agent) is authoritative
+	// for orchestrator-spawned workers: the harness must match what was chosen at
+	// project creation regardless of what the orchestrator asks for. Some agents
+	// (e.g. Codex) spawn children naming their own harness, which would otherwise
+	// override the project's choice. Resolve and force it here, before the
+	// credential check and the provisioning plan. Only when the project set no
+	// worker agent do we honor the requested harness, falling back to claude-code.
+	if workerAgentStore, ok := s.store.(orchestratorWorkerAgentStore); ok {
+		configured, err := workerAgentStore.OrchestratorProjectWorkerAgent(r.Context(), claims.OrgID, claims.SessionID)
+		if err != nil {
+			s.writeStoreError(w, r, err)
+			return
+		}
+		if configured = strings.TrimSpace(configured); configured != "" {
+			request.Harness = configured
+		}
+	}
+	if request.Harness == "" {
+		request.Harness = "claude-code"
 	}
 	if request.Prompt == "" {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Child prompt is required.")

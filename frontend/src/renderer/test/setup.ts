@@ -301,6 +301,8 @@ if (typeof window !== "undefined") {
 			setBadge: async () => undefined,
 			devBounce: async () => undefined,
 			onClick: () => () => undefined,
+			onPlaySound: () => () => undefined,
+			reportSoundFailure: () => undefined,
 		},
 		tray: {
 			setAttentionState: () => undefined,

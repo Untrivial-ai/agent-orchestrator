@@ -2,20 +2,12 @@ package sqlite
 
 import (
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestMigrateRepairsRenumberedAgentInventoryHistory(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 118)
+	db := openMigratedDatabaseCopy(t, 118)
 	seedCompletedPlanBeforeFinalization(t, db)
 	applyLegacyCodexProfileMigrations(t, db, []legacyCodexProfileMigration{
 		{version: 119, canonicalPath: "migrations/0122_drop_agent_inventory_cache.sql", legacyName: "drop_agent_inventory_cache.sql"},
@@ -59,14 +51,7 @@ ORDER BY id DESC LIMIT 1`).Scan(&reapplied119ID); err != nil {
 }
 
 func TestMigrateRepairsAgentInventoryHistoryFromCollidedVersion120(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 119)
+	db := openMigratedDatabaseCopy(t, 119)
 	now := time.Now().UTC()
 	if _, err := db.Exec(`
 INSERT INTO projects (id, path, registered_at, config)
@@ -99,14 +84,7 @@ SELECT CAST(activity_last_at AS TEXT) FROM sessions WHERE id = 'legacy-0120-sess
 }
 
 func TestMigrateRepairsAgentInventoryHistoryFromCollidedVersion121(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 120)
+	db := openMigratedDatabaseCopy(t, 120)
 	applyLegacyCodexProfileMigrations(t, db, []legacyCodexProfileMigration{
 		{version: 121, canonicalPath: "migrations/0122_drop_agent_inventory_cache.sql", legacyName: "drop_agent_inventory_cache.sql"},
 	})

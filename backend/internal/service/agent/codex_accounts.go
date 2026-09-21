@@ -19,6 +19,7 @@ import (
 
 const (
 	codexAccountDisplayTTL       = 5 * time.Minute
+	codexAccountSettingsTTL      = 15 * time.Second
 	codexAccountLaunchTTL        = 30 * time.Second
 	codexAccountAuthTimeout      = 10 * time.Second
 	codexAccountReconcileTimeout = 45 * time.Second
@@ -69,6 +70,7 @@ type CodexAccountLoginTerminalStart struct {
 type codexAccountLoginTerminalService interface {
 	OpenCommandTerminal(context.Context, shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error)
 	CloseShellTerminal(context.Context, string) error
+	IsShellTerminalChildAlive(context.Context, string) (bool, error)
 }
 
 type accountAuthCall struct {
@@ -436,8 +438,11 @@ func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record c
 			return out, nil
 		}
 		ttl := codexAccountDisplayTTL
-		if purpose == domain.AgentReadinessPurposeLaunch {
+		switch purpose {
+		case domain.AgentReadinessPurposeLaunch:
 			ttl = codexAccountLaunchTTL
+		case domain.AgentReadinessPurposeSettings:
+			ttl = codexAccountSettingsTTL
 		}
 		fresh := current.Snapshot.Authentication.CheckedAt != nil && m.now().Sub(*current.Snapshot.Authentication.CheckedAt) < ttl
 		if !state.invalidated && fresh {
@@ -445,8 +450,11 @@ func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record c
 			m.mu.Unlock()
 			return out, nil
 		}
-		if purpose == domain.AgentReadinessPurposeDisplay && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
+		if purpose != domain.AgentReadinessPurposeLaunch && !state.nextRetryAt.IsZero() && m.now().Before(state.nextRetryAt) {
 			out := current.Snapshot.Authentication
+			if purpose == domain.AgentReadinessPurposeSettings {
+				out = cachedAuthenticationWithoutFailure(out)
+			}
 			m.mu.Unlock()
 			return out, nil
 		}
@@ -480,6 +488,27 @@ func (m *codexAccountManager) ensureAuthentication(ctx context.Context, record c
 			return domain.AgentAuthenticationObservation{}, ctx.Err()
 		}
 	}
+}
+
+// cachedAuthenticationWithoutFailure prevents a Codex-internal retry delay
+// from being reported as a second readiness failure. The settings surface can
+// keep showing the last known state while the provider retry window expires.
+func cachedAuthenticationWithoutFailure(observation domain.AgentAuthenticationObservation) domain.AgentAuthenticationObservation {
+	switch observation.State {
+	case domain.AgentAuthenticationAuthorized:
+		observation.ReasonCode = domain.AgentReadinessReasonAuthorized
+		observation.Reason = "Codex appears signed in."
+	case domain.AgentAuthenticationUnauthorized:
+		observation.ReasonCode = domain.AgentReadinessReasonUnauthorized
+		observation.Reason = "Codex needs authentication."
+	case domain.AgentAuthenticationNotApplicable:
+		observation.ReasonCode = domain.AgentReadinessReasonAuthNotApplicable
+		observation.Reason = "Codex authentication is not required."
+	default:
+		observation.ReasonCode = domain.AgentReadinessReasonNotChecked
+		observation.Reason = "Authentication has not been checked yet."
+	}
+	return observation
 }
 
 func (m *codexAccountManager) runAuthentication(record codexAccountRecord, call *accountAuthCall) {
@@ -558,7 +587,7 @@ func (m *codexAccountManager) globalCredentialMissingFor(account ports.CodexAcco
 	if canonicalPath(account.Home) != m.globalHome {
 		return false
 	}
-	_, state, err := readCodexFileState(m.globalCredentialPath(), true)
+	_, state, err := readCodexDeviceFileState(m.globalCredentialPath(), true)
 	return err == nil && !state.exists
 }
 

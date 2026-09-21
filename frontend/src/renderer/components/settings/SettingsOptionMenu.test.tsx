@@ -30,4 +30,32 @@ describe("SettingsOptionMenu", () => {
 		expect(screen.getByRole("menuitem", { name: "GPT Five" })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: "Claude Sonnet" })).not.toBeInTheDocument();
 	});
+
+	it("keeps an action footer outside the shrinking options region", async () => {
+		render(
+			<SettingsOptionMenu
+				aria-label="Agent"
+				value=""
+				options={Array.from({ length: 20 }, (_, index) => ({
+					value: `agent-${index}`,
+					label: `Agent ${index}`,
+				}))}
+				action={{ label: "Manage agents…", onSelect: () => {} }}
+				onChange={() => {}}
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Agent" }));
+
+		const firstOption = screen.getByRole("menuitem", { name: "Agent 0" });
+		const action = screen.getByRole("menuitem", { name: "Manage agents…" });
+		const scrollRegion = firstOption.parentElement?.parentElement;
+		const actionRegion = action.parentElement;
+
+		expect(scrollRegion).toHaveAttribute("data-slot", "settings-option-menu-scroll-region");
+		expect(scrollRegion).toHaveClass("min-h-0", "flex-1", "overflow-hidden");
+		expect(firstOption.parentElement).toHaveClass("min-h-0", "overflow-y-auto");
+		expect(actionRegion).toHaveAttribute("data-slot", "settings-option-menu-action");
+		expect(actionRegion).toHaveClass("shrink-0");
+	});
 });

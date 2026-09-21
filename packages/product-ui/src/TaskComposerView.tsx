@@ -81,6 +81,15 @@ export type TaskComposerModelControl = {
 	value: string;
 };
 
+export type TaskComposerEffortControl = {
+	disabled: boolean;
+	id: string;
+	label: string;
+	onChange: (value: string) => void;
+	options: string[];
+	value: string;
+};
+
 export type TaskComposerAttachment = {
 	id: string;
 	name: string;
@@ -105,6 +114,7 @@ export type TaskComposerSubmission = {
 
 export type TaskComposerLabels = {
 	addFile: string;
+	effort: string;
 	fallbackAction: string;
 	removeFile: (name: string) => string;
 	runsWith: string;
@@ -122,9 +132,12 @@ export type TaskComposerViewProps = {
 	initialPrompt?: string;
 	labels: TaskComposerLabels;
 	model: Omit<TaskComposerModelControl, "id">;
+	effort: Omit<TaskComposerEffortControl, "id" | "label">;
 	onPromptChange: (value: string) => void;
 	renderAgentControl: (control: TaskComposerAgentControl) => ReactNode;
+	renderEffortControl: (control: TaskComposerEffortControl) => ReactNode;
 	renderModelControl: (control: TaskComposerModelControl) => ReactNode;
+	showEffort: boolean;
 	submission: TaskComposerSubmission;
 };
 
@@ -197,13 +210,17 @@ export function TaskComposerView({
 	initialPrompt = "",
 	labels,
 	model,
+	effort,
 	onPromptChange,
 	renderAgentControl,
+	renderEffortControl,
 	renderModelControl,
+	showEffort,
 	submission,
 }: TaskComposerViewProps) {
 	const promptId = useId();
 	const modelId = useId();
+	const effortId = useId();
 	const agentId = useId();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const promptRef = useRef(initialPrompt);
@@ -378,13 +395,22 @@ export function TaskComposerView({
 			)}
 
 			<div className="composer-toolbar">
-				<div className="composer-run-controls" role="group" aria-label={labels.runsWith}>
+				<div
+					className={`composer-run-controls${showEffort ? " composer-run-controls-with-effort" : ""}`}
+					role="group"
+					aria-label={labels.runsWith}
+				>
 					<div className="composer-toolbar-slot">
 						{renderAgentControl({ ...agent, id: agentId })}
 					</div>
 					<div className="composer-toolbar-slot">
 						{renderModelControl({ ...model, id: modelId })}
 					</div>
+					{showEffort ? (
+						<div className="composer-toolbar-slot composer-toolbar-effort-slot">
+							{renderEffortControl({ ...effort, id: effortId, label: labels.effort })}
+						</div>
+					) : null}
 				</div>
 
 				<button
