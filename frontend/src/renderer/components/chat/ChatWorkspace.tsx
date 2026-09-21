@@ -3228,6 +3228,7 @@ const TurnGroup = memo(function TurnGroup({
 				<TurnChangedFiles
 					diff={group.diff}
 					items={group.items}
+					sessionId={sessionId}
 					onReview={onOpenFiles}
 					onOpenFile={onOpenFile}
 				/>

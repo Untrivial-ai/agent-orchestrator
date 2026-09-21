@@ -1,11 +1,37 @@
 import { render as rtlRender, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActivityRow, TurnChangedFiles } from "./ChatTimelineItems";
 import { ActivityRun } from "./ActivityRun";
 import type { ConversationActivity, TurnDiff } from "../../types/conversation";
+import type { WorkspaceFileSummary } from "../../hooks/useSessionWorkspaceFiles";
+import { useSessionWorkspaceChangedFiles } from "../../hooks/useSessionWorkspaceFiles";
 import { TooltipProvider } from "../ui/tooltip";
+
+// The card repo-qualifies each row against the session's changed files (read from
+// cache, the same repo-qualified list the click resolver matches), so tests seed
+// that list directly instead of relying on a client-side path heuristic.
+vi.mock("../../hooks/useSessionWorkspaceFiles", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../hooks/useSessionWorkspaceFiles")>();
+	return { ...actual, useSessionWorkspaceChangedFiles: vi.fn(() => [] as WorkspaceFileSummary[]) };
+});
+
+const mockWorkspaceFileList = vi.mocked(useSessionWorkspaceChangedFiles);
+
+function seedWorkspaceFiles(paths: string[]) {
+	mockWorkspaceFileList.mockReturnValue(
+		paths.map((path) => ({ path, status: "added", additions: 1, deletions: 0 }) as WorkspaceFileSummary),
+	);
+}
+
+beforeEach(() => {
+	mockWorkspaceFileList.mockReturnValue([]);
+});
+
+afterEach(() => {
+	vi.clearAllMocks();
+});
 
 function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
@@ -46,11 +72,75 @@ describe("TurnChangedFiles", () => {
 	it("shows the bordered summary with files visible", () => {
 		render(<TurnChangedFiles diff={diff()} />);
 		expect(screen.getByText("2 Files Changed")).toBeInTheDocument();
-		expect(screen.getByText("a.ts")).toBeInTheDocument();
-		expect(screen.getByText("new.ts")).toBeInTheDocument();
+		expect(screen.getByText("src/a.ts")).toBeInTheDocument();
+		expect(screen.getByText("src/new.ts")).toBeInTheDocument();
 		expect(screen.getByText("+12")).toBeInTheDocument();
 		expect(screen.getByText("+40")).toBeInTheDocument();
 		expect(screen.getByText("−3")).toBeInTheDocument();
+	});
+
+	// In a real multi-repo workspace the daemon stores the provider's repo-relative
+	// path verbatim (`workspace-test.txt`), with no repository qualifier. The card
+	// resolves the row against the session workspace file list, the same list the
+	// click handler matches, and shows that repository-qualified path
+	// (`alpha/workspace-test.txt`) rather than the bare basename the daemon stored.
+	it("shows the repository-qualified path resolved from the workspace file list", () => {
+		seedWorkspaceFiles(["alpha/workspace-test.txt"]);
+		render(
+			<TurnChangedFiles
+				sessionId="session-1"
+				diff={{
+					files: [{ path: "workspace-test.txt", additions: 1, deletions: 0, status: "added" }],
+				}}
+			/>,
+		);
+		expect(screen.getByText("alpha/workspace-test.txt")).toBeInTheDocument();
+		expect(screen.queryByText("workspace-test.txt")).not.toBeInTheDocument();
+	});
+
+	// The label the row shows and the path it opens must be the same repository-qualified
+	// string, so a click cannot open a different file than the one named on screen.
+	it("shows and opens the same repository-qualified path", async () => {
+		seedWorkspaceFiles(["alpha/workspace-test.txt"]);
+		const onOpenFile = vi.fn();
+		render(
+			<TurnChangedFiles
+				sessionId="session-1"
+				diff={{
+					files: [{ path: "workspace-test.txt", additions: 1, deletions: 0, status: "added" }],
+				}}
+				onOpenFile={onOpenFile}
+			/>,
+		);
+		expect(screen.getByText("alpha/workspace-test.txt")).toBeInTheDocument();
+		await userEvent.click(
+			screen.getByRole("button", { name: /Open alpha\/workspace-test\.txt in Files/ }),
+		);
+		expect(onOpenFile).toHaveBeenCalledWith("alpha/workspace-test.txt");
+	});
+
+	// Two repos in one workspace each change a same-named file. The daemon stores the
+	// provider path verbatim, so both diff rows arrive as the byte-identical bare
+	// `workspace-test.txt` and no display-layer resolver can tell them apart. The card
+	// must show the honest bare basename for both rather than guess a repo and name
+	// the wrong one (the #5366 mislabel). Full disambiguation needs a repo-qualified
+	// path from the daemon, which the diff payload does not carry.
+	it("keeps the honest bare path when two repos change a same-named file", () => {
+		seedWorkspaceFiles(["alpha/workspace-test.txt", "beta/workspace-test.txt"]);
+		render(
+			<TurnChangedFiles
+				sessionId="session-1"
+				diff={{
+					files: [
+						{ path: "workspace-test.txt", additions: 1, deletions: 0, status: "added" },
+						{ path: "workspace-test.txt", additions: 2, deletions: 0, status: "added" },
+					],
+				}}
+			/>,
+		);
+		expect(screen.getAllByText("workspace-test.txt")).toHaveLength(2);
+		expect(screen.queryByText("alpha/workspace-test.txt")).not.toBeInTheDocument();
+		expect(screen.queryByText("beta/workspace-test.txt")).not.toBeInTheDocument();
 	});
 
 	it("offers Review when a handler is provided", async () => {
@@ -67,7 +157,9 @@ describe("TurnChangedFiles", () => {
 		expect(onOpenFile).toHaveBeenCalledWith("src/a.ts");
 	});
 
-	it("opens a cwd-relative path from a turn diff basename", async () => {
+	// With no workspace list loaded the row falls back to the raw path the daemon
+	// stored, so the label and open target stay in sync with what is available.
+	it("falls back to the raw row path when no workspace list is available", async () => {
 		const onOpenFile = vi.fn();
 		render(
 			<TurnChangedFiles
@@ -94,46 +186,17 @@ describe("TurnChangedFiles", () => {
 		expect(onOpenFile).toHaveBeenCalledWith("notes.txt");
 	});
 
-	it("preserves duplicate-disambiguating suffixes for absolute turn diff paths", async () => {
-		const cwd = "/Users/me/.ao/dev/data/worktrees/demo/demo-1";
-		const onOpenFile = vi.fn();
-		render(
-			<TurnChangedFiles
-				diff={{
-					files: [
-						{ path: `${cwd}/frontend/index.ts`, additions: 1, deletions: 0, status: "modified" },
-						{ path: `${cwd}/backend/index.ts`, additions: 2, deletions: 0, status: "modified" },
-					],
-				}}
-				items={[
-					{
-						kind: "activity",
-						id: "a-1",
-						sequence: 1,
-						revision: 0,
-						activityKind: "command",
-						status: "completed",
-						summary: "Ran command",
-						detail: { cwd, command: "ls" },
-						createdAt: new Date().toISOString(),
-					},
-				]}
-				onOpenFile={onOpenFile}
-			/>,
-		);
-		await userEvent.click(screen.getByRole("button", { name: /Open frontend\/index\.ts in Files/ }));
-		expect(onOpenFile).toHaveBeenCalledWith("frontend/index.ts");
-		await userEvent.click(screen.getByRole("button", { name: /Open backend\/index\.ts in Files/ }));
-		expect(onOpenFile).toHaveBeenCalledWith("backend/index.ts");
-	});
-
-	it("shows the full path on basename hover", async () => {
+	it("shows the full path on hover", async () => {
 		const user = userEvent.setup();
 		render(<TurnChangedFiles diff={diff()} />);
-		await user.hover(screen.getByText("a.ts"));
+		await user.hover(screen.getByText("src/a.ts"));
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("src/a.ts");
 	});
 
+	// With no command cwd in the turn there is no reliable worktree root to trim
+	// against, so the row shows the plain basename rather than a fabricated
+	// `wexaai-21/...` prefix (that leading segment is the worktree directory, not a
+	// workspace path). The tooltip still carries the full absolute path.
 	it("resolves a turn-diff basename against the turn's Edited path for the tooltip", async () => {
 		const user = userEvent.setup();
 		render(
@@ -211,8 +274,8 @@ describe("TurnChangedFiles", () => {
 			/>,
 		);
 		expect(screen.getByText("1 File Changed")).toBeInTheDocument();
-		expect(screen.getByText("new.ts")).toBeInTheDocument();
-		await user.hover(screen.getByText("new.ts"));
+		expect(screen.getByText("src/new.ts")).toBeInTheDocument();
+		await user.hover(screen.getByText("src/new.ts"));
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("src/old.ts → src/new.ts");
 	});
 
@@ -232,10 +295,10 @@ describe("TurnChangedFiles", () => {
 			})),
 		};
 		render(<TurnChangedFiles diff={many} />);
-		expect(screen.getByText("file-0.ts")).toBeInTheDocument();
-		expect(screen.queryByText("file-5.ts")).not.toBeInTheDocument();
+		expect(screen.getByText("src/file-0.ts")).toBeInTheDocument();
+		expect(screen.queryByText("src/file-5.ts")).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Show 2 more" }));
-		expect(screen.getByText("file-5.ts")).toBeInTheDocument();
+		expect(screen.getByText("src/file-5.ts")).toBeInTheDocument();
 	});
 
 	it("marks a running turn's diff as still growing", () => {

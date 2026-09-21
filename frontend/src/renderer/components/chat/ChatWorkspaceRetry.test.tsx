@@ -15,9 +15,15 @@ import { ChatWorkspace } from "./ChatWorkspace";
 import { chatFixture } from "../../lib/chat-fixture";
 import type { ConversationSnapshot } from "../../types/conversation";
 import { TooltipProvider } from "../ui/tooltip";
+import { createTestQueryClient } from "../../test/query-client";
+import { QueryClientProvider } from "@tanstack/react-query";
 
 function render(ui: ReactElement) {
-	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+	return rtlRender(
+		<QueryClientProvider client={createTestQueryClient()}>
+			<TooltipProvider>{ui}</TooltipProvider>
+		</QueryClientProvider>,
+	);
 }
 
 /** A conversation with one failed turn and nothing in flight. */
