@@ -521,6 +521,7 @@
 	"inspector.terminateOnMergeShort": "Bei Merge beenden",
 	"inspector.terminateShort": "Beenden",
 	"inspector.timeline.createdWorkspace": "Workspace erstellt",
+	"inspector.timeline.createdStandaloneSession": "Eigenständige Sitzung erstellt",
 	"inspector.timeline.done": "Fertig",
 	"inspector.timeline.draft": "Entwurf",
 	"inspector.timeline.merged": "Gemerged",

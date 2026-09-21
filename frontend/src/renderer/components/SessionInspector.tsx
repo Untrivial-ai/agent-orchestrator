@@ -305,7 +305,8 @@ const SummaryView = memo(function SummaryView({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
-	const query = useSessionScmSummary(session.id);
+	const capabilities = summaryCapabilities(session);
+	const query = useSessionScmSummary(capabilities.pullRequests ? session.id : undefined);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
 	const showUsage =
@@ -319,8 +320,7 @@ const SummaryView = memo(function SummaryView({
 	const hasPRs = prSummaries.length > 0;
 	// Cloud orchestrators list the workers they spawned; local orchestrators
 	// have no parent/child model and every other session has no children.
-	const showWorkers =
-		session.kind === "orchestrator" && (session.cloud !== undefined || usePreviewData);
+	const showWorkers = capabilities.workers && (session.cloud !== undefined || usePreviewData);
 	return (
 		<SessionInspectorSummaryView
 			activity={
@@ -331,7 +331,7 @@ const SummaryView = memo(function SummaryView({
 			}
 			activityTitle={t("inspector.activity")}
 			completion={<SessionControls session={session} />}
-			pullRequestCards={
+			pullRequestCards={capabilities.pullRequests ? (
 				<div className="flex flex-col gap-1.5">
 					{hasPRs ? (
 						prSummaries.map((pr) => (
@@ -347,8 +347,8 @@ const SummaryView = memo(function SummaryView({
 						<p className={inspectorEmptyClass}>{t("inspector.noPROpened")}</p>
 					)}
 				</div>
-			}
-			pullRequestTitle={prSectionTitle}
+			) : undefined}
+			pullRequestTitle={capabilities.pullRequests ? prSectionTitle : undefined}
 			workers={showWorkers ? <OrchestratorChildrenSection session={session} /> : undefined}
 			usage={
 				showUsageError ? (
@@ -366,6 +366,20 @@ const SummaryView = memo(function SummaryView({
 		/>
 	);
 });
+
+type SummaryCapabilities = {
+	pullRequests: boolean;
+	workers: boolean;
+};
+
+/** Summary surfaces follow what a session can do, not absent data that looks unfinished. */
+function summaryCapabilities(session: Pick<WorkspaceSession, "kind" | "workspaceId">): SummaryCapabilities {
+	const standalone = session.workspaceId === STANDALONE_WORKSPACE_ID;
+	return {
+		pullRequests: !standalone && session.kind !== "orchestrator",
+		workers: !standalone && session.kind === "orchestrator",
+	};
+}
 
 const ReviewsView = memo(function ReviewsView({
 	session,
@@ -1152,6 +1166,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	};
 
 	if (session.isTerminated === true) return null;
+	if (session.kind === "orchestrator") return null;
 
 	const terminateAction = (
 		<div className="flex items-center justify-between gap-3 py-1">
@@ -1195,7 +1210,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 		<Section title={t("inspector.sessionControls")}>
 			<AutoInjectCIPolicyControl session={session} />
 			<AutoInjectReviewPolicyControl session={session} />
-			{session.kind === "orchestrator" ? null : canTerminateNow ? (
+			{canTerminateNow ? (
 				terminateAction
 			) : (
 				<>
@@ -1320,7 +1335,11 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 	pushEvent(
 		{
 			tone: "neutral",
-			content: <>{appI18n.t("inspector.timeline.createdWorkspace")}</>,
+			content: <>{appI18n.t(
+				session.workspaceId === STANDALONE_WORKSPACE_ID
+					? "inspector.timeline.createdStandaloneSession"
+					: "inspector.timeline.createdWorkspace",
+			)}</>,
 			timestamp: formatTimeCompact(createdAt),
 		},
 		createdAt,

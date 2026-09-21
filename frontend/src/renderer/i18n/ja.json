@@ -521,6 +521,7 @@
 	"inspector.terminateOnMergeShort": "マージ時に終了",
 	"inspector.terminateShort": "終了",
 	"inspector.timeline.createdWorkspace": "ワークスペースを作成済み",
+	"inspector.timeline.createdStandaloneSession": "スタンドアロンセッションを作成済み",
 	"inspector.timeline.done": "完了",
 	"inspector.timeline.draft": "下書き",
 	"inspector.timeline.merged": "マージ済み",

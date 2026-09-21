@@ -521,6 +521,7 @@
 	"inspector.terminateOnMergeShort": "合并后终止",
 	"inspector.terminateShort": "终止",
 	"inspector.timeline.createdWorkspace": "已创建工作区",
+	"inspector.timeline.createdStandaloneSession": "已创建独立会话",
 	"inspector.timeline.done": "完成",
 	"inspector.timeline.draft": "草稿",
 	"inspector.timeline.merged": "已合并",

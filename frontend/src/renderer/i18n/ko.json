@@ -521,6 +521,7 @@
 	"inspector.terminateOnMergeShort": "병합 시 종료",
 	"inspector.terminateShort": "종료",
 	"inspector.timeline.createdWorkspace": "워크스페이스 생성됨",
+	"inspector.timeline.createdStandaloneSession": "독립 세션 생성됨",
 	"inspector.timeline.done": "완료",
 	"inspector.timeline.draft": "초안",
 	"inspector.timeline.merged": "병합됨",

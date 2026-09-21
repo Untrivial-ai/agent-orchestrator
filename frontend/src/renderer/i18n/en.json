@@ -517,6 +517,7 @@
 	"inspector.terminateOnMergeShort": "Terminate on merge",
 	"inspector.terminateShort": "Terminate",
 	"inspector.timeline.createdWorkspace": "Created workspace",
+	"inspector.timeline.createdStandaloneSession": "Created standalone session",
 	"inspector.timeline.done": "Done",
 	"inspector.timeline.draft": "Draft",
 	"inspector.timeline.merged": "Merged",

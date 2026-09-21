@@ -242,8 +242,8 @@ export function SessionInspectorSummaryView({
 	activity: ReactNode;
 	activityTitle: string;
 	completion?: ReactNode;
-	pullRequestCards: ReactNode;
-	pullRequestTitle: string;
+	pullRequestCards?: ReactNode;
+	pullRequestTitle?: string;
 	reviews?: ReactNode;
 	usage?: ReactNode;
 	/**
@@ -255,9 +255,11 @@ export function SessionInspectorSummaryView({
 	return (
 		<div role="tabpanel">
 			{workers}
-			<InspectorSection surface={false} title={pullRequestTitle}>
-				<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
-			</InspectorSection>
+			{pullRequestCards && pullRequestTitle ? (
+				<InspectorSection surface={false} title={pullRequestTitle}>
+					<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
+				</InspectorSection>
+			) : null}
 			{reviews}
 			{completion}
 			<InspectorSection title={activityTitle}>{activity}</InspectorSection>

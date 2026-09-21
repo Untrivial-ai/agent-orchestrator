@@ -524,6 +524,7 @@
 	"inspector.terminateOnMergeShort": "Terminer à la fusion",
 	"inspector.terminateShort": "Terminer",
 	"inspector.timeline.createdWorkspace": "Espace de travail créé",
+	"inspector.timeline.createdStandaloneSession": "Session autonome créée",
 	"inspector.timeline.done": "Terminé",
 	"inspector.timeline.draft": "Brouillon",
 	"inspector.timeline.merged": "Fusionné",

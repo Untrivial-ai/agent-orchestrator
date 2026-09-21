@@ -711,6 +711,41 @@ describe("SessionInspector PR section", () => {
     expect(screen.getByText("No pull request opened yet.")).toBeInTheDocument();
   });
 
+  it.each([
+    ["project worker", session([])],
+    ["workspace worker", session([], { workspaceName: "multi-repo workspace" })],
+  ])("keeps pull-request capability for a %s", (_name, candidate) => {
+    renderWithQuery(<SessionInspector session={candidate} />);
+    expect(screen.getByText("No pull request opened yet.")).toBeInTheDocument();
+    expect(screen.getByText("Created workspace")).toBeInTheDocument();
+  });
+
+  it("omits pull-request state for an orchestrator", () => {
+    renderWithQuery(<SessionInspector session={session([], { kind: "orchestrator" })} />);
+    expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
+    expect(screen.queryByText("No pull request opened yet.")).not.toBeInTheDocument();
+    expect(screen.getByText("Created workspace")).toBeInTheDocument();
+  });
+
+  it("renders only standalone-capable Summary content for a standalone session", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          workspaceId: STANDALONE_WORKSPACE_ID,
+          workspaceName: "Standalone",
+        })}
+      />,
+    );
+
+    expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
+    expect(screen.queryByText("No pull request opened yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Created workspace")).not.toBeInTheDocument();
+    expect(screen.getByText("Created standalone session")).toBeInTheDocument();
+    expect(screen.getByText("Session controls")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Terminate session" })).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  });
+
   it("keeps durable session policies in Summary and operational review controls in Reviews", async () => {
     renderWithQuery(<SessionInspector session={session([pr(7, "open")])} />);
 
@@ -1308,6 +1343,8 @@ describe("SessionInspector completion controls", () => {
     );
 
     expect(screen.queryByText("Completion")).not.toBeInTheDocument();
+    expect(screen.queryByText("Session controls")).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("switch", {
         name: "Terminate session when pull requests merge",
