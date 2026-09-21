@@ -72,7 +72,6 @@ export function CloudWorkspaceReviewPane({
 	const [commitBrowserOpen, setCommitBrowserOpen] = useState(false);
 	const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 	const [loadedDeferred, setLoadedDeferred] = useState<Set<string>>(() => new Set());
-	const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
 	const selectedCommit = data.commits.find((commit) => commit.sha === commitSha);
 	const allFiles = scope === "committed" && selectedCommit ? selectedCommit.files : filesForScope(data, scope);
 	const normalizedFilter = filter.trim().toLowerCase();
@@ -99,7 +98,7 @@ export function CloudWorkspaceReviewPane({
 	const requested = files.filter((file) => !deferredByDefault(file) || loadedDeferred.has(file.path));
 	const batches = chunk(requested.map((file) => file.path));
 	const diffQueries = useQueries({ queries: batches.map((paths) => ({
-		...cloudWorkspaceReviewDiffsQueryOptions({ client, baseUrl, orgId, sessionId, paths, scope, commitSha: selectedCommit?.sha, workspaceVersion: data.workspaceVersion, ignoreWhitespace }),
+		...cloudWorkspaceReviewDiffsQueryOptions({ client, baseUrl, orgId, sessionId, paths, scope, commitSha: selectedCommit?.sha, workspaceVersion: data.workspaceVersion, ignoreWhitespace: false }),
 		staleTime: Infinity,
 	})) });
 	const patchByPath = useMemo(() => {
@@ -138,7 +137,6 @@ export function CloudWorkspaceReviewPane({
 			{visibleScopes.map((entry) => <Button aria-pressed={scope === entry} key={entry} onClick={() => selectScope(entry)} size="sm" variant={scope === entry ? "secondary" : "ghost"}>{t(`files.section.${entry}`)}<span className="text-caption text-passive">{data.sections[entry].length}</span></Button>)}
 			<Button aria-expanded={commitBrowserOpen} aria-pressed={scope === "committed"} disabled={data.commits.length === 0} onClick={() => setCommitBrowserOpen((open) => !open)} size="sm" variant={scope === "committed" ? "secondary" : "ghost"}><GitCommitHorizontal className="size-icon-sm" />{t("files.commits")}{selectedCommit ? <span className="text-caption text-passive">{selectedCommit.sha.slice(0, 7)}</span> : null}</Button>
 			{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
-				<label className="flex items-center gap-1"><Checkbox checked={ignoreWhitespace} onCheckedChange={(value) => setIgnoreWhitespace(Boolean(value))} />{t("files.ignoreWhitespace")}</label>
 				<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
 				<Button aria-label={t(allCollapsed ? "files.expandAll" : "files.collapseAll")} onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(files.map((file) => file.path)))} size="icon-sm" variant="ghost">{allCollapsed ? <ChevronsUpDown /> : <ChevronsDownUp />}</Button>
 			</div> : null}
