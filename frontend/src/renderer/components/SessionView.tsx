@@ -1457,7 +1457,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		if (!orgId) throw new Error(t("files.feedbackError"));
 		await cloudCpClient.sendSessionMessage(orgId, sessionId, { text: message });
 	}, [cloudCpClient, session?.cloud?.orgId, sessionId, t]);
-	const fileAnnotation = useFileAnnotation(sessionId, session?.cloud ? sendCloudFileAnnotation : undefined);
+	const fileAnnotation = useFileAnnotation(sessionId, { sendMessage: session?.cloud ? sendCloudFileAnnotation : undefined });
 	const centerFileTabs = useMemo(
 		() =>
 			fileTabs.openPaths.map((path) => ({
