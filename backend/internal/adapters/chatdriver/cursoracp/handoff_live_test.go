@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,16 +32,14 @@ const (
 	cursorHandoffTurnTimeout  = 2 * time.Minute
 )
 
-// Provider evidence (blocked 2026-09-18): Cursor 2026.09.02-c22c1a3 on
-// darwin/arm64 reached ACP session/new, which returned Authentication required
-// for the isolated CURSOR_DATA_DIR at <scratch AO_DATA_DIR>/cursor. The user's
-// normal Cursor profile was authenticated, but credentials were deliberately
-// neither copied nor imported into the isolated profile. Consequently the
-// sessionStart identity field, ACP replay identity fields, and bounded 10s
-// flush result remain unobserved. Re-run this gate only after the user explicitly
-// authenticates that isolated profile with AO_CURSOR_HANDOFF_DATA_DIR set to an
-// absolute scratch root, or supplies CURSOR_API_KEY to the process. Do not enable
-// Cursor switching from this evidence.
+// Provider evidence (blocked 2026-09-21): Cursor 2026.09.18-9a7762b on
+// darwin/arm64 completed an authenticated ACP turn and resumed the same native
+// conversation id in its interactive TUI after a bounded 10s flush. The resumed
+// beforeSubmitPrompt hook reported that id, but the TUI did not recall the ACP
+// marker. Cursor also deliberately omits sessionStart for --resume. Do not enable
+// Cursor switching from this evidence. The default remains an isolated profile;
+// AO_CURSOR_HANDOFF_USE_DEFAULT_PROFILE=1 is an explicit local-only escape hatch
+// that uses the user's existing Cursor profile without copying credentials.
 func TestLiveCursorInterfaceHandoff(t *testing.T) {
 	if os.Getenv("AO_LIVE_CURSOR_HANDOFF") != "1" {
 		t.Skip("set AO_LIVE_CURSOR_HANDOFF=1 to run the Cursor cross-interface contract")
@@ -59,8 +58,12 @@ func TestValidateCursorHandoffDataDirAcceptsRealTemporaryDirectory(t *testing.T)
 	if err != nil {
 		t.Fatalf("validateCursorHandoffDataDir: %v", err)
 	}
-	if got != filepath.Clean(root) {
-		t.Fatalf("data dir = %q, want %q", got, filepath.Clean(root))
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("data dir = %q, want real path %q", got, want)
 	}
 	profile, err := os.Lstat(filepath.Join(root, "cursor"))
 	if err != nil || !profile.IsDir() || profile.Mode()&os.ModeSymlink != 0 {
@@ -114,6 +117,46 @@ func TestValidateCursorHandoffDataDirRejectsNonScratchPaths(t *testing.T) {
 	}
 }
 
+func TestRewriteCursorHandoffHookCommandsPreservesConfig(t *testing.T) {
+	workspace := t.TempDir()
+	hooksDir := filepath.Join(workspace, ".cursor")
+	if err := os.Mkdir(hooksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(hooksDir, "hooks.json")
+	original := `{"version":1,"hooks":{"sessionStart":[{"command":"ao hooks cursor session-start","failClosed":true},{"command":"custom hook"}]}}`
+	if err := os.WriteFile(hooksPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeAO := filepath.Join(t.TempDir(), "fake ao")
+	rewriteCursorHandoffHookCommands(t, workspace, fakeAO)
+	var config struct {
+		Version int `json:"version"`
+		Hooks   map[string][]struct {
+			Command    string `json:"command"`
+			FailClosed bool   `json:"failClosed"`
+		} `json:"hooks"`
+	}
+	payload, err := os.ReadFile(hooksPath)
+	if err != nil || json.Unmarshal(payload, &config) != nil {
+		t.Fatalf("read rewritten hooks: %v", err)
+	}
+	entries := config.Hooks["sessionStart"]
+	want := strconv.Quote(fakeAO) + " hooks cursor session-start"
+	if config.Version != 1 || len(entries) != 2 || entries[0].Command != want || !entries[0].FailClosed || entries[1].Command != "custom hook" {
+		t.Fatalf("rewritten hooks = version:%d entries:%+v", config.Version, entries)
+	}
+}
+
+func TestCursorHandoffEnterSequence(t *testing.T) {
+	if got := cursorHandoffEnterSequence([]byte("plain terminal")); got != "\r" {
+		t.Fatalf("plain enter = %q", got)
+	}
+	if got := cursorHandoffEnterSequence([]byte("\x1b[>1u")); got != "\x1b[13u" {
+		t.Fatalf("kitty enter = %q", got)
+	}
+}
+
 type cursorHandoffHarness struct {
 	t         *testing.T
 	plugin    *cursor.Plugin
@@ -126,10 +169,24 @@ type cursorHandoffHarness struct {
 	markers   [3]string
 }
 
+type cursorHandoffDefaultProfilePlugin struct{ plugin *cursor.Plugin }
+
+func (p cursorHandoffDefaultProfilePlugin) ResolveBinary(ctx context.Context) (string, error) {
+	return p.plugin.ResolveBinary(ctx)
+}
+
+func (cursorHandoffDefaultProfilePlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusAuthorized, nil
+}
+
 func newCursorHandoffHarness(t *testing.T, plugin *cursor.Plugin) *cursorHandoffHarness {
 	t.Helper()
-	workspace := t.TempDir()
 	dataDir := cursorHandoffDataDir(t)
+	workspace := filepath.Join(dataDir, "workspace")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatalf("Cursor handoff setup failed: create workspace")
+	}
+	actualProfile := os.Getenv("AO_CURSOR_HANDOFF_USE_DEFAULT_PROFILE") == "1"
 	hookDir := filepath.Join(dataDir, "cursor-handoff-hooks")
 	binDir := filepath.Join(dataDir, "cursor-handoff-bin")
 	if err := os.MkdirAll(hookDir, 0o700); err != nil {
@@ -154,19 +211,68 @@ func newCursorHandoffHarness(t *testing.T, plugin *cursor.Plugin) *cursorHandoff
 	env["AO_DATA_DIR"] = dataDir
 	env["AO_CURSOR_HANDOFF_HOOK_DIR"] = hookDir
 	env["PATH"] = binDir + string(os.PathListSeparator) + env["PATH"]
-	plugin.AugmentRuntimeEnv(env, dataDir)
+	env["TERM"] = "xterm-256color"
+	driver := New(plugin, nil)
+	if actualProfile {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal("Cursor handoff setup failed: home directory unavailable")
+		}
+		env["CURSOR_DATA_DIR"] = filepath.Join(home, ".cursor")
+		driver = New(cursorHandoffDefaultProfilePlugin{plugin: plugin}, nil)
+	} else {
+		plugin.AugmentRuntimeEnv(env, dataDir)
+	}
 	t.Setenv("CURSOR_DATA_DIR", env["CURSOR_DATA_DIR"])
 	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{
 		DataDir: dataDir, Env: env, SessionID: "live-cursor-handoff", WorkspacePath: workspace,
 	}); err != nil {
 		t.Fatalf("Cursor handoff setup failed: install hooks")
 	}
+	t.Cleanup(func() {
+		_ = plugin.CleanupWorkspace(context.Background(), ports.WorkspaceHookConfig{
+			DataDir: dataDir, Env: env, SessionID: "live-cursor-handoff", WorkspacePath: workspace,
+		})
+	})
+	rewriteCursorHandoffHookCommands(t, workspace, filepath.Join(binDir, "ao"))
 
 	version := cursorHandoffVersion(t, plugin)
 	return &cursorHandoffHarness{
-		t: t, plugin: plugin, driver: New(plugin, nil), workspace: workspace,
+		t: t, plugin: plugin, driver: driver, workspace: workspace,
 		dataDir: dataDir, hookDir: hookDir, env: env, version: version,
 		markers: [3]string{randomCursorHandoffMarker(t), randomCursorHandoffMarker(t), randomCursorHandoffMarker(t)},
+	}
+}
+
+func rewriteCursorHandoffHookCommands(t *testing.T, workspace, fakeAO string) {
+	t.Helper()
+	hooksPath := filepath.Join(workspace, ".cursor", "hooks.json")
+	payload, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("Cursor handoff setup failed: read hooks")
+	}
+	var config struct {
+		Version int                         `json:"version"`
+		Hooks   map[string][]map[string]any `json:"hooks"`
+	}
+	if err := json.Unmarshal(payload, &config); err != nil {
+		t.Fatalf("Cursor handoff setup failed: decode hooks")
+	}
+	for _, entries := range config.Hooks {
+		for _, entry := range entries {
+			command, _ := entry["command"].(string)
+			if strings.HasPrefix(command, "ao ") {
+				entry["command"] = strconv.Quote(fakeAO) + strings.TrimPrefix(command, "ao")
+			}
+		}
+	}
+	payload, err = json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatalf("Cursor handoff setup failed: encode hooks")
+	}
+	payload = append(payload, '\n')
+	if err := os.WriteFile(hooksPath, payload, 0o600); err != nil {
+		t.Fatalf("Cursor handoff setup failed: write hooks")
 	}
 }
 
@@ -228,7 +334,7 @@ func validateCursorHandoffDataDir(dataDir string) (string, error) {
 	if err != nil || filepath.Dir(realProfile) != realRoot {
 		return "", errors.New("cursor profile must remain inside the scratch root")
 	}
-	return dataDir, nil
+	return realRoot, nil
 }
 
 func (h *cursorHandoffHarness) run(ctx context.Context) {
@@ -262,20 +368,28 @@ func (h *cursorHandoffHarness) run(ctx context.Context) {
 		h.t.Fatalf("Cursor %s ACP turn A completed without its in-memory acknowledgement", h.version)
 	}
 	h.stopConversation(stopConversation, "ACP turn A")
+	time.Sleep(cursorHandoffFlushTimeout)
 
-	firstSessionStarts := len(h.hookRecords("session-start"))
-	tui := h.startTUI(ctx, providerID, firstSessionStarts)
-	h.assertSessionStartIDs(providerID)
+	tui := h.startTUI(ctx, providerID)
+	if tui.outputContains("Failed to resume chat") {
+		h.t.Fatalf("Cursor %s TUI rejected ACP native id=%s", h.version, providerID)
+	}
 	tui.clearOutput()
 	stopCount := len(h.hookRecords("stop"))
+	promptRecords := h.hookRecordNames("user-prompt-submit")
 	bOpen, bClose := randomCursorHandoffDelimiter(h.t), randomCursorHandoffDelimiter(h.t)
 	bRecallSentinel := bOpen + h.markers[0] + bClose
 	tui.writePrompt(h.t, "Recall the private code from the previous turn and place it directly between "+bOpen+
 		" and "+bClose+", with no spaces. Then include this second code: "+h.markers[1]+".")
-	h.waitForHookCount("stop", stopCount+1, cursorHandoffTurnTimeout)
-	if !tui.waitForOutput([]string{bRecallSentinel}, 5*time.Second) {
+	if !tui.waitForOutput([]string{h.markers[1]}, 5*time.Second) {
+		h.t.Fatalf("Cursor %s TUI did not echo submitted input", h.version)
+	}
+	h.waitForHookCount("user-prompt-submit", len(promptRecords)+1, 30*time.Second)
+	h.assertNewForegroundPromptID(providerID, promptRecords)
+	if !tui.waitForOutput([]string{bRecallSentinel}, cursorHandoffTurnTimeout) {
 		h.t.Fatalf("Cursor %s TUI turn B did not recall the ACP marker; native id=%s", h.version, providerID)
 	}
+	h.waitForHookCount("stop", stopCount+1, 5*time.Second)
 	h.stopTUI(tui)
 
 	resumed, stopResumed := h.resumeACP(ctx, providerID)
@@ -292,16 +406,17 @@ func (h *cursorHandoffHarness) run(ctx context.Context) {
 	}
 	h.stopConversation(stopResumed, "ACP turn C")
 
-	secondSessionStarts := len(h.hookRecords("session-start"))
-	tui = h.startTUI(ctx, providerID, secondSessionStarts)
-	h.assertSessionStartIDs(providerID)
+	tui = h.startTUI(ctx, providerID)
 	tui.clearOutput()
 	stopCount = len(h.hookRecords("stop"))
+	promptRecords = h.hookRecordNames("user-prompt-submit")
 	var expected []string
+	var echoedDelimiter string
 	var instruction strings.Builder
 	instruction.WriteString("State all three private codes from this conversation. For each code in order, place it directly between its assigned delimiters with no spaces: ")
 	for index, marker := range h.markers {
 		open, closing := randomCursorHandoffDelimiter(h.t), randomCursorHandoffDelimiter(h.t)
+		echoedDelimiter = open
 		expected = append(expected, open+marker+closing)
 		if index > 0 {
 			instruction.WriteString("; ")
@@ -309,12 +424,16 @@ func (h *cursorHandoffHarness) run(ctx context.Context) {
 		fmt.Fprintf(&instruction, "code %d between %s and %s", index+1, open, closing)
 	}
 	tui.writePrompt(h.t, instruction.String()+".")
-	h.waitForHookCount("stop", stopCount+1, cursorHandoffTurnTimeout)
-	if !tui.waitForOutput(expected, 5*time.Second) {
+	if !tui.waitForOutput([]string{echoedDelimiter}, 5*time.Second) {
+		h.t.Fatalf("Cursor %s final TUI did not echo submitted input", h.version)
+	}
+	h.waitForHookCount("user-prompt-submit", len(promptRecords)+1, 30*time.Second)
+	h.assertNewForegroundPromptID(providerID, promptRecords)
+	if !tui.waitForOutput(expected, cursorHandoffTurnTimeout) {
 		h.t.Fatalf("Cursor %s final TUI turn omitted a prior marker; native id=%s", h.version, providerID)
 	}
+	h.waitForHookCount("stop", stopCount+1, 5*time.Second)
 	h.stopTUI(tui)
-	h.assertSessionStartIDs(providerID)
 }
 
 func (h *cursorHandoffHarness) resumeACP(
@@ -500,17 +619,17 @@ func allCursorHandoffCountsEqual(counts []int, want int) bool {
 }
 
 type cursorHandoffPTY struct {
-	file *os.File
-	cmd  *exec.Cmd
-	done chan error
-	mu   sync.Mutex
-	out  bytes.Buffer
+	file          *os.File
+	cmd           *exec.Cmd
+	done          chan error
+	mu            sync.Mutex
+	out           bytes.Buffer
+	kittyKeyboard bool
 }
 
 func (h *cursorHandoffHarness) startTUI(
 	ctx context.Context,
 	providerID string,
-	previousSessionStarts int,
 ) *cursorHandoffPTY {
 	h.t.Helper()
 	argv, ok, err := h.plugin.GetRestoreCommand(ctx, ports.RestoreConfig{
@@ -534,7 +653,12 @@ func (h *cursorHandoffHarness) startTUI(
 	go process.capture()
 	go func() { process.done <- cmd.Wait() }()
 	h.t.Cleanup(func() { process.forceStop() })
-	h.waitForHookCount("session-start", previousSessionStarts+1, 30*time.Second)
+	if !process.waitForOutput([]string{"\x1b[?2004h"}, 30*time.Second) {
+		process.mu.Lock()
+		resumeRejected := strings.Contains(process.out.String(), "Failed to resume chat")
+		process.mu.Unlock()
+		h.t.Fatalf("Cursor %s resumed TUI did not reach the composer; resume rejected=%t", h.version, resumeRejected)
+	}
 	return process
 }
 
@@ -545,6 +669,7 @@ func (p *cursorHandoffPTY) capture() {
 		if n > 0 {
 			p.mu.Lock()
 			_, _ = p.out.Write(buffer[:n])
+			p.kittyKeyboard = p.kittyKeyboard || cursorHandoffEnterSequence(p.out.Bytes()) == "\x1b[13u"
 			p.mu.Unlock()
 		}
 		if err != nil {
@@ -582,9 +707,22 @@ func (p *cursorHandoffPTY) waitForOutput(markers []string, timeout time.Duration
 
 func (p *cursorHandoffPTY) writePrompt(t *testing.T, prompt string) {
 	t.Helper()
-	if _, err := io.WriteString(p.file, prompt+"\r"); err != nil {
+	p.mu.Lock()
+	enter := "\r"
+	if p.kittyKeyboard {
+		enter = "\x1b[13u"
+	}
+	p.mu.Unlock()
+	if _, err := io.WriteString(p.file, prompt+enter); err != nil {
 		t.Fatal("Cursor TUI prompt submission failed")
 	}
+}
+
+func cursorHandoffEnterSequence(output []byte) string {
+	if bytes.Contains(output, []byte("\x1b[>1u")) {
+		return "\x1b[13u"
+	}
+	return "\r"
 }
 
 func (h *cursorHandoffHarness) stopTUI(process *cursorHandoffPTY) {
@@ -617,6 +755,7 @@ func (p *cursorHandoffPTY) forceStop() {
 }
 
 type cursorHookRecord struct {
+	name   string
 	fields map[string]json.RawMessage
 }
 
@@ -637,10 +776,19 @@ func (h *cursorHandoffHarness) hookRecords(event string) []cursorHookRecord {
 		}
 		fields := make(map[string]json.RawMessage)
 		if json.Unmarshal(payload, &fields) == nil {
-			records = append(records, cursorHookRecord{fields: fields})
+			records = append(records, cursorHookRecord{name: entry.Name(), fields: fields})
 		}
 	}
 	return records
+}
+
+func (h *cursorHandoffHarness) hookRecordNames(event string) map[string]struct{} {
+	h.t.Helper()
+	names := make(map[string]struct{})
+	for _, record := range h.hookRecords(event) {
+		names[record.name] = struct{}{}
+	}
+	return names
 }
 
 func (h *cursorHandoffHarness) waitForHookCount(event string, want int, timeout time.Duration) {
@@ -656,17 +804,30 @@ func (h *cursorHandoffHarness) waitForHookCount(event string, want int, timeout 
 		h.version, event, len(h.hookRecords(event)), want)
 }
 
-func (h *cursorHandoffHarness) assertSessionStartIDs(want string) {
+func (h *cursorHandoffHarness) assertNewForegroundPromptID(want string, before map[string]struct{}) {
 	h.t.Helper()
-	records := h.hookRecords("session-start")
-	if len(records) == 0 {
-		h.t.Fatalf("Cursor %s sessionStart hook count=0", h.version)
+	records := h.hookRecords("user-prompt-submit")
+	var newRecords []cursorHookRecord
+	for _, record := range records {
+		if _, existed := before[record.name]; !existed {
+			newRecords = append(newRecords, record)
+		}
 	}
-	for index, record := range records {
-		field, got := cursorHookNativeID(record.fields)
-		if got != want {
-			h.t.Fatalf("Cursor %s sessionStart index=%d identity field=%s id=%s want=%s fields=%v",
-				h.version, index, field, got, want, cursorHookFieldNames(record.fields))
+	if len(newRecords) != 1 {
+		h.t.Fatalf("Cursor %s beforeSubmitPrompt new hook count=%d want=1", h.version, len(newRecords))
+	}
+	record := newRecords[0]
+	field, got := cursorHookNativeID(record.fields)
+	if got != want {
+		h.t.Fatalf("Cursor %s beforeSubmitPrompt identity field=%s id=%s want=%s fields=%v",
+			h.version, field, got, want, cursorHookFieldNames(record.fields))
+	}
+	for _, childField := range []string{
+		"agent_id", "agentId", "subagent_id", "subagentId", "parent_agent_id", "parentAgentId",
+	} {
+		if _, present := record.fields[childField]; present {
+			h.t.Fatalf("Cursor %s beforeSubmitPrompt carried child field=%s; native id=%s",
+				h.version, childField, want)
 		}
 	}
 }

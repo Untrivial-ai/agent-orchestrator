@@ -43,7 +43,7 @@ No identity/completion verifier or transcript bridge was invented to bypass thes
 - `backend/internal/cli/hooks_test.go`: reproduce and prevent the subagent/foreign/non-start overwrite; test worker and reviewer routes and permission paths; strengthen the existing unverified-facts test.
 - `backend/internal/session_manager/interface_transition_test.go`: prove both transition directions reject before controller mutation using the real Cursor adapter.
 - `backend/internal/session_manager/cursor_restore_test.go`: prove real Cursor command construction through the Session Manager preserves `--resume` with missing, empty, and unrecognized citation state.
-- `backend/internal/adapters/chatdriver/cursoracp/handoff_live_test.go`: fix expected-marker chronology and add ordered, reversed, missing, and duplicate fixture coverage.
+- `backend/internal/adapters/chatdriver/cursoracp/handoff_live_test.go`: fix expected-marker chronology, make the real TUI harness macOS/kitty-safe, support an explicit existing-profile validation mode, and add ordered, reversed, missing, and duplicate fixture coverage.
 - `.superpowers/sdd/2026-09-18-cursor-local-interface-handoff/task-3-production-report.md`: this report.
 
 ## Verification
@@ -77,11 +77,15 @@ Reviewed the complete six-file production/test diff from the supplied base and a
 - Main session-start shape is based on the installed 2026.09.02-c22c1a3 bundle. A different Cursor version that omits the explicit foreground flag, changes the startup generation relationship, or adds foreign identity aliases will be rejected for resume-metadata capture. This conservative compatibility limitation is intentional; no minimum live-verified version is claimed.
 - The initial self-review missed that ordinary-restore consumer; it is corrected in the final fix wave below. Existing generic lifecycle production code remains unchanged.
 
-## Explicit live-validation gap
+## Live provider validation
 
-Live provider validation is **pending and was deliberately not attempted in this task**, per the user's direction. No Cursor authentication, account import, authenticated turn, or real interactive handoff was requested or performed. The opt-in live tests were not enabled during the ordinary package suites.
+An explicit follow-up validation used the user's existing authenticated Cursor profile with `AO_CURSOR_HANDOFF_USE_DEFAULT_PROFILE=1`; credentials were neither copied nor printed. Cursor `2026.09.18-9a7762b` on darwin/arm64 completed ACP turn A, acknowledged its in-memory marker, shut down cleanly, observed a bounded 10-second flush window, and opened `cursor-agent --resume <native-id>` in a real PTY. The resumed `beforeSubmitPrompt` hook reported the same native conversation id and no child-agent identity fields.
 
-The earlier harness records an isolated-profile authentication block before completing the provider contract. No successful ACP-to-TUI-to-ACP-to-TUI sequence, same-ID assertion, stable ACP/native history mapping, or bounded flush convergence is claimed here. Cursor switching remains disabled until those provider-backed contracts can be safely established.
+The resumed TUI nevertheless failed to recall the ACP marker and searched the workspace instead. Static inspection independently confirmed that Cursor deliberately suppresses `sessionStart` when a resume id is present. The provider contract therefore fails before any TUI-to-ACP checkpoint mapping is considered; no successful ACP-to-TUI-to-ACP-to-TUI sequence or stable ACP/native history mapping is claimed.
+
+A repeat run on the same Cursor build submitted the resumed prompt and entered `Composing`, but emitted no `beforeSubmitPrompt` hook within 30 seconds. This does not change the result: neither observed behavior provides the deterministic, pre-delivery readiness and history-continuity proof required to enable switching.
+
+The live harness was corrected so this result is provider evidence rather than a test-fixture artifact: it now resolves the macOS temporary root to `/private/var/...` so Cursor does not reject hooks reached through `/var`, preserves `version: 1` while rewriting test hook commands to an absolute recorder path, sets a real PTY `TERM`, persists kitty-keyboard negotiation across output resets, sends Enter as `CSI 13 u` when requested, waits for bracketed-paste composer readiness, and verifies the resumed foreground prompt id instead of waiting for a `sessionStart` event Cursor never emits on resume. Cursor switching remains disabled.
 
 ## Final fix wave after whole-branch review
 

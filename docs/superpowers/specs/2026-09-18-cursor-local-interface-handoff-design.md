@@ -162,9 +162,12 @@ retain them natively, a later separately designed display-only affordance may
 be considered; it is outside this feature and must never be sent back as a
 prompt.
 
-The target is ready only after Cursor's session-start hook reports the expected
-native id for the new launch generation. A different or missing id triggers the
-existing rollback/recovery path.
+The proposed target-ready proof cannot be implemented on the validated provider
+build. Cursor `2026.09.18-9a7762b` deliberately omits `sessionStart` whenever
+`--resume` is present. Its later `beforeSubmitPrompt` hook reports the expected
+native id, but only after input has already reached the resumed controller, so it
+cannot serve as a fail-closed pre-delivery readiness boundary. This is an
+additional reason Chat-to-TUI switching remains unsupported.
 
 ## History and Checkpoint Rules
 
