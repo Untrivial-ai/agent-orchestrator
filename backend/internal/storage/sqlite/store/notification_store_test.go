@@ -50,6 +50,37 @@ func TestNotificationStore_InsertListAndDedupe(t *testing.T) {
 	}
 }
 
+func TestNotificationStore_RecurringTurnsDedupeByEventKey(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	rec := domain.NotificationRecord{
+		ID: "ntf_1", SessionID: sess.ID, ProjectID: sess.ProjectID,
+		EventKey: "stop:1", Type: domain.NotificationTurnCompleted,
+		Title: "finished", Status: domain.NotificationUnread, CreatedAt: now,
+	}
+	if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+		t.Fatalf("first turn inserted=%v err=%v", inserted, err)
+	}
+	duplicate := rec
+	duplicate.ID = "ntf_2"
+	if _, inserted, err := s.CreateNotification(ctx, duplicate); err != nil || inserted {
+		t.Fatalf("duplicate turn inserted=%v err=%v, want false", inserted, err)
+	}
+	next := rec
+	next.ID = "ntf_3"
+	next.EventKey = "stop:2"
+	next.CreatedAt = now.Add(time.Minute)
+	if _, inserted, err := s.CreateNotification(ctx, next); err != nil || !inserted {
+		t.Fatalf("next turn inserted=%v err=%v, want true", inserted, err)
+	}
+}
+
 // Seeing a notification is not the same as fixing what it reported. Dedupe is
 // keyed on the issue being open, so the same session cannot be re-notified
 // about a pause it is still sitting in — only resolving it reopens dedupe.
@@ -131,6 +162,7 @@ func TestNotificationStore_ListUnresolvedIgnoresSeenAndTerminalTypes(t *testing.
 	}
 	seed("ntf_input", domain.NotificationNeedsInput, "")
 	seed("ntf_ready", domain.NotificationReadyToMerge, "https://github.com/o/r/pull/1")
+	seed("ntf_ci", domain.NotificationCIFailed, "https://github.com/o/r/pull/3")
 	seed("ntf_merged", domain.NotificationPRMerged, "https://github.com/o/r/pull/2")
 	if _, err := s.MarkAllNotificationsRead(ctx); err != nil {
 		t.Fatalf("MarkAllNotificationsRead: %v", err)
@@ -144,12 +176,12 @@ func TestNotificationStore_ListUnresolvedIgnoresSeenAndTerminalTypes(t *testing.
 	for _, row := range rows {
 		ids = append(ids, row.ID)
 	}
-	if len(ids) != 2 || ids[0] == "ntf_merged" || ids[1] == "ntf_merged" {
-		t.Fatalf("unresolved ids = %v, want the two open issues", ids)
+	if len(ids) != 3 {
+		t.Fatalf("unresolved ids = %v, want the three open issues", ids)
 	}
 	count, err := s.CountUnresolvedNotifications(ctx)
-	if err != nil || count != 2 {
-		t.Fatalf("CountUnresolvedNotifications = %d err=%v, want 2", count, err)
+	if err != nil || count != 3 {
+		t.Fatalf("CountUnresolvedNotifications = %d err=%v, want 3", count, err)
 	}
 
 	// Resolving by PR follows the PR, not the session.
@@ -157,8 +189,8 @@ func TestNotificationStore_ListUnresolvedIgnoresSeenAndTerminalTypes(t *testing.
 	if err != nil || len(resolved) != 1 || resolved[0].ID != "ntf_ready" {
 		t.Fatalf("ResolvePRNotifications = %+v err=%v", resolved, err)
 	}
-	if count, err := s.CountUnresolvedNotifications(ctx); err != nil || count != 1 {
-		t.Fatalf("CountUnresolvedNotifications = %d err=%v, want 1", count, err)
+	if count, err := s.CountUnresolvedNotifications(ctx); err != nil || count != 2 {
+		t.Fatalf("CountUnresolvedNotifications = %d err=%v, want 2", count, err)
 	}
 }
 

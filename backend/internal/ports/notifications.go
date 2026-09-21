@@ -14,6 +14,9 @@ type NotificationIntent struct {
 	SessionID domain.SessionID
 	ProjectID domain.ProjectID
 	PRURL     string
+	// EventKey distinguishes recurring terminal events such as completed turns.
+	// Stable one-off and unresolved notifications leave it empty.
+	EventKey  string
 	CreatedAt time.Time
 
 	// Enrichment hints. These avoid storage reads on the hot path.

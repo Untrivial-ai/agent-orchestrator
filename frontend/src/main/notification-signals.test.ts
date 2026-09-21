@@ -10,7 +10,15 @@ import {
 	type NotificationType,
 } from "./notification-signals";
 
-const ALL_TYPES: NotificationType[] = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged"];
+const ALL_TYPES: NotificationType[] = [
+	"turn_completed",
+	"turn_failed",
+	"needs_input",
+	"ci_failed",
+	"ready_to_merge",
+	"pr_merged",
+	"pr_closed_unmerged",
+];
 
 describe("shouldToast", () => {
 	it("fires a toast for every backend notification type", () => {
@@ -28,11 +36,14 @@ describe("shouldToast", () => {
 
 describe("shouldSignalAttention", () => {
 	it("flashes the taskbar for the actionable types", () => {
+		expect(shouldSignalAttention("turn_failed")).toBe(true);
 		expect(shouldSignalAttention("needs_input")).toBe(true);
+		expect(shouldSignalAttention("ci_failed")).toBe(true);
 		expect(shouldSignalAttention("ready_to_merge")).toBe(true);
 	});
 
 	it("does not flash the taskbar for informational PR outcomes", () => {
+		expect(shouldSignalAttention("turn_completed")).toBe(false);
 		expect(shouldSignalAttention("pr_merged")).toBe(false);
 		expect(shouldSignalAttention("pr_closed_unmerged")).toBe(false);
 	});

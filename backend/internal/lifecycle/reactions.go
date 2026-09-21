@@ -499,8 +499,27 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 		return err
 	}
 	m.emitNotification(ctx, intent)
-	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, ready, m.clock())...)
+	resolutions := append(
+		readyToMergeResolutions(id, o, ready, m.clock()),
+		ciFailedResolutions(id, o, m.clock())...,
+	)
+	m.resolveNotifications(ctx, resolutions...)
 	return nil
+}
+
+// ciFailedResolutions closes the actionable failure once checks stop failing.
+// Pending and unknown both resolve the old failure; a later failing observation
+// creates a fresh notification for the new failure episode.
+func ciFailedResolutions(id domain.SessionID, o ports.SCMObservation, now time.Time) []ports.NotificationResolution {
+	if domain.CIState(o.CI.Summary) == domain.CIFailing {
+		return nil
+	}
+	return []ports.NotificationResolution{{
+		Type:       domain.NotificationCIFailed,
+		SessionID:  id,
+		PRURL:      firstSCMNonEmpty(o.PR.URL, o.PR.HTMLURL),
+		ResolvedAt: timeOr(o.ObservedAt, now),
+	}}
 }
 
 // readyToMergeResolutions reports the ready-to-merge notification this
@@ -555,6 +574,10 @@ func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCM
 	}
 	if o.PR.Closed {
 		base.Type = domain.NotificationPRClosedUnmerged
+		return &base
+	}
+	if domain.CIState(o.CI.Summary) == domain.CIFailing {
+		base.Type = domain.NotificationCIFailed
 		return &base
 	}
 	if rec.IsTerminated || rec.Activity.State.NeedsInput() || !ready {

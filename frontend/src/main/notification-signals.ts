@@ -9,7 +9,14 @@
  */
 
 /** The notification types defined by `backend/internal/domain/notification.go`. */
-export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
+export type NotificationType =
+	| "turn_completed"
+	| "turn_failed"
+	| "needs_input"
+	| "ci_failed"
+	| "ready_to_merge"
+	| "pr_merged"
+	| "pr_closed_unmerged";
 
 /**
  * Whether to fire the Windows/Linux taskbar flash. Restricted to the
@@ -19,7 +26,12 @@ export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | 
  * The macOS dock bounce is deliberately NOT gated by this allowlist — every
  * notification bounces there, with urgency carried by {@link dockBounceType}.
  */
-const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>(["needs_input", "ready_to_merge"]);
+const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>([
+	"turn_failed",
+	"needs_input",
+	"ci_failed",
+	"ready_to_merge",
+]);
 
 /** Whether this notification type should flash the Windows/Linux taskbar. */
 export function shouldSignalAttention(type: string | undefined): boolean {

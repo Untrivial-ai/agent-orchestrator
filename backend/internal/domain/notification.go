@@ -9,8 +9,14 @@ import (
 type NotificationType string
 
 const (
+	// NotificationTurnCompleted means an agent finished a turn and is ready for more work.
+	NotificationTurnCompleted NotificationType = "turn_completed"
+	// NotificationTurnFailed means an agent turn ended with an authoritative failure.
+	NotificationTurnFailed NotificationType = "turn_failed"
 	// NotificationNeedsInput means an agent session is waiting for user input.
 	NotificationNeedsInput NotificationType = "needs_input"
+	// NotificationCIFailed means a tracked PR has failing checks.
+	NotificationCIFailed NotificationType = "ci_failed"
 	// NotificationReadyToMerge means a PR has no known merge blockers.
 	NotificationReadyToMerge NotificationType = "ready_to_merge"
 	// NotificationPRMerged means a tracked PR was merged.
@@ -22,7 +28,8 @@ const (
 // Valid reports whether t is one of the v1 notification kinds.
 func (t NotificationType) Valid() bool {
 	switch t {
-	case NotificationNeedsInput, NotificationReadyToMerge, NotificationPRMerged, NotificationPRClosedUnmerged:
+	case NotificationTurnCompleted, NotificationTurnFailed, NotificationNeedsInput, NotificationCIFailed,
+		NotificationReadyToMerge, NotificationPRMerged, NotificationPRClosedUnmerged:
 		return true
 	default:
 		return false
@@ -31,10 +38,11 @@ func (t NotificationType) Valid() bool {
 
 // NeedsResolution reports whether t describes an issue that stays open until
 // something changes (an agent waiting on the user, a PR waiting on a merge).
-// Terminal facts — a PR that merged or closed — describe something that already
-// happened, so they are surfaced once as unseen and never held as unresolved.
+// Terminal facts — a finished turn or a PR that merged or closed — describe
+// something that already happened, so they are surfaced once as unseen and
+// never held as unresolved.
 func (t NotificationType) NeedsResolution() bool {
-	return t == NotificationNeedsInput || t == NotificationReadyToMerge
+	return t == NotificationNeedsInput || t == NotificationCIFailed || t == NotificationReadyToMerge
 }
 
 // NotificationStatus is the seen state for a stored notification. The stored
@@ -88,6 +96,9 @@ type NotificationRecord struct {
 	SessionID SessionID
 	ProjectID ProjectID
 	PRURL     string
+	// EventKey distinguishes recurring events of the same type within a session.
+	// It is internal deduplication metadata and is not exposed over HTTP.
+	EventKey  string
 	Type      NotificationType
 	Title     string
 	Body      string

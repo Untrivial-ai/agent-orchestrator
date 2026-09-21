@@ -3713,7 +3713,7 @@ export interface components {
             target: components["schemas"]["NotificationTarget"];
             title: string;
             /** @enum {string} */
-            type: "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
+            type: "turn_completed" | "turn_failed" | "needs_input" | "ci_failed" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
         };
         NotificationTarget: {
             /** @enum {string} */

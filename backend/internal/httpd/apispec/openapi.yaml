@@ -10619,7 +10619,10 @@ components:
           type: string
         type:
           enum:
+          - turn_completed
+          - turn_failed
           - needs_input
+          - ci_failed
           - ready_to_merge
           - pr_merged
           - pr_closed_unmerged

@@ -975,18 +975,7 @@ retryProjection:
 		m.mu.Unlock()
 		return nil
 	}
-	// Transition into the needs-input family (waiting_input or blocked) pings
-	// the user; an in-family escalation (waiting_input -> blocked) does not
-	// re-notify — the user was already pinged once for this pause.
-	if !rec.Activity.State.NeedsInput() && next.Activity.State.NeedsInput() && !next.IsTerminated {
-		intent = &ports.NotificationIntent{
-			Type:               domain.NotificationNeedsInput,
-			SessionID:          next.ID,
-			ProjectID:          next.ProjectID,
-			CreatedAt:          next.Activity.LastActivityAt,
-			SessionDisplayName: next.DisplayName,
-		}
-	}
+	intent = activityNotificationIntent(rec, next, s.Event)
 	// Leaving the needs-input family is the user answering: the notification
 	// that pinged them has nothing left to resolve.
 	resolutions := needsInputResolutions(rec, next, now)
@@ -1001,6 +990,48 @@ retryProjection:
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
 	return nil
+}
+
+// activityNotificationIntent translates authoritative agent boundaries into
+// durable user-facing events. It deliberately keys completion on provider
+// boundary names rather than treating every idle observation as success.
+func activityNotificationIntent(prev, next domain.SessionRecord, event string) *ports.NotificationIntent {
+	if next.IsTerminated {
+		return nil
+	}
+	var typ domain.NotificationType
+	switch {
+	case !prev.Activity.State.NeedsInput() && next.Activity.State.NeedsInput():
+		// An in-family escalation (waiting_input -> blocked) does not re-notify:
+		// the user was already pinged once for this pause.
+		typ = domain.NotificationNeedsInput
+	case event == "chat.turn.failed":
+		typ = domain.NotificationTurnFailed
+	case next.Activity.State == domain.ActivityIdle && activityCompletionEvent(event):
+		typ = domain.NotificationTurnCompleted
+	default:
+		return nil
+	}
+	intent := &ports.NotificationIntent{
+		Type:               typ,
+		SessionID:          next.ID,
+		ProjectID:          next.ProjectID,
+		CreatedAt:          next.Activity.LastActivityAt,
+		SessionDisplayName: next.DisplayName,
+	}
+	if typ == domain.NotificationTurnCompleted || typ == domain.NotificationTurnFailed {
+		intent.EventKey = fmt.Sprintf("%s:%d", event, next.Activity.LastActivityAt.UTC().UnixNano())
+	}
+	return intent
+}
+
+func activityCompletionEvent(event string) bool {
+	switch event {
+	case "stop", "after-agent", "post-agent", "chat.turn.completed":
+		return true
+	default:
+		return false
+	}
 }
 
 // stagePendingAgentSwitchNativeMetadata persists provider-assigned startup
