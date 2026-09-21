@@ -1,6 +1,9 @@
 package worker
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // BootstrapRequest is what a worker sends to redeem its one-time ticket.
 type BootstrapRequest struct {
@@ -122,6 +125,19 @@ type SubmitReviewResponse struct {
 type EventRequest struct {
 	Type    string `json:"type"`
 	Payload any    `json:"payload,omitempty"`
+}
+
+type NotificationEventRequest struct {
+	EventID    string          `json:"eventId"`
+	Type       string          `json:"type"`
+	OccurredAt time.Time       `json:"occurredAt"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+type NotificationEventResponse struct {
+	Accepted  bool   `json:"accepted"`
+	EventID   string `json:"eventId"`
+	Duplicate bool   `json:"duplicate"`
 }
 
 type ClaimTurnRequest struct{}
@@ -276,11 +292,15 @@ type TerminalCommand struct {
 // pushes user keystrokes down; "error" tells the worker to fall back to the
 // polled transport.
 type TerminalStreamFrame struct {
-	Type     string `json:"type"`
-	Data     []byte `json:"data,omitempty"`
-	ID       int64  `json:"id,omitempty"`
-	Sequence int64  `json:"sequence,omitempty"`
-	Code     string `json:"code,omitempty"`
+	Type       string          `json:"type"`
+	Data       []byte          `json:"data,omitempty"`
+	ID         int64           `json:"id,omitempty"`
+	Sequence   int64           `json:"sequence,omitempty"`
+	Code       string          `json:"code,omitempty"`
+	EventID    string          `json:"eventId,omitempty"`
+	EventType  string          `json:"eventType,omitempty"`
+	OccurredAt time.Time       `json:"occurredAt,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
 }
 
 type TerminalOutputRequest struct {
