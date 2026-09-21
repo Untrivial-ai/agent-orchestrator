@@ -662,7 +662,7 @@ func createSessionTx(
 			$6, $7, $8, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid
 		FROM generated
 		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
-			mode, denied_commands, activity_state, is_terminated,
+			mode, denied_commands, activity_state, is_terminated, auto_inject_ci,
 			false, '', '', '', '', '', 0, created_at, updated_at`,
 		orgID,
 		input.ProjectID,
@@ -928,6 +928,7 @@ const sessionSelect = `
 			ELSE session.activity_state
 		END AS activity_state,
 		session.is_terminated,
+		session.auto_inject_ci,
 		EXISTS (
 			SELECT 1 FROM ao_worker_connections worker
 			WHERE worker.session_id = session.id AND worker.disconnected_at IS NULL
@@ -1001,6 +1002,7 @@ func scanSession(row scanner, session *domain.Session) error {
 		&session.DeniedCommands,
 		&activity,
 		&session.IsTerminated,
+		&session.AutoInjectCI,
 		&session.RuntimeConnected,
 		&session.SandboxProvider,
 		&session.DesiredState,

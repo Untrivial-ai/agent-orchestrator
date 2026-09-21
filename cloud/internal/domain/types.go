@@ -75,6 +75,7 @@ type Session struct {
 	ObservedState    string
 	RuntimeState     string
 	RuntimeError     string
+	AutoInjectCI     bool
 	// WorkerEpoch is the highest worker epoch the session has minted for its
 	// agent terminal. It advances every time a fresh worker connects (a resume
 	// from idle-pause, a restore, or any re-provision), so a client can key its
