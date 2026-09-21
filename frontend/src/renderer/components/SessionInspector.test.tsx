@@ -40,6 +40,18 @@ function postCallsFor(path: string) {
   return postMock.mock.calls.filter(([calledPath]) => calledPath === path);
 }
 
+function mockPostsWithResponse(response: unknown) {
+  postMock.mockImplementation(async (path: string) => {
+    if (path === "/api/v1/agents/readiness/ensure") {
+      const agents = ["claude-code", "codex", "opencode"].map((id) =>
+        agentReadiness(id),
+      );
+      return { data: { agents } };
+    }
+    return response;
+  });
+}
+
 function setRenderedOverflow(element: HTMLElement, overflowing: boolean) {
   Object.defineProperties(element, {
     clientHeight: { configurable: true, value: 64 },
@@ -278,7 +290,7 @@ beforeEach(() => {
   navigateMock.mockReset();
   patchMock.mockReset();
   postMock.mockReset();
-  useUiStore.setState({ developerMode: false, inspectorSessions: {} });
+  useUiStore.setState({ developerMode: false, inspectorSessions: {}, settingsModal: null });
   putMock.mockReset();
   mockCommonGets();
   patchMock.mockResolvedValue({
@@ -286,7 +298,7 @@ beforeEach(() => {
     error: undefined,
     response: { status: 200 },
   });
-  postMock.mockResolvedValue({
+  mockPostsWithResponse({
     data: { ok: true, sessionId: "sess-1" },
     error: undefined,
   });
@@ -1212,7 +1224,7 @@ describe("SessionInspector completion controls", () => {
       <SessionInspector
         session={session([], {
           workspaceId: STANDALONE_WORKSPACE_ID,
-          workspaceName: "Ad hoc agents",
+          workspaceName: "Scratchpad",
           status: "idle",
         })}
       />,
@@ -2024,6 +2036,35 @@ describe("SessionInspector summary reviews", () => {
     });
     expect(trigger).toHaveTextContent("Claude Code");
     expect(trigger).not.toHaveTextContent("claude-code");
+  });
+
+  it("opens Harness from the reviewer menu for its unavailable selection", async () => {
+    const responder = commonGetsResponder();
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents/readiness") {
+        return {
+          data: {
+            agents: [
+              agentReadiness("claude-code", "Claude Code"),
+              agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+            ],
+          },
+        };
+      }
+      return responder(path);
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+    await waitFor(() => expect(useUiStore.getState().settingsModal).not.toBeNull());
+
+    expect(useUiStore.getState().settingsModal).toEqual({
+      scope: "global",
+      section: "harness",
+      focusAgentId: "codex",
+    });
   });
 
   it("configures session auto-review and disables manual controls", async () => {
@@ -3001,7 +3042,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });
@@ -3058,7 +3099,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3114,7 +3155,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3169,7 +3210,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3231,7 +3272,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3277,7 +3318,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3390,7 +3431,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });

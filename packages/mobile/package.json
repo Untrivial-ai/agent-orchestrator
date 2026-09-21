@@ -40,6 +40,7 @@
 		"expo-splash-screen": "~57.0.7",
 		"expo-status-bar": "~57.0.1",
 		"expo-updates": "~57.0.19",
+		"expo-web-browser": "~57.0.3",
 		"posthog-react-native": "^4.62.0",
 		"react": "19.2.3",
 		"react-native": "0.86.3",

@@ -618,9 +618,11 @@ func (r *SetSessionAutoReviewRequest) UnmarshalJSON(data []byte) error {
 
 // SetSessionPreviewRequest is the body of POST /api/v1/sessions/{sessionId}/preview.
 // An empty url asks the daemon to autodetect a static entry point in the
-// session workspace; a non-empty url is used verbatim as the preview target.
+// session workspace; a non-empty url is resolved as a workspace file when
+// possible and otherwise retained as an external target.
 type SetSessionPreviewRequest struct {
-	URL string `json:"url,omitempty" description:"Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace."`
+	URL                  string `json:"url,omitempty" description:"Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace."`
+	RequireWorkspaceFile bool   `json:"requireWorkspaceFile,omitempty" description:"Reject the target unless it resolves to an existing file in the session workspace."`
 }
 
 // StartPreviewServerRequest selects one named entry from .ao/launch.json. The
@@ -1225,7 +1227,7 @@ type AgentReadinessResponse = agentsvc.Readiness
 // An omitted or empty agentIds list selects all supported harnesses.
 type EnsureAgentReadinessRequest struct {
 	AgentIDs []string                     `json:"agentIds,omitempty"`
-	Purpose  domain.AgentReadinessPurpose `json:"purpose" enum:"display,launch"`
+	Purpose  domain.AgentReadinessPurpose `json:"purpose" enum:"display,settings,launch"`
 }
 
 // CodexAccountsResponse is the controller-owned, redacted cached account view.
@@ -1668,6 +1670,14 @@ type MarkAllNotificationsReadResponse struct {
 	UpdatedCount  int64                  `json:"updatedCount" description:"Number of notifications changed from unread to read."`
 }
 
+// ClearNotificationsResponse is the body of DELETE /api/v1/notifications.
+type ClearNotificationsResponse struct {
+	ClearedCount  int64  `json:"clearedCount" description:"Number of notifications deleted."`
+	ClearID       string `json:"clearId" description:"Identifier shared with the ordered notification_cleared stream event."`
+	ClearEpoch    string `json:"clearEpoch" description:"Daemon epoch for ordering notification clears across one daemon lifetime."`
+	ClearSequence int64  `json:"clearSequence" description:"Monotonic notification-clear sequence within clearEpoch."`
+}
+
 // ImportStatusResponse is the body of GET /api/v1/import: whether a legacy AO
 // install is available to import, and the root the daemon would read from.
 type ImportStatusResponse struct {
@@ -1737,6 +1747,23 @@ type EndpointsResponse struct {
 type IdentityResponse struct {
 	HostID     string `json:"hostId"`
 	APIVersion int    `json:"apiVersion"`
+}
+
+// LinkPreviewQuery selects the external page to unfurl.
+type LinkPreviewQuery struct {
+	URL string `query:"url" description:"Absolute http(s) URL of the page to preview."`
+}
+
+// LinkPreviewResponse is the body of GET /api/v1/link-preview (200). Only URL
+// is guaranteed; every other field is omitted when the page does not provide
+// it, so the renderer renders whatever subset arrived.
+type LinkPreviewResponse struct {
+	URL         string `json:"url"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	ImageURL    string `json:"imageUrl,omitempty"`
+	SiteName    string `json:"siteName,omitempty"`
+	FaviconURL  string `json:"faviconUrl,omitempty"`
 }
 
 // MobileStatusResponse is the body of the Connect Mobile status/enable/disable/

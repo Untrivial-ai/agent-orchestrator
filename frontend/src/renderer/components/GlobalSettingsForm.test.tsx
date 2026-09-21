@@ -11,6 +11,15 @@ import { useUiStore } from "../stores/ui-store";
 import { useTelemetryPolicyStore } from "../stores/telemetry-policy-store";
 import { TooltipProvider } from "./ui/tooltip";
 
+const { harnessSettingsSectionMock } = vi.hoisted(() => ({ harnessSettingsSectionMock: vi.fn() }));
+
+vi.mock("./settings/HarnessSettingsSection", () => ({
+	HarnessSettingsSection: (props: { focusAgentId?: string; titleHidden?: boolean }) => {
+		harnessSettingsSectionMock(props);
+		return <div data-testid="harness-settings-section" />;
+	},
+}));
+
 const {
 	getUpdate,
 	setUpdate,
@@ -110,12 +119,12 @@ vi.mock("../lib/bridge", () => ({
 	},
 }));
 
-function renderForm(section: GlobalSettingsSection = "all") {
+function renderForm(section: GlobalSettingsSection = "all", focusAgentId?: string) {
 	const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	render(
 		<QueryClientProvider client={qc}>
 			<TooltipProvider>
-				<GlobalSettingsForm section={section} />
+				<GlobalSettingsForm focusAgentId={focusAgentId} section={section} />
 			</TooltipProvider>
 		</QueryClientProvider>,
 	);
@@ -123,6 +132,7 @@ function renderForm(section: GlobalSettingsSection = "all") {
 }
 
 beforeEach(async () => {
+	harnessSettingsSectionMock.mockReset();
 	for (const m of [
 		getUpdate,
 		setUpdate,
@@ -197,6 +207,13 @@ beforeEach(async () => {
 });
 
 describe("GlobalSettingsForm", () => {
+	it("propagates a Harness focus target through the settings catalog", async () => {
+		renderForm("harness", "cursor");
+
+		expect(await screen.findByTestId("harness-settings-section")).toBeInTheDocument();
+		expect(harnessSettingsSectionMock).toHaveBeenCalledWith({ focusAgentId: "cursor", titleHidden: true });
+	});
+
 	it("keeps Browser in its dedicated settings page", async () => {
 		renderForm("general");
 		expect(await screen.findByLabelText("Settings")).toBeInTheDocument();

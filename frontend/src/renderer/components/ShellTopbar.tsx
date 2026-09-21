@@ -11,12 +11,14 @@ import { useProjectOrchestratorAction } from "../hooks/useProjectOrchestratorAct
 import {
 	CLOUD_PROJECT_KIND,
 	isOrchestratorSession,
+	resolveNextNavigationAfterSessionKill,
 	sessionIsActive,
 	STANDALONE_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
 	type WorkspaceSession,
+	type WorkspaceSummary,
 } from "../types/workspace";
-import { useWorkspaceScope } from "../hooks/useWorkspaceQuery";
+import { useWorkspaceScope, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import {
 	clearTerminateSessionState,
 	useProjectTerminateSessionStates,
@@ -79,6 +81,7 @@ export function ShellTopbar({
 	compactActions?: boolean;
 } = {}) {
 	const { t } = useTranslation();
+	const queryClient = useQueryClient();
 	const navigate = useNavigate();
 	const params = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
 	const currentSessionId = params.sessionId;
@@ -277,11 +280,14 @@ export function ShellTopbar({
 										key={session.id}
 										session={session}
 										orchestratorId={orchestrator?.id}
-										onKilled={(workspaceId, orchestratorId) => {
-											if (orchestratorId) {
+										onKilled={(workspaceId) => {
+											const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
+											const fullWorkspace = workspaces.find((w: WorkspaceSummary) => w.id === workspaceId);
+											const nextRoute = resolveNextNavigationAfterSessionKill(fullWorkspace, session.id);
+											if (nextRoute.target === "session") {
 												void navigate({
 													to: "/projects/$projectId/sessions/$sessionId",
-													params: { projectId: workspaceId, sessionId: orchestratorId },
+													params: { projectId: workspaceId, sessionId: nextRoute.sessionId },
 												});
 												return;
 											}

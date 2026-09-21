@@ -529,7 +529,7 @@ func (c *codexAccountCatalog) commitPending(pendingDir string, observation ports
 		return codexAccountRecord{}, fmt.Errorf("write Codex account descriptor: %w", err)
 	}
 	target := filepath.Join(c.root, id)
-	if err := os.Rename(pendingDir, target); err != nil {
+	if err := renameCodexAccountDirectory(pendingDir, target); err != nil {
 		return codexAccountRecord{}, fmt.Errorf("commit Codex account: %w", err)
 	}
 	if err := syncDirectory(c.root); err != nil {

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../../lib/bridge";
 import type { ConversationActivity } from "../../types/conversation";
-import { ElicitationCard } from "./ElicitationCard";
+import { ElicitationDock } from "./ElicitationDock";
 
 function activity(detail: ConversationActivity["detail"]): ConversationActivity {
 	return {
@@ -20,7 +20,7 @@ function activity(detail: ConversationActivity["detail"]): ConversationActivity 
 	};
 }
 
-describe("ElicitationCard", () => {
+describe("ElicitationDock", () => {
 	const claudeQuestions = {
 		type: "object" as const,
 		required: ["question_0", "question_1"],
@@ -48,7 +48,7 @@ describe("ElicitationCard", () => {
 
 	it("shows one Claude question and its Other field at a time", () => {
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({ inputMode: "form", schema: claudeQuestions })}
 				onResolve={vi.fn()}
 			/>,
@@ -63,7 +63,7 @@ describe("ElicitationCard", () => {
 	it("validates the active Claude question before moving forward", async () => {
 		const user = userEvent.setup();
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({ inputMode: "form", schema: claudeQuestions })}
 				onResolve={vi.fn()}
 			/>,
@@ -78,7 +78,7 @@ describe("ElicitationCard", () => {
 	it("navigates Claude questions and preserves answers when going back", async () => {
 		const user = userEvent.setup();
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({ inputMode: "form", schema: claudeQuestions })}
 				onResolve={vi.fn()}
 			/>,
@@ -98,7 +98,7 @@ describe("ElicitationCard", () => {
 		const user = userEvent.setup();
 		const onResolve = vi.fn().mockResolvedValue(undefined);
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({
 					inputMode: "form",
 					message: "Which implementation should we use?",
@@ -124,7 +124,7 @@ describe("ElicitationCard", () => {
 
 	it("keeps generic MCP forms in the all-fields layout", () => {
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({
 					inputMode: "form",
 					schema: {
@@ -149,7 +149,7 @@ describe("ElicitationCard", () => {
 		const user = userEvent.setup();
 		const onResolve = vi.fn();
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({
 					inputMode: "form",
 					schema: {
@@ -166,12 +166,56 @@ describe("ElicitationCard", () => {
 		expect(onResolve).not.toHaveBeenCalled();
 	});
 
+	it("gives an invalid boolean the error node its aria-describedby names", async () => {
+		const user = userEvent.setup();
+		const onResolve = vi.fn();
+		render(
+			<ElicitationDock
+				activity={activity({
+					inputMode: "form",
+					schema: {
+						type: "object",
+						required: ["diagnostics"],
+						properties: { diagnostics: { type: "boolean", title: "Share diagnostics" } },
+					},
+				})}
+				onResolve={onResolve}
+			/>,
+		);
+
+		const checkbox = screen.getByRole("checkbox", { name: /Share diagnostics/ });
+		expect(checkbox).not.toHaveAttribute("aria-describedby");
+
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+		expect(onResolve).not.toHaveBeenCalled();
+
+		// A description that points at nothing reads as an unlabelled error to a
+		// screen reader, so the target has to exist and carry the wording.
+		const describedBy = checkbox.getAttribute("aria-describedby") ?? "";
+		expect(describedBy).not.toBe("");
+		expect(document.getElementById(describedBy)).toHaveTextContent("This field is required.");
+	});
+
+	it("names the Other row with a visible label rather than a placeholder", () => {
+		render(
+			<ElicitationDock
+				activity={activity({ inputMode: "form", schema: claudeQuestions })}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		// DESIGN.md §9: a placeholder is an example, never the only name a field has.
+		const other = screen.getByLabelText("Other approach");
+		expect(other).not.toHaveAttribute("placeholder");
+		expect(screen.getByText("Other approach")).toBeVisible();
+	});
+
 	it("opens an external URL only after the user explicitly consents", async () => {
 		const user = userEvent.setup();
 		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
 		const onResolve = vi.fn().mockResolvedValue(undefined);
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({ inputMode: "url", url: "https://console.anthropic.com/oauth", message: "Sign in" })}
 				onResolve={onResolve}
 			/>,
@@ -185,7 +229,7 @@ describe("ElicitationCard", () => {
 
 	it("refuses unsafe URL schemes", () => {
 		render(
-			<ElicitationCard
+			<ElicitationDock
 				activity={activity({ inputMode: "url", url: "file:///Users/alice/.ssh/id_rsa" })}
 				onResolve={vi.fn()}
 			/>,

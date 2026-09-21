@@ -188,8 +188,10 @@ func runSpawn(ctx context.Context, c *client, args []string) error {
 	flags := flag.NewFlagSet("spawn", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	var harness, name, prompt, mode, providerConnection string
-	flags.StringVar(&harness, "harness", "claude-code", "agent harness")
-	flags.StringVar(&harness, "agent", "claude-code", "alias for --harness")
+	// Empty by default so the control plane can fill in the project's configured
+	// worker agent (config.worker.agent); an explicit value here still wins.
+	flags.StringVar(&harness, "harness", "", "agent harness (default: the project's configured worker agent)")
+	flags.StringVar(&harness, "agent", "", "alias for --harness")
 	flags.StringVar(&name, "name", "", "child display name")
 	flags.StringVar(&prompt, "prompt", "", "initial child prompt")
 	flags.StringVar(&mode, "mode", "trusted", "standard or trusted")
@@ -468,7 +470,8 @@ func newIdempotencyKey() string {
 
 func printUsage(out io.Writer) {
 	fmt.Fprintln(out, `AO Cloud orchestration commands:
-  ao spawn --name NAME --prompt TEXT [--agent claude-code] [--mode standard|trusted]
+  ao spawn --name NAME --prompt TEXT [--agent AGENT] [--mode standard|trusted]
+    (--agent defaults to the project's configured worker agent)
   ao list [--json] [--all]
   ao send SESSION_ID MESSAGE
   ao report MESSAGE
