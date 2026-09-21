@@ -4038,7 +4038,7 @@ func TestClaimRowsFromSCMSnapshotsSessionReviewPolicy(t *testing.T) {
 		PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
 		Review: ports.SCMReviewObservation{
 			Reviews: []ports.SCMReviewSummaryObservation{{ID: "r1", State: string(domain.ReviewChangesRequest), Body: "review body"}},
-			Threads: []ports.SCMReviewThreadObservation{{ID: "t1", Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Body: "inline comment"}}}},
+			Threads: []ports.SCMReviewThreadObservation{{ID: "t1", IsBot: true, Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Author: "human", IsBot: false, Body: "inline comment"}}}},
 		},
 	}
 	for _, autoInject := range []bool{false, true} {
@@ -4049,6 +4049,9 @@ func TestClaimRowsFromSCMSnapshotsSessionReviewPolicy(t *testing.T) {
 			}
 			if len(comments) != 1 || comments[0].AutoInjectReview != autoInject {
 				t.Fatalf("comments = %+v, want policy %t", comments, autoInject)
+			}
+			if comments[0].IsBot {
+				t.Fatalf("human comment in bot-started thread was persisted as bot-authored: %+v", comments[0])
 			}
 		})
 	}

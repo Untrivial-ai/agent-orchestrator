@@ -117,6 +117,15 @@ native history and compaction.
 explicitly with `ao session claim-pr <session-id> <pr-ref>`. The explicit form
 remains supported for backward compatibility and cross-session coordination.
 
+Both `ao session claim-pr` and `ao spawn --claim-pr` claim ownership metadata
+only. The claim step does not check out a branch or change HEAD, so
+`branchChanged: false` renders as `checkout: not performed; workspace unchanged`
+without asserting that HEAD matches the provider PR. `ao session claim-pr --json`
+preserves that field; `spawn` has no JSON mode. Verify the branch and HEAD before
+editing or pushing. Automatic checkout is deferred until exact-head verification,
+takeover, concurrent provider changes, and worktree preservation can be handled
+together.
+
 If `--agent` / `--harness` is omitted, `ao spawn` uses the resolved project's
 `worker.agent` config. Before spawning, the CLI performs one targeted launch
 ensure. It fails early for unsupported or definitely missing harnesses and
