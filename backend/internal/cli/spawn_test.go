@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 )
 
 func authorizedAgentsJSON(agent string) string {
@@ -24,13 +26,18 @@ func readinessAgentsJSON(agent, installation, authentication string) string {
 		`,"effectiveReadiness":"unknown","usageCount":0}]}`
 }
 
-func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
+// TestSpawnHelpListsEveryRegisteredHarness guards against the --harness help
+// text drifting from the adapter registry (issue #5659): every registered
+// harness id must appear in `spawn --help` output.
+func TestSpawnHelpListsEveryRegisteredHarness(t *testing.T) {
 	out, errOut, err := executeCLI(t, Deps{}, "spawn", "--help")
 	if err != nil {
 		t.Fatalf("spawn --help: %v\nstderr: %s", err, errOut)
 	}
-	if !strings.Contains(out, "prime-agent") {
-		t.Fatalf("spawn help does not list prime-agent:\n%s", out)
+	for _, h := range registry.Harnessed() {
+		if !strings.Contains(out, h.Manifest.ID) {
+			t.Fatalf("spawn help does not list registered harness %q:\n%s", h.Manifest.ID, out)
+		}
 	}
 }
 
