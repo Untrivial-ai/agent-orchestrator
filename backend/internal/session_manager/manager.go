@@ -152,6 +152,11 @@ var (
 	// agent hook callback, so the native startup sequence (including pre-session
 	// approval dialogs) may still be consuming pane input.
 	ErrStartupPending = errors.New("session: agent startup not ready for input")
+	// ErrComposerBusy means a TUI session's composer holds an unsent human draft,
+	// so delivering now would concatenate with the operator's half-typed text and
+	// submit both as one prompt (#5711). The API maps it to a retryable 409; the
+	// caller retries once the operator submits or discards their draft.
+	ErrComposerBusy = errors.New("session: composer has an unsent draft")
 
 	// Spawn-stage sentinels. Each is the existing log word after "spawn" /
 	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
@@ -3610,11 +3615,21 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 			}
 		}
 	}
-	outcome, err := m.messenger.DeliverWithPostWrite(ctx, id, message, afterWrite)
+	// A non-empty user-initiated send must not land in a composer that holds an
+	// unsent human draft (#5711). An empty message is the deliberate Enter that
+	// submits an existing draft, so it is left unchecked. The check runs under the
+	// guard's held input lease, immediately before the write.
+	var composerBusy func(context.Context, domain.SessionRecord) bool
+	if strings.TrimSpace(message) != "" {
+		composerBusy = m.composerBusyCheck()
+	}
+	outcome, err := m.messenger.DeliverWithComposerCheck(ctx, id, message, composerBusy, afterWrite)
 	if err != nil {
 		return fmt.Errorf("send %s: %w", id, err)
 	}
 	switch outcome {
+	case sessionguard.SuppressedComposerBusy:
+		return fmt.Errorf("send %s: %w", id, ErrComposerBusy)
 	case sessionguard.SuppressedNotFound:
 		return fmt.Errorf("send %s: %w", id, ErrNotFound)
 	case sessionguard.SuppressedTerminated:

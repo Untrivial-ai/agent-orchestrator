@@ -1167,6 +1167,9 @@ func mapSessionError(err error) error {
 	case errors.Is(err, sessionmanager.ErrAwaitingDecision):
 		return apierr.Conflict("SESSION_AWAITING_DECISION",
 			"Session is paused on a permission decision; answer it in the session terminal first", nil)
+	case errors.Is(err, sessionmanager.ErrComposerBusy):
+		return apierr.Conflict("SESSION_COMPOSER_BUSY",
+			"Session composer has an unsent draft; retry after the draft is submitted or cleared", nil)
 	case errors.Is(err, sessionmanager.ErrStartupPending):
 		return apierr.Conflict("SESSION_STARTUP_PENDING",
 			"Session agent is still starting; retry after the agent prompt is ready", nil)
