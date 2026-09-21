@@ -520,7 +520,10 @@ export const useUiStore = create<UiState>((set, get) => ({
 		set((state) => {
 			const nonce = state.sessionLinkNoticeSequence + 1;
 			return {
-				sessionLinkNotices: [...state.sessionLinkNotices, { message, nonce }],
+				sessionLinkNotices: [
+					...state.sessionLinkNotices.filter((notice) => notice.message !== message),
+					{ message, nonce },
+				],
 				sessionLinkNoticeSequence: nonce,
 			};
 		}),

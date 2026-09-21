@@ -28,6 +28,23 @@ describe("SessionLinkFeedback", () => {
 		expect(screen.queryByText("Session hosted-ao-109 is terminated")).not.toBeInTheDocument();
 	});
 
+	it("replaces a duplicate notice and restarts its dismissal timer", () => {
+		useUiStore.getState().showSessionLinkNotice("Session hosted-ao-109 is terminated");
+		render(<SessionLinkFeedback />);
+
+		act(() => vi.advanceTimersByTime(4_000));
+		act(() => useUiStore.getState().showSessionLinkNotice("Session hosted-ao-109 is terminated"));
+		expect(screen.getAllByRole("status")).toHaveLength(1);
+		expect(useUiStore.getState().sessionLinkNotices).toEqual([
+			{ message: "Session hosted-ao-109 is terminated", nonce: 2 },
+		]);
+
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(screen.getByText("Session hosted-ao-109 is terminated")).toBeInTheDocument();
+		act(() => vi.advanceTimersByTime(4_000));
+		expect(screen.queryByText("Session hosted-ao-109 is terminated")).not.toBeInTheDocument();
+	});
+
 	it("dismisses one notice without removing the rest", () => {
 		const store = useUiStore.getState();
 		store.showSessionLinkNotice("Session first is terminated");

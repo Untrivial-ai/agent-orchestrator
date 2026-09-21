@@ -32,9 +32,8 @@ describe("useSessionLinkNavigation", () => {
 		act(() => expect(result.current("ao://sessions/project/terminated")).toBe(false));
 		act(() => expect(result.current("ao://sessions/project/terminated")).toBe(false));
 		expect(mocks.navigate).not.toHaveBeenCalled();
-		expect(useUiStore.getState().sessionLinkNotices.map((notice) => notice.message)).toEqual([
-			"Session terminated is terminated",
-			"Session terminated is terminated",
+		expect(useUiStore.getState().sessionLinkNotices).toEqual([
+			{ message: "Session terminated is terminated", nonce: 2 },
 		]);
 	});
 
