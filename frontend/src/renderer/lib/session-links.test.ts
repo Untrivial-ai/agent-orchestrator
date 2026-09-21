@@ -12,7 +12,7 @@ describe("session links", () => {
 		"ao://sessions/project", "ao://sessions/project/session/extra", "ao://sessions//session",
 		"ao://sessions/project/session?kill=true", "ao://sessions/project/session#chat",
 		"ao://user@sessions/project/session", "ao://sessions/project/%ZZ", "ao://sessions/project/%2Faction",
-		"ao://sessions/project/session/kill",
+		"ao://sessions/project/session/kill", "ao://sessions/%20/%20", "ao://sessions/project/%09",
 	])("rejects unsupported value %s", (url) => expect(parseSessionLink(url)).toBeUndefined());
 
 	it("trims adjacent punctuation while preserving encoded IDs", () => {

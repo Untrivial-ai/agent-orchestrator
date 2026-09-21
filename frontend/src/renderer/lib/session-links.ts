@@ -29,7 +29,7 @@ export function parseSessionLink(value: string): SessionLinkTarget | undefined {
 	if (segments.length !== 2 || segments.some((segment) => segment.length === 0)) return undefined;
 	try {
 		const [projectId, sessionId] = segments.map(decodeURIComponent);
-		if (!projectId || !sessionId || projectId.includes("/") || sessionId.includes("/")) return undefined;
+		if (!projectId.trim() || !sessionId.trim() || projectId.includes("/") || sessionId.includes("/")) return undefined;
 		return { projectId, sessionId };
 	} catch {
 		return undefined;
