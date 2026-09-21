@@ -199,6 +199,9 @@ export function AgentModelCombobox({
 		onChange(modelID);
 	};
 	const refreshBusy = refreshing || refreshingLocal;
+	const showManualRefresh = Boolean(
+		onRefresh && (models.length === 0 || (normalizedSearch !== "" && rankedModels.length === 0)),
+	);
 	const runRefresh = () => {
 		if (!onRefresh || refreshBusy) return;
 		setRefreshFailed(false);
@@ -242,7 +245,7 @@ export function AgentModelCombobox({
 				onCloseAutoFocus={onCloseAutoFocus}
 				className="settings-menu-surface max-h-select-menu-max! w-[min(22rem,calc(100vw-2rem))] overflow-hidden! rounded-(--radius-settings-panel) border-settings-menu bg-settings-menu"
 			>
-				{(showSearch || onRefresh) && (
+				{(showSearch || showManualRefresh) && (
 					<div className="flex shrink-0 items-center gap-1 p-1" onKeyDown={(event) => event.stopPropagation()}>
 						{showSearch && (
 							<div className="relative min-w-0 flex-1">
@@ -264,7 +267,7 @@ export function AgentModelCombobox({
 								/>
 							</div>
 						)}
-						{onRefresh && (
+						{showManualRefresh && (
 							<button
 								type="button"
 								className="flex size-8 shrink-0 items-center justify-center rounded-md text-settings-muted hover:bg-settings-menu-selected hover:text-settings-label disabled:cursor-not-allowed disabled:opacity-50"
@@ -391,6 +394,19 @@ export function AgentModelCombobox({
 												})
 											: t("settings.models.unavailable")}
 									</p>
+									{onRefresh && !refreshError && !showManualRefresh && (
+										<button
+											type="button"
+											className="text-settings-label underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+											onClick={(event) => {
+												event.stopPropagation();
+												runRefresh();
+											}}
+											disabled={refreshBusy}
+										>
+											{refreshBusy ? t("settings.models.refreshing") : t("settings.models.refresh")}
+										</button>
+									)}
 								</div>
 							</>
 						)}

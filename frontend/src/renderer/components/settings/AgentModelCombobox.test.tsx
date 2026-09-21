@@ -178,7 +178,7 @@ describe("AgentModelCombobox", () => {
 		expect(onRefresh).toHaveBeenCalledOnce();
 	});
 
-	it("keeps refresh visible beside search and prevents duplicate scope refreshes", async () => {
+	it("shows refresh only after a model search misses and prevents duplicate scope refreshes", async () => {
 		let finish!: () => void;
 		const onRefresh = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
 		renderCombobox(Array.from({ length: 10 }, (_, index) => ({ id: `model-${index}`, label: `Model ${index}` })), {
@@ -187,6 +187,8 @@ describe("AgentModelCombobox", () => {
 		});
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
 		const search = screen.getByRole("searchbox", { name: "Search worker model" });
+		expect(screen.queryByRole("button", { name: "Refresh models" })).not.toBeInTheDocument();
+		await userEvent.type(search, "missing-model");
 		const refresh = screen.getByRole("button", { name: "Refresh models" });
 		expect(search.parentElement?.parentElement).toContainElement(refresh);
 		expect(screen.getByText(/Last updated/)).toBeInTheDocument();
@@ -197,6 +199,15 @@ describe("AgentModelCombobox", () => {
 		expect(onRefresh).toHaveBeenCalledOnce();
 		finish();
 		await waitFor(() => expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled());
+	});
+
+	it("shows refresh when the catalog is empty", async () => {
+		const onRefresh = vi.fn();
+		renderCombobox([], { allowCustom: false, onRefresh });
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		await userEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+		expect(onRefresh).toHaveBeenCalledOnce();
 	});
 
 	it("shows a compact retryable persisted refresh error", async () => {
