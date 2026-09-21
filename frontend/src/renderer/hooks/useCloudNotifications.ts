@@ -5,6 +5,8 @@ import { addCloudNotificationHint, applyCloudNotificationEvent, cloudNotificatio
 import { subscribeNotificationEventsBridged } from "../lib/cloud-cp/stream-bridge";
 import { useCloudCp } from "./useCloudCp";
 import { useCloudOrg } from "./useCloudOrg";
+import { cloudSessionsQueryKey } from "./useWorkspaceQuery";
+import { orchestratorChildrenQueryKey } from "./useOrchestratorChildren";
 
 export function useCloudNotifications(status: "all" | "unread" | "read" = "all") {
 	const { client, ready, baseUrl } = useCloudCp();
@@ -21,6 +23,8 @@ export function useCloudNotifications(status: "all" | "unread" | "read" = "all")
 		void subscribeNotificationEventsBridged({ baseUrl, orgId, signal: controller.signal, onEvent: (event) => {
 			update((state) => applyCloudNotificationEvent(state, event));
 			void queryClient.invalidateQueries({ queryKey: ["cloud-notifications", baseUrl, orgId] });
+			void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+			void queryClient.invalidateQueries({ queryKey: orchestratorChildrenQueryKey });
 		}, onError: () => { void queryClient.invalidateQueries({ queryKey: ["cloud-notifications", baseUrl, orgId] }); } });
 		return () => { stopHints(); controller.abort(); };
 	}, [baseUrl, orgId, queryClient, ready]);

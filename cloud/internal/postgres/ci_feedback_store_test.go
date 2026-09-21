@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
@@ -14,14 +16,36 @@ func TestCIFailureApplicationKeyIsStablePerHead(t *testing.T) {
 	}
 }
 
+func TestCIFailureMessageNamesFailingChecks(t *testing.T) {
+	pr := domain.PullRequest{
+		Repository: "ao/repo",
+		Number:     42,
+		Checks: json.RawMessage(`[
+			{"name":"unit tests","conclusion":"failure","html_url":"https://example.test/unit"},
+			{"name":"lint","conclusion":"success"}
+		]`),
+	}
+	message := ciFailureMessage(pr)
+	if !strings.Contains(message, "unit tests") || !strings.Contains(message, "https://example.test/unit") {
+		t.Fatalf("message missing failing check details: %q", message)
+	}
+	if strings.Contains(message, "lint") {
+		t.Fatalf("message includes passing check: %q", message)
+	}
+}
+
 func TestShouldCreateCIFailureEffectOnlyOnTransition(t *testing.T) {
-	passing := domain.PullRequest{CIState: contract.CIPassing}
-	failing := domain.PullRequest{CIState: contract.CIFailing}
+	passing := domain.PullRequest{HeadSHA: "sha-1", CIState: contract.CIPassing}
+	failing := domain.PullRequest{HeadSHA: "sha-1", CIState: contract.CIFailing}
 	if !shouldCreateCIFailureEffect(passing, failing) {
 		t.Fatal("passing to failing should create an effect")
 	}
 	if shouldCreateCIFailureEffect(failing, failing) {
 		t.Fatal("unchanged failure must not create another effect")
+	}
+	nextHeadFailing := domain.PullRequest{HeadSHA: "sha-2", CIState: contract.CIFailing}
+	if !shouldCreateCIFailureEffect(failing, nextHeadFailing) {
+		t.Fatal("a new failing head should create a new effect")
 	}
 }
 

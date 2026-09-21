@@ -132,7 +132,7 @@ function sessionPRFactToSummary(session: WorkspaceSession, pr: PullRequestFacts)
 		ci: {
 			autoInjectCI: true,
 			state: toCIState(pr.ci),
-			failingChecks: [],
+			failingChecks: pr.failingChecks ?? [],
 		},
 		review: {
 			decision: toReviewDecision(pr.review),

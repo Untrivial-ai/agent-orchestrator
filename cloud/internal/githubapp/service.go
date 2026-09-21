@@ -60,12 +60,12 @@ type Store interface {
 	ClaimPullRequestRecord(context.Context, string, string, domain.PullRequest) (domain.PullRequest, error)
 	GitHubInstallationForRepository(ctx context.Context, orgID, repository string) (installationID, repositoryID int64, err error)
 	PullRequestByGitHubReference(ctx context.Context, orgID string, repositoryID int64, number int) (domain.PullRequest, error)
+	PullRequestByGitHubHead(ctx context.Context, orgID string, repositoryID int64, headSHA string) (domain.PullRequest, error)
 	UpdatePullRequestObservation(
 		ctx context.Context,
 		orgID, pullRequestID string,
 		observation domain.PullRequestObservation,
 	) (domain.PullRequest, error)
-	RecordPullRequestTransition(context.Context, domain.PullRequest, domain.PullRequest) (domain.SCMEffects, error)
 	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA string) (domain.ReviewRun, bool, error)
 	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt string) error
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error

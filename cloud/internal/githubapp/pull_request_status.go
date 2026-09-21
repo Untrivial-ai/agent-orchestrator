@@ -2,6 +2,7 @@ package githubapp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
@@ -41,6 +42,10 @@ func (s *Service) RefreshPullRequestStatus(
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
+	checksSnapshot, err := json.Marshal(checks)
+	if err != nil {
+		return domain.PullRequest{}, err
+	}
 	observation := domain.PullRequestObservation{
 		State:        pullRequestLifecycleState(detail),
 		Draft:        detail.Draft,
@@ -51,6 +56,7 @@ func (s *Service) RefreshPullRequestStatus(
 		CIState:      aggregateCIState(checks),
 		ReviewState:  aggregateReviewState(reviews),
 		Mergeability: mapMergeability(detail),
+		Checks:       checksSnapshot,
 	}
 	return s.store.UpdatePullRequestObservation(ctx, ref.OrgID, ref.ID, observation)
 }
@@ -79,7 +85,7 @@ func aggregateCIState(checks []CheckRun) contract.CIState {
 			continue
 		}
 		switch check.Conclusion {
-		case "failure", "timed_out", "action_required", "startup_failure":
+		case "failure", "timed_out", "action_required", "startup_failure", "cancelled":
 			return contract.CIFailing
 		case "success", "neutral", "skipped":
 			continue

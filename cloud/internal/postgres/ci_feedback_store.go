@@ -17,18 +17,55 @@ func ciFailureApplicationKey(pr domain.PullRequest) string {
 }
 
 func shouldCreateCIFailureEffect(previous, current domain.PullRequest) bool {
-	return current.CIState == contract.CIFailing && previous.CIState != contract.CIFailing
+	return current.CIState == contract.CIFailing &&
+		(previous.CIState != contract.CIFailing || previous.HeadSHA != current.HeadSHA)
 }
 
 func shouldResolveCIFailureEffect(previous, current domain.PullRequest) bool {
 	return previous.CIState == contract.CIFailing && current.CIState != contract.CIFailing
 }
 
-func (s *Store) RecordPullRequestTransition(ctx context.Context, previous, current domain.PullRequest) (domain.SCMEffects, error) {
+func ciFailureMessage(pr domain.PullRequest) string {
+	message := fmt.Sprintf(
+		"CI failure detected on %s#%d. Inspect the failing checks, fix the cause, and push the correction.",
+		pr.Repository, pr.Number,
+	)
+	var checks []struct {
+		Name       string `json:"name"`
+		Conclusion string `json:"conclusion"`
+		HTMLURL    string `json:"html_url"`
+	}
+	if json.Unmarshal(pr.Checks, &checks) != nil {
+		return message
+	}
+	for _, check := range checks {
+		switch check.Conclusion {
+		case "failure", "timed_out", "action_required", "startup_failure", "cancelled":
+			message += "\n- " + check.Name
+			if check.HTMLURL != "" {
+				message += ": " + check.HTMLURL
+			}
+		}
+	}
+	return message
+}
+
+func recordPullRequestTransitionTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	previous, current domain.PullRequest,
+) (domain.SCMEffects, error) {
 	var effects domain.SCMEffects
 	if shouldResolveCIFailureEffect(previous, current) {
 		effects.CIFailureResolved = true
-		return effects, s.resolveCIFailureNotification(ctx, previous)
+		return effects, resolveCIFailureNotificationTx(ctx, tx, previous)
+	}
+	if previous.CIState == contract.CIFailing && current.CIState == contract.CIFailing &&
+		previous.HeadSHA != current.HeadSHA {
+		if err := resolveCIFailureNotificationTx(ctx, tx, previous); err != nil {
+			return effects, err
+		}
+		effects.CIFailureResolved = true
 	}
 	if !shouldCreateCIFailureEffect(previous, current) {
 		return effects, nil
@@ -38,50 +75,49 @@ func (s *Store) RecordPullRequestTransition(ctx context.Context, previous, curre
 		"pullRequestId": current.ID, "pullRequestUrl": current.URL,
 		"pullRequestNumber": current.Number, "headSha": current.HeadSHA,
 		"repository": current.Repository,
-		"message":    fmt.Sprintf("CI failure detected on %s#%d. Inspect the failing checks, fix the cause, and push the correction.", current.Repository, current.Number),
+		"message":    ciFailureMessage(current),
 	})
 	if err != nil {
 		return effects, err
 	}
-	err = s.withService(ctx, func(tx pgx.Tx) error {
-		var inserted bool
-		if err := tx.QueryRow(ctx, `
+	var inserted bool
+	if err := tx.QueryRow(ctx, `
 			INSERT INTO ao_github_pr_applications (org_id, pull_request_id, application_key)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (pull_request_id, application_key) DO NOTHING
 			RETURNING true`, current.OrgID, current.ID, key).Scan(&inserted); errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		effects.CIFailureStarted = true
+		return effects, nil
+	} else if err != nil {
+		return effects, err
+	}
+	effects.CIFailureStarted = true
 
-		var projectID, recipientID string
-		var autoInject bool
-		if err := tx.QueryRow(ctx, `
+	var projectID, recipientID string
+	var autoInject bool
+	if err := tx.QueryRow(ctx, `
 			SELECT project_id::text, COALESCE(created_by_user_id::text, ''), auto_inject_ci
 			FROM ao_sessions WHERE org_id = $1 AND id = $2`,
-			current.OrgID, current.SessionID).Scan(&projectID, &recipientID, &autoInject); err != nil {
-			return err
-		}
-		if autoInject {
-			tag, err := tx.Exec(ctx, `
+		current.OrgID, current.SessionID).Scan(&projectID, &recipientID, &autoInject); err != nil {
+		return effects, err
+	}
+	if autoInject {
+		tag, err := tx.Exec(ctx, `
 				INSERT INTO ao_ci_feedback_outbox (
 					application_key, org_id, session_id, pull_request_id, payload
 				) VALUES ($1, $2, $3, $4, $5)
 				ON CONFLICT (application_key) DO NOTHING`,
-				key, current.OrgID, current.SessionID, current.ID, payload)
-			if err != nil {
-				return err
-			}
-			effects.FeedbackQueued = tag.RowsAffected() == 1
+			key, current.OrgID, current.SessionID, current.ID, payload)
+		if err != nil {
+			return effects, err
 		}
-		if recipientID == "" {
-			return nil
-		}
+		effects.FeedbackQueued = tag.RowsAffected() == 1
+	}
+	if recipientID == "" {
+		return effects, nil
+	}
 
-		var notificationID string
-		err := tx.QueryRow(ctx, `
+	var notificationID string
+	err = tx.QueryRow(ctx, `
 			INSERT INTO ao_notifications (
 				org_id, recipient_user_id, project_id, session_id, pull_request_id,
 				source, type, title, body, metadata, dedupe_key, source_event_id, status
@@ -92,14 +128,14 @@ func (s *Store) RecordPullRequestTransition(ctx context.Context, previous, curre
 			DO UPDATE SET body = EXCLUDED.body, metadata = EXCLUDED.metadata,
 				source_event_id = EXCLUDED.source_event_id, status = 'unread', updated_at = now()
 			RETURNING id::text`,
-			current.OrgID, recipientID, projectID, current.SessionID, current.ID,
-			fmt.Sprintf("CI is failing for %s#%d.", current.Repository, current.Number),
-			payload, key).Scan(&notificationID)
-		if err != nil {
-			return err
-		}
-		var snapshot []byte
-		if err := tx.QueryRow(ctx, `
+		current.OrgID, recipientID, projectID, current.SessionID, current.ID,
+		fmt.Sprintf("CI is failing for %s#%d.", current.Repository, current.Number),
+		payload, key).Scan(&notificationID)
+	if err != nil {
+		return effects, err
+	}
+	var snapshot []byte
+	if err := tx.QueryRow(ctx, `
 			SELECT jsonb_build_object(
 				'id', id::text, 'orgId', org_id::text,
 				'recipientUserId', recipient_user_id::text,
@@ -109,38 +145,35 @@ func (s *Store) RecordPullRequestTransition(ctx context.Context, previous, curre
 				'createdAt', created_at, 'updatedAt', updated_at
 			) FROM ao_notifications notification
 			WHERE org_id = $1 AND id = $2`, current.OrgID, notificationID).Scan(&snapshot); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
+		return effects, err
+	}
+	if _, err := tx.Exec(ctx, `
 			INSERT INTO ao_notification_events (
 				org_id, recipient_user_id, notification_id, kind, source_event_id, snapshot
 			) VALUES ($1, $2, $3, 'notification_created', $4, $5)`,
-			current.OrgID, recipientID, notificationID, key, snapshot); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `SELECT pg_notify('ao_notification_event', $1)`, current.OrgID)
-		return err
-	})
+		current.OrgID, recipientID, notificationID, key, snapshot); err != nil {
+		return effects, err
+	}
+	_, err = tx.Exec(ctx, `SELECT pg_notify('ao_notification_event', $1)`, current.OrgID)
 	return effects, err
 }
 
-func (s *Store) resolveCIFailureNotification(ctx context.Context, failed domain.PullRequest) error {
+func resolveCIFailureNotificationTx(ctx context.Context, tx pgx.Tx, failed domain.PullRequest) error {
 	dedupeKey := ciFailureApplicationKey(failed)
 	resolutionKey := "ci-resolved:" + failed.ID + ":" + failed.HeadSHA
-	return s.withService(ctx, func(tx pgx.Tx) error {
-		var inserted bool
-		if err := tx.QueryRow(ctx, `
+	var inserted bool
+	if err := tx.QueryRow(ctx, `
 			INSERT INTO ao_github_pr_applications (org_id, pull_request_id, application_key)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (pull_request_id, application_key) DO NOTHING
 			RETURNING true`, failed.OrgID, failed.ID, resolutionKey).Scan(&inserted); errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		var notificationID, recipientID string
-		var snapshot []byte
-		err := tx.QueryRow(ctx, `
+		return nil
+	} else if err != nil {
+		return err
+	}
+	var notificationID, recipientID string
+	var snapshot []byte
+	err := tx.QueryRow(ctx, `
 			WITH resolved AS (
 				UPDATE ao_notifications
 				SET resolved_at = now(), updated_at = now()
@@ -156,22 +189,21 @@ func (s *Store) resolveCIFailureNotification(ctx context.Context, failed domain.
 				'status', status, 'eventId', source_event_id, 'metadata', metadata,
 				'resolvedAt', resolved_at, 'createdAt', created_at, 'updatedAt', updated_at
 			) FROM resolved`, failed.OrgID, failed.ID, dedupeKey).Scan(&notificationID, &recipientID, &snapshot)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 			INSERT INTO ao_notification_events (
 				org_id, recipient_user_id, notification_id, kind, source_event_id, snapshot
 			) VALUES ($1, $2, $3, 'notification_resolved', $4, $5)`,
-			failed.OrgID, recipientID, notificationID, resolutionKey, snapshot); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `SELECT pg_notify('ao_notification_event', $1)`, failed.OrgID)
+		failed.OrgID, recipientID, notificationID, resolutionKey, snapshot); err != nil {
 		return err
-	})
+	}
+	_, err = tx.Exec(ctx, `SELECT pg_notify('ao_notification_event', $1)`, failed.OrgID)
+	return err
 }
 
 func (s *Store) ClaimCIFeedback(ctx context.Context, owner string, leaseDuration time.Duration) (domain.CIFeedback, bool, error) {

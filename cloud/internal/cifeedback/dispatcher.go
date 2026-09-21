@@ -11,6 +11,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
 
 type Store interface {
@@ -92,7 +93,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return retry(err)
 	}
-	if err := d.store.QueueTerminalInput(ctx, terminal, item.ApplicationKey, []byte(prompt)); err != nil {
+	if err := d.store.QueueTerminalInput(ctx, terminal, item.ApplicationKey, worker.EncodeTerminalInput(prompt)); err != nil {
 		return retry(err)
 	}
 	return d.store.CompleteCIFeedback(ctx, item.ID, d.config.Owner)
@@ -105,7 +106,7 @@ func feedbackPrompt(payload json.RawMessage) (string, error) {
 	if json.Unmarshal(payload, &input) != nil || strings.TrimSpace(input.Message) == "" {
 		return "", errors.New("invalid CI feedback payload")
 	}
-	return strings.TrimSpace(input.Message) + "\n", nil
+	return strings.TrimSpace(input.Message), nil
 }
 
 // Compile-time assertion that the production store satisfies the dispatcher.

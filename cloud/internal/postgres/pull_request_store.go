@@ -337,12 +337,18 @@ func (s *Store) UpdatePullRequestObservation(
 	}
 	var record domain.PullRequest
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
-		var err error
+		previous, err := scanPullRequest(tx.QueryRow(ctx,
+			`SELECT `+pullRequestColumns+` FROM ao_pull_requests
+			WHERE org_id = $1 AND id = $2 FOR UPDATE`, orgID, pullRequestID))
+		if err != nil {
+			return err
+		}
 		record, err = scanPullRequest(tx.QueryRow(
 			ctx,
 			`UPDATE ao_pull_requests
 			SET state = $3, draft = $4, head_sha = $5, additions = $6, deletions = $7,
 				changed_files = $8, ci_state = $9, review_state = $10, mergeability = $11,
+				checks = $12,
 				observed_at = now(), updated_at = now()
 			WHERE org_id = $1 AND id = $2
 			RETURNING `+pullRequestColumns,
@@ -350,7 +356,12 @@ func (s *Store) UpdatePullRequestObservation(
 			string(state), observation.Draft, observation.HeadSHA,
 			observation.Additions, observation.Deletions, observation.ChangedFiles,
 			string(observation.CIState), string(observation.ReviewState), string(observation.Mergeability),
+			observation.Checks,
 		))
+		if err != nil {
+			return err
+		}
+		_, err = recordPullRequestTransitionTx(ctx, tx, previous, record)
 		return err
 	})
 	if err != nil {
@@ -382,6 +393,37 @@ func (s *Store) PullRequestByGitHubReference(
 			)
 			ORDER BY updated_at DESC LIMIT 1`,
 			orgID, repositoryID, number,
+		))
+		return err
+	})
+	if err != nil {
+		return domain.PullRequest{}, err
+	}
+	return record, nil
+}
+
+// PullRequestByGitHubHead resolves check events whose GitHub payload omits the
+// pull_requests association but still carries the checked commit SHA.
+func (s *Store) PullRequestByGitHubHead(
+	ctx context.Context,
+	orgID string,
+	repositoryID int64,
+	headSHA string,
+) (domain.PullRequest, error) {
+	var record domain.PullRequest
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		record, err = scanPullRequest(tx.QueryRow(ctx,
+			`SELECT `+pullRequestColumns+`
+			FROM ao_pull_requests
+			WHERE org_id = $1 AND head_sha = $3 AND session_id IN (
+				SELECT session.id FROM ao_sessions session
+				JOIN ao_projects project
+				  ON project.org_id = session.org_id AND project.id = session.project_id
+				WHERE session.org_id = $1 AND project.github_repository_id = $2
+			)
+			ORDER BY updated_at DESC LIMIT 1`,
+			orgID, repositoryID, headSHA,
 		))
 		return err
 	})

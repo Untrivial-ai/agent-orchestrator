@@ -277,6 +277,12 @@ export interface CloudCpSessionPullRequest {
 	ci: string;
 	review: string;
 	mergeability: string;
+	failingChecks?: Array<{
+		name: string;
+		status: "failed" | "cancelled";
+		conclusion: string;
+		url?: string;
+	}>;
 	/** Always false today: the control plane does not track unresolved comments yet. */
 	reviewComments: boolean;
 	sourceBranch?: string;

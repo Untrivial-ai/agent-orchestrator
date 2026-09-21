@@ -44,6 +44,12 @@ export type PullRequestFacts = {
 	ci: string;
 	review: string;
 	mergeability: string;
+	failingChecks?: Array<{
+		name: string;
+		status: "failed" | "cancelled";
+		conclusion: string;
+		url?: string;
+	}>;
 	reviewComments: boolean;
 	updatedAt: string;
 };

@@ -823,8 +823,10 @@ func (c *Client) GetPullRequest(
 
 // CheckRun is one GitHub Checks API run against a commit.
 type CheckRun struct {
+	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
 }
 
 // ListCheckRuns returns every check run GitHub has recorded against ref

@@ -23,3 +23,16 @@ func TestSCMWebhookPullRequestNumber(t *testing.T) {
 		}
 	}
 }
+
+func TestSCMWebhookReferenceFallsBackToCheckHeadSHA(t *testing.T) {
+	ref, err := scmWebhookPullRequestReference(
+		"check_run",
+		[]byte(`{"check_run":{"head_sha":"abc123","pull_requests":[]}}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Number != 0 || ref.HeadSHA != "abc123" {
+		t.Fatalf("reference = %#v", ref)
+	}
+}

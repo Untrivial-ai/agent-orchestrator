@@ -45,7 +45,7 @@ func TestDispatcherQueuesOnePrompt(t *testing.T) {
 	if err := dispatcher.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if string(store.queued) != "CI failure detected; fix it.\n" {
+	if string(store.queued) != "CI failure detected; fix it.\r" {
 		t.Fatalf("queued %q", store.queued)
 	}
 	if !store.completed {

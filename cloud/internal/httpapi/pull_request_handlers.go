@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -110,7 +111,7 @@ func toPullRequestSummaryResponse(pr domain.PullRequest) pullRequestSummaryRespo
 		ChangedFiles: pr.ChangedFiles,
 		CI: pullRequestCISummaryResponse{
 			State:         string(pr.CIState),
-			FailingChecks: []pullRequestFailingCheckResponse{},
+			FailingChecks: pullRequestFailingChecks(pr.Checks),
 		},
 		Review: pullRequestReviewSummaryResponse{
 			Decision:     string(pr.ReviewState),
@@ -129,6 +130,32 @@ func toPullRequestSummaryResponse(pr domain.PullRequest) pullRequestSummaryRespo
 		CIObservedAt:     pr.ObservedAt,
 		ReviewObservedAt: pr.ObservedAt,
 	}
+}
+
+func pullRequestFailingChecks(snapshot json.RawMessage) []pullRequestFailingCheckResponse {
+	var checks []struct {
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+		HTMLURL    string `json:"html_url"`
+	}
+	if len(snapshot) == 0 || json.Unmarshal(snapshot, &checks) != nil {
+		return []pullRequestFailingCheckResponse{}
+	}
+	result := make([]pullRequestFailingCheckResponse, 0, len(checks))
+	for _, check := range checks {
+		switch check.Conclusion {
+		case "failure", "timed_out", "action_required", "startup_failure", "cancelled":
+			status := "failed"
+			if check.Conclusion == "cancelled" {
+				status = "cancelled"
+			}
+			result = append(result, pullRequestFailingCheckResponse{
+				Name: check.Name, Status: status, Conclusion: check.Conclusion, URL: check.HTMLURL,
+			})
+		}
+	}
+	return result
 }
 
 func (s *Server) listSessionPullRequests(w http.ResponseWriter, r *http.Request) {

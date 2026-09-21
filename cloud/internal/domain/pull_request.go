@@ -67,6 +67,7 @@ type PullRequestObservation struct {
 	CIState      contract.CIState
 	ReviewState  contract.ReviewDecision
 	Mergeability contract.Mergeability
+	Checks       json.RawMessage
 }
 
 // ReviewRun is one automated review of a pull request commit.

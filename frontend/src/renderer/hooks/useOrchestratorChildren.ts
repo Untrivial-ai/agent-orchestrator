@@ -42,6 +42,7 @@ function toPullRequestFacts(pr: CloudCpSessionPullRequest): PullRequestFacts {
 		ci: pr.ci,
 		review: pr.review,
 		mergeability: pr.mergeability,
+		failingChecks: pr.failingChecks,
 		reviewComments: pr.reviewComments,
 		updatedAt: pr.updatedAt,
 	};
