@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -28,6 +29,15 @@ const (
 	maxWorkspaceFiles     = 5000
 	maxWorkspaceFileBytes = 256 * 1024
 	maxWorkspaceDiffBytes = 512 * 1024
+	// AO's agent adapters write this marker into self-ignoring .gitignore
+	// files beside their workspace-local control files. Scratch workspaces have
+	// no Git index to hide that infrastructure from the review surfaces, so the
+	// filesystem readers honor the same ownership marker directly.
+	aoManagedGitignoreSentinel = hookutil.GitignoreSentinel
+	// Copilot profiles are ignored through .git/info/exclude in project
+	// worktrees, but standalone workspaces have no Git metadata. The profile
+	// carries its own ownership marker so scratch readers can hide it directly.
+	aoManagedCopilotProfileSentinel = hookutil.CopilotAgentProfileSentinel
 	// maxWorkspaceImageBytes caps a single image revision streamed to the diff
 	// viewer. Anything larger is refused rather than buffered.
 	maxWorkspaceImageBytes = 16 * 1024 * 1024
@@ -1338,6 +1348,7 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	managedByDir := make(map[string]map[string]struct{})
 	var files []WorkspaceFileSummary
 	truncated := false
 	err = filepath.WalkDir(rootResolved, func(fullPath string, entry fs.DirEntry, walkErr error) error {
@@ -1358,7 +1369,22 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 			}
 			return nil
 		}
+		dirPath := filepath.Dir(fullPath)
+		managed, ok := managedByDir[dirPath]
+		if !ok {
+			managed = scratchAOManagedNamesIn(dirPath)
+			managedByDir[dirPath] = managed
+		}
+		if _, hidden := managed[entry.Name()]; hidden {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if entry.IsDir() {
+			return nil
+		}
+		if scratchAOManagedCopilotProfile(path.Dir(rel), entry.Name(), fullPath) {
 			return nil
 		}
 		info, include, err := scratchWorkspaceFileInfo(rootResolved, fullPath, entry)
@@ -1391,6 +1417,112 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, truncated, nil
+}
+
+// scratchAOManagedNamesIn returns the basenames claimed by an AO-managed
+// .gitignore in dir. Adapter-owned patterns are anchored to that directory and
+// name files only. Missing, malformed, or unreadable markers safely reveal the
+// files instead of failing an otherwise readable workspace-tree request.
+func scratchAOManagedNamesIn(dir string) map[string]struct{} {
+	managed := make(map[string]struct{})
+	marker := filepath.Join(dir, ".gitignore")
+	info, err := os.Lstat(marker)
+	if err != nil || !info.Mode().IsRegular() {
+		return managed
+	}
+	content, binary, _, err := readWorkspaceTextFile(marker, 64*1024)
+	if err != nil || binary || !strings.Contains(content, aoManagedGitignoreSentinel) {
+		return managed
+	}
+	for _, rawLine := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "/") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		name := path.Clean(strings.TrimPrefix(line, "/"))
+		if name == "." || name == ".." || strings.Contains(name, "/") {
+			continue
+		}
+		managed[name] = struct{}{}
+	}
+	return managed
+}
+
+func scratchAOManagedCopilotProfile(dir, name, fullPath string) bool {
+	if dir != ".github/agents" || !strings.HasPrefix(name, "ao-") || !strings.HasSuffix(name, ".agent.md") {
+		return false
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	content, binary, _, err := readWorkspaceTextFile(fullPath, 64*1024)
+	return err == nil && !binary && strings.Contains(content, aoManagedCopilotProfileSentinel)
+}
+
+// scratchDirectoryOnlyAOManaged reports whether a directory contains control
+// files but no user-visible file. This keeps an otherwise empty .kimi,
+// .claude, or similar adapter directory from surviving as a misleading folder
+// in the Files tree after its contents have been filtered.
+func scratchDirectoryOnlyAOManaged(rootResolved, rel string) bool {
+	// AO workspace metadata lives under hidden roots. Avoid recursively probing
+	// ordinary scratch directories just to prove that they are user-visible.
+	rootName := strings.SplitN(rel, "/", 2)[0]
+	if !strings.HasPrefix(rootName, ".") {
+		return false
+	}
+	hasManaged := false
+	hasVisible := false
+	visited := 0
+	managedByDir := make(map[string]map[string]struct{})
+	target := filepath.Join(rootResolved, filepath.FromSlash(rel))
+	err := filepath.WalkDir(target, func(fullPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if fullPath != target {
+			visited++
+			if visited > maxWorkspaceFiles {
+				hasVisible = true
+				return filepath.SkipAll
+			}
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" && fullPath != target {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		pathRel, err := filepath.Rel(rootResolved, fullPath)
+		if err != nil {
+			return err
+		}
+		workspaceRel := filepath.ToSlash(pathRel)
+		dirPath := filepath.Dir(fullPath)
+		managed, ok := managedByDir[dirPath]
+		if !ok {
+			managed = scratchAOManagedNamesIn(dirPath)
+			managedByDir[dirPath] = managed
+		}
+		if _, hidden := managed[entry.Name()]; hidden {
+			hasManaged = true
+			return nil
+		}
+		if scratchAOManagedCopilotProfile(path.Dir(workspaceRel), entry.Name(), fullPath) {
+			hasManaged = true
+			return nil
+		}
+		_, include, err := scratchWorkspaceFileInfo(rootResolved, fullPath, entry)
+		if err != nil {
+			return err
+		}
+		if include {
+			hasVisible = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return err == nil && hasManaged && !hasVisible
 }
 
 func isStandaloneScratchWorkspace(rec domain.SessionRecord) bool {

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,6 +210,7 @@ type fakeCodexLoginTerminal struct {
 	closeErr        error
 	writeCredential bool
 	credential      []byte
+	childExited     bool
 }
 
 func (f *fakeCodexLoginTerminal) OpenCommandTerminal(_ context.Context, in shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error) {
@@ -235,6 +237,12 @@ func (f *fakeCodexLoginTerminal) CloseShellTerminal(_ context.Context, handle st
 	}
 	f.closed = append(f.closed, handle)
 	return nil
+}
+
+func (f *fakeCodexLoginTerminal) IsShellTerminalChildAlive(_ context.Context, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.childExited, nil
 }
 
 func supportedCodexAccountCapabilities() domain.CodexAccountCapabilities {
@@ -819,6 +827,76 @@ func TestRequiredReauthenticationStaysSignedOutUntilLogin(t *testing.T) {
 	view := manager.cached()
 	if len(view.Accounts) != 1 || view.Accounts[0].Authentication.State != domain.AgentAuthenticationUnauthorized || view.Accounts[0].UsageSummary != nil {
 		t.Fatalf("account awaiting sign-in = %#v", view.Accounts)
+	}
+}
+
+func TestSettingsAuthenticationUsesShortFreshnessWindow(t *testing.T) {
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{
+			Authentication: domain.AgentAuthenticationAuthorized,
+			Method:         domain.CodexAuthMethodChatGPT,
+		}}, nil
+	}}
+	manager := newTestCodexAccountManager(t, factory, nil)
+	manager.catalog.newID = func() string { return testAccountID }
+	record := commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+	})
+	var nowNanos atomic.Int64
+	nowNanos.Store(time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC).UnixNano())
+	manager.now = func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
+
+	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	nowNanos.Add(int64(10 * time.Second))
+	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	if factory.opens != 1 {
+		t.Fatalf("Codex reads inside settings TTL = %d, want 1", factory.opens)
+	}
+	nowNanos.Add(int64(6 * time.Second))
+	if _, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings); err != nil {
+		t.Fatal(err)
+	}
+	if factory.opens != 2 {
+		t.Fatalf("Codex reads after settings TTL = %d, want 2", factory.opens)
+	}
+}
+
+func TestSettingsAuthenticationBackoffDoesNotRearmReadinessFailure(t *testing.T) {
+	factory := &fakeCodexAccountFactory{open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return nil, errors.New("provider unavailable")
+	}}
+	manager := newTestCodexAccountManager(t, factory, nil)
+	manager.catalog.newID = func() string { return testAccountID }
+	record := commitTestAccount(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodChatGPT,
+	})
+	manager.catalog.updateSnapshot(record.Snapshot.ID, func(snapshot *domain.CodexAccountSnapshot) {
+		snapshot.Authentication = accountAuthenticationObservation(manager.now(), domain.AgentAuthenticationAuthorized)
+	})
+
+	first, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State != domain.AgentAuthenticationAuthorized || first.ReasonCode != domain.AgentReadinessReasonAuthCheckFailed {
+		t.Fatalf("initial failed authentication = %#v", first)
+	}
+
+	second, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.State != domain.AgentAuthenticationAuthorized || second.ReasonCode != domain.AgentReadinessReasonAuthorized {
+		t.Fatalf("backoff authentication = %#v, want cached authorized observation", second)
+	}
+	if factory.opens != 1 {
+		t.Fatalf("Codex reads during retry backoff = %d, want 1", factory.opens)
 	}
 }
 

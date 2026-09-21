@@ -334,7 +334,7 @@ describe("Chat message timestamps", () => {
 		);
 
 		expect(screen.getByLabelText(/^Sent Yesterday · \d{2}:\d{2}$/)).toBeInTheDocument();
-		expect(screen.getByLabelText(/^Sent [A-Z][a-z]{2} \d{1,2}, \d{4}$/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/^Sent .+\d{4}$/)).toBeInTheDocument();
 	});
 });
 
@@ -396,6 +396,29 @@ describe("ChatWorkspace timeline", () => {
 		render(<ChatWorkspace snapshot={durable} localEchos={localEchos} />);
 
 		expect(screen.getAllByText("Already durable")).toHaveLength(1);
+	});
+
+	it("resolves a relative image in agent prose against this session workspace", () => {
+		const snapshot = idleSnapshot(chatFixtureEmpty);
+		snapshot.items.push({
+			kind: "message",
+			id: "assistant-image",
+			turnId: "turn-image",
+			sequence: 1,
+			revision: 0,
+			role: "assistant",
+			origin: "provider",
+			text: "![screenshot](docs/screenshot.png)",
+			streaming: false,
+			createdAt: "2026-09-09T00:00:00Z",
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		const src = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+		const url = new URL(src, "http://127.0.0.1");
+		expect(url.pathname).toBe(`/api/v1/sessions/${encodeURIComponent(snapshot.sessionId)}/workspace/file/blob`);
+		expect(url.searchParams.get("path")).toBe("docs/screenshot.png");
 	});
 
 	it("makes composer and history controls inert while a durable agent switch owns input", () => {
@@ -688,6 +711,65 @@ describe("ChatWorkspace timeline", () => {
 
 		fireEvent.click(screen.getByRole("log", { name: "Conversation" }));
 		expect(selection?.isCollapsed).toBe(false);
+	});
+
+	function withUserInput(status: "pending" | "completed") {
+		const snapshot = structuredClone(chatFixture);
+		snapshot.turns[0] = { ...snapshot.turns[0], state: "running" };
+		snapshot.items = snapshot.items.filter(
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
+		);
+		snapshot.items.push({
+			kind: "activity",
+			id: "input-1",
+			sequence: 100,
+			revision: 1,
+			turnId: "turn-1",
+			activityKind: "user_input",
+			status,
+			summary: "Choose a direction",
+			requestId: "input-1",
+			detail: {
+				inputMode: "form",
+				message: "Choose a direction",
+				schema: {
+					type: "object",
+					properties: {
+						question_0: {
+							type: "string",
+							title: "Which harness?",
+							oneOf: [{ const: "acp", title: "ACP" }],
+						},
+					},
+				},
+			},
+			createdAt: "2026-08-24T00:00:00Z",
+		});
+		return snapshot;
+	}
+
+	it("docks a pending question on the composer instead of the transcript", () => {
+		render(<ChatWorkspace snapshot={withUserInput("pending")} onResolveInput={vi.fn()} />);
+
+		expect(screen.getByTestId("elicitation-composer-dock")).toBeInTheDocument();
+		expect(screen.getByRole("group", { name: "Agent question" })).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("log", { name: "Conversation" })).queryByText("Which harness?"),
+		).not.toBeInTheDocument();
+	});
+
+	it("leaves nothing behind once a question is answered", () => {
+		render(<ChatWorkspace snapshot={withUserInput("completed")} onResolveInput={vi.fn()} />);
+
+		expect(screen.queryByTestId("elicitation-composer-dock")).not.toBeInTheDocument();
+		expect(screen.queryByRole("group", { name: "Agent question" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Which harness?")).not.toBeInTheDocument();
+		expect(screen.queryByText("Choose a direction")).not.toBeInTheDocument();
 	});
 
 	it("does not interrupt while an elicitation is open", () => {

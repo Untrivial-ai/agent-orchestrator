@@ -540,7 +540,7 @@ const api = {
 		},
 	},
 	notifications: {
-		show: (notification: { id: string; title: string; body?: string; type?: string }) =>
+		show: (notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) =>
 			ipcRenderer.invoke("notifications:show", notification) as Promise<void>,
 		setBadge: (count: number) => ipcRenderer.invoke("notifications:setBadge", count) as Promise<void>,
 		devBounce: () => ipcRenderer.invoke("notifications:devBounce") as Promise<void>,
@@ -551,6 +551,14 @@ const api = {
 				ipcRenderer.off("notifications:click", wrapped);
 			};
 		},
+		onPlaySound: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on("notifications:playSound", wrapped);
+			return () => {
+				ipcRenderer.off("notifications:playSound", wrapped);
+			};
+		},
+		reportSoundFailure: () => ipcRenderer.send("notifications:soundFailed"),
 	},
 	tray: {
 		setAttentionState: (state: TrayAttentionState) => ipcRenderer.send(TRAY_SET_ATTENTION_STATE_CHANNEL, state),
@@ -571,6 +579,8 @@ const api = {
 	updateSettings: {
 		get: () => ipcRenderer.invoke("updateSettings:get") as Promise<UpdateSettings>,
 		set: (settings: UpdateSettings) => ipcRenderer.invoke("updateSettings:set", settings) as Promise<void>,
+		setMacDifferentialUpdates: (enabled: boolean) =>
+			ipcRenderer.invoke("updateSettings:setMacDifferentialUpdates", enabled) as Promise<void>,
 	},
 	uiSettings: {
 		get: () => ipcRenderer.invoke("uiSettings:get") as Promise<UiSettings>,
@@ -617,6 +627,9 @@ const api = {
 		getSession: () => ipcRenderer.invoke("cloud:getSession") as Promise<CloudAccount | null>,
 		signIn: () => ipcRenderer.invoke("cloud:signIn") as Promise<void>,
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
+		cancelProviderAuth: () => ipcRenderer.invoke("cloud:cancelProviderAuth") as Promise<void>,
+		connectProviderAuth: (input: { baseUrl: string; orgId: string; provider: string }) =>
+			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<void>,
 		// Dev-only local (email/password) sign-in against a loopback Docker CP.
 		// Whether the surface is offered is decided in main (unpackaged/dev +
 		// loopback); the renderer only mirrors it for UI visibility.

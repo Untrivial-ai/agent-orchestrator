@@ -34,17 +34,23 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { WrapText } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
-import { isWebLink, isWorkspaceFileLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
+import {
+	isPotentialWorkspaceFileLink,
+	isWebLink,
+	openLinkInSystemBrowser,
+	workspaceFilePath,
+} from "../../lib/external-link-policy";
 import { AppLink } from "../AppLink";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
+import { ChatImage, ChatImageGallery, ChatImageLinkScope, isImageOnlyParagraph } from "./ChatImage";
 import "./code-theme.css";
 
 // Activity titles live inside disclosure buttons: keep inline formatting, but
@@ -73,18 +79,32 @@ const PLUGINS = [remarkGfm];
  * and re-parse every message on every poll.
  */
 const StreamingProse = createContext(false);
-const OpenChatLink = createContext<{ open?: (url: string) => void; workspacePaths: string[] }>({ workspacePaths: [] });
+const OpenChatLink = createContext<{
+	open?: (url: string) => void;
+	openFile?: (path: string) => void;
+	workspacePaths: string[];
+}>({ workspacePaths: [] });
 
 export function ChatLinkProvider({
 	onLinkOpen,
+	onFileOpen,
 	workspacePaths = [],
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
+	onFileOpen?: (path: string) => void;
 	workspacePaths?: string[];
 	children: ReactNode;
 }) {
-	return <OpenChatLink.Provider value={{ open: onLinkOpen, workspacePaths }}>{children}</OpenChatLink.Provider>;
+	return <OpenChatLink.Provider value={{ open: onLinkOpen, openFile: onFileOpen, workspacePaths }}>{children}</OpenChatLink.Provider>;
+}
+
+function chatUrlTransform(url: string, key: string): string | undefined {
+	// react-markdown correctly strips unknown schemes, but a Windows absolute
+	// path resembles one (C:). Preserve only hrefs that look like local paths;
+	// the click still goes through the workspace-confined preview endpoint.
+	if (key === "href" && isPotentialWorkspaceFileLink(url)) return url;
+	return defaultUrlTransform(url);
 }
 
 export const ChatMarkdown = memo(function ChatMarkdown({
@@ -109,7 +129,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 					muted ? "text-[13px] text-muted-foreground" : "text-sm text-foreground",
 				)}
 			>
-				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS} urlTransform={chatUrlTransform}>
 					{text}
 				</Markdown>
 			</div>
@@ -210,14 +230,18 @@ function compactEmoji(children: ReactNode): ReactNode {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
-	const { open: onLinkOpen, workspacePaths } = useContext(OpenChatLink);
+	const { open: onLinkOpen, openFile: onFileOpen, workspacePaths } = useContext(OpenChatLink);
+	const filePath = href ? workspaceFilePath(href, workspacePaths) : undefined;
+	const browserLink = href ? isWebLink(href) || !!filePath || isPotentialWorkspaceFileLink(href) : false;
 	return (
 		<AppLink
 			href={href}
 			onBrowserOpen={onLinkOpen}
-			inAppLink={href ? (url) => isWebLink(url) || isWorkspaceFileLink(url, workspacePaths) : undefined}
+			inAppLink={href ? () => browserLink : undefined}
+			filePath={filePath}
+			onFileOpen={onFileOpen}
 			onClick={(event) => {
-				if (href && !isWebLink(href) && !isWorkspaceFileLink(href, workspacePaths)) {
+				if (href && !browserLink) {
 					event.preventDefault();
 					void openLinkInSystemBrowser(href);
 				}
@@ -226,7 +250,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 			rel="noreferrer noopener"
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
-			{children}
+			<ChatImageLinkScope>{children}</ChatImageLinkScope>
 		</AppLink>
 	);
 }
@@ -268,7 +292,13 @@ const COMPONENTS: Components = {
 		</h6>
 	),
 
-	p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{compactEmoji(children)}</p>,
+	// A paragraph of nothing but images is a set of pictures, not prose.
+	p: ({ children, node }) =>
+		isImageOnlyParagraph(node) ? (
+			<ChatImageGallery>{children}</ChatImageGallery>
+		) : (
+			<p className="my-2 first:mt-0 last:mb-0">{compactEmoji(children)}</p>
+		),
 
 	ul: ({ children }) => <ul className="my-2 ml-4 list-disc space-y-1 first:mt-0">{children}</ul>,
 	ol: ({ children }) => (
@@ -343,7 +373,5 @@ const COMPONENTS: Components = {
 	// and right-click offers the system browser and copying the address.
 	a: MarkdownLink,
 
-	img: ({ src, alt }) => (
-		<img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} className="my-2 max-w-full rounded-md border border-border" />
-	),
+	img: ChatImage,
 };

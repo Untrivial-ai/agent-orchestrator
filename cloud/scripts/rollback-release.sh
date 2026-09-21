@@ -77,8 +77,9 @@ aws_cli ecs update-service \
 	--cluster "$cluster" \
 	--service "$service" \
 	--task-definition "$target_arn" \
+	--desired-count 1 \
 	--deployment-configuration \
-	"{\"maximumPercent\":200,\"minimumHealthyPercent\":100,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${alarm}\"],\"enable\":true,\"rollback\":true}}" \
+	"{\"maximumPercent\":100,\"minimumHealthyPercent\":0,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${alarm}\"],\"enable\":true,\"rollback\":true}}" \
 	>/dev/null
 aws_cli ecs wait services-stable --cluster "$cluster" --services "$service"
 ./scripts/verify-ecs-service.py \

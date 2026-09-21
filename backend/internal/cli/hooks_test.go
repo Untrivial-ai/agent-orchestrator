@@ -1760,3 +1760,64 @@ func TestHooks_CursorTerminalFailureReportsCorrelatedCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestHooks_ReviewerPermissionRequestAnswersInsteadOfBlocking(t *testing.T) {
+	// Claude Code ≥ 2.1.257 prompts on Bash commands its analyzer cannot verify
+	// even when an allow rule matches (#4810). A headless reviewer has nobody to
+	// answer, so the hook decides: the exact submit shapes are allowed, anything
+	// else is denied, and no blocked activity is reported either way.
+	// The shell literal, JSON-escaped for the hook payload; `it'\''s` is the
+	// prompt's shell-escaped single quote.
+	const submitJSON = `'{ \"reviews\": [ { \"runId\": \"run-1\", \"verdict\": \"approved\", \"body\": \"it'\\''s fine\" } ] }'`
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"ao review submit pipe", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' ` + submitJSON + ` | ao review submit --session worker-7 --reviews -"}}`, "allow"},
+		{"gh api review post", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{ \"event\": \"COMMENT\", \"body\": \"ok\" }' | gh api --method POST repos/acme/app/pulls/12/reviews --input - --jq '.id'"}}`, "allow"},
+		{"other worker session", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}' | ao review submit --session worker-9 --reviews -"}}`, "deny"},
+		{"unset worker session id", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}' | ao review submit --session worker-7 --reviews -"}}`, "deny"},
+		{"command substitution in operand", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}'$(id) | ao review submit --session worker-7 --reviews -"}}`, "deny"},
+		{"heredoc submit", `{"tool_name":"Bash","tool_input":{"command":"cat > /tmp/r.json <<'EOF'\n{}\nEOF\nao review submit --session worker-7 --reviews - < /tmp/r.json"}}`, "deny"},
+		{"env inspection", `{"tool_name":"Bash","tool_input":{"command":"pip3 show pkg | sed -n 1p; cat \"$(pip3 show pkg)\" || python3 -c \"print(1)\""}}`, "deny"},
+		{"non-bash tool", `{"tool_name":"Read","tool_input":{"file_path":"/etc/passwd"}}`, "deny"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
+			t.Setenv("AO_REVIEW_WORKER_SESSION_ID", "worker-7")
+			if tc.name == "unset worker session id" {
+				t.Setenv("AO_REVIEW_WORKER_SESSION_ID", "")
+			}
+			t.Setenv("AO_REVIEW_HARNESS", "claude-code")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+
+			out, errOut, err := executeCLI(t, Deps{
+				In:           strings.NewReader(tc.payload),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "claude-code", "permission-request")
+			if err != nil {
+				t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+			}
+			if capture.hits != 0 {
+				t.Fatalf("reviewer permission-request reported activity; body=%s", capture.body)
+			}
+			var res claudePermissionHookOutput
+			if err := json.Unmarshal([]byte(out), &res); err != nil {
+				t.Fatalf("decode hook output: %v\nout=%s", err, out)
+			}
+			if res.HookSpecificOutput.HookEventName != "PermissionRequest" {
+				t.Fatalf("hookEventName = %q", res.HookSpecificOutput.HookEventName)
+			}
+			if got := res.HookSpecificOutput.Decision.Behavior; got != tc.want {
+				t.Fatalf("behavior = %q, want %q\nout=%s", got, tc.want, out)
+			}
+			if tc.want == "deny" && res.HookSpecificOutput.Decision.Message == "" {
+				t.Fatalf("deny carried no message: %s", out)
+			}
+		})
+	}
+}

@@ -12,33 +12,37 @@ const source = (route: string) => readFileSync(new URL(route, appDir), "utf8");
 // An exported fallback here could not render: see RouteErrorBoundary.
 const rootLayout = "_layout.tsx";
 
-const screenRoutes = ["onboarding.tsx", "pair.tsx", "session/[id].tsx", "shell/[handleId].tsx", "preview/[id].tsx"];
+const screenRoutes = [
+	"(tabs)/index.tsx",
+	"(tabs)/projects.tsx",
+	"(tabs)/prs.tsx",
+	"notifications.tsx",
+	"onboarding.tsx",
+	"pair.tsx",
+	"preview/[id].tsx",
+	"project/[id].tsx",
+	"session/[id].tsx",
+	"settings.tsx",
+	"shell/[handleId].tsx",
+];
 
 const sheetRoutes = [
+	"spawn.tsx",
 	"sheets/agent.tsx",
 	"sheets/chat-settings.tsx",
 	"sheets/composer-picker.tsx",
 	"sheets/connect.tsx",
+	"sheets/conversation-actions.tsx",
 	"sheets/conversation-map.tsx",
+	"sheets/conversation-rename.tsx",
 	"sheets/model.tsx",
 	"sheets/project.tsx",
 	"sheets/store-update.tsx",
-	"sheets/theme.tsx",
 ];
 
-// They want a fallback too. Held back because the open mobile revamp (#5349)
-// deletes two of these and rewrites or re-presents the rest, so their fallback is
-// better chosen with it; whichever lands second places them, and the routes that
-// PR adds.
-const deferredRoutes = [
-	"(tabs)/_layout.tsx",
-	"(tabs)/index.tsx",
-	"(tabs)/orchestrator.tsx",
-	"(tabs)/prs.tsx",
-	"(tabs)/settings.tsx",
-	"notifications.tsx",
-	"spawn.tsx",
-];
+// The tab navigator alone: it renders no screen of its own, and a fallback there
+// would swallow the failure of whichever tab is mounted inside it.
+const deferredRoutes = ["(tabs)/_layout.tsx"];
 
 describe("route error boundaries", () => {
 	it("places every route file on exactly one list", () => {

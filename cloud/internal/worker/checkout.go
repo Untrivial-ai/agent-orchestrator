@@ -35,6 +35,17 @@ func (ExecGitRunner) Run(ctx context.Context, dir string, env map[string]string,
 	command := exec.CommandContext(ctx, "git", append([]string{"-c", "protocol.version=0"}, args...)...)
 	command.Dir = dir
 	command.Env = replaceEnvironment(os.Environ(), env)
+	// Abort a stalled HTTP transfer instead of hanging until the whole sandbox is
+	// torn down. If throughput stays under 1 KB/s for 60s, git fails the
+	// clone/fetch/push. A stalled clone otherwise blocks worker startup - and thus
+	// the agent terminal, which is only created after checkout - indefinitely,
+	// which is exactly the multi-minute "terminal never connects" stall we saw.
+	// This targets stalls, not slow-but-progressing transfers, so a large repo
+	// still clones; and it is a no-op for local git ops, which do no HTTP.
+	command.Env = append(command.Env,
+		"GIT_HTTP_LOW_SPEED_LIMIT=1000",
+		"GIT_HTTP_LOW_SPEED_TIME=60",
+	)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Run(); err != nil {
@@ -121,7 +132,15 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 // tracked files are moved in. This removes the ordering dependency between
 // agent startup and repository checkout.
 func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace string, grant CheckoutGrantResponse, expected string) error {
-	staging, err := os.MkdirTemp(filepath.Dir(workspace), ".ao-checkout-")
+	// Stage inside the workspace itself, not its parent. The parent is the
+	// provider's durable root (e.g. Coder's /home/coder), which is owned by the
+	// provider's own user and is not writable by the AO worker user, so a
+	// staging dir there fails with "permission denied". The workspace, by
+	// contrast, is always writable by the worker (the agent just wrote into it,
+	// which is why this non-empty path runs) and is on the same filesystem, so
+	// the entry moves below stay a same-filesystem rename. The hidden staging
+	// dir is removed before the checkout returns.
+	staging, err := os.MkdirTemp(workspace, ".ao-checkout-")
 	if err != nil {
 		return fmt.Errorf("create checkout staging directory: %w", err)
 	}
@@ -187,7 +206,7 @@ func ConfigureWorkerGit(
 set -eu
 [ "${1:-}" = "get" ] || exit 0
 worker_token="$(tr -d '\r\n' < %s)"
-response="$(curl -fsS -X POST \
+response="$(curl -fsS --connect-timeout 10 --max-time 30 -X POST \
   -H "Authorization: Worker ${worker_token}" \
   -H "X-AO-Session-ID: %s" \
   %s)"
@@ -219,7 +238,7 @@ elif [ -n "${GITHUB_TOKEN:-}" ]; then
   github_token="$GITHUB_TOKEN"
 else
   worker_token="$(tr -d '\r\n' < %s)"
-  response="$(curl -fsS -X POST \
+  response="$(curl -fsS --connect-timeout 10 --max-time 30 -X POST \
     -H "Authorization: Worker ${worker_token}" \
     -H "X-AO-Session-ID: %s" \
     %s)"

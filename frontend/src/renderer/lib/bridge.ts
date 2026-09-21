@@ -216,6 +216,8 @@ export const aoBridge: AoBridge =
 			setBadge: async () => undefined,
 			devBounce: async () => undefined,
 			onClick: () => () => undefined,
+			onPlaySound: () => () => undefined,
+			reportSoundFailure: () => undefined,
 		},
 		tray: {
 			setAttentionState: () => undefined,
@@ -226,8 +228,9 @@ export const aoBridge: AoBridge =
 			setMigration: async () => undefined,
 		},
 		updateSettings: {
-			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
+			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false }),
 			set: async () => undefined,
+			setMacDifferentialUpdates: async () => undefined,
 		},
 		uiSettings: {
 			get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -257,6 +260,10 @@ export const aoBridge: AoBridge =
 			getSession: async () => null,
 			signIn: async () => undefined,
 			signOut: async () => undefined,
+			cancelProviderAuth: async () => undefined,
+			connectProviderAuth: async () => {
+				throw new Error("Cloud provider sign-in requires the desktop app.");
+			},
 			localAuthAvailable: async () => false,
 			localRegister: async () => {
 				throw new Error("AO Cloud sign-in requires the desktop app.");

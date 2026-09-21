@@ -154,6 +154,12 @@ export function TurnSettingsBar({
 	const standaloneExecutionMode =
 		grouped.executionMode && !isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
 	const planning = isPlanMode(grouped.executionMode);
+	// Leaving Plan returns to the approval mode the session was on, not to the
+	// provider's bare agent mode, which would silently drop the policy while the
+	// picker still displayed it.
+	const planReturn = modeOption?.choices.find(
+		(choice) => choice.permissionMode === (settings.approvalMode ?? "default"),
+	)?.value;
 	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
 	const clubbedLeft =
 		grouped.model.length > 0 ||
@@ -195,6 +201,7 @@ export function TurnSettingsBar({
 							rerouted={rerouted}
 							chosenLabel={chosenLabel}
 							executionMode={inlineExecutionMode}
+							planReturn={planReturn}
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
 							onChangeConfigOption={onChangeConfigOption ? applyOption : undefined}
@@ -206,6 +213,7 @@ export function TurnSettingsBar({
 							modelOptions={grouped.model}
 							effortOptions={grouped.effort}
 							executionMode={inlineExecutionMode}
+							planReturn={planReturn}
 							toggles={grouped.toggles}
 							extraOptions={grouped.extra}
 							disabled={optionDisabled}
@@ -216,6 +224,7 @@ export function TurnSettingsBar({
 					{standaloneExecutionMode && onChangeConfigOption ? (
 						<ExecutionModePicker
 							option={standaloneExecutionMode}
+							planReturn={planReturn}
 							disabled={optionDisabled}
 							onChange={applyOption}
 						/>
@@ -294,6 +303,7 @@ function ModelEffortPicker({
 	rerouted,
 	chosenLabel,
 	executionMode,
+	planReturn,
 	toggles = [],
 	extraOptions = [],
 	onChangeConfigOption,
@@ -310,6 +320,7 @@ function ModelEffortPicker({
 	rerouted?: string;
 	chosenLabel: string;
 	executionMode?: ChatConfigOption;
+	planReturn?: string;
 	toggles?: ChatConfigOption[];
 	extraOptions?: ChatConfigOption[];
 	onChangeConfigOption?: (optionId: string, value: ChatConfigOptionValue) => void;
@@ -391,7 +402,7 @@ function ModelEffortPicker({
 					</OptionMenuSub>
 				) : null}
 				{executionMode && onChangeConfigOption ? (
-					<PlanModeToggle option={executionMode} onChange={onChangeConfigOption} />
+					<PlanModeToggle option={executionMode} planReturn={planReturn} onChange={onChangeConfigOption} />
 				) : null}
 				{toggles.map((option) => (
 					<ConfigToggle key={option.id} option={option} onChange={onChangeConfigOption!} />
@@ -408,6 +419,7 @@ function ClubbedConfigPicker({
 	modelOptions,
 	effortOptions,
 	executionMode,
+	planReturn,
 	toggles,
 	extraOptions,
 	disabled,
@@ -416,6 +428,7 @@ function ClubbedConfigPicker({
 	modelOptions: ChatConfigOption[];
 	effortOptions: ChatConfigOption[];
 	executionMode?: ChatConfigOption;
+	planReturn?: string;
 	toggles: ChatConfigOption[];
 	extraOptions: ChatConfigOption[];
 	disabled?: boolean;
@@ -430,7 +443,14 @@ function ClubbedConfigPicker({
 		modelOptions.length + effortOptions.length + Number(Boolean(executionMode)) + toggles.length + extraOptions.length;
 	if (leftCount === 1) {
 		if (executionMode)
-			return <ExecutionModePicker option={executionMode} disabled={disabled} onChange={onChange} />;
+			return (
+				<ExecutionModePicker
+					option={executionMode}
+					planReturn={planReturn}
+					disabled={disabled}
+					onChange={onChange}
+				/>
+			);
 		const option = primaryModel ?? primaryEffort ?? executionMode ?? toggles[0] ?? extraOptions[0];
 		if (!option) return null;
 		return (
@@ -460,7 +480,7 @@ function ClubbedConfigPicker({
 				{effortOptions.map((option) => (
 					<OptionSubmenu key={option.id} option={option} onChange={onChange} />
 				))}
-				{executionMode ? <PlanModeToggle option={executionMode} onChange={onChange} /> : null}
+				{executionMode ? <PlanModeToggle option={executionMode} planReturn={planReturn} onChange={onChange} /> : null}
 				{toggles.map((option) => (
 					<ConfigToggle key={option.id} option={option} onChange={onChange} />
 				))}
@@ -474,21 +494,24 @@ function ClubbedConfigPicker({
 
 function PlanModeToggle({
 	option,
+	planReturn,
 	onChange,
 }: {
 	option: ChatConfigOption;
+	/** Where turning Plan off goes, when the provider shares one slot for both. */
+	planReturn?: string;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
 }) {
 	const planning = isPlanMode(option);
-	const planChoice = option.choices.find((choice) => isPlanChoice(choice));
-	const agentChoice = option.choices.find((choice) => !isPlanChoice(choice));
-	const next = planning ? agentChoice : planChoice;
+	const next = planning
+		? planReturn ?? option.choices.find((choice) => !isPlanChoice(choice))?.value
+		: option.choices.find((choice) => isPlanChoice(choice))?.value;
 	if (!next) return null;
 	return (
 		<MenuToggle
 			label="Plan Mode"
 			checked={planning}
-			onCheckedChange={() => onChange(option.id, { value: next.value })}
+			onCheckedChange={() => onChange(option.id, { value: next })}
 		/>
 	);
 }
@@ -544,10 +567,12 @@ function MenuToggle({
 
 function ExecutionModePicker({
 	option,
+	planReturn,
 	disabled,
 	onChange,
 }: {
 	option: ChatConfigOption;
+	planReturn?: string;
 	disabled?: boolean;
 	onChange: (optionId: string, value: ChatConfigOptionValue) => void;
 }) {
@@ -563,7 +588,7 @@ function ExecutionModePicker({
 			</OptionMenuTrigger>
 			<OptionMenuContent align="start" className={CHAT_MENU_CLASS}>
 				{isPlanBinary(option) ? (
-					<PlanModeToggle option={option} onChange={onChange} />
+					<PlanModeToggle option={option} planReturn={planReturn} onChange={onChange} />
 				) : (
 					<ConfigOptionChoices
 						option={option}
@@ -832,6 +857,15 @@ function choiceIsEnabled(choice: ChatConfigOption["choices"][number] | undefined
 	return Boolean(choice && /(?:^|[\s_-])(on|enabled|true)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`));
 }
 
+/**
+ * Whether a provider catalog replaces AO's own approval control. A `mode` option
+ * that offers only execution modes (OpenCode's build/plan) is not one: taking it
+ * for an approval catalog leaves the session with no permission control at all.
+ */
+export function hasProviderPermissionMode(options: ChatConfigOption[]): boolean {
+	return Boolean(partitionConfigOptions(options).mode);
+}
+
 function partitionConfigOptions(options: ChatConfigOption[]): {
 	model: ChatConfigOption[];
 	effort: ChatConfigOption[];
@@ -923,7 +957,9 @@ function addAgentModeChoice(
 	executionChoices: ChatConfigOption["choices"],
 	permissionChoices: ChatConfigOption["choices"],
 ): ChatConfigOption["choices"] {
-	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent"))) {
+	// OpenCode names its ordinary agent mode "build", so its catalog already has
+	// one and must not gain a synthetic duplicate.
+	if (executionChoices.some((choice) => executionChoiceMatches(choice, "agent|build"))) {
 		return executionChoices;
 	}
 	const standard = permissionChoices.find((choice) => choiceMatches(choice, "manual"))

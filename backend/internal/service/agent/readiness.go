@@ -63,7 +63,7 @@ func (s *Service) EnsureReadiness(ctx context.Context, agentIDs []string, purpos
 			return Readiness{}, apierr.Invalid("UNKNOWN_AGENT_ID", "Unknown agent adapter: "+unsupported.id, map[string]any{"agentId": unsupported.id})
 		}
 		if !purpose.Valid() {
-			return Readiness{}, apierr.Invalid("INVALID_READINESS_PURPOSE", "Purpose must be display or launch", map[string]any{"purpose": purpose})
+			return Readiness{}, apierr.Invalid("INVALID_READINESS_PURPOSE", "Purpose must be display, settings, or launch", map[string]any{"purpose": purpose})
 		}
 		return Readiness{}, err
 	}
@@ -82,6 +82,11 @@ func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purp
 // InvalidateAgentInstallation marks an agent's installation observation stale.
 func (s *Service) InvalidateAgentInstallation(agentID string) {
 	s.readiness.Invalidate(agentID, readinessInvalidateInstallation)
+	if item, ok := s.agent(agentID); ok {
+		if invalidator, ok := item.Agent.(ports.AgentBinaryResolutionInvalidator); ok {
+			invalidator.InvalidateBinaryResolution()
+		}
+	}
 }
 
 // InvalidateAgentAuthentication marks an agent's authentication observation stale.

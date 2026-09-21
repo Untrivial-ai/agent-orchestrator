@@ -17,7 +17,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { getApiBaseUrl } from "../lib/api-client";
 import { consumeFreshTerminalHandle } from "../lib/fresh-terminal-handles";
 import { captureRendererEvent } from "../lib/telemetry";
-import { LOCAL_ECHO_ENABLED, withPredictiveLocalEcho } from "../lib/terminal-local-echo";
+import { LOCAL_ECHO_ENABLED, withLineBufferedLocalInput } from "../lib/terminal-local-echo";
 import { createTerminalMux, muxUrlFromApiBase, type TerminalMux } from "../lib/terminal-mux";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
@@ -50,12 +50,6 @@ export type AttachableTerminal = {
 	prepareForActivation: () => Promise<void>;
 	/** Tell Cursor Agent the live light/dark scheme (private 997 notification). */
 	notifyCursorColorScheme: () => void;
-	/**
-	 * Which xterm buffer is active. Predictive local echo (cloud panes only)
-	 * predicts on the normal buffer and self-disables on the alternate one;
-	 * fakes may omit it, which reads as "alternate" — never predict.
-	 */
-	bufferType?: () => "normal" | "alternate";
 	/** Send an explicit UI action through the same guarded path as user input. */
 	sendUserInput: (data: string, source?: TerminalUserInputSource) => boolean;
 	onUserInput: (listener: (data: string, source: TerminalUserInputSource) => boolean | void) => { dispose: () => void };
@@ -113,6 +107,13 @@ const CLOUD_CONNECT_RETRY_MS = 1_000;
 // reported by the mux as "waiting") never trips this, so a slow cold start does
 // not false-fire a "check your firewall" error. ~8 socket failures ≈ 8s.
 const CLOUD_CONNECT_MAX_FAILURES = 8;
+// Local daemon panes only: the daemon runs a liveness probe and spawns the
+// runtime client between mux.open() and the pane opening, so a stalled spawn
+// must recover. A CLOUD pane gets NO client open timeout — readiness is
+// server-driven: the CP holds the socket in "starting" until the terminal opens
+// or its own 20s ready deadline closes the socket, which the client already
+// handles as onConnectionChange("closed") -> scheduleReattach. A client-side
+// cloud open timeout only manufactured reconnect storms (the 3s/30s band-aids).
 const OPEN_TIMEOUT_MS = 3_000;
 // Trailing debounce on grid changes: a pane drag emits a burst of intermediate
 // sizes; the attached program should get one SIGWINCH when the drag settles,
@@ -397,16 +398,15 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 
 		const baseMux = (optionsRef.current.createMux ?? defaultCreateMux)();
 		// Cloud panes ride a real network round trip per keystroke, so wrap their
-		// mux with predictive local echo (see lib/terminal-local-echo.ts): typed
-		// characters render immediately and reconcile against the server echo.
+		// mux with line-buffered local input (see lib/terminal-local-echo.ts): typed
+		// characters render in xterm immediately, then the complete line is sent
+		// once on Enter and reconciled against the server echo.
 		// Local panes are loopback PTYs with ~0 latency and stay byte-exact
 		// untouched. Shell panes carry no session, so they are never wrapped —
 		// today the renderer only dials cloud sockets for agent panes anyway.
 		const mux =
 			LOCAL_ECHO_ENABLED && sessionRef.current?.cloud
-				? withPredictiveLocalEcho(baseMux, {
-						bufferType: () => terminal.bufferType?.() ?? "alternate",
-					})
+				? withLineBufferedLocalInput(baseMux, {})
 				: baseMux;
 		r.mux = mux;
 
@@ -794,8 +794,10 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// would then land frame-by-frame with the bug fully intact, behind a
 		// pointless blank cover. `opened` fires from setPTY immediately before
 		// copyOut, so anchoring there means the cap only ever measures the burst.
-		// If `opened` never arrives, openTimer tears down and teardownMux lifts
-		// the cover.
+		// If `opened` never arrives, the cover is lifted by the recovery path for
+		// that transport: a LOCAL pane's openTimer tears down (teardownMux lifts
+		// it); a CLOUD pane's socket closing or mint-409 reaches
+		// onConnectionChange, whose flushReplay lifts it.
 
 		// A retained pane may reconnect while parked. It still needs the output
 		// stream, but its stale off-screen grid must not resize the shared PTY.
@@ -808,18 +810,30 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		mux.open(handle, openCols, openRows);
 		r.lastPublishedGrid =
 			openCols > 0 && openRows > 0 ? { cols: openCols, rows: openRows } : null;
-		r.openTimer = setTimeout(() => {
-			if (!isCurrentAttachment(generation, handle, mux)) return;
-			r.openTimer = null;
-			// Only the first timeout of a reattach sequence is reported; the
-			// backoff loop retrying against a restarting daemon is not news.
-			if (r.attempts === 0) {
-				void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
-			}
-			transition("reattaching");
-			teardownMux();
-			scheduleReattach();
-		}, OPEN_TIMEOUT_MS);
+		// Client open timeout for LOCAL panes only. It budgets the time between
+		// mux.open() and the pane opening — the daemon's liveness probe + runtime
+		// spawn — so a stalled spawn recovers. A CLOUD pane gets NO client open
+		// timeout: readiness is server-driven (the mux opens its socket directly,
+		// the CP holds it in "starting" until the terminal opens or its own ~20s
+		// deadline closes it, and a closed socket already reaches
+		// onConnectionChange("closed") -> scheduleReattach). A client timeout here
+		// only ever tore a healthy slow open down mid-attach and rebuilt the mux —
+		// the reconnect storm the 3s/30s band-aids chased. The mint-409 "waiting"
+		// poll and the CP-close bound already cover every cloud stall.
+		if (!sessionRef.current?.cloud) {
+			r.openTimer = setTimeout(() => {
+				if (!isCurrentAttachment(generation, handle, mux)) return;
+				r.openTimer = null;
+				// Only the first timeout of a reattach sequence is reported; the
+				// backoff loop retrying against a restarting daemon is not news.
+				if (r.attempts === 0) {
+					void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
+				}
+				transition("reattaching");
+				teardownMux();
+				scheduleReattach();
+			}, OPEN_TIMEOUT_MS);
+		}
 	}, [
 		clearOpenTimer,
 		clearReplayTimers,

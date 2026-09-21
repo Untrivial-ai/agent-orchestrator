@@ -3,6 +3,7 @@ import type {
 	IpcMain,
 	IpcMainEvent,
 	IpcMainInvokeEvent,
+	NativeImage,
 	Rectangle,
 	Session,
 	View,
@@ -1558,11 +1559,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		});
 	};
 
-	// Best-effort full-viewport capture for a browser-annotation submit. Bounded
-	// by ANNOTATION_SNAPSHOT_TIMEOUT_MS so a slow/hung capturePage() can never
-	// delay the send — on timeout, error, or an empty frame this resolves
-	// undefined and the caller proceeds with a text-only message.
-	const captureAnnotationSnapshot = async (entry: BrowserEntry): Promise<BrowserAnnotationSnapshot | undefined> => {
+	// Best-effort full-viewport page image shared by submit-time snapshots and
+	// annotation screenshot copies. Bounded by ANNOTATION_SNAPSHOT_TIMEOUT_MS so
+	// a slow/hung capturePage() can never block its caller — on timeout, error,
+	// or an empty frame this resolves undefined.
+	const capturePageImage = async (entry: BrowserEntry): Promise<NativeImage | undefined> => {
 		try {
 			const timedOut = Symbol("annotation-snapshot-timeout");
 			const image = await Promise.race([
@@ -1572,20 +1573,29 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				}),
 			]);
 			if (image === timedOut || image.isEmpty()) return undefined;
-			const { width, height } = image.getSize();
-			const longestEdge = Math.max(width, height);
-			const resized =
-				longestEdge > ANNOTATION_SNAPSHOT_MAX_DIMENSION
-					? image.resize(
-							width >= height
-								? { width: ANNOTATION_SNAPSHOT_MAX_DIMENSION }
-								: { height: ANNOTATION_SNAPSHOT_MAX_DIMENSION },
-						)
-					: image;
-			return { mimeType: "image/png", data: resized.toPNG().toString("base64") };
+			return image;
 		} catch {
 			return undefined;
 		}
+	};
+
+	// Best-effort full-viewport capture for a browser-annotation submit. On
+	// timeout, error, or an empty frame this resolves undefined and the caller
+	// proceeds with a text-only message.
+	const captureAnnotationSnapshot = async (entry: BrowserEntry): Promise<BrowserAnnotationSnapshot | undefined> => {
+		const image = await capturePageImage(entry);
+		if (!image) return undefined;
+		const { width, height } = image.getSize();
+		const longestEdge = Math.max(width, height);
+		const resized =
+			longestEdge > ANNOTATION_SNAPSHOT_MAX_DIMENSION
+				? image.resize(
+						width >= height
+							? { width: ANNOTATION_SNAPSHOT_MAX_DIMENSION }
+							: { height: ANNOTATION_SNAPSHOT_MAX_DIMENSION },
+					)
+				: image;
+		return { mimeType: "image/png", data: resized.toPNG().toString("base64") };
 	};
 
 	const destroy = (viewId: string): void => {
@@ -1872,6 +1882,15 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (!browserSession) return;
 		assertProfileStable(browserSession);
 		const entry = activeEntry(browserSession);
+		if (!input.enabled) {
+			// Drop the open composer when leaving annotation mode. Keep saved
+			// batch annotations/markers so they reappear on the next entry.
+			const stored = annotationSessionFor(entry);
+			if (stored?.draft) {
+				delete stored.draft;
+				pushAnnotationState(options, entry, stored);
+			}
+		}
 		entry.annotationEnabled = input.enabled;
 		if (input.theme) entry.annotationTheme = input.theme;
 		const annotationSession = annotationSessionFor(entry);
@@ -1941,9 +1960,17 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		shellWebContents.send("browser:annotation:canceled", forwarded);
 	};
 
-	const captureAnnotation = (event: IpcMainInvokeEvent): Promise<BrowserAnnotationSnapshot | undefined> => {
+	// The annotation toolbar's screenshot button copies the capture to the
+	// user's system clipboard instead of queueing an attachment for the next
+	// agent batch. Resolves true only when the image actually reached the
+	// clipboard, so the page can surface a failure instead of a false "copied".
+	const captureAnnotation = async (event: IpcMainInvokeEvent): Promise<boolean> => {
 		const entry = tabsByWebContentsId.get(event.sender.id);
-		return entry ? captureAnnotationSnapshot(entry) : Promise.resolve(undefined);
+		if (!entry || !options.clipboard) return false;
+		const image = await capturePageImage(entry);
+		if (!image) return false;
+		options.clipboard.writeImage(image);
+		return true;
 	};
 
 	const discardAnnotationSession = (entry: BrowserEntry): void => {

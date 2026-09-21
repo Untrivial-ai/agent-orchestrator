@@ -415,18 +415,50 @@ function SessionInspectorRail({
 // x-transform). Summary/Reviews/Files share a utility width, while Browser
 // automatically grows into a co-work canvas. Chat readability clamps either
 // profile before the conversation can become unusably narrow.
+// Formats a connecting elapsed time as "7s" under a minute, then "1:03".
+function formatCloudElapsed(seconds: number): string {
+	if (seconds < 60) return `${seconds}s`;
+	const m = Math.floor(seconds / 60);
+	const s = seconds % 60;
+	return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function CloudLifecycleStatus({ stage }: { stage: CloudLifecycleStage }) {
 	const { t } = useTranslation();
 	const label = {
 		paused_by_coder: t("cloud.lifecycle.pausedByCoder"),
 		resuming_workspace: t("cloud.lifecycle.resumingWorkspace"),
-		waiting_for_coder_agent: t("cloud.lifecycle.waitingForCoderAgent"),
+		waiting_for_coder_agent: t("cloud.lifecycle.connecting"),
 		starting_ao_worker: t("cloud.lifecycle.startingAoWorker"),
 		restoring_agent: t("cloud.lifecycle.restoringAgent"),
 		connected: t("cloud.lifecycle.connected"),
 	}[stage];
 	const settled = stage === "connected";
 	const paused = stage === "paused_by_coder";
+	const connecting = !settled && !paused;
+	// One elapsed-time counter for the whole connecting window (fresh spawn or
+	// restore); anchored on the first connecting render and reset once it
+	// settles. Hooks stay unconditional (called every render) so the settled
+	// early-return below never changes hook order.
+	const connectingStartRef = useRef<number | null>(null);
+	if (connecting && connectingStartRef.current === null) connectingStartRef.current = Date.now();
+	if (!connecting) connectingStartRef.current = null;
+	const [elapsedSeconds, setElapsedSeconds] = useState(0);
+	useEffect(() => {
+		if (!connecting) return;
+		const start = connectingStartRef.current ?? Date.now();
+		const tick = () => setElapsedSeconds(Math.max(0, Math.round((Date.now() - start) / 1000)));
+		tick();
+		const id = setInterval(tick, 1000);
+		return () => clearInterval(id);
+	}, [connecting]);
+
+	// Connected is the resting state: no status indicator at all. A connected
+	// terminal needs no persistent "Connected" badge or dot cluttering the pane.
+	if (settled) {
+		return null;
+	}
+
 	return (
 		<motion.div
 			animate={{ opacity: 1, y: 0 }}
@@ -434,7 +466,7 @@ function CloudLifecycleStatus({ stage }: { stage: CloudLifecycleStage }) {
 			className={cn(
 				"absolute right-3 top-3 z-20 flex h-7 items-center gap-2 rounded-sm border px-2.5",
 				"bg-background/92 font-mono text-[11px] tracking-tight shadow-sm backdrop-blur-sm",
-				settled ? "border-success/30 text-passive" : "border-border/80 text-foreground",
+				"border-border/80 text-foreground",
 			)}
 			data-cloud-lifecycle-stage={stage}
 			initial={{ opacity: 0, y: -4 }}
@@ -442,12 +474,9 @@ function CloudLifecycleStatus({ stage }: { stage: CloudLifecycleStage }) {
 		>
 			<span
 				aria-hidden="true"
-				className={cn(
-					"size-1.5 rounded-full",
-					settled ? "bg-success" : paused ? "bg-warning" : "animate-pulse bg-primary",
-				)}
+				className={cn("size-1.5 rounded-full", paused ? "bg-warning" : "animate-pulse bg-primary")}
 			/>
-			{label}
+			{paused ? label : formatCloudElapsed(elapsedSeconds)}
 		</motion.div>
 	);
 }
@@ -1389,6 +1418,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the button entirely rather than showing a permanently disabled control.
 	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
+	// Harnesses without a TUI/Chat handoff cannot convert a running terminal
+	// session. Say so plainly instead of showing the daemon's reason.
+	const interfaceSwitchBlockedReason =
+		interfaceSwitch.status?.reasonCode === "INTERFACE_HANDOFF_UNSUPPORTED"
+			? t("session.interfaceHandoffUnsupported", {
+					defaultValue:
+						"This agent can't switch a running terminal session to chat. Start a new chat session instead.",
+				})
+			: undefined;
 	const showInterfaceSwitchAction = Boolean(
 		!interfaceSwitchUnsupported && (interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError),
 	);
@@ -1423,12 +1461,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						active={fileTabs.activePath === path}
 						dirty={Boolean(dirtyFiles[path])}
 						onActivate={() => activateCenterFile(path)}
-						onAddFeedback={() => fileAnnotation.begin({
-							path,
-							scope: activeCenterFileRequest?.scope ?? "combined",
-							side: "file",
-							surface: "focused",
-						})}
 						onClose={() => closeCenterFile(path)}
 						path={path}
 					/>
@@ -1436,7 +1468,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				onSelect: () => activateCenterFile(path),
 				onClose: () => closeCenterFile(path),
 			})),
-		[activeCenterFileRequest?.scope, activateCenterFile, closeCenterFile, dirtyFiles, fileAnnotation, fileTabs.activePath, fileTabs.openPaths],
+		[activateCenterFile, closeCenterFile, dirtyFiles, fileTabs.activePath, fileTabs.openPaths],
 	);
 	const activeWorkspaceTabKey = fileTabs.activePath ? `file:${fileTabs.activePath}` : undefined;
 	const previewUrl = session?.previewUrl?.trim() || undefined;
@@ -1535,7 +1567,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
-						: interfaceSwitch.status?.reason || interfaceSwitch.statusError
+						: interfaceSwitchBlockedReason || interfaceSwitch.status?.reason || interfaceSwitch.statusError
 				}
 				pending={interfaceSwitch.starting || activeInterfaceTransition}
 				transition={interfaceSwitch.transition}
@@ -1556,6 +1588,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.status,
 			interfaceSwitch.statusError,
 			interfaceSwitch.transition,
+			interfaceSwitchBlockedReason,
 			interfaceTarget,
 			requestInterfaceSwitch,
 			session,
@@ -1570,7 +1603,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
-						: interfaceSwitch.status?.reason || interfaceSwitch.statusError
+						: interfaceSwitchBlockedReason || interfaceSwitch.status?.reason || interfaceSwitch.statusError
 				}
 				pending={interfaceSwitch.starting || chatLeaveLocked}
 				onClick={requestInterfaceSwitch}
@@ -1582,6 +1615,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.starting,
 			interfaceSwitch.status,
 			interfaceSwitch.statusError,
+			interfaceSwitchBlockedReason,
 			interfaceTarget,
 			requestInterfaceSwitch,
 			session,

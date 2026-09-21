@@ -121,10 +121,22 @@ func (s *Store) ResolveSessionNotifications(
 ) ([]domain.NotificationRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.ResolveSessionNotificationsByType(ctx, gen.ResolveSessionNotificationsByTypeParams{
-		ResolvedAt: nullTime(at),
-		SessionID:  id,
-		Type:       typ,
+	var rows []gen.Notification
+	err := s.inTx(ctx, "resolve session notifications", func(q *gen.Queries) error {
+		var err error
+		rows, err = q.ResolveSessionNotificationsByType(ctx, gen.ResolveSessionNotificationsByTypeParams{
+			ResolvedAt: nullTime(at),
+			SessionID:  id,
+			Type:       typ,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = q.DeleteDismissedSessionNotificationsByType(ctx, gen.DeleteDismissedSessionNotificationsByTypeParams{
+			SessionID: id,
+			Type:      typ,
+		})
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolve session notifications %s/%s: %w", id, typ, err)
@@ -142,10 +154,22 @@ func (s *Store) ResolvePRNotifications(
 ) ([]domain.NotificationRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.ResolvePRNotificationsByType(ctx, gen.ResolvePRNotificationsByTypeParams{
-		ResolvedAt: nullTime(at),
-		PRURL:      prURL,
-		Type:       typ,
+	var rows []gen.Notification
+	err := s.inTx(ctx, "resolve pr notifications", func(q *gen.Queries) error {
+		var err error
+		rows, err = q.ResolvePRNotificationsByType(ctx, gen.ResolvePRNotificationsByTypeParams{
+			ResolvedAt: nullTime(at),
+			PRURL:      prURL,
+			Type:       typ,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = q.DeleteDismissedPRNotificationsByType(ctx, gen.DeleteDismissedPRNotificationsByTypeParams{
+			PRURL: prURL,
+			Type:  typ,
+		})
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolve pr notifications %s/%s: %w", prURL, typ, err)
@@ -189,7 +213,7 @@ func (s *Store) ReconcileResolvedNotifications(ctx context.Context, at time.Time
 		}
 		unresolved := false
 		for _, c := range comments {
-			if !c.Resolved && !c.IsBot {
+			if domain.IsActionableReviewComment(c.Resolved, c.IsBot, c.File, c.Line) {
 				unresolved = true
 				break
 			}
@@ -201,21 +225,37 @@ func (s *Store) ReconcileResolvedNotifications(ctx context.Context, at time.Time
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	needsInput, err := s.qw.ResolveStaleNeedsInputNotifications(ctx, nullTime(at))
-	if err != nil {
-		return nil, fmt.Errorf("reconcile needs-input notifications: %w", err)
-	}
-	resolved := notificationsFromGen(needsInput)
-	for _, prURL := range stalePRs {
-		rows, err := s.qw.ResolvePRNotificationsByType(ctx, gen.ResolvePRNotificationsByTypeParams{
-			ResolvedAt: nullTime(at),
-			PRURL:      prURL,
-			Type:       domain.NotificationReadyToMerge,
-		})
+	var resolved []domain.NotificationRecord
+	err = s.inTx(ctx, "reconcile resolved notifications", func(q *gen.Queries) error {
+		needsInput, err := q.ResolveStaleNeedsInputNotifications(ctx, nullTime(at))
 		if err != nil {
-			return nil, fmt.Errorf("reconcile ready-to-merge notifications %s: %w", prURL, err)
+			return fmt.Errorf("reconcile needs-input notifications: %w", err)
 		}
-		resolved = append(resolved, notificationsFromGen(rows)...)
+		if _, err := q.DeleteStaleDismissedNeedsInputNotifications(ctx); err != nil {
+			return fmt.Errorf("delete dismissed needs-input notifications: %w", err)
+		}
+		resolved = notificationsFromGen(needsInput)
+		for _, prURL := range stalePRs {
+			rows, err := q.ResolvePRNotificationsByType(ctx, gen.ResolvePRNotificationsByTypeParams{
+				ResolvedAt: nullTime(at),
+				PRURL:      prURL,
+				Type:       domain.NotificationReadyToMerge,
+			})
+			if err != nil {
+				return fmt.Errorf("reconcile ready-to-merge notifications %s: %w", prURL, err)
+			}
+			if _, err := q.DeleteDismissedPRNotificationsByType(ctx, gen.DeleteDismissedPRNotificationsByTypeParams{
+				PRURL: prURL,
+				Type:  domain.NotificationReadyToMerge,
+			}); err != nil {
+				return fmt.Errorf("delete dismissed ready-to-merge notifications %s: %w", prURL, err)
+			}
+			resolved = append(resolved, notificationsFromGen(rows)...)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return resolved, nil
 }
@@ -263,6 +303,49 @@ func (s *Store) MarkAllNotificationsRead(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("mark all notifications read: %w", err)
 	}
 	return count, nil
+}
+
+// ClearAllNotifications hides every visible notification while retaining open
+// rows for dedupe until their underlying condition resolves.
+func (s *Store) ClearAllNotifications(ctx context.Context) (int64, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var count int64
+	err := s.inTx(ctx, "clear all notifications", func(q *gen.Queries) error {
+		var err error
+		count, err = q.ClearAllNotifications(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = q.DeleteResolvedDismissedNotifications(ctx)
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("clear all notifications: %w", err)
+	}
+	return count, nil
+}
+
+// DeleteNotification hides one visible notification and returns its original
+// row while retaining open dedupe state until the underlying condition resolves.
+func (s *Store) DeleteNotification(ctx context.Context, id string) (domain.NotificationRecord, bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	row, err := s.qw.GetNotificationForDismissal(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.NotificationRecord{}, false, nil
+	}
+	if err != nil {
+		return domain.NotificationRecord{}, false, fmt.Errorf("read notification for delete %s: %w", id, err)
+	}
+	updated, err := s.qw.DismissNotification(ctx, id)
+	if err != nil {
+		return domain.NotificationRecord{}, false, fmt.Errorf("delete notification %s: %w", id, err)
+	}
+	if updated != 1 {
+		return domain.NotificationRecord{}, false, nil
+	}
+	return notificationFromGen(row), true, nil
 }
 
 func (s *Store) getOpenNotificationByDedupe(ctx context.Context, rec domain.NotificationRecord) (domain.NotificationRecord, bool, error) {

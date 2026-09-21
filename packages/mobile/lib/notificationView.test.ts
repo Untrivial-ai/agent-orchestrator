@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { notificationTarget, notificationVisual, relativeTime } from "./notificationView";
+import { notificationAction, notificationSections, notificationTarget, notificationVisual, relativeTime } from "./notificationView";
 import { darkTheme } from "./theme";
 
 describe("notificationVisual", () => {
@@ -8,6 +8,28 @@ describe("notificationVisual", () => {
 			(t) => notificationVisual(darkTheme, t).label,
 		);
 		expect(new Set(labels).size).toBe(4);
+	});
+
+	// The renderer draws these with GitHub's own vocabulary, and this theme's
+	// palette reserves purple for a merged PR: "terminal, not actionable". Merged
+	// was rendering as a blue tick, which reads as an action still open.
+	it("marks a merged PR the way the palette and the renderer both say", () => {
+		const merged = notificationVisual(darkTheme, "pr_merged");
+		expect(merged.icon).toBe("git-merge");
+		expect(merged.color).toBe(darkTheme.purple);
+		expect(merged.color).not.toBe(darkTheme.blue);
+	});
+
+	it("uses pull-request glyphs for pull-request outcomes", () => {
+		expect(notificationVisual(darkTheme, "ready_to_merge").icon).toBe("git-pull-request-arrow");
+		expect(notificationVisual(darkTheme, "pr_closed_unmerged").icon).toBe("git-pull-request-closed");
+	});
+
+	it("gives every known type a distinct semantic icon", () => {
+		const icons = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged"].map(
+			(type) => notificationVisual(darkTheme, type).icon,
+		);
+		expect(new Set(icons).size).toBe(4);
 	});
 
 	it("falls back to a usable label for an unknown type", () => {
@@ -43,6 +65,27 @@ describe("notificationTarget", () => {
 	});
 });
 
+describe("notificationSections", () => {
+	it("puts unread notifications in the attention section before earlier history", () => {
+		const read = { id: "read", status: "read" };
+		const unread = { id: "unread", status: "unread" };
+
+		expect(notificationSections([read, unread])).toEqual([
+			{ key: "attention", title: "Needs attention", data: [unread] },
+			{ key: "earlier", data: [read] },
+		]);
+	});
+
+	it("omits empty sections", () => {
+		const read = { id: "read", status: "read" };
+
+		expect(notificationSections([read])).toEqual([
+			{ key: "earlier", data: [read] },
+		]);
+		expect(notificationSections([])).toEqual([]);
+	});
+});
+
 describe("relativeTime", () => {
 	const now = Date.parse("2026-07-30T12:00:00Z");
 	const ago = (ms: number) => new Date(now - ms).toISOString();
@@ -69,5 +112,40 @@ describe("relativeTime", () => {
 
 	it("returns nothing for an unparseable timestamp", () => {
 		expect(relativeTime("not-a-date", now)).toBe("");
+	});
+});
+
+describe("notificationAction", () => {
+	const ready = { terminated: false, sessionsReady: true };
+
+	it("opens the session behind a live notification", () => {
+		expect(notificationAction({ type: "needs_input", sessionId: "s1" }, ready)).toEqual({ kind: "open", sessionId: "s1" });
+		expect(notificationAction({ type: "ready_to_merge", sessionId: "s1" }, ready)).toEqual({ kind: "open", sessionId: "s1" });
+	});
+
+	// The renderer's rule: a paused agent is the only thing a terminated
+	// needs_input row can act on, so it offers restore rather than navigating to
+	// a session with nothing to show.
+	it("offers restore instead of opening a terminated session that wants input", () => {
+		expect(notificationAction({ type: "needs_input", sessionId: "s1" }, { terminated: true, sessionsReady: true }))
+			.toEqual({ kind: "restore", sessionId: "s1" });
+	});
+
+	// ...but a finished PR is still worth reading, so termination does not gate it.
+	it("still opens a terminated session behind a PR outcome", () => {
+		for (const type of ["ready_to_merge", "pr_merged", "pr_closed_unmerged"]) {
+			expect(notificationAction({ type, sessionId: "s1" }, { terminated: true, sessionsReady: true }))
+				.toEqual({ kind: "open", sessionId: "s1" });
+		}
+	});
+
+	it("waits rather than guessing before the board has loaded", () => {
+		expect(notificationAction({ type: "needs_input", sessionId: "s1" }, { terminated: false, sessionsReady: false }))
+			.toEqual({ kind: "none" });
+	});
+
+	it("sends a session-less PR notification to the PR list", () => {
+		expect(notificationAction({ type: "ready_to_merge" }, ready)).toEqual({ kind: "prs" });
+		expect(notificationAction({ type: "needs_input" }, ready)).toEqual({ kind: "none" });
 	});
 });

@@ -17,7 +17,10 @@ ao spawn --name "<label>" --prompt "<clear worker task>" [--agent claude-code] [
   before running the command; an over-long label wastes a turn on a rejection.
 - `--prompt` (required): the worker's complete task. Write it like a brief for
   a competent engineer with no other context: goal, constraints, and the
-  expected outcome (usually a pull request).
+  expected outcome (usually a pull request). Before you name a specific file,
+  class, or path, confirm it exists in the checked-out repository (`ls`,
+  `find`, `grep`). A prompt pointing at a file that does not exist wastes the
+  whole worker.
 - `--agent` / `--harness`: `claude-code` (default), `codex`, or `cursor`.
 - `--mode`: `trusted` (default) or `standard`.
 
@@ -68,9 +71,12 @@ ao report <message...>
 
 Sends a message to the orchestrator session that spawned this worker. Use it
 when the task is done (say what was delivered and the PR number), or when
-blocked on a decision only the orchestrator or human can make. Keep it short;
-the orchestrator sees it in its own conversation prefixed with this session's
-id. A session that was not spawned by an orchestrator gets `SCOPE_REQUIRED`.
+blocked on a decision only the orchestrator or human can make. Keep it to one
+or two sentences: the outcome and PR number, or the single blocking reason.
+Never paste diffs, logs, or file contents — a long report reads like an
+injected prompt in the orchestrator's conversation, where it appears prefixed
+with this session's id. A session that was not spawned by an orchestrator gets
+`SCOPE_REQUIRED`.
 
 ## ao kill — terminate a worker
 
