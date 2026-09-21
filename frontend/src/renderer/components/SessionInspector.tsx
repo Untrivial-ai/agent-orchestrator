@@ -1715,7 +1715,6 @@ function ReviewsSection({
 				onKill={() => killReview.mutate()}
 				onTrigger={() => triggerReview.mutate()}
 				reviewerHandleId={reviewsQuery.data?.reviewerHandleId ?? ""}
-				reviewerActivityState={reviewsQuery.data?.reviewerActivityState}
 				reviewStates={reviewStates}
 				notice={reviewNotice}
 				agentCatalog={agentsQuery.data}
@@ -2185,7 +2184,6 @@ function ReviewPanel({
 	config,
 	reviewStates,
 	reviewerHandleId,
-	reviewerActivityState,
 	isLoading,
 	isTriggering,
 	isCancelling,
@@ -2210,7 +2208,6 @@ function ReviewPanel({
 	config?: ProjectConfig;
 	reviewStates: PRReviewState[];
 	reviewerHandleId: string;
-	reviewerActivityState?: components["schemas"]["ListReviewsResponse"]["reviewerActivityState"];
 	isLoading: boolean;
 	isTriggering: boolean;
 	isCancelling: boolean;
