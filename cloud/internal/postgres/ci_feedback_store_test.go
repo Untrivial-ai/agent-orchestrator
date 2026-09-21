@@ -24,3 +24,14 @@ func TestShouldCreateCIFailureEffectOnlyOnTransition(t *testing.T) {
 		t.Fatal("unchanged failure must not create another effect")
 	}
 }
+
+func TestShouldResolveCIFailureEffectOnRecovery(t *testing.T) {
+	failing := domain.PullRequest{CIState: contract.CIFailing}
+	passing := domain.PullRequest{CIState: contract.CIPassing}
+	if !shouldResolveCIFailureEffect(failing, passing) {
+		t.Fatal("failing to passing should resolve the active notification")
+	}
+	if shouldResolveCIFailureEffect(passing, passing) {
+		t.Fatal("unchanged passing state must not emit a resolution")
+	}
+}
