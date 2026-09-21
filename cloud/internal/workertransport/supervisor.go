@@ -155,10 +155,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			}
 			s.Logger.Warn("claim worker transport request", "error", err)
 		} else if request != nil {
-			// A page usually loads several resources at once. Keep those fetches
-			// from blocking shell input while still relying on the durable command
-			// queue for the per-session concurrency ceiling.
-			if request.Kind == "browser.fetch" {
+			// Read-only workspace/review requests and browser fetches run off the
+			// serial loop so a large-repo review (which reads every file and spawns
+			// many git procs per call) or a burst of page resources cannot wedge
+			// shell input and turn forwarding. Writes (workspace.write /
+			// workspace.review.write) and terminal control stay serial, so the
+			// review write-guard's read-check-write keeps its serialization against
+			// other writes. See isConcurrentlyHandledKind.
+			if isConcurrentlyHandledKind(request.Kind) {
 				go s.handle(ctx, workspace, request)
 				continue
 			}
@@ -299,6 +303,27 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, false)
+}
+
+// isConcurrentlyHandledKind reports whether a transport request is a read-only
+// workspace/review request or a browser fetch that may run off the serial loop.
+// Offloading these keeps an expensive review (ReviewSummary reads every tracked
+// file and spawns hundreds of git procs) from blocking terminal input and turn
+// forwarding. It is safe: the workspace struct is immutable after construction,
+// file writes are atomic (write-temp + rename) so a concurrent read never sees a
+// torn file, and every mutating kind (workspace.write, workspace.review.write)
+// plus terminal control stays on the serial loop, so writes remain serialized
+// against each other and the review write-guard keeps its TOCTOU-free property.
+func isConcurrentlyHandledKind(kind string) bool {
+	switch kind {
+	case "browser.fetch",
+		"workspace.list", "workspace.read", "workspace.diff", "workspace.diff-file",
+		"workspace.review.summary", "workspace.review.tree", "workspace.review.search",
+		"workspace.review.file", "workspace.review.diffs", "workspace.review.revision":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Supervisor) handle(
