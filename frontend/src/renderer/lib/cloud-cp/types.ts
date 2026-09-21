@@ -95,6 +95,51 @@ export interface CloudCpPageInfo {
 	nextCursor?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Cloud notifications (`notification_handlers.go`)
+// ---------------------------------------------------------------------------
+
+export interface CloudCpNotification {
+	id: string;
+	source: "cloud";
+	eventId?: string;
+	orgId: string;
+	projectId?: string;
+	sessionId?: string;
+	type: string;
+	title: string;
+	body: string;
+	status: "unread" | "read";
+	resolvedAt?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CloudCpNotificationEvent {
+	sequence: number;
+	orgId: string;
+	recipientUserId: string;
+	kind: "notification_created" | "notification_updated" | "notification_resolved";
+	notification: CloudCpNotification;
+	createdAt: string;
+}
+
+export interface CloudCpNotificationListQuery extends CloudCpListQuery {
+	status?: "unread" | "read" | "all";
+}
+
+export interface CloudCpNotificationListResponse {
+	items: CloudCpNotification[];
+	page: CloudCpPageInfo;
+	unreadCount: number;
+	latestSequence: number;
+}
+
+export interface CloudCpNotificationEventsResponse {
+	items: CloudCpNotificationEvent[];
+	hasMore: boolean;
+}
+
 export interface CloudCpListQuery {
 	/** Page size, 1-100 (control-plane default: 50). */
 	limit?: number;

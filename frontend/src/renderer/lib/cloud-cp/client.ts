@@ -24,6 +24,9 @@ import type {
 	CloudCpListQuery,
 	CloudCpListSessionsQuery,
 	CloudCpMeResponse,
+	CloudCpNotificationEventsResponse,
+	CloudCpNotificationListQuery,
+	CloudCpNotificationListResponse,
 	CloudCpProjectDeletedResponse,
 	CloudCpProjectListResponse,
 	CloudCpProjectResponse,
@@ -78,6 +81,13 @@ export interface CloudCpSessionEventsOptions {
 	/** Aborting closes the stream and resolves the subscription promise. */
 	signal?: AbortSignal;
 	/** Resume strictly after this sequence; omit to replay from the beginning. */
+	after?: number;
+}
+
+export interface CloudCpNotificationEventsOptions {
+	onEvent: (event: import("./types").CloudCpNotificationEvent) => void;
+	onError?: (error: CloudCpError) => void;
+	signal?: AbortSignal;
 	after?: number;
 }
 
@@ -170,6 +180,10 @@ export interface CloudCpClient {
 	 * a rejection, so fire-and-forget callers cannot leak unhandled rejections.
 	 */
 	subscribeSessionEvents(orgId: string, sessionId: string, options: CloudCpSessionEventsOptions): Promise<void>;
+	listNotifications(orgId: string, query?: CloudCpNotificationListQuery, options?: CloudCpRequestOptions): Promise<CloudCpNotificationListResponse>;
+	listNotificationEvents(orgId: string, after?: number, options?: CloudCpRequestOptions): Promise<CloudCpNotificationEventsResponse>;
+	markNotificationsRead(orgId: string, notificationIds?: string[], options?: CloudCpRequestOptions): Promise<{ updated: number }>;
+	subscribeNotificationEvents(orgId: string, options: CloudCpNotificationEventsOptions): Promise<void>;
 
 	createTerminalTicket(
 		orgId: string,
@@ -356,6 +370,31 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 		}
 	}
 
+	async function subscribeNotificationEvents(orgId: string, subscribeOptions: CloudCpNotificationEventsOptions): Promise<void> {
+		const { onEvent, onError, signal, after } = subscribeOptions;
+		const fail = (error: unknown): void => {
+			if (signal?.aborted === true || isAbortError(error)) return;
+			onError?.(toCloudCpError(error));
+		};
+		let response: Response;
+		try {
+			response = await send("GET", `/orgs/${seg(orgId)}/notification-events`, { query: { after }, signal, accept: "text/event-stream" });
+		} catch (error) { fail(error); return; }
+		if (response.body === null) { fail(new CloudCpError("The notification stream response has no body.", { status: response.status })); return; }
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		const parser = createSseFrameParser();
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (value !== undefined) for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+					try { onEvent(JSON.parse(frame.data)); } catch { fail(new CloudCpError("The notification stream sent a frame with malformed JSON.", { status: 200 })); }
+				}
+				if (done) break;
+			}
+		} catch (error) { fail(error); } finally { reader.releaseLock(); }
+	}
+
 	return {
 		me: (o) => requestJson("GET", "/me", { signal: o?.signal }),
 		createOrganization: (body, o) => requestJson("POST", "/orgs", { body, signal: o?.signal }),
@@ -422,6 +461,12 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				signal: o?.signal,
 			}),
 		subscribeSessionEvents,
+		listNotifications: (orgId, query, o) => requestJson("GET", `/orgs/${seg(orgId)}/notifications`, { query: { status: query?.status, limit: query?.limit, cursor: query?.cursor }, signal: o?.signal }),
+		listNotificationEvents: (orgId, after, o) => requestJson("GET", `/orgs/${seg(orgId)}/notification-events`, { query: { after }, signal: o?.signal }),
+		markNotificationsRead: (orgId, notificationIds, o) => notificationIds === undefined || notificationIds.length === 0
+			? requestJson("POST", `/orgs/${seg(orgId)}/notifications/read-all`, { signal: o?.signal })
+			: Promise.all(notificationIds.map((id) => requestJson<{ updated: number }>("PATCH", `/orgs/${seg(orgId)}/notifications/${seg(id)}`, { body: { status: "read" }, signal: o?.signal }))).then((rows) => ({ updated: rows.reduce((total, row) => total + row.updated, 0) })),
+		subscribeNotificationEvents,
 
 		createTerminalTicket: (orgId, sessionId, body, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/terminal-ticket`, {
