@@ -16,12 +16,14 @@ const (
 	// Upstream has not published this version as a GitHub or PyPI release.
 	AuditedVersion = "0.1.0"
 
-	// AuditedSourceCommit and AuditedSourceTree bind the audit to immutable Git
-	// objects even though upstream does not currently publish release artifacts.
+	// AuditedSourceCommit binds the audit to an immutable Git commit.
 	AuditedSourceCommit = "e839e559ac61bdd0e057c375dd1dee391fee797d"
-	AuditedSourceTree   = "fceea1cae3ddf5fcc29649db47449c54e011844e"
+
+	// AuditedSourceTree binds the audit to the commit's immutable Git tree.
+	AuditedSourceTree = "fceea1cae3ddf5fcc29649db47449c54e011844e"
 )
 
+// Contract validation errors identify each independently unproven capability.
 var (
 	ErrVersionMissing              = errors.New("trae-agent: version missing")
 	ErrVersionInvalid              = errors.New("trae-agent: version is not a three-component semantic version")
