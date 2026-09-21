@@ -129,6 +129,7 @@ export type TaskComposerViewProps = {
 	attachments: TaskComposerAttachments;
 	autoFocusPrompt?: boolean;
 	canSubmit: boolean;
+	context?: ReactNode;
 	initialPrompt?: string;
 	labels: TaskComposerLabels;
 	model: Omit<TaskComposerModelControl, "id">;
@@ -207,6 +208,7 @@ export function TaskComposerView({
 	attachments,
 	autoFocusPrompt,
 	canSubmit,
+	context,
 	initialPrompt = "",
 	labels,
 	model,
@@ -236,6 +238,7 @@ export function TaskComposerView({
 
 	const submit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
+		if (!canSubmit || submission.isSubmitting) return;
 		submission.onSubmit(promptRef.current);
 	};
 
@@ -275,6 +278,7 @@ export function TaskComposerView({
 				if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsDragging(false);
 			}}
 		>
+			{context}
 			<TaskPrompt
 				autoFocus={autoFocusPrompt}
 				disabled={submission.isSubmitting}

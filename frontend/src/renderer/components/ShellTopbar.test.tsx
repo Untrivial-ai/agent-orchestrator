@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,8 @@ import {
 } from "../types/workspace";
 import { ShellTopbar, TopbarKillButton } from "./ShellTopbar";
 import { TooltipProvider } from "./ui/tooltip";
+import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
+import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
 
 const { navigateMock, onKilledMock, paramsMock, postMock, spawnMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
 	navigateMock: vi.fn(),
@@ -57,6 +59,7 @@ vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		POST: postMock,
 	},
+	hasTrustedApiBaseUrl: () => false,
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => {
 		if (error instanceof Error) return error.message;
 		if (typeof error === "object" && error !== null && "message" in error) {
@@ -389,6 +392,21 @@ describe("ShellTopbar orchestrator actions", () => {
 		if (!pulses) expect(indicator).not.toHaveClass("animate-status-pulse");
 	});
 
+	it("shows a rejected orchestrator resume request", async () => {
+		postMock.mockRejectedValueOnce(new Error("resume request failed"));
+		const exitedOrchestrator = {
+			...orchestrator,
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+			status: "exited",
+		} satisfies WorkspaceSession;
+		renderTopbarSessions([worker, exitedOrchestrator], "");
+
+		await userEvent.click(screen.getByRole("button", { name: "Orchestrator, Exited" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent("resume request failed");
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
 	it("shows a clear Kanban button on embedded orchestrator sessions", async () => {
 		renderTopbar(orchestrator, true);
 
@@ -445,6 +463,48 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
 		expect(navigateMock).not.toHaveBeenCalled();
 		expect(spawnMock).not.toHaveBeenCalled();
+	});
+
+	it("opens an exited orchestrator without resuming while its agent switch is active", async () => {
+		const switchingOrchestrator = {
+			...orchestrator,
+			activeAgentSwitch: activeAgentSwitch(),
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+			status: "exited",
+		} satisfies WorkspaceSession;
+		renderTopbarSessions([worker, switchingOrchestrator], worker.id);
+
+		await userEvent.click(screen.getByRole("button", { name: "Open orchestrator" }));
+
+		expect(postMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "orch-1" },
+		});
+	});
+
+	it("opens an exited orchestrator without resuming during an interface transition", async () => {
+		const exitedOrchestrator = {
+			...orchestrator,
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+			status: "exited",
+		} satisfies WorkspaceSession;
+		const view = renderTopbarSessions([worker, exitedOrchestrator], worker.id);
+		act(() => {
+			view.queryClient.setQueryData(
+				sessionInterfaceTransitionQueryKey(exitedOrchestrator.id),
+				sessionInterfaceTransitionStatus(exitedOrchestrator.id),
+			);
+		});
+		view.rerenderTopbar();
+
+		await userEvent.click(screen.getByRole("button", { name: "Open orchestrator" }));
+
+		expect(postMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "orch-1" },
+		});
 	});
 
 	it("hides project-only orchestrator actions for ad hoc sessions", () => {

@@ -21,6 +21,18 @@ variable "workspace_image" {
   type        = string
 }
 
+variable "workspace_memory_mb" {
+  default     = 0
+  description = "Hard per-workspace memory limit in MB (0 = unlimited). Set this on shared single-host deployments (e.g. the Azure Coder VM) so one workspace cannot OOM the host and take down its siblings."
+  type        = number
+}
+
+variable "workspace_cpu_shares" {
+  default     = 0
+  description = "Relative CPU weight per workspace (0 = default/unset). On a shared host this keeps CPU fair across concurrent workspaces without a hard cap."
+  type        = number
+}
+
 provider "docker" {
   host = var.docker_socket != "" ? var.docker_socket : null
 }
@@ -87,6 +99,12 @@ resource "docker_container" "workspace" {
     replace(coder_agent.main.init_script, "/localhost|127\\.0\\.0\\.1/", "host.docker.internal"),
   ]
   env = ["CODER_AGENT_TOKEN=${coder_agent.main.token}"]
+
+  # Optional per-workspace limits (no-op when the variables are 0, so the
+  # existing single-tenant deployments are unchanged). Used on shared single-host
+  # deployments so one workspace cannot exhaust the host.
+  memory     = var.workspace_memory_mb > 0 ? var.workspace_memory_mb : null
+  cpu_shares = var.workspace_cpu_shares > 0 ? var.workspace_cpu_shares : null
 
   host {
     host = "host.docker.internal"

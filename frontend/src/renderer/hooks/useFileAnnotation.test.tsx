@@ -22,7 +22,7 @@ describe("useFileAnnotation", () => {
 
 	it("submits feedback through the provided Cloud message sender", async () => {
 		const sendMessage = vi.fn().mockResolvedValue(undefined);
-		const { result } = renderHook(() => useFileAnnotation("cloud-session", sendMessage));
+		const { result } = renderHook(() => useFileAnnotation("cloud-session", { sendMessage }));
 
 		act(() => result.current.begin({ path: "src/App.tsx", side: "file", scope: "combined", surface: "focused" }));
 		act(() => result.current.setDraft("Please simplify this file."));
@@ -31,5 +31,16 @@ describe("useFileAnnotation", () => {
 		expect(sendMessage).toHaveBeenCalledOnce();
 		expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining("Please simplify this file."));
 		expect(result.current.status).toBe("sent");
+	});
+
+	it("cancels an open composer when the file source changes", () => {
+		const prSource = "PR #42 · files (https://example.test/acme/repo/pull/42)";
+		const { result, rerender } = renderHook(({ source }) => useFileAnnotation("sess-1", { source }), { initialProps: { source: prSource } });
+		act(() => result.current.begin({ path: "src/App.tsx", side: "new", line: 12, scope: "unstaged", surface: "focused" }));
+		act(() => result.current.setDraft("stale feedback"));
+		expect(result.current.target?.source).toBe(prSource);
+		rerender({ source: "Workspace" });
+		expect(result.current.target).toBeNull();
+		expect(result.current.draft).toBe("");
 	});
 });
