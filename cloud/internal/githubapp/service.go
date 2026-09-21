@@ -65,6 +65,7 @@ type Store interface {
 		orgID, pullRequestID string,
 		observation domain.PullRequestObservation,
 	) (domain.PullRequest, error)
+	RecordPullRequestTransition(context.Context, domain.PullRequest, domain.PullRequest) (domain.SCMEffects, error)
 	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA string) (domain.ReviewRun, bool, error)
 	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt string) error
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error

@@ -66,9 +66,13 @@ func (s *Service) processSCMWebhook(
 	if err != nil {
 		return err
 	}
-	_, err = s.RefreshPullRequestStatus(ctx, domain.PullRequestRef{
+	refreshed, err := s.RefreshPullRequestStatus(ctx, domain.PullRequestRef{
 		ID: pr.ID, OrgID: pr.OrgID, Provider: pr.Provider,
 		Repository: pr.Repository, Number: pr.Number,
 	})
+	if err != nil {
+		return err
+	}
+	_, err = s.store.RecordPullRequestTransition(ctx, pr, refreshed)
 	return err
 }
