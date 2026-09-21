@@ -7,6 +7,7 @@ import type { TFunction } from "i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+	ExecutionContextView,
 	InspectorActivityTimelineView,
 	InspectorPullRequestCardView,
 	InspectorReviewsView,
@@ -38,19 +39,21 @@ import {
 } from "lucide-react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useCloudProjectsQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
 import { OrchestratorChildrenSection } from "./OrchestratorChildrenSection";
 import { ProductExternalLink } from "./ProductExternalLink";
+import { ResumeAgentControl } from "./ResumeAgentControl";
 import {
 	sessionScmSummaryQueryKey,
 	useSessionScmSummary,
 	type SessionPRSummary,
 } from "../hooks/useSessionScmSummary";
 import { useSessionUsage, type SessionUsage } from "../hooks/useSessionUsage";
-import { useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
+import { sessionWorkspaceFilesQueryKey, useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
+import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
 import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
@@ -63,7 +66,7 @@ import {
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
-import { aoBridge } from "../lib/bridge";
+import { executionContextLabels, projectRepositories } from "../lib/execution-context";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
@@ -90,6 +93,7 @@ import {
 } from "../lib/session-reviews";
 
 type ProjectConfig = components["schemas"]["ProjectConfig"];
+type Project = components["schemas"]["Project"];
 type OpenReviewerTerminal = (target: { handleId: string; harness: string }) => void;
 
 export type { InspectorView } from "@aoagents/product-ui";
@@ -198,7 +202,20 @@ export const SessionInspector = memo(function SessionInspector({
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
-	const filesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const inspectorQueryClient = useQueryClient();
+	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const localWorkspaceData = session ? inspectorQueryClient.getQueryData<{ files?: unknown[] }>(sessionWorkspaceFilesQueryKey(session.id)) : undefined;
+	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
+	const cloudOrgId = session?.cloud?.orgId;
+	const cloudReview = useQuery({
+		queryKey: ["cloud-workspace-review", cloudBaseUrl, cloudOrgId ?? "", session?.id ?? "", "summary"],
+		enabled: cloudReady && session?.cloud !== undefined && cloudOrgId !== undefined,
+		refetchInterval: 5_000,
+		queryFn: () => cloudCpClient.getWorkspaceReview(cloudOrgId!, session!.id),
+	});
+	const cloudFilesChangedCount = cloudReview.data?.summary.files;
+	const filesChangedCount = session?.cloud ? (cloudFilesChangedCount ? cloudFilesChangedCount : undefined) : localFilesChangedCount;
+	const hasWorkspaceInventory = session?.cloud ? Boolean(cloudReview.data?.files.length) : Boolean(localWorkspaceData?.files?.length);
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);
@@ -223,7 +240,7 @@ export const SessionInspector = memo(function SessionInspector({
 			...entry,
 			badge: entry.id === "browser" && browserUnseen,
 			displayLabel:
-				entry.id === "files" && filesChangedCount !== undefined
+				entry.id === "files" && filesChangedCount !== undefined && (filesChangedCount > 0 || hasWorkspaceInventory)
 					? t("files.tabCount", { count: filesChangedCount })
 					: label,
 			label,
@@ -307,7 +324,25 @@ const SummaryView = memo(function SummaryView({
 	const { t } = useTranslation();
 	const query = useSessionScmSummary(session.id);
 	const developerMode = useUiStore((state) => state.developerMode);
+	const cloudProjects = useCloudProjectsQuery();
+	const cloudProject = (cloudProjects.data ?? []).find((project) => project.id === session.workspaceId);
+	const isCloudProject = session.cloud !== undefined;
 	const usageQuery = useSessionUsage(session.id, developerMode);
+	const projectQuery = useQuery({
+		queryKey: ["project", session.workspaceId],
+		enabled: session.workspaceId !== STANDALONE_WORKSPACE_ID && !isCloudProject && !usePreviewData,
+		queryFn: async () => {
+			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
+				params: { path: { id: session.workspaceId } },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+			if (data?.status !== "ok") throw new Error(t("newTask.configUnavailable"));
+			return data.project as Project;
+		},
+	});
+	const project = projectQuery.data;
+	const configuredWorkerAgent = project?.config?.worker?.agent ?? project?.agent;
+	const configuredOrchestratorAgent = project?.config?.orchestrator?.agent;
 	const showUsage =
 		developerMode &&
 		!usageQuery.isLoading &&
@@ -326,11 +361,36 @@ const SummaryView = memo(function SummaryView({
 			activity={
 				<>
 					<ActivityTimeline prs={prSummaries} session={session} />
-					<ResumeAgentControl session={session} />
+					<ResumeAgentControl
+						className="w-full"
+						containerClassName="mt-3 border-t border-(--color-border-settings-input) pt-3"
+						session={session}
+					/>
 				</>
 			}
 			activityTitle={t("inspector.activity")}
 			completion={<SessionControls session={session} />}
+			context={
+				<ExecutionContextView
+					activeAgent={agentLabel(session.provider)}
+					activeRole={session.kind === "orchestrator" ? "orchestrator" : "worker"}
+					baseBranch={project?.defaultBranch}
+					branch={session.branch}
+					labels={executionContextLabels(t)}
+					error={!isCloudProject && projectQuery.isError ? (projectQuery.error instanceof Error ? projectQuery.error.message : t("newTask.configUnavailable")) : undefined}
+					loading={
+						!usePreviewData &&
+						session.workspaceId !== STANDALONE_WORKSPACE_ID &&
+						!isCloudProject &&
+						projectQuery.isPending
+					}
+					orchestratorAgent={configuredOrchestratorAgent ? agentLabel(configuredOrchestratorAgent) : undefined}
+					path={project?.path}
+					projectName={project?.name ?? cloudProject?.displayName ?? session.workspaceName}
+					repositories={project ? projectRepositories(project) : cloudProject ? [cloudProject.repositoryUrl] : []}
+					workerAgent={configuredWorkerAgent ? agentLabel(configuredWorkerAgent) : undefined}
+				/>
+			}
 			pullRequestCards={
 				<div className="flex flex-col gap-1.5">
 					{hasPRs ? (
@@ -1040,59 +1100,6 @@ function formatModelName(modelID: string): string {
 		formatted.push(normalized === "gpt" || normalized === "glm" ? normalized.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`);
 	}
 	return formatted.join(" ") || modelID;
-}
-
-function ResumeAgentControl({ session }: { session: WorkspaceSession }) {
-	const { t } = useTranslation();
-	const queryClient = useQueryClient();
-	const resume = useMutation({
-		mutationFn: async () => {
-			if (usePreviewData) return;
-			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
-				params: { path: { sessionId: session.id } },
-			});
-			if (error) throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
-			return data;
-		},
-		onSuccess: async (data) => {
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			if (data?.resumeMode === "saved_prompt") {
-				void aoBridge.notifications
-					.show({
-						id: `resume-agent-fallback:${session.id}:${Date.now()}`,
-						title: t("inspector.startedFromPrompt"),
-						body: t("inspector.resumeFallbackBody"),
-					})
-					.catch((err) => {
-						console.warn("Unable to show resume fallback notification", err);
-					});
-			}
-		},
-	});
-
-	if (session.isTerminated === true || session.activity?.state !== "exited" || session.activeAgentSwitch) return null;
-
-	const error = resume.error instanceof Error ? resume.error.message : null;
-	return (
-		<div className="mt-3 border-t border-(--color-border-settings-input) pt-3">
-			<Button
-				className="w-full"
-				disabled={resume.isPending}
-				onClick={() => resume.mutate()}
-				size="sm"
-				type="button"
-				variant="outline"
-			>
-				<Play className="size-icon-sm" aria-hidden="true" />
-				{resume.isPending ? t("inspector.resumingAgent") : t("inspector.resumeAgent")}
-			</Button>
-			{error ? (
-				<p className="mt-2 text-2xs leading-normal text-error" role="status">
-					{error}
-				</p>
-			) : null}
-		</div>
-	);
 }
 
 function SessionControls({ session }: { session: WorkspaceSession }) {

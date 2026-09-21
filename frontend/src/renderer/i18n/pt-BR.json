@@ -1078,6 +1078,7 @@
 	"settings.project.modelOverride": "Substituição de modelo",
 	"settings.project.name": "Nome do projeto",
 	"settings.project.nameRequired": "O nome do projeto é obrigatório.",
+	"settings.project.nameTooLong": "O nome do projeto deve ter {{max}} caracteres ou menos.",
 	"settings.project.path": "caminho",
 	"settings.project.permissionAcceptEdits": "Aceitar edições",
 	"settings.project.permissionAuto": "Automático",
@@ -1701,6 +1702,9 @@
 	"files.explorer.filter": "Filter files",
 	"files.explorer.filterPlaceholder": "Filter files",
 	"files.explorer.changedOnly": "Changed only",
+	"files.explorer.source": "File source",
+	"files.explorer.workspaceSource": "Workspace",
+	"files.explorer.sourceUnavailable": "The selected pull request is no longer available; showing Workspace.",
 	"files.explorer.empty": "This folder is empty.",
 	"files.explorer.tree": "File tree",
 	"files.explorer.selectFile": "Select a file to preview.",
@@ -2104,5 +2108,9 @@
 	"settings.cloudAgents.github.saving": "Saving…",
 	"settings.cloudAgents.github.remove": "Remove",
 	"settings.cloudAgents.github.errorSave": "Could not save the GitHub token.",
-	"settings.cloudAgents.github.errorRemove": "Could not remove the GitHub token."
+	"settings.cloudAgents.github.errorRemove": "Could not remove the GitHub token.",
+	"executionContext.active": "ativo",
+	"executionContext.configured": "configurado",
+	"executionContext.title": "contexto de execução",
+	"executionContext.loading": "carregando o contexto do projeto…"
 }

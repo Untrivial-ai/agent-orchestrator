@@ -222,6 +222,191 @@ export interface CloudCpSessionListResponse {
 	page: CloudCpPageInfo;
 }
 
+// ---------------------------------------------------------------------------
+// Docker workspace review (`workspace_handlers.go`)
+// ---------------------------------------------------------------------------
+
+/** One changed file in a cloud workspace. */
+export interface CloudCpWorkspaceDiffFile {
+	path: string;
+	status: "unmodified" | "modified" | "added" | "deleted" | "renamed" | "untracked" | "copied" | "changed";
+	additions: number;
+	deletions: number;
+	binary: boolean;
+}
+
+/** Changed-file summary, compared with the session's HEAD. */
+export interface CloudCpWorkspaceDiff {
+	files: CloudCpWorkspaceDiffFile[];
+	diffBaseRef: string;
+	diffBaseSha?: string;
+	truncated: { combined: boolean; stats: boolean };
+}
+
+/** Selected-file review details. */
+export interface CloudCpWorkspaceDiffFileDetail extends CloudCpWorkspaceDiffFile {
+	size: number;
+	deleted: boolean;
+	content: string;
+	contentTruncated: boolean;
+	diff: string;
+	diffTruncated: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Provider-neutral workspace review (`workspace_review_handlers.go`)
+// ---------------------------------------------------------------------------
+
+export type CloudCpWorkspaceReviewScope = "combined" | "committed" | "staged" | "unstaged" | "untracked";
+export type CloudCpWorkspaceReviewStatus = "unmodified" | "modified" | "added" | "deleted" | "renamed" | "copied" | "untracked";
+export type CloudCpWorkspaceReviewSide = "before" | "after";
+
+export interface CloudCpWorkspaceReviewFileSummary {
+	path: string;
+	previousPath?: string;
+	status: CloudCpWorkspaceReviewStatus;
+	additions: number;
+	deletions: number;
+	size: number;
+	binary: boolean;
+	editable: boolean;
+	fileFingerprint: string;
+}
+
+export interface CloudCpWorkspaceReviewSections {
+	staged: CloudCpWorkspaceReviewFileSummary[];
+	unstaged: CloudCpWorkspaceReviewFileSummary[];
+	untracked: CloudCpWorkspaceReviewFileSummary[];
+	committed: CloudCpWorkspaceReviewFileSummary[];
+}
+
+export interface CloudCpWorkspaceReviewCommit {
+	sha: string;
+	subject: string;
+	author: string;
+	timestamp: string;
+	files: CloudCpWorkspaceReviewFileSummary[];
+}
+
+export interface CloudCpWorkspaceReviewResponse {
+	workspaceVersion: string;
+	compareBaseSha?: string;
+	compareBaseRef?: string;
+	compareMode?: "base" | "head_fallback";
+	files: CloudCpWorkspaceReviewFileSummary[];
+	truncated: boolean;
+	sections: CloudCpWorkspaceReviewSections;
+	commits: CloudCpWorkspaceReviewCommit[];
+	summary: { files: number; additions: number; deletions: number };
+	ahead?: number;
+	behind?: number;
+}
+
+export interface CloudCpWorkspaceReviewFileQuery {
+	path: string;
+	scope?: CloudCpWorkspaceReviewScope;
+	commitSha?: string;
+}
+
+export interface CloudCpWorkspaceReviewFileResponse extends CloudCpWorkspaceReviewFileSummary {
+	deleted: boolean;
+	imageMediaType?: string;
+	content: string;
+	contentTruncated: boolean;
+	diff: string;
+	diffTruncated: boolean;
+	compareBaseSha?: string;
+	compareBaseRef?: string;
+	compareMode?: "base" | "head_fallback";
+	workspaceVersion: string;
+	historical?: boolean;
+}
+
+export interface CloudCpWorkspaceReviewDiffsRequest {
+	scope: CloudCpWorkspaceReviewScope;
+	paths: string[];
+	contextLines: number;
+	ignoreWhitespace: boolean;
+	workspaceVersion?: string;
+	commitSha?: string;
+}
+
+export interface CloudCpWorkspaceReviewDiffsResponse {
+	workspaceVersion: string;
+	groups: Array<{
+		repository?: string;
+		patch: string;
+		truncated: boolean;
+		includedPaths: string[];
+		deferred: Array<{ path: string; reason: "binary" | "oversized" | "generated" | "long_line" | "budget_exceeded" }>;
+		errors: Array<{ code: string; message: string }>;
+	}>;
+}
+
+export interface CloudCpWorkspaceReviewRevisionQuery {
+	path: string;
+	scope?: CloudCpWorkspaceReviewScope;
+	side?: CloudCpWorkspaceReviewSide;
+	workspaceVersion?: string;
+	expectedRevision?: string;
+	commitSha?: string;
+}
+
+export interface CloudCpWorkspaceReviewRevisionResponse {
+	path: string;
+	side: CloudCpWorkspaceReviewSide;
+	revision?: string;
+	workspaceVersion: string;
+	mediaType?: string;
+	encoding?: string;
+	size: number;
+	exists: boolean;
+	binary: boolean;
+	truncated: boolean;
+	content: string;
+}
+
+export interface CloudCpWorkspaceReviewTreeResponse {
+	path: string;
+	entries: Array<{
+		name: string;
+		path: string;
+		type: "file" | "dir";
+		status?: CloudCpWorkspaceReviewStatus;
+		hasChanges?: boolean;
+		size?: number;
+		binary?: boolean;
+	}>;
+	truncated: boolean;
+}
+
+export interface CloudCpWorkspaceReviewSearchQuery {
+	query: string;
+	cursor?: string;
+	limit?: number;
+}
+
+export interface CloudCpWorkspaceReviewSearchResponse {
+	query: string;
+	results: Array<Pick<CloudCpWorkspaceReviewFileSummary, "path" | "status" | "size" | "binary" | "fileFingerprint">>;
+	nextCursor?: string;
+	truncated: boolean;
+}
+
+export interface CloudCpWorkspaceReviewWriteRequest {
+	path: string;
+	content: string;
+	expectedFileFingerprint: string;
+}
+
+export interface CloudCpWorkspaceReviewWriteResponse {
+	path: string;
+	content: string;
+	size: number;
+	fileFingerprint: string;
+	workspaceVersion: string;
+}
+
 /** One pull request on a children listing (GET .../sessions/{id}/children). */
 export interface CloudCpSessionPullRequest {
 	url: string;

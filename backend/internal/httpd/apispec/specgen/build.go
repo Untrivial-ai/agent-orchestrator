@@ -261,6 +261,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersCleanupSessionsResponse":                  "CleanupSessionsResponse",
 	"ControllersCleanupSkippedSession":                    "CleanupSkippedSession",
 	"ControllersWorkspaceFileQuery":                       "WorkspaceFileQuery",
+	"ControllersPRFileQuery":                              "PRFileQuery",
+	"ControllersPRFileRevisionQuery":                      "PRFileRevisionQuery",
 	"ControllersUpdateWorkspaceFileRequest":               "UpdateWorkspaceFileRequest",
 	"ControllersWorkspaceFileBlobQuery":                   "WorkspaceFileBlobQuery",
 	"ControllersWorkspaceFileRevisionQuery":               "WorkspaceFileRevisionQuery",
@@ -269,6 +271,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersStageSessionAttachmentsResponse":          "StageSessionAttachmentsResponse",
 	"ControllersAttachmentInput":                          "AttachmentInput",
 	"ControllersListWorkspaceFilesResponse":               "ListWorkspaceFilesResponse",
+	"ControllersListPRFilesResponse":                      "ListPRFilesResponse",
 	"ControllersWorkspaceFileSummary":                     "WorkspaceFileSummary",
 	"ControllersWorkspaceFileSections":                    "WorkspaceFileSections",
 	"ControllersWorkspaceCommitSummary":                   "WorkspaceCommitSummary",
@@ -2067,6 +2070,28 @@ func sessionOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/pr/{prNumber}/files", id: "listSessionPRFiles", tag: "sessions",
+			summary:    "List the exact base-to-head changed files for an associated pull request",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.PRNumberParam{}, controllers.PRFilesQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListPRFilesResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/pr/{prNumber}/file", id: "getSessionPRFile", tag: "sessions",
+			summary:    "Read one file from an associated pull request base-to-head diff",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.PRNumberParam{}, controllers.PRFileQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.WorkspaceFileResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/workspace/events", id: "streamSessionWorkspaceChanges", tag: "sessions",
 			summary:    "Stream session workspace file changes",
 			pathParams: []any{controllers.SessionIDParam{}},
@@ -2129,6 +2154,17 @@ func sessionOperations() []operation {
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision", id: "getSessionPRFileRevision", tag: "sessions",
+			summary:    "Read one text-capable side of a pull request comparison",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.PRNumberParam{}, controllers.PRFileRevisionQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.WorkspaceFileRevisionResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},
 		{
