@@ -1,6 +1,7 @@
 import { Host } from "@expo/ui";
 import { Group, Image } from "@expo/ui/swift-ui";
 import {
+	accessibilityAddTraits,
 	accessibilityIdentifier,
 	accessibilityLabel,
 	frame,
@@ -53,6 +54,10 @@ export function NativeHeaderButton({
 					frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
 					glassCircle(),
 					onTapGesture(() => onPress()),
+					// The gesture is on the group rather than a Button, so nothing adds the
+					// button trait by itself: VoiceOver read these as plain text and never
+					// said "button". The trait is what a real Button would have contributed.
+					accessibilityAddTraits(["isButton"]),
 					accessibilityLabel(label),
 					accessibilityIdentifier(`header-${icon}`),
 				]}

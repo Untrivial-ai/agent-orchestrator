@@ -1,122 +1,119 @@
 import type { ComponentProps } from "react";
-import {
-	Activity,
-	Folder,
-	FolderOpen,
-	Pin,
-	PinOff,
-	Archive,
-	ArrowDown,
-	ArrowUp,
-	Bell,
-	Bookmark,
-	CameraOff,
-	Check,
-	ChevronDown,
-	ChevronLeft,
-	ChevronRight,
-	ChevronUp,
-	Circle,
-	CircleAlert,
-	CircleCheck,
-	CircleMinus,
-	CircleQuestionMark,
-	CircleX,
-	Clock,
-	Cloud,
-	CloudDownload,
-	Code,
-	Command,
-	Copy,
-	CornerDownLeft,
-	CornerDownRight,
-	CornerUpRight,
-	Cpu,
-	Delete,
-	Disc,
-	Ellipsis,
-	ExternalLink,
-	Feather as FeatherGlyph,
-	File,
-	FileText,
-	Flag,
-	GitBranch,
-	GitMerge,
-	GitPullRequest,
-	Globe,
-	Grid2x2,
-	Image,
-	Inbox,
-	Info,
-	Italic,
-	KeyRound,
-	Layers,
-	Link,
-	List,
-	LoaderCircle,
-	LogOut,
-	Map,
-	Maximize,
-	Menu,
-	MessageCircle,
-	MessageSquare,
-	Mic,
-	MicOff,
-	Minus,
-	Monitor,
-	Moon,
-	OctagonX,
-	Paperclip,
-	Pause,
-	Pen,
-	PenLine,
-	Play,
-	Plus,
-	Power,
-	Radio,
-	RefreshCw,
-	Repeat,
-	RotateCcw,
-	RotateCw,
-	Save,
-	Search,
-	Send,
-	Server,
-	Settings,
-	Shield,
-	ShieldOff,
-	Shuffle,
-	SlidersHorizontal,
-	Smartphone,
-	Square,
-	SquareCheck,
-	Star,
-	Sun,
-	Table,
-	Terminal,
-	Trash,
-	TriangleAlert,
-	Type,
-	Underline,
-	User,
-	WifiOff,
-	Wrench,
-	X,
-	Zap,
-} from "lucide-react-native";
+// One import per glyph, from its own module. The package root re-exports every
+// icon it ships, and a barrel is not tree-shaken here by default: a production
+// export that imported the root carried 4,330 modules against 2,480 on main for
+// the same screens. These are the only icons the app draws.
+import Activity from "lucide-react-native/icons/activity";
+import CircleAlert from "lucide-react-native/icons/circle-alert";
+import TriangleAlert from "lucide-react-native/icons/triangle-alert";
+import Archive from "lucide-react-native/icons/archive";
+import ArrowDown from "lucide-react-native/icons/arrow-down";
+import ArrowUp from "lucide-react-native/icons/arrow-up";
+import Bell from "lucide-react-native/icons/bell";
+import Bookmark from "lucide-react-native/icons/bookmark";
+import CameraOff from "lucide-react-native/icons/camera-off";
+import Check from "lucide-react-native/icons/check";
+import CircleCheck from "lucide-react-native/icons/circle-check";
+import SquareCheck from "lucide-react-native/icons/square-check";
+import ChevronDown from "lucide-react-native/icons/chevron-down";
+import ChevronLeft from "lucide-react-native/icons/chevron-left";
+import ChevronRight from "lucide-react-native/icons/chevron-right";
+import ChevronUp from "lucide-react-native/icons/chevron-up";
+import Circle from "lucide-react-native/icons/circle";
+import Clock from "lucide-react-native/icons/clock";
+import Cloud from "lucide-react-native/icons/cloud";
+import Code from "lucide-react-native/icons/code";
+import Command from "lucide-react-native/icons/command";
+import Copy from "lucide-react-native/icons/copy";
+import CornerDownLeft from "lucide-react-native/icons/corner-down-left";
+import CornerDownRight from "lucide-react-native/icons/corner-down-right";
+import CornerUpRight from "lucide-react-native/icons/corner-up-right";
+import Cpu from "lucide-react-native/icons/cpu";
+import Delete from "lucide-react-native/icons/delete";
+import Disc from "lucide-react-native/icons/disc";
+import CloudDownload from "lucide-react-native/icons/cloud-download";
+import Pen from "lucide-react-native/icons/pen";
+import PenLine from "lucide-react-native/icons/pen-line";
+import ExternalLink from "lucide-react-native/icons/external-link";
+import FeatherGlyph from "lucide-react-native/icons/feather";
+import File from "lucide-react-native/icons/file";
+import FileText from "lucide-react-native/icons/file-text";
+import Folder from "lucide-react-native/icons/folder";
+import FolderOpen from "lucide-react-native/icons/folder-open";
+import Flag from "lucide-react-native/icons/flag";
+import GitBranch from "lucide-react-native/icons/git-branch";
+import GitMerge from "lucide-react-native/icons/git-merge";
+import GitPullRequest from "lucide-react-native/icons/git-pull-request";
+import Globe from "lucide-react-native/icons/globe";
+import Grid2x2 from "lucide-react-native/icons/grid-2x2";
+import CircleQuestionMark from "lucide-react-native/icons/circle-question-mark";
+import Image from "lucide-react-native/icons/image";
+import Inbox from "lucide-react-native/icons/inbox";
+import Info from "lucide-react-native/icons/info";
+import Italic from "lucide-react-native/icons/italic";
+import KeyRound from "lucide-react-native/icons/key-round";
+import Layers from "lucide-react-native/icons/layers";
+import Link from "lucide-react-native/icons/link";
+import List from "lucide-react-native/icons/list";
+import LoaderCircle from "lucide-react-native/icons/loader-circle";
+import LogOut from "lucide-react-native/icons/log-out";
+import Map from "lucide-react-native/icons/map";
+import Maximize from "lucide-react-native/icons/maximize";
+import Menu from "lucide-react-native/icons/menu";
+import MessageCircle from "lucide-react-native/icons/message-circle";
+import MessageSquare from "lucide-react-native/icons/message-square";
+import Mic from "lucide-react-native/icons/mic";
+import MicOff from "lucide-react-native/icons/mic-off";
+import Minus from "lucide-react-native/icons/minus";
+import CircleMinus from "lucide-react-native/icons/circle-minus";
+import Monitor from "lucide-react-native/icons/monitor";
+import Moon from "lucide-react-native/icons/moon";
+import Ellipsis from "lucide-react-native/icons/ellipsis";
+import Paperclip from "lucide-react-native/icons/paperclip";
+import Pin from "lucide-react-native/icons/pin";
+import PinOff from "lucide-react-native/icons/pin-off";
+import Pause from "lucide-react-native/icons/pause";
+import Play from "lucide-react-native/icons/play";
+import Plus from "lucide-react-native/icons/plus";
+import Power from "lucide-react-native/icons/power";
+import Radio from "lucide-react-native/icons/radio";
+import RefreshCw from "lucide-react-native/icons/refresh-cw";
+import Repeat from "lucide-react-native/icons/repeat";
+import RotateCcw from "lucide-react-native/icons/rotate-ccw";
+import RotateCw from "lucide-react-native/icons/rotate-cw";
+import Save from "lucide-react-native/icons/save";
+import Search from "lucide-react-native/icons/search";
+import Send from "lucide-react-native/icons/send";
+import Server from "lucide-react-native/icons/server";
+import Settings from "lucide-react-native/icons/settings";
+import Shield from "lucide-react-native/icons/shield";
+import ShieldOff from "lucide-react-native/icons/shield-off";
+import Shuffle from "lucide-react-native/icons/shuffle";
+import SlidersHorizontal from "lucide-react-native/icons/sliders-horizontal";
+import Smartphone from "lucide-react-native/icons/smartphone";
+import Square from "lucide-react-native/icons/square";
+import Star from "lucide-react-native/icons/star";
+import Sun from "lucide-react-native/icons/sun";
+import Table from "lucide-react-native/icons/table";
+import Terminal from "lucide-react-native/icons/terminal";
+import Wrench from "lucide-react-native/icons/wrench";
+import Trash from "lucide-react-native/icons/trash";
+import Type from "lucide-react-native/icons/type";
+import Underline from "lucide-react-native/icons/underline";
+import User from "lucide-react-native/icons/user";
+import WifiOff from "lucide-react-native/icons/wifi-off";
+import X from "lucide-react-native/icons/x";
+import CircleX from "lucide-react-native/icons/circle-x";
+import OctagonX from "lucide-react-native/icons/octagon-x";
+import Zap from "lucide-react-native/icons/zap";
 
 /**
  * The app's icons, drawn from the desktop's set.
  *
  * The renderer draws every icon from Lucide, and this is the same family at the
- * same version — a glyph the desktop shows is the glyph drawn here. Feather was
- * Lucide's ancestor and close enough to pass at a glance, which is exactly how
- * the two products drifted: a chevron with a different shoulder, a lock with a
- * different shackle, one name meaning two drawings.
- *
- * Call sites keep the names they already use, and the map says where Lucide
- * renamed a glyph (`alert-circle` -> `CircleAlert`, `loader` -> `LoaderCircle`)
- * once, here, rather than at forty call sites.
+ * same version: a glyph the desktop shows is the glyph drawn here. Call sites
+ * keep the names they already use, and the map records where Lucide renamed one,
+ * and where two of our names land on the same drawing.
  */
 export const glyphs = {
 	"activity": Activity,

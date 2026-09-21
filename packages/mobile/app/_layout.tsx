@@ -1,9 +1,14 @@
-import { Geist_400Regular, Geist_500Medium, Geist_600SemiBold } from "@expo-google-fonts/geist";
-import { GeistMono_400Regular } from "@expo-google-fonts/geist-mono";
+// Per weight, not from the package root: the barrels pull every face the family
+// ships, and this app draws four of the thirty-six.
+import { Geist_400Regular } from "@expo-google-fonts/geist/400Regular";
+import { Geist_500Medium } from "@expo-google-fonts/geist/500Medium";
+import { Geist_600SemiBold } from "@expo-google-fonts/geist/600SemiBold";
+import { GeistMono_400Regular } from "@expo-google-fonts/geist-mono/400Regular";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider as NavigationThemeProvider } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -61,11 +66,25 @@ const CONNECT_SHEET_OPTIONS = {
 	headerShown: false,
 } as const;
 
+// Held until the faces are in, so the wait is spent on the splash instead of on
+// an empty root. The tree draws nothing without the family, and the splash is the
+// only thing that can cover that gap.
+void SplashScreen.preventAutoHideAsync().catch(() => {});
+
 export default function RootLayout() {
 	// The desktop's family, loaded before anything else draws: rendering the tree
 	// first would paint one frame of SF Pro and then swap every label under it.
-	const [fontsReady] = useFonts({ Geist_400Regular, Geist_500Medium, Geist_600SemiBold, GeistMono_400Regular });
-	if (!fontsReady) return null;
+	//
+	// `error` matters as much as `loaded`. A face that fails to load never flips
+	// `loaded`, so waiting on that flag alone left the app on a blank root forever,
+	// with no way out and nothing on screen to say why. A missing family is worth
+	// losing to a system fallback; it is not worth losing the app to.
+	const [fontsReady, fontError] = useFonts({ Geist_400Regular, Geist_500Medium, Geist_600SemiBold, GeistMono_400Regular });
+	const fontsSettled = fontsReady || fontError != null;
+	useEffect(() => {
+		if (fontsSettled) void SplashScreen.hideAsync().catch(() => {});
+	}, [fontsSettled]);
+	if (!fontsSettled) return null;
 
 	// ThemeProvider sits outside everything that reads a colour, including the
 	// Stack's own screenOptions below — hence the inner component: a hook cannot
