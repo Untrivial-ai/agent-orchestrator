@@ -103,12 +103,11 @@ describe("AgentModelCombobox", () => {
 
 	it("keeps compact catalogs free of search and result-count chrome", async () => {
 		renderCombobox(
-			Array.from({ length: 9 }, (_, index) => ({
+			Array.from({ length: 7 }, (_, index) => ({
 				id: `gpt-${index}`,
-				label: index === 8 ? "GPT Luna" : `GPT ${index}`,
+				label: index === 6 ? "GPT Luna" : `GPT ${index}`,
 				provider: "OpenAI",
 			})),
-			{ allowCustom: false, customModelEntry: "none" },
 		);
 
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
@@ -121,6 +120,7 @@ describe("AgentModelCombobox", () => {
 		const { onCustom } = renderCombobox([
 			{ id: "gpt-5.6-sol", label: "Sol" },
 			{ id: "gpt-5.6-luna", label: "Luna" },
+			...Array.from({ length: 6 }, (_, index) => ({ id: `model-${index}`, label: `Model ${index}` })),
 		]);
 
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
@@ -132,13 +132,14 @@ describe("AgentModelCombobox", () => {
 		expect(onCustom).toHaveBeenCalledWith("private/model-id");
 	});
 
-	it("adds simple model search at ten models", async () => {
+	it("adds simple model search at eight models", async () => {
 		renderCombobox(
-			Array.from({ length: 10 }, (_, index) => ({
-				id: index === 8 ? "gpt-luna" : index === 9 ? "claude-fable" : `model-${index}`,
-				label: index === 8 ? "Luna" : index === 9 ? "Fable" : `Model ${index}`,
+			Array.from({ length: 8 }, (_, index) => ({
+				id: index === 6 ? "gpt-luna" : index === 7 ? "claude-fable" : `model-${index}`,
+				label: index === 6 ? "Luna" : index === 7 ? "Fable" : `Model ${index}`,
 				provider: "OpenAI",
 			})),
+			{ allowCustom: false },
 		);
 
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
