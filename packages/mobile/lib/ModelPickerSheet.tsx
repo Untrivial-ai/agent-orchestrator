@@ -28,6 +28,12 @@ export function ModelPickerSheet({ catalog, selected, loading, refreshing, error
 		data={rows}
 		keyExtractor={(item) => item.id || "__auto__"}
 		contentContainerStyle={SHEET_SCROLL_CONTENT}
+		// The custom-model field lives in this list's footer, so the keyboard is up
+		// over the rows it is meant to help pick. Without this, Android's default
+		// (`never`) spends the first tap on dismissing the keyboard and only the
+		// second one chooses a model. Every other list in the app that holds an
+		// input already sets it.
+		keyboardShouldPersistTaps="handled"
 		ListHeaderComponent={<><SheetHeader title="Model" subtitle="Choose how this agent runs the task." right={<Pressable accessibilityRole="button" accessibilityLabel="Refresh model list" disabled={refreshing} onPress={() => { haptics.tap(); onRefresh(); }} style={styles.refresh}>{refreshing ? <ActivityIndicator size="small" color={t.accent} /> : <><Feather name="refresh-cw" size={iconSize.xs} color={t.accent} /><Text style={styles.refreshText}>Refresh</Text></>}</Pressable>} />{error || catalog?.warning ? <Text style={styles.error}>{error || catalog?.warning}</Text> : null}{loading ? <ActivityIndicator color={t.accent} style={{ marginVertical: space.xxl }} /> : null}</>}
 		renderItem={({ item }) => <Pressable accessibilityRole="radio" accessibilityState={{ selected: selected === item.id }} onPress={() => choose(item.id)} style={({ pressed }) => [styles.option, pressed && { opacity: press.opacity }]}><View style={{ flex: 1 }}><Text style={[styles.label, selected === item.id && { color: t.accent }]}>{item.label}</Text>{item.id === "" ? <Text style={styles.hint}>Let the agent choose</Text> : item.isDefault ? <Text style={styles.hint}>Agent default</Text> : null}</View>{selected === item.id ? <Feather name="check" size={iconSize.md} color={t.accent} /> : null}</Pressable>}
 		ListFooterComponent={catalog && (catalog.selectionMode === "text" || catalog.allowCustom) ? <View style={styles.custom}><Text style={styles.customLabel}>CUSTOM MODEL</Text><View style={styles.customRow}><TextInput value={custom} onChangeText={setCustom} placeholder="Model identifier" placeholderTextColor={t.textFaint} autoCapitalize="none" autoCorrect={false} style={styles.input} /><Pressable disabled={!custom.trim()} onPress={() => choose(custom.trim())} style={[styles.use, !custom.trim() && { opacity: 0.4 }]}><Text style={styles.useText}>Use</Text></Pressable></View></View> : null}

@@ -99,7 +99,16 @@ function Option({
 	const t = useTheme();
 	const s = useThemedStyles(makeS);
 	return (
-		<Pressable onPress={onPress} style={({ pressed }) => [s.option, pressed && s.optionPressed]}>
+		<Pressable
+			accessibilityRole="button"
+			// One of these is the active project, and the row showed that with an
+			// accent colour and a check glyph — neither of which a screen reader
+			// reports. Siblings elsewhere in the app (the model picker's rows, the
+			// theme choices) already carry the state; this one did not.
+			accessibilityState={{ selected }}
+			onPress={onPress}
+			style={({ pressed }) => [s.option, pressed && s.optionPressed]}
+		>
 			<Feather name={icon} size={iconSize.sm} color={selected ? t.accent : t.textTertiary} />
 			<Text style={[s.label, selected && { color: t.accent }]} numberOfLines={1}>
 				{label}

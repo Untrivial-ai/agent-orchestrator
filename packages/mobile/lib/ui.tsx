@@ -103,6 +103,8 @@ export function Pill({
 	const s = useThemedStyles(makeStyles);
 	return (
 		<Pressable
+			accessibilityRole="button"
+			accessibilityState={{ selected: active }}
 			onPress={() => {
 				haptics.select();
 				onPress();
@@ -385,6 +387,12 @@ export function Button({
 	return (
 		<Animated.View style={[style, pressFx.style]}>
 			<Pressable
+				accessibilityRole="button"
+				// The label is pinned to the visible title rather than left to the child
+				// text: while a request is in flight the text is replaced by a spinner,
+				// and the control would otherwise announce with no name at all.
+				accessibilityLabel={title}
+				accessibilityState={{ disabled: disabled || loading, busy: loading }}
 				onPressIn={pressFx.onPressIn}
 				onPressOut={pressFx.onPressOut}
 				onPress={() => {
@@ -620,6 +628,10 @@ export function SettingsRow({
 	return (
 		<Animated.View style={pressFx.style}>
 			<Pressable
+				accessibilityRole="button"
+				// No `accessibilityLabel`: the row's own text is the name, and pinning one
+				// would drop the accessory value ("Connected", "2 devices") from it.
+				accessibilityState={{ disabled: disabled || loading, busy: loading }}
 				disabled={disabled || loading}
 				onPressIn={pressFx.onPressIn}
 				onPressOut={pressFx.onPressOut}

@@ -2,7 +2,7 @@ import { Feather } from "../icons";
 import { XtermJsWebView, type XtermWebViewHandle } from "@fressh/react-native-xtermjs-webview";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Keyboard, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, BackHandler, Keyboard, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { ApiError, getPreview, isTerminalStatus, killSession, sendMessage } from "../api";
@@ -42,6 +42,20 @@ import type { RouteSession } from "./sessionRoute";
 import { iconSize, press, space, type } from "../tokens";
 
 const FONT_SIZE = 12;
+
+/**
+ * Touch padding for the two icon-only controls in the preview bar.
+ *
+ * The glyph sits in a box of roughly 23x19pt, well under the 44pt touch target.
+ * Growing the box itself would grow the bar, so the padding goes outside it: 12pt
+ * on every side except the one facing the other control, where the 8pt gap leaves
+ * room for 4. Asymmetric on purpose — symmetric padding of 8 swapped this pair's
+ * targets for the path text between them, and padding wide enough to reach 44 on
+ * both sides would make the reload and close targets overlap, which is worse than
+ * either being slightly small.
+ */
+const PREVIEW_RELOAD_SLOP = { top: 12, bottom: 12, left: 12, right: 4 } as const;
+const PREVIEW_CLOSE_SLOP = { top: 12, bottom: 12, left: 4, right: 12 } as const;
 
 // Injected into the xterm WebView after load. xterm has its own touch handlers
 // that scroll by discrete lines (the janky "1 line per swipe"). We intercept in
@@ -1057,6 +1071,21 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 		setBrowserOpen(true);
 	}, [browserOpen, hasPreview]);
 
+	// Android's back gesture closes what is on top. The preview is a full-screen
+	// overlay drawn inside this route, so without this it answered back by leaving
+	// the session — the whole terminal, not the panel the user was looking at —
+	// while the same gesture closed the drawer correctly. Registered only while the
+	// overlay is up, so it never competes with the drawer's handler for the back
+	// press on a route where only one of the two can be on screen.
+	useEffect(() => {
+		if (Platform.OS !== "android" || !browserOpen) return;
+		const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+			setBrowserOpen(false);
+			return true;
+		});
+		return () => subscription.remove();
+	}, [browserOpen]);
+
 	const startInterfaceSwitch = useCallback(
 		async (policy: "drain" | "interrupt") => {
 			try {
@@ -1497,10 +1526,22 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 							<Text style={styles.browserPath} numberOfLines={1}>
 								{preview.entry}
 							</Text>
-							<Pressable hitSlop={8} onPress={() => { haptics.tap(); previewWebRef.current?.reload(); }} style={styles.browserAction}>
+							<Pressable
+								accessibilityRole="button"
+								accessibilityLabel="Reload preview"
+								hitSlop={PREVIEW_RELOAD_SLOP}
+								onPress={() => { haptics.tap(); previewWebRef.current?.reload(); }}
+								style={styles.browserAction}
+							>
 								<Feather name="rotate-cw" size={iconSize.sm} color={t.accent} />
 							</Pressable>
-							<Pressable hitSlop={8} onPress={() => { haptics.tap(); setBrowserOpen(false); }} style={styles.browserAction}>
+							<Pressable
+								accessibilityRole="button"
+								accessibilityLabel="Close preview"
+								hitSlop={PREVIEW_CLOSE_SLOP}
+								onPress={() => { haptics.tap(); setBrowserOpen(false); }}
+								style={styles.browserAction}
+							>
 								<Feather name="x" size={iconSize.md} color={t.textSecondary} />
 							</Pressable>
 						</View>
