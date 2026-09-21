@@ -307,19 +307,22 @@ func (s *Store) AcknowledgeSessionInterfaceTransitionNotice(
 // controller is allowed to accept work.
 func (s *Store) EnqueueSessionInterfaceTransitionMessage(
 	ctx context.Context,
-	transitionID, clientMessageID, message string,
+	orgID, transitionID, clientMessageID, message string,
 ) error {
-	_, err := s.pool.Exec(
-		ctx,
-		`INSERT INTO ao_interface_transition_messages (
-			transition_id, client_message_id, message
-		) VALUES ($1, $2, $3)
-		ON CONFLICT (transition_id, client_message_id) DO NOTHING`,
-		transitionID,
-		clientMessageID,
-		message,
-	)
-	return err
+	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(
+			ctx,
+			`INSERT INTO ao_interface_transition_messages (
+				org_id, transition_id, client_message_id, message
+			) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (org_id, transition_id, client_message_id) DO NOTHING`,
+			orgID,
+			transitionID,
+			clientMessageID,
+			message,
+		)
+		return err
+	})
 }
 
 // CoordinatedInterfaceTransition is the service-context view the coordinator

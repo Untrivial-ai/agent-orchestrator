@@ -67,15 +67,16 @@ CREATE INDEX ao_interface_transitions_claim_idx
 -- Messages held while neither controller is allowed to accept work.
 CREATE TABLE ao_interface_transition_messages (
     id BIGSERIAL PRIMARY KEY,
+    org_id UUID NOT NULL REFERENCES ao_organizations(id) ON DELETE CASCADE,
     transition_id UUID NOT NULL,
     client_message_id TEXT NOT NULL,
     message TEXT NOT NULL CHECK (btrim(message) <> ''),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     delivered_at TIMESTAMPTZ,
-    UNIQUE (transition_id, client_message_id),
+    UNIQUE (org_id, transition_id, client_message_id),
     CONSTRAINT ao_interface_transition_messages_transition_fk
-        FOREIGN KEY (transition_id)
-        REFERENCES ao_interface_transitions(id)
+        FOREIGN KEY (org_id, transition_id)
+        REFERENCES ao_interface_transitions(org_id, id)
         ON DELETE CASCADE
 );
 
@@ -88,26 +89,14 @@ CREATE POLICY ao_interface_transitions_service_policy ON ao_interface_transition
     USING (ao_service_context())
     WITH CHECK (ao_service_context());
 
--- Messages are scoped through their parent transition; a tenant cannot reference
--- another organization's transition row, and service context may deliver them.
+-- Messages carry the parent's tenant key and the composite foreign key prevents
+-- cross-tenant ownership drift. Service context may deliver them.
 ALTER TABLE ao_interface_transition_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ao_interface_transition_messages FORCE ROW LEVEL SECURITY;
 CREATE POLICY ao_interface_transition_messages_tenant_policy
     ON ao_interface_transition_messages
-    USING (
-        EXISTS (
-            SELECT 1 FROM ao_interface_transitions t
-            WHERE t.org_id = ao_current_org_id()
-              AND t.id = transition_id
-        )
-    )
-    WITH CHECK (
-        EXISTS (
-            SELECT 1 FROM ao_interface_transitions t
-            WHERE t.org_id = ao_current_org_id()
-              AND t.id = transition_id
-        )
-    );
+    USING (org_id = ao_current_org_id())
+    WITH CHECK (org_id = ao_current_org_id());
 CREATE POLICY ao_interface_transition_messages_service_policy
     ON ao_interface_transition_messages
     USING (ao_service_context())
