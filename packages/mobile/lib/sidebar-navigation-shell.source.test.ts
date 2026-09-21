@@ -50,7 +50,9 @@ describe("sidebar page separation", () => {
 		expect(source).toContain('<Icon name="pin.fill"');
 		expect(source).toContain("rotationEffect(28)");
 		expect(source).not.toContain(">★</RNText>");
-		expect(androidSource).toContain('<FontAwesome name="thumb-tack"');
+		// The drawer draws the desktop's Lucide Pin now, not a FontAwesome pushpin.
+		expect(androidSource).toContain('<Feather name="pin"');
+		expect(androidSource).not.toContain("FontAwesome");
 		expect(androidSource).toContain('rotate: "28deg"');
 		expect(androidSource).not.toContain('name="star"');
 	});

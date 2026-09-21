@@ -1,7 +1,7 @@
 import { Feather } from "./icons";
 import { Pressable, StyleSheet } from "react-native";
 import { useTheme } from "./ThemeProvider";
-import { iconSize, type } from "./tokens";
+import { iconSize, radius, type } from "./tokens";
 
 export function SidebarSettingsButton({ active, onPress }: { active: boolean; onPress: () => void }) {
 	const t = useTheme();
@@ -29,7 +29,9 @@ const styles = StyleSheet.create({
 	button: {
 		width: 44,
 		height: 44,
-		borderRadius: 20, borderCurve: "continuous",
+		// A circle, like the spawn button beside it and the glass circles on iOS.
+		// At 20 the pair read as two different controls.
+		borderRadius: radius.pill, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",
 		justifyContent: "center",

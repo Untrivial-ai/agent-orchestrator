@@ -1,5 +1,4 @@
 import { Feather } from "./icons";
-import { FontAwesome } from "@expo/vector-icons";
 import { usePathname, useRouter } from "expo-router";
 import {
 	createContext,
@@ -343,7 +342,9 @@ function SessionRow({ session, projectName, onPress }: {
 					<Text numberOfLines={1} style={styles.sessionMeta}>{statusLabel} · {projectName}</Text>
 				</View>
 			</View>
-			{session.isPinned ? <FontAwesome name="thumb-tack" size={14} color={t.textTertiary} style={{ transform: [{ rotate: "28deg" }] }} /> : null}
+			{/* The desktop's Pin, tilted the way the swipe rail tilts it, so one action
+			    reads the same wherever it appears. */}
+			{session.isPinned ? <Feather name="pin" size={14} color={t.textTertiary} style={{ transform: [{ rotate: "28deg" }] }} /> : null}
 		</Pressable>
 	);
 }

@@ -44,7 +44,10 @@ export function ChatAttachmentMenu({
 				}}
 				style={[styles.trigger, disabled && styles.disabled]}
 			>
-				<Feather name="paperclip" size={iconSize.lg} color={disabled ? t.textFaint : t.textSecondary} />
+				{/* A plus, not a paperclip, to match the iOS trigger: the composer is one
+				    row of three controls, and the clip read as an attachment badge on the
+				    field rather than a way in. */}
+				<Feather name="plus" size={iconSize.xl} color={disabled ? t.textFaint : t.textSecondary} />
 			</Pressable>
 
 			<BottomSheet
@@ -94,7 +97,7 @@ function AttachmentChoice({ icon, label, bordered, onPress }: {
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
-	trigger: { width: 42, height: 42, borderRadius: radius.pill, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
+	trigger: { width: 44, height: 44, borderRadius: radius.pill, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
 	disabled: { opacity: 0.55 },
 	sheet: { paddingHorizontal: space.lg, backgroundColor: t.bgSurface },
 	header: { minHeight: 54, paddingHorizontal: space.xxs, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },

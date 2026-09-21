@@ -1,6 +1,6 @@
 import { requireOptionalNativeModule } from "expo-modules-core";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Appearance, useColorScheme } from "react-native";
+import { Appearance, Platform, useColorScheme } from "react-native";
 import { themeFor, type ColorScheme, type Theme } from "./theme";
 import { DEFAULT_PREFERENCE, nativeColorSchemeOverride, resolveScheme, type ThemePreference } from "./themePreference";
 import { loadThemePreference, saveThemePreference } from "./themeStore";
@@ -87,6 +87,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 		const systemUI = requireOptionalNativeModule<{ setBackgroundColorAsync(color: string): Promise<void> }>("ExpoSystemUI");
 		if (systemUI) void systemUI.setBackgroundColorAsync(backgroundColor).catch(() => {});
 	}, [backgroundColor]);
+
+	// Android's navigation bar is system chrome, and it follows the *activity's*
+	// theme rather than anything React Native draws. A phone in light mode with the
+	// app in dark mode therefore got Android's light contrast scrim under the
+	// gesture pill: a solid #e7e7e7 strip across the bottom of a dark screen. The
+	// bar's content and scrim follow this call instead of the device setting.
+	//
+	// Guarded like the window colour above, because the module is native and a
+	// build made before it would have nothing to bind to.
+	useEffect(() => {
+		if (Platform.OS !== "android") return;
+		const navigationBar = requireOptionalNativeModule<{ setStyle(style: "light" | "dark"): Promise<void> }>("ExpoNavigationBar");
+		void navigationBar?.setStyle(scheme === "dark" ? "light" : "dark").catch(() => {});
+	}, [scheme]);
 
 	const value = useMemo<ThemeState>(
 		() => ({ theme: themeFor(scheme), scheme, preference, setPreference }),
