@@ -14,6 +14,18 @@ const REDACTED_LOCAL_URL = "[redacted-local-url]";
 const REDACTED_LOCAL_PATH = "[redacted-local-path]";
 const ACTIVE_STORAGE_KEY = "ao.telemetry.activeSlotsByDate";
 const ROUTE_VIEW_STORAGE_KEY = "ao.telemetry.routeViewsByDate";
+const API_ERROR_KIND_SET = new Set([
+	"internal",
+	"bad_request",
+	"validation",
+	"not_found",
+	"conflict",
+	"forbidden",
+	"too_many_requests",
+	"not_implemented",
+	"unavailable",
+]);
+const API_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const EMBEDDED_LOCAL_URL_PATTERN =
 	/(?:\bfile:\/\/\/\S+|\bapp:\/\/renderer\/\S+|\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*)/gi;
 const POSTHOG_EVENT_NAME_ALIASES: Record<string, string> = {
@@ -504,6 +516,14 @@ export async function sanitizeRendererProperties(
 			if (projectIDHash) safe.project_id_hash = projectIDHash;
 			if (typeof properties?.source === "string" && ORCHESTRATOR_SPAWN_SOURCE_SET.has(properties.source)) {
 				safe.source = properties.source;
+			}
+			if (event === "ao.renderer.orchestrator_spawn_failed") {
+				if (typeof properties?.error_kind === "string" && API_ERROR_KIND_SET.has(properties.error_kind)) {
+					safe.error_kind = properties.error_kind;
+				}
+				if (typeof properties?.error_code === "string" && API_ERROR_CODE_PATTERN.test(properties.error_code)) {
+					safe.error_code = properties.error_code;
+				}
 			}
 			break;
 		}

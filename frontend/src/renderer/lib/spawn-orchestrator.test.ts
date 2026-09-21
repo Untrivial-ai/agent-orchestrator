@@ -14,6 +14,10 @@ vi.mock("./api-client", () => ({
 		typeof error === "object" && error !== null && "code" in error
 			? String((error as { code: unknown }).code)
 			: undefined,
+	apiErrorKind: (error: unknown) =>
+		typeof error === "object" && error !== null && "error" in error
+			? String((error as { error: unknown }).error)
+			: undefined,
 	apiErrorRequestId: (error: unknown) =>
 		typeof error === "object" && error !== null && "requestId" in error
 			? String((error as { requestId: unknown }).requestId)
@@ -128,6 +132,7 @@ describe("spawnOrchestrator", () => {
 		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
 			data: undefined,
 			error: {
+				error: "bad_request",
 				code: "CHAT_DRIVER_UNAVAILABLE",
 				message: "chat driver is unavailable",
 				requestId: "request-42",
@@ -138,10 +143,18 @@ describe("spawnOrchestrator", () => {
 		const error = await spawnOrchestrator("proj", "board").catch((caught: unknown) => caught);
 		expect(error).toBeInstanceOf(OrchestratorSpawnError);
 		expect(error).toMatchObject({
+			kind: "bad_request",
 			code: "CHAT_DRIVER_UNAVAILABLE",
 			requestId: "request-42",
 			status: 400,
 		});
+		expect(captureMock).toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_failed", {
+			project_id: "proj",
+			source: "board",
+			error_kind: "bad_request",
+			error_code: "CHAT_DRIVER_UNAVAILABLE",
+		});
+		expect(captureMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("message");
 		expect((error as Error).message).toBe("chat driver is unavailable (CHAT_DRIVER_UNAVAILABLE)");
 		expect(isChatPreflightError(error)).toBe(true);
 	});

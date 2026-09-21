@@ -340,6 +340,15 @@ export function apiErrorCode(error: unknown): string | undefined {
 	return undefined;
 }
 
+/** Semantic kind from the daemon's stable error envelope. */
+export function apiErrorKind(error: unknown): string | undefined {
+	if (typeof error === "object" && error !== null) {
+		const body = error as { error?: unknown };
+		if (typeof body.error === "string" && body.error !== "") return body.error;
+	}
+	return undefined;
+}
+
 /** Structured recovery metadata from the daemon's stable error envelope. */
 export function apiErrorDetails(error: unknown): Record<string, unknown> | undefined {
 	if (typeof error !== "object" || error === null) return undefined;
