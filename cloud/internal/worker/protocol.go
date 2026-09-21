@@ -301,6 +301,7 @@ type TerminalStreamFrame struct {
 	EventType  string          `json:"eventType,omitempty"`
 	OccurredAt time.Time       `json:"occurredAt,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
+	Duplicate  bool            `json:"duplicate,omitempty"`
 }
 
 type TerminalOutputRequest struct {

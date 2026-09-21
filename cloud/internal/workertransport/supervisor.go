@@ -72,6 +72,7 @@ type Supervisor struct {
 
 	mu                       sync.Mutex
 	terminals                map[string]*terminalProcess
+	notificationStreams      map[*terminalStream]struct{}
 	holdAgentInput           bool
 	workspaceReady           bool
 	agentStarting            bool
@@ -124,6 +125,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.Logger = slog.Default()
 	}
 	s.terminals = make(map[string]*terminalProcess)
+	s.notificationStreams = make(map[*terminalStream]struct{})
 	workspace, err := openWorkspace(s.Workspace)
 	if err != nil {
 		return err

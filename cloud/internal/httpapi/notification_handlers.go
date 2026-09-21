@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -43,39 +44,59 @@ func (s *Server) workerNotificationEvent(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:notification scope is required.")
 		return
 	}
-	var event domain.AgentNotificationEvent
-	if err := decodeJSONLimit(w, r, &event, maxNotificationRequestBytes); err != nil {
+	var request worker.NotificationEventRequest
+	if err := decodeJSONLimit(w, r, &request, maxNotificationRequestBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "The notification event is invalid.")
 		return
 	}
-	event.EventID = strings.TrimSpace(event.EventID)
-	if event.EventID == "" || len(event.EventID) > maxNotificationEventIDBytes || !event.Type.Valid() ||
-		event.OccurredAt.IsZero() || event.OccurredAt.After(time.Now().Add(5*time.Minute)) ||
-		!validNotificationPayload(event.Payload) {
-		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "The notification event violates a resource constraint.")
-		return
-	}
-	accepted, err := s.store.AcceptNotificationEvent(
-		r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch, event,
-	)
+	accepted, err := s.acceptWorkerNotification(r.Context(), claims, request)
 	if err != nil {
 		if errors.Is(err, postgres.ErrStaleWorker) {
 			writeError(w, r, http.StatusUnauthorized, "STALE_WORKER_TOKEN", "The worker credential has been replaced.")
 			return
 		}
-		s.writeStoreError(w, r, err)
+		if errors.Is(err, errInvalidNotificationEvent) {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "The notification event violates a resource constraint.")
+		} else {
+			s.writeStoreError(w, r, err)
+		}
 		return
-	}
-	if s.notificationWake != nil {
-		s.notificationWake()
 	}
 	status := http.StatusAccepted
 	if accepted.Duplicate {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, notificationAcceptanceResponse{
-		Accepted: true, EventID: event.EventID, Duplicate: accepted.Duplicate,
+		Accepted: true, EventID: request.EventID, Duplicate: accepted.Duplicate,
 	})
+}
+
+var errInvalidNotificationEvent = errors.New("invalid notification event")
+
+func (s *Server) acceptWorkerNotification(ctx context.Context, claims worker.Claims, request worker.NotificationEventRequest) (domain.NotificationAcceptance, error) {
+	request.EventID = strings.TrimSpace(request.EventID)
+	eventType := domain.NotificationType(request.Type)
+	if request.EventID == "" || len(request.EventID) > maxNotificationEventIDBytes || !eventType.Valid() ||
+		request.OccurredAt.IsZero() || request.OccurredAt.After(time.Now().Add(5*time.Minute)) || !validNotificationPayload(request.Payload) {
+		return domain.NotificationAcceptance{}, errInvalidNotificationEvent
+	}
+	accepted, err := s.store.AcceptNotificationEvent(ctx, claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch, domain.AgentNotificationEvent{
+		EventID: request.EventID, Type: eventType, OccurredAt: request.OccurredAt, Payload: request.Payload,
+	})
+	if err == nil && s.notificationWake != nil {
+		s.notificationWake()
+	}
+	return accepted, err
+}
+
+func notificationStreamErrorCode(err error) string {
+	if errors.Is(err, postgres.ErrStaleWorker) {
+		return "STALE_WORKER_TOKEN"
+	}
+	if errors.Is(err, errInvalidNotificationEvent) {
+		return "INVALID_NOTIFICATION"
+	}
+	return "NOTIFICATION_FAILED"
 }
 
 func validNotificationPayload(payload json.RawMessage) bool {

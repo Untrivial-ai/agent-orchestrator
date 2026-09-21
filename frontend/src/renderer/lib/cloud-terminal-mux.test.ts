@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createCloudTerminalMux } from "./cloud-terminal-mux";
+import { subscribeCloudNotificationHints } from "./cloud-notification-hints";
 
 // Minimal fake WebSocket: records its URL and every frame it sends, lets the
 // test deliver frames, and reports OPEN so sendJSON works.
@@ -138,6 +139,21 @@ describe("createCloudTerminalMux cursor resume", () => {
 		expect(cursor.value).toBe(0);
 		// A clear-screen + scrollback-wipe sequence is emitted to the pane.
 		expect(chunks.join("")).toContain("\x1b[2J");
+		mux.dispose();
+	});
+});
+
+describe("createCloudTerminalMux cloud notification hints", () => {
+	it("forwards a structured notification hint without writing terminal bytes", async () => {
+		FakeWebSocket.instances = [];
+		const mux = makeMux();
+		await settle();
+		const ws = FakeWebSocket.instances[0];
+		const hints: string[] = [];
+		const unsubscribe = subscribeCloudNotificationHints((hint) => hints.push(hint.eventId));
+		ws.deliver({ type: "notification_hint", eventId: "evt-1", eventType: "needs_input", occurredAt: "2026-09-21T00:00:00Z", payload: { message: "Need a choice" } });
+		expect(hints).toEqual(["evt-1"]);
+		unsubscribe();
 		mux.dispose();
 	});
 });

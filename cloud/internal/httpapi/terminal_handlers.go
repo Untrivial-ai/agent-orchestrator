@@ -436,6 +436,12 @@ func (s *Server) writeTerminalOutput(
 		live, cancelLive = s.terminalStreams.subscribeRelayOutput(terminal.ID)
 		defer cancelLive()
 	}
+	var notificationHints chan terminalRelayNotification
+	if structured && s.terminalRelayEnabled && s.terminalStreams != nil {
+		var cancelNotifications func()
+		notificationHints, cancelNotifications = s.terminalStreams.subscribeRelayNotifications(terminal.ID)
+		defer cancelNotifications()
+	}
 	replayComplete := false
 	startingSent := false
 	ready := false
@@ -554,6 +560,16 @@ func (s *Server) writeTerminalOutput(
 					"terminal_id", terminal.ID, "sequence", frame.sequence,
 					"bytes", len(frame.data))
 			}
+		case hint := <-notificationHints:
+			writeMu.Lock()
+			writeErr := writeTerminalMessage(ctx, connection, terminalServerMessage{
+				Type: "notification_hint", EventID: hint.eventID, EventType: hint.typeName,
+				OccurredAt: hint.occurredAt, Payload: hint.payload,
+			})
+			writeMu.Unlock()
+			if writeErr != nil {
+				return writeErr
+			}
 		case <-wake:
 			pollDurable = true
 		case <-ticker.C:
@@ -563,11 +579,15 @@ func (s *Server) writeTerminalOutput(
 }
 
 type terminalServerMessage struct {
-	Type     string `json:"type"`
-	Data     string `json:"data,omitempty"`
-	Message  string `json:"message,omitempty"`
-	Sequence int64  `json:"sequence,omitempty"`
-	InputID  string `json:"inputId,omitempty"`
+	Type       string          `json:"type"`
+	Data       string          `json:"data,omitempty"`
+	Message    string          `json:"message,omitempty"`
+	Sequence   int64           `json:"sequence,omitempty"`
+	InputID    string          `json:"inputId,omitempty"`
+	EventID    string          `json:"eventId,omitempty"`
+	EventType  string          `json:"eventType,omitempty"`
+	OccurredAt time.Time       `json:"occurredAt,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
 }
 
 func writeTerminalMessage(

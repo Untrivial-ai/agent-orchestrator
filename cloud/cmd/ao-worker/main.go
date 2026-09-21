@@ -209,7 +209,12 @@ func run(logger *slog.Logger) error {
 			defer outbox.Close()
 			results <- (&notificationoutbox.Flusher{
 				Outbox: outbox, WorkerEpoch: bootstrap.Epoch, Logger: logger,
-				Deliver: client.publishNotification,
+				Deliver: func(deliveryCtx context.Context, event notificationoutbox.Event) error {
+					if err := transportSupervisor.DeliverNotification(deliveryCtx, event); err == nil {
+						return nil
+					}
+					return client.publishNotification(deliveryCtx, event)
+				},
 			}).Run(runCtx)
 		}()
 	}
