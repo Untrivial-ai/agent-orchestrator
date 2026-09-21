@@ -354,6 +354,46 @@ func TestChangedInputsStartANewRetrySequence(t *testing.T) {
 	}
 }
 
+func TestOnlyManualModelRefreshPersistsLoadingState(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		refresh  func(*Service) (ports.AgentModelCatalog, error)
+		wantPuts int
+	}{
+		{
+			name: "automatic revalidation",
+			refresh: func(svc *Service) (ports.AgentModelCatalog, error) {
+				return svc.RevalidateModels(context.Background(), "codex", "project-a")
+			},
+			wantPuts: 1,
+		},
+		{
+			name: "manual refresh",
+			refresh: func(svc *Service) (ports.AgentModelCatalog, error) {
+				return svc.Models(context.Background(), "codex", "project-a", true)
+			},
+			wantPuts: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &fakeModelCache{}
+			discoverer := successfulModelDiscoverer()
+			svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
+			if _, err := svc.Models(context.Background(), "codex", "project-a", true); err != nil {
+				t.Fatal(err)
+			}
+			cache.puts = 0
+
+			if _, err := tc.refresh(svc); err != nil {
+				t.Fatal(err)
+			}
+			if cache.puts != tc.wantPuts {
+				t.Fatalf("cache updates = %d, want %d; automatic refresh must not publish a transient loading state", cache.puts, tc.wantPuts)
+			}
+		})
+	}
+}
+
 func TestModelDiscoveryRetryBackoffStopsAfterBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

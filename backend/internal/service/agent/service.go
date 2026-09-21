@@ -560,8 +560,12 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		cached.RefreshError = ""
 		cached.Catalog.RetryAt = nil
 	}
-	// Cache state is advisory; discovery remains usable without persistence.
-	_ = s.persistCatalogState(ctx, projectID, cached, hasCached, "refreshing", "", time.Time{}, generation)
+	// Only an explicit user refresh surfaces a loading state. Automatic daily,
+	// wake, and input-change revalidation keeps the last-known-good catalog
+	// visible without causing cache subscribers to show a loader.
+	if mode == modelLoadRefresh {
+		_ = s.persistCatalogState(ctx, projectID, cached, hasCached, "refreshing", "", time.Time{}, generation)
+	}
 	discovered, discoverErr := s.discoverer.Discover(ctx, request)
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
