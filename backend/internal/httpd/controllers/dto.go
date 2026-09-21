@@ -143,6 +143,11 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// PRNumberParam is the associated pull-request number in Files routes.
+type PRNumberParam struct {
+	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`
+}
+
 // AgentSwitchIDParam is the {switchId} path parameter for one durable switch saga.
 type AgentSwitchIDParam struct {
 	SwitchID string `path:"switchId" description:"Durable agent-switch identifier."`
@@ -205,6 +210,26 @@ type WorkspaceFileRevisionQuery struct {
 	WorkspaceVersion string `query:"workspaceVersion,omitempty" description:"Opaque workspace snapshot token used for consistency checks."`
 	ExpectedRevision string `query:"expectedRevision,omitempty" description:"Opaque revision token used for optimistic consistency checks."`
 	CommitSHA        string `query:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
+}
+
+// PRFilesQuery selects the associated pull request when multiple providers or
+// repositories can have the same pull-request number.
+type PRFilesQuery struct {
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileQuery identifies one file in an associated pull request.
+type PRFileQuery struct {
+	Path         string `query:"path" required:"true" description:"Repository-relative file path."`
+	PreviousPath string `query:"previousPath,omitempty" description:"Previous repository-relative path supplied by the selected PR file summary for rename detection."`
+	SourceURL    string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileRevisionQuery selects one immutable side of a pull-request comparison.
+type PRFileRevisionQuery struct {
+	Path      string `query:"path" required:"true" description:"Repository-relative file path."`
+	Side      string `query:"side,omitempty" enum:"before,after" description:"Comparison side. Defaults to after."`
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
 }
 
 // WorkspaceSearchQuery is the query string accepted by the workspace path search.
@@ -427,6 +452,14 @@ type ListWorkspaceFilesResponse struct {
 	// upstream, detached HEAD).
 	Ahead  *int `json:"ahead,omitempty"`
 	Behind *int `json:"behind,omitempty"`
+}
+
+// ListPRFilesResponse is the exact base...head changed-file set for one PR.
+type ListPRFilesResponse struct {
+	SessionID domain.SessionID       `json:"sessionId"`
+	Files     []WorkspaceFileSummary `json:"files"`
+	Truncated bool                   `json:"truncated"`
+	Summary   WorkspaceSummary       `json:"summary"`
 }
 
 // WorkspaceFileSections groups a session workspace's changed files by git

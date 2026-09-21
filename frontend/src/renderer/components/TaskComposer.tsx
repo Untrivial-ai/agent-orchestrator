@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	ExecutionContextView,
 	TaskComposerView,
 	type TaskComposerAgentControl,
 	type TaskComposerEffortControl,
@@ -26,6 +27,7 @@ import { useCloudOrg } from "../hooks/useCloudOrg";
 import { useProviderConnections } from "../hooks/useProviderConnections";
 import { cloudAgentInfos } from "../lib/cloud-agents";
 import { useSandboxProviderStore } from "../stores/sandbox-provider-store";
+import { executionContextLabels, projectRepositories } from "../lib/execution-context";
 import { cloudSessionsQueryKey, useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import {
 	agentModelsQueryKey,
@@ -130,8 +132,8 @@ export function TaskComposer({
 	// offers more than one); omitted lets the control plane use its default.
 	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
 	const cloudProjects = useCloudProjectsQuery();
-	const isCloudProject =
-		Boolean(projectId) && (cloudProjects.data ?? []).some((project) => project.id === projectId);
+	const cloudProject = (cloudProjects.data ?? []).find((project) => project.id === projectId);
+	const isCloudProject = Boolean(cloudProject);
 	const isStandalone = projectId === STANDALONE_WORKSPACE_ID;
 	// A cloud project is unknown to the local daemon, so the local model catalog
 	// must be queried agent-level (no project scope); otherwise the request 404s
@@ -266,9 +268,6 @@ export function TaskComposer({
 	// list (already fetched as cloudProjects). Reading the worker defaults from
 	// the disabled local query is what made a cloud worker ignore
 	// config.worker.agent and fall back to claude-code.
-	const cloudProject = isCloudProject
-		? (cloudProjects.data ?? []).find((project) => project.id === projectId)
-		: undefined;
 	const projectConfig = (isCloudProject ? cloudProject?.config : projectQuery.data?.config) as
 		| {
 				worker?: { agent?: string; agentConfig?: { model?: string; mode?: string; effort?: string } };
@@ -370,6 +369,10 @@ export function TaskComposer({
 		selectedAgent !== "" &&
 		settings?.defaultSessionMode === "chat" &&
 		!settings.chatHarnesses.includes(selectedAgent);
+	const canSubmit =
+		Boolean(projectId) &&
+		(!isStandalone || selectedAgent !== "") &&
+		(isCloudProject || isStandalone || projectQuery.data !== undefined);
 	const refreshSelectedModels = useCallback(async () => {
 		const refreshed = await refreshAgentModels(selectedAgent, modelsProjectId);
 		queryClient.setQueryData(agentModelsQueryKey(selectedAgent, modelsProjectId), refreshed);
@@ -403,12 +406,28 @@ export function TaskComposer({
 	useEffect(() => () => onSubmittingChange?.(false), [onSubmittingChange]);
 	useEffect(() => () => clearAttachments(), [clearAttachments]);
 
+	const executionContext = projectId ? (
+		<ExecutionContextView
+			activeAgent={selectedAgentLabel || undefined}
+			activeRole="worker"
+			baseBranch={projectQuery.data?.defaultBranch ?? cloudProject?.defaultBranch}
+			error={!isCloudProject && !isStandalone && projectQuery.isError ? (projectQuery.error instanceof Error ? projectQuery.error.message : t("newTask.configUnavailable")) : undefined}
+			labels={executionContextLabels(t)}
+			loading={!isCloudProject && !isStandalone && projectQuery.isPending}
+			orchestratorAgent={projectQuery.data?.config?.orchestrator?.agent ? selectedAgentLabelFor(projectQuery.data.config.orchestrator.agent, agentCatalog?.agents) : undefined}
+			path={projectQuery.data?.path}
+			projectName={projectQuery.data?.name ?? cloudProject?.displayName ?? projectId}
+			repositories={projectQuery.data ? projectRepositories(projectQuery.data) : cloudProject ? [cloudProject.repositoryUrl] : []}
+			workerAgent={projectWorkerAgent ? selectedAgentLabelFor(projectWorkerAgent, agentCatalog?.agents) : undefined}
+		/>
+	) : undefined;
+
 	const submitTask = async (
 		brief: string,
 		interfaceMode?: "tui",
 		approvalMode?: "bypass-permissions",
 	) => {
-		if (!projectId || isSubmitting) return;
+		if (!projectId || !canSubmit || isSubmitting) return;
 
 		const cleanModel = selectedModel.trim();
 		const cleanMode = selectedMode.trim();
@@ -459,7 +478,8 @@ export function TaskComposer({
 	return (
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
-			canSubmit={Boolean(projectId) && (!isStandalone || selectedAgent !== "")}
+			canSubmit={canSubmit}
+			context={executionContext}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
@@ -547,6 +567,10 @@ export function TaskComposer({
 			showEffort={!requiresTuiFallback && effortOptions.length > 0}
 		/>
 	);
+}
+
+function selectedAgentLabelFor(agent: string, catalog?: Array<{ id: string; label: string }>): string {
+	return catalog?.find((item) => item.id === agent)?.label ?? agent;
 }
 
 function TaskEffortPicker({ disabled, label, onChange, options, value }: TaskComposerEffortControl) {

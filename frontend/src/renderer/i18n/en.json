@@ -1835,6 +1835,9 @@
 	"files.explorer.filter": "Filter files",
 	"files.explorer.filterPlaceholder": "Filter files",
 	"files.explorer.changedOnly": "Changed only",
+	"files.explorer.source": "File source",
+	"files.explorer.workspaceSource": "Workspace",
+	"files.explorer.sourceUnavailable": "The selected pull request is no longer available; showing Workspace.",
 	"files.explorer.empty": "This folder is empty.",
 	"files.explorer.tree": "File tree",
 	"files.explorer.selectFile": "Select a file to preview.",
@@ -2040,5 +2043,9 @@
 	"home.newStandaloneAgent": "New standalone agent",
 	"createProject.standaloneDesc": "Start an agent without a project, repository, or workspace.",
 	"newTask.standaloneDescription": "Start a worker without attaching it to a project or repository.",
-	"settings.harness.summary": "{{installed}} of {{total}} installed"
+	"settings.harness.summary": "{{installed}} of {{total}} installed",
+	"executionContext.active": "active",
+	"executionContext.configured": "configured",
+	"executionContext.title": "execution context",
+	"executionContext.loading": "loading project context…"
 }

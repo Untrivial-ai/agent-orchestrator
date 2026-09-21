@@ -584,6 +584,20 @@ func (f *fakeSessionService) ListWorkspaceFiles(_ context.Context, id domain.Ses
 	return sessionsvc.WorkspaceFiles{SessionID: id}, nil
 }
 
+func (f *fakeSessionService) ListPRFiles(_ context.Context, id domain.SessionID, _ int, _ string) (sessionsvc.PRFiles, error) {
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.PRFiles{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	return sessionsvc.PRFiles{SessionID: id}, nil
+}
+
+func (f *fakeSessionService) GetPRFile(_ context.Context, id domain.SessionID, _ int, _ string, path string, _ *string) (sessionsvc.WorkspaceFileDetail, error) {
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceFileDetail{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
+}
+
 func (f *fakeSessionService) WorkspaceWatchPaths(_ context.Context, id domain.SessionID) ([]string, error) {
 	if f.workspaceErr != nil {
 		return nil, f.workspaceErr
@@ -671,6 +685,10 @@ func (f *fakeSessionService) GetWorkspaceFileRevision(_ context.Context, id doma
 		return f.workspaceRevision, nil
 	}
 	return sessionsvc.WorkspaceFileRevision{SessionID: id, Path: path, Side: side, Revision: expectedRevision, Exists: true}, nil
+}
+
+func (f *fakeSessionService) GetPRFileRevision(ctx context.Context, id domain.SessionID, number int, _ string, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileRevision, error) {
+	return f.GetWorkspaceFileRevision(ctx, id, path, sessionsvc.WorkspaceDiffCommitted, side, "", "")
 }
 
 func (f *fakeSessionService) GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (sessionsvc.WorkspaceFileRevision, error) {
@@ -1014,6 +1032,10 @@ func TestSessionsRoutes_DefaultToStubsWithoutService(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	body, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions", "")
+	assertJSON(t, headers)
+	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
+
+	body, status, headers = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/file/revision?path=README.md", "")
 	assertJSON(t, headers)
 	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
 }
@@ -2539,6 +2561,31 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 	}
 	if got.Files[1].Path != "notes.txt" || got.Files[1].PreviousPath != "old-notes.txt" || got.Files[1].Status != "renamed" {
 		t.Fatalf("second file = %#v", got.Files[1])
+	}
+}
+
+func TestSessionsAPI_ListPRFiles(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/files", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET PR files = %d, want 200; body=%s", status, body)
+	}
+	var got controllers.ListPRFilesResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != "ao-1" {
+		t.Fatalf("response = %+v", got)
+	}
+}
+
+func TestSessionsAPI_ListPRFilesRejectsInvalidNumber(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	_, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/nope/files", "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("GET PR files = %d, want 400", status)
 	}
 }
 

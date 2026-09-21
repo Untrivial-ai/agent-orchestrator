@@ -1661,6 +1661,9 @@
 	"files.explorer.filter": "Filter files",
 	"files.explorer.filterPlaceholder": "Filter files",
 	"files.explorer.changedOnly": "Changed only",
+	"files.explorer.source": "File source",
+	"files.explorer.workspaceSource": "Workspace",
+	"files.explorer.sourceUnavailable": "The selected pull request is no longer available; showing Workspace.",
 	"files.explorer.empty": "This folder is empty.",
 	"files.explorer.tree": "File tree",
 	"files.explorer.selectFile": "Select a file to preview.",
@@ -2060,5 +2063,9 @@
 	"settings.cloudAgents.github.saving": "Saving…",
 	"settings.cloudAgents.github.remove": "Remove",
 	"settings.cloudAgents.github.errorSave": "Could not save the GitHub token.",
-	"settings.cloudAgents.github.errorRemove": "Could not remove the GitHub token."
+	"settings.cloudAgents.github.errorRemove": "Could not remove the GitHub token.",
+	"executionContext.active": "アクティブ",
+	"executionContext.configured": "設定済み",
+	"executionContext.title": "実行コンテキスト",
+	"executionContext.loading": "プロジェクトコンテキストを読み込み中…"
 }
