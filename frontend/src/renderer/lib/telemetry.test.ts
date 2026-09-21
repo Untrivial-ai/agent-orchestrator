@@ -422,6 +422,47 @@ describe("telemetry sanitizers", () => {
 		expect(badSource).not.toHaveProperty("source");
 	});
 
+	it("keeps bounded daemon classifications on failed orchestrator spawns", async () => {
+		const kinds = [
+			"internal",
+			"bad_request",
+			"validation",
+			"not_found",
+			"conflict",
+			"forbidden",
+			"too_many_requests",
+			"not_implemented",
+			"unavailable",
+		];
+		for (const errorKind of kinds) {
+			const props = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_failed", {
+				project_id: "demo-project",
+				source: "board",
+				error_kind: errorKind,
+				error_code: "CHAT_DRIVER_UNAVAILABLE",
+				message: "raw error with /Users/alice/private",
+			});
+			expect(props).toMatchObject({
+				source: "board",
+				error_kind: errorKind,
+				error_code: "CHAT_DRIVER_UNAVAILABLE",
+			});
+			expect(props).not.toHaveProperty("message");
+		}
+
+		const unsafe = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_failed", {
+			error_kind: "invalid",
+			error_code: "raw message",
+		});
+		expect(unsafe).toEqual({});
+
+		const nonFailure = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_succeeded", {
+			error_kind: "conflict",
+			error_code: "CHAT_DRIVER_UNAVAILABLE",
+		});
+		expect(nonFailure).toEqual({});
+	});
+
 	it("keeps every whitelisted spawn source (the shared ORCHESTRATOR_SPAWN_SOURCES list)", async () => {
 		for (const source of ORCHESTRATOR_SPAWN_SOURCES) {
 			const props = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_succeeded", {

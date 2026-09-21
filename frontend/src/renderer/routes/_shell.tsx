@@ -33,7 +33,7 @@ import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { cloudProjectsQueryKey, cloudSessionsQueryKey, useWorkspaceQuery, workspaceQueryKey, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
-import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorKind, apiErrorMessage, apiErrorRequestId, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
@@ -416,6 +416,8 @@ function ShellLayout() {
 				"Project added, but the orchestrator is taking longer than expected to start. Retry from the board if it does not appear.",
 			);
 		}, PROVISIONING_TIMEOUT_MS);
+		let spawnErrorKind: string | undefined;
+		let spawnErrorCode: string | undefined;
 		try {
 			void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
 				project_id: workspace.id,
@@ -433,6 +435,8 @@ function ShellLayout() {
 				},
 			});
 			if (spawnError || !spawnData?.session?.id) {
+				spawnErrorKind = apiErrorKind(spawnError);
+				spawnErrorCode = apiErrorCode(spawnError);
 				const message = spawnError
 					? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
 					: `Failed to spawn orchestrator (${spawnResponse.status})`;
@@ -460,6 +464,8 @@ function ShellLayout() {
 			void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
 				project_id: workspace.id,
 				source,
+				error_kind: spawnErrorKind,
+				error_code: spawnErrorCode,
 			});
 			const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
 			const startupMessage = `Project added, but orchestrator did not start: ${message}`;

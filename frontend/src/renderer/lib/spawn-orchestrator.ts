@@ -1,4 +1,4 @@
-import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId } from "./api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorKind, apiErrorMessage, apiErrorRequestId } from "./api-client";
 import type { OrchestratorSpawnSource } from "./orchestrator-spawn-sources";
 import { captureRendererEvent } from "./telemetry";
 import type { SessionMode } from "../types/conversation";
@@ -25,6 +25,7 @@ export class OrchestratorSpawnError extends Error {
 		readonly requestId?: string,
 		readonly status?: number,
 		readonly details?: Record<string, unknown>,
+		readonly kind?: string,
 	) {
 		super(message);
 		this.name = "OrchestratorSpawnError";
@@ -76,13 +77,18 @@ export async function spawnOrchestrator(
 				apiErrorRequestId(error),
 				response.status,
 				apiErrorDetails(error),
+				apiErrorKind(error),
 			);
 		}
 
 		void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", { project_id: projectId, source });
 		return data.orchestrator.id;
 	} catch (err) {
-		void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", { project_id: projectId, source });
+		void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
+			project_id: projectId,
+			source,
+			...(err instanceof OrchestratorSpawnError ? { error_kind: err.kind, error_code: err.code } : {}),
+		});
 		throw err;
 	}
 }
