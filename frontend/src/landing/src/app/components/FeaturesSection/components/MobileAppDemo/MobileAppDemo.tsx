@@ -117,7 +117,7 @@ export function MobileAppDemo() {
                 className="absolute inset-0 flex flex-col"
               >
                 {destination === "workers" ? (
-                  <WorkersScreen navigationTrigger={navigationTrigger} onOpenNavigation={() => setNavigationOpen(true)} searchOpen={searchOpen} onToggleSearch={() => setSearchOpen((open) => !open)} />
+                  <WorkersScreen navigationTrigger={navigationTrigger} onOpenNavigation={() => setNavigationOpen(true)} searchOpen={searchOpen} onToggleSearch={() => setSearchOpen((open) => !open)} reduceMotion={reduceMotion} />
                 ) : destination === "projects" ? (
                   <ProjectsScreen navigationTrigger={navigationTrigger} onOpenNavigation={() => setNavigationOpen(true)} />
                 ) : (
@@ -181,7 +181,7 @@ function ScreenHeader({ title, navigationTrigger, onOpenNavigation }: ScreenProp
   );
 }
 
-function WorkersScreen({ navigationTrigger, onOpenNavigation, searchOpen, onToggleSearch }: ScreenProps & { searchOpen: boolean; onToggleSearch: () => void }) {
+function WorkersScreen({ navigationTrigger, onOpenNavigation, searchOpen, onToggleSearch, reduceMotion }: ScreenProps & { searchOpen: boolean; onToggleSearch: () => void; reduceMotion: boolean }) {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <ScreenHeader title="Workers" navigationTrigger={navigationTrigger} onOpenNavigation={onOpenNavigation} />
@@ -193,7 +193,7 @@ function WorkersScreen({ navigationTrigger, onOpenNavigation, searchOpen, onTogg
         <BottomFade />
       </div>
       <div className="absolute inset-x-[14px] bottom-[14px] z-10">
-        <AnimatePresence initial={false}>{searchOpen ? <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }} transition={MOTION.screen} className="mb-[7px] flex h-[44px] items-center gap-[7px] rounded-[22px] border px-[8px] pl-[12px] shadow-lg backdrop-blur-xl" style={{ backgroundColor: "rgba(18,19,23,0.68)", borderColor: "rgba(255,255,255,0.15)" }}>
+        <AnimatePresence initial={false}>{searchOpen ? <motion.div initial={reduceMotion ? false : { opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={reduceMotion ? undefined : { opacity: 0, y: 4 }} transition={reduceMotion ? { duration: 0 } : MOTION.screen} className="mb-[7px] flex h-[44px] items-center gap-[7px] rounded-[22px] border px-[8px] pl-[12px] shadow-lg backdrop-blur-xl" style={{ backgroundColor: "rgba(18,19,23,0.68)", borderColor: "rgba(255,255,255,0.15)" }}>
           <Search className="size-[14px]" style={{ color: t.tertiary }} /><span className="flex-1 text-[11px]" style={{ color: t.tertiary }}>Search workers</span>
           <RoundButton label="Close search" icon={X} onClick={onToggleSearch} />
         </motion.div> : null}</AnimatePresence>

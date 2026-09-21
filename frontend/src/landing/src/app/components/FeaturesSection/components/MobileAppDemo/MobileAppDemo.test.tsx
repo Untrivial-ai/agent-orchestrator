@@ -1,6 +1,13 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const motionPreference = vi.hoisted(() => ({ reduced: false }));
+
+vi.mock("motion/react", async (importOriginal) => ({
+  ...await importOriginal<typeof import("motion/react")>(),
+  useReducedMotion: () => motionPreference.reduced,
+}));
 
 import { MobileAppDemo } from "./MobileAppDemo";
 
@@ -9,6 +16,7 @@ describe("MobileAppDemo", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    motionPreference.reduced = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -102,6 +110,18 @@ describe("MobileAppDemo", () => {
     expect(button("Worker filters").parentElement).toBe(button("Search workers").parentElement);
     expect(button("New worker").parentElement).toBe(actions);
     expect(actions.querySelector('[role="separator"]')).toBeNull();
+  });
+
+  it("reveals search without motion when reduced motion is preferred", async () => {
+    motionPreference.reduced = true;
+    await act(async () => root.render(<MobileAppDemo />));
+
+    await click(button("Search workers"));
+
+    const searchPanel = button("Close search").parentElement;
+    if (!(searchPanel instanceof HTMLElement)) throw new Error("Search panel not found");
+    expect(searchPanel.style.opacity).not.toBe("0");
+    expect(searchPanel.style.transform).not.toContain("translateY");
   });
 
   function button(name: string): HTMLButtonElement {
