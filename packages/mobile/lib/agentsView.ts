@@ -339,7 +339,7 @@ export function prLine(session: DashboardSession): { text: string; tone: Tone } 
 		: lifecycles.includes("open")
 			? "success"
 			: lifecycles.includes("merged")
-				? "neutral"
+				? "merged"
 				: "passive";
 	return { text: `PR ${parts.join(" · ")}`, tone };
 }

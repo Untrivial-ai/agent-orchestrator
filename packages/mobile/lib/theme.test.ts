@@ -49,15 +49,29 @@ describe("palette parity", () => {
 		expect(lightTheme.onAccent).toBe("#ffffff");
 	});
 
-	// Blue and purple were removed from the product palette: every hue means a
-	// state, and the interactive accent carries emphasis with contrast instead.
-	it("has no blue or purple left anywhere in the palette", () => {
+	// Every hue in the palette means a state, and the interactive accent carries
+	// emphasis with contrast instead. Blue stays out — it meant nothing specific
+	// here, and the pin was carrying a stray one. Purple is in, meaning exactly
+	// one thing: a pull request that landed.
+	it("keeps blue out of the palette and purple to a single meaning", () => {
 		for (const t of [darkTheme, lightTheme]) {
-			for (const gone of ["blue", "purple", "tintBlue", "tintPurple", "attention"]) {
+			for (const gone of ["blue", "tintBlue", "attention"]) {
 				expect(t, gone).not.toHaveProperty(gone);
 			}
+			expect(t.purple, "purple").toBeTruthy();
+			// Not the accent, not the success hue: a merged PR must not read as
+			// either "selected" or "mergeable".
+			expect(t.purple).not.toBe(t.accent);
+			expect(t.purple).not.toBe(t.green);
 			expect(t.accent).not.toBe(t.orange);
 			expect(t.accentBorder).toBeTruthy();
+		}
+	});
+
+	it("marks a merged session with the purple, not the muted grey it used to share", () => {
+		for (const t of [darkTheme, lightTheme]) {
+			expect(statusVisual(t, "merged").color).toBe(t.purple);
+			expect(statusVisual(t, "merged").color).not.toBe(t.textSecondary);
 		}
 	});
 });

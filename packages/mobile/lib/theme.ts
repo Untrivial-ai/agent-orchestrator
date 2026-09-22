@@ -5,11 +5,18 @@
 //   amber            = needs your input / attention
 //   red              = failing / stuck / crashed
 //   green            = mergeable / passed / approved
-//   neutral (muted)  = terminal states — merged, done, killed
+//   purple           = merged
+//   neutral (muted)  = terminal states — done, killed
 //
-// There is no blue and no purple in the product palette, on purpose. Every hue
-// in the system already means a state, so the interactive accent carries
-// emphasis with contrast — a filled pill against a hairline outline — instead
+// Purple was added for merged, which was the one state that needed its own hue:
+// it borrowed the muted grey shared with "done" and "killed", so a pull request
+// that landed looked like a session that had merely switched off, sitting next
+// to a green that had only just said "mergeable". Purple means exactly that one
+// thing and nothing else.
+//
+// Blue is still absent. Every remaining hue means a state, so the interactive
+// accent carries emphasis with contrast — a filled pill against a hairline
+// outline — instead
 // of with a hue of its own. That keeps exactly one meaning per color, and stops
 // a filled button from reading as a status.
 //
@@ -60,11 +67,13 @@ export type Theme = {
 	amber: string;
 	red: string;
 	green: string;
+	purple: string;
 
 	tintOrange: string;
 	tintAmber: string;
 	tintRed: string;
 	tintGreen: string;
+	tintPurple: string;
 
 	/** Ink on a filled accent surface (primary button, send, mic). */
 	onAccent: string;
@@ -109,11 +118,13 @@ export const darkTheme: Theme = {
 	amber: "#e8c14a",
 	red: "#ef6b6b",
 	green: "#74b98a",
+	purple: "#b49bf0",
 
 	tintOrange: "rgba(245,159,76,0.14)",
 	tintAmber: "rgba(232,193,74,0.14)",
 	tintRed: "rgba(239,107,107,0.14)",
 	tintGreen: "rgba(116,185,138,0.14)",
+	tintPurple: "rgba(180,155,240,0.14)",
 
 	// Near-black ink on the near-white accent.
 	onAccent: "#0b0c0e",
@@ -157,11 +168,13 @@ export const lightTheme: Theme = {
 	amber: "#875900",
 	red: "#b13428",
 	green: "#2a702d",
+	purple: "#7a3fd0",
 
 	tintOrange: "rgba(180,83,9,0.12)",
 	tintAmber: "rgba(148,98,0,0.12)",
 	tintRed: "rgba(192,57,43,0.12)",
 	tintGreen: "rgba(47,125,50,0.12)",
+	tintPurple: "rgba(122,63,208,0.12)",
 
 	onAccent: "#ffffff",
 	scrim: "rgba(0,0,0,0.45)",
@@ -307,10 +320,11 @@ export function statusVisual(t: Theme, status?: string | null): StatusVisual {
 			return { color: t.green, label: "Approved" };
 		case "mergeable":
 			return { color: t.green, label: "Mergeable" };
-		// Merged is terminal and no longer actionable, so it drops out of the
-		// success hue and settles into the neutral the other finished states use.
+		// Merged used to drop out of the success hue into the same muted grey as
+		// "done" and "killed", which made a landed pull request look like a session
+		// that had merely switched off. It has its own hue now: one state, one colour.
 		case "merged":
-			return { color: t.textSecondary, label: "Merged" };
+			return { color: t.purple, label: "Merged" };
 		case "done":
 			return { color: t.green, label: "Done" };
 		case "idle":

@@ -10,13 +10,14 @@ describe("notificationVisual", () => {
 		expect(new Set(labels).size).toBe(4);
 	});
 
-	// The renderer draws these with GitHub's own vocabulary, and this theme's
-	// palette gives a merged PR the terminal tone rather than an action colour:
-	// merged is settled, not still open.
+	// The renderer draws these with GitHub's own vocabulary, and merged has its own
+	// hue rather than an action colour: it is settled, not still open — and it is
+	// no longer the grey it shared with a session that had merely switched off.
 	it("marks a merged PR the way the palette and the renderer both say", () => {
 		const merged = notificationVisual(darkTheme, "pr_merged");
 		expect(merged.icon).toBe("git-merge");
-		expect(merged.color).toBe(darkTheme.textSecondary);
+		expect(merged.color).toBe(darkTheme.purple);
+		expect(merged.color).not.toBe(darkTheme.textSecondary);
 		expect(merged.color).not.toBe(darkTheme.accent);
 	});
 
