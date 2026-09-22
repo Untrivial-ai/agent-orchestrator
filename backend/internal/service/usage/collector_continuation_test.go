@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +179,47 @@ func TestReadClaudeTranscriptMetaSkipsRecordsWithoutCwd(t *testing.T) {
 	}
 	if nativeID != "session-1" || cwd != "/tmp/worktree" {
 		t.Fatalf("nativeID=%q cwd=%q", nativeID, cwd)
+	}
+}
+
+func TestReadClaudeTranscriptMetaSkipsOversizedRecords(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "meta.jsonl")
+	content := "{\"type\":\"last-prompt\",\"sessionId\":\"session-1\"}\n" +
+		strings.Repeat("x", maxClaudeContinuationScanBytes+1) + "\n" +
+		"{\"type\":\"user\",\"sessionId\":\"session-1\",\"cwd\":\"/tmp/worktree\"}\n"
+	mustNoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	nativeID, cwd, ok := readClaudeTranscriptMeta(ctx, path)
+	if !ok {
+		t.Fatal("meta not found behind oversized record")
+	}
+	if nativeID != "session-1" || cwd != "/tmp/worktree" {
+		t.Fatalf("nativeID=%q cwd=%q", nativeID, cwd)
+	}
+}
+
+func TestCollectorContinuationDiscoveryIgnoresSessionIdFilenameMismatch(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1700000000, 0).UTC()
+	store := collectorTestStore(t)
+	claudeRoot := t.TempDir()
+	worktree := t.TempDir()
+	nativeA := "native-a"
+	session := seedContinuationSession(t, store, claudeRoot, worktree, nativeA)
+	seedCollectorUsageBinding(t, store, session, nativeA, domain.UsageBindingActive, now, "")
+
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: claudeRoot}, nil)
+	// Records carry continuationNativeB but the file name does not; binding it
+	// would strand a zero-source binding that fails every reconcile pass.
+	writeUsageFixture(t, filepath.Join(claudeRoot, "encoded-worktree", "mismatched.jsonl"),
+		`{"type":"last-prompt","sessionId":"`+continuationNativeB+`"}`+"\n"+
+			`{"type":"user","sessionId":"`+continuationNativeB+`","cwd":"`+worktree+`"}`+"\n")
+	mustNoError(t, collector.ReconcileSources(ctx, 8))
+	mustNoError(t, collector.ReconcileSources(ctx, 8))
+
+	sources := continuationBindingIDs(t, store, session.ID)
+	if _, ok := sources[continuationNativeB]; ok {
+		t.Fatalf("filename/sessionId mismatch must not mint a binding; bindings=%v", sources)
 	}
 }

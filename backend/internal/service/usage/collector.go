@@ -1393,9 +1393,13 @@ func (c *Collector) codexSourceBudgetExceeded(
 	return len(inventory.codexLogicalIDs) >= c.codexLogicalSourceLimit
 }
 
-// maxClaudeContinuationScanBytes bounds how much of a candidate transcript is
-// read while extracting its session id and cwd.
+// maxClaudeContinuationScanBytes bounds the size of one transcript record that
+// is parsed while extracting its session id and cwd.
 const maxClaudeContinuationScanBytes = 256 << 10
+
+// maxClaudeContinuationScanTotalBytes bounds the total bytes read per
+// candidate, so a pathological run-on record cannot make the scan unbounded.
+const maxClaudeContinuationScanTotalBytes = 8 << 20
 
 // maxClaudeContinuationScanRecords bounds the leading-record window.
 const maxClaudeContinuationScanRecords = 128
@@ -1459,6 +1463,12 @@ func (c *Collector) discoverClaudeContinuations(
 		}
 		nativeID, cwd, ok := readClaudeTranscriptMeta(ctx, resolved)
 		if !ok || !nativeUsageIDPattern.MatchString(nativeID) || !sameWorkspacePath(cwd, workspace) {
+			continue
+		}
+		if filepath.Base(resolved) != nativeID+".jsonl" {
+			// validateSourceAttribution rejects a claude_main source whose file
+			// name does not carry the native id, so upserting the binding first
+			// would strand a zero-source binding and fail every reconcile pass.
 			continue
 		}
 		newBinding, err := c.upsertContinuationBinding(ctx, session, nativeID, now)
@@ -1530,33 +1540,40 @@ type claudeTranscriptMetaRecord struct {
 // readClaudeTranscriptMeta extracts the native session id and working directory
 // from a bounded window of leading records. sessionId is present on every
 // transcript record but cwd first appears on user/assistant records, so the
-// first line alone is not enough.
+// first line alone is not enough. A record larger than maxClaudeContinuationScanBytes
+// is drained and skipped instead of aborting the scan: a transcript that opens
+// with a large paste or tool result must not become permanently undiscoverable.
 func readClaudeTranscriptMeta(ctx context.Context, path string) (string, string, bool) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", "", false
 	}
 	defer func() { _ = file.Close() }()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64<<10), maxClaudeContinuationScanBytes)
+	reader := bufio.NewReader(io.LimitReader(file, maxClaudeContinuationScanTotalBytes))
 	sessionID := ""
 	cwd := ""
-	for scanned := 0; scanned < maxClaudeContinuationScanRecords && scanner.Scan(); scanned++ {
+	for scanned := 0; scanned < maxClaudeContinuationScanRecords; {
 		if err := ctx.Err(); err != nil {
 			return "", "", false
 		}
-		var record claudeTranscriptMetaRecord
-		if json.Unmarshal(scanner.Bytes(), &record) != nil {
-			continue
-		}
-		if sessionID == "" {
-			sessionID = strings.TrimSpace(record.SessionID)
-		}
-		if cwd == "" {
-			cwd = strings.TrimSpace(record.Cwd)
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 && len(line) <= maxClaudeContinuationScanBytes {
+			scanned++
+			var record claudeTranscriptMetaRecord
+			if json.Unmarshal(line, &record) == nil {
+				if sessionID == "" {
+					sessionID = strings.TrimSpace(record.SessionID)
+				}
+				if cwd == "" {
+					cwd = strings.TrimSpace(record.Cwd)
+				}
+			}
 		}
 		if sessionID != "" && cwd != "" {
 			return sessionID, cwd, true
+		}
+		if readErr != nil {
+			break
 		}
 	}
 	return "", "", false
