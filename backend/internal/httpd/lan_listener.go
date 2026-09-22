@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -80,7 +81,7 @@ func lanControlBlock(next http.Handler) http.Handler {
 			notFoundJSON(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(requestscope.WithLAN(r.Context())))
 	})
 }
 

@@ -1159,7 +1159,7 @@ func shellTerminalOperations() []operation {
 }
 
 // cueOperations declares the project cue surface: reusable quick actions a
-// user defines per project and invokes through an agent session.
+// user defines per project and invokes through an agent session or transient terminal.
 func cueOperations() []operation {
 	return []operation{
 		{
@@ -1217,12 +1217,13 @@ func cueOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/cues/{cueId}/invoke", id: "invokeCue", tag: "cues",
-			summary:    "Dispatch a cue to the specified session; create a worker only when sessionId is omitted",
+			summary:    "Dispatch an agent cue to a session or run a command cue in a transient desktop terminal",
 			pathParams: []any{controllers.CueIDParam{}},
 			reqBody:    controllers.InvokeCueRequest{}, optionalReqBody: true,
 			resps: []respUnit{
 				{http.StatusOK, controllers.InvokeCueResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
 				{http.StatusRequestEntityTooLarge, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},

@@ -15,20 +15,23 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	cuesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/cue"
+	shelltermsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
 type fakeCueService struct {
-	gotProject  domain.ProjectID
-	gotCueID    domain.CueID
-	gotSession  domain.SessionID
-	gotCreateIn cuesvc.Input
-	gotUpdateIn cuesvc.Input
-	created     domain.Cue
-	listed      []domain.Cue
-	updated     domain.Cue
-	invoked     domain.SessionID
-	err         error
+	gotProject      domain.ProjectID
+	gotCueID        domain.CueID
+	gotInvoke       cuesvc.InvokeInput
+	gotCreateIn     cuesvc.Input
+	gotUpdateIn     cuesvc.Input
+	created         domain.Cue
+	listed          []domain.Cue
+	updated         domain.Cue
+	invoked         cuesvc.InvokeResult
+	enforceLoopback bool
+	err             error
 }
 
 func (f *fakeCueService) Create(_ context.Context, projectID domain.ProjectID, input cuesvc.Input) (domain.Cue, error) {
@@ -53,9 +56,12 @@ func (f *fakeCueService) Delete(_ context.Context, cueID domain.CueID) error {
 	return f.err
 }
 
-func (f *fakeCueService) Invoke(_ context.Context, cueID domain.CueID, sessionID domain.SessionID) (domain.SessionID, error) {
+func (f *fakeCueService) Invoke(_ context.Context, cueID domain.CueID, input cuesvc.InvokeInput) (cuesvc.InvokeResult, error) {
 	f.gotCueID = cueID
-	f.gotSession = sessionID
+	f.gotInvoke = input
+	if f.enforceLoopback && !input.AllowDirectCommand {
+		return cuesvc.InvokeResult{}, apierr.Forbidden("CUE_COMMAND_LOOPBACK_REQUIRED", "Command Cues can only run through the local daemon")
+	}
 	return f.invoked, f.err
 }
 
@@ -241,36 +247,82 @@ func TestCuesAPI_DeleteUnknownCueReturnsNotFound(t *testing.T) {
 }
 
 func TestCuesAPI_InvokeMessagesSession(t *testing.T) {
-	svc := &fakeCueService{invoked: "sess-123"}
+	svc := &fakeCueService{invoked: cuesvc.InvokeResult{Kind: domain.CueTypeAgent, SessionID: "sess-123"}}
 	srv := newCueTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke",
-		`{"sessionId":"sess-123"}`)
+		`{"sessionId":"sess-123","shell":"pwsh"}`)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", status, body)
 	}
-	if svc.gotCueID != "cue-def456" || svc.gotSession != "sess-123" {
-		t.Fatalf("invoke args = cue %q session %q", svc.gotCueID, svc.gotSession)
+	if svc.gotCueID != "cue-def456" || svc.gotInvoke.SessionID != "sess-123" || svc.gotInvoke.Shell != "pwsh" || !svc.gotInvoke.AllowDirectCommand {
+		t.Fatalf("invoke args = cue %q input %+v", svc.gotCueID, svc.gotInvoke)
 	}
 	var resp struct {
+		Kind      string `json:"kind"`
 		SessionID string `json:"sessionId"`
 	}
 	mustJSON(t, body, &resp)
-	if resp.SessionID != "sess-123" {
-		t.Fatalf("sessionId = %q, want sess-123", resp.SessionID)
+	if resp.Kind != "agent" || resp.SessionID != "sess-123" {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func newCueLANTestServer(t *testing.T, svc controllers.CueService) *httptest.Server {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Cues: svc}, httpd.ControlDeps{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		router.ServeHTTP(w, r.WithContext(requestscope.WithLAN(r.Context())))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCuesAPI_InvokeReturnsCommandTerminal(t *testing.T) {
+	terminal := shelltermsvc.ShellTerminal{
+		HandleID: "shellterm-cue", ProjectID: "portfolio", SessionID: "sess-123",
+		Title: "Run Tests", WorkingDir: `C:\worktrees\sess-123`,
+	}
+	svc := &fakeCueService{invoked: cuesvc.InvokeResult{
+		Kind: domain.CueTypeCommand, Terminal: &terminal, InitialState: "starting",
+	}}
+	srv := newCueTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", `{"sessionId":"sess-123","shell":"cmd"}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	var resp controllers.InvokeCueResponse
+	mustJSON(t, body, &resp)
+	if resp.Kind != "command" || resp.SessionID != "" || resp.State != "starting" || resp.ShellTerminal == nil || resp.ShellTerminal.HandleID != "shellterm-cue" {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestCuesAPI_LANInvocationCannotRunCommandCue(t *testing.T) {
+	svc := &fakeCueService{enforceLoopback: true}
+	srv := newCueLANTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", `{}`)
+	if status != http.StatusForbidden || !strings.Contains(string(body), "CUE_COMMAND_LOOPBACK_REQUIRED") {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if svc.gotInvoke.AllowDirectCommand {
+		t.Fatal("LAN request was marked as loopback")
 	}
 }
 
 func TestCuesAPI_InvokeWithoutSessionSpawnsWorker(t *testing.T) {
-	svc := &fakeCueService{invoked: "sess-worker"}
+	svc := &fakeCueService{invoked: cuesvc.InvokeResult{Kind: domain.CueTypeAgent, SessionID: "sess-worker"}}
 	srv := newCueTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", `{}`)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", status, body)
 	}
-	if svc.gotSession != "" {
-		t.Fatalf("session = %q, want empty", svc.gotSession)
+	if svc.gotInvoke.SessionID != "" {
+		t.Fatalf("session = %q, want empty", svc.gotInvoke.SessionID)
 	}
 	var resp struct {
 		SessionID string `json:"sessionId"`
@@ -323,8 +375,8 @@ func TestCuesAPI_InvokeRejectsPresentBlankSessionID(t *testing.T) {
 			if !strings.Contains(string(body), "INVALID_SESSION_ID") {
 				t.Fatalf("missing INVALID_SESSION_ID envelope: %s", body)
 			}
-			if svc.gotCueID != "" || svc.gotSession != "" {
-				t.Fatalf("invalid body dispatched: cue=%q session=%q", svc.gotCueID, svc.gotSession)
+			if svc.gotCueID != "" || svc.gotInvoke != (cuesvc.InvokeInput{}) {
+				t.Fatalf("invalid body dispatched: cue=%q input=%+v", svc.gotCueID, svc.gotInvoke)
 			}
 		})
 	}
@@ -342,8 +394,8 @@ func TestCuesAPI_InvokeRejectsTopLevelNullBody(t *testing.T) {
 		if !strings.Contains(string(body), "INVALID_JSON") {
 			t.Fatalf("missing INVALID_JSON envelope: %s", body)
 		}
-		if svc.gotCueID != "" || svc.gotSession != "" {
-			t.Fatalf("invalid body dispatched: cue=%q session=%q", svc.gotCueID, svc.gotSession)
+		if svc.gotCueID != "" || svc.gotInvoke != (cuesvc.InvokeInput{}) {
+			t.Fatalf("invalid body dispatched: cue=%q input=%+v", svc.gotCueID, svc.gotInvoke)
 		}
 	}
 }
@@ -357,15 +409,15 @@ func TestCuesAPI_InvokeOmittedSessionIDSpawnsWorker(t *testing.T) {
 		{"unrelated field", `{"unused":1}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := &fakeCueService{invoked: "sess-worker"}
+			svc := &fakeCueService{invoked: cuesvc.InvokeResult{Kind: domain.CueTypeAgent, SessionID: "sess-worker"}}
 			srv := newCueTestServer(t, svc)
 
 			body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", tc.body)
 			if status != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body=%s", status, body)
 			}
-			if svc.gotSession != "" {
-				t.Fatalf("session = %q, want empty (worker spawn)", svc.gotSession)
+			if svc.gotInvoke.SessionID != "" {
+				t.Fatalf("session = %q, want empty (worker spawn)", svc.gotInvoke.SessionID)
 			}
 		})
 	}
@@ -408,7 +460,7 @@ func TestCuesAPI_BoundedSingleJSONBody(t *testing.T) {
 			{"malformed", "{", 400},
 		} {
 			t.Run(route.method+route.path+tc.name, func(t *testing.T) {
-				svc := &fakeCueService{created: sampleCue(), updated: sampleCue(), invoked: "sess-1"}
+				svc := &fakeCueService{created: sampleCue(), updated: sampleCue(), invoked: cuesvc.InvokeResult{Kind: domain.CueTypeAgent, SessionID: "sess-1"}}
 				srv := newCueTestServer(t, svc)
 				body, status, _ := doRequest(t, srv, route.method, route.path, tc.body)
 				want := tc.status

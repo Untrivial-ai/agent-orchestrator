@@ -491,7 +491,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Dispatch a cue to the specified session; create a worker only when sessionId is omitted */
+        /** Dispatch an agent cue to a session or run a command cue in a transient desktop terminal */
         post: operations["invokeCue"];
         delete?: never;
         options?: never;
@@ -3430,7 +3430,7 @@ export interface components {
             name: string;
             /** @description Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues. */
             prompt?: string;
-            /** @description Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB. */
+            /** @description Cue kind: command runs directly in a transient terminal; agent sends an authored prompt. Definition body limit: 128 KiB. */
             type: string;
         };
         CueEnvelope: {
@@ -3690,12 +3690,26 @@ export interface components {
             updatedAt?: null | string;
         };
         InvokeCueRequest: {
-            /** @description Session to message. Omit the field to create a worker in the cue's project. A supplied id must be non-blank and reachable; an explicit blank, null, unavailable, or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB. */
+            /** @description Optional exact session target. Agent cues message it; command cues use its worktree. Omit it to spawn an agent worker or run a command in the project root. A supplied id must be non-blank and compatible, and never falls back to a replacement worker. Invocation body limit: 4 KiB. */
             sessionId?: string;
+            /** @description Desktop shell selection used only for command cues. */
+            shell?: string;
         };
         InvokeCueResponse: {
-            /** @description Session that received the cue: the messaged session, or the newly spawned worker. */
-            sessionId: string;
+            /**
+             * @description Invocation kind.
+             * @enum {string}
+             */
+            kind: "agent" | "command";
+            /** @description For agent cues, the session that received the prompt or newly spawned worker. */
+            sessionId?: string;
+            /** @description For command cues, the transient terminal running the command. */
+            shellTerminal?: components["schemas"]["ShellTerminalResponse"];
+            /**
+             * @description Initial command-terminal state.
+             * @enum {string}
+             */
+            state?: "starting";
         };
         KillReviewResponse: {
             reviewerHandleId: string;
@@ -6437,6 +6451,15 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -403,6 +403,8 @@
 	"cues.empty": "No cues yet. Create one to run a prompt or command on demand.",
 	"cues.emptyMenu": "No cues in this project",
 	"cues.invokeFailed": "Could not run the cue.",
+	"cues.invokeCommandStarted": "명령이 시작됨",
+	"cues.invokeCommandStartedBody": "터미널에서 {{name}}을(를) 시작했습니다",
 	"cues.invokeSent": "세션에 전송됨",
 	"cues.invokeSentBody": "{{name}}을(를) 세션에 전송했습니다",
 	"cues.loadFailed": "Could not load cues.",

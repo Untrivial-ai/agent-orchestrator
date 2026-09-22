@@ -15,6 +15,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	cuesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/cue"
 )
 
@@ -24,7 +25,7 @@ type CueService interface {
 	List(ctx context.Context, projectID domain.ProjectID) ([]domain.Cue, error)
 	Update(ctx context.Context, cueID domain.CueID, input cuesvc.Input) (domain.Cue, error)
 	Delete(ctx context.Context, cueID domain.CueID) error
-	Invoke(ctx context.Context, cueID domain.CueID, sessionID domain.SessionID) (domain.SessionID, error)
+	Invoke(ctx context.Context, cueID domain.CueID, input cuesvc.InvokeInput) (cuesvc.InvokeResult, error)
 }
 
 // CuesController owns the project cue routes: reusable, user-defined quick
@@ -35,6 +36,7 @@ type CuesController struct {
 
 type invokeCueRequestBody struct {
 	SessionID json.RawMessage `json:"sessionId"`
+	Shell     string          `json:"shell,omitempty"`
 }
 
 func (b *invokeCueRequestBody) UnmarshalJSON(data []byte) error {
@@ -139,6 +141,7 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req InvokeCueRequest
+	req.Shell = payload.Shell
 	if payload.SessionID != nil {
 		if err := json.Unmarshal(payload.SessionID, &req.SessionID); err != nil || strings.TrimSpace(req.SessionID) == "" {
 			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_SESSION_ID", "Session id must not be blank when supplied", nil)
@@ -150,14 +153,21 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "CUE_ID_INVALID", "Invalid cue id", nil)
 		return
 	}
-	sessionID, err := c.Svc.Invoke(r.Context(), domain.CueID(cueID), domain.SessionID(req.SessionID))
+	result, err := c.Svc.Invoke(r.Context(), domain.CueID(cueID), cuesvc.InvokeInput{
+		SessionID:          domain.SessionID(req.SessionID),
+		Shell:              req.Shell,
+		AllowDirectCommand: !requestscope.IsLAN(r.Context()),
+	})
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, InvokeCueResponse{
-		SessionID: string(sessionID),
-	})
+	response := InvokeCueResponse{Kind: string(result.Kind), SessionID: string(result.SessionID), State: result.InitialState}
+	if result.Terminal != nil {
+		terminal := shellTerminalResponse(*result.Terminal)
+		response.ShellTerminal = &terminal
+	}
+	envelope.WriteJSON(w, http.StatusOK, response)
 }
 
 // Bound allocation before decoding, and consume the entire body so trailing

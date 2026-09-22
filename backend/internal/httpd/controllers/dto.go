@@ -1707,7 +1707,7 @@ type CueProjectIDParam struct {
 type CueDefinitionRequest struct {
 	Name        string `json:"name" maxLength:"64" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
 	Description string `json:"description,omitempty" maxLength:"240" description:"Optional human note about the cue, at most 240 bytes."`
-	Type        string `json:"type" description:"Cue kind: command asks an agent to run a shell command; agent sends an authored prompt. Definition body limit: 128 KiB."`
+	Type        string `json:"type" description:"Cue kind: command runs directly in a transient terminal; agent sends an authored prompt. Definition body limit: 128 KiB."`
 	Command     string `json:"command,omitempty" maxLength:"4096" description:"Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues."`
 	Prompt      string `json:"prompt,omitempty" maxLength:"16384" description:"Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues."`
 }
@@ -1732,12 +1732,16 @@ type ListCuesResponse struct {
 
 // InvokeCueRequest is the optional body of POST /api/v1/cues/{cueId}/invoke.
 type InvokeCueRequest struct {
-	SessionID string `json:"sessionId,omitempty" description:"Session to message. Omit the field to create a worker in the cue's project. A supplied id must be non-blank and reachable; an explicit blank, null, unavailable, or incompatible session returns an error and never creates a replacement worker. Invocation body limit: 4 KiB."`
+	SessionID string `json:"sessionId,omitempty" description:"Optional exact session target. Agent cues message it; command cues use its worktree. Omit it to spawn an agent worker or run a command in the project root. A supplied id must be non-blank and compatible, and never falls back to a replacement worker. Invocation body limit: 4 KiB."`
+	Shell     string `json:"shell,omitempty" description:"Desktop shell selection used only for command cues."`
 }
 
 // InvokeCueResponse is the body of POST /api/v1/cues/{cueId}/invoke.
 type InvokeCueResponse struct {
-	SessionID string `json:"sessionId" description:"Session that received the cue: the messaged session, or the newly spawned worker."`
+	Kind          string                 `json:"kind" enum:"agent,command" description:"Invocation kind."`
+	SessionID     string                 `json:"sessionId,omitempty" description:"For agent cues, the session that received the prompt or newly spawned worker."`
+	ShellTerminal *ShellTerminalResponse `json:"shellTerminal,omitempty" description:"For command cues, the transient terminal running the command."`
+	State         string                 `json:"state,omitempty" enum:"starting" description:"Initial command-terminal state."`
 }
 
 // CueEnvelope is the { cue } response body for cue reads and mutations.

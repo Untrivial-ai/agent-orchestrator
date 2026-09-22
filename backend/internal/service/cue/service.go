@@ -16,10 +16,11 @@ import (
 // and delete. Validation rejects malformed definitions up front; uniqueness and
 // project existence are enforced by the store and surfaced as API errors.
 type Service struct {
-	store    Store
-	sessions Sessions
-	newID    func() string
-	now      func() time.Time
+	store     Store
+	sessions  Sessions
+	terminals CommandTerminals
+	newID     func() string
+	now       func() time.Time
 }
 
 // Deps configures a Service.
@@ -28,6 +29,8 @@ type Deps struct {
 	// Sessions is the session side of cue invocation: messaging an active
 	// session or spawning a worker when no session was requested.
 	Sessions Sessions
+	// Terminals executes trusted command Cues without involving an agent.
+	Terminals CommandTerminals
 	// NewID overrides the cue id generator in tests.
 	NewID func() string
 	// Now overrides the clock in tests.
@@ -42,7 +45,7 @@ func New(d Deps) *Service {
 	if d.Now == nil {
 		d.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{store: d.Store, sessions: d.Sessions, newID: d.NewID, now: d.Now}
+	return &Service{store: d.Store, sessions: d.Sessions, terminals: d.Terminals, newID: d.NewID, now: d.Now}
 }
 
 // Create persists a new cue for a project. It reports INVALID_PROJECT_ID for a

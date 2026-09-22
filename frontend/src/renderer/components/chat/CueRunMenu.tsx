@@ -4,9 +4,12 @@ import { Loader2, MessageSquare, Play, Plus, TerminalSquare } from "lucide-react
 import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../../stores/ui-store";
 import { apiErrorMessage } from "../../lib/api-client";
-import { useNavigateToSession } from "../../lib/navigate-to-session";
+import { useNavigateToSession, useNavigateToTerminals } from "../../lib/navigate-to-session";
 import { useInvokeCueMutation, useProjectCuesQuery } from "../../hooks/useCuesQuery";
 import { fetchProjectCues, projectCuesQueryKey, type CueDTO } from "../../lib/cues";
+import { shellTerminalsQueryKey, toShellTerminal, type ShellTerminal } from "../../hooks/useShellTerminals";
+import { markTerminalHandleFresh } from "../../lib/fresh-terminal-handles";
+import { terminalShellRequestValue, useTerminalShellStore } from "../../stores/terminal-shell-store";
 import { TopbarButton } from "../TopbarButton";
 import {
 	DropdownMenu,
@@ -58,6 +61,8 @@ function CueRunMenuTrigger({
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const queryClient = useQueryClient();
 	const navigateToSession = useNavigateToSession();
+	const navigateToTerminals = useNavigateToTerminals();
+	const setActiveShellTerminal = useUiStore((state) => state.setActiveShellTerminal);
 	const [open, setOpen] = useState(false);
 	const [runningPrimary, setRunningPrimary] = useState(false);
 	const pending = useRef(false);
@@ -130,10 +135,25 @@ function CueRunMenuTrigger({
 		const origin = generation.current;
 		setInvokingId(cue.id);
 		try {
-			const targetSessionId = await invokeMutation.mutateAsync({ cueId: cue.id, sessionId });
+			await useTerminalShellStore.getState().load();
+			const shell = terminalShellRequestValue(useTerminalShellStore.getState().preference);
+			const result = await invokeMutation.mutateAsync({ cueId: cue.id, sessionId, shell });
 			if (origin !== generation.current) return;
+			if (result.kind === "command") {
+				if (!result.shellTerminal) throw new Error(t("cues.invokeFailed"));
+				const terminal = toShellTerminal(result.shellTerminal);
+				markTerminalHandleFresh(terminal.handleId);
+				queryClient.setQueryData<ShellTerminal[]>(shellTerminalsQueryKey, (current = []) => [
+					terminal,
+					...current.filter((item) => item.handleId !== terminal.handleId),
+				]);
+				setActiveShellTerminal(terminal.handleId);
+				showGlobalToast(t("cues.invokeCommandStarted"), t("cues.invokeCommandStartedBody", { name: cue.name }));
+				if (!sessionId) navigateToTerminals();
+				return;
+			}
 			showGlobalToast(t("cues.invokeSent"), t("cues.invokeSentBody", { name: cue.name }));
-			if (!sessionId) navigateToSession(projectId, targetSessionId);
+			if (!sessionId && result.sessionId) navigateToSession(projectId, result.sessionId);
 		} catch (error) {
 			if (origin !== generation.current) return;
 			showGlobalToast(t("cues.invokeFailed"), apiErrorMessage(error, t("cues.invokeFailed")), "error");

@@ -403,6 +403,8 @@
 	"cues.empty": "No cues yet. Create one to run a prompt or command on demand.",
 	"cues.emptyMenu": "No cues in this project",
 	"cues.invokeFailed": "Could not run the cue.",
+	"cues.invokeCommandStarted": "命令已启动",
+	"cues.invokeCommandStartedBody": "已在终端中启动 {{name}}",
 	"cues.invokeSent": "已发送到会话",
 	"cues.invokeSentBody": "已将 {{name}} 发送到会话",
 	"cues.loadFailed": "Could not load cues.",

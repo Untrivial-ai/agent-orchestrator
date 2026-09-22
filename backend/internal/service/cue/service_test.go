@@ -10,6 +10,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/cue"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
 // fakeStore is an in-memory cue.Store for service tests. It keeps stored
@@ -293,6 +294,17 @@ type fakeSessions struct {
 	spawned  []ports.SpawnConfig
 }
 
+type fakeCommandTerminals struct {
+	opened []shellterm.OpenCueCommandTerminalInput
+	result shellterm.ShellTerminal
+	err    error
+}
+
+func (f *fakeCommandTerminals) OpenCueCommandTerminal(_ context.Context, input shellterm.OpenCueCommandTerminalInput) (shellterm.ShellTerminal, error) {
+	f.opened = append(f.opened, input)
+	return f.result, f.err
+}
+
 func newFakeSessions() *fakeSessions {
 	return &fakeSessions{sessions: map[domain.SessionID]domain.Session{}}
 }
@@ -340,7 +352,7 @@ func commandCue(id domain.CueID, projectID domain.ProjectID) domain.Cue {
 
 func newInvokeService(t *testing.T, store *fakeStore, sessions *fakeSessions) *cue.Service {
 	t.Helper()
-	return cue.New(cue.Deps{Store: store, Sessions: sessions})
+	return cue.New(cue.Deps{Store: store, Sessions: sessions, Terminals: &fakeCommandTerminals{}})
 }
 
 func TestInvokeSendsToMessageableSession(t *testing.T) {
@@ -350,12 +362,12 @@ func TestInvokeSendsToMessageableSession(t *testing.T) {
 	sessions.sessions["sess-1"] = activeSession("sess-1", "mer", domain.ActivityIdle)
 	svc := newInvokeService(t, store, sessions)
 
-	got, err := svc.Invoke(context.Background(), "cue-a", "sess-1")
+	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", AllowDirectCommand: true})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if got != "sess-1" {
-		t.Fatalf("invoke returned %s, want sess-1", got)
+	if got.Kind != domain.CueTypeAgent || got.SessionID != "sess-1" || got.Terminal != nil {
+		t.Fatalf("invoke returned %+v, want sess-1", got)
 	}
 	if len(sessions.sent) != 1 || sessions.sent[0] != "Reword the PR description." {
 		t.Fatalf("sent = %v", sessions.sent)
@@ -365,18 +377,65 @@ func TestInvokeSendsToMessageableSession(t *testing.T) {
 	}
 }
 
-func TestInvokeCommandCueWrapsCommand(t *testing.T) {
+func TestInvokeCommandCueOpensTerminalWithoutTouchingAgent(t *testing.T) {
 	store := newFakeStore()
 	store.cues["cue-a"] = commandCue("cue-a", "mer")
 	sessions := newFakeSessions()
 	sessions.sessions["sess-1"] = activeSession("sess-1", "mer", domain.ActivityActive)
-	svc := newInvokeService(t, store, sessions)
+	terminals := &fakeCommandTerminals{result: shellterm.ShellTerminal{HandleID: "shellterm-cue", ProjectID: "mer", SessionID: "sess-1", WorkingDir: "/worktrees/sess-1"}}
+	svc := cue.New(cue.Deps{Store: store, Sessions: sessions, Terminals: terminals})
 
-	if _, err := svc.Invoke(context.Background(), "cue-a", "sess-1"); err != nil {
+	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", Shell: "pwsh", AllowDirectCommand: true})
+	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if len(sessions.sent) != 1 || sessions.sent[0] != "Run `pnpm lint` and report the output." {
-		t.Fatalf("sent = %v", sessions.sent)
+	if len(terminals.opened) != 1 || terminals.opened[0].ProjectID != "mer" || terminals.opened[0].SessionID != "sess-1" || terminals.opened[0].Command != "pnpm lint" || terminals.opened[0].Shell != "pwsh" {
+		t.Fatalf("opened = %+v", terminals.opened)
+	}
+	if got.Kind != domain.CueTypeCommand || got.Terminal == nil || got.Terminal.HandleID != "shellterm-cue" || got.InitialState != "starting" {
+		t.Fatalf("result = %+v", got)
+	}
+	if len(sessions.sent) != 0 || len(sessions.spawned) != 0 {
+		t.Fatalf("agent touched: sent=%v spawned=%v", sessions.sent, sessions.spawned)
+	}
+}
+
+func TestInvokeCommandCueFromBoardUsesProjectTerminalWithoutAgent(t *testing.T) {
+	store := newFakeStore()
+	store.cues["cue-a"] = commandCue("cue-a", "mer")
+	sessions := newFakeSessions()
+	terminals := &fakeCommandTerminals{result: shellterm.ShellTerminal{HandleID: "shellterm-board", ProjectID: "mer", WorkingDir: "/projects/mer"}}
+	svc := cue.New(cue.Deps{Store: store, Sessions: sessions, Terminals: terminals})
+
+	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{Shell: "bash", AllowDirectCommand: true})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if len(terminals.opened) != 1 || terminals.opened[0].SessionID != "" || terminals.opened[0].ProjectID != "mer" {
+		t.Fatalf("opened = %+v", terminals.opened)
+	}
+	if got.Terminal == nil || got.Terminal.HandleID != "shellterm-board" || len(sessions.sent) != 0 || len(sessions.spawned) != 0 {
+		t.Fatalf("result=%+v sent=%v spawned=%v", got, sessions.sent, sessions.spawned)
+	}
+}
+
+func TestInvokeCommandCueRequiresLoopbackAndPropagatesTerminalErrors(t *testing.T) {
+	store := newFakeStore()
+	store.cues["cue-a"] = commandCue("cue-a", "mer")
+	sessions := newFakeSessions()
+	terminals := &fakeCommandTerminals{}
+	svc := cue.New(cue.Deps{Store: store, Sessions: sessions, Terminals: terminals})
+
+	_, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{})
+	wantCode(t, err, apierr.KindForbidden, "CUE_COMMAND_LOOPBACK_REQUIRED")
+	if len(terminals.opened) != 0 || len(sessions.sent) != 0 || len(sessions.spawned) != 0 {
+		t.Fatal("forbidden command dispatched")
+	}
+
+	terminals.err = errors.New("terminal failed")
+	_, err = svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{AllowDirectCommand: true})
+	if err == nil || err.Error() != "terminal failed" || len(terminals.opened) != 1 {
+		t.Fatalf("terminal error=%v opened=%v", err, terminals.opened)
 	}
 }
 
@@ -386,12 +445,12 @@ func TestInvokeWithoutSessionSpawnsWorker(t *testing.T) {
 	sessions := newFakeSessions()
 	svc := newInvokeService(t, store, sessions)
 
-	got, err := svc.Invoke(context.Background(), "cue-a", "")
+	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{AllowDirectCommand: true})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if got != "sess-worker" {
-		t.Fatalf("invoke returned %s, want sess-worker", got)
+	if got.Kind != domain.CueTypeAgent || got.SessionID != "sess-worker" {
+		t.Fatalf("invoke returned %+v, want sess-worker", got)
 	}
 	if len(sessions.sent) != 0 {
 		t.Fatalf("sent %d message(s), want none", len(sessions.sent))
@@ -412,9 +471,9 @@ func TestInvokeLookupErrorsNeverSpawn(t *testing.T) {
 		sessions := newFakeSessions()
 		sessions.getErr = lookupErr
 		svc := newInvokeService(t, store, sessions)
-		got, err := svc.Invoke(context.Background(), "cue-a", "sess-gone")
-		if got != "" || !errors.Is(err, lookupErr) || len(sessions.spawned) != 0 || len(sessions.sent) != 0 {
-			t.Fatalf("lookup error: got=%q err=%v sent=%v spawned=%v", got, err, sessions.sent, sessions.spawned)
+		got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-gone", AllowDirectCommand: true})
+		if got != (cue.InvokeResult{}) || !errors.Is(err, lookupErr) || len(sessions.spawned) != 0 || len(sessions.sent) != 0 {
+			t.Fatalf("lookup error: got=%+v err=%v sent=%v spawned=%v", got, err, sessions.sent, sessions.spawned)
 		}
 	}
 }
@@ -437,10 +496,10 @@ func TestInvokeUnmessageableSessionNeverSpawns(t *testing.T) {
 			sessions.sessions["sess-1"] = tc.sess
 			svc := newInvokeService(t, store, sessions)
 
-			got, err := svc.Invoke(context.Background(), "cue-a", "sess-1")
+			got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", AllowDirectCommand: true})
 			wantCode(t, err, apierr.KindConflict, "CUE_TARGET_UNAVAILABLE")
-			if got != "" {
-				t.Fatalf("unexpected destination %s", got)
+			if got != (cue.InvokeResult{}) {
+				t.Fatalf("unexpected destination %+v", got)
 			}
 			if len(sessions.sent) != 0 {
 				t.Fatalf("sent %d message(s), want none", len(sessions.sent))
@@ -455,13 +514,13 @@ func TestInvokeUnmessageableSessionNeverSpawns(t *testing.T) {
 func TestInvokeErrors(t *testing.T) {
 	t.Run("empty cue id", func(t *testing.T) {
 		svc := newInvokeService(t, newFakeStore(), newFakeSessions())
-		_, err := svc.Invoke(context.Background(), "", "sess-1")
+		_, err := svc.Invoke(context.Background(), "", cue.InvokeInput{SessionID: "sess-1", AllowDirectCommand: true})
 		wantCode(t, err, apierr.KindInvalid, "INVALID_CUE_ID")
 	})
 
 	t.Run("unknown cue", func(t *testing.T) {
 		svc := newInvokeService(t, newFakeStore(), newFakeSessions())
-		_, err := svc.Invoke(context.Background(), "cue-x", "sess-1")
+		_, err := svc.Invoke(context.Background(), "cue-x", cue.InvokeInput{SessionID: "sess-1", AllowDirectCommand: true})
 		wantCode(t, err, apierr.KindNotFound, "CUE_NOT_FOUND")
 	})
 
@@ -473,7 +532,7 @@ func TestInvokeErrors(t *testing.T) {
 		sessions.sendErr = errors.New("delivery failed")
 		svc := newInvokeService(t, store, sessions)
 
-		_, err := svc.Invoke(context.Background(), "cue-a", "sess-1")
+		_, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", AllowDirectCommand: true})
 		if err == nil || err.Error() != "delivery failed" {
 			t.Fatalf("invoke error = %v, want delivery failed", err)
 		}
@@ -486,7 +545,7 @@ func TestInvokeErrors(t *testing.T) {
 		sessions.spawnErr = errors.New("agent not installed")
 		svc := newInvokeService(t, store, sessions)
 
-		_, err := svc.Invoke(context.Background(), "cue-a", "")
+		_, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{AllowDirectCommand: true})
 		if err == nil || err.Error() != "agent not installed" {
 			t.Fatalf("invoke error = %v, want agent not installed", err)
 		}
@@ -495,7 +554,7 @@ func TestInvokeErrors(t *testing.T) {
 	t.Run("nil sessions guard", func(t *testing.T) {
 		store := newFakeStore()
 		svc := cue.New(cue.Deps{Store: store})
-		if _, err := svc.Invoke(context.Background(), "cue-a", ""); err == nil {
+		if _, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{AllowDirectCommand: true}); err == nil {
 			t.Fatal("invoke without sessions succeeded")
 		}
 	})
@@ -538,7 +597,7 @@ func TestInvokeCanceledDoesNotDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, target := range []domain.SessionID{"", "sess-1"} {
-		_, err := svc.Invoke(ctx, "cue-a", target)
+		_, err := svc.Invoke(ctx, "cue-a", cue.InvokeInput{SessionID: target, AllowDirectCommand: true})
 		if !errors.Is(err, context.Canceled) || len(sessions.sent) != 0 || len(sessions.spawned) != 0 {
 			t.Fatalf("cancellation: %v", err)
 		}
@@ -550,7 +609,7 @@ func TestInvokeBlankExplicitTargetDoesNotSpawn(t *testing.T) {
 	store.cues["cue-a"] = agentCue("cue-a", "mer", "hello")
 	sessions := newFakeSessions()
 	svc := newInvokeService(t, store, sessions)
-	_, err := svc.Invoke(context.Background(), "cue-a", "  ")
+	_, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "  ", AllowDirectCommand: true})
 	wantCode(t, err, apierr.KindInvalid, "INVALID_SESSION_ID")
 	if len(sessions.sent) != 0 || len(sessions.spawned) != 0 {
 		t.Fatal("blank target dispatched")

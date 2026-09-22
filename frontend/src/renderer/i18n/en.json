@@ -399,6 +399,8 @@
 	"cues.empty": "No cues yet. Create one to run a prompt or command on demand.",
 	"cues.emptyMenu": "No cues in this project",
 	"cues.invokeFailed": "Could not run the cue.",
+	"cues.invokeCommandStarted": "Command started",
+	"cues.invokeCommandStartedBody": "{{name}} started in a terminal",
 	"cues.invokeSent": "Sent to session",
 	"cues.invokeSentBody": "{{name}} sent to session",
 	"cues.loadFailed": "Could not load cues.",

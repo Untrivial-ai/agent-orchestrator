@@ -8,13 +8,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
-
-// commandCueInstructionFmt shapes a command cue into an agent instruction. A
-// command cue is executed by the agent, not by AO: the agent runs the command
-// in its sandbox and reports the output back, so the message is an instruction
-// to do exactly that.
-const commandCueInstructionFmt = "Run `%s` and report the output."
 
 // Sessions is the session side of a cue invocation: resolving an active session
 // to message, or spawning a worker when no session was requested.
@@ -24,54 +19,75 @@ type Sessions interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error)
 }
 
-// Invoke runs one cue. Inside a session, the cue's content is sent to that
-// session as a message. Command execution remains agent-mediated. Only calls
-// without a session create a worker; an explicit target never falls back to a
-// different workspace. It returns the id of the session accepting the message.
-func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, sessionID domain.SessionID) (domain.SessionID, error) {
+// CommandTerminals opens trusted command-cue terminals without an agent.
+type CommandTerminals interface {
+	OpenCueCommandTerminal(context.Context, shellterm.OpenCueCommandTerminalInput) (shellterm.ShellTerminal, error)
+}
+
+// Invoke runs one cue. Agent cues are delivered to the selected session, or
+// spawn a worker when invoked from the project board. Command cues open a
+// transient terminal in the selected session worktree or project root and
+// never create or message an agent.
+func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, input InvokeInput) (InvokeResult, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return InvokeResult{}, err
 	}
 	if s == nil || s.store == nil {
-		return "", fmt.Errorf("cue: store is required")
-	}
-	if s.sessions == nil {
-		return "", fmt.Errorf("cue: sessions are required")
+		return InvokeResult{}, fmt.Errorf("cue: store is required")
 	}
 	if strings.TrimSpace(string(cueID)) == "" {
-		return "", apierr.Invalid("INVALID_CUE_ID", "Cue id is required", nil)
+		return InvokeResult{}, apierr.Invalid("INVALID_CUE_ID", "Cue id is required", nil)
 	}
 	cue, ok, err := s.store.SelectCueByID(ctx, cueID)
 	if err != nil {
-		return "", err
+		return InvokeResult{}, err
 	}
 	if !ok {
-		return "", apierr.NotFound("CUE_NOT_FOUND", "Unknown cue")
+		return InvokeResult{}, apierr.NotFound("CUE_NOT_FOUND", "Unknown cue")
 	}
-	message := invokeMessage(cue)
-
-	if sessionID != "" {
-		if strings.TrimSpace(string(sessionID)) == "" {
-			return "", apierr.Invalid("INVALID_SESSION_ID", "Session id must not be blank", nil)
+	if cue.Type == domain.CueTypeCommand {
+		if !input.AllowDirectCommand {
+			return InvokeResult{}, apierr.Forbidden("CUE_COMMAND_LOOPBACK_REQUIRED", "Command Cues can only run through the local daemon")
 		}
-		sess, err := s.sessions.Get(ctx, sessionID)
+		if s.terminals == nil {
+			return InvokeResult{}, fmt.Errorf("cue: command terminals are required")
+		}
+		terminal, err := s.terminals.OpenCueCommandTerminal(ctx, shellterm.OpenCueCommandTerminalInput{
+			ProjectID: cue.ProjectID, SessionID: input.SessionID, Shell: input.Shell,
+			Command: cue.Command, Title: cue.Name,
+		})
 		if err != nil {
-			return "", err
+			return InvokeResult{}, err
+		}
+		return InvokeResult{Kind: domain.CueTypeCommand, Terminal: &terminal, InitialState: "starting"}, nil
+	}
+	if s.sessions == nil {
+		return InvokeResult{}, fmt.Errorf("cue: sessions are required")
+	}
+	message := cue.Prompt
+
+	if input.SessionID != "" {
+		if strings.TrimSpace(string(input.SessionID)) == "" {
+			return InvokeResult{}, apierr.Invalid("INVALID_SESSION_ID", "Session id must not be blank", nil)
+		}
+		sess, err := s.sessions.Get(ctx, input.SessionID)
+		if err != nil {
+			return InvokeResult{}, err
 		}
 		if !sessionMessageable(sess, cue.ProjectID) {
-			return "", apierr.Conflict("CUE_TARGET_UNAVAILABLE", "This session cannot accept the cue. Select an available session in the cue's project.", nil)
+			return InvokeResult{}, apierr.Conflict("CUE_TARGET_UNAVAILABLE", "This session cannot accept the cue. Select an available session in the cue's project.", nil)
 		}
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return InvokeResult{}, err
 		}
-		if err := s.sessions.Send(ctx, sessionID, message, nil); err != nil {
-			return "", err
+		if err := s.sessions.Send(ctx, input.SessionID, message, nil); err != nil {
+			return InvokeResult{}, err
 		}
-		return sessionID, nil
+		return InvokeResult{Kind: domain.CueTypeAgent, SessionID: input.SessionID}, nil
 	}
 
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return InvokeResult{}, err
 	}
 	spawned, _, _, err := s.sessions.Spawn(ctx, ports.SpawnConfig{
 		ProjectID: cue.ProjectID,
@@ -79,18 +95,9 @@ func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, sessionID doma
 		Prompt:    message,
 	})
 	if err != nil {
-		return "", err
+		return InvokeResult{}, err
 	}
-	return spawned.ID, nil
-}
-
-// invokeMessage is the agent-facing payload a cue becomes: agent cues are the
-// authored prompt verbatim; command cues are instructions to run the command.
-func invokeMessage(cue domain.Cue) string {
-	if cue.Type == domain.CueTypeCommand {
-		return fmt.Sprintf(commandCueInstructionFmt, cue.Command)
-	}
-	return cue.Prompt
+	return InvokeResult{Kind: domain.CueTypeAgent, SessionID: spawned.ID}, nil
 }
 
 // sessionMessageable reports whether a cue may be injected into a session:

@@ -7,21 +7,33 @@ import { CueRunMenu } from "./chat/CueRunMenu";
 import { TooltipProvider } from "./ui/tooltip";
 import * as cues from "../lib/cues";
 
-const { toast, navigate, openProjectSettings } = vi.hoisted(() => ({
+const { toast, navigate, navigateTerminals, openProjectSettings, setActiveShellTerminal, loadShellPreference } = vi.hoisted(() => ({
 	toast: vi.fn(),
 	navigate: vi.fn(),
+	navigateTerminals: vi.fn(),
 	openProjectSettings: vi.fn(),
+	setActiveShellTerminal: vi.fn(),
+	loadShellPreference: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../stores/ui-store", () => ({
-	useUiStore: (select: (s: unknown) => unknown) => select({ showGlobalToast: toast, openProjectSettings }),
+	useUiStore: (select: (s: unknown) => unknown) => select({ showGlobalToast: toast, openProjectSettings, setActiveShellTerminal }),
 }));
-vi.mock("../lib/navigate-to-session", () => ({ useNavigateToSession: () => navigate }));
+vi.mock("../lib/navigate-to-session", () => ({ useNavigateToSession: () => navigate, useNavigateToTerminals: () => navigateTerminals }));
+vi.mock("../stores/terminal-shell-store", () => ({
+	terminalShellRequestValue: () => "auto",
+	useTerminalShellStore: { getState: () => ({ load: loadShellPreference, preference: { kind: "auto" } }) },
+}));
 vi.mock("../lib/cues", async (original) => ({
 	...await original<typeof import("../lib/cues")>(),
 	fetchProjectCues: vi.fn(), createCue: vi.fn(), updateCue: vi.fn(), deleteCue: vi.fn(), invokeCue: vi.fn(),
 }));
 
 const cue: cues.CueDTO = { id: "cue-1", projectId: "project", name: "Tests", type: "command", command: "npm test", description: "", createdAt: "2026-09-13T00:00:00Z", updatedAt: "2026-09-13T00:00:00Z" };
+const commandResult: cues.CueInvokeResult = {
+	kind: "command",
+	state: "starting",
+	shellTerminal: { handleId: "shellterm-cue", projectId: "project", title: "Tests", workingDir: "C:/project", createdAt: "2026-09-13T00:00:00Z" },
+};
 function deferred<T>() {
 	let resolve!: (value: T) => void;
 	let reject!: (error: Error) => void;
@@ -37,7 +49,7 @@ function setup(node: ReactNode) {
 		</QueryClientProvider>
 	);
 	const view = render(wrap(node));
-	return { ...view, rerender: (child: ReactNode) => view.rerender(wrap(child)) };
+	return { ...view, client, rerender: (child: ReactNode) => view.rerender(wrap(child)) };
 }
 beforeEach(() => {
 	vi.resetAllMocks();
@@ -45,7 +57,7 @@ beforeEach(() => {
 	vi.mocked(cues.createCue).mockResolvedValue(cue);
 	vi.mocked(cues.updateCue).mockResolvedValue(cue);
 	vi.mocked(cues.deleteCue).mockResolvedValue(undefined);
-	vi.mocked(cues.invokeCue).mockResolvedValue("worker");
+	vi.mocked(cues.invokeCue).mockResolvedValue(commandResult);
 });
 afterEach(cleanup);
 
@@ -129,17 +141,31 @@ test("failed deletion stays open for retry and pending deletion cannot be dismis
 	expect(cues.deleteCue).toHaveBeenCalledTimes(2);
 });
 
-test("project topbar invocation creates a worker once and navigates after dispatch", async () => {
-	const invocation = deferred<string>();
+test("project topbar command invocation opens the returned terminal once", async () => {
+	const invocation = deferred<cues.CueInvokeResult>();
 	vi.mocked(cues.invokeCue).mockReturnValue(invocation.promise);
-	setup(<CueRunMenu projectId="project" />);
+	const view = setup(<CueRunMenu projectId="project" />);
 	expect(screen.getByRole("button", { name: "Run a cue" }).querySelector(".lucide-play")).not.toBeNull();
 	openMenu();
 	const run = await screen.findByRole("menuitem", { name: "Tests" });
 	fireEvent.click(run); fireEvent.click(run);
-	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", undefined));
-	await act(async () => invocation.resolve("worker"));
-	expect(navigate).toHaveBeenCalledWith("project", "worker");
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", undefined, "auto"));
+	await act(async () => invocation.resolve(commandResult));
+	expect(navigateTerminals).toHaveBeenCalledOnce();
+	expect(setActiveShellTerminal).toHaveBeenCalledWith("shellterm-cue");
+	expect(view.client.getQueryData<Array<{ handleId: string }>>(["shell-terminals"])?.[0]?.handleId).toBe("shellterm-cue");
+	expect(toast).toHaveBeenCalledWith("Command started", "Tests started in a terminal");
+});
+
+test("project topbar agent invocation preserves worker navigation", async () => {
+	const agentCue: cues.CueDTO = { ...cue, type: "agent", command: "", prompt: "run tests" };
+	vi.mocked(cues.fetchProjectCues).mockResolvedValue([agentCue]);
+	vi.mocked(cues.invokeCue).mockResolvedValue({ kind: "agent", sessionId: "worker" });
+	setup(<CueRunMenu projectId="project" />);
+	openMenu();
+	fireEvent.click(await screen.findByRole("menuitem", { name: "Tests" }));
+	await waitFor(() => expect(navigate).toHaveBeenCalledWith("project", "worker"));
+	expect(navigateTerminals).not.toHaveBeenCalled();
 	expect(toast).toHaveBeenCalledWith("Sent to session", "Tests sent to session");
 });
 
@@ -215,7 +241,7 @@ test("clicking the trigger runs the primary cue and leaves the hover menu up", a
 
 	fireEvent.click(trigger, { detail: 1 });
 
-	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session"));
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto"));
 	expect(screen.getByRole("menuitem", { name: "Tests" })).toBeInTheDocument();
 	expect(navigate).not.toHaveBeenCalled();
 });
@@ -247,7 +273,7 @@ test("session-targeted runner remains discoverable when empty and sees externall
 	openMenu();
 	const item = await screen.findByRole("menuitem", { name: "Tests" });
 	fireEvent.click(item);
-	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session"));
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto"));
 	expect(navigate).not.toHaveBeenCalled();
 });
 
@@ -261,7 +287,7 @@ test("session-targeted runner displays refresh errors and retries without closin
 });
 
 test("session-targeted runner ignores late responses after switching sessions and never retries dispatch", async () => {
-	const invocation = deferred<string>();
+	const invocation = deferred<cues.CueInvokeResult>();
 	vi.mocked(cues.invokeCue).mockReturnValueOnce(invocation.promise);
 	const view = setup(<CueRunMenu projectId="project" sessionId="session" />);
 	openMenu();
@@ -274,14 +300,14 @@ test("session-targeted runner ignores late responses after switching sessions an
 });
 
 test("unmounting the project menu isolates an earlier invocation response", async () => {
-	const invocation = deferred<string>();
+	const invocation = deferred<cues.CueInvokeResult>();
 	vi.mocked(cues.invokeCue).mockReturnValue(invocation.promise);
 	const view = setup(<CueRunMenu projectId="project" />);
 	openMenu();
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Tests" }));
 	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledTimes(1));
 	view.rerender(null);
-	await act(async () => invocation.resolve("worker"));
+	await act(async () => invocation.resolve({ kind: "agent", sessionId: "worker" }));
 	expect(navigate).not.toHaveBeenCalled();
 	expect(toast).not.toHaveBeenCalled();
 });

@@ -14,15 +14,15 @@ describe("invokeCue", () => {
 
 	it("preserves an explicitly supplied empty session id", async () => {
 		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({
-			data: { sessionId: "unused" },
+			data: { kind: "agent", sessionId: "unused" },
 			error: undefined,
 		});
 
-		await invokeCue("cue-1", "");
+		await expect(invokeCue("cue-1", "", "pwsh")).resolves.toEqual({ kind: "agent", sessionId: "unused" });
 
 		expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/cues/{cueId}/invoke", {
 			params: { path: { cueId: "cue-1" } },
-			body: { sessionId: "" },
+			body: { sessionId: "", shell: "pwsh" },
 		});
 	});
 });

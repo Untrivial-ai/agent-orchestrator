@@ -52,7 +52,7 @@ export function useDeleteCueMutation(projectId: string) {
 
 export function useInvokeCueMutation() {
 	return useMutation({
-		mutationFn: ({ cueId, sessionId }: { cueId: string; sessionId?: string }) => invokeCue(cueId, sessionId),
+		mutationFn: ({ cueId, sessionId, shell }: { cueId: string; sessionId?: string; shell?: string }) => invokeCue(cueId, sessionId, shell),
 		retry: false,
 	});
 }
