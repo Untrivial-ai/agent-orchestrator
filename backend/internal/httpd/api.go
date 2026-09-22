@@ -39,6 +39,7 @@ type APIDeps struct {
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
+	Directories        controllers.DirectoryBrowserService
 	ShellTerminals     controllers.ShellTerminalService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
@@ -64,6 +65,9 @@ type APIDeps struct {
 	Installer         controllers.Installer
 	AgentAuth         controllers.AgentAuthService
 	AgentSwitchPolicy AgentSwitchPolicyControl
+	// LinkPreview unfurls external URLs for the renderer's hover cards; nil
+	// leaves the route answering 501.
+	LinkPreview controllers.LinkPreviewService
 
 	// Presence tracks which mobile devices are currently running the app.
 	// Nil disables presence tracking (the roster then reports every device offline).
@@ -117,6 +121,7 @@ type API struct {
 	notifications *controllers.NotificationsController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
+	fs            *controllers.FSController
 	shellTerms    *controllers.ShellTerminalsController
 	conversations *controllers.ConversationsController
 	settings      *controllers.SettingsController
@@ -127,6 +132,7 @@ type API struct {
 	endpoints     *controllers.EndpointsController
 	systemInstall *controllers.SystemInstallController
 	agentAuth     *controllers.AgentAuthController
+	linkPreview   *controllers.LinkPreviewController
 	events        *EventsController
 }
 
@@ -159,6 +165,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
+		fs:            &controllers.FSController{Svc: deps.Directories},
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
@@ -169,6 +176,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
 		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
 		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
+		linkPreview:   &controllers.LinkPreviewController{Svc: deps.LinkPreview},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -198,6 +206,7 @@ func (a *API) Register(root chi.Router) {
 			a.notifications.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
+			a.fs.Register(r)
 			a.shellTerms.Register(r)
 			a.conversations.Register(r)
 			a.settings.Register(r)
@@ -208,6 +217,7 @@ func (a *API) Register(root chi.Router) {
 			a.endpoints.Register(r)
 			a.systemInstall.Register(r)
 			a.agentAuth.Register(r)
+			a.linkPreview.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
