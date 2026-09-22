@@ -1184,18 +1184,15 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler;
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/new-project");
-		getMock.mockResolvedValueOnce({
-			data: {
-				agents: [
-					agentReadiness("goose", "Goose"),
-					agentReadiness("devin", "Devin"),
-					agentReadiness("aider", "Aider"),
-					agentReadiness("opencode", "OpenCode"),
+		getMock.mockImplementation(async (path: string) =>
+			path === "/api/v1/agents/readiness"
+				? { data: { agents: [
+					agentReadiness("goose", "Goose"), agentReadiness("devin", "Devin"),
+					agentReadiness("aider", "Aider"), agentReadiness("opencode", "OpenCode"),
 					agentReadiness("cursor", "Cursor"),
-				],
-			},
-			error: undefined,
-		});
+				] }, error: undefined }
+				: { data: {}, error: undefined },
+		);
 		renderSidebar({ onCreateProject, seedAgents: false });
 
 		await user.click(screen.getByLabelText("New project"));
@@ -1637,16 +1634,15 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler;
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/new-project");
-		getMock.mockResolvedValueOnce({
-			data: {
-				agents: [
+		getMock.mockImplementation(async (path: string) =>
+			path === "/api/v1/agents/readiness"
+				? { data: { agents: [
 					agentReadiness("claude-code", "Claude Code"),
 					agentReadiness("cursor", "Cursor", { authentication: "unauthorized" }),
 					agentReadiness("aider", "Aider", { installation: "not_installed", authentication: "unknown" }),
-				],
-			},
-			error: undefined,
-		});
+				] }, error: undefined }
+				: { data: {}, error: undefined },
+		);
 		renderSidebar({ onCreateProject, seedAgents: false });
 
 		await user.click(screen.getByLabelText("New project"));
@@ -1677,11 +1673,12 @@ describe("Sidebar", () => {
 			data: { agents: ReturnType<typeof agentReadiness>[] };
 			error: undefined;
 		}) => void;
-		getMock.mockReturnValueOnce(
-			new Promise((resolve) => {
+		getMock.mockImplementation((path: string) => {
+			if (path !== "/api/v1/agents/readiness") return Promise.resolve({ data: {}, error: undefined });
+			return new Promise((resolve) => {
 				resolveAgents = resolve;
-			}),
-		);
+			});
+		});
 		renderSidebar({ onCreateProject, seedAgents: false });
 
 		await user.click(screen.getByLabelText("New project"));
@@ -2874,4 +2871,3 @@ describe("resolveNextNavigationAfterSessionKill", () => {
 		expect(route).toEqual({ target: "project" });
 	});
 });
-
