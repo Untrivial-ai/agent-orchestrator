@@ -46,7 +46,11 @@ export function WorkerRowActions({
 						buttonBorderShape("circle"),
 						controlSize("large"),
 						labelStyle("iconOnly"),
-						tint(pinned ? t.amber : t.accent),
+						// Foreground ink, not a hue: `amber` is the palette's "needs your
+						// attention" colour, so a yellow pin claimed this row wanted you when
+						// it was only pinned. The state is carried by the glyph — `pin.fill`
+						// against `pin` — which is how the palette says emphasis works.
+						tint(t.textPrimary),
 						frame({ width: CONTROL_SIZE, height: CONTROL_SIZE }),
 						accessibilityLabel(pinned ? `Unpin ${title}` : `Pin ${title}`),
 						accessibilityIdentifier("worker-pin"),
@@ -55,7 +59,7 @@ export function WorkerRowActions({
 					<Image
 						systemName={pinned ? "pin.fill" : "pin"}
 						size={iconSize.lg}
-						color={pinned ? t.amber : t.accent}
+						color={t.textPrimary}
 						modifiers={[rotationEffect(28)]}
 					/>
 				</Button>

@@ -63,7 +63,9 @@ function PinAction({
 				<Feather
 					name={pinned ? "pin-off" : "pin"}
 					size={20}
-					color={pinned ? t.amber : t.accent}
+					// Foreground ink: `amber` means "needs your attention" in this palette,
+					// and a pinned row is not asking for anything.
+					color={t.textPrimary}
 					style={{ transform: [{ rotate: "28deg" }] }}
 				/>
 			</Pressable>
