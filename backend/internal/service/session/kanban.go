@@ -11,22 +11,25 @@ func deriveKanbanPresentation(
 	rec domain.SessionRecord,
 	prs []domain.PRFacts,
 	runs []domain.CurrentHeadReviewRun,
-	artifactFiles []domain.SessionArtifactFile,
 	now time.Time,
 	signalCapable bool,
 ) contract.KanbanPresentation {
 	return contract.DeriveKanbanPresentation(
-		toContractKanbanSessionFacts(rec, artifactFiles, signalCapable),
+		toContractKanbanSessionFacts(rec, signalCapable),
 		toContractKanbanPRFacts(prs, runs),
 		now,
 		noSignalGrace,
 	)
 }
 
-func toContractKanbanSessionFacts(rec domain.SessionRecord, artifactFiles []domain.SessionArtifactFile, signalCapable bool) contract.KanbanSessionFacts {
+// toContractKanbanSessionFacts reads rec.OutputType, the persisted column
+// lifecycle.Manager.ReconcileSessionOutputType maintains, as the source of
+// truth for artifact-output placement rather than re-scanning the artifact
+// directory on every Kanban derivation.
+func toContractKanbanSessionFacts(rec domain.SessionRecord, signalCapable bool) contract.KanbanSessionFacts {
 	return contract.KanbanSessionFacts{
 		SessionFacts:      toContractSessionFacts(rec, signalCapable),
-		HasArtifactOutput: len(artifactFiles) > 0,
+		HasArtifactOutput: rec.OutputType == domain.SessionOutputArtifact,
 		AutoReview:        rec.AutoReviewEnabled,
 		AutoInjectReview:  rec.AutoInjectReview,
 		AutoInjectCI:      rec.AutoInjectCI,

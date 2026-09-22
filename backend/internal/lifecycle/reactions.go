@@ -156,6 +156,13 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	if !o.Fetched {
 		return nil
 	}
+	// A PR observation is this session's earliest opportunity to durably record
+	// "this session produced a PR" — reconcile immediately rather than waiting
+	// for the artifact-output poller's next tick. A failure here must not
+	// swallow the nudge delivery below, so it is logged, not returned.
+	if err := m.ReconcileSessionOutputType(ctx, id); err != nil {
+		slog.Default().Warn("lifecycle: reconcile session output type", "session", id, "err", err)
+	}
 	// A PR reaching a terminal state (merged or closed) no longer ends the
 	// session on its own: a session may own several PRs. Terminate only when no
 	// open PR remains and at least one of them merged. The observer persists the
