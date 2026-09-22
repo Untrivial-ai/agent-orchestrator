@@ -1028,6 +1028,7 @@
 	"settings.project.modelOverride": "模型覆盖",
 	"settings.project.name": "项目名称",
 	"settings.project.nameRequired": "项目名称为必填项。",
+	"settings.project.nameTooLong": "项目名称不得超过 {{max}} 个字符。",
 	"settings.project.path": "路径",
 	"settings.project.permissionAcceptEdits": "接受编辑",
 	"settings.project.permissionAuto": "自动",
@@ -1675,6 +1676,9 @@
 	"files.explorer.filter": "Filter files",
 	"files.explorer.filterPlaceholder": "Filter files",
 	"files.explorer.changedOnly": "Changed only",
+	"files.explorer.source": "File source",
+	"files.explorer.workspaceSource": "Workspace",
+	"files.explorer.sourceUnavailable": "The selected pull request is no longer available; showing Workspace.",
 	"files.explorer.empty": "This folder is empty.",
 	"files.explorer.tree": "File tree",
 	"files.explorer.selectFile": "Select a file to preview.",
@@ -2044,5 +2048,9 @@
 	"settings.cloudAgents.github.saving": "Saving…",
 	"settings.cloudAgents.github.remove": "Remove",
 	"settings.cloudAgents.github.errorSave": "Could not save the GitHub token.",
-	"settings.cloudAgents.github.errorRemove": "Could not remove the GitHub token."
+	"settings.cloudAgents.github.errorRemove": "Could not remove the GitHub token.",
+	"executionContext.active": "活跃",
+	"executionContext.configured": "已配置",
+	"executionContext.title": "执行上下文",
+	"executionContext.loading": "正在加载项目上下文…"
 }

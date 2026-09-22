@@ -151,8 +151,11 @@ type Server struct {
 	// session, always including sandboxProvider (the default). It gates the
 	// per-session provider override and is reported to clients via /me.
 	availableSandboxProviders []string
-	provisioning              sandbox.ProvisioningDefaults
-	workerTokens              WorkerTokens
+	// capabilityGatedProviders is the set of providers that additionally require
+	// a matching organization capability. Empty by default (no gating).
+	capabilityGatedProviders map[string]bool
+	provisioning             sandbox.ProvisioningDefaults
+	workerTokens             WorkerTokens
 	// workerTokenLifetime is zero when the deployment does not override the
 	// protocol default; workerTokenTTL() resolves that.
 	workerTokenLifetime     time.Duration
@@ -193,6 +196,7 @@ type Options struct {
 	LocalSessionTTL           time.Duration
 	SandboxProvider           string
 	AvailableSandboxProviders []string
+	CapabilityGatedProviders  []string
 	Provisioning              sandbox.ProvisioningDefaults
 	WorkerTokens              WorkerTokens
 	WorkerTokenTTL            time.Duration
@@ -258,6 +262,12 @@ func New(options Options) *Server {
 	if maxSandboxes <= 0 {
 		maxSandboxes = DefaultMaxSandboxesPerOrg
 	}
+	capabilityGatedProviders := make(map[string]bool, len(options.CapabilityGatedProviders))
+	for _, provider := range options.CapabilityGatedProviders {
+		if provider = strings.ToLower(strings.TrimSpace(provider)); provider != "" {
+			capabilityGatedProviders[provider] = true
+		}
+	}
 	server := &Server{
 		store:                     options.Store,
 		transcripts:               options.Transcripts,
@@ -267,6 +277,7 @@ func New(options Options) *Server {
 		localAuthLimiter:          newFixedWindowLimiter(10, time.Minute, 4096),
 		sandboxProvider:           sandboxProvider,
 		availableSandboxProviders: availableSandboxProviders,
+		capabilityGatedProviders:  capabilityGatedProviders,
 		provisioning:              options.Provisioning,
 		workerTokens:              options.WorkerTokens,
 		workerTokenLifetime:       options.WorkerTokenTTL,
@@ -455,8 +466,16 @@ func New(options Options) *Server {
 			}
 			router.Get("/sessions/{sessionId}/workspace/files", server.listWorkspaceFiles)
 			router.Get("/sessions/{sessionId}/workspace/file", server.readWorkspaceFile)
+			router.Get("/sessions/{sessionId}/workspace/file/diff", server.readWorkspaceDiffFile)
 			router.Put("/sessions/{sessionId}/workspace/file", server.writeWorkspaceFile)
 			router.Get("/sessions/{sessionId}/workspace/diff", server.getWorkspaceDiff)
+			router.Get("/sessions/{sessionId}/workspace/review", server.getWorkspaceReview)
+			router.Get("/sessions/{sessionId}/workspace/tree", server.getWorkspaceReviewTree)
+			router.Get("/sessions/{sessionId}/workspace/search", server.getWorkspaceReviewSearch)
+			router.Get("/sessions/{sessionId}/workspace/review/file", server.getWorkspaceReviewFile)
+			router.Post("/sessions/{sessionId}/workspace/review/diffs", server.postWorkspaceReviewDiffs)
+			router.Get("/sessions/{sessionId}/workspace/review/revision", server.getWorkspaceReviewRevision)
+			router.Put("/sessions/{sessionId}/workspace/review/file", server.putWorkspaceReviewFile)
 			router.Get("/sessions/{sessionId}/pull-requests", server.listSessionPullRequests)
 			router.Get("/sessions/{sessionId}/reviews", server.getSessionReviewState)
 			router.Get("/members", server.listOrgMembers)

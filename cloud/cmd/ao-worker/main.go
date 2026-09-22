@@ -173,8 +173,12 @@ func run(logger *slog.Logger) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	started := make(chan error, 1)
+	compareBase := ""
+	if defaultBranch := strings.TrimSpace(bootstrap.Launch.DefaultBranch); defaultBranch != "" {
+		compareBase = "origin/" + defaultBranch
+	}
 	transportSupervisor := workertransport.Supervisor{
-		Control: client, Workspace: workspace, Logger: logger,
+		Control: client, Workspace: workspace, CompareBase: compareBase, Logger: logger,
 		Started: started,
 	}
 	// Real-time terminal streaming (duplex predictive echo) rides the same
@@ -321,6 +325,11 @@ func prepareWorkspace(
 		); err != nil {
 			return fmt.Errorf("configure repository tooling: %w", err)
 		}
+	}
+	if err := worker.EnsureWorkspaceReviewBase(
+		ctx, worker.ExecGitRunner{}, workspace, bootstrap.Launch.DefaultBranch,
+	); err != nil {
+		return fmt.Errorf("record workspace review base: %w", err)
 	}
 	return nil
 }

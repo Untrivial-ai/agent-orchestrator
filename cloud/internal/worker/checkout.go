@@ -18,6 +18,9 @@ const scratchRepositoryHost = "scratch.ao.local"
 const (
 	cloudGitAuthorName  = "AO Cloud Agent"
 	cloudGitAuthorEmail = "noreply@aoagents.com"
+	// WorkspaceReviewBaseRef is an immutable, AO-owned baseline stored with the
+	// checkout so committed changes survive worker restarts and restores.
+	WorkspaceReviewBaseRef = "refs/ao/diff-base"
 )
 
 type GitRunner interface {
@@ -123,6 +126,75 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 		return err
 	}
 	return validateOrigin(ctx, runner, workspace, expected)
+}
+
+// EnsureWorkspaceReviewBase records the checkout's comparison baseline once.
+// Existing refs are deliberately left untouched even when a later fetch moves
+// origin/<defaultBranch>.
+func EnsureWorkspaceReviewBase(ctx context.Context, runner GitRunner, workspace, defaultBranch string) error {
+	if runner == nil {
+		return errors.New("git runner is required")
+	}
+	// A scratch / freshly-initialized workspace has an unborn HEAD (git init with
+	// no commit), so there is no history to anchor a review base to. Treat it as a
+	// no-op instead of failing worker startup on the later rev-list HEAD, which
+	// aborts every no-repo session across all providers.
+	if _, err := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", "HEAD"); err != nil {
+		return nil
+	}
+	existingOutput, existingErr := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", WorkspaceReviewBaseRef)
+	configuredCandidate := ""
+	if branch := strings.TrimSpace(defaultBranch); branch != "" {
+		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "origin/"+branch, "HEAD"); err == nil {
+			configuredCandidate = strings.TrimSpace(output)
+		}
+	}
+	remoteHeadCandidate := ""
+	if configuredCandidate == "" {
+		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "refs/remotes/origin/HEAD", "HEAD"); err == nil {
+			remoteHeadCandidate = strings.TrimSpace(output)
+		}
+	}
+	if existingErr == nil {
+		// Older workers fell straight back to the repository root when a project
+		// called its default branch "main" but the remote used "master" (or vice
+		// versa). Repair only that recognizable legacy fallback; every non-root
+		// baseline remains immutable across fetches and restores.
+		if configuredCandidate != "" || remoteHeadCandidate == "" {
+			return nil
+		}
+		rootOutput, err := runner.Run(ctx, workspace, nil, "rev-list", "--max-parents=0", "--reverse", "HEAD")
+		if err != nil {
+			return nil
+		}
+		root := strings.TrimSpace(strings.SplitN(rootOutput, "\n", 2)[0])
+		if strings.TrimSpace(existingOutput) != root || remoteHeadCandidate == root {
+			return nil
+		}
+		if _, err := runner.Run(ctx, workspace, nil, "update-ref", WorkspaceReviewBaseRef, remoteHeadCandidate); err != nil {
+			return fmt.Errorf("repair workspace review base: %w", err)
+		}
+		return nil
+	}
+
+	candidate := configuredCandidate
+	if candidate == "" {
+		candidate = remoteHeadCandidate
+	}
+	if candidate == "" {
+		output, err := runner.Run(ctx, workspace, nil, "rev-list", "--max-parents=0", "--reverse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("resolve workspace review base: %w", err)
+		}
+		candidate = strings.TrimSpace(strings.SplitN(output, "\n", 2)[0])
+	}
+	if candidate == "" {
+		return errors.New("resolve workspace review base: repository has no commits")
+	}
+	if _, err := runner.Run(ctx, workspace, nil, "update-ref", WorkspaceReviewBaseRef, candidate); err != nil {
+		return fmt.Errorf("record workspace review base: %w", err)
+	}
+	return nil
 }
 
 // cloneIntoNonEmptyWorkspace clones the authorized repository into a staging

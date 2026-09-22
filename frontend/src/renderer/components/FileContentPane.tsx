@@ -6,11 +6,12 @@ import { Editor, type EditorFactory } from "@pierre/diffs/edit";
 import { EditProvider } from "@pierre/diffs/react";
 import {
 	sessionWorkspaceFileQueryKey,
-	sessionWorkspaceFileQueryOptions,
-	sessionWorkspaceFileRevisionQueryOptions,
+	sessionSourceFileQueryOptions,
+	sessionSourceFileRevisionQueryOptions,
 	updateSessionWorkspaceFile,
 	type WorkspaceDiffScope,
 	type WorkspaceFileDetail,
+	type FilesSource,
 } from "../hooks/useSessionWorkspaceFiles";
 import { usePierreFileHighlightReady } from "../hooks/usePierreFileHighlight";
 import { cn } from "../lib/utils";
@@ -32,6 +33,8 @@ import { MarkdownFileView } from "./markdown/MarkdownFileView";
 export type FileViewMode = "diff" | "file" | "rendered";
 export type FileOpenOptions = { commitSha?: string; editing?: boolean; mode?: FileViewMode; scope?: WorkspaceDiffScope };
 
+const DEFAULT_FILES_SOURCE: FilesSource = { kind: "workspace" };
+
 const createReviewEditor: EditorFactory<"feedback", undefined> = (editorType, options, editStateKey) =>
 	new Editor(editorType, options, editStateKey);
 
@@ -47,9 +50,11 @@ export function FileContentPane({
 	commitSha,
 	onDirtyChange,
 	path,
+	previousPath,
 	sessionId,
 	split,
 	scope = "combined",
+	source = DEFAULT_FILES_SOURCE,
 }: {
 	annotation: FileAnnotationModel;
 	initialEditing?: boolean;
@@ -58,9 +63,11 @@ export function FileContentPane({
 	commitSha?: string;
 	onDirtyChange?: (dirty: boolean) => void;
 	path: string | null;
+	previousPath?: string;
 	sessionId: string;
 	split: boolean;
 	scope?: WorkspaceDiffScope;
+	source?: FilesSource;
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
@@ -74,7 +81,7 @@ export function FileContentPane({
 	// an active native text selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
 	const query = useQuery({
-		...sessionWorkspaceFileQueryOptions(sessionId, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha),
+		...sessionSourceFileQueryOptions(sessionId, source, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha, previousPath),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
 	const hasUnsavedChanges = Boolean(editing && query.data && draft !== query.data.content);
@@ -83,7 +90,7 @@ export function FileContentPane({
 		setEditing(initialEditing);
 		setDraft("");
 		setSaveError("");
-	}, [commitSha, initialEditing, initialMode, initialRequestKey, path, scope]);
+	}, [commitSha, initialEditing, initialMode, initialRequestKey, path, scope, source]);
 	useEffect(() => {
 		if (initialEditing && query.data) setDraft(query.data.content);
 	}, [initialEditing, initialRequestKey, path, query.data]);
@@ -177,6 +184,7 @@ export function FileContentPane({
 			scope={scope}
 			sessionId={sessionId}
 			commitSha={commitSha}
+			source={source}
 		/>
 	) : <PanelMessage>{t("files.loading")}</PanelMessage>;
 	const beginEditing = () => {
@@ -297,6 +305,7 @@ export function FileContentPane({
 						sessionId={sessionId}
 						split={split && canSplitCompare(detail.status)}
 						commitSha={commitSha}
+						source={source}
 					/>
 				) : effectiveMode === "rendered" && renderedAvailable ? (
 					<MarkdownFileView content={detail.content} filePath={path} sessionId={sessionId} truncated={detail.contentTruncated} version={query.dataUpdatedAt} />
@@ -321,10 +330,10 @@ export function FileContentPane({
 	);
 }
 
-function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange, scope, sessionId }: { annotation: FileAnnotationModel; commitSha?: string; detail: WorkspaceFileDetail; editing: boolean; onEditChange: (content: string) => void; scope: WorkspaceDiffScope; sessionId: string }) {
+function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange, scope, sessionId, source }: { annotation: FileAnnotationModel; commitSha?: string; detail: WorkspaceFileDetail; editing: boolean; onEditChange: (content: string) => void; scope: WorkspaceDiffScope; sessionId: string; source: FilesSource }) {
 	const { t } = useTranslation();
 	const revision = useQuery({
-		...sessionWorkspaceFileRevisionQueryOptions({ commitSha, path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", workspaceVersion: detail.workspaceVersion }),
+		...sessionSourceFileRevisionQueryOptions({ commitSha, path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", source, workspaceVersion: detail.workspaceVersion }),
 		enabled: detail.deleted || detail.contentTruncated,
 	});
 	if (revision.isPending && revision.isFetching) return <PanelMessage>{t("files.loading")}</PanelMessage>;

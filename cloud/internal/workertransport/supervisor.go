@@ -59,6 +59,7 @@ const (
 type Supervisor struct {
 	Control         Control
 	Workspace       string
+	CompareBase     string
 	Shell           string
 	AgentCommand    workerexec.Command
 	AgentTerminalID string
@@ -130,6 +131,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	workspace.compareBase = s.CompareBase
 	defer workspace.Close()
 	defer s.closeAllTerminals()
 	if s.AgentTerminalID != "" {
@@ -155,10 +157,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			}
 			s.Logger.Warn("claim worker transport request", "error", err)
 		} else if request != nil {
-			// A page usually loads several resources at once. Keep those fetches
-			// from blocking shell input while still relying on the durable command
-			// queue for the per-session concurrency ceiling.
-			if request.Kind == "browser.fetch" {
+			// Read-only workspace/review requests and browser fetches run off the
+			// serial loop so a large-repo review (which reads every file and spawns
+			// many git procs per call) or a burst of page resources cannot wedge
+			// shell input and turn forwarding. Writes (workspace.write /
+			// workspace.review.write) and terminal control stay serial, so the
+			// review write-guard's read-check-write keeps its serialization against
+			// other writes. See isConcurrentlyHandledKind.
+			if isConcurrentlyHandledKind(request.Kind) {
 				go s.handle(ctx, workspace, request)
 				continue
 			}
@@ -301,6 +307,27 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, false)
 }
 
+// isConcurrentlyHandledKind reports whether a transport request is a read-only
+// workspace/review request or a browser fetch that may run off the serial loop.
+// Offloading these keeps an expensive review (ReviewSummary reads every tracked
+// file and spawns hundreds of git procs) from blocking terminal input and turn
+// forwarding. It is safe: the workspace struct is immutable after construction,
+// file writes are atomic (write-temp + rename) so a concurrent read never sees a
+// torn file, and every mutating kind (workspace.write, workspace.review.write)
+// plus terminal control stays on the serial loop, so writes remain serialized
+// against each other and the review write-guard keeps its TOCTOU-free property.
+func isConcurrentlyHandledKind(kind string) bool {
+	switch kind {
+	case "browser.fetch",
+		"workspace.list", "workspace.read", "workspace.diff", "workspace.diff-file",
+		"workspace.review.summary", "workspace.review.tree", "workspace.review.search",
+		"workspace.review.file", "workspace.review.diffs", "workspace.review.revision":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Supervisor) handle(
 	ctx context.Context,
 	workspace *workspace,
@@ -321,6 +348,20 @@ func (s *Supervisor) handle(
 		if err == nil {
 			response, err = workspace.Read(input)
 		}
+	case "workspace.diff-file":
+		var input worker.WorkspaceDiffFileRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			s.Logger.Info("workspace diff-file request started", "request_id", request.ID, "path", input.Path)
+			response, err = workspace.DiffFile(ctx, input)
+			if err != nil {
+				failureCode, _ := transportError(err)
+				s.Logger.Warn("workspace diff-file request failed", "request_id", request.ID, "path", input.Path, "failure_code", failureCode)
+			} else {
+				file := response.(worker.WorkspaceDiffFile)
+				s.Logger.Info("workspace diff-file request completed", "request_id", request.ID, "path", file.Path, "size", file.Size, "binary", file.Binary, "deleted", file.Deleted, "diff_truncated", file.DiffTruncated)
+			}
+		}
 	case "workspace.write":
 		var input worker.WorkspaceWriteRequest
 		err = decodePayload(request.Payload, &input)
@@ -329,6 +370,44 @@ func (s *Supervisor) handle(
 		}
 	case "workspace.diff":
 		response, err = workspace.Diff(ctx)
+	case "workspace.review.summary":
+		response, err = workspace.ReviewSummary(ctx)
+	case "workspace.review.tree":
+		var input worker.WorkspaceReviewTreeRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewTree(ctx, input)
+		}
+	case "workspace.review.search":
+		var input worker.WorkspaceReviewSearchRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewSearch(ctx, input)
+		}
+	case "workspace.review.file":
+		var input worker.WorkspaceReviewFileRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewFile(ctx, input)
+		}
+	case "workspace.review.diffs":
+		var input worker.WorkspaceReviewDiffsRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewDiffs(ctx, input)
+		}
+	case "workspace.review.revision":
+		var input worker.WorkspaceReviewRevisionRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewRevision(ctx, input)
+		}
+	case "workspace.review.write":
+		var input worker.WorkspaceReviewWriteRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewWrite(ctx, input)
+		}
 	case "browser.fetch":
 		var input worker.BrowserFetchRequest
 		err = decodePayload(request.Payload, &input)
@@ -649,6 +728,12 @@ func decodePayload(payload any, target any) error {
 
 func transportError(err error) (string, string) {
 	switch {
+	case errors.Is(err, ErrWorkspaceSnapshotStale):
+		return "WORKSPACE_SNAPSHOT_STALE", "The workspace changed while it was being reviewed."
+	case errors.Is(err, ErrWorkspaceFingerprintStale):
+		return "WORKSPACE_FILE_STALE", "The file changed after it was opened."
+	case errors.Is(err, ErrWorkspaceCommitNotFound):
+		return "WORKSPACE_COMMIT_NOT_FOUND", "The requested commit is outside the workspace review range."
 	case errors.Is(err, errUnsafePath):
 		return "INVALID_WORKSPACE_PATH", "The requested path is outside the workspace."
 	case errors.Is(err, os.ErrNotExist):

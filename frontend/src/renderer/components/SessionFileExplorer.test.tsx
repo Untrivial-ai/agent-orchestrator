@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,16 +23,18 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("./FileTree", () => ({
 	FileTree: ({
 		changedOnly,
+		forceChangedOnly = false,
 		filterText,
 		onSelectPath,
 	}: {
 		changedOnly: boolean;
+		forceChangedOnly?: boolean;
 		filterText: string;
 		onSelectPath: (node: { path: string; type: "file" }) => void;
 	}) => {
 		const [expanded, setExpanded] = useState(false);
 		return <div>
-			<span data-testid="tree-changed-only">{String(changedOnly)}</span>
+			<span data-testid="tree-changed-only">{String(changedOnly || forceChangedOnly)}</span>
 			<span data-testid="tree-filter">{filterText}</span>
 			<button onClick={() => setExpanded((current) => !current)} type="button">expand src</button>
 			{expanded ? <span>src directory expanded</span> : null}
@@ -44,7 +46,7 @@ vi.mock("./FileTree", () => ({
 }));
 
 vi.mock("./FileContentPane", () => ({
-	FileContentPane: ({ initialEditing, initialMode, path }: { initialEditing?: boolean; initialMode?: string; path: string | null }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode ?? "default"} data-testid="content-pane">{path ?? "none"}</div>,
+	FileContentPane: ({ initialEditing, initialMode, path, previousPath }: { initialEditing?: boolean; initialMode?: string; path: string | null; previousPath?: string }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode ?? "default"} data-previous-path={previousPath} data-testid="content-pane">{path ?? "none"}</div>,
 }));
 
 vi.mock("./diffs/WorkspaceReviewPane", () => ({
@@ -195,6 +197,100 @@ describe("SessionFileExplorer", () => {
 		expect(screen.queryByRole("tab", { name: "Changes" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Split diff view" })).not.toBeInTheDocument();
+	});
+
+	it("switches to an associated PR without changing the workspace", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId: "sess-pr", prs: [{ number: 42, url: "https://example.test/pr/42", sourceBranch: "feature/files", title: "Files" }] } };
+			}
+			return {
+				data: {
+					sessionId: "sess-pr",
+					files: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false }],
+					truncated: false,
+				},
+			};
+		});
+		renderWithQuery(<SessionFileExplorer sessionId="sess-pr" />);
+
+		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · feature/files" }));
+
+		expect(screen.getByText("PR #42 · feature/files", { selector: "div" })).toBeInTheDocument();
+		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
+		expect(getMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
+			expect.objectContaining({
+				params: {
+					path: { sessionId: "sess-pr", prNumber: 42 },
+					query: { sourceUrl: "https://example.test/pr/42" },
+				},
+			}),
+		);
+	});
+
+	it("refreshes PR files when the observed head changes", async () => {
+		const sessionId = "sess-pr-refresh";
+		const url = "https://example.test/pr/42";
+		useUiStore.getState().setFilesSource(sessionId, { kind: "pull_request", number: 42, url, label: "PR #42 · files" });
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId, prs: [{ headSha: "head-1", number: 42, url, sourceBranch: "files", title: "Files" }] } };
+			}
+			return { data: { sessionId, files: [], truncated: false } };
+		});
+		const { client } = renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
+
+		await waitFor(() => expect(client.getQueryData(["session-source-files", sessionId, "pull_request", url, "head-1"])).toBeDefined());
+		client.setQueryData(["session-scm-summary", sessionId], [{ headSha: "head-2", number: 42, url, sourceBranch: "files", title: "Files" }]);
+		await waitFor(() => expect(client.getQueryData(["session-source-files", sessionId, "pull_request", url, "head-2"])).toBeDefined());
+	});
+
+	it("passes a renamed file's previous path to the PR detail request", async () => {
+		const sessionId = "sess-pr-rename";
+		const url = "https://example.test/pr/42";
+		useUiStore.getState().setFilesSource(sessionId, { kind: "pull_request", number: 42, url, label: "PR #42 · files" });
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId, prs: [{ headSha: "head-1", number: 42, url, sourceBranch: "files", title: "Files" }] } };
+			}
+			return { data: { sessionId, files: [{ path: "src/App.tsx", previousPath: "src/OldApp.tsx", status: "renamed", additions: 0, deletions: 0, size: 10, binary: false }], truncated: false } };
+		});
+		renderWithQuery(<SessionFileExplorer isMaximized sessionId={sessionId} />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "select src/App.tsx" }));
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-previous-path", "src/OldApp.tsx");
+	});
+
+	it("selects duplicate PR numbers by URL and preserves the source across remounts", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId: "sess-duplicate-pr", prs: [
+					{ number: 42, url: "https://github.example/acme/app/pull/42", sourceBranch: "upstream", title: "Upstream" },
+					{ number: 42, url: "https://gitlab.example/acme/app/-/merge_requests/42", sourceBranch: "canonical", title: "Canonical" },
+				] } };
+			}
+			return { data: { sessionId: "sess-duplicate-pr", files: [], truncated: false } };
+		});
+		const first = renderWithQuery(<SessionFileExplorer sessionId="sess-duplicate-pr" />);
+
+		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · canonical" }));
+		await waitFor(() => expect(getMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
+			expect.objectContaining({ params: { path: { sessionId: "sess-duplicate-pr", prNumber: 42 }, query: { sourceUrl: "https://gitlab.example/acme/app/-/merge_requests/42" } } }),
+		));
+
+		first.unmount();
+		renderWithQuery(<SessionFileExplorer isMaximized sessionId="sess-duplicate-pr" />);
+		expect((await screen.findAllByText("PR #42 · canonical")).length).toBeGreaterThan(0);
+		expect(useUiStore.getState().inspectorSessions["sess-duplicate-pr"]?.filesSource).toEqual({
+			kind: "pull_request",
+			label: "PR #42 · canonical",
+			number: 42,
+			url: "https://gitlab.example/acme/app/-/merge_requests/42",
+		});
 	});
 
 	it("keeps the continuous right-side diff visible when opening the full file in center", async () => {
