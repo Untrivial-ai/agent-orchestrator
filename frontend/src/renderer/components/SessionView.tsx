@@ -73,7 +73,7 @@ import {
 	workspaceQueryKey,
 } from "../hooks/useWorkspaceQuery";
 import { useCloudGate } from "../hooks/useCloudGate";
-import { cloudLifecycleStage, type CloudLifecycleStage } from "../lib/cloud-lifecycle";
+import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
