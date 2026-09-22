@@ -6,6 +6,33 @@ import "time"
 // callbacks, not inferred from transcript/JSONL
 type ActivityState string
 
+// TurnOutcome is an optional provider fact attached to a terminal activity
+// signal. Empty means the provider did not expose a trustworthy distinction.
+type TurnOutcome string
+
+const (
+	// TurnOutcomeUnknown preserves compatibility when a provider cannot
+	// distinguish normal completion from interruption.
+	TurnOutcomeUnknown TurnOutcome = ""
+	// TurnOutcomeCompleted means the provider positively reported success.
+	TurnOutcomeCompleted TurnOutcome = "completed"
+	// TurnOutcomeFailed means the provider positively reported failure.
+	TurnOutcomeFailed TurnOutcome = "failed"
+	// TurnOutcomeInterrupted means the turn was cancelled or interrupted.
+	TurnOutcomeInterrupted TurnOutcome = "interrupted"
+)
+
+// Valid reports whether o is a supported turn outcome. Empty is valid for
+// older hook clients and providers that do not expose an outcome.
+func (o TurnOutcome) Valid() bool {
+	switch o {
+	case TurnOutcomeUnknown, TurnOutcomeCompleted, TurnOutcomeFailed, TurnOutcomeInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
 // Activity states. WaitingInput and Blocked are sticky (see IsSticky).
 //
 // WaitingInput and Blocked both mean "paused on the user" but demand opposite

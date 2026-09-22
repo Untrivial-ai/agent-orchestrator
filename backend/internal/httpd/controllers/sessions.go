@@ -1683,6 +1683,10 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_CONVERSATION_CHECKPOINT_ORIGIN", "Conversation checkpoint origin must be human or coordination", nil)
 		return
 	}
+	if !in.TurnOutcome.Valid() {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_TURN_OUTCOME", "Turn outcome must be completed, failed, or interrupted", nil)
+		return
+	}
 	if state == "" && agentSessionID == "" && in.Usage == nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "ACTIVITY_OR_SESSION_ID_REQUIRED", "Activity state or agent session ID is required", nil)
 		return
@@ -1697,6 +1701,7 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		Valid:                        state != "",
 		State:                        state,
 		Event:                        capActivityMeta(domain.SanitizeControlChars(in.Event)),
+		TurnOutcome:                  in.TurnOutcome,
 		ToolName:                     capActivityMeta(domain.SanitizeControlChars(in.ToolName)),
 		ToolUseID:                    capActivityMeta(domain.SanitizeControlChars(in.ToolUseID)),
 		AgentSessionID:               agentSessionID,

@@ -10826,7 +10826,10 @@ components:
           type: string
         type:
           enum:
+          - turn_completed
+          - turn_failed
           - needs_input
+          - ci_failed
           - ready_to_merge
           - pr_merged
           - pr_closed_unmerged
@@ -12021,6 +12024,14 @@ components:
         transcriptPath:
           description: Read-only provider-native transcript path exposed by the hook.
           maxLength: 4096
+          type: string
+        turnOutcome:
+          description: Provider-reported terminal outcome when the hook distinguishes
+            completion from interruption.
+          enum:
+          - completed
+          - failed
+          - interrupted
           type: string
         usage:
           $ref: '#/components/schemas/UsageHookMetadata'

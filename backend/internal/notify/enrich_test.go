@@ -51,3 +51,55 @@ func TestEnrichReadyToMergeFallsBackWithoutPRTitle(t *testing.T) {
 		t.Fatalf("title = %q, want %q", rec.Title, want)
 	}
 }
+
+func TestEnrichAgentTurnNotificationsAreSessionScoped(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		typ       domain.NotificationType
+		wantTitle string
+		wantBody  string
+	}{
+		{
+			typ:       domain.NotificationTurnCompleted,
+			wantTitle: "Checkout flow finished",
+			wantBody:  "Your agent finished its turn and is ready for more work.",
+		},
+		{
+			typ:       domain.NotificationTurnFailed,
+			wantTitle: "Checkout flow failed",
+			wantBody:  "The agent could not complete its turn. Open the session for details.",
+		},
+	} {
+		t.Run(string(tt.typ), func(t *testing.T) {
+			rec, err := enrich(Intent{
+				Type:               tt.typ,
+				SessionID:          "sess-1",
+				ProjectID:          "proj-1",
+				EventKey:           "turn-1",
+				SessionDisplayName: "Checkout flow",
+				CreatedAt:          time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatalf("enrich: %v", err)
+			}
+			if rec.Title != tt.wantTitle || rec.Body != tt.wantBody || rec.EventKey != "turn-1" {
+				t.Fatalf("record = %+v", rec)
+			}
+		})
+	}
+}
+
+func TestEnrichCIFailureRequiresPR(t *testing.T) {
+	t.Parallel()
+
+	_, err := enrich(Intent{
+		Type:      domain.NotificationCIFailed,
+		SessionID: "sess-1",
+		ProjectID: "proj-1",
+		CreatedAt: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected missing PR URL to fail")
+	}
+}

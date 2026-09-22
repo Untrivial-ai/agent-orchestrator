@@ -1,7 +1,7 @@
 -- name: CreateNotification :one
 INSERT INTO notifications (
-    id, session_id, project_id, pr_url, type, title, body, status, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, session_id, project_id, pr_url, event_key, type, title, body, status, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: ListUnreadNotificationsPage :many
@@ -18,14 +18,15 @@ ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit);
 
 -- Unresolved is the still-actionable set: the underlying issue has not gone
--- away yet. Terminal facts (pr_merged, pr_closed_unmerged) describe something
--- that already happened, so they are unseen-only and never listed here.
+-- away yet. Terminal facts (turn outcomes, pr_merged, pr_closed_unmerged)
+-- describe something that already happened, so they are unseen-only and never
+-- listed here.
 -- name: ListUnresolvedNotificationsPage :many
 SELECT *
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND type IN ('needs_input', 'ready_to_merge')
+  AND type IN ('needs_input', 'ci_failed', 'ready_to_merge')
   AND (
     CAST(sqlc.arg(before_id) AS TEXT) = ''
     OR created_at < sqlc.arg(before_created_at)
@@ -57,7 +58,7 @@ SELECT COUNT(*)
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND type IN ('needs_input', 'ready_to_merge');
+  AND type IN ('needs_input', 'ci_failed', 'ready_to_merge');
 
 -- name: MarkNotificationRead :one
 UPDATE notifications
@@ -117,6 +118,12 @@ FROM notifications
 WHERE type = 'ready_to_merge'
   AND resolved_at IS NULL;
 
+-- name: ListOpenCIFailedNotifications :many
+SELECT *
+FROM notifications
+WHERE type = 'ci_failed'
+  AND resolved_at IS NULL;
+
 -- Restart reconciliation: a resolution transition observed while the daemon was
 -- down never reaches lifecycle, so open rows are re-checked against the durable
 -- session/PR facts on startup.
@@ -150,6 +157,7 @@ FROM notifications
 WHERE session_id = ?
   AND type = ?
   AND pr_url = ?
+  AND event_key = ?
   AND (status = 'unread' OR resolved_at IS NULL)
 LIMIT 1;
 

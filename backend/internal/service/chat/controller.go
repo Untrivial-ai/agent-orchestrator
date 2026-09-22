@@ -3072,6 +3072,13 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		if reauthRequired {
 			activityState = domain.ActivityWaitingInput
 			activityEvent = "chat.account.reauth"
+		} else {
+			switch settledTurnState(event) {
+			case domain.TurnStateFailed:
+				activityEvent = "chat.turn.failed"
+			case domain.TurnStateInterrupted:
+				activityEvent = "chat.turn.interrupted"
+			}
 		}
 		c.reportActivity(ctx, activityState, activityEvent, now)
 		// Only a completed turn releases queued work; a failed or recovered one holds

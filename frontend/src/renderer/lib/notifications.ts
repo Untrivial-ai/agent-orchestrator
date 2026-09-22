@@ -21,12 +21,12 @@ const EVENTSOURCE_CLOSED = 2;
 const MAX_CONFIRMED_NOTIFICATION_DELETIONS = 256;
 
 /**
- * Only these two kinds describe something still waiting on the user.
- * `pr_merged` / `pr_closed_unmerged` report something that already happened.
+ * These kinds describe something still waiting on the user or automation.
+ * Turn and PR outcome notifications report something that already happened.
  * Mirrors NotificationType.NeedsResolution on the backend — used here only to
  * keep `unresolvedCount` accurate on the unread/all caches.
  */
-const UNRESOLVABLE_TYPES = new Set(["needs_input", "ready_to_merge"]);
+const UNRESOLVABLE_TYPES = new Set(["needs_input", "ci_failed", "ready_to_merge"]);
 
 type NotificationsQueryKey = typeof unreadNotificationsQueryKey | typeof recentNotificationsQueryKey;
 

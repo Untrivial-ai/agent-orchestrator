@@ -12,6 +12,7 @@ func enrich(intent Intent) (domain.NotificationRecord, error) {
 		SessionID: intent.SessionID,
 		ProjectID: intent.ProjectID,
 		PRURL:     strings.TrimSpace(intent.PRURL),
+		EventKey:  strings.TrimSpace(intent.EventKey),
 		Type:      intent.Type,
 		Status:    domain.NotificationUnread,
 		CreatedAt: intent.CreatedAt,
@@ -19,7 +20,7 @@ func enrich(intent Intent) (domain.NotificationRecord, error) {
 	if !intent.Type.Valid() {
 		return domain.NotificationRecord{}, domain.ErrInvalidNotificationType
 	}
-	if intent.Type != domain.NotificationNeedsInput && rec.PRURL == "" {
+	if notificationIsPRScoped(intent.Type) && rec.PRURL == "" {
 		return domain.NotificationRecord{}, domain.ErrInvalidNotificationRecord
 	}
 	rec.Title = titleForIntent(intent)
@@ -32,8 +33,14 @@ func enrich(intent Intent) (domain.NotificationRecord, error) {
 
 func titleForIntent(intent Intent) string {
 	switch intent.Type {
+	case domain.NotificationTurnCompleted:
+		return fmt.Sprintf("%s finished", sessionLabel(intent))
+	case domain.NotificationTurnFailed:
+		return fmt.Sprintf("%s failed", sessionLabel(intent))
 	case domain.NotificationNeedsInput:
 		return fmt.Sprintf("%s needs your input", sessionLabel(intent))
+	case domain.NotificationCIFailed:
+		return fmt.Sprintf("Checks failed for %s", prLabel(intent))
 	case domain.NotificationReadyToMerge:
 		if title := strings.TrimSpace(intent.PRTitle); title != "" {
 			if label := prLabel(intent); label != "PR" {
@@ -53,8 +60,17 @@ func titleForIntent(intent Intent) string {
 
 func bodyForIntent(intent Intent) string {
 	switch intent.Type {
+	case domain.NotificationTurnCompleted:
+		return "Your agent finished its turn and is ready for more work."
+	case domain.NotificationTurnFailed:
+		return "The agent could not complete its turn. Open the session for details."
 	case domain.NotificationNeedsInput:
 		return "Your agent is waiting on you to continue."
+	case domain.NotificationCIFailed:
+		if title := strings.TrimSpace(intent.PRTitle); title != "" {
+			return fmt.Sprintf("%s has failing checks.", title)
+		}
+		return "One or more pull request checks failed."
 	case domain.NotificationReadyToMerge:
 		if session := sessionLabel(intent); session != "session" {
 			return fmt.Sprintf("PR from session %s is ready to merge. CI passed with no blocking review feedback.", session)
@@ -76,6 +92,16 @@ func bodyForIntent(intent Intent) string {
 		return "Closed without merging. Reopen it if this wasn't intended."
 	default:
 		return ""
+	}
+}
+
+func notificationIsPRScoped(typ domain.NotificationType) bool {
+	switch typ {
+	case domain.NotificationCIFailed, domain.NotificationReadyToMerge,
+		domain.NotificationPRMerged, domain.NotificationPRClosedUnmerged:
+		return true
+	default:
+		return false
 	}
 }
 

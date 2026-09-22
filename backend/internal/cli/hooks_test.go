@@ -26,6 +26,31 @@ type activityCapture struct {
 	hits int
 }
 
+func TestHookTurnOutcome(t *testing.T) {
+	tests := []struct {
+		name    string
+		agent   domain.AgentHarness
+		event   string
+		payload string
+		want    domain.TurnOutcome
+	}{
+		{name: "amp completed", agent: domain.HarnessAmp, event: "stop", payload: `{}`, want: domain.TurnOutcomeUnknown},
+		{name: "amp cancelled", agent: domain.HarnessAmp, event: "stop", payload: `{"status":"cancelled"}`, want: domain.TurnOutcomeInterrupted},
+		{name: "amp failed", agent: domain.HarnessAmp, event: "stop", payload: `{"status":"error"}`, want: domain.TurnOutcomeFailed},
+		{name: "auggie completed", agent: domain.HarnessAuggie, event: "stop", payload: `{"agent_stop_cause":"end_turn"}`, want: domain.TurnOutcomeCompleted},
+		{name: "auggie interrupted", agent: domain.HarnessAuggie, event: "stop", payload: `{"agent_stop_cause":"interrupted"}`, want: domain.TurnOutcomeInterrupted},
+		{name: "cline cancelled", agent: domain.HarnessCline, event: "cancel", payload: `{}`, want: domain.TurnOutcomeInterrupted},
+		{name: "non-terminal", agent: domain.HarnessAmp, event: "user-prompt-submit", payload: `{}`, want: domain.TurnOutcomeUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hookTurnOutcome(tt.agent, tt.event, []byte(tt.payload)); got != tt.want {
+				t.Fatalf("hookTurnOutcome() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClaudeSubmissionContextMatchesDurableNonce(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "qa-1")
 	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-1")

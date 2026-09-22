@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -4222,6 +4223,120 @@ func TestActivity_WaitingInputTransitionEmitsNotification(t *testing.T) {
 	}
 }
 
+func TestActivity_TurnBoundaryEmitsCompletionNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	now := time.Date(2026, 9, 21, 10, 0, 0, 123, time.UTC)
+	m.clock = func() time.Time { return now }
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", DisplayName: "checkout-flow",
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		FirstSignalAt: now.Add(-time.Minute),
+	}
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("intents = %+v, want one completion", sink.intents)
+	}
+	intent := sink.intents[0]
+	if intent.Type != domain.NotificationTurnCompleted || intent.SessionDisplayName != "checkout-flow" || intent.EventKey == "" {
+		t.Fatalf("intent = %+v", intent)
+	}
+}
+
+func TestActivity_InterruptedTurnDoesNotEmitCompletionNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	now := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		FirstSignalAt: now.Add(-time.Minute),
+	}
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", Timestamp: now,
+		TurnOutcome: domain.TurnOutcomeInterrupted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("interrupted turn emitted %+v", sink.intents)
+	}
+}
+
+func TestActivity_LateTurnBoundaryAfterObserverIdleEmitsCompletionNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	idleAt := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", DisplayName: "checkout-flow",
+		Activity:      domain.Activity{State: domain.ActivityIdle, LastActivityAt: idleAt},
+		FirstSignalAt: idleAt.Add(-time.Minute),
+	}
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", Timestamp: idleAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationTurnCompleted {
+		t.Fatalf("late completion intents = %+v, want one completion", sink.intents)
+	}
+	wantKey := fmt.Sprintf("stop:%d", idleAt.UnixNano())
+	if sink.intents[0].EventKey != wantKey {
+		t.Fatalf("event key = %q, want %q", sink.intents[0].EventKey, wantKey)
+	}
+}
+
+func TestActivity_ChatFailureEmitsFailureNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	now := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+	m.clock = func() time.Time { return now }
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", DisplayName: "checkout-flow",
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		FirstSignalAt: now.Add(-time.Minute),
+	}
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "chat.turn.failed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationTurnFailed {
+		t.Fatalf("intents = %+v, want one turn failure", sink.intents)
+	}
+}
+
+func TestActivity_GenericIdleDoesNotClaimTurnCompleted(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	now := time.Now()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		FirstSignalAt: now.Add(-time.Minute),
+	}
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{Valid: true, State: domain.ActivityIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("unproven completion emitted %+v", sink.intents)
+	}
+}
+
 // The user answering the agent is what resolves a needs-input notification —
 // there is no manual acknowledgement anywhere in the flow.
 func TestActivity_LeavingNeedsInputResolvesNotification(t *testing.T) {
@@ -4570,7 +4685,8 @@ func TestSCMObservation_PersistedAnchoredBotReviewSuppressesReadyNotification(t 
 	if len(sink.intents) != 0 {
 		t.Fatalf("ready notification ignored persisted actionable bot feedback: %+v", sink.intents)
 	}
-	if len(sink.resolutions) != 1 || sink.resolutions[0].Type != domain.NotificationReadyToMerge {
+	readyResolutions := notificationResolutionsOfType(sink.resolutions, domain.NotificationReadyToMerge)
+	if len(readyResolutions) != 1 {
 		t.Fatalf("ready notification was not resolved from persisted actionable bot feedback: %+v", sink.resolutions)
 	}
 }
@@ -4615,13 +4731,24 @@ func TestSCMObservation_AnchoredBotReviewResolvesExistingReadyNotification(t *te
 	if len(sink.intents) != 1 {
 		t.Fatalf("bot feedback emitted a competing intent: %+v", sink.intents)
 	}
-	if len(sink.resolutions) != 1 {
+	readyResolutions := notificationResolutionsOfType(sink.resolutions, domain.NotificationReadyToMerge)
+	if len(readyResolutions) != 1 {
 		t.Fatalf("resolutions = %+v, want existing ready notification resolved", sink.resolutions)
 	}
-	got := sink.resolutions[0]
+	got := readyResolutions[0]
 	if got.Type != domain.NotificationReadyToMerge || got.SessionID != "mer-1" || got.PRURL != prURL {
 		t.Fatalf("resolution = %+v", got)
 	}
+}
+
+func notificationResolutionsOfType(all []ports.NotificationResolution, typ domain.NotificationType) []ports.NotificationResolution {
+	filtered := make([]ports.NotificationResolution, 0, len(all))
+	for _, resolution := range all {
+		if resolution.Type == typ {
+			filtered = append(filtered, resolution)
+		}
+	}
+	return filtered
 }
 
 func TestSCMObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {
@@ -4681,13 +4808,19 @@ func TestSCMObservation_ResolvesReadyToMergeWhenNoLongerReady(t *testing.T) {
 			if err := m.ApplySCMObservation(ctx, "mer-1", tt.obs); err != nil {
 				t.Fatal(err)
 			}
-			if len(sink.resolutions) != tt.want {
-				t.Fatalf("resolutions = %+v, want %d", sink.resolutions, tt.want)
+			var readyResolutions []ports.NotificationResolution
+			for _, resolution := range sink.resolutions {
+				if resolution.Type == domain.NotificationReadyToMerge {
+					readyResolutions = append(readyResolutions, resolution)
+				}
+			}
+			if len(readyResolutions) != tt.want {
+				t.Fatalf("ready resolutions = %+v, want %d (all: %+v)", readyResolutions, tt.want, sink.resolutions)
 			}
 			if tt.want == 0 {
 				return
 			}
-			got := sink.resolutions[0]
+			got := readyResolutions[0]
 			if got.Type != domain.NotificationReadyToMerge || got.PRURL != tt.obs.PR.URL {
 				t.Fatalf("resolution = %+v", got)
 			}
@@ -4696,22 +4829,28 @@ func TestSCMObservation_ResolvesReadyToMergeWhenNoLongerReady(t *testing.T) {
 }
 
 func TestSCMObservation_NotReadyWhenCIOrReviewBlocks(t *testing.T) {
-	for _, obs := range []ports.SCMObservation{
-		{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIFailing)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}},
-		{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIPending)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}},
-		{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIUnknown)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}},
-		{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}},
-		{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIPassing)}, Review: ports.SCMReviewObservation{Decision: string(domain.ReviewChangesRequest)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}},
+	for _, tc := range []struct {
+		obs      ports.SCMObservation
+		wantType domain.NotificationType
+	}{
+		{obs: ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIFailing)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}}, wantType: domain.NotificationCIFailed},
+		{obs: ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIPending)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}}},
+		{obs: ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIUnknown)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}}},
+		{obs: ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}}},
+		{obs: ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1}, CI: ports.SCMCIObservation{Summary: string(domain.CIPassing)}, Review: ports.SCMReviewObservation{Decision: string(domain.ReviewChangesRequest)}, Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)}}},
 	} {
 		st := newFakeStore()
 		sink := &fakeNotificationSink{}
 		m := New(st, nil, WithNotificationSink(sink))
 		st.sessions["mer-1"] = working("mer-1")
-		if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		if err := m.ApplySCMObservation(ctx, "mer-1", tc.obs); err != nil {
 			t.Fatal(err)
 		}
-		if len(sink.intents) != 0 {
+		if tc.wantType == "" && len(sink.intents) != 0 {
 			t.Fatalf("blocked PR emitted %+v", sink.intents)
+		}
+		if tc.wantType != "" && (len(sink.intents) != 1 || sink.intents[0].Type != tc.wantType) {
+			t.Fatalf("intents = %+v, want %s", sink.intents, tc.wantType)
 		}
 	}
 }

@@ -34,6 +34,7 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 		SessionID: rec.SessionID,
 		ProjectID: optionalProjectID(rec.ProjectID),
 		PRURL:     rec.PRURL,
+		EventKey:  rec.EventKey,
 		Type:      rec.Type,
 		Title:     rec.Title,
 		Body:      rec.Body,
@@ -222,7 +223,25 @@ func (s *Store) ReconcileResolvedNotifications(ctx context.Context, at time.Time
 			stalePRs = append(stalePRs, row.PRURL)
 		}
 	}
-
+	ciCandidates, err := s.qr.ListOpenCIFailedNotifications(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list open CI-failed notifications: %w", err)
+	}
+	staleCIPRs := make([]string, 0, len(ciCandidates))
+	seen = map[string]bool{}
+	for _, row := range ciCandidates {
+		if row.PRURL == "" || seen[row.PRURL] {
+			continue
+		}
+		seen[row.PRURL] = true
+		pr, ok, err := s.GetPR(ctx, row.PRURL)
+		if err != nil {
+			return nil, fmt.Errorf("reconcile read CI-failed pr %s: %w", row.PRURL, err)
+		}
+		if ok && pr.CI != domain.CIFailing {
+			staleCIPRs = append(staleCIPRs, row.PRURL)
+		}
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	var resolved []domain.NotificationRecord
@@ -256,6 +275,17 @@ func (s *Store) ReconcileResolvedNotifications(ctx context.Context, at time.Time
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, prURL := range staleCIPRs {
+		rows, err := s.qw.ResolvePRNotificationsByType(ctx, gen.ResolvePRNotificationsByTypeParams{
+			ResolvedAt: nullTime(at),
+			PRURL:      prURL,
+			Type:       domain.NotificationCIFailed,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reconcile CI-failed notifications %s: %w", prURL, err)
+		}
+		resolved = append(resolved, notificationsFromGen(rows)...)
 	}
 	return resolved, nil
 }
@@ -353,6 +383,7 @@ func (s *Store) getOpenNotificationByDedupe(ctx context.Context, rec domain.Noti
 		SessionID: rec.SessionID,
 		Type:      rec.Type,
 		PRURL:     rec.PRURL,
+		EventKey:  rec.EventKey,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.NotificationRecord{}, false, nil
@@ -374,6 +405,7 @@ func notificationFromGen(row gen.Notification) domain.NotificationRecord {
 		SessionID:  row.SessionID,
 		ProjectID:  projectIDValue(row.ProjectID),
 		PRURL:      row.PRURL,
+		EventKey:   row.EventKey,
 		Type:       row.Type,
 		Title:      row.Title,
 		Body:       row.Body,

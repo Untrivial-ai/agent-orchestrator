@@ -226,6 +226,28 @@ func TestDispatcherIgnoresResolvedEvents(t *testing.T) {
 	}
 }
 
+func TestDispatcherDoesNotSendDesktopOnlyNotificationTypes(t *testing.T) {
+	for _, typ := range []domain.NotificationType{
+		domain.NotificationTurnCompleted,
+		domain.NotificationTurnFailed,
+		domain.NotificationCIFailed,
+	} {
+		if mobilePushNotification(typ) {
+			t.Fatalf("desktop-only %s notification is eligible for mobile push", typ)
+		}
+	}
+	for _, typ := range []domain.NotificationType{
+		domain.NotificationNeedsInput,
+		domain.NotificationReadyToMerge,
+		domain.NotificationPRMerged,
+		domain.NotificationPRClosedUnmerged,
+	} {
+		if !mobilePushNotification(typ) {
+			t.Fatalf("existing %s notification lost mobile push eligibility", typ)
+		}
+	}
+}
+
 func TestDispatcherSweepPrunesOnReceipt(t *testing.T) {
 	store := &fakeDeviceStore{devices: []mobilebridge.PushDevice{{Token: "ExponentPushToken[dead]"}}}
 	sender := newFakeSender(nil)

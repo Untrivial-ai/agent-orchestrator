@@ -94,8 +94,9 @@ surface (`npm run sqlc`, `npm run api`).
   host-trusted adapters remain candidates for future contained execution once
   their documented sandbox, environment-replacement, broker, and gateway
   prerequisites are implemented.
-- Durable dashboard notifications for `needs_input`, `ready_to_merge`,
-  `pr_merged`, and `pr_closed_unmerged`: backend enrichment/persistence,
+- Durable dashboard and native desktop notifications for `turn_completed`,
+  `turn_failed`, `needs_input`, `ci_failed`, `ready_to_merge`, `pr_merged`, and
+  `pr_closed_unmerged`: backend enrichment/persistence,
   cursor-paginated read/unread history, live notification stream, and read
   acknowledgement API.
 - SCM observer (`internal/observe/scm`) wired into the daemon: GitHub provider,

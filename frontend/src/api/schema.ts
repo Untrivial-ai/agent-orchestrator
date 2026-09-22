@@ -3807,7 +3807,7 @@ export interface components {
             target: components["schemas"]["NotificationTarget"];
             title: string;
             /** @enum {string} */
-            type: "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
+            type: "turn_completed" | "turn_failed" | "needs_input" | "ci_failed" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
         };
         NotificationTarget: {
             /** @enum {string} */
@@ -4269,6 +4269,11 @@ export interface components {
             toolUseId?: string;
             /** @description Read-only provider-native transcript path exposed by the hook. */
             transcriptPath?: string;
+            /**
+             * @description Provider-reported terminal outcome when the hook distinguishes completion from interruption.
+             * @enum {string}
+             */
+            turnOutcome?: "completed" | "failed" | "interrupted";
             /** @description Provider transcript metadata used by the local usage pipeline. */
             usage?: components["schemas"]["UsageHookMetadata"];
         };

@@ -46,6 +46,7 @@ type ActivitySignal struct {
 	// unversioned hook, while a pointer to zero is a valid initial revision.
 	ExpectedRevision *int64
 	Event            string
+	TurnOutcome      domain.TurnOutcome
 	ToolName         string
 	ToolUseID        string
 	AgentSessionID   string

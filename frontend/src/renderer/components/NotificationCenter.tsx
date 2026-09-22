@@ -742,8 +742,14 @@ function notificationMentions(notification: NotificationCopy, value: string): bo
 
 function notificationIcon(type: string) {
 	switch (type) {
+		case "turn_completed":
+			return CheckCheck;
+		case "turn_failed":
+			return CircleAlert;
 		case "needs_input":
 			return MessageSquareDot;
+		case "ci_failed":
+			return CircleAlert;
 		case "ready_to_merge":
 			return GitPullRequestArrow;
 		case "pr_merged":
@@ -760,8 +766,14 @@ function notificationIcon(type: string) {
 // invisible, so it must not be used for a glyph.
 function notificationIconClass(type: string): string {
 	switch (type) {
+		case "turn_completed":
+			return "text-success";
+		case "turn_failed":
+			return "text-error";
 		case "needs_input":
 			return "text-warning";
+		case "ci_failed":
+			return "text-error";
 		case "ready_to_merge":
 			return "text-success";
 		case "pr_merged":

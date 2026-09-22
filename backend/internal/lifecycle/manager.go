@@ -532,6 +532,9 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	s.ControllerGeneration = strings.TrimSpace(s.ControllerGeneration)
 	s.ProviderTurnID = strings.TrimSpace(s.ProviderTurnID)
 	s.SubmissionID = strings.TrimSpace(s.SubmissionID)
+	if !s.TurnOutcome.Valid() {
+		s.TurnOutcome = domain.TurnOutcomeUnknown
+	}
 	if !s.ConversationCheckpointOrigin.Valid() {
 		s.ConversationCheckpointOrigin = domain.ConversationCheckpointOriginUnknown
 	}
@@ -930,6 +933,11 @@ retryProjection:
 	// first to ARRIVE may match the seeded state — e.g. a turn's "active"
 	// POST is lost and its Stop hook lands idle on the idle-seeded row.
 	if sameState && !rec.FirstSignalAt.IsZero() {
+		// A terminal hook can arrive after the pane observer has already moved the
+		// session to idle. The state write is redundant, but the provider boundary
+		// is still the authoritative notification event. Its key uses the existing
+		// idle epoch, so retries of the same late hook remain deduplicated.
+		intent = activityNotificationIntent(rec, rec, s)
 		if metadataChanged || s.Event == "user-prompt-submit" {
 			rec.UpdatedAt = now
 			applied, retry, err := project(rec)
@@ -945,9 +953,14 @@ retryProjection:
 				return nil
 			}
 			m.mu.Unlock()
-			return m.acknowledgeAgentSwitchTarget(ctx, id, s, now)
+			if err := m.acknowledgeAgentSwitchTarget(ctx, id, s, now); err != nil {
+				return err
+			}
+			m.emitNotification(ctx, intent)
+			return nil
 		}
 		m.mu.Unlock()
+		m.emitNotification(ctx, intent)
 		return nil
 	}
 	next := rec
@@ -975,18 +988,7 @@ retryProjection:
 		m.mu.Unlock()
 		return nil
 	}
-	// Transition into the needs-input family (waiting_input or blocked) pings
-	// the user; an in-family escalation (waiting_input -> blocked) does not
-	// re-notify — the user was already pinged once for this pause.
-	if !rec.Activity.State.NeedsInput() && next.Activity.State.NeedsInput() && !next.IsTerminated {
-		intent = &ports.NotificationIntent{
-			Type:               domain.NotificationNeedsInput,
-			SessionID:          next.ID,
-			ProjectID:          next.ProjectID,
-			CreatedAt:          next.Activity.LastActivityAt,
-			SessionDisplayName: next.DisplayName,
-		}
-	}
+	intent = activityNotificationIntent(rec, next, s)
 	// Leaving the needs-input family is the user answering: the notification
 	// that pinged them has nothing left to resolve.
 	resolutions := needsInputResolutions(rec, next, now)
@@ -1001,6 +1003,54 @@ retryProjection:
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
 	return nil
+}
+
+// activityNotificationIntent translates authoritative agent boundaries into
+// durable user-facing events. It deliberately keys completion on provider
+// boundary names rather than treating every idle observation as success.
+func activityNotificationIntent(prev, next domain.SessionRecord, signal ports.ActivitySignal) *ports.NotificationIntent {
+	if next.IsTerminated {
+		return nil
+	}
+	var typ domain.NotificationType
+	switch {
+	case !prev.Activity.State.NeedsInput() && next.Activity.State.NeedsInput():
+		// An in-family escalation (waiting_input -> blocked) does not re-notify:
+		// the user was already pinged once for this pause.
+		typ = domain.NotificationNeedsInput
+	case signal.Event == "chat.turn.failed" || signal.TurnOutcome == domain.TurnOutcomeFailed:
+		typ = domain.NotificationTurnFailed
+	case signal.TurnOutcome == domain.TurnOutcomeInterrupted:
+		return nil
+	case next.Activity.State == domain.ActivityIdle && activityCompletionEvent(signal.Event):
+		typ = domain.NotificationTurnCompleted
+	default:
+		return nil
+	}
+	intent := &ports.NotificationIntent{
+		Type:               typ,
+		SessionID:          next.ID,
+		ProjectID:          next.ProjectID,
+		CreatedAt:          next.Activity.LastActivityAt,
+		SessionDisplayName: next.DisplayName,
+	}
+	if typ == domain.NotificationTurnCompleted || typ == domain.NotificationTurnFailed {
+		turnKey := strings.TrimSpace(signal.ProviderTurnID)
+		if turnKey == "" {
+			turnKey = fmt.Sprintf("%d", next.Activity.LastActivityAt.UTC().UnixNano())
+		}
+		intent.EventKey = fmt.Sprintf("%s:%s", signal.Event, turnKey)
+	}
+	return intent
+}
+
+func activityCompletionEvent(event string) bool {
+	switch event {
+	case "stop", "after-agent", "post-agent", "chat.turn.completed":
+		return true
+	default:
+		return false
+	}
 }
 
 // stagePendingAgentSwitchNativeMetadata persists provider-assigned startup
@@ -1200,7 +1250,7 @@ func cursorResolvedExecutionKey(s ports.ActivitySignal) (string, bool) {
 // dialog is gone: a prompt cannot be submitted while a dialog holds the
 // composer, and a turn cannot end (or the session exit) with one on screen.
 func isTurnBoundaryEvent(event string) bool {
-	return event == "user-prompt-submit" || event == "stop" || event == "session-end" ||
+	return event == "user-prompt-submit" || event == "stop" || event == "cancel" || event == "session-end" ||
 		event == "process-exited" || event == "chat.controller.stopped"
 }
 

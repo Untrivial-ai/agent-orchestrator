@@ -363,6 +363,7 @@ type Notification struct {
 	SessionID   domain.SessionID
 	ProjectID   *domain.ProjectID
 	PRURL       string
+	EventKey    string
 	Type        domain.NotificationType
 	Title       string
 	Body        string
