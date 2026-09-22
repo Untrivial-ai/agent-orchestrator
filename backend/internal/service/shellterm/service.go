@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ type ProjectRootLocator interface {
 // of its own yet. The daemon wiring adapts the session service to it.
 type SessionWorkspaceLocator interface {
 	SessionWorkspace(ctx context.Context, id domain.SessionID) (workspacePath string, projectID domain.ProjectID, err error)
+	CueCommandSessionTarget(ctx context.Context, id domain.SessionID) (CueCommandSessionTarget, error)
 }
 
 // Service opens, lists, and closes standalone shell terminals.
@@ -311,6 +313,101 @@ func (s *Service) OpenCommandTerminal(ctx context.Context, in OpenCommandTermina
 		go s.sendInitialInputWhenReady(context.WithoutCancel(ctx), ports.RuntimeHandle{ID: terminal.HandleID}, in.InitialInput, in.InitialInputReadyStates)
 	}
 	return terminal, nil
+}
+
+// OpenCueCommandTerminal launches one trusted Cue command without creating or
+// messaging an agent session. A session target is strict: it must belong to the
+// requested project, remain usable, and retain its exact worktree.
+func (s *Service) OpenCueCommandTerminal(ctx context.Context, in OpenCueCommandTerminalInput) (ShellTerminal, error) {
+	if in.ProjectID == "" {
+		return ShellTerminal{}, apierr.Invalid("CUE_COMMAND_PROJECT_REQUIRED", "A project is required to run a command Cue", nil)
+	}
+	if strings.TrimSpace(in.Command) == "" {
+		return ShellTerminal{}, apierr.Invalid("CUE_COMMAND_REQUIRED", "A command is required to run a command Cue", nil)
+	}
+	if strings.TrimSpace(in.Title) == "" {
+		return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_TITLE_REQUIRED", "A shell terminal title is required", nil)
+	}
+	if err := validateOpenCommandTerminalInput(OpenCommandTerminalInput{Argv: []string{"cue-command"}, Title: in.Title}); err != nil {
+		return ShellTerminal{}, err
+	}
+
+	workingDir, projectID, err := s.resolveCueCommandWorkingDir(ctx, in.ProjectID, in.SessionID)
+	if err != nil {
+		return ShellTerminal{}, err
+	}
+	shellArgv, usedFallback := resolveUserLoginShell(in.Shell)
+	if usedFallback {
+		return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_SHELL_UNAVAILABLE",
+			fmt.Sprintf("The selected shell is unavailable: %s. Choose another shell in Settings.", in.Shell), nil)
+	}
+	argv, err := buildCueCommandArgv(shellArgv, in.Command, stdruntime.GOOS)
+	if err != nil {
+		return ShellTerminal{}, err
+	}
+
+	if in.SessionID != "" {
+		release, acquireErr := s.acquireSessionGate(ctx, in.SessionID)
+		if acquireErr != nil {
+			return ShellTerminal{}, acquireErr
+		}
+		defer release()
+		// Resolve again inside the teardown gate so the worktree cannot disappear
+		// between validation and runtime creation.
+		workingDir, projectID, err = s.resolveCueCommandWorkingDir(ctx, in.ProjectID, in.SessionID)
+		if err != nil {
+			return ShellTerminal{}, err
+		}
+	}
+
+	return s.openTerminal(ctx, openTerminalConfig{
+		argv:       argv,
+		env:        s.pinnedEnv(),
+		projectID:  projectID,
+		sessionID:  in.SessionID,
+		workingDir: workingDir,
+		title:      in.Title,
+		transient:  true,
+	})
+}
+
+func (s *Service) resolveCueCommandWorkingDir(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) (string, domain.ProjectID, error) {
+	if sessionID == "" {
+		root, err := s.resolveProjectRootOrDataDir(ctx, projectID)
+		if err != nil {
+			return "", "", err
+		}
+		if !filepath.IsAbs(root) {
+			return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The project root is unavailable", nil)
+		}
+		info, statErr := os.Stat(root)
+		if statErr != nil || !info.IsDir() {
+			return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The project root is unavailable", nil)
+		}
+		return filepath.Clean(root), projectID, nil
+	}
+	if s.sessions == nil {
+		return "", "", apierr.Internal("SHELL_TERMINAL_NO_SESSION_LOOKUP", "Session lookup is unavailable")
+	}
+	target, err := s.sessions.CueCommandSessionTarget(ctx, sessionID)
+	if err != nil {
+		return "", "", fmt.Errorf("open cue command terminal: resolve session %s: %w", sessionID, err)
+	}
+	if target.ProjectID != projectID {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session belongs to another project", nil)
+	}
+	if target.IsTerminated || target.Activity == domain.ActivityExited || target.Activity == domain.ActivityBlocked {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session cannot run command Cues", nil)
+	}
+	workspace := strings.TrimSpace(target.WorkspacePath)
+	if workspace == "" || !filepath.IsAbs(workspace) {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session worktree is unavailable", nil)
+	}
+	info, statErr := os.Stat(workspace)
+	if statErr != nil || !info.IsDir() {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session worktree is unavailable", nil)
+	}
+	return filepath.Clean(workspace), target.ProjectID, nil
 }
 
 const (
