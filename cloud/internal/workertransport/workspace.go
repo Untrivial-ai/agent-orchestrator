@@ -28,8 +28,9 @@ const (
 var errUnsafePath = errors.New("path is outside the workspace")
 
 type workspace struct {
-	path string
-	root *os.Root
+	path        string
+	root        *os.Root
+	compareBase string
 }
 
 func openWorkspace(path string) (*workspace, error) {
@@ -144,6 +145,151 @@ func (w *workspace) Read(input worker.WorkspaceReadRequest) (worker.WorkspaceFil
 	}, nil
 }
 
+// DiffFile returns the selected workspace file and its combined (compare base
+// to worktree) patch. This is the Cloud equivalent of the local daemon's
+// file-detail read model: deleted and binary files are still reviewable even
+// when no text content can be returned, untracked text gets a synthetic patch,
+// and every payload remains bounded.
+func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFileRequest) (worker.WorkspaceDiffFile, error) {
+	path, err := cleanWorkspacePath(input.Path, false)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+
+	baseRef, base := w.comparisonBase(ctx)
+	// Compare against the merge-base SHA, not the symbolic branch tip (see Diff):
+	// diffing against the tip surfaces spurious upstream changes after a fetch and
+	// disagrees with the review.summary view.
+	diffBase := base
+	if diffBase == "" {
+		diffBase = baseRef
+	}
+	status, err := w.fileStatus(ctx, path, diffBase)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+	file := worker.WorkspaceDiffFile{Path: wirePath(path), Status: status}
+	file.Deleted = status == "deleted"
+
+	if !file.Deleted {
+		content, size, binary, truncated, readErr := w.diffFileContent(path)
+		if readErr != nil {
+			return worker.WorkspaceDiffFile{}, readErr
+		}
+		file.Content, file.Size = content, size
+		file.Binary, file.ContentTruncated = binary, truncated
+	}
+
+	if status == "unmodified" {
+		return file, nil
+	}
+	if status == "untracked" {
+		if !file.Binary && !file.ContentTruncated {
+			file.Diff, file.DiffTruncated = truncateDiff(syntheticAddedFileDiff(file.Path, file.Content), maxDiffOutput)
+		}
+		return file, nil
+	}
+
+	numstat, _, err := w.git(ctx, "diff", "--numstat", diffBase, "--", path)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+	file.Additions, file.Deletions, file.Binary = diffNumstat(numstat, file.Binary)
+	diff, truncated, err := w.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", diffBase, "--", path)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+	file.Diff, file.DiffTruncated = diff, truncated
+	return file, nil
+}
+
+func (w *workspace) diffFileContent(path string) (string, int64, bool, bool, error) {
+	file, err := w.root.Open(path)
+	if err != nil {
+		return "", 0, false, false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", 0, false, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, false, false, errors.New("workspace path is not a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxWorkspaceFile+1))
+	if err != nil {
+		return "", 0, false, false, err
+	}
+	if len(data) > maxWorkspaceFile {
+		return "", info.Size(), false, true, nil
+	}
+	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+		return "", info.Size(), true, false, nil
+	}
+	return string(data), info.Size(), false, false, nil
+}
+
+func (w *workspace) fileStatus(ctx context.Context, path, baseRef string) (string, error) {
+	output, _, err := w.git(ctx, "status", "--porcelain=v1", "--untracked-files=all", "--", path)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(strings.SplitN(output, "\n", 2)[0])
+	if len(line) >= 2 {
+		return gitStatus(line[:2]), nil
+	}
+	changes, _, err := w.git(ctx, "diff", "--name-status", "--find-renames", baseRef, "--", path)
+	if err != nil {
+		return "", err
+	}
+	for _, status := range changedFileStatuses(changes) {
+		return status, nil
+	}
+	return "unmodified", nil
+}
+
+func diffNumstat(output string, binary bool) (int, int, bool) {
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) < 2 {
+		return 0, 0, binary
+	}
+	if fields[0] == "-" || fields[1] == "-" {
+		return 0, 0, true
+	}
+	var additions, deletions int
+	_, _ = fmt.Sscanf(fields[0], "%d", &additions)
+	_, _ = fmt.Sscanf(fields[1], "%d", &deletions)
+	return additions, deletions, binary
+}
+
+func syntheticAddedFileDiff(path, content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
+	}
+	var result strings.Builder
+	fmt.Fprintf(&result, "diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, path, path, len(lines))
+	for _, line := range lines {
+		result.WriteByte('+')
+		result.WriteString(line)
+		if !strings.HasSuffix(line, "\n") {
+			result.WriteByte('\n')
+		}
+	}
+	return result.String()
+}
+
+func truncateDiff(value string, limit int) (string, bool) {
+	if len(value) <= limit {
+		return value, false
+	}
+	end := limit
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end], true
+}
+
 func (w *workspace) Write(input worker.WorkspaceWriteRequest) (worker.WorkspaceFile, error) {
 	path, err := cleanWorkspacePath(input.Path, false)
 	if err != nil {
@@ -202,18 +348,50 @@ func (w *workspace) Diff(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	unstaged, unstagedTruncated, err := w.git(ctx, "diff", "--no-ext-diff", "--")
+	baseRef, base := w.comparisonBase(ctx)
+	// Diff against the merge-base SHA, not the symbolic ref (branch tip). Once a
+	// fetch advances origin/<defaultBranch> past this session's fork point,
+	// diffing against the tip renders upstream commits as spurious deletions and
+	// disagrees with both the reported diffBaseSha (the merge-base) and the
+	// review.summary view. Comparing against the merge-base shows only this
+	// session's own changes.
+	diffBase := base
+	if diffBase == "" {
+		diffBase = baseRef
+	}
+	baseStatus, baseStatusTruncated, err := w.git(ctx, "diff", "--name-status", "--find-renames", diffBase, "--")
 	if err != nil {
 		return nil, err
 	}
-	staged, stagedTruncated, err := w.git(ctx, "diff", "--cached", "--no-ext-diff", "--")
+	combined, combinedTruncated, err := w.git(ctx, "diff", "--no-ext-diff", diffBase, "--")
 	if err != nil {
 		return nil, err
 	}
-	base, _, _ := w.git(ctx, "rev-parse", "HEAD")
-	files := make([]map[string]any, 0)
+	numstat, numstatTruncated, err := w.git(ctx, "diff", "--numstat", diffBase, "--")
+	if err != nil {
+		return nil, err
+	}
+	stats := diffNumstats(numstat)
+	statuses := changedFileStatuses(baseStatus)
+	files := make([]map[string]any, 0, len(statuses))
 	untracked := make([]string, 0)
-	for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
+	paths := make([]string, 0, len(statuses))
+	for path := range statuses {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		fileStatus := statuses[path]
+		additions, deletions, binary := 0, 0, false
+		if stat, found := stats[path]; found {
+			additions, deletions, binary = stat.additions, stat.deletions, stat.binary
+		}
+		files = append(files, map[string]any{
+			"path": path, "status": fileStatus, "additions": additions,
+			"deletions": deletions, "binary": binary,
+		})
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(status, "\n"), "\n") {
 		if len(line) < 4 {
 			continue
 		}
@@ -223,27 +401,105 @@ func (w *workspace) Diff(ctx context.Context) (map[string]any, error) {
 		if fileStatus == "untracked" {
 			untracked = append(untracked, path)
 		}
+		if fileStatus != "untracked" {
+			continue
+		}
+		if _, alreadyChanged := statuses[path]; alreadyChanged {
+			continue
+		}
+		additions, deletions, binary := 0, 0, false
+		if fileStatus == "untracked" {
+			content, _, isBinary, truncated, readErr := w.diffFileContent(filepath.FromSlash(path))
+			if readErr == nil {
+				binary = isBinary
+				if !binary && !truncated {
+					additions = lineCount(content)
+				}
+			}
+			// On a read error (dangling symlink, FIFO/socket, or a file removed
+			// between git status and the read), still list the untracked file
+			// rather than failing the entire diff view.
+		}
 		files = append(files, map[string]any{
-			"path": path, "status": fileStatus, "additions": 0,
-			"deletions": 0, "binary": false,
+			"path": path, "status": fileStatus, "additions": additions,
+			"deletions": deletions, "binary": binary,
 		})
 	}
-	combined := staged + unstaged
-	combinedTruncated := stagedTruncated || unstagedTruncated
-	if len(combined) > maxDiffOutput {
-		combined = combined[:maxDiffOutput]
-		combinedTruncated = true
-	}
 	return map[string]any{
-		"status": status, "unstaged": unstaged, "staged": staged,
-		"combined": combined, "diffBaseRef": "HEAD",
-		"diffBaseSha": strings.TrimSpace(base), "files": files,
+		"status": status, "unstaged": "", "staged": "",
+		"combined": combined, "diffBaseRef": baseRef,
+		"diffBaseSha": base, "files": files,
 		"untrackedFiles": untracked,
 		"truncated": map[string]bool{
 			"combined": combinedTruncated,
-			"stats":    statusTruncated,
+			"stats":    statusTruncated || baseStatusTruncated || numstatTruncated,
 		},
 	}, nil
+}
+
+func (w *workspace) comparisonBase(ctx context.Context) (string, string) {
+	ref := strings.TrimSpace(w.compareBase)
+	if ref == "" {
+		ref = "HEAD"
+	}
+	base, _, err := w.git(ctx, "merge-base", ref, "HEAD")
+	if err != nil {
+		base, _, err = w.git(ctx, "rev-parse", "HEAD")
+		if err != nil {
+			return "HEAD", ""
+		}
+		return "HEAD", strings.TrimSpace(base)
+	}
+	return ref, strings.TrimSpace(base)
+}
+
+func changedFileStatuses(output string) map[string]string {
+	statuses := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		code := strings.TrimRight(parts[0], "0123456789")
+		path := parts[len(parts)-1]
+		if path != "" {
+			statuses[path] = gitStatus(code)
+		}
+	}
+	return statuses
+}
+
+type diffStat struct {
+	additions int
+	deletions int
+	binary    bool
+}
+
+func diffNumstats(output string) map[string]diffStat {
+	stats := make(map[string]diffStat)
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 || parts[2] == "" {
+			continue
+		}
+		additions, deletions, binary := diffNumstat(strings.Join(parts[:2], "\t"), false)
+		stats[parts[2]] = diffStat{additions: additions, deletions: deletions, binary: binary}
+	}
+	return stats
+}
+
+func lineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	return strings.Count(content, "\n") + boolToInt(!strings.HasSuffix(content, "\n"))
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (w *workspace) git(ctx context.Context, args ...string) (string, bool, error) {

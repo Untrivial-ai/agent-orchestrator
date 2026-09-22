@@ -992,20 +992,30 @@ func TestProbeReportsMissingBinary(t *testing.T) {
 // Chat must not be quietly stricter than the terminal path for the same setting.
 func TestApprovalSettingsMirrorTUIPosture(t *testing.T) {
 	for _, tc := range []struct {
+		readOnly                  bool
 		mode                      ports.PermissionMode
 		policy, sandbox, reviewer string
 	}{
-		{ports.PermissionModeDefault, "never", "danger-full-access", "user"},
-		{ports.PermissionModeBypassPermissions, "never", "danger-full-access", "user"},
-		{ports.PermissionModeAcceptEdits, "on-request", "workspace-write", "user"},
-		{ports.PermissionModeAuto, "on-request", "workspace-write", "auto_review"},
-		{ports.PermissionMode("nonsense"), "never", "danger-full-access", "user"},
+		{false, ports.PermissionModeDefault, "never", "danger-full-access", "user"},
+		{false, ports.PermissionModeBypassPermissions, "never", "danger-full-access", "user"},
+		{false, ports.PermissionModeAcceptEdits, "on-request", "workspace-write", "user"},
+		{false, ports.PermissionModeAuto, "on-request", "workspace-write", "auto_review"},
+		{false, ports.PermissionMode("nonsense"), "never", "danger-full-access", "user"},
+		{true, ports.PermissionModeAuto, "never", "read-only", "user"},
 	} {
-		policy, sandbox := approvalSettings(tc.mode)
-		reviewer := approvalReviewer(tc.mode)
+		policy, sandbox, reviewer := launchApprovalSettings(tc.mode, tc.readOnly)
 		if policy != tc.policy || sandbox != tc.sandbox || reviewer != tc.reviewer {
-			t.Errorf("approval settings(%q) = %q/%q/%q, want %q/%q/%q", tc.mode, policy, sandbox, reviewer, tc.policy, tc.sandbox, tc.reviewer)
+			t.Errorf("approval settings(%q, readOnly=%t) = %q/%q/%q, want %q/%q/%q", tc.mode, tc.readOnly, policy, sandbox, reviewer, tc.policy, tc.sandbox, tc.reviewer)
 		}
+	}
+}
+
+func TestReadOnlyTurnCannotOverrideSandbox(t *testing.T) {
+	params := map[string]any{}
+	applyTurnSettings(params, ports.ChatTurnSettings{Approval: ports.PermissionModeAuto}, true)
+	if params["approvalPolicy"] != "never" || params["approvalsReviewer"] != "user" ||
+		!reflect.DeepEqual(params["sandboxPolicy"], map[string]any{"type": "readOnly"}) {
+		t.Fatalf("read-only turn settings = %#v", params)
 	}
 }
 

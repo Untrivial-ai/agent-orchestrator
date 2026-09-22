@@ -6,6 +6,10 @@ import { computeSseRetryDelayMs } from "./sse-backoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
 import { conversationQueryKey, conversationQueryRoot } from "../hooks/useConversation";
+import {
+	reviewerConversationQueryKey,
+	reviewerConversationQueryRoot,
+} from "../hooks/useReviewerConversation";
 import { agentSwitchesQueryRoot } from "../hooks/useAgentSwitches";
 import { sessionUsageQueryRoot } from "../hooks/useSessionUsageSummaries";
 import { agentSwitchVisibility } from "./agent-switch-visibility";
@@ -55,6 +59,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let healthAttempt = 0;
 			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
+			const pendingReviewerConversations = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
 			const pendingEditorHandoffSessions = new Set<string>();
 			const pendingModelCatalogScopes = new Map<string, { agentId: string; projectId: string }>();
@@ -103,6 +108,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			const flushPending = () => {
 				if (allConversationsInvalidationPending) {
 					invalidate(conversationQueryRoot);
+					invalidate(reviewerConversationQueryRoot);
 					allConversationsInvalidationPending = false;
 				}
 				if (workspaceInvalidationPending) {
@@ -126,6 +132,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(conversationQueryKey(sessionId));
 				}
 				pendingConversationSessions.clear();
+				for (const reviewId of pendingReviewerConversations) {
+					invalidate(reviewerConversationQueryKey(reviewId));
+				}
+				pendingReviewerConversations.clear();
 				for (const sessionId of pendingInterfaceTransitionSessions) {
 					invalidate(["session-interface-transition", sessionId]);
 				}
@@ -165,6 +175,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							typeof decoded.payload === "object" && decoded.payload !== null
 								? (decoded.payload as {
 										conversationId?: unknown;
+										reviewId?: unknown;
 										interfaceTransitionId?: unknown;
 										kind?: unknown;
 										agentId?: unknown;
@@ -179,6 +190,14 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							modelCatalogOnly = true;
 						}
 						if (
+							typeof payload?.reviewId === "string" &&
+							payload.reviewId &&
+							typeof payload.conversationId === "string" &&
+							payload.conversationId
+						) {
+							pendingReviewerConversations.add(payload.reviewId);
+							conversationOnly = true;
+						} else if (
 							typeof decoded.sessionId === "string" &&
 							decoded.sessionId &&
 							typeof payload?.interfaceTransitionId === "string" &&

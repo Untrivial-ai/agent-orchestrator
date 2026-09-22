@@ -11,6 +11,7 @@ import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { toReviewerHarnessId } from "../lib/reviewer-harnesses";
 import { captureRendererEvent } from "../lib/telemetry";
 import { agentSwitchVisibility } from "../lib/agent-switch-visibility";
+import { applyOptimisticSessionKills } from "./optimistic-session-kills";
 import { appI18n } from "../i18n";
 import {
 	type AgentSwitchSummary,
@@ -208,7 +209,8 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 			typeof window !== "undefined"
 				? (window as unknown as { __aoFakeAgent?: FakeAgentSeam }).__aoFakeAgent
 				: undefined;
-		return fake ? fake.snapshot() : mockWorkspaces;
+		const snapshot = fake ? fake.snapshot() : mockWorkspaces;
+		return applyOptimisticSessionKills(snapshot) ?? snapshot;
 	}
 	if (!hasTrustedApiBaseUrl()) {
 		throw new Error("AO daemon API is not ready");
@@ -250,7 +252,10 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 			.filter((session) => !session.projectId)
 			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, standaloneName)),
 	};
-	return standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
+	const workspaces =
+		standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
+	// Pending optimistic kills must survive CDC/refetch while the daemon kill is in flight.
+	return applyOptimisticSessionKills(workspaces) ?? workspaces;
 }
 
 // Shared so route loaders can prefetch via queryClient.ensureQueryData (paired

@@ -1,22 +1,29 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiClient } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { appI18n } from "../../i18n";
+import { agentReadinessQueryKey, useAgentReadinessQuery, type AgentReadiness } from "../../hooks/useAgentReadinessQuery";
+import type { TerminalSessionState } from "../../hooks/useTerminalSession";
+import { agentReadiness } from "../../test/agent-readiness-fixtures";
 import { HarnessSettingsSection } from "./HarnessSettingsSection";
 
 const { terminalFocusRequested, terminalStateCallback } = vi.hoisted(() => ({
 	terminalFocusRequested: { value: false },
-	terminalStateCallback: { value: undefined as ((state: "attached" | "exited" | "error") => void) | undefined },
+	terminalStateCallback: { value: undefined as ((state: TerminalSessionState) => void) | undefined },
 }));
 
 vi.mock("../TerminalPane", () => ({
-	TerminalPane: ({ focusRequested, onTerminalStateChange }: { focusRequested?: boolean; onTerminalStateChange?: (state: "attached" | "exited" | "error") => void }) => {
+	TerminalPane: ({ focusRequested, onTerminalStateChange }: { focusRequested?: boolean; onTerminalStateChange?: (state: TerminalSessionState) => void }) => {
 		terminalFocusRequested.value = focusRequested === true;
 		terminalStateCallback.value = onTerminalStateChange;
-		return <div data-testid="inline-terminal-body" />;
+		return (
+			<div data-testid="inline-terminal-body">
+				<button onClick={() => onTerminalStateChange?.("exited")}>Complete login terminal</button>
+			</div>
+		);
 	},
 }));
 
@@ -73,13 +80,24 @@ const plans = {
 	],
 };
 
-function renderSection() {
+function ReadinessSelector({ agentId }: { agentId: string }) {
+	const readiness = useAgentReadinessQuery();
+	return (
+		<div data-testid="originating-selector">
+			{readiness.data?.agents.find((agent) => agent.id === agentId)?.effectiveReadiness}
+		</div>
+	);
+}
+
+function renderSection(focusAgentId?: string, selectorAgentId?: string) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	return render(
+	const view = render(
 		<QueryClientProvider client={client}>
-			<HarnessSettingsSection />
+			{selectorAgentId ? <ReadinessSelector agentId={selectorAgentId} /> : null}
+			<HarnessSettingsSection focusAgentId={focusAgentId} />
 		</QueryClientProvider>,
 	);
+	return { ...view, client };
 }
 
 describe("HarnessSettingsSection", () => {
@@ -104,7 +122,77 @@ describe("HarnessSettingsSection", () => {
 		});
 	});
 
-	afterEach(() => vi.restoreAllMocks());
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it("keeps a targeted harness visible, scrolls it, focuses Install, and highlights it for two seconds once", async () => {
+		const scrollIntoView = vi.fn();
+		const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+		Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+		const view = renderSection("codex");
+		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
+		const install = await within(row).findByRole("button", { name: "Install" });
+
+		await waitFor(() => expect(document.activeElement).toBe(install));
+		expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+		expect(row).toHaveAttribute("data-focus-highlighted");
+
+		fireEvent.change(screen.getByRole("textbox", { name: "Search harnesses" }), { target: { value: "Claude" } });
+		expect(document.querySelector('[data-agent="codex"]')).toBe(row);
+
+		const highlightTimeout = setTimeoutSpy.mock.calls.find(([, delay]) => delay === 2_000)?.[0];
+		expect(highlightTimeout).toBeTypeOf("function");
+		act(() => highlightTimeout?.());
+		expect(row).not.toHaveAttribute("data-focus-highlighted");
+
+		view.rerender(
+			<QueryClientProvider client={view.client}>
+				<HarnessSettingsSection focusAgentId="cursor" />
+			</QueryClientProvider>,
+		);
+		expect(scrollIntoView).toHaveBeenCalledTimes(1);
+	});
+
+	it("focuses Login for an installed harness when authentication is required", async () => {
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			if (path === "/api/v1/agents/auth-plans") {
+				return { data: { plans: [{ agentId: "claude-code", action: "login", launchMode: "terminal", available: true }] } } as never;
+			}
+			return { data: undefined } as never;
+		});
+		Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+		renderSection("claude-code");
+		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
+		const login = await within(row).findByRole("button", { name: "Login" });
+
+		await waitFor(() => expect(document.activeElement).toBe(login));
+	});
+
+	it("falls back to the targeted row when it has no primary action", async () => {
+		Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+		renderSection("claude-code");
+		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
+
+		await waitFor(() => expect(document.activeElement).toBe(row));
+		expect(row).toHaveAttribute("tabindex", "-1");
+	});
+
+	it("does not scroll, focus, or highlight for an unknown harness id", async () => {
+		const scrollIntoView = vi.fn();
+		Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+		renderSection("not-a-harness");
+		await screen.findByText("Codex");
+		await waitFor(() => expect(apiClient.GET).toHaveBeenCalledWith("/api/v1/agents/install-jobs"));
+
+		expect(scrollIntoView).not.toHaveBeenCalled();
+		expect(document.querySelector("[data-focus-highlighted]")).toBeNull();
+		expect(document.activeElement).toBe(document.body);
+	});
 
 	it("shows installed harnesses and install actions without authentication UI", async () => {
 		renderSection();
@@ -320,6 +408,28 @@ describe("HarnessSettingsSection", () => {
 		expect(screen.getAllByRole("button", { name: "Refresh harness status" })).toHaveLength(1);
 	});
 
+	it("sorts harnesses by authentication state while preserving catalog order within each group", async () => {
+		const readiness = catalogWithInstalled("claude-code", "codex", "cursor", "goose");
+		readiness.agents[0].authentication.state = "unknown";
+		readiness.agents[1].authentication.state = "authorized";
+		readiness.agents[2].authentication.state = "unauthorized";
+		readiness.agents[3].authentication.state = "not_applicable";
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: readiness } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			return { data: undefined } as never;
+		});
+
+		renderSection();
+
+		await waitFor(() => {
+			const agentIds = Array.from(document.querySelectorAll<HTMLElement>("[data-agent]"))
+				.map((row) => row.dataset.agent);
+			expect(agentIds.slice(0, 4)).toEqual(["codex", "goose", "cursor", "claude-code"]);
+		});
+	});
+
 	it("starts the fixed daemon install route and exposes retry after failure", async () => {
 		const user = userEvent.setup();
 		renderSection();
@@ -378,30 +488,19 @@ describe("HarnessSettingsSection", () => {
 		}));
 	});
 
-	it("offers a safe reinstall action for installed harnesses", async () => {
+	it("does not offer reinstall actions for installed harnesses", async () => {
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalogWithInstalled("claude-code", "cursor") } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
 			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
 			return { data: undefined } as never;
 		});
-		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
-			if (path === "/api/v1/agents/{agent}/install") {
-				return { data: { target: "claude-code", status: "installing", method: "homebrew" } } as never;
-			}
-			return { data: undefined } as never;
-		});
-		const user = userEvent.setup();
 		renderSection();
 		const claudeRow = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		const cursorRow = (await screen.findByText("Cursor")).closest('[data-agent="cursor"]') as HTMLElement;
 
 		expect(claudeRow).toHaveTextContent("Installed");
-		await user.click(within(claudeRow).getByRole("button", { name: "Reinstall" }));
-		await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/agents/{agent}/install", {
-			params: { path: { agent: "claude-code" } },
-			body: { method: "homebrew", operation: "reinstall" },
-		}));
+		expect(within(claudeRow).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
 		expect(within(cursorRow).queryByRole("button", { name: "Reinstall" })).not.toBeInTheDocument();
 		expect(within(cursorRow).queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
 	});
@@ -487,6 +586,80 @@ describe("HarnessSettingsSection", () => {
 		await waitFor(() => expect(installerFetches).toBe(2));
 	});
 
+	it.each(["authorized", "unauthorized"] as const)("updates a mounted readiness consumer after installation returns %s", async (authentication) => {
+		const initial = { agents: [
+			agentReadiness("claude-code", "Claude Code"),
+			agentReadiness("codex", "Codex", { installation: "not_installed", authentication: "unknown" }),
+		] };
+		let probed = false;
+		const updated = agentReadiness("codex", "Codex", { authentication });
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: initial } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			return { data: undefined } as never;
+		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness/ensure") return { data: probed ? { agents: [updated] } : initial } as never;
+			if (path === "/api/v1/agents/{agent}/install") return { data: { target: "codex", status: "succeeded", method: "homebrew", updatedAt: "2026-09-19T00:00:00Z" } } as never;
+			if (path === "/api/v1/agents/{agent}/probe") {
+				probed = true;
+				return { data: { agent: { id: "codex", authStatus: authentication }, installed: true } } as never;
+			}
+			return { data: undefined } as never;
+		});
+		const { client } = renderSection(undefined, "codex");
+		const selector = screen.getByTestId("originating-selector");
+		await waitFor(() => expect(selector).toHaveTextContent("not_ready"));
+		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
+		await userEvent.click(await within(row).findByRole("button", { name: "Install" }));
+
+		await waitFor(() => expect(row).toHaveTextContent(authentication === "authorized" ? "Authorized" : "Installed"));
+		await waitFor(() => expect(selector).toHaveTextContent(authentication === "authorized" ? /^ready$/ : /^not_ready$/));
+		expect(client.getQueryData<AgentReadiness>(agentReadinessQueryKey)?.agents).toEqual([initial.agents[0], updated]);
+		expect(screen.getByTestId("originating-selector")).toBe(selector);
+	});
+
+	it("updates a mounted readiness consumer when the Harness authentication terminal completes", async () => {
+		const initial = { agents: [
+			agentReadiness("claude-code", "Claude Code"),
+			agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+		] };
+		const authorized = agentReadiness("codex", "Codex");
+		let probed = false;
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: initial } as never;
+			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [{ agentId: "codex", action: "login", launchMode: "terminal", available: true }] } } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			return { data: undefined } as never;
+		});
+		vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness/ensure") return { data: probed ? { agents: [authorized] } : initial } as never;
+			if (path === "/api/v1/agents/{agent}/auth") return { data: {
+				agentId: "codex", action: "login", terminal: { handleId: "auth-codex", projectId: null, sessionId: null, workingDir: "/tmp", title: "Codex login", createdAt: "2026-09-19T00:00:00Z" },
+			} } as never;
+			if (path === "/api/v1/agents/{agent}/probe") {
+				probed = true;
+				return { data: { agent: { id: "codex", authStatus: "authorized" }, installed: true } } as never;
+			}
+			return { data: undefined } as never;
+		});
+		vi.spyOn(apiClient, "DELETE").mockResolvedValue({ data: undefined } as never);
+		Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+		const { client } = renderSection(undefined, "codex");
+		const selector = screen.getByTestId("originating-selector");
+		await waitFor(() => expect(selector).toHaveTextContent("not_ready"));
+		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
+		await userEvent.click(await within(row).findByRole("button", { name: "Login" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Complete login terminal" }));
+
+		await waitFor(() => expect(selector).toHaveTextContent(/^ready$/));
+		expect(client.getQueryData<AgentReadiness>(agentReadinessQueryKey)?.agents).toEqual([initial.agents[0], authorized]);
+		expect(screen.getByTestId("originating-selector")).toBe(selector);
+		await waitFor(() => expect(screen.queryByRole("button", { name: "Complete login terminal" })).not.toBeInTheDocument());
+	});
+
 	it("admits only one install request per harness while the first POST is pending", async () => {
 		let resolveInstall!: (value: unknown) => void;
 		let installCalls = 0;
@@ -537,7 +710,7 @@ describe("HarnessSettingsSection", () => {
 		expect(within(aiderRow as HTMLElement).getAllByText("Installing…")).toHaveLength(1);
 	});
 
-	it("hydrates interrupted jobs and offers separate verify and reinstall actions", async () => {
+	it("hydrates interrupted jobs and offers verification", async () => {
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;

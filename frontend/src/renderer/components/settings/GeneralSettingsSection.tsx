@@ -153,6 +153,8 @@ export function GeneralSettingsSection({
 	const soundNotificationsSaveError = useSoundNotificationsStore((state) => state.saveError);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const setDeveloperMode = useUiStore((state) => state.setDeveloperMode);
+	const remoteHosts = useUiStore((state) => state.remoteHosts);
+	const setRemoteHosts = useUiStore((state) => state.setRemoteHosts);
 
 	const themeOptions = [
 		{ value: "light", label: t("settings.theme.light") },
@@ -241,6 +243,13 @@ export function GeneralSettingsSection({
 						aria-label={t("settings.developerMode")}
 						checked={developerMode}
 						onCheckedChange={setDeveloperMode}
+					/>
+				</SettingsRow>
+				<SettingsRow label={t("settings.remoteHosts")}>
+					<Switch
+						aria-label={t("settings.remoteHosts")}
+						checked={remoteHosts}
+						onCheckedChange={setRemoteHosts}
 					/>
 				</SettingsRow>
 				{developerMode && <CloudOfferingRow />}

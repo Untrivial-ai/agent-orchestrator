@@ -1,19 +1,11 @@
 package sqlite
 
 import (
-	"database/sql"
-	"path/filepath"
 	"testing"
 )
 
 func TestMigrateAcceptsUnrecordedAutoInjectReviewSchema(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 83)
+	db := openMigratedDatabaseCopy(t, 83)
 	for _, table := range []string{"sessions", "review_run", "pr_reviews", "pr_comment"} {
 		if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN auto_inject_review BOOLEAN NOT NULL DEFAULT TRUE`); err != nil {
 			t.Fatalf("seed %s.auto_inject_review: %v", table, err)

@@ -447,6 +447,22 @@ func (c *Client) launchWorker(
 	// Only the worker binary must be present to launch; a missing or stale ao
 	// helper is healed by the worker's own self-update, so it is not gated here.
 	script.WriteString("if ! [ -x " + shellQuote(destination) + " ]; then echo AO_WORKER_ABSENT; exit 0; fi; ")
+	// Self-heal safety net. Launching the baked worker in place trusts it to heal
+	// itself from /api/cloud/v1/worker/binary when its bake is stale. A worker
+	// baked before self-update shipped cannot do that: launched against a newer
+	// control plane it connects, then its heartbeats fail and the session never
+	// gets a terminal (the codex/cursor default-rootfs regression, where claude
+	// worked only because its rootfs was rebaked with a self-update-capable
+	// worker). So when the baked binary is BOTH stale (sha != the build this
+	// control plane serves) AND lacks the self-update fetch path, report it as
+	// absent and let BootstrapWorker upload the exact bytes. A stale-but-capable
+	// worker still fast-paths, preserving the no-upload optimization.
+	if expected := strings.ToLower(strings.TrimSpace(bootstrap.Environment["AO_WORKER_EXPECTED_SHA256"])); expected != "" {
+		script.WriteString("have=\"$(sha256sum " + shellQuote(destination) + " | cut -d' ' -f1)\"; ")
+		script.WriteString("if [ \"$have\" != " + shellQuote(expected) + " ] && ! grep -aq " +
+			shellQuote("/api/cloud/v1/worker/binary/") + " " + shellQuote(destination) +
+			"; then echo AO_WORKER_STALE_NO_SELFHEAL; exit 0; fi; ")
+	}
 	script.WriteString("{ pkill -f " + shellQuote("^"+destination+"( |$)") + " || true; }; ")
 	command := launchEnvironment(bootstrap.Environment) + shellQuote(destination)
 	if user := strings.TrimSpace(bootstrap.User); user != "" {
@@ -468,6 +484,11 @@ func (c *Client) launchWorker(
 	if strings.Contains(result.Stdout, "AO_WORKER_LAUNCHED") {
 		c.log.Info("createos launched baked worker", "provider_id", id)
 		return true
+	}
+	if strings.Contains(result.Stdout, "AO_WORKER_STALE_NO_SELFHEAL") {
+		c.log.Info("createos baked worker is stale and predates self-update; falling back to upload",
+			"provider_id", id)
+		return false
 	}
 	c.log.Info("createos baked worker absent; falling back to upload", "provider_id", id)
 	return false

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -66,6 +67,16 @@ type Plan struct {
 	command          []string
 	title            string
 	terminalInput    string
+	// initialInput and initialInputReadyStates, when set, make the daemon inject
+	// the reviewed input automatically once the terminal renders a known ready
+	// state, instead of waiting for the user to trigger terminalInput.
+	initialInput            string
+	initialInputReadyStates []shellterm.InitialInputReadyState
+	// prepareWorkspace, when set, runs reviewed harness-specific setup against
+	// the plan's stable auth workspace before the terminal launches (for
+	// example pre-recording workspace trust so a first-run dialog cannot
+	// swallow the login flow).
+	prepareWorkspace func(context.Context, string) error
 	launcher         string
 	launcherArgs     []string
 }
@@ -88,22 +99,25 @@ type StartResult struct {
 
 // Service resolves the fixed authentication registry through AO's registered
 // harness adapters, with direct PATH lookup only for callers without one.
+// dataDir roots the stable per-harness auth workspaces used by plans with a
+// prepareWorkspace hook.
 type Service struct {
 	executables    ExecutableFinder
 	agents         AgentBinaryResolver
 	terminals      TerminalOpener
+	dataDir        string
 	selfExecutable func() (string, error)
 }
 
 // New creates an authentication-plan service.
 func New(executables ExecutableFinder, terminals TerminalOpener) *Service {
-	return NewWithAgentResolver(executables, nil, terminals)
+	return NewWithAgentResolver(executables, nil, terminals, "")
 }
 
 // NewWithAgentResolver creates a service that uses AO's adapter-aware binary
 // resolver as the authoritative validation and discovery boundary.
-func NewWithAgentResolver(executables ExecutableFinder, agents AgentBinaryResolver, terminals TerminalOpener) *Service {
-	return &Service{executables: executables, agents: agents, terminals: terminals, selfExecutable: os.Executable}
+func NewWithAgentResolver(executables ExecutableFinder, agents AgentBinaryResolver, terminals TerminalOpener, dataDir string) *Service {
+	return &Service{executables: executables, agents: agents, terminals: terminals, dataDir: dataDir, selfExecutable: os.Executable}
 }
 
 // Plans returns every known harness plan in stable Harness settings order.
@@ -126,8 +140,10 @@ func (s *Service) Plan(ctx context.Context, agentID string) (Plan, error) {
 
 // Start opens the reviewed native authentication flow for agentID. Callers
 // choose only the registry key; command arguments come exclusively from the
-// resolved private plan fields. Interactive slash commands are returned as a
-// fixed, reviewed action that the user explicitly triggers after the TUI starts.
+// resolved private plan fields. Interactive slash commands are either returned
+// as a fixed, reviewed action that the user explicitly triggers after the TUI
+// starts, or — for plans with initialInput — injected by the daemon
+// automatically once the terminal renders a reviewed ready state.
 func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error) {
 	plan, ok := planByAgentID[agentID]
 	if !ok {
@@ -154,10 +170,20 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 		}
 		argv = append([]string{self, plan.launcher, "--executable", plan.command[0]}, plan.launcherArgs...)
 	}
-	terminal, err := s.terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{
-		Argv:  argv,
-		Title: plan.title,
-	})
+	input := shellterm.OpenCommandTerminalInput{
+		Argv:                    argv,
+		Title:                   plan.title,
+		InitialInput:            plan.initialInput,
+		InitialInputReadyStates: plan.initialInputReadyStates,
+	}
+	if plan.prepareWorkspace != nil {
+		workingDir, err := s.prepareAuthWorkspace(ctx, plan)
+		if err != nil {
+			return StartResult{}, err
+		}
+		input.WorkingDir = workingDir
+	}
+	terminal, err := s.terminals.OpenCommandTerminal(ctx, input)
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -168,6 +194,27 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 		TerminalInput: plan.terminalInput,
 		Terminal:      terminal,
 	}, nil
+}
+
+// authWorkspaceRootName mirrors shellterm's auth-workspace root so all
+// daemon-owned authentication terminals live under one directory; plans with a
+// prepareWorkspace hook get a stable per-harness subdirectory instead of a
+// throwaway per-handle one, so harness state the hook seeds (for example
+// Kimi's workspace-trust record) persists across login attempts.
+const authWorkspaceRootName = "auth-workspace"
+
+func (s *Service) prepareAuthWorkspace(ctx context.Context, plan Plan) (string, error) {
+	if strings.TrimSpace(s.dataDir) == "" {
+		return "", apierr.Internal("AGENT_AUTH_WORKSPACE_UNAVAILABLE", "Authentication workspace is unavailable.")
+	}
+	dir := filepath.Join(s.dataDir, authWorkspaceRootName, plan.AgentID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create authentication workspace: %w", err)
+	}
+	if err := plan.prepareWorkspace(ctx, dir); err != nil {
+		return "", fmt.Errorf("prepare %s authentication workspace: %w", plan.AgentID, err)
+	}
+	return dir, nil
 }
 
 func (s *Service) resolve(ctx context.Context, plan Plan) Plan {
