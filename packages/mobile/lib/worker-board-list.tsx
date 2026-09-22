@@ -25,6 +25,18 @@ type ListSection =
 	| { zone: "search"; label: string; color: string; data: DashboardSession[] };
 
 /**
+ * Sections that never fold, whatever the user has toggled.
+ *
+ * Search results are a transient answer — folding the thing you just asked for
+ * is a way to lose it. `needs_you` is the reason the app was opened at all, and
+ * `pinned` is what someone deliberately put at the top; a board that can hide
+ * either of those behind a chevron can hide the two things that matter most.
+ * Everything else folds and stays folded, because the shape of a long board is
+ * the user's call.
+ */
+const ALWAYS_OPEN = new Set<ListSection["zone"]>(["search", "needs_you", "pinned"]);
+
+/**
  * One flat list, not a SectionList, and that is load-bearing.
  *
  * A row moving between sections has to stay mounted for its layout animation to
@@ -146,9 +158,7 @@ export function WorkerBoardList({
 						...section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const),
 					];
 				}
-				// Search results are a transient answer, so they are never foldable —
-				// folding the thing you just asked for is a way to lose it.
-				const collapsible = section.zone !== "search";
+				const collapsible = !ALWAYS_OPEN.has(section.zone);
 				const open = !collapsible || !collapsedSections[section.zone];
 				return [
 					{ kind: "header", key: `header:${section.zone}`, label: section.label, open, collapsible } as const,

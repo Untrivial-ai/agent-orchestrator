@@ -66,3 +66,17 @@ describe("worker row working indicator", () => {
 		expect(ui.match(/useBreathing\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
 	});
 });
+
+describe("board sections that cannot be folded", () => {
+	const board = source("./worker-board-list.tsx");
+
+	// "Needs you" is why the app was opened, and "Pinned" is what the user put at
+	// the top on purpose. Both were foldable, so both could be hidden by a chevron
+	// — the board could show a clean, empty-looking screen with work waiting in it.
+	it("keeps needs-you, pinned and search results always open", () => {
+		expect(board).toContain('const ALWAYS_OPEN = new Set<ListSection["zone"]>(["search", "needs_you", "pinned"]);');
+		expect(board).toContain("const collapsible = !ALWAYS_OPEN.has(section.zone);");
+		// The previous rule made everything but search foldable.
+		expect(board).not.toContain('const collapsible = section.zone !== "search";');
+	});
+});
