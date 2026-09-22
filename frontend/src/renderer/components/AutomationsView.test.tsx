@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("../hooks/useAgentReadinessQuery", () => ({ useAgentReadinessQuery: () => ({ data: { agents: [{ id: "codex", label: "Codex" }] } }) }));
+const codexSnapshot = { id: "codex", label: "Codex", installation: { state: "installed", freshness: "fresh" }, authentication: { state: "authorized", freshness: "fresh" }, effectiveReadiness: "ready", usageCount: 3, lastUsedAt: null };
+const cursorSnapshot = { id: "cursor", label: "Cursor", installation: { state: "not_installed", freshness: "fresh" }, authentication: { state: "unknown", freshness: "stale" }, effectiveReadiness: "not_ready", usageCount: 0, lastUsedAt: null };
+vi.mock("../hooks/useAgentReadinessQuery", () => ({ useAgentReadinessQuery: () => ({ data: { agents: [codexSnapshot, cursorSnapshot] } }) }));
+vi.mock("../hooks/useProjectDefaultWorker", () => ({ useProjectDefaultWorker: () => "codex" }));
 vi.mock("../hooks/useWorkspaceQuery", () => ({ useWorkspaceQuery: () => ({ data: [{ id: "demo", name: "Demo" }] }) }));
 vi.mock("../hooks/useAutomations", () => ({
 	useAutomations: () => ({ data: mocks.automations, isLoading: false, error: null }),
@@ -31,12 +34,48 @@ describe("AutomationsView", () => {
 		expect(screen.getAllByRole("button", { name: /create automation/i })).not.toHaveLength(0);
 	});
 
-	it("offers the daemon agent catalog when creating an automation", async () => {
+	it("preselects the project's resolved default worker and dims unavailable agents", async () => {
 		render(<AutomationsView />);
 		await userEvent.click(screen.getAllByRole("button", { name: /create automation/i })[0]);
-		await userEvent.click(screen.getByRole("combobox", { name: "Agent" }));
-		expect(await screen.findByRole("option", { name: "Project default" })).toBeInTheDocument();
+
+		const agent = screen.getByRole("combobox", { name: "Agent" });
+		expect(agent).toHaveTextContent("Codex");
+		await userEvent.click(agent);
 		expect(screen.getByRole("option", { name: "Codex" })).toBeInTheDocument();
+		expect(screen.getByRole("option", { name: "Cursor" })).toHaveAttribute("aria-disabled", "true");
+		expect(screen.queryByRole("option", { name: "Project default" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("combobox", { name: "Session kind" })).not.toBeInTheDocument();
+	});
+
+	it("edits an automation from its card action", async () => {
+		const user = userEvent.setup();
+		mocks.automations = [{ id: "automation-1", projectId: "demo", displayName: "Morning triage", prompt: "Review", kind: "worker", harness: "codex", rrule: "DTSTART:20260826T090000Z\nRRULE:FREQ=DAILY;BYHOUR=9;BYMINUTE=30;BYSECOND=0", timezone: "UTC", enabled: true, nextRunAt: "2026-08-27T09:00:00Z", createdAt: "2026-08-26T09:00:00Z", updatedAt: "2026-08-26T09:00:00Z" }];
+		render(<AutomationsView />);
+		await user.click(screen.getByRole("button", { name: "Edit Morning triage" }));
+
+		const dialog = screen.getByRole("dialog", { name: "Edit automation" });
+		expect(within(dialog).getByRole("textbox", { name: "Name" })).toHaveValue("Morning triage");
+		expect(within(dialog).getByRole("textbox", { name: "Prompt" })).toHaveValue("Review");
+		expect(within(dialog).getByRole("combobox", { name: "Project" })).toBeDisabled();
+		expect(within(dialog).getByRole("combobox", { name: "Agent" })).toHaveTextContent("Codex");
+		expect(within(dialog).getByRole("textbox", { name: "Minute" })).toHaveValue("30");
+
+		const name = within(dialog).getByRole("textbox", { name: "Name" });
+		await user.clear(name);
+		await user.type(name, "Evening triage");
+		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+		expect(mocks.update).toHaveBeenCalledWith({
+			id: "automation-1",
+			body: expect.objectContaining({
+				displayName: "Evening triage",
+				prompt: "Review",
+				harness: "codex",
+				rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=30;BYSECOND=0",
+			}),
+		});
+		expect(mocks.update.mock.calls[0][0].body).not.toHaveProperty("projectId");
+		expect(mocks.update.mock.calls[0][0].body).not.toHaveProperty("timezone");
 	});
 
 	it("uses AO popup controls instead of native browser selects", async () => {
@@ -150,6 +189,7 @@ describe("AutomationsView", () => {
 		mocks.automations = [{ id: "automation-1", projectId: "demo", displayName: "Morning triage", prompt: "Review", kind: "worker", rrule: "FREQ=DAILY", timezone: "UTC", enabled: true, nextRunAt: "2026-08-27T09:00:00Z", createdAt: "2026-08-26T09:00:00Z", updatedAt: "2026-08-26T09:00:00Z" }];
 		render(<AutomationsView />);
 		expect(screen.getByRole("switch", { name: "Disable Morning triage" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Edit Morning triage" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Delete Morning triage" })).toHaveClass(
 			"text-destructive",
 			"hover:bg-destructive/10",

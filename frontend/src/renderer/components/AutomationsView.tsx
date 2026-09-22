@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { CalendarClock, ChevronDown, ChevronRight, Plus, Trash2, TriangleAlert, X } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronRight, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import {
@@ -19,8 +19,10 @@ import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Switch } from "./ui/switch";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { useAgentReadinessQuery } from "../hooks/useAgentReadinessQuery";
+import { useAgentReadinessQuery, type AgentReadinessSnapshot } from "../hooks/useAgentReadinessQuery";
+import { useProjectDefaultWorker } from "../hooks/useProjectDefaultWorker";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import { buildRankedAgentOptions, DEFAULT_AGENT_PRIORITY_RANK } from "../lib/agent-select-options";
 import {
 	useAutomationRuns,
 	useAutomations,
@@ -28,6 +30,7 @@ import {
 	useDeleteAutomation,
 	useUpdateAutomation,
 	type Automation,
+	type CreateAutomationInput,
 } from "../hooks/useAutomations";
 
 function displayTime(value?: string, locale?: string) {
@@ -44,6 +47,7 @@ export function AutomationsView() {
 	const update = useUpdateAutomation();
 	const remove = useDeleteAutomation();
 	const [createOpen, setCreateOpen] = useState(false);
+	const [editTarget, setEditTarget] = useState<Automation | null>(null);
 	const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null);
 	const [expanded, setExpanded] = useState<string | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
@@ -60,10 +64,11 @@ export function AutomationsView() {
 				{query.error ? <p role="alert" className="text-sm text-destructive">{query.error.message}</p> : null}
 				{!query.isLoading && !query.error && query.data?.length === 0 ? <EmptyAutomations onCreate={() => setCreateOpen(true)} /> : null}
 				{query.data?.map((item) => (
-					<AutomationCard key={item.id} item={item} expanded={expanded === item.id} onExpand={() => setExpanded(expanded === item.id ? null : item.id)} onDelete={() => setDeleteTarget(item)} onToggle={async (enabled) => { setActionError(null); try { await update.mutateAsync({ id: item.id, body: { enabled } }); } catch (error) { setActionError(error instanceof Error ? error.message : t("automations.updateError")); } }} />
+					<AutomationCard key={item.id} item={item} expanded={expanded === item.id} onExpand={() => setExpanded(expanded === item.id ? null : item.id)} onEdit={() => setEditTarget(item)} onDelete={() => setDeleteTarget(item)} onToggle={async (enabled) => { setActionError(null); try { await update.mutateAsync({ id: item.id, body: { enabled } }); } catch (error) { setActionError(error instanceof Error ? error.message : t("automations.updateError")); } }} />
 				))}
 			</main>
-			<CreateAutomationDialog open={createOpen} workspaces={workspaces} harnesses={harnesses} busy={create.isPending} error={create.error?.message ?? null} onOpenChange={setCreateOpen} onCreate={async (input) => { await create.mutateAsync(input); setCreateOpen(false); }} />
+			<AutomationFormDialog open={createOpen} workspaces={workspaces} harnesses={harnesses} busy={create.isPending} error={create.error?.message ?? null} onOpenChange={setCreateOpen} onSubmit={async (input) => { await create.mutateAsync(input as CreateAutomationInput); setCreateOpen(false); }} />
+			<AutomationFormDialog open={Boolean(editTarget)} automation={editTarget ?? undefined} workspaces={workspaces} harnesses={harnesses} busy={update.isPending} error={update.error?.message ?? null} onOpenChange={(open) => { if (!open) setEditTarget(null); }} onSubmit={async (input) => { if (!editTarget) return; await update.mutateAsync({ id: editTarget.id, body: input }); setEditTarget(null); }} />
 			<ConfirmDialog open={Boolean(deleteTarget)} title={t("automations.delete.title")} description={t("automations.delete.description", { name: deleteTarget?.displayName })} confirmLabel={t("automations.delete.confirm")} destructive busy={remove.isPending} error={remove.error?.message ?? null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }} onConfirm={() => { if (!deleteTarget) return; remove.mutate(deleteTarget.id, { onSuccess: () => setDeleteTarget(null) }); }} />
 		</div>
 	);
@@ -74,40 +79,55 @@ function EmptyAutomations({ onCreate }: { onCreate: () => void }) {
 	return <div className="grid min-h-64 place-items-center rounded-xl border border-dashed border-border p-8 text-center"><div><CalendarClock className="mx-auto mb-3 size-8 text-muted-foreground" /><h2 className="font-medium">{t("automations.empty.title")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("automations.empty.description")}</p><Button className="mt-4" onClick={onCreate}>{t("automations.create")}</Button></div></div>;
 }
 
-function AutomationCard({ item, expanded, onExpand, onDelete, onToggle }: { item: Automation; expanded: boolean; onExpand: () => void; onDelete: () => void; onToggle: (enabled: boolean) => Promise<void> }) {
+function AutomationCard({ item, expanded, onExpand, onEdit, onDelete, onToggle }: { item: Automation; expanded: boolean; onExpand: () => void; onEdit: () => void; onDelete: () => void; onToggle: (enabled: boolean) => Promise<void> }) {
 	const runs = useAutomationRuns(expanded ? item.id : null);
 	const navigate = useNavigate();
 	const { t, i18n } = useTranslation();
 	const frequency = item.rrule.match(/FREQ=([^;\n]+)/)?.[1]?.toLowerCase();
 	const schedule = t(`automations.frequency.${frequency ?? "recurring"}`, { defaultValue: frequency ?? t("automations.frequency.recurring") });
 	return <Card size="sm">
-		<CardHeader><CardTitle className="flex items-center gap-2"><button type="button" className="grid size-6 place-items-center rounded hover:bg-muted" aria-label={t(expanded ? "automations.runs.hide" : "automations.runs.show", { name: item.displayName })} onClick={onExpand}>{expanded ? <ChevronDown /> : <ChevronRight />}</button>{item.displayName}</CardTitle><CardDescription>{item.projectId} · {schedule} · {item.timezone}</CardDescription><CardAction className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs text-muted-foreground"><span>{t(item.enabled ? "automations.enabled" : "automations.disabled")}</span><Switch checked={item.enabled} aria-label={t(item.enabled ? "automations.disable" : "automations.enable", { name: item.displayName })} onCheckedChange={(checked) => void onToggle(checked)} /></label><Button variant="ghost" size="icon-sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={t("automations.delete.aria", { name: item.displayName })} onClick={onDelete}><Trash2 /></Button></CardAction></CardHeader>
+		<CardHeader><CardTitle className="flex items-center gap-2"><button type="button" className="grid size-6 place-items-center rounded hover:bg-muted" aria-label={t(expanded ? "automations.runs.hide" : "automations.runs.show", { name: item.displayName })} onClick={onExpand}>{expanded ? <ChevronDown /> : <ChevronRight />}</button>{item.displayName}</CardTitle><CardDescription>{item.projectId} · {schedule} · {item.timezone}</CardDescription><CardAction className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs text-muted-foreground"><span>{t(item.enabled ? "automations.enabled" : "automations.disabled")}</span><Switch checked={item.enabled} aria-label={t(item.enabled ? "automations.disable" : "automations.enable", { name: item.displayName })} onCheckedChange={(checked) => void onToggle(checked)} /></label><Button variant="ghost" size="icon-sm" aria-label={t("automations.edit.aria", { name: item.displayName })} onClick={onEdit}><Pencil /></Button><Button variant="ghost" size="icon-sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={t("automations.delete.aria", { name: item.displayName })} onClick={onDelete}><Trash2 /></Button></CardAction></CardHeader>
 		<CardContent><div className="grid gap-3 text-sm sm:grid-cols-3"><div><span className="block text-xs text-muted-foreground">{t("automations.nextRun")}</span>{item.enabled ? displayTime(item.nextRunAt, i18n.resolvedLanguage) : t("automations.paused")}</div><div><span className="block text-xs text-muted-foreground">{t("automations.latestState")}</span>{item.latestRun?.status ?? t("automations.neverRun")}</div><div><span className="block text-xs text-muted-foreground">{t("automations.agent")}</span>{item.harness || t("automations.projectDefault")} · {item.kind}</div></div>{item.latestRun?.errorMessage ? <p role="alert" className="mt-3 rounded bg-destructive/10 px-3 py-2 text-xs text-destructive">{item.latestRun.errorMessage}</p> : null}
 		{expanded ? <div className="mt-4 border-t border-border pt-4"><h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("automations.runs.title")}</h3>{runs.isLoading ? <p className="text-sm text-muted-foreground">{t("automations.runs.loading")}</p> : runs.error ? <p role="alert" className="text-sm text-destructive">{runs.error.message}</p> : runs.data?.length ? <div className="space-y-2">{runs.data.map((run) => <div key={run.id} className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-sm"><div><span className="font-medium capitalize">{run.status}</span><span className="ml-2 text-xs text-muted-foreground">{displayTime(run.scheduledFor, i18n.resolvedLanguage)}</span>{run.errorMessage ? <p className="text-xs text-destructive">{run.errorMessage}</p> : null}</div>{run.sessionId ? <Button variant="outline" size="sm" onClick={() => void navigate({ to: "/sessions/$sessionId", params: { sessionId: run.sessionId! } })}>{t("automations.runs.openSession")}</Button> : null}</div>)}</div> : <p className="text-sm text-muted-foreground">{t("automations.runs.empty")}</p>}</div> : null}</CardContent>
 	</Card>;
 }
 
 type WorkspaceOption = { id: string; name: string };
-type HarnessOption = { id: string; label: string };
-type CreateAutomationDialogProps = {
+type AutomationFormSubmit = {
+	projectId?: string;
+	displayName: string;
+	prompt: string;
+	kind?: "worker" | "orchestrator";
+	harness?: string;
+	timezone?: string;
+	rrule: string;
+};
+type AutomationFormDialogProps = {
 	open: boolean;
+	automation?: Automation;
 	workspaces: WorkspaceOption[];
-	harnesses: HarnessOption[];
+	harnesses: AgentReadinessSnapshot[];
 	busy: boolean;
 	error: string | null;
 	onOpenChange: (open: boolean) => void;
-	onCreate: (input: {
-		projectId: string;
-		displayName: string;
-		prompt: string;
-		kind: "worker" | "orchestrator";
-		harness?: string;
-		timezone: string;
-		rrule: string;
-	}) => Promise<void>;
+	onSubmit: (input: AutomationFormSubmit) => Promise<void>;
 };
 
-const PROJECT_DEFAULT = "__project_default__";
+// Maps a persisted rule back onto the form presets; anything the presets
+// cannot reproduce stays on the custom RRULE field.
+function scheduleFieldsFromRRule(rruleText: string) {
+	const rruleLine = rruleText.split("\n").find((line) => line.startsWith("RRULE:"))?.slice("RRULE:".length) ?? rruleText;
+	const freq = rruleLine.match(/FREQ=([^;]+)/)?.[1];
+	const hour = rruleLine.match(/BYHOUR=(\d{1,2})/)?.[1];
+	const minute = rruleLine.match(/BYMINUTE=(\d{1,2})/)?.[1];
+	const byDay = rruleLine.match(/BYDAY=([^;]+)/)?.[1];
+	if (hour !== undefined && minute !== undefined) {
+		const local = { hour: hour.padStart(2, "0"), minute: minute.padStart(2, "0") };
+		if (freq === "DAILY" && !byDay) return { preset: "daily", ...local, raw: rruleLine };
+		if (freq === "WEEKLY" && byDay === "MO") return { preset: "weekly", ...local, raw: rruleLine };
+	}
+	return { preset: "raw", hour: "09", minute: "00", raw: rruleLine };
+}
 type AutomationField = "projectId" | "name" | "prompt" | "raw" | "hour" | "minute";
 type AutomationValidationErrors = Partial<Record<AutomationField, string>>;
 
@@ -120,21 +140,23 @@ const AUTOMATION_FIELD_IDS: Record<AutomationField, string> = {
 	minute: "automation-minute",
 };
 
-function CreateAutomationDialog({
+function AutomationFormDialog({
 	open,
+	automation,
 	workspaces,
 	harnesses,
 	busy,
 	error,
 	onOpenChange,
-	onCreate,
-}: CreateAutomationDialogProps) {
+	onSubmit,
+}: AutomationFormDialogProps) {
 	const { t } = useTranslation();
-	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+	const editing = Boolean(automation);
+	const timezone = automation?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 	const [projectId, setProjectId] = useState("");
+	const projectDefaultWorker = useProjectDefaultWorker(open ? (automation?.projectId || projectId) : "");
 	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
-	const [kind, setKind] = useState<"worker" | "orchestrator">("worker");
 	const [harness, setHarness] = useState("");
 	const [preset, setPreset] = useState("daily");
 	const [hour, setHour] = useState("09");
@@ -144,17 +166,35 @@ function CreateAutomationDialog({
 
 	useEffect(() => {
 		if (!open) return;
-		setProjectId("");
-		setName("");
-		setPrompt("");
-		setKind("worker");
-		setHarness("");
-		setPreset("daily");
-		setHour("09");
-		setMinute("00");
-		setRaw("FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0");
+		setProjectId(automation?.projectId ?? "");
+		setName(automation?.displayName ?? "");
+		setPrompt(automation?.prompt ?? "");
+		setHarness(automation?.harness ?? "");
+		const schedule = automation
+			? scheduleFieldsFromRRule(automation.rrule)
+			: { preset: "daily", hour: "09", minute: "00", raw: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0" };
+		setPreset(schedule.preset);
+		setHour(schedule.hour);
+		setMinute(schedule.minute);
+		setRaw(schedule.raw);
 		setValidationErrors({});
-	}, [open]);
+	}, [open, automation]);
+
+	const projectOptions = workspaces.map((item) => ({ value: item.id, label: item.name }));
+	if (automation && !projectOptions.some((option) => option.value === automation.projectId)) {
+		projectOptions.unshift({ value: automation.projectId, label: automation.projectId });
+	}
+	const harnessOptions = buildRankedAgentOptions({
+		agents: harnesses,
+		priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
+		fallbackAgents: [],
+	}).map((agent) => ({ value: agent.id, label: agent.label, disabled: agent.disabled }));
+	if (projectDefaultWorker && !harnessOptions.some((option) => option.value === projectDefaultWorker)) {
+		harnessOptions.unshift({ value: projectDefaultWorker, label: projectDefaultWorker, disabled: false });
+	}
+	// Like the New Task composer, the resolved project default is preselected as
+	// a real agent instead of a "project default" placeholder entry.
+	const selectedHarness = harness || projectDefaultWorker;
 
 	function clearValidationError(field: AutomationField) {
 		setValidationErrors((current) => {
@@ -168,7 +208,7 @@ function CreateAutomationDialog({
 	async function submit(event: FormEvent) {
 		event.preventDefault();
 		const nextErrors: AutomationValidationErrors = {};
-		if (!projectId) nextErrors.projectId = t("automations.validation.project");
+		if (!editing && !projectId) nextErrors.projectId = t("automations.validation.project");
 		if (!name.trim()) nextErrors.name = t("automations.validation.name");
 		if (!prompt.trim()) nextErrors.prompt = t("automations.validation.prompt");
 		if (preset === "raw" && !raw.trim()) nextErrors.raw = t("automations.validation.rrule");
@@ -190,13 +230,13 @@ function CreateAutomationDialog({
 				: preset === "weekly"
 					? `FREQ=WEEKLY;BYDAY=MO;BYHOUR=${Number(hour)};BYMINUTE=${Number(minute)};BYSECOND=0`
 					: raw;
-		await onCreate({
-			projectId,
+		await onSubmit({
+			// Kind is not a form choice: automations are workers, and editing
+			// leaves the stored kind untouched.
+			...(editing ? {} : { projectId, timezone, kind: "worker" as const }),
 			displayName: name,
 			prompt,
-			kind,
-			harness: harness || undefined,
-			timezone,
+			harness: selectedHarness || undefined,
 			rrule,
 		});
 	}
@@ -215,9 +255,9 @@ function CreateAutomationDialog({
 					</button>
 				</DialogClose>
 				<div className={settingsDialogHeaderClass}>
-					<DialogTitle className="settings-dialog-title">{t("automations.create")}</DialogTitle>
+					<DialogTitle className="settings-dialog-title">{t(editing ? "automations.edit" : "automations.create")}</DialogTitle>
 					<DialogDescription className="text-control leading-4 text-settings-muted">
-						{t("automations.create.description")}
+						{t(editing ? "automations.edit.description" : "automations.create.description")}
 					</DialogDescription>
 				</div>
 				<form className="flex min-h-0 flex-1 flex-col" noValidate onSubmit={(event) => void submit(event)}>
@@ -234,11 +274,12 @@ function CreateAutomationDialog({
 								label={t("automations.field.project")}
 								placeholder={t("automations.projectPlaceholder")}
 								required
+								disabled={editing}
 								invalid={Boolean(validationErrors.projectId)}
 								describedBy={validationErrors.projectId ? `${AUTOMATION_FIELD_IDS.projectId}-error` : undefined}
 								value={projectId}
 								onValueChange={(value) => { setProjectId(value); clearValidationError("projectId"); }}
-								options={workspaces.map((item) => ({ value: item.id, label: item.name }))}
+								options={projectOptions}
 							/>
 						</Field>
 						<Field label={t("automations.field.name")} id={AUTOMATION_FIELD_IDS.name} error={validationErrors.name}>
@@ -257,49 +298,36 @@ function CreateAutomationDialog({
 							/>
 						</Field>
 						<div className="grid grid-cols-2 gap-3">
-							<Field label={t("automations.field.sessionKind")}>
-								<AutomationSelect
-									label={t("automations.field.sessionKind")}
-									value={kind}
-									onValueChange={(value) => setKind(value as typeof kind)}
-									options={[
-										{ value: "worker", label: t("automations.kind.worker") },
-										{ value: "orchestrator", label: t("automations.kind.orchestrator") },
-									]}
-								/>
-							</Field>
 							<Field label={t("automations.agent")}>
 								<AutomationSelect
 									label={t("automations.agent")}
-									value={harness || PROJECT_DEFAULT}
-									onValueChange={(value) => setHarness(value === PROJECT_DEFAULT ? "" : value)}
+									placeholder={t("automations.agentPlaceholder")}
+									value={selectedHarness}
+									onValueChange={setHarness}
+									options={harnessOptions}
+								/>
+							</Field>
+							<Field label={t("automations.field.schedule")}>
+								<AutomationSelect
+									label={t("automations.field.schedule")}
+									value={preset}
+									onValueChange={(value) => {
+										setPreset(value);
+										if (value === "raw") {
+											clearValidationError("hour");
+											clearValidationError("minute");
+										} else {
+											clearValidationError("raw");
+										}
+									}}
 									options={[
-										{ value: PROJECT_DEFAULT, label: t("automations.projectDefault") },
-										...harnesses.map((item) => ({ value: item.id, label: item.label })),
+										{ value: "daily", label: t("automations.schedule.daily") },
+										{ value: "weekly", label: t("automations.schedule.weekly") },
+										{ value: "raw", label: t("automations.schedule.custom") },
 									]}
 								/>
 							</Field>
 						</div>
-						<Field label={t("automations.field.schedule")}>
-							<AutomationSelect
-								label={t("automations.field.schedule")}
-								value={preset}
-								onValueChange={(value) => {
-									setPreset(value);
-									if (value === "raw") {
-										clearValidationError("hour");
-										clearValidationError("minute");
-									} else {
-										clearValidationError("raw");
-									}
-								}}
-								options={[
-									{ value: "daily", label: t("automations.schedule.daily") },
-									{ value: "weekly", label: t("automations.schedule.weekly") },
-									{ value: "raw", label: t("automations.schedule.custom") },
-								]}
-							/>
-						</Field>
 						{preset === "raw" ? (
 							<Field label={t("automations.field.rrule")} id={AUTOMATION_FIELD_IDS.raw} error={validationErrors.raw}>
 								<Input id={AUTOMATION_FIELD_IDS.raw} required value={raw} aria-invalid={Boolean(validationErrors.raw) || undefined} aria-describedby={validationErrors.raw ? `${AUTOMATION_FIELD_IDS.raw}-error` : undefined} onChange={(event) => { setRaw(event.target.value); if (event.target.value.trim()) clearValidationError("raw"); }} />
@@ -321,7 +349,7 @@ function CreateAutomationDialog({
 							{t("automations.cancel")}
 						</Button>
 						<Button type="submit" variant="footer-primary" disabled={busy}>
-							{busy ? t("automations.creating") : t("automations.create")}
+							{busy ? t(editing ? "automations.saving" : "automations.creating") : t(editing ? "automations.save" : "automations.create")}
 						</Button>
 					</div>
 				</form>
@@ -366,6 +394,7 @@ function AutomationSelect({
 	options,
 	placeholder,
 	required,
+	disabled,
 	invalid,
 	describedBy,
 }: {
@@ -373,20 +402,21 @@ function AutomationSelect({
 	label: string;
 	value: string;
 	onValueChange: (value: string) => void;
-	options: Array<{ value: string; label: string }>;
+	options: Array<{ value: string; label: string; disabled?: boolean }>;
 	placeholder?: string;
 	required?: boolean;
+	disabled?: boolean;
 	invalid?: boolean;
 	describedBy?: string;
 }) {
 	return (
-		<Select value={value} onValueChange={onValueChange} required={required}>
+		<Select value={value} onValueChange={onValueChange} required={required} disabled={disabled}>
 			<SelectTrigger id={id} size="sm" className="w-full text-control" aria-label={label} aria-invalid={invalid || undefined} aria-describedby={describedBy}>
 				<SelectValue placeholder={placeholder} />
 			</SelectTrigger>
 			<SelectContent position="popper" side="bottom" align="start" sideOffset={4} className="max-h-64">
 				{options.map((option) => (
-					<SelectItem key={option.value} value={option.value}>
+					<SelectItem key={option.value} value={option.value} disabled={option.disabled}>
 						{option.label}
 					</SelectItem>
 				))}
