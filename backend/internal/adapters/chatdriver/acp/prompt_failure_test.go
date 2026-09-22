@@ -119,6 +119,29 @@ func TestACPDriverPromptResponseFailure(t *testing.T) {
 	}
 }
 
+func TestACPFinishPromptReleasesTurnBeforeTerminalEvents(t *testing.T) {
+	conv := &conversation{
+		activeTurn: "turn-1",
+		events:     make(chan ports.ChatEvent, 2),
+	}
+
+	conv.finishPrompt("turn-1", acpsdk.PromptResponse{StopReason: acpsdk.StopReasonEndTurn}, nil)
+	completed := nextEvent(t, conv.Events())
+	if completed.Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("first terminal event = %#v, want turn completed", completed)
+	}
+	conv.mu.Lock()
+	activeTurn := conv.activeTurn
+	conv.mu.Unlock()
+	if activeTurn != "" {
+		t.Fatalf("active turn = %q after turn completed, want empty", activeTurn)
+	}
+	ready := nextEvent(t, conv.Events())
+	if ready.Kind != ports.ChatEventControllerState || ready.ControllerState != ports.ChatControllerReady {
+		t.Fatalf("second terminal event = %#v, want controller ready", ready)
+	}
+}
+
 func testPromptFailureMeta(failure map[string]any) map[string]any {
 	return map[string]any{"jetbrains": map[string]any{"air": map[string]any{
 		"version": float64(1), "sessionFailure": failure,
