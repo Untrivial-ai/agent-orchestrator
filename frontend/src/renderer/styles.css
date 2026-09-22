@@ -1709,15 +1709,19 @@ textarea,
 }
 
 .multi-step-loader__step {
-	animation: multi-step-loader-step var(--multi-step-loader-duration, 3500ms) ease-in-out;
+	/* `both`: hold the final keyframe (opacity 0) after the exit and pre-apply
+	   the 0% keyframe before the entry. Without it the element snaps back to its
+	   base style (opacity 1) at animation end, flashing the outgoing sentence
+	   fully opaque for a frame before the swap. */
+	animation: multi-step-loader-step var(--multi-step-loader-duration, 3500ms) ease-in-out both;
 }
 
 .multi-step-loader__dot {
-	animation: multi-step-loader-dot var(--multi-step-loader-duration, 3500ms) ease-in-out;
+	animation: multi-step-loader-dot var(--multi-step-loader-duration, 3500ms) ease-in-out both;
 }
 
 .multi-step-loader__check {
-	animation: multi-step-loader-check var(--multi-step-loader-duration, 3500ms) ease-out;
+	animation: multi-step-loader-check var(--multi-step-loader-duration, 3500ms) ease-out both;
 }
 
 @keyframes multi-step-loader-step {
