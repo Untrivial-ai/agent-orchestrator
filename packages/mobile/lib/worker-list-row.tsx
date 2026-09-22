@@ -68,11 +68,14 @@ export const WorkerListRow = memo(
 	const visual = statusVisual(t, session.status);
 	const glyph = workerStatusGlyph(session.status);
 	const prs = prLine(session);
-	// The second line is the pull request, and only the pull request. It used to
-	// lead with the branch, which on most rows was the worktree path
-	// (`ao/dev/<project>-N/root`) — the same string the session header shows, and
-	// noise under a title that already names the work.
-	const details = prs?.text ?? "";
+	// The second line is the pull request when there is one, and the branch when
+	// there is not. The branch used to lead unconditionally, which put a worktree
+	// path (`ao/dev/<project>-N/root`) under every title — the same string the
+	// session header already shows. Then it went missing entirely for a row with no
+	// PR, which left the line blank on exactly the sessions that had no other way to
+	// name their branch. `workerRowPresentation` has already dropped a branch that
+	// only restates the title, so whatever reaches here says something new.
+	const details = prs?.text ?? row.branch ?? "";
 	useEffect(() => {
 		if (isRenaming) return;
 		setRenameTitle(row.title);

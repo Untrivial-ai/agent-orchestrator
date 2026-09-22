@@ -30,3 +30,16 @@ describe("worker dock keyboard lift", () => {
 		expect(board).not.toContain("keyboardAnimation.height.value");
 	});
 });
+
+describe("worker row second line", () => {
+	const row = source("./worker-list-row.tsx");
+
+	// The line led with the branch unconditionally, so every row carried a worktree
+	// path under its title. Dropping the branch outright then left rows with no PR
+	// showing nothing at all, on exactly the sessions whose branch was the only
+	// thing naming their worktree.
+	it("falls back to the branch when the row has no pull request", () => {
+		expect(row).toContain("const details = prs?.text ?? row.branch ?? \"\";");
+		expect(row).not.toContain("const details = prs?.text ?? \"\";");
+	});
+});
