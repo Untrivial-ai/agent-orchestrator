@@ -330,6 +330,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedPRReviewPartialMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered PR review-partial migration history: %w", err)
 	}
+	if err := repairBurnedAutomationsMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair burned automations migration history: %w", err)
+	}
 	if err := prepareBurnedSchemaRepairs(db); err != nil {
 		return fmt.Errorf("prepare burned schema repairs: %w", err)
 	}
@@ -1529,6 +1532,50 @@ SELECT COALESCE((
 		return err
 	}
 	return tx.Commit()
+}
+
+// repairBurnedAutomationsMigrationHistory releases goose version 149 when it
+// was recorded by a parallel feature branch (session_effort, conversation CDC,
+// etc.) without the Phase C automations schema. goose then applies
+// 0149_automations.sql. Without this, session list/reconcile crash on boot
+// with "no such column: automation_run_id" while the Automations UI spins.
+func repairBurnedAutomationsMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var automationsTable, automationRunID int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'automations'),
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'automation_run_id')`).Scan(
+		&automationsTable, &automationRunID,
+	); err != nil {
+		return err
+	}
+	if automationsTable > 0 && automationRunID > 0 {
+		return nil
+	}
+
+	var applied149 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 149 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied149); err != nil {
+		return err
+	}
+	if applied149 == 0 {
+		return nil
+	}
+
+	_, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 149`)
+	return err
 }
 
 // schemaRepairs lists the column-level effects of migrations that real

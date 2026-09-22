@@ -6,6 +6,44 @@ import (
 	"time"
 )
 
+// Parallel feature branches commonly burn goose version 149 without the
+// automations schema. Open must release that ledger entry and apply
+// 0149_automations.sql, or daemon boot dies on automation_run_id.
+func TestMigrateRepairsBurnedAutomationsVersion(t *testing.T) {
+	dataDir := t.TempDir()
+	db := openMigratedDatabaseCopyAt(t, dataDir, 148, pragmas)
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (149, 1)`); err != nil {
+		t.Fatalf("burn version 149: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("open burned automations database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	check, err := sql.Open("sqlite", databaseURI(dataDir)+pragmas)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = check.Close() })
+
+	var automationsTable, runIDColumn int
+	if err := check.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'automations'),
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'automation_run_id')`).Scan(
+		&automationsTable, &runIDColumn,
+	); err != nil {
+		t.Fatalf("inspect repaired schema: %v", err)
+	}
+	if automationsTable != 1 || runIDColumn != 1 {
+		t.Fatalf("repaired schema automations=%d automation_run_id=%d, want both 1", automationsTable, runIDColumn)
+	}
+}
+
 // Removing the run-occurrence uniqueness or the durable enum constraints must
 // make this test fail: they are what let duplicate pollers and restart recovery
 // converge on one logical run instead of spawning independent work.

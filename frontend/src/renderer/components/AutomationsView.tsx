@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { CalendarClock, ChevronDown, ChevronRight, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronRight, Loader2, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import {
@@ -10,19 +11,27 @@ import {
 	DialogContent,
 	DialogDescription,
 	DialogTitle,
-	settingsDialogBodyClass,
-	settingsDialogContentClass,
-	settingsDialogFooterClass,
-	settingsDialogHeaderClass,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Switch } from "./ui/switch";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { RequiredAgentField } from "./CreateProjectAgentSheet";
+import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { useAgentReadinessQuery, type AgentReadinessSnapshot } from "../hooks/useAgentReadinessQuery";
+import {
+	agentModelsQueryKey,
+	agentModelsQueryOptions,
+	refreshAgentModels,
+	type AgentModelCatalog,
+} from "../hooks/useAgentModelsQuery";
 import { useProjectDefaultWorker } from "../hooks/useProjectDefaultWorker";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
-import { buildRankedAgentOptions, DEFAULT_AGENT_PRIORITY_RANK } from "../lib/agent-select-options";
+import {
+	buildRankedAgentOptions,
+	DEFAULT_AGENT_PRIORITY_RANK,
+	isReadyAgent,
+} from "../lib/agent-select-options";
 import {
 	useAutomationRuns,
 	useAutomations,
@@ -32,6 +41,19 @@ import {
 	type Automation,
 	type CreateAutomationInput,
 } from "../hooks/useAutomations";
+import {
+	centeredOnboardingDialogClass,
+	onboardingAlertErrorClass,
+	onboardingFieldErrorClass,
+	onboardingFieldHintClass,
+	onboardingFooterActionsEndClass,
+	onboardingFormLabelClass,
+} from "../lib/onboarding-ui";
+import { cn } from "../lib/utils";
+
+/** Same quiet filled trigger Schedule/Project use — keeps Agent/Model in that family. */
+const formControlTriggerClass =
+	"flex h-control-form w-full items-center justify-between gap-2 rounded-md border border-transparent bg-input/50 px-3 text-sm text-foreground hover:bg-input/50 data-[state=open]:bg-input/50 [&_svg]:text-muted-foreground";
 
 function displayTime(value?: string, locale?: string) {
 	if (!value) return "—";
@@ -122,13 +144,62 @@ function scheduleFieldsFromRRule(rruleText: string) {
 	const minute = rruleLine.match(/BYMINUTE=(\d{1,2})/)?.[1];
 	const byDay = rruleLine.match(/BYDAY=([^;]+)/)?.[1];
 	if (hour !== undefined && minute !== undefined) {
-		const local = { hour: hour.padStart(2, "0"), minute: minute.padStart(2, "0") };
-		if (freq === "DAILY" && !byDay) return { preset: "daily", ...local, raw: rruleLine };
-		if (freq === "WEEKLY" && byDay === "MO") return { preset: "weekly", ...local, raw: rruleLine };
+		const time = `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
+		if (freq === "DAILY" && !byDay) return { preset: "daily", time, raw: rruleLine };
+		if (freq === "WEEKLY" && byDay === "MO") return { preset: "weekly", time, raw: rruleLine };
 	}
-	return { preset: "raw", hour: "09", minute: "00", raw: rruleLine };
+	return { preset: "raw", time: nowLocalHHMM(), raw: rruleLine };
 }
-type AutomationField = "projectId" | "name" | "prompt" | "raw" | "hour" | "minute";
+
+function nowLocalHHMM() {
+	const now = new Date();
+	return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+/** 24-hour clock values as HH:mm. Empty means unset. */
+function parseTimeValue(value: string): { hour: number; minute: number } | null {
+	const match = value.trim().match(/^(\d{2}):(\d{2})$/);
+	if (!match) return null;
+	const hour = Number(match[1]);
+	const minute = Number(match[2]);
+	if (hour > 23 || minute > 59) return null;
+	return { hour, minute };
+}
+
+/** Digits-only draft → HH:mm, rejecting any digit that would make an invalid clock. */
+function formatTimeDraft(raw: string): string {
+	const out: string[] = [];
+	for (const ch of raw.replace(/\D/g, "")) {
+		if (out.length >= 4) break;
+		const digit = Number(ch);
+		const pos = out.length;
+		if (pos === 0) {
+			// Hour tens is 0–2; 3–9 becomes 0X so the field never holds 3x–9x.
+			if (digit > 2) {
+				out.push("0", ch);
+			} else {
+				out.push(ch);
+			}
+			continue;
+		}
+		if (pos === 1) {
+			if (Number(out[0]) === 2 && digit > 3) continue;
+			out.push(ch);
+			continue;
+		}
+		if (pos === 2) {
+			if (digit > 5) continue;
+			out.push(ch);
+			continue;
+		}
+		out.push(ch);
+	}
+	const digits = out.slice(0, 4).join("");
+	if (digits.length <= 2) return digits;
+	return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+type AutomationField = "projectId" | "name" | "prompt" | "raw" | "time";
 type AutomationValidationErrors = Partial<Record<AutomationField, string>>;
 
 const AUTOMATION_FIELD_IDS: Record<AutomationField, string> = {
@@ -136,8 +207,7 @@ const AUTOMATION_FIELD_IDS: Record<AutomationField, string> = {
 	name: "automation-name",
 	prompt: "automation-prompt",
 	raw: "automation-rrule",
-	hour: "automation-hour",
-	minute: "automation-minute",
+	time: "automation-time",
 };
 
 function AutomationFormDialog({
@@ -151,6 +221,7 @@ function AutomationFormDialog({
 	onSubmit,
 }: AutomationFormDialogProps) {
 	const { t } = useTranslation();
+	const queryClient = useQueryClient();
 	const editing = Boolean(automation);
 	const timezone = automation?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 	const [projectId, setProjectId] = useState("");
@@ -158,9 +229,10 @@ function AutomationFormDialog({
 	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
 	const [harness, setHarness] = useState("");
+	const [model, setModel] = useState("");
+	const [modelTouched, setModelTouched] = useState(false);
 	const [preset, setPreset] = useState("daily");
-	const [hour, setHour] = useState("09");
-	const [minute, setMinute] = useState("00");
+	const [time, setTime] = useState(nowLocalHHMM);
 	const [raw, setRaw] = useState("FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0");
 	const [validationErrors, setValidationErrors] = useState<AutomationValidationErrors>({});
 
@@ -170,12 +242,19 @@ function AutomationFormDialog({
 		setName(automation?.displayName ?? "");
 		setPrompt(automation?.prompt ?? "");
 		setHarness(automation?.harness ?? "");
+		setModel("");
+		setModelTouched(false);
+		const defaultTime = nowLocalHHMM();
+		const [defaultHour, defaultMinute] = defaultTime.split(":");
 		const schedule = automation
 			? scheduleFieldsFromRRule(automation.rrule)
-			: { preset: "daily", hour: "09", minute: "00", raw: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0" };
+			: {
+					preset: "daily",
+					time: defaultTime,
+					raw: `FREQ=DAILY;BYHOUR=${Number(defaultHour)};BYMINUTE=${Number(defaultMinute)};BYSECOND=0`,
+				};
 		setPreset(schedule.preset);
-		setHour(schedule.hour);
-		setMinute(schedule.minute);
+		setTime(schedule.time);
 		setRaw(schedule.raw);
 		setValidationErrors({});
 	}, [open, automation]);
@@ -184,17 +263,32 @@ function AutomationFormDialog({
 	if (automation && !projectOptions.some((option) => option.value === automation.projectId)) {
 		projectOptions.unshift({ value: automation.projectId, label: automation.projectId });
 	}
-	const harnessOptions = buildRankedAgentOptions({
-		agents: harnesses,
-		priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
-		fallbackAgents: [],
-	}).map((agent) => ({ value: agent.id, label: agent.label, disabled: agent.disabled }));
-	if (projectDefaultWorker && !harnessOptions.some((option) => option.value === projectDefaultWorker)) {
-		harnessOptions.unshift({ value: projectDefaultWorker, label: projectDefaultWorker, disabled: false });
+	// Prefer an explicit choice, then the project's resolved worker, then the
+	// first ready harness so Model isn't stuck on "Select agent" before a
+	// project is picked.
+	const fallbackHarness =
+		buildRankedAgentOptions({
+			agents: harnesses,
+			priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
+			fallbackAgents: [],
+		}).find(isReadyAgent)?.id ?? "";
+	const selectedHarness = harness || projectDefaultWorker || fallbackHarness;
+	const selectedAgentLabel = harnesses.find((item) => item.id === selectedHarness)?.label || selectedHarness;
+	const modelsProjectId = automation?.projectId || projectId;
+	const modelCatalogQuery = useQuery(agentModelsQueryOptions(selectedHarness, modelsProjectId));
+	const catalogModels = modelCatalogQuery.data?.models ?? [];
+	const catalogDefault = catalogModels.find((item) => item.isDefault)?.id || catalogModels[0]?.id || "";
+	const selectedModel = model || catalogDefault;
+
+	useEffect(() => {
+		if (!modelTouched) setModel(catalogDefault);
+	}, [catalogDefault, modelTouched]);
+
+	async function refreshSelectedModels() {
+		if (!selectedHarness) return;
+		const refreshed = await refreshAgentModels(selectedHarness, modelsProjectId);
+		queryClient.setQueryData(agentModelsQueryKey(selectedHarness, modelsProjectId), refreshed);
 	}
-	// Like the New Task composer, the resolved project default is preselected as
-	// a real agent instead of a "project default" placeholder entry.
-	const selectedHarness = harness || projectDefaultWorker;
 
 	function clearValidationError(field: AutomationField) {
 		setValidationErrors((current) => {
@@ -212,23 +306,19 @@ function AutomationFormDialog({
 		if (!name.trim()) nextErrors.name = t("automations.validation.name");
 		if (!prompt.trim()) nextErrors.prompt = t("automations.validation.prompt");
 		if (preset === "raw" && !raw.trim()) nextErrors.raw = t("automations.validation.rrule");
-		if (preset !== "raw") {
-			if (!/^(?:[01]?[0-9]|2[0-3])$/.test(hour)) nextErrors.hour = t("automations.validation.hour");
-			if (!/^[0-5]?[0-9]$/.test(minute)) nextErrors.minute = t("automations.validation.minute");
-		}
+		const parsedTime = preset === "raw" ? null : parseTimeValue(time);
+		if (preset !== "raw" && !parsedTime) nextErrors.time = t("automations.validation.time");
 		setValidationErrors(nextErrors);
-		const firstInvalid = (["projectId", "name", "prompt", "raw", "hour", "minute"] as const).find(
-			(field) => nextErrors[field],
-		);
+		const firstInvalid = (["projectId", "name", "prompt", "raw", "time"] as const).find((field) => nextErrors[field]);
 		if (firstInvalid) {
 			document.getElementById(AUTOMATION_FIELD_IDS[firstInvalid])?.focus();
 			return;
 		}
 		const rrule =
 			preset === "daily"
-				? `FREQ=DAILY;BYHOUR=${Number(hour)};BYMINUTE=${Number(minute)};BYSECOND=0`
+				? `FREQ=DAILY;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
 				: preset === "weekly"
-					? `FREQ=WEEKLY;BYDAY=MO;BYHOUR=${Number(hour)};BYMINUTE=${Number(minute)};BYSECOND=0`
+					? `FREQ=WEEKLY;BYDAY=MO;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
 					: raw;
 		await onSubmit({
 			// Kind is not a form choice: automations are workers, and editing
@@ -243,7 +333,7 @@ function AutomationFormDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent showCloseButton={false} className={settingsDialogContentClass}>
+			<DialogContent showCloseButton={false} className={centeredOnboardingDialogClass}>
 				<DialogClose asChild>
 					<button
 						type="button"
@@ -251,19 +341,20 @@ function AutomationFormDialog({
 						className="settings-dialog-close-button settings-close-button"
 						aria-label={t("automations.create.close")}
 					>
-						<X className="size-5" aria-hidden="true" />
+						<X className="size-4" aria-hidden="true" />
 					</button>
 				</DialogClose>
-				<div className={settingsDialogHeaderClass}>
-					<DialogTitle className="settings-dialog-title">{t(editing ? "automations.edit" : "automations.create")}</DialogTitle>
-					<DialogDescription className="text-control leading-4 text-settings-muted">
-						{t(editing ? "automations.edit.description" : "automations.create.description")}
-					</DialogDescription>
-				</div>
+				{/* Match New Task / project onboarding: title padding only, no header band or hairline. */}
+				<DialogTitle className="settings-dialog-title px-4 pr-12 pt-3">
+					{t(editing ? "automations.edit" : "automations.create")}
+				</DialogTitle>
+				<DialogDescription className="px-4 pr-12 pt-1 text-[13px] leading-5 text-muted-foreground">
+					{t(editing ? "automations.edit.description" : "automations.create.description")}
+				</DialogDescription>
 				<form className="flex min-h-0 flex-1 flex-col" noValidate onSubmit={(event) => void submit(event)}>
-					<div className={settingsDialogBodyClass}>
+					<div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-1 pt-4">
 						{Object.keys(validationErrors).length > 0 ? (
-							<div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+							<div role="alert" className={cn(onboardingAlertErrorClass, "flex items-start gap-2")}>
 								<TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
 								<span>{t("automations.validation.summary")}</span>
 							</div>
@@ -294,17 +385,39 @@ function AutomationFormDialog({
 								aria-invalid={Boolean(validationErrors.prompt) || undefined}
 								aria-describedby={validationErrors.prompt ? `${AUTOMATION_FIELD_IDS.prompt}-error` : undefined}
 								onChange={(event) => { setPrompt(event.target.value); if (event.target.value.trim()) clearValidationError("prompt"); }}
-								className="min-h-24 w-full rounded-md border border-transparent bg-input/50 px-3 py-2 text-sm outline-none aria-invalid:border-destructive"
+								className="min-h-24 w-full rounded-md border border-transparent bg-input/50 px-3 py-2 text-[13px] outline-none focus-visible:outline-none aria-invalid:border-destructive"
 							/>
 						</Field>
+						{/* Agent/Model/Schedule/Time share one labeled 2×2 grid and Select/Input chrome. */}
 						<div className="grid grid-cols-2 gap-3">
-							<Field label={t("automations.agent")}>
-								<AutomationSelect
-									label={t("automations.agent")}
-									placeholder={t("automations.agentPlaceholder")}
-									value={selectedHarness}
-									onValueChange={setHarness}
-									options={harnessOptions}
+							<RequiredAgentField
+								id="automation-agent"
+								label={t("automations.agent")}
+								labelClassName={onboardingFormLabelClass}
+								placeholder={t("automations.agentPlaceholder")}
+								value={selectedHarness}
+								agents={harnesses}
+								disabled={busy}
+								onChange={(value) => {
+									setHarness(value);
+									setModel("");
+									setModelTouched(false);
+								}}
+							/>
+							<Field label={t("automations.model")}>
+								<AutomationModelPicker
+									agentId={selectedHarness}
+									agentLabel={selectedAgentLabel}
+									value={selectedModel}
+									catalog={modelCatalogQuery.data}
+									loading={selectedHarness !== "" && modelCatalogQuery.isFetching && modelCatalogQuery.data === undefined}
+									fetching={modelCatalogQuery.isFetching}
+									disabled={busy}
+									onChange={(value) => {
+										setModel(value);
+										setModelTouched(true);
+									}}
+									onRefresh={refreshSelectedModels}
 								/>
 							</Field>
 							<Field label={t("automations.field.schedule")}>
@@ -313,12 +426,8 @@ function AutomationFormDialog({
 									value={preset}
 									onValueChange={(value) => {
 										setPreset(value);
-										if (value === "raw") {
-											clearValidationError("hour");
-											clearValidationError("minute");
-										} else {
-											clearValidationError("raw");
-										}
+										if (value === "raw") clearValidationError("time");
+										else clearValidationError("raw");
 									}}
 									options={[
 										{ value: "daily", label: t("automations.schedule.daily") },
@@ -327,28 +436,52 @@ function AutomationFormDialog({
 									]}
 								/>
 							</Field>
+							{preset === "raw" ? (
+								<Field label={t("automations.field.rrule")} id={AUTOMATION_FIELD_IDS.raw} error={validationErrors.raw}>
+									<Input
+										id={AUTOMATION_FIELD_IDS.raw}
+										required
+										value={raw}
+										aria-invalid={Boolean(validationErrors.raw) || undefined}
+										aria-describedby={validationErrors.raw ? `${AUTOMATION_FIELD_IDS.raw}-error` : undefined}
+										onChange={(event) => {
+											setRaw(event.target.value);
+											if (event.target.value.trim()) clearValidationError("raw");
+										}}
+									/>
+								</Field>
+							) : (
+								<Field label={t("automations.field.localTime")} id={AUTOMATION_FIELD_IDS.time} error={validationErrors.time}>
+									<Input
+										id={AUTOMATION_FIELD_IDS.time}
+										type="text"
+										inputMode="numeric"
+										autoComplete="off"
+										spellCheck={false}
+										required
+										placeholder="09:00"
+										value={time}
+										aria-invalid={Boolean(validationErrors.time) || undefined}
+										aria-describedby={validationErrors.time ? `${AUTOMATION_FIELD_IDS.time}-error` : undefined}
+										className="tabular-nums"
+										onChange={(event) => {
+											const next = formatTimeDraft(event.target.value);
+											setTime(next);
+											if (parseTimeValue(next)) clearValidationError("time");
+										}}
+									/>
+								</Field>
+							)}
 						</div>
-						{preset === "raw" ? (
-							<Field label={t("automations.field.rrule")} id={AUTOMATION_FIELD_IDS.raw} error={validationErrors.raw}>
-								<Input id={AUTOMATION_FIELD_IDS.raw} required value={raw} aria-invalid={Boolean(validationErrors.raw) || undefined} aria-describedby={validationErrors.raw ? `${AUTOMATION_FIELD_IDS.raw}-error` : undefined} onChange={(event) => { setRaw(event.target.value); if (event.target.value.trim()) clearValidationError("raw"); }} />
-							</Field>
-						) : (
-							<Field label={t("automations.field.localTime")}>
-								<div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-									<TimePartInput id={AUTOMATION_FIELD_IDS.hour} label={t("automations.field.hour")} value={hour} max={23} error={validationErrors.hour} onChange={(value) => { setHour(value); if (/^(?:[01]?[0-9]|2[0-3])$/.test(value)) clearValidationError("hour"); }} />
-									<span aria-hidden="true" className="text-center font-semibold text-muted-foreground">:</span>
-									<TimePartInput id={AUTOMATION_FIELD_IDS.minute} label={t("automations.field.minute")} value={minute} max={59} error={validationErrors.minute} onChange={(value) => { setMinute(value); if (/^[0-5]?[0-9]$/.test(value)) clearValidationError("minute"); }} />
-								</div>
-							</Field>
-						)}
-						<p className="text-xs text-settings-muted">{t("automations.timezone", { timezone })}</p>
-						{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+						<p className={onboardingFieldHintClass}>{t("automations.timezone", { timezone })}</p>
+						{error ? <p role="alert" className={onboardingFieldErrorClass}>{error}</p> : null}
 					</div>
-					<div className={settingsDialogFooterClass}>
-						<Button type="button" variant="footer" disabled={busy} onClick={() => onOpenChange(false)}>
+					{/* Match onboarding/new-task action row: no footer hairline. */}
+					<div className={cn(onboardingFooterActionsEndClass, "px-4 pb-4")}>
+						<Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
 							{t("automations.cancel")}
 						</Button>
-						<Button type="submit" variant="footer-primary" disabled={busy}>
+						<Button type="submit" variant="primary" disabled={busy}>
 							{busy ? t(editing ? "automations.saving" : "automations.creating") : t(editing ? "automations.save" : "automations.create")}
 						</Button>
 					</div>
@@ -358,31 +491,92 @@ function AutomationFormDialog({
 	);
 }
 
-function TimePartInput({ id, label, value, max, error, onChange }: { id: string; label: string; value: string; max: number; error?: string; onChange: (value: string) => void }) {
+function AutomationModelPicker({
+	agentId,
+	agentLabel,
+	value,
+	catalog,
+	loading,
+	fetching,
+	disabled,
+	onChange,
+	onRefresh,
+}: {
+	agentId: string;
+	agentLabel: string;
+	value: string;
+	catalog: AgentModelCatalog | undefined;
+	loading: boolean;
+	fetching: boolean;
+	disabled: boolean;
+	onChange: (value: string) => void;
+	onRefresh: () => Promise<void>;
+}) {
+	const { t } = useTranslation();
+	const models = catalog?.models ?? [];
+	const noOverrideLabel = agentLabel
+		? t("newTask.letAgentChoose", { agent: agentLabel })
+		: t("settings.models.agentDefault");
+
+	if (agentId === "") {
+		return (
+			<span
+				className={cn(formControlTriggerClass, "inline-flex cursor-not-allowed items-center opacity-50")}
+				aria-disabled="true"
+				aria-label={t("automations.model")}
+			>
+				<span className="truncate text-muted-foreground">{t("newTask.selectAgent")}</span>
+			</span>
+		);
+	}
+
+	if (loading) {
+		return (
+			<span
+				className={cn(formControlTriggerClass, "inline-flex cursor-not-allowed items-center opacity-50")}
+				aria-label={t("automations.model")}
+			>
+				<span className="inline-flex min-w-0 items-center gap-1.5" role="status" aria-label={t("settings.models.loading")} aria-busy="true">
+					<Loader2 className="size-icon-sm shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+					<span className="truncate text-muted-foreground">{t("settings.models.loading")}</span>
+				</span>
+			</span>
+		);
+	}
+
+	const displayModels =
+		catalog?.selectionMode === "mode"
+			? models
+			: models.map((item) => (item.id === "auto" ? { ...item, label: t("settings.models.autoRouteLabel") } : item));
+
 	return (
-		<div className="flex min-w-0 flex-col gap-1.5">
-			<Input
-				id={id}
-				type="text"
-				inputMode="numeric"
-				required
-				maxLength={2}
-				pattern={max === 23 ? "(?:[01]?[0-9]|2[0-3])" : "[0-5]?[0-9]"}
-				value={value}
-				aria-label={label}
-				aria-invalid={Boolean(error) || undefined}
-				aria-describedby={error ? `${id}-error` : undefined}
-				className="text-control tabular-nums"
-				onFocus={(event) => event.currentTarget.select()}
-				onChange={(event) => onChange(event.target.value)}
-				onBlur={(event) => {
-					if (event.currentTarget.validity.valid && event.currentTarget.value !== "") {
-						onChange(String(Number(event.currentTarget.value)).padStart(2, "0"));
-					}
-				}}
-			/>
-			{error ? <p id={`${id}-error`} className="text-[11px] leading-4 text-destructive">{error}</p> : null}
-		</div>
+		<AgentModelCombobox
+			key={agentId}
+			aria-label={t("automations.model")}
+			value={value}
+			models={displayModels}
+			allowCustom={catalog?.selectionMode === "mode" ? false : catalog?.allowCustom}
+			customModelEntry={catalog?.selectionMode === "mode" ? "none" : catalog?.customModelEntry}
+			agentLabel={agentLabel}
+			onRefresh={onRefresh}
+			disabled={disabled || (catalog?.selectionMode === "mode" && models.length === 0)}
+			emptyLabel={fetching ? t("settings.models.loading") : noOverrideLabel}
+			requireSelection
+			onChange={onChange}
+			onCustom={onChange}
+			compact
+			recentScope={agentId}
+			triggerClassName={formControlTriggerClass}
+			menuAlign="start"
+			renderTrigger={(label) => {
+				const visibleLabel = value ? label : (displayModels[0]?.label ?? noOverrideLabel);
+				return (
+					<span className="min-w-0 truncate text-control text-foreground" title={visibleLabel}>
+						{visibleLabel}
+					</span>
+				);
+			}}
+		/>
 	);
 }
 
@@ -427,10 +621,10 @@ function AutomationSelect({
 
 function Field({ label, id, error, children }: { label: string; id?: string; error?: string; children: React.ReactNode }) {
 	return (
-		<div className="flex flex-col gap-1.5 text-sm">
-			{id ? <label htmlFor={id} className="font-medium text-settings-label">{label}</label> : <span className="font-medium text-settings-label">{label}</span>}
+		<div className="flex flex-col gap-2">
+			{id ? <label htmlFor={id} className={onboardingFormLabelClass}>{label}</label> : <span className={onboardingFormLabelClass}>{label}</span>}
 			{children}
-			{error ? <p id={`${id}-error`} className="text-[11px] leading-4 text-destructive">{error}</p> : null}
+			{error ? <p id={`${id}-error`} className={onboardingFieldErrorClass}>{error}</p> : null}
 		</div>
 	);
 }
