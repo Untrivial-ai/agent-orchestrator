@@ -41,6 +41,10 @@ Security posture:
   must not be able to lock out the real phone).
 - **App API only** on the LAN Listener; daemon-control routes keep their existing
   loopback-only guard (`localControlRequest`) with no change.
+- The authenticated app API includes `GET /api/v1/fs/dirs` for remote folder
+  selection. Its bounded response identifies the listed absolute path and parent,
+  plus each visible subdirectory's name, absolute path, and `.git` presence; it
+  does not expose file contents, sizes, timestamps, files, or dotted names.
 - **Plaintext transport (HTTP), accepted.** No TLS. The feature is
   **home-network-only** and the UI says so. The Pairing QR therefore carries only
   host+port (non-secret); the Connection Password is delivered out-of-band (read off

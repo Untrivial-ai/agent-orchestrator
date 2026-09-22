@@ -17,20 +17,32 @@ test("counts review submissions, distinct PRs, and comments in the activity wind
 		[
 			{
 				number: 10,
-				author: { login: "author" },
+				author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
 				reviews: [
-					{ author: { login: "reviewer" }, submittedAt: "2026-09-16T00:00:00.000Z" },
-					{ author: { login: "reviewer" }, submittedAt: "2026-09-17T00:00:00.000Z" },
+					{
+						author: { __typename: "User", login: "reviewer", avatarUrl: "https://avatars.example/reviewer" },
+						submittedAt: "2026-09-16T00:00:00.000Z",
+					},
+					{
+						author: { __typename: "User", login: "reviewer", avatarUrl: "https://avatars.example/reviewer" },
+						submittedAt: "2026-09-17T00:00:00.000Z",
+					},
 				],
 				comments: [
-					{ author: { login: "reviewer" }, createdAt: "2026-09-18T00:00:00.000Z" },
+					{
+						author: { __typename: "User", login: "reviewer", avatarUrl: "https://avatars.example/reviewer" },
+						createdAt: "2026-09-18T00:00:00.000Z",
+					},
 				],
 			},
 			{
 				number: 11,
-				author: { login: "another-author" },
+				author: { __typename: "User", login: "another-author", avatarUrl: "https://avatars.example/another" },
 				reviews: [
-					{ author: { login: "reviewer" }, submittedAt: "2026-09-19T00:00:00.000Z" },
+					{
+						author: { __typename: "User", login: "reviewer", avatarUrl: "https://avatars.example/reviewer" },
+						submittedAt: "2026-09-19T00:00:00.000Z",
+					},
 				],
 				comments: [],
 			},
@@ -39,31 +51,63 @@ test("counts review submissions, distinct PRs, and comments in the activity wind
 	);
 
 	assert.deepEqual(stats, [
-		{ login: "reviewer", comments: 1, reviews: 3, pullRequests: 2 },
+		{
+			login: "reviewer",
+			avatarUrl: "https://avatars.example/reviewer",
+			comments: 1,
+			reviews: 3,
+			pullRequests: 2,
+		},
 	]);
 });
 
-test("uses activity timestamps, includes self-reviews, and excludes bots", () => {
+test("excludes self activity and bots while preserving the time boundaries", () => {
 	const stats = calculateStats(
 		[
 			{
 				number: 20,
-				author: { login: "author" },
+				author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
 				reviews: [
-					{ author: { login: "author" }, submittedAt: "2026-09-16T00:00:00.000Z" },
-					{ author: { login: "robot[bot]" }, submittedAt: "2026-09-16T00:00:00.000Z" },
 					{
-						author: { __typename: "Bot", login: "github-actions" },
+						author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
 						submittedAt: "2026-09-16T00:00:00.000Z",
 					},
-					{ author: { login: "early" }, submittedAt: window.start },
-					{ author: { login: "late" }, submittedAt: window.end },
+					{
+						author: { __typename: "User", login: "i-trytoohard", avatarUrl: "https://avatars.example/automation" },
+						submittedAt: "2026-09-16T00:00:00.000Z",
+					},
+					{
+						author: { __typename: "Bot", login: "robot[bot]", avatarUrl: "https://avatars.example/robot" },
+						submittedAt: "2026-09-16T00:00:00.000Z",
+					},
+					{
+						author: { __typename: "Bot", login: "github-actions", avatarUrl: "https://avatars.example/actions" },
+						submittedAt: "2026-09-16T00:00:00.000Z",
+					},
+					{
+						author: { __typename: "User", login: "early", avatarUrl: "https://avatars.example/early" },
+						submittedAt: window.start,
+					},
+					{
+						author: { __typename: "User", login: "late", avatarUrl: "https://avatars.example/late" },
+						submittedAt: window.end,
+					},
 				],
 				comments: [
-					{ author: { login: "author" }, createdAt: "2026-09-16T00:00:00.000Z" },
-					{ author: { login: "robot[bot]" }, createdAt: "2026-09-16T00:00:00.000Z" },
 					{
-						author: { __typename: "Bot", login: "github-actions" },
+						author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
+						createdAt: "2026-09-16T00:00:00.000Z",
+					},
+					{
+						author: { __typename: "User", login: "i-trytoohard", avatarUrl: "https://avatars.example/automation" },
+						createdAt: "2026-09-16T00:00:00.000Z",
+					},
+					{
+						author: { __typename: "Bot", login: "robot[bot]", avatarUrl: "https://avatars.example/robot" },
+						createdAt: "2026-09-16T00:00:00.000Z",
+					},
+					{
+						author: { __typename: "Bot", login: "github-actions", avatarUrl: "https://avatars.example/actions" },
 						createdAt: "2026-09-16T00:00:00.000Z",
 					},
 				],
@@ -73,24 +117,66 @@ test("uses activity timestamps, includes self-reviews, and excludes bots", () =>
 	);
 
 	assert.deepEqual(stats, [
-		{ login: "author", comments: 1, reviews: 1, pullRequests: 1 },
-		{ login: "early", comments: 0, reviews: 1, pullRequests: 1 },
+		{
+			login: "early",
+			avatarUrl: "https://avatars.example/early",
+			comments: 0,
+			reviews: 1,
+			pullRequests: 1,
+		},
 	]);
 });
 
-test("combines review submissions and distinct PRs in one column", () => {
-	const comment = buildComment(
+test("removes comment-only contributors and ranks by distinct PRs reviewed", () => {
+	const stats = calculateStats(
 		[
-			{ login: "reviewer", reviews: 31, pullRequests: 18, comments: 37 },
-			{ login: "another-reviewer", reviews: 1, pullRequests: 1, comments: 0 },
+			{
+				number: 30,
+				author: { __typename: "User", login: "author", avatarUrl: "https://avatars.example/author" },
+				reviews: [
+					{ author: { __typename: "User", login: "many-rounds", avatarUrl: "https://avatars.example/many" }, submittedAt: window.start },
+					{ author: { __typename: "User", login: "many-rounds", avatarUrl: "https://avatars.example/many" }, submittedAt: window.start },
+					{ author: { __typename: "User", login: "wide-reviewer", avatarUrl: "https://avatars.example/wide" }, submittedAt: window.start },
+				],
+				comments: [
+					{ author: { __typename: "User", login: "commenter", avatarUrl: "https://avatars.example/commenter" }, createdAt: window.start },
+				],
+			},
+			{
+				number: 31,
+				author: { __typename: "User", login: "another-author", avatarUrl: "https://avatars.example/another" },
+				reviews: [
+					{ author: { __typename: "User", login: "wide-reviewer", avatarUrl: "https://avatars.example/wide" }, submittedAt: window.start },
+				],
+				comments: [],
+			},
 		],
 		window,
 	);
 
-	assert.match(comment, /User \| Reviews \| PR comments/);
-	assert.match(comment, /reviewer \| 31 reviews \(18 PRs\) \| 37/);
-	assert.match(comment, /another-reviewer \| 1 review \(1 PR\) \| 0/);
-	assert.match(comment, /2026-09-15T00:00:00\.000Z/);
+	assert.deepEqual(stats.map(({ login }) => login), ["wide-reviewer", "many-rounds"]);
+});
+
+test("renders linked avatars, readable dates, medals, and a collapsed remainder", () => {
+	const reviewers = Array.from({ length: 12 }, (_, index) => ({
+		login: `reviewer-${index + 1}`,
+		avatarUrl: `https://avatars.example/${index + 1}`,
+		reviews: 12 - index,
+		pullRequests: 12 - index,
+		comments: index,
+	}));
+	const comment = buildComment(
+		reviewers,
+		window,
+	);
+
+	assert.match(comment, /^## 🏆 Review leaderboard/m);
+	assert.match(comment, /Sep 15–22, 2026 · UTC/);
+	assert.match(comment, /🥇 \| <img src="https:\/\/avatars\.example\/1" width="24" height="24" alt="@reviewer-1"> \[@reviewer-1\]\(https:\/\/github\.com\/reviewer-1\)/);
+	assert.match(comment, /\| PRs reviewed \| Review rounds \| PR comments \|/);
+	assert.match(comment, /<summary>Show 2 more reviewers<\/summary>/);
+	assert.ok(comment.indexOf("@reviewer-10") < comment.indexOf("<details>"));
+	assert.ok(comment.indexOf("@reviewer-11") > comment.indexOf("<details>"));
 });
 
 test("paginates search results and oversized PR connections", async () => {
@@ -135,6 +221,11 @@ test("paginates search results and oversized PR connections", async () => {
 	const calls = [];
 	const github = {
 		graphql: async (_query, variables) => {
+			// @octokit/graphql reserves these names and throws when they are
+			// passed as variables.
+			for (const reserved of ["query", "method", "url"]) {
+				assert.ok(!(reserved in variables), `"${reserved}" cannot be used as a GraphQL variable name`);
+			}
 			calls.push(variables);
 			return responses.shift();
 		},

@@ -1,21 +1,23 @@
 const PAGE_SIZE = 100;
+const BOT_LOGINS = new Set(["i-trytoohard"]);
 
 const SEARCH_QUERY = `
-  query($query: String!, $cursor: String) {
-    search(query: $query, type: ISSUE, first: ${PAGE_SIZE}, after: $cursor) {
+  query($searchQuery: String!, $cursor: String) {
+    search(query: $searchQuery, type: ISSUE, first: ${PAGE_SIZE}, after: $cursor) {
       issueCount
       pageInfo { hasNextPage endCursor }
       nodes {
         ... on PullRequest {
           id
           number
+          author { login }
           reviews(first: ${PAGE_SIZE}) {
             pageInfo { hasNextPage endCursor }
-            nodes { author { __typename login } submittedAt }
+            nodes { author { __typename login avatarUrl } submittedAt }
           }
           comments(first: ${PAGE_SIZE}) {
             pageInfo { hasNextPage endCursor }
-            nodes { author { __typename login } createdAt }
+            nodes { author { __typename login avatarUrl } createdAt }
           }
         }
       }
@@ -29,11 +31,11 @@ const CONNECTION_QUERY = `
       ... on PullRequest {
         reviews(first: ${PAGE_SIZE}, after: $reviewsCursor) @include(if: $includeReviews) {
           pageInfo { hasNextPage endCursor }
-          nodes { author { __typename login } submittedAt }
+          nodes { author { __typename login avatarUrl } submittedAt }
         }
         comments(first: ${PAGE_SIZE}, after: $commentsCursor) @include(if: $includeComments) {
           pageInfo { hasNextPage endCursor }
-          nodes { author { __typename login } createdAt }
+          nodes { author { __typename login avatarUrl } createdAt }
         }
       }
     }
@@ -41,7 +43,9 @@ const CONNECTION_QUERY = `
 `;
 
 const isBot = (author) =>
-	author?.__typename === "Bot" || /\[bot\]$/i.test(author?.login ?? "");
+	author?.__typename === "Bot" ||
+	/\[bot\]$/i.test(author?.login ?? "") ||
+	BOT_LOGINS.has(author?.login?.toLowerCase());
 const isWithin = (timestamp, start, end) => {
 	const time = Date.parse(timestamp);
 	return time >= Date.parse(start) && time < Date.parse(end);
@@ -49,25 +53,36 @@ const isWithin = (timestamp, start, end) => {
 
 export function calculateStats(pullRequests, { start, end }) {
 	const stats = new Map();
-	const entryFor = (login) => {
+	const entryFor = (author) => {
+		const { login, avatarUrl } = author;
 		if (!stats.has(login)) {
-			stats.set(login, { login, comments: 0, reviews: 0, pullRequests: new Set() });
+			stats.set(login, {
+				login,
+				avatarUrl,
+				comments: 0,
+				reviews: 0,
+				pullRequests: new Set(),
+			});
+		} else if (!stats.get(login).avatarUrl && avatarUrl) {
+			stats.get(login).avatarUrl = avatarUrl;
 		}
 		return stats.get(login);
 	};
 
 	for (const pullRequest of pullRequests) {
+		const authorLogin = pullRequest.author?.login?.toLowerCase();
 		for (const review of pullRequest.reviews) {
 			const { author } = review;
 			const login = author?.login;
 			if (
 				!login ||
 				isBot(author) ||
+				login.toLowerCase() === authorLogin ||
 				!isWithin(review.submittedAt, start, end)
 			) {
 				continue;
 			}
-			const entry = entryFor(login);
+			const entry = entryFor(author);
 			entry.reviews += 1;
 			entry.pullRequests.add(pullRequest.number);
 		}
@@ -75,40 +90,88 @@ export function calculateStats(pullRequests, { start, end }) {
 		for (const comment of pullRequest.comments) {
 			const { author } = comment;
 			const login = author?.login;
-			if (!login || isBot(author) || !isWithin(comment.createdAt, start, end)) continue;
-			entryFor(login).comments += 1;
+			if (
+				!login ||
+				isBot(author) ||
+				login.toLowerCase() === authorLogin ||
+				!isWithin(comment.createdAt, start, end)
+			) {
+				continue;
+			}
+			entryFor(author).comments += 1;
 		}
 	}
 
 	return [...stats.values()]
 		.map(({ pullRequests: reviewed, ...entry }) => ({ ...entry, pullRequests: reviewed.size }))
+		.filter((entry) => entry.reviews > 0)
 		.sort((left, right) =>
-			right.comments - left.comments ||
+			right.pullRequests - left.pullRequests ||
 			right.reviews - left.reviews ||
+			right.comments - left.comments ||
 			left.login.localeCompare(right.login),
 		);
 }
 
 export function buildComment(stats, { start, end }) {
-	const countLabel = (count, label) => `${count} ${label}${count === 1 ? "" : "s"}`;
-	const rows = stats
-		.map(
-			(entry) =>
-				`| ${entry.login} | ${countLabel(entry.reviews, "review")} (${countLabel(entry.pullRequests, "PR")}) | ${entry.comments} |`,
-		)
-		.join("\n");
-
-	return [
-		"## Pull review activity",
-		"",
-		`Activity from ${start} (inclusive) to ${end} (exclusive).`,
-		"",
-		"| User | Reviews | PR comments |",
-		"| --- | ---: | ---: |",
-		rows || "| _No review activity_ | 0 reviews (0 PRs) | 0 |",
-		"",
-		"Reviews are counted by submission time, including repeated review rounds on the same PR. PR comments are conversation comments created during the same window.",
+	const dateRange = formatDateRange(start, end);
+	const visible = stats.slice(0, 10);
+	const remaining = stats.slice(10);
+	const table = (entries, rankOffset = 0) => [
+		"| Rank | Reviewer | PRs reviewed | Review rounds | PR comments |",
+		"| :---: | --- | ---: | ---: | ---: |",
+		...(entries.length > 0
+			? entries.map((entry, index) => formatRow(entry, rankOffset + index + 1))
+			: ["| — | _No external review activity_ | 0 | 0 | 0 |"]),
 	].join("\n");
+
+	const sections = [
+		"## 🏆 Review leaderboard",
+		"",
+		dateRange,
+		"",
+		table(visible),
+		"",
+		"Ranked by distinct external PRs reviewed, then review rounds, then PR comments. Self-activity and bot activity are excluded.",
+	];
+
+	if (remaining.length > 0) {
+		sections.push(
+			"",
+			"<details>",
+			`<summary>Show ${remaining.length} more reviewers</summary>`,
+			"",
+			table(remaining, visible.length),
+			"",
+			"</details>",
+		);
+	}
+
+	return sections.join("\n");
+}
+
+function formatDateRange(start, end) {
+	const startDate = new Date(start);
+	const endDate = new Date(end);
+	const month = new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" });
+	const day = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: "UTC" });
+	const year = new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone: "UTC" });
+	const sameMonth =
+		startDate.getUTCFullYear() === endDate.getUTCFullYear() &&
+		startDate.getUTCMonth() === endDate.getUTCMonth();
+	const range = sameMonth
+		? `${month.format(startDate)} ${day.format(startDate)}–${day.format(endDate)}, ${year.format(endDate)}`
+		: `${month.format(startDate)} ${day.format(startDate)}, ${year.format(startDate)}–${month.format(endDate)} ${day.format(endDate)}, ${year.format(endDate)}`;
+	return `${range} · UTC`;
+}
+
+function formatRow(entry, rank) {
+	const medal = ["🥇", "🥈", "🥉"][rank - 1] ?? rank;
+	const profileUrl = `https://github.com/${entry.login}`;
+	const avatar = entry.avatarUrl
+		? `<img src="${entry.avatarUrl}" width="24" height="24" alt="@${entry.login}"> `
+		: "";
+	return `| ${medal} | ${avatar}[@${entry.login}](${profileUrl}) | ${entry.pullRequests} | ${entry.reviews} | ${entry.comments} |`;
 }
 
 async function remainingConnection(github, id, name, initial) {
@@ -133,13 +196,13 @@ async function remainingConnection(github, id, name, initial) {
 }
 
 export async function fetchPullRequests(github, { owner, repo, start }) {
-	const query = `repo:${owner}/${repo} is:pr updated:>=${start.slice(0, 10)}`;
+	const searchQuery = `repo:${owner}/${repo} is:pr updated:>=${start.slice(0, 10)}`;
 	const pullRequests = [];
 	let cursor = null;
 	let hasNextPage = true;
 
 	while (hasNextPage) {
-		const response = await github.graphql(SEARCH_QUERY, { query, cursor });
+		const response = await github.graphql(SEARCH_QUERY, { searchQuery, cursor });
 		if (response.search.issueCount > 1000) {
 			throw new Error("The activity window contains more than GitHub Search's 1,000-PR limit");
 		}

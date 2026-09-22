@@ -1,8 +1,11 @@
 import { type ChildProcess, spawn, type SpawnOptions } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, chmod, lstat, mkdtemp, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { shell } from "electron";
+import crypto from "node:crypto";
 
 const MAX_AUTH_DOCUMENT_BYTES = 64 << 10;
 
@@ -410,9 +413,162 @@ const claudeAuthFlow: ProviderAuthFlow = {
 	},
 };
 
+// GitHub OAuth scopes requested by Agent Orchestrator:
+//   repo        – full control of public and private repos (clone, push, pull, PRs, issues, hooks)
+//   read:org    – read org membership and team membership
+//   repo_hook   – full control of repo webhooks (needed for some cloud features)
+const GITHUB_OAUTH_SCOPES = "repo read:org repo_hook";
+
+const GITHUB_CALLBACK_HTML = (title: string, body: string): string =>
+	`<!doctype html><meta charset="utf-8"><title>${title}</title>` +
+	`<body style="font:15px -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#111">` +
+	`<h1 style="font-size:1.25rem">${title}</h1><p style="color:#555">${body}</p></body>`;
+
+const githubAuthFlow: ProviderAuthFlow = {
+	provider: "github",
+	async authenticate(_dataDir: string, signal?: AbortSignal): Promise<ProviderAuthCredential> {
+		const clientId = process.env.AO_GITHUB_OAUTH_CLIENT_ID?.trim();
+		if (!clientId) {
+			throw new Error(
+				"GitHub OAuth is not configured. Set AO_GITHUB_OAUTH_CLIENT_ID in your environment, or use a Personal Access Token instead.",
+			);
+		}
+		const state = crypto.randomBytes(16).toString("hex");
+		let server: Server | null = null;
+
+		return new Promise<ProviderAuthCredential>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				server?.close();
+				reject(new Error("GitHub sign-in timed out after 5 minutes."));
+			}, 5 * 60 * 1000);
+
+			const cleanup = () => {
+				clearTimeout(timeout);
+				signal?.removeEventListener("abort", onAbort);
+			};
+
+			const onAbort = () => {
+				server?.close();
+				cleanup();
+				reject(new Error("GitHub sign-in was cancelled."));
+			};
+			if (signal?.aborted) return onAbort();
+			signal?.addEventListener("abort", onAbort, { once: true });
+
+			server = createServer((req, res) => {
+				const url = new URL(req.url ?? "/", "http://127.0.0.1");
+				if (url.pathname !== "/callback") {
+					res.writeHead(404, { "Content-Type": "text/plain" });
+					res.end("Not found");
+					return;
+				}
+				const errorParam = url.searchParams.get("error");
+				if (errorParam) {
+					cleanup();
+					server?.close();
+					reject(new Error(url.searchParams.get("error_description") || `GitHub sign-in failed: ${errorParam}`));
+					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+					res.end(GITHUB_CALLBACK_HTML("Sign-in failed", "Return to Agent Orchestrator and try signing in again."));
+					return;
+				}
+
+				const code = url.searchParams.get("code");
+				const returnedState = url.searchParams.get("state");
+				if (!code || returnedState !== state) {
+					cleanup();
+					server?.close();
+					reject(new Error("GitHub sign-in callback is invalid."));
+					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+					res.end(GITHUB_CALLBACK_HTML("Sign-in failed", "Return to Agent Orchestrator and try signing in again."));
+					return;
+				}
+
+				void (async () => {
+					try {
+						const clientSecret = process.env.AO_GITHUB_OAUTH_CLIENT_SECRET?.trim();
+						if (!clientSecret) throw new Error("GitHub OAuth client secret is not configured.");
+
+						const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+							method: "POST",
+							headers: {
+								Accept: "application/json",
+								"Content-Type": "application/json",
+								"User-Agent": "Agent-Orchestrator",
+							},
+							body: JSON.stringify({
+								client_id: clientId,
+								client_secret: clientSecret,
+								code,
+							}),
+						});
+						if (!tokenRes.ok) throw new Error(`GitHub token exchange failed (HTTP ${tokenRes.status}).`);
+						const tokenBody = (await tokenRes.json()) as Record<string, unknown>;
+						if (typeof tokenBody.error === "string") {
+							throw new Error((tokenBody.error_description as string) || `GitHub OAuth error: ${tokenBody.error}`);
+						}
+						const accessToken = tokenBody.access_token;
+						if (typeof accessToken !== "string" || !accessToken) {
+							throw new Error("GitHub did not return an access token.");
+						}
+
+						const userRes = await fetch("https://api.github.com/user", {
+							headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Agent-Orchestrator" },
+						});
+						if (!userRes.ok) throw new Error("GitHub token verification failed.");
+						const user = (await userRes.json()) as { login?: string };
+						const login = user.login || "unknown";
+
+						cleanup();
+						server?.close();
+						res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+						res.end(GITHUB_CALLBACK_HTML(
+							"Signed in to Agent Orchestrator",
+							`Authenticated as <strong>${login}</strong>. You can close this tab and return to Agent Orchestrator.`,
+						));
+						resolve({ provider: "github", credentialType: "access_token", secret: accessToken });
+					} catch (err) {
+						cleanup();
+						server?.close();
+						reject(err instanceof Error ? err : new Error(String(err)));
+						res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+						res.end(GITHUB_CALLBACK_HTML("Sign-in failed", "Return to Agent Orchestrator and try signing in again."));
+					}
+				})();
+			});
+
+			server.listen(0, "127.0.0.1", () => {
+				const addr = server!.address();
+				if (typeof addr === "string" || addr === null) {
+					cleanup();
+					server?.close();
+					reject(new Error("Failed to start local callback server."));
+					return;
+				}
+				const port = addr.port;
+				const redirectUri = `http://127.0.0.1:${port}/callback`;
+				const authUrl =
+					`https://github.com/login/oauth/authorize` +
+					`?client_id=${encodeURIComponent(clientId)}` +
+					`&redirect_uri=${encodeURIComponent(redirectUri)}` +
+					`&scope=${encodeURIComponent(GITHUB_OAUTH_SCOPES)}` +
+					`&state=${encodeURIComponent(state)}` +
+					`&prompt=consent`;
+				void shell.openExternal(authUrl);
+			});
+
+			server.on("error", (err) => {
+				cleanup();
+				server?.close();
+				reject(err);
+			});
+		});
+	},
+};
+
 const flows = new Map<string, ProviderAuthFlow>([
 	[codexAuthFlow.provider, codexAuthFlow],
 	[claudeAuthFlow.provider, claudeAuthFlow],
+	[githubAuthFlow.provider, githubAuthFlow],
 ]);
 
 export function providerAuthFlow(provider: string): ProviderAuthFlow {

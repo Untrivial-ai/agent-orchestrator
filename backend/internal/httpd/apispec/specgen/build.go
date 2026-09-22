@@ -17,6 +17,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 )
@@ -84,10 +85,14 @@ func Build() ([]byte, error) {
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
 		*(&openapi31.Tag{Name: "browser"}).WithDescription(
 			"Target-isolated desktop browser runtime (loopback only)"),
+		*(&openapi31.Tag{Name: "fs"}).WithDescription(
+			"Read-only filesystem browsing for remote clients"),
 		*(&openapi31.Tag{Name: "system"}).WithDescription(
 			"Local machine readiness checks the desktop app runs before showing the board"),
 		*(&openapi31.Tag{Name: "link-preview"}).WithDescription(
 			"Server-side unfurl of external links for the CSP-locked renderer"),
+		*(&openapi31.Tag{Name: "github"}).WithDescription(
+			"Local GitHub personal access token storage and repository listing"),
 	}
 
 	for _, op := range operations() {
@@ -219,6 +224,9 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersGetProjectResponse":                       "ProjectGetResponse",
 	"ControllersProjectOrDegraded":                        "ProjectOrDegraded",
 	"ControllersListSessionsQuery":                        "ListSessionsQuery",
+	"ControllersListDirsQuery":                            "ListDirsQuery",
+	"ControllersListDirsResponse":                         "ListDirsResponse",
+	"ControllersFSEntry":                                  "FSEntry",
 	"ControllersCleanupSessionsQuery":                     "CleanupSessionsQuery",
 	"ControllersListSessionsResponse":                     "ListSessionsResponse",
 	"ControllersSpawnSessionRequest":                      "SpawnSessionRequest",
@@ -463,6 +471,9 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ProjectUpdateSettingsInput":        "UpdateProjectSettingsInput",
 	"ProjectWorkspaceRepo":              "WorkspaceRepo",
 	"SessionWorkspaceFileStatus":        "WorkspaceFileStatus",
+	// httpd/controllers: GitHub PAT wire envelopes
+	"ControllersPutGitHubPATRequest": "PutGitHubPATRequest",
+	"GithubpatRepo":                  "GitHubRepo",
 }
 
 // markRequestBodyRequired sets requestBody.required: true on the operation's
@@ -564,6 +575,7 @@ func operations() []operation {
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
+	ops = append(ops, fsOperations()...)
 	ops = append(ops, devOperations()...)
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, mobileDeviceOperations()...)
@@ -1496,6 +1508,25 @@ func importOperations() []operation {
 				{http.StatusOK, importsvc.GitPreparationResult{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
+// fsOperations declares the read-only filesystem-browsing operations. Must stay
+// 1:1 with the routes FSController.Register mounts (enforced by the parity test).
+func fsOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/fs/dirs", id: "listDirs", tag: "fs",
+			summary:    "List the subdirectories of a directory on the daemon host",
+			pathParams: []any{controllers.ListDirsQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListDirsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},
 	}
@@ -2601,6 +2632,28 @@ func prOperations() []operation {
 				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
+		},
+		// GitHub PAT + repos (local daemon storage)
+		{
+			method: http.MethodPut, path: "/api/v1/github/pat", id: "putGitHubPAT", tag: "github",
+			summary: "Store a GitHub personal access token locally",
+			reqBody: controllers.PutGitHubPATRequest{},
+			resps:   []respUnit{{http.StatusOK, map[string]string{"status": "ok"}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/github/pat", id: "deleteGitHubPAT", tag: "github",
+			summary: "Remove the stored GitHub personal access token",
+			resps:   []respUnit{{http.StatusOK, map[string]string{"status": "ok"}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/github/status", id: "getGitHubStatus", tag: "github",
+			summary: "Check whether a GitHub personal access token is stored locally",
+			resps:   []respUnit{{http.StatusOK, map[string]bool{"connected": false}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/github/repos", id: "listGitHubRepos", tag: "github",
+			summary: "List repositories accessible with the stored GitHub token",
+			resps:   []respUnit{{http.StatusOK, map[string]any{"repos": []githubpat.Repo{}}}, {http.StatusUnauthorized, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
 		},
 	}
 }
