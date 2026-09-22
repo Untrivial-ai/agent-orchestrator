@@ -272,6 +272,12 @@ function browserIsVisible(sessionId: string, browserPoppedOut: boolean): boolean
 }
 
 function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTarget | undefined {
+	// Prefer the first terminal from the multi-reviewer array when available.
+	if (data?.reviewerTerminals && data.reviewerTerminals.length > 0) {
+		const terminal = data.reviewerTerminals[0];
+		return { handleId: terminal.handleId, harness: terminal.harness || "codex" };
+	}
+	// Fall back to single-reviewer fields for backward compatibility.
 	const handleId = data?.reviewerHandleId?.trim();
 	if (!handleId) return undefined;
 	const latest = data?.reviews?.find((review) => review.latestRun)?.latestRun;
@@ -871,7 +877,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				params: { path: { sessionId } },
 			});
 			if (error) throw new Error(apiErrorMessage(error, "Unable to load reviews"));
-			return data ?? ({ reviewerHandleId: "", reviews: [], runs: [] } satisfies ReviewsResponse);
+			return data ?? ({ reviewerHandleId: "", reviewerTerminals: [], reviews: [], runs: [] } satisfies ReviewsResponse);
 		},
 	});
 	const availableReviewerTerminal = reviewerTerminalFromReviews(reviewerQuery.data);

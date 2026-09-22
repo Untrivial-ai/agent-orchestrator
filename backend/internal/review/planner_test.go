@@ -127,3 +127,80 @@ func withClosed(pr domain.PullRequest) domain.PullRequest {
 	pr.Closed = true
 	return pr
 }
+
+func TestPlanAggregateComputesCorrectStatus(t *testing.T) {
+	prs := []domain.PullRequest{
+		{URL: "https://github.com/o/r/pull/1", Number: 1, HeadSHA: "sha1"},
+	}
+
+	tests := []struct {
+		name       string
+		runs       []domain.ReviewRun
+		wantStatus StateStatus
+	}{
+		{
+			name:       "no runs",
+			runs:       []domain.ReviewRun{},
+			wantStatus: ReviewStateNeedsReview,
+		},
+		{
+			name: "single reviewer approved",
+			runs: []domain.ReviewRun{
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerClaudeCode, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+			},
+			wantStatus: ReviewStateUpToDate,
+		},
+		{
+			name: "multiple reviewers all approved",
+			runs: []domain.ReviewRun{
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerClaudeCode, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+			},
+			wantStatus: ReviewStateUpToDate,
+		},
+		{
+			name: "one reviewer changes requested",
+			runs: []domain.ReviewRun{
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerClaudeCode, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested},
+			},
+			wantStatus: ReviewStateChangesRequested,
+		},
+		{
+			name: "one reviewer failed",
+			runs: []domain.ReviewRun{
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerClaudeCode, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunFailed, Verdict: domain.VerdictNone},
+			},
+			wantStatus: ReviewStateNeedsReview,
+		},
+		{
+			name: "one reviewer still running",
+			runs: []domain.ReviewRun{
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerClaudeCode, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunRunning, Verdict: domain.VerdictNone},
+			},
+			wantStatus: ReviewStateRunning,
+		},
+		{
+			name: "incomplete - one approved, one no verdict",
+			runs: []domain.ReviewRun{
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerClaudeCode, Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+				{PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunComplete, Verdict: domain.VerdictNone},
+			},
+			wantStatus: ReviewStateNeedsReview,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviews := PlanAggregate(prs, tt.runs)
+			if len(reviews) != 1 {
+				t.Fatalf("expected 1 review, got %d", len(reviews))
+			}
+			if reviews[0].Status != tt.wantStatus {
+				t.Fatalf("status = %v, want %v", reviews[0].Status, tt.wantStatus)
+			}
+		})
+	}
+}

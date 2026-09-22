@@ -32,7 +32,7 @@ export function sessionReviewsQueryOptions(session: WorkspaceSession, enabled: b
 				params: { path: { sessionId: session.id } },
 			});
 			if (error) throw new Error(apiErrorMessage(error, "Unable to load reviews"));
-			return data ?? ({ reviewerHandleId: "", reviews: [], runs: [] } satisfies ReviewsResponse);
+			return data ?? ({ reviewerHandleId: "", reviewerTerminals: [], reviews: [], runs: [] } satisfies ReviewsResponse);
 		},
 	});
 }
@@ -222,7 +222,7 @@ function mockReviewsResponse(session: WorkspaceSession): ReviewsResponse {
 			},
 		];
 	});
-	return { reviewerHandleId: `${session.id}-reviewer`, reviews: states, runs };
+	return { reviewerHandleId: `${session.id}-reviewer`, reviewerTerminals: [{ handleId: `${session.id}-reviewer`, harness: "codex", activityState: "idle" }], reviews: states, runs };
 }
 
 function mockReviewTitle(prNumber: number): string {

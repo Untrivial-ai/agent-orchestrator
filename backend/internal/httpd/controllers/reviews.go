@@ -22,12 +22,20 @@ type ListReviewsResponse struct {
 	ReviewerHandleID      string                     `json:"reviewerHandleId"`
 	ReviewerHarness       domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
 	ReviewerActivityState string                     `json:"reviewerActivityState,omitempty" enum:"active,idle,waiting_input,blocked,exited"`
+	ReviewerTerminals     []ReviewerTerminalResponse `json:"reviewerTerminals"`
 	Reviews               []reviewcore.PRReviewState `json:"reviews"`
 	// Runs is every recorded pass for this session, newest first. Reviews only
 	// carries the current and previous run per PR, which cannot answer "what did
 	// the other reviewer say" once a third pass has run — so the client cannot
 	// show one summary across reviewers without this.
 	Runs []domain.ReviewRun `json:"runs"`
+}
+
+// ReviewerTerminalResponse is one reviewer's independently attachable terminal.
+type ReviewerTerminalResponse struct {
+	HandleID      string                 `json:"handleId"`
+	Harness       domain.ReviewerHarness `json:"harness"`
+	ActivityState string                 `json:"activityState,omitempty" enum:"active,idle,waiting_input,blocked,exited"`
 }
 
 // ReviewRunResponse is the body of submit (200). It carries the run plus the
@@ -41,9 +49,10 @@ type ReviewRunResponse struct {
 // TriggerReviewResponse is the body of trigger (200/201). reviews carries the
 // PR-scoped review state after the trigger.
 type TriggerReviewResponse struct {
-	ReviewerHandleID string                     `json:"reviewerHandleId"`
-	Reviews          []reviewcore.PRReviewState `json:"reviews"`
-	Runs             []domain.ReviewRun         `json:"runs"`
+	ReviewerHandleID  string                     `json:"reviewerHandleId"`
+	ReviewerTerminals []ReviewerTerminalResponse `json:"reviewerTerminals"`
+	Reviews           []reviewcore.PRReviewState `json:"reviews"`
+	Runs              []domain.ReviewRun         `json:"runs"`
 	// Created is true when a new review pass was started (HTTP 201) and false
 	// when an existing run for the same commit was reused (HTTP 200).
 	Created bool `json:"created" description:"True when a new review pass was started; false when an existing run for the same commit was reused."`
@@ -58,18 +67,20 @@ type CancelReviewResponse struct {
 
 // RestoreReviewResponse is the body of reviewer session restore (200).
 type RestoreReviewResponse struct {
-	ReviewerHandleID string                     `json:"reviewerHandleId"`
-	ReviewerHarness  domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
-	Reviews          []reviewcore.PRReviewState `json:"reviews"`
-	Runs             []domain.ReviewRun         `json:"runs"`
+	ReviewerHandleID  string                     `json:"reviewerHandleId"`
+	ReviewerHarness   domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
+	ReviewerTerminals []ReviewerTerminalResponse `json:"reviewerTerminals"`
+	Reviews           []reviewcore.PRReviewState `json:"reviews"`
+	Runs              []domain.ReviewRun         `json:"runs"`
 }
 
 // KillReviewResponse is the body of reviewer session kill (200).
 type KillReviewResponse struct {
-	ReviewerHandleID string                     `json:"reviewerHandleId"`
-	ReviewerHarness  domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
-	Reviews          []reviewcore.PRReviewState `json:"reviews"`
-	Runs             []domain.ReviewRun         `json:"runs"`
+	ReviewerHandleID  string                     `json:"reviewerHandleId"`
+	ReviewerHarness   domain.ReviewerHarness     `json:"reviewerHarness,omitempty"`
+	ReviewerTerminals []ReviewerTerminalResponse `json:"reviewerTerminals"`
+	Reviews           []reviewcore.PRReviewState `json:"reviews"`
+	Runs              []domain.ReviewRun         `json:"runs"`
 }
 
 // SubmitReviewItem is one review result in a batched submit request.
@@ -207,10 +218,11 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		runs = []domain.ReviewRun{}
 	}
 	envelope.WriteJSON(w, status, TriggerReviewResponse{
-		ReviewerHandleID: res.ReviewerHandleID,
-		Reviews:          reviews,
-		Runs:             runs,
-		Created:          res.Created,
+		ReviewerHandleID:  res.ReviewerHandleID,
+		ReviewerTerminals: reviewerTerminalsResponse(res.ReviewerTerminals),
+		Reviews:           reviews,
+		Runs:              runs,
+		Created:           res.Created,
 	})
 }
 
@@ -291,7 +303,7 @@ func (c *ReviewsController) kill(w http.ResponseWriter, r *http.Request) {
 	if runs == nil {
 		runs = []domain.ReviewRun{}
 	}
-	envelope.WriteJSON(w, http.StatusOK, KillReviewResponse{ReviewerHandleID: res.ReviewerHandleID, ReviewerHarness: res.ReviewerHarness, Reviews: reviews, Runs: runs})
+	envelope.WriteJSON(w, http.StatusOK, KillReviewResponse{ReviewerHandleID: res.ReviewerHandleID, ReviewerHarness: res.ReviewerHarness, ReviewerTerminals: reviewerTerminalsResponse(res.ReviewerTerminals), Reviews: reviews, Runs: runs})
 }
 
 func (c *ReviewsController) restore(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +329,7 @@ func (c *ReviewsController) restore(w http.ResponseWriter, r *http.Request) {
 	if runs == nil {
 		runs = []domain.ReviewRun{}
 	}
-	envelope.WriteJSON(w, http.StatusOK, RestoreReviewResponse{ReviewerHandleID: res.ReviewerHandleID, ReviewerHarness: res.ReviewerHarness, Reviews: reviews, Runs: runs})
+	envelope.WriteJSON(w, http.StatusOK, RestoreReviewResponse{ReviewerHandleID: res.ReviewerHandleID, ReviewerHarness: res.ReviewerHarness, ReviewerTerminals: reviewerTerminalsResponse(res.ReviewerTerminals), Reviews: reviews, Runs: runs})
 }
 
 func (c *ReviewsController) switchReviewer(w http.ResponseWriter, r *http.Request) {
@@ -355,9 +367,23 @@ func reviewsResponse(res reviewcore.SessionReviews, reviews []reviewcore.PRRevie
 		ReviewerHandleID:      res.ReviewerHandleID,
 		ReviewerHarness:       res.ReviewerHarness,
 		ReviewerActivityState: string(res.ReviewerActivityState),
+		ReviewerTerminals:     reviewerTerminalsResponse(res.ReviewerTerminals),
 		Reviews:               reviews,
 		Runs:                  runs,
 	}
+}
+
+func reviewerTerminalsResponse(terminals []reviewcore.ReviewerTerminal) []ReviewerTerminalResponse {
+	if terminals == nil {
+		return []ReviewerTerminalResponse{}
+	}
+	result := make([]ReviewerTerminalResponse, 0, len(terminals))
+	for _, terminal := range terminals {
+		result = append(result, ReviewerTerminalResponse{
+			HandleID: terminal.HandleID, Harness: terminal.Harness, ActivityState: string(terminal.ActivityState),
+		})
+	}
+	return result
 }
 
 func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {

@@ -163,6 +163,9 @@ func TestLauncherSpawnWarnsWhenPATHPinAndShimFail(t *testing.T) {
 }
 
 func TestLauncherSpawnPrependsNodeRuntimeForNodeShimReviewer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("node runtime dir detection is not supported on Windows")
+	}
 	emptyPath := t.TempDir()
 	home := t.TempDir()
 	binDir := filepath.Join(home, "reviewer", "bin")
