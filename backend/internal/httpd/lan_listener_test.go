@@ -153,6 +153,27 @@ func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
 		t.Fatalf("/api/v1/agents: got 404, should not be blocked by the control-route filter")
 	}
 
+	// Browsing a remote host for a project path is the whole point of fs/dirs,
+	// so it must behave like every other data route: credential-gated, and
+	// specifically NOT a loopback-only control route. A 404 here would be a
+	// silent feature kill that no loopback-side test could catch.
+	fsReq, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/v1/fs/dirs", port), nil)
+	fsReq.Host = "127.0.0.1" // spoofed loopback Host, as above
+	fsReq.Header.Set("Authorization", "Bearer secret12")
+	fsResp, err := http.DefaultClient.Do(fsReq)
+	if err != nil {
+		t.Fatalf("fs/dirs: request failed: %v", err)
+	}
+	if fsResp.StatusCode == http.StatusNotFound {
+		t.Fatal("/api/v1/fs/dirs: got 404 — remote folder browsing needs it reachable over the LAN")
+	}
+	fsNoAuth, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/v1/fs/dirs", port))
+	if err != nil {
+		t.Fatalf("fs/dirs unauthenticated: request failed: %v", err)
+	}
+	if fsNoAuth.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/api/v1/fs/dirs unauthenticated: got %d want 401", fsNoAuth.StatusCode)
+	}
 }
 
 func TestLANManagerStartStopIdempotent(t *testing.T) {

@@ -1388,6 +1388,155 @@ paths:
       summary: Stream CDC events with durable replay
       tags:
       - events
+  /api/v1/fs/dirs:
+    get:
+      operationId: listDirs
+      parameters:
+      - description: Absolute directory on the daemon host to list. When omitted,
+          the daemon user's home directory.
+        in: query
+        name: path
+        schema:
+          description: Absolute directory on the daemon host to list. When omitted,
+            the daemon user's home directory.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDirsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List the subdirectories of a directory on the daemon host
+      tags:
+      - fs
+  /api/v1/github/pat:
+    delete:
+      operationId: deleteGitHubPAT
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Remove the stored GitHub personal access token
+      tags:
+      - github
+    put:
+      operationId: putGitHubPAT
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutGitHubPATRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Store a GitHub personal access token locally
+      tags:
+      - github
+  /api/v1/github/repos:
+    get:
+      operationId: listGitHubRepos
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items:
+                    $ref: '#/components/schemas/GitHubRepo'
+                  type: array
+                type: object
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unauthorized
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List repositories accessible with the stored GitHub token
+      tags:
+      - github
+  /api/v1/github/status:
+    get:
+      operationId: getGitHubStatus
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: boolean
+                type: object
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Check whether a GitHub personal access token is stored locally
+      tags:
+      - github
   /api/v1/identity:
     get:
       operationId: getIdentity
@@ -10168,6 +10317,42 @@ components:
       - sessionId
       - session
       type: object
+    FSEntry:
+      properties:
+        gitRepo:
+          description: True when the directory carries a .git entry (clone or worktree
+            checkout).
+          type: boolean
+        name:
+          description: Directory name.
+          type: string
+        path:
+          description: Absolute path of the directory on the daemon host.
+          type: string
+      required:
+      - name
+      - path
+      - gitRepo
+      type: object
+    GitHubRepo:
+      properties:
+        clone_url:
+          type: string
+        default_branch:
+          type: string
+        full_name:
+          type: string
+        name:
+          type: string
+        private:
+          type: boolean
+      required:
+      - name
+      - full_name
+      - private
+      - default_branch
+      - clone_url
+      type: object
     GitHubRepositoryPreparation:
       properties:
         name:
@@ -10587,6 +10772,29 @@ components:
           type: array
       required:
       - cues
+      type: object
+    ListDirsResponse:
+      properties:
+        entries:
+          description: Subdirectories, excluding dotted names.
+          items:
+            $ref: '#/components/schemas/FSEntry'
+          type: array
+        parent:
+          description: Absolute path of the listed directory's parent; equals path
+            at the filesystem root.
+          type: string
+        path:
+          description: Absolute path that was listed.
+          type: string
+        truncated:
+          description: True when the listing hit the entry cap and more subdirectories
+            exist.
+          type: boolean
+      required:
+      - path
+      - parent
+      - entries
       type: object
     ListNotificationsResponse:
       properties:
@@ -11312,6 +11520,13 @@ components:
       required:
       - createdAt
       - lastSeenAt
+      type: object
+    PutGitHubPATRequest:
+      properties:
+        pat:
+          type: string
+      required:
+      - pat
       type: object
     RegisterPushDeviceRequest:
       properties:
@@ -13463,8 +13678,12 @@ tags:
   name: mobile
 - description: Target-isolated desktop browser runtime (loopback only)
   name: browser
+- description: Read-only filesystem browsing for remote clients
+  name: fs
 - description: Local machine readiness checks the desktop app runs before showing
     the board
   name: system
 - description: Server-side unfurl of external links for the CSP-locked renderer
   name: link-preview
+- description: Local GitHub personal access token storage and repository listing
+  name: github

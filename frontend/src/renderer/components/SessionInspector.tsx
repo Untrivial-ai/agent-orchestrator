@@ -7,7 +7,6 @@ import type { TFunction } from "i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-	ExecutionContextView,
 	InspectorActivityTimelineView,
 	InspectorPullRequestCardView,
 	InspectorReviewsView,
@@ -39,7 +38,7 @@ import {
 } from "lucide-react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { useCloudProjectsQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
@@ -66,7 +65,6 @@ import {
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
-import { executionContextLabels, projectRepositories } from "../lib/execution-context";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
@@ -93,7 +91,6 @@ import {
 } from "../lib/session-reviews";
 
 type ProjectConfig = components["schemas"]["ProjectConfig"];
-type Project = components["schemas"]["Project"];
 type OpenReviewerTerminal = (target: { handleId: string; harness: string }) => void;
 
 export type { InspectorView } from "@aoagents/product-ui";
@@ -324,25 +321,7 @@ const SummaryView = memo(function SummaryView({
 	const { t } = useTranslation();
 	const query = useSessionScmSummary(session.id);
 	const developerMode = useUiStore((state) => state.developerMode);
-	const cloudProjects = useCloudProjectsQuery();
-	const cloudProject = (cloudProjects.data ?? []).find((project) => project.id === session.workspaceId);
-	const isCloudProject = session.cloud !== undefined;
 	const usageQuery = useSessionUsage(session.id, developerMode);
-	const projectQuery = useQuery({
-		queryKey: ["project", session.workspaceId],
-		enabled: session.workspaceId !== STANDALONE_WORKSPACE_ID && !isCloudProject && !usePreviewData,
-		queryFn: async () => {
-			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
-				params: { path: { id: session.workspaceId } },
-			});
-			if (error) throw new Error(apiErrorMessage(error));
-			if (data?.status !== "ok") throw new Error(t("newTask.configUnavailable"));
-			return data.project as Project;
-		},
-	});
-	const project = projectQuery.data;
-	const configuredWorkerAgent = project?.config?.worker?.agent ?? project?.agent;
-	const configuredOrchestratorAgent = project?.config?.orchestrator?.agent;
 	const showUsage =
 		developerMode &&
 		!usageQuery.isLoading &&
@@ -370,27 +349,6 @@ const SummaryView = memo(function SummaryView({
 			}
 			activityTitle={t("inspector.activity")}
 			completion={<SessionControls session={session} />}
-			context={
-				<ExecutionContextView
-					activeAgent={agentLabel(session.provider)}
-					activeRole={session.kind === "orchestrator" ? "orchestrator" : "worker"}
-					baseBranch={project?.defaultBranch}
-					branch={session.branch}
-					labels={executionContextLabels(t)}
-					error={!isCloudProject && projectQuery.isError ? (projectQuery.error instanceof Error ? projectQuery.error.message : t("newTask.configUnavailable")) : undefined}
-					loading={
-						!usePreviewData &&
-						session.workspaceId !== STANDALONE_WORKSPACE_ID &&
-						!isCloudProject &&
-						projectQuery.isPending
-					}
-					orchestratorAgent={configuredOrchestratorAgent ? agentLabel(configuredOrchestratorAgent) : undefined}
-					path={project?.path}
-					projectName={project?.name ?? cloudProject?.displayName ?? session.workspaceName}
-					repositories={project ? projectRepositories(project) : cloudProject ? [cloudProject.repositoryUrl] : []}
-					workerAgent={configuredWorkerAgent ? agentLabel(configuredWorkerAgent) : undefined}
-				/>
-			}
 			pullRequestCards={
 				<div className="flex flex-col gap-1.5">
 					{hasPRs ? (
