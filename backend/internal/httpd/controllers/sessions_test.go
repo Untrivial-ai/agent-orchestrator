@@ -1519,17 +1519,31 @@ func TestSessionsAPI_SpawnsQwenChat(t *testing.T) {
 	}
 }
 
-func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
+func TestSessionsAPI_SpawnPassesTuningToService(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
-		`{"projectId":"ao","kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker","model":"sonnet"}`)
+		`{"projectId":"ao","kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker","model":"sonnet","effort":" high "}`)
 	if status != http.StatusCreated {
 		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
 	}
 	if svc.lastSpawn.AgentConfig.Model != "sonnet" {
 		t.Fatalf("service AgentConfig.Model = %q, want sonnet", svc.lastSpawn.AgentConfig.Model)
+	}
+	if svc.lastSpawn.AgentConfig.Effort != "high" || !svc.lastSpawn.EffortOverride {
+		t.Fatalf("service effort = %q override=%t, want high/true", svc.lastSpawn.AgentConfig.Effort, svc.lastSpawn.EffortOverride)
+	}
+}
+
+func TestSessionsAPI_SpawnRejectsOversizedEffort(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"projectId":"ao","kind":"worker","harness":"codex","effort":"`+strings.Repeat("x", 65)+`"}`)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "EFFORT_TOO_LONG") {
+		t.Fatalf("POST session = %d body=%s, want 400 EFFORT_TOO_LONG", status, body)
 	}
 }
 

@@ -979,9 +979,9 @@ func TestResolveSpawnHarness_OrchestratorDefault(t *testing.T) {
 	}
 }
 
-// TestSpawnModelFlagWiring asserts `ao spawn --model` sends the model override
-// to the daemon without touching project config.
-func TestSpawnModelFlagWiring(t *testing.T) {
+// TestSpawnTuningFlagsWiring asserts `ao spawn` sends session-only tuning
+// overrides to the daemon without touching project config.
+func TestSpawnTuningFlagsWiring(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req spawnRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1003,11 +1003,14 @@ func TestSpawnModelFlagWiring(t *testing.T) {
 	t.Cleanup(srv.Close)
 	writeRunFileFor(t, cfg, srv)
 
-	_, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "codex", "--name", "worker", "--model", "gpt-5.6-sol")
+	_, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "codex", "--name", "worker", "--model", "gpt-5.6-sol", "--effort", " high ")
 	if err != nil {
 		t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
 	}
 	if req.Model != "gpt-5.6-sol" {
 		t.Fatalf("spawn request model = %q, want gpt-5.6-sol", req.Model)
+	}
+	if req.Effort != "high" {
+		t.Fatalf("spawn request effort = %q, want high", req.Effort)
 	}
 }

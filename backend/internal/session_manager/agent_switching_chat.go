@@ -172,7 +172,7 @@ func (m *Manager) executeChatAgentSwitch(
 		return result, fmt.Errorf("switch Chat agent %s: %w", id, ErrInterfaceHandoffUnsupported)
 	}
 	baseAgentConfig := effectiveAgentConfig(cfg.TargetHarness, rec.Kind, project.Config)
-	agentConfig, err := m.resolveChatAgentConfig(ctx, ports.SpawnConfig{
+	agentConfig, err := m.resolveSpawnAgentConfig(ctx, ports.SpawnConfig{
 		ProjectID: rec.ProjectID,
 		Kind:      rec.Kind,
 		Harness:   cfg.TargetHarness,

@@ -1108,6 +1108,26 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 	}
 }
 
+func TestClaudeChatSpawnAppliesEffortOverride(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, _, runtime := newChatManager(launcher)
+
+	_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: chatTestProject, Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeChat,
+		AgentConfig:   ports.AgentConfig{Effort: "max"}, EffortOverride: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if runtime.created != 0 || len(launcher.started) != 1 {
+		t.Fatalf("controllers: TUI=%d Chat=%d, want 0/1", runtime.created, len(launcher.started))
+	}
+	if got := launcher.started[0].Effort; got != "max" {
+		t.Fatalf("Claude Chat effort = %q, want max", got)
+	}
+}
+
 func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, runtime := newChatManager(launcher)

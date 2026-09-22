@@ -185,3 +185,79 @@ func TestClaudeSessionModelSurvivesRestore(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexTUIEffortSurvivesProjectChangeAndRestore(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := sqlitetest.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	})
+	project := domain.ProjectRecord{
+		ID: "mer", Path: t.TempDir(), RegisteredAt: time.Now().UTC(),
+		Config: domain.ProjectConfig{
+			Worker: domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "gpt-test", Effort: "low"}},
+		},
+	}
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	agent := &recordingAgent{}
+	runtime := &fakeRuntime{}
+	workspace := &fakeWorkspace{path: t.TempDir()}
+	newManager := func() *Manager {
+		messenger := &fakeMessenger{}
+		manager := New(Deps{
+			Runtime: runtime, Agents: singleAgent{agent: agent}, Workspace: workspace,
+			Store: store, Messenger: messenger, Lifecycle: lifecycle.New(store, messenger), DataDir: dataDir,
+			LookPath: func(string) (string, error) { return "/bin/true", nil },
+		})
+		manager.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+			{ID: "gpt-test", IsDefault: true, Efforts: []string{"low", "high"}},
+		}}})
+		return manager
+	}
+
+	manager := newManager()
+	rec, _, _, err := manager.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, RequestedMode: domain.SessionModeTUI,
+		AgentConfig: ports.AgentConfig{Model: "gpt-test", Effort: "high"}, EffortOverride: true,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if rec.Metadata.Effort != "high" || !rec.Metadata.EffortResolved {
+		t.Fatalf("spawn effort snapshot = %q/%t, want high/true", rec.Metadata.Effort, rec.Metadata.EffortResolved)
+	}
+	rec.IsTerminated = true
+	rec.Activity.State = domain.ActivityExited
+	rec.Metadata.AgentSessionID = "native-effort-test"
+	if err := store.UpdateSession(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	project.Config.Worker.AgentConfig.Effort = "low"
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store = nil
+	store, err = sqlite.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager = newManager()
+	*agent = recordingAgent{}
+	if _, err := manager.RestoreWithMode(ctx, rec.ID); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if agent.lastConfig.Effort != "high" {
+		t.Fatalf("restored effort = %q, want snapshotted high", agent.lastConfig.Effort)
+	}
+}

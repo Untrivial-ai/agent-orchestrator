@@ -522,6 +522,8 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			ControllerGeneration:             row.ControllerGeneration,
 			Model:                            row.Model,
 			Permissions:                      domain.PermissionMode(row.SessionPermissions),
+			Effort:                           row.SessionEffort.String,
+			EffortResolved:                   row.SessionEffort.Valid,
 		},
 		CleanupGeneration: row.CleanupGeneration,
 		CreatedAt:         row.CreatedAt,
@@ -594,6 +596,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
 		Model:                            rec.Metadata.Model,
 		SessionPermissions:               string(rec.Metadata.Permissions),
+		SessionEffort:                    sql.NullString{String: rec.Metadata.Effort, Valid: rec.Metadata.EffortResolved},
 		CreatedAt:                        rec.CreatedAt,
 		UpdatedAt:                        rec.UpdatedAt,
 	}

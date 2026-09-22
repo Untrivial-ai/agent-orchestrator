@@ -1700,6 +1700,84 @@ func TestSpawnModelPersisted(t *testing.T) {
 	}
 }
 
+func TestSpawnTUIValidatesEffortBeforeProvisioning(t *testing.T) {
+	tests := []struct {
+		name    string
+		harness domain.AgentHarness
+		effort  string
+		catalog tuningCatalog
+		wantErr error
+	}{
+		{
+			name:    "supported",
+			harness: domain.HarnessCodex,
+			effort:  "high",
+			catalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+				{ID: "gpt-test", IsDefault: true, Efforts: []string{"low", "high"}},
+			}}},
+		},
+		{
+			name:    "unsupported",
+			harness: domain.HarnessCodex,
+			effort:  "extreme",
+			catalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+				{ID: "gpt-test", IsDefault: true, Efforts: []string{"low", "high"}},
+			}}},
+			wantErr: ports.ErrUnsupportedEffort,
+		},
+		{
+			name:    "catalog unavailable",
+			harness: domain.HarnessCodex,
+			effort:  "high",
+			catalog: tuningCatalog{err: errors.New("catalog offline")},
+			wantErr: ports.ErrModelCapabilitiesUnavailable,
+		},
+		{
+			name:    "harness does not support TUI effort",
+			harness: domain.HarnessClaudeCode,
+			effort:  "max",
+			catalog: tuningCatalog{},
+			wantErr: ports.ErrUnsupportedEffort,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{
+				Worker: domain.RoleOverride{Harness: tt.harness},
+			}}
+			agent := &recordingAgent{}
+			runtime := &fakeRuntime{}
+			manager := New(Deps{
+				Runtime: runtime, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+				Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+				LookPath: func(string) (string, error) { return "/bin/true", nil },
+			})
+			manager.SetModelCatalog(tt.catalog)
+
+			rec, _, _, err := manager.Spawn(ctx, ports.SpawnConfig{
+				ProjectID: "mer", Kind: domain.KindWorker, Harness: tt.harness, RequestedMode: domain.SessionModeTUI,
+				AgentConfig: ports.AgentConfig{Model: "gpt-test", Effort: tt.effort}, EffortOverride: true,
+			})
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("spawn error = %v, want %v", err, tt.wantErr)
+				}
+				if len(st.sessions) != 0 || runtime.created != 0 {
+					t.Fatalf("invalid effort provisioned session=%d runtime=%d", len(st.sessions), runtime.created)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			if agent.lastConfig.Effort != "high" || rec.Metadata.Effort != "high" || !rec.Metadata.EffortResolved {
+				t.Fatalf("resolved effort: launch=%q metadata=%+v", agent.lastConfig.Effort, rec.Metadata)
+			}
+		})
+	}
+}
+
 // A spawn that names a harness other than the role override's must not inherit
 // that role's model: it was tuned for the other agent and would reach the
 // selected harness as an unknown provider alias. The harness picks its own

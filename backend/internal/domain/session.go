@@ -72,6 +72,11 @@ func (o ConversationCheckpointOrigin) Valid() bool {
 type SessionMetadata struct {
 	// Permissions pins the resolved launch policy independently of future project defaults.
 	Permissions PermissionMode `json:"permissions,omitempty"`
+	// Effort pins the resolved reasoning level independently of future project defaults.
+	// EffortResolved distinguishes a new session using provider defaults from a
+	// legacy row created before effort snapshots were stored.
+	Effort         string `json:"effort,omitempty"`
+	EffortResolved bool   `json:"-"`
 
 	Branch            string `json:"branch,omitempty"`
 	WorkspacePath     string `json:"workspacePath,omitempty"`

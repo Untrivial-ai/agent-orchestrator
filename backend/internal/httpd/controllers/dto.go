@@ -330,6 +330,9 @@ type SpawnSessionRequest struct {
 	// keeps the resolved project/role default. The daemon validates that the
 	// selected harness can honor the model before launching.
 	Model string `json:"model,omitempty" maxLength:"256"`
+	// Effort is an optional reasoning-level override scoped to this single spawn.
+	// Empty keeps the resolved project/role or provider default.
+	Effort string `json:"effort,omitempty" maxLength:"64"`
 
 	// DisplayName is the sidebar label for the session, capped at 100 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
