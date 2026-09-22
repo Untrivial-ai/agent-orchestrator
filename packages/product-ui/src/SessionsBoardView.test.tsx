@@ -520,7 +520,7 @@ describe("SessionsBoardView", () => {
 			"1 of 2 PRs merged · 1 open",
 		);
 		expect(mixedProgress).toHaveAttribute("title", "1 of 2 PRs merged · 1 open");
-		expect(mixedProgress).toHaveClass("col-span-2", "truncate");
+		expect(mixedProgress).toHaveClass("min-w-0", "truncate");
 
 		rerender(
 			<SessionCardView
@@ -580,7 +580,7 @@ describe("SessionsBoardView", () => {
 		expect(screen.queryByTestId("session-pr-progress")).not.toBeInTheDocument();
 	});
 
-	it("truncates the status before card metrics can collide", () => {
+	it("keeps the full status readable above card metrics", () => {
 		render(
 			<SessionCardView
 				externalLink={ExternalLink}
@@ -603,12 +603,11 @@ describe("SessionsBoardView", () => {
 		const status = statusLabel.parentElement;
 		const statusSlot = status?.parentElement;
 		const metadataRow = statusSlot?.parentElement;
-		expect(statusLabel).toHaveClass("min-w-0", "truncate");
+		expect(statusLabel).toHaveClass("min-w-0", "break-words");
 		expect(status).toHaveClass("min-w-0", "max-w-full");
 		expect(statusSlot).toHaveClass("min-w-0", "flex-1");
-		expect(metadataRow).toHaveClass("grid", "grid-cols-[minmax(0,1fr)_auto]", "items-center");
-		expect(metadataRow).not.toHaveClass("flex-wrap");
-		expect(screen.getByText("24.6M tok").parentElement).toHaveClass("shrink-0", "whitespace-nowrap");
+		expect(metadataRow).toHaveClass("flex", "flex-col");
+		expect(screen.getByText("24.6M tok").parentElement?.parentElement).toHaveClass("justify-between", "whitespace-nowrap");
 	});
 
 	it("prints the daemon's display status in place of the derived status label", () => {

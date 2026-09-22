@@ -151,11 +151,7 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 			className="board-horizontal-scrollbar h-full overflow-x-auto overflow-y-hidden"
 			data-testid="board-horizontal-scroll"
 		>
-			<div className="relative grid h-full min-w-[64rem] grid-cols-4 divide-x divide-border-strong xl:min-w-0">
-				<div
-					aria-hidden="true"
-					className="pointer-events-none absolute inset-x-0 top-12 z-10 border-t border-border-strong"
-				/>
+			<div className="relative grid h-full min-w-[72rem] grid-cols-4 gap-2 bg-background p-2 xl:min-w-0">
 				{columns.map((column) => (
 					<BoardColumnView
 						column={column}
@@ -189,11 +185,11 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 	return (
 		<section
 			aria-label={labels.columnAria(column.label)}
-			className="flex min-w-0 flex-col overflow-hidden"
+			className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface/40"
 			data-testid="board-column"
 			data-column={column.column}
 		>
-			<div className="flex h-12 shrink-0 items-center gap-2.5 px-4">
+			<div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-surface px-3.5">
 				<span
 					data-testid="board-column-swatch"
 					className="size-[var(--size-swatch)] rounded-full"
@@ -202,9 +198,9 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 				<span className={cn("text-xs font-medium", column.titleClassName)}>
 					{column.label}
 				</span>
-				<span className="ml-auto tabular-nums text-xs leading-none text-passive">{ordered.length}</span>
+				<span className="ml-auto inline-flex min-w-6 items-center justify-center rounded-full bg-background px-1.5 py-1 tabular-nums text-xs leading-none text-muted-foreground">{ordered.length}</span>
 			</div>
-			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto pl-3 pr-2 pb-3 pt-3">
+			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5">
 				<div className="flex min-h-full flex-col gap-2.5">
 					{ordered.map((session) => (
 						<Fragment key={session.id}>{renderSessionCard(session)}</Fragment>
@@ -312,7 +308,7 @@ export function SessionCardView({
 			onClick={interactive ? onOpen : undefined}
 			role={interactive ? undefined : "listitem"}
 			className={cn(
-				"group relative w-full rounded-lg border border-border text-left transition-[background-color,box-shadow,transform] duration-[120ms] ease-out",
+				"group relative w-full rounded-lg border border-border text-left shadow-sm transition-[background-color,box-shadow,transform] duration-[120ms] ease-out",
 				badge.cardClassName ?? "border-border bg-surface",
 				interactive &&
 					"cursor-pointer hover:bg-interactive-hover focus-within:bg-interactive-hover active:scale-[0.99] has-[.pr-link:active]:scale-100",
@@ -329,11 +325,11 @@ export function SessionCardView({
 					type="button"
 				/>
 			) : null}
-			<div className="px-3.5 pb-2.5 pt-2.5">
-				<div className="flex min-w-0 items-center gap-2.5">
+			<div className="px-3.5 pb-3 pt-3">
+				<div className="flex min-w-0 items-start gap-2.5">
 					{renderAvatar(session.provider)}
 					<div
-						className="min-w-0 flex-1 line-clamp-2 overflow-hidden text-balance text-sm-md font-semibold leading-tight tracking-tight text-foreground"
+						className="min-w-0 flex-1 line-clamp-3 overflow-hidden text-sm-md font-semibold leading-snug tracking-tight text-foreground"
 						title={session.title}
 					>
 						{session.title}
@@ -346,7 +342,7 @@ export function SessionCardView({
 					) : null}
 				</div>
 				{showBranch && (
-					<div className="mt-1.5 flex min-w-0 items-center gap-1.5 font-mono text-2xs text-muted-foreground">
+					<div className="mt-2 flex min-w-0 items-center gap-1.5 font-mono text-2xs text-muted-foreground" title={branch}>
 						{branchIcon ?? <GitBranchIcon aria-hidden="true" className="size-icon-2xs shrink-0" />}
 						<span className="truncate text-muted-foreground">{branch}</span>
 						{branchAction}
@@ -376,11 +372,11 @@ export function SessionCardView({
 					)}
 				</div>
 			)}
-			<div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-t border-border px-3.5 py-2.5">
+			<div className="flex min-w-0 flex-col gap-2 border-t border-border px-3.5 py-2.5">
 				<div className="flex min-w-0 flex-1">
 					<span
 						className={cn(
-							"inline-flex min-w-0 max-w-full items-center text-2xs font-medium",
+							"inline-flex min-w-0 max-w-full items-center rounded-md bg-background px-2 py-1 text-2xs font-semibold",
 							needsAttentionChip
 								? "text-status-needs-you"
 								: statusClassName,
@@ -389,19 +385,18 @@ export function SessionCardView({
 						data-testid="session-status"
 					>
 						{showStatusLoader ? <LoaderCircleIcon aria-hidden="true" className="mr-1 size-icon-2xs animate-spin" /> : null}
-						<span className="min-w-0 truncate">{renderedStatusLabel}</span>
+						<span className="min-w-0 break-words">{renderedStatusLabel}</span>
 					</span>
 				</div>
-				<div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-2xs text-muted-foreground">
+				<div className="flex min-w-0 items-center justify-between gap-2 whitespace-nowrap text-2xs text-muted-foreground">
 					{usage ? renderUsage(usage) : null}
-					{usage ? <span aria-hidden="true" className="text-border-strong">·</span> : null}
-					<span className="tabular-nums text-muted-foreground" title={labels.updatedAt(session.updatedAt)}>
+					<span className="ml-auto tabular-nums text-muted-foreground" title={labels.updatedAt(session.updatedAt)}>
 						{labels.formatTime(session.updatedAt)}
 					</span>
 				</div>
 				{pullRequestProgressLabel ? (
 					<div
-						className="col-span-2 min-w-0 truncate text-2xs text-muted-foreground"
+						className="min-w-0 truncate text-2xs text-muted-foreground"
 						data-testid="session-pr-progress"
 						title={pullRequestProgressLabel}
 					>
