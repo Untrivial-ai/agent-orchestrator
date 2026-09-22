@@ -97,3 +97,61 @@ func TestNormalizePullRequestSnapshotMarksPartialReviewWindow(t *testing.T) {
 		t.Fatal("ReviewsPartial = false, want true")
 	}
 }
+
+func TestNormalizePullRequestSnapshotEncodesNoChecksAsArray(t *testing.T) {
+	tests := []struct {
+		name       string
+		withRollup bool
+	}{
+		{name: "missing rollup"},
+		{name: "empty rollup", withRollup: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var response githubPullRequestSnapshotResponse
+			response.Data.Repository.PullRequest.Number = 1
+			response.Data.Repository.PullRequest.URL = "https://github.com/acme/widgets/pull/1"
+			if tt.withRollup {
+				response.Data.Repository.PullRequest.Commits.Nodes = append(
+					response.Data.Repository.PullRequest.Commits.Nodes,
+					struct {
+						Commit struct {
+							StatusCheckRollup *struct {
+								State    string
+								Contexts struct {
+									Nodes []struct {
+										Type                                 string `json:"__typename"`
+										Name, Status, Conclusion, DetailsURL string
+										DatabaseID                           int64
+										Context, State, TargetURL            string
+									} `json:"nodes"`
+									PageInfo githubPageInfo `json:"pageInfo"`
+								} `json:"contexts"`
+							} `json:"statusCheckRollup"`
+						} `json:"commit"`
+					}{},
+				)
+				response.Data.Repository.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup = &struct {
+					State    string
+					Contexts struct {
+						Nodes []struct {
+							Type                                 string `json:"__typename"`
+							Name, Status, Conclusion, DetailsURL string
+							DatabaseID                           int64
+							Context, State, TargetURL            string
+						} `json:"nodes"`
+						PageInfo githubPageInfo `json:"pageInfo"`
+					} `json:"contexts"`
+				}{}
+			}
+
+			snapshot, err := normalizePullRequestSnapshot(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(snapshot.Observation.Checks); got != "[]" {
+				t.Fatalf("checks = %s, want []", got)
+			}
+		})
+	}
+}

@@ -77,13 +77,19 @@ func TestOutboxSupportsConcurrentHookWriterAndWorkerReader(t *testing.T) {
 		}
 	}()
 	wait.Wait()
-	count, _, err := reader.Usage(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	count := outboxRowCount(t, reader)
 	if count != 50 {
 		t.Fatalf("row count = %d, want 50", count)
 	}
+}
+
+func outboxRowCount(t *testing.T, outbox *Outbox) int {
+	t.Helper()
+	var count int
+	if err := outbox.db.QueryRowContext(context.Background(), `SELECT count(*) FROM notification_outbox`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func TestOutboxRetryAndDeleteRequireMatchingEventAndEpoch(t *testing.T) {

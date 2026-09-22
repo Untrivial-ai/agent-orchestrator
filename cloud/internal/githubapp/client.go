@@ -259,7 +259,9 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, code, verifier string) (
 		"client_secret": c.clientSecret,
 		"code":          code,
 		"redirect_uri":  c.OAuthCallbackURL(),
-		"code_verifier": verifier,
+	}
+	if verifier = strings.TrimSpace(verifier); verifier != "" {
+		payload["code_verifier"] = verifier
 	}
 	var response struct {
 		AccessToken string `json:"access_token"`

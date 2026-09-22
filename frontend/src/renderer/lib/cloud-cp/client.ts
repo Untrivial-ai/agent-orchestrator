@@ -17,6 +17,7 @@ import type {
 	CloudCpClientEvent,
 	CloudCpCreateOrganizationRequest,
 	CloudCpCreateOrganizationResponse,
+	CloudCpCreateGitHubProjectRequest,
 	CloudCpCreateProjectRequest,
 	CloudCpCreateSessionRequest,
 	CloudCpErrorEnvelope,
@@ -33,6 +34,9 @@ import type {
 	CloudCpProviderConnectionResponse,
 	CloudCpProviderConnectionsResponse,
 	CloudCpGitHubReposResponse,
+	CloudCpGitHubInstallation,
+	CloudCpGitHubInstallationStart,
+	CloudCpGitHubRepositoryPage,
 	CloudCpPutAgentConnectionRequest,
 	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
@@ -136,6 +140,14 @@ export interface CloudCpClient {
 		projectId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpProjectDeletedResponse>;
+	listGitHubInstallations(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpGitHubInstallation[]>;
+	startGitHubInstallation(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpGitHubInstallationStart>;
+	listGitHubRepositories(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpGitHubRepositoryPage>;
+	createProjectFromGitHub(
+		orgId: string,
+		body: CloudCpCreateGitHubProjectRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpProjectResponse>;
 
 	listSessions(
 		orgId: string,
@@ -461,6 +473,24 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions`, {
 				query: { projectId: query?.projectId, limit: query?.limit, cursor: query?.cursor },
 				signal: o?.signal,
+			}),
+		listGitHubInstallations: async (orgId, o) => {
+			const response = await requestJson<{ installations: CloudCpGitHubInstallation[] }>(
+				"GET",
+				`/orgs/${seg(orgId)}/github/installations`,
+				{ signal: o?.signal },
+			);
+			return response.installations;
+		},
+		startGitHubInstallation: (orgId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/github/installations/start`, { signal: o?.signal }),
+		listGitHubRepositories: (orgId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/github/repositories`, { signal: o?.signal }),
+		createProjectFromGitHub: (orgId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/github/projects`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
 		createSession: (orgId, body, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions`, {

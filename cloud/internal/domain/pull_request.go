@@ -64,6 +64,29 @@ type PullRequestRef struct {
 	Number     int
 }
 
+type PullRequestRefreshReason string
+
+type PullRequestRefreshSource string
+
+const (
+	PullRequestRefreshWebhookFailed PullRequestRefreshReason = "webhook_failed"
+	PullRequestRefreshWebhookSilent PullRequestRefreshReason = "webhook_silent"
+	PullRequestRefreshWebhook       PullRequestRefreshSource = "webhook"
+	PullRequestRefreshFallback      PullRequestRefreshSource = "fallback"
+)
+
+type PullRequestRefreshContext struct {
+	Source     PullRequestRefreshSource
+	LeaseOwner string
+}
+
+type PullRequestRefreshJob struct {
+	Ref          PullRequestRef
+	Reason       PullRequestRefreshReason
+	AttemptCount int
+	LeaseOwner   string
+}
+
 // PullRequestObservation is a freshly fetched lifecycle and status snapshot.
 type PullRequestObservation struct {
 	State        contract.PRState

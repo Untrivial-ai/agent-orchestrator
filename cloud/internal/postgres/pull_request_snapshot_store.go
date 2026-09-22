@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // ApplyPullRequestSnapshot atomically replaces the authoritative PR read model.
-func (s *Store) ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequestID string, snapshot domain.PullRequestSnapshot) (domain.PullRequestTransition, error) {
+func (s *Store) ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequestID string, snapshot domain.PullRequestSnapshot, refresh domain.PullRequestRefreshContext) (domain.PullRequestTransition, error) {
 	var transition domain.PullRequestTransition
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		previous, err := scanPullRequest(tx.QueryRow(ctx, `SELECT `+pullRequestColumns+` FROM ao_pull_requests WHERE org_id=$1 AND id=$2 FOR UPDATE`, orgID, pullRequestID))
@@ -26,10 +27,7 @@ func (s *Store) ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequest
 		if err := tx.QueryRow(ctx, `SELECT auto_inject_review FROM ao_sessions WHERE org_id=$1 AND id=$2`, orgID, previous.SessionID).Scan(&autoInjectReview); err != nil {
 			return err
 		}
-		checks := snapshot.Observation.Checks
-		if len(checks) == 0 {
-			checks = json.RawMessage(`[]`)
-		}
+		checks := normalizeChecksJSON(snapshot.Observation.Checks)
 		state := snapshot.Observation.State
 		if snapshot.Observation.Draft && state == "draft" {
 			state = "open"
@@ -145,13 +143,55 @@ func (s *Store) ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequest
 		if err := recordSCMFeedbackTx(ctx, tx, transition); err != nil {
 			return err
 		}
-		return appendTypedEvent(ctx, tx, orgID, current.SessionID, "scm.updated", map[string]any{
+		if err := appendTypedEvent(ctx, tx, orgID, current.SessionID, "scm.updated", map[string]any{
 			"pullRequestId": pullRequestID,
 			"number":        current.Number,
 			"repository":    current.Repository,
-		})
+		}); err != nil {
+			return err
+		}
+		return completePullRequestRefreshTx(ctx, tx, orgID, pullRequestID, refresh)
 	})
 	return transition, normalizeConstraintError(err)
+}
+
+func completePullRequestRefreshTx(ctx context.Context, tx pgx.Tx, orgID, pullRequestID string, refresh domain.PullRequestRefreshContext) error {
+	switch refresh.Source {
+	case "":
+		return nil
+	case domain.PullRequestRefreshWebhook:
+		_, err := tx.Exec(ctx, `
+			INSERT INTO ao_pr_refresh_fallbacks (pull_request_id, org_id)
+			VALUES ($1, $2)
+			ON CONFLICT (pull_request_id) DO UPDATE SET
+				due_at=NULL, reason='', attempt_count=0,
+				lease_owner='', lease_until=NULL, last_error='', updated_at=now()`,
+			pullRequestID, orgID)
+		return err
+	case domain.PullRequestRefreshFallback:
+		tag, err := tx.Exec(ctx, `
+			UPDATE ao_pr_refresh_fallbacks
+			SET due_at=NULL, reason='', attempt_count=0, lease_owner='', lease_until=NULL,
+				last_error='', updated_at=now()
+			WHERE org_id=$1 AND pull_request_id=$2 AND lease_owner=$3`,
+			orgID, pullRequestID, refresh.LeaseOwner)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrConflict
+		}
+		return nil
+	default:
+		return ErrInvalid
+	}
+}
+
+func normalizeChecksJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return json.RawMessage(`[]`)
+	}
+	return raw
 }
 
 func unresolvedHumanCommentsTx(ctx context.Context, tx pgx.Tx, orgID, pullRequestID string) (bool, error) {

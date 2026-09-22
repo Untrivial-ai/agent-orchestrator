@@ -4,21 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 )
 
-type scmWebhookPullRequestRef struct {
-	Number  int
-	HeadSHA string
-}
-
 type scmWebhookTargetSet struct {
 	PullRequestNumber int
 	HeadSHA           string
-	BeforeSHA         string
-	AfterSHA          string
 	RepositoryWide    bool
 }
 
@@ -42,9 +37,7 @@ func scmWebhookTargets(event string, payload []byte) (scmWebhookTargetSet, error
 				Number int `json:"number"`
 			} `json:"pull_requests"`
 		} `json:"check_suite"`
-		SHA    string `json:"sha"`
-		Before string `json:"before"`
-		After  string `json:"after"`
+		SHA string `json:"sha"`
 	}
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return scmWebhookTargetSet{}, postgres.ErrInvalid
@@ -76,21 +69,9 @@ func scmWebhookTargets(event string, payload []byte) (scmWebhookTargetSet, error
 	case "status":
 		return scmWebhookTargetSet{HeadSHA: envelope.SHA}, nil
 	case "push":
-		return scmWebhookTargetSet{
-			BeforeSHA: envelope.Before, AfterSHA: envelope.After, RepositoryWide: true,
-		}, nil
+		return scmWebhookTargetSet{RepositoryWide: true}, nil
 	}
 	return scmWebhookTargetSet{}, nil
-}
-
-func scmWebhookPullRequestReference(event string, payload []byte) (scmWebhookPullRequestRef, error) {
-	target, err := scmWebhookTargets(event, payload)
-	return scmWebhookPullRequestRef{Number: target.PullRequestNumber, HeadSHA: target.HeadSHA}, err
-}
-
-func scmWebhookPullRequestNumber(event string, payload []byte) (int, error) {
-	ref, err := scmWebhookPullRequestReference(event, payload)
-	return ref.Number, err
 }
 
 func (s *Service) processSCMWebhook(
@@ -130,13 +111,52 @@ func (s *Service) processSCMWebhook(
 	if err != nil {
 		return err
 	}
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	var processErr error
 	for _, pr := range pullRequests {
-		if _, err := s.RefreshPullRequestStatus(ctx, domain.PullRequestRef{
+		refresh := s.RefreshPullRequestStatus
+		if s.refreshPullRequestStatus != nil {
+			refresh = s.refreshPullRequestStatus
+		}
+		if _, err := refresh(ctx, domain.PullRequestRef{
 			ID: pr.ID, OrgID: pr.OrgID, Provider: pr.Provider,
 			Repository: pr.Repository, Number: pr.Number,
-		}); err != nil {
-			return err
+		}, domain.PullRequestRefreshContext{Source: domain.PullRequestRefreshWebhook}); err != nil {
+			scheduleCtx, cancelSchedule := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			scheduleErr := s.store.SchedulePullRequestRefresh(
+				scheduleCtx,
+				pr.OrgID,
+				pr.ID,
+				domain.PullRequestRefreshWebhookFailed,
+				time.Now().UTC(),
+				err.Error(),
+			)
+			cancelSchedule()
+			if scheduleErr != nil {
+				processErr = errors.Join(processErr, err, scheduleErr)
+				continue
+			}
+			logger.Warn("webhook fallback scheduled",
+				"delivery_id", delivery.DeliveryID,
+				"org_id", pr.OrgID,
+				"pull_request_id", pr.ID,
+				"repository", pr.Repository,
+				"number", pr.Number,
+				"reason", domain.PullRequestRefreshWebhookFailed,
+			)
+			processErr = errors.Join(processErr, err)
+			continue
 		}
+		logger.Info("webhook refresh succeeded",
+			"delivery_id", delivery.DeliveryID,
+			"org_id", pr.OrgID,
+			"pull_request_id", pr.ID,
+			"repository", pr.Repository,
+			"number", pr.Number,
+		)
 	}
-	return nil
+	return processErr
 }

@@ -663,6 +663,7 @@ func createSessionTx(
 		FROM generated
 		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
 			mode, denied_commands, activity_state, is_terminated, auto_inject_ci,
+			auto_inject_review, terminate_on_pr_merge,
 			false, '', '', '', '', '', 0, created_at, updated_at`,
 		orgID,
 		input.ProjectID,

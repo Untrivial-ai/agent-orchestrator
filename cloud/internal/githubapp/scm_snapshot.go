@@ -188,7 +188,14 @@ func normalizePullRequestSnapshot(response githubPullRequestSnapshotResponse) (d
 	} else {
 		snapshot.Observation.CIState = contract.CIPassing
 	}
-	checkJSON, _ := json.Marshal(snapshot.Checks)
+	checks := snapshot.Checks
+	if checks == nil {
+		checks = []domain.PullRequestCheck{}
+	}
+	checkJSON, err := json.Marshal(checks)
+	if err != nil {
+		return domain.PullRequestSnapshot{}, err
+	}
 	snapshot.Observation.Checks = checkJSON
 	for _, review := range pr.Reviews.Nodes {
 		snapshot.Reviews = append(snapshot.Reviews, domain.PullRequestReview{

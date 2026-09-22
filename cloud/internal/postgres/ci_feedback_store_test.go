@@ -36,7 +36,7 @@ func TestRetryCIFeedbackReturnsItemToReadyQueue(t *testing.T) {
 			Body: "please rename this", Path: "main.go", Line: 7,
 		}},
 	}
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pullRequest.ID, snapshot); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pullRequest.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +75,12 @@ func TestCIFailureNotificationPersistsAndResolvesUnderRecipientRLS(t *testing.T)
 		ReviewState: contract.ReviewNone, Mergeability: contract.MergeMergeable,
 		Checks: json.RawMessage(`[{"name":"tests","status":"completed","conclusion":"failure"}]`),
 	}
-	if _, err := store.UpdatePullRequestObservation(ctx, fixture.orgID, pullRequest.ID, observation); err != nil {
+	snapshot := domain.PullRequestSnapshot{
+		URL: pullRequest.URL, Title: pullRequest.Title, Author: pullRequest.Author,
+		SourceBranch: pullRequest.SourceBranch, TargetBranch: pullRequest.TargetBranch,
+		Observation: observation,
+	}
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pullRequest.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatalf("record CI failure: %v", err)
 	}
 	principal := domain.Principal{UserID: fixture.userID, Provider: "local"}
@@ -89,7 +94,8 @@ func TestCIFailureNotificationPersistsAndResolvesUnderRecipientRLS(t *testing.T)
 
 	observation.CIState = contract.CIPassing
 	observation.Checks = json.RawMessage(`[]`)
-	if _, err := store.UpdatePullRequestObservation(ctx, fixture.orgID, pullRequest.ID, observation); err != nil {
+	snapshot.Observation = observation
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pullRequest.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatalf("resolve CI failure: %v", err)
 	}
 	page, err = store.ListNotifications(ctx, principal, fixture.orgID, domain.NotificationFilter{Limit: 20})

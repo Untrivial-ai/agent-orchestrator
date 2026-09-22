@@ -122,11 +122,6 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-func (s *Service) ProcessOne(ctx context.Context) error {
-	_, err := s.processOne(ctx)
-	return err
-}
-
 func (s *Service) processOne(ctx context.Context) (bool, error) {
 	ingress, found, err := s.store.ClaimNotificationEvent(ctx, s.owner, s.leaseDuration)
 	if err != nil || !found {

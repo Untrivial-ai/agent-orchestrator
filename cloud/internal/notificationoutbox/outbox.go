@@ -205,15 +205,6 @@ func (o *Outbox) Delete(ctx context.Context, eventID string, epoch int64) error 
 	return requireAffected(result)
 }
 
-func (o *Outbox) Usage(ctx context.Context) (int, int64, error) {
-	var count int
-	var used int64
-	err := o.db.QueryRowContext(ctx, `
-		SELECT count(*), COALESCE(sum(length(event_id) + length(event_type) + length(payload)), 0)
-		FROM notification_outbox`).Scan(&count, &used)
-	return count, used, err
-}
-
 func requireAffected(result sql.Result) error {
 	count, err := result.RowsAffected()
 	if err != nil {

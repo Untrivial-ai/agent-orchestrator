@@ -80,7 +80,7 @@ func TestProcessOneCompletesIngressWithoutRecipient(t *testing.T) {
 	store := &fakeStore{claim: domain.NotificationIngress{ID: "ingress-1", OrgID: "org-1", LeaseOwner: "processor"}, found: true}
 	service := NewService(store, Config{Owner: "processor"})
 
-	err := service.ProcessOne(context.Background())
+	_, err := service.processOne(context.Background())
 	if err != nil {
 		t.Fatalf("ProcessOne() error = %v", err)
 	}
@@ -96,7 +96,7 @@ func TestProcessOneRetriesTransientFailure(t *testing.T) {
 	}
 	service := NewService(store, Config{Owner: "processor", Now: func() time.Time { return time.Unix(100, 0) }})
 
-	err := service.ProcessOne(context.Background())
+	_, err := service.processOne(context.Background())
 	if err == nil {
 		t.Fatal("ProcessOne() error = nil, want transient failure")
 	}
@@ -120,7 +120,7 @@ func TestProcessOnePermanentlyFailsInvalidPayloadAndAttemptLimit(t *testing.T) {
 			t.Parallel()
 			store := &fakeStore{claim: test.ingress, found: true, createErr: test.storeErr}
 			service := NewService(store, Config{Owner: "processor"})
-			_ = service.ProcessOne(context.Background())
+			_, _ = service.processOne(context.Background())
 			if store.retried != 1 || !store.retryTerminal {
 				t.Fatalf("retry count=%d terminal=%v", store.retried, store.retryTerminal)
 			}
@@ -135,7 +135,7 @@ func TestProcessOneAcceptsReclaimedExpiredLeaseAndContextCancellation(t *testing
 	ingress.LeaseUntil = &expired
 	store := &fakeStore{claim: ingress, found: true}
 	service := NewService(store, Config{Owner: "new-owner"})
-	if err := service.ProcessOne(context.Background()); err != nil || store.created != 1 {
+	if _, err := service.processOne(context.Background()); err != nil || store.created != 1 {
 		t.Fatalf("reclaimed ProcessOne() error = %v; created=%d", err, store.created)
 	}
 
@@ -143,7 +143,7 @@ func TestProcessOneAcceptsReclaimedExpiredLeaseAndContextCancellation(t *testing
 	cancel()
 	store = &fakeStore{claimErr: context.Canceled}
 	service = NewService(store, Config{Owner: "processor"})
-	if err := service.ProcessOne(cancelled); !errors.Is(err, context.Canceled) {
+	if _, err := service.processOne(cancelled); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled ProcessOne error = %v", err)
 	}
 }

@@ -63,12 +63,8 @@ type Store interface {
 	PullRequestByGitHubHead(ctx context.Context, orgID string, repositoryID int64, headSHA string) (domain.PullRequest, error)
 	PullRequestsByGitHubRepository(ctx context.Context, orgID string, repositoryID int64) ([]domain.PullRequest, error)
 	RecordPullRequestOpened(ctx context.Context, orgID string, pr domain.PullRequest, deliveryID string) error
-	UpdatePullRequestObservation(
-		ctx context.Context,
-		orgID, pullRequestID string,
-		observation domain.PullRequestObservation,
-	) (domain.PullRequest, error)
-	ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequestID string, snapshot domain.PullRequestSnapshot) (domain.PullRequestTransition, error)
+	ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequestID string, snapshot domain.PullRequestSnapshot, refresh domain.PullRequestRefreshContext) (domain.PullRequestTransition, error)
+	SchedulePullRequestRefresh(ctx context.Context, orgID, pullRequestID string, reason domain.PullRequestRefreshReason, dueAt time.Time, message string) error
 	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA string) (domain.ReviewRun, bool, error)
 	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt string) error
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error
@@ -94,18 +90,19 @@ type CheckoutGrant struct {
 }
 
 type Service struct {
-	store         Store
-	client        *Client
-	stateKey      []byte
-	webhookSecret string
-	installTTL    time.Duration
-	logger        *slog.Logger
-	workerID      string
-	credentialKey []byte
-	userTokenMu   sync.Mutex
-	checkMu       sync.Mutex
-	checkAt       time.Time
-	checkErr      error
+	store                    Store
+	client                   *Client
+	stateKey                 []byte
+	webhookSecret            string
+	installTTL               time.Duration
+	logger                   *slog.Logger
+	workerID                 string
+	credentialKey            []byte
+	userTokenMu              sync.Mutex
+	checkMu                  sync.Mutex
+	checkAt                  time.Time
+	checkErr                 error
+	refreshPullRequestStatus func(context.Context, domain.PullRequestRef, domain.PullRequestRefreshContext) (domain.PullRequest, error)
 }
 
 func (s *Service) Check(ctx context.Context) error {
@@ -289,6 +286,50 @@ func (s *Service) CompleteOAuth(
 		return domain.GitHubInstallation{}, err
 	}
 	return installation, nil
+}
+
+// CompleteInstallationOAuth handles GitHub's combined installation and user
+// authorization callback. In this mode GitHub returns the OAuth code directly
+// to the configured callback, so there is no second authorization redirect and
+// therefore no PKCE verifier. The original installation state remains the
+// single-use correlation key while the durable attempt advances to oauth.
+func (s *Service) CompleteInstallationOAuth(
+	ctx context.Context,
+	state, code string,
+	installationID int64,
+) (domain.GitHubInstallation, error) {
+	if state == "" || code == "" || installationID <= 0 {
+		return domain.GitHubInstallation{}, postgres.ErrInvalid
+	}
+	stateHash := HashState(state)
+	if err := s.store.ValidateGitHubInstallState(ctx, stateHash); err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	providerInstallation, err := s.client.GetInstallation(ctx, installationID)
+	if err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	if !InstallationSupportsAuthorityProof(providerInstallation) {
+		return domain.GitHubInstallation{}, postgres.ErrForbidden
+	}
+	associatedData := []byte(strconv.FormatInt(installationID, 10))
+	ciphertext, nonce, err := Encrypt(s.stateKey, nil, associatedData)
+	if err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	_, err = s.store.BeginGitHubOAuth(
+		ctx,
+		stateHash,
+		toDomainInstallation(providerInstallation),
+		stateHash,
+		ciphertext,
+		nonce,
+		time.Now().UTC().Add(s.installTTL),
+	)
+	if err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	return s.CompleteOAuth(ctx, state, code)
 }
 
 func (s *Service) ListInstallations(

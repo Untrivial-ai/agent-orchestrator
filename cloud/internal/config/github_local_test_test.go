@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setGitHubLocalTestEnvironment(t *testing.T, environment string, localTest bool) {
@@ -23,6 +24,26 @@ func setGitHubLocalTestEnvironment(t *testing.T, environment string, localTest b
 	t.Setenv("AO_CLOUD_GITHUB_WEBHOOK_SECRET", "webhook-secret")
 	t.Setenv("AO_CLOUD_GITHUB_STATE_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("AO_CLOUD_REPOSITORY_BROKER_TOKEN", strings.Repeat("b", 32))
+}
+
+func TestLoadPullRequestWebhookSilenceGrace(t *testing.T) {
+	setGitHubLocalTestEnvironment(t, "development", true)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PRWebhookSilenceGrace != 2*time.Minute {
+		t.Fatalf("default silence grace = %s, want 2m", cfg.PRWebhookSilenceGrace)
+	}
+
+	t.Setenv("AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE", "4m")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PRWebhookSilenceGrace != 4*time.Minute {
+		t.Fatalf("configured silence grace = %s, want 4m", cfg.PRWebhookSilenceGrace)
+	}
 }
 
 func TestLoadAllowsGitHubAppInDevelopmentOnlyWithLocalTestOptIn(t *testing.T) {

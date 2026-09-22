@@ -2,11 +2,52 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 )
+
+func TestApplyPullRequestSnapshotNormalizesNullChecksToArray(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks json.RawMessage
+		number int
+	}{
+		{name: "nil", number: 41},
+		{name: "json null", checks: json.RawMessage("null"), number: 42},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _, fixture := openNotificationTestStore(t)
+			ctx := context.Background()
+			pr, err := store.CreatePullRequestRecord(ctx, fixture.orgID, fixture.sessionID,
+				"github", "octo/widgets", "owner", tt.number, "https://github.test/octo/widgets/pull/41",
+				"feature", "main", "head", "Title", 0, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := domain.PullRequestSnapshot{
+				URL: pr.URL, Title: pr.Title, Author: pr.Author, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch,
+				Observation: domain.PullRequestObservation{
+					State: contract.PRStateOpen, HeadSHA: "head", CIState: contract.CIPassing,
+					ReviewState: contract.ReviewNone, Mergeability: contract.MergeMergeable, Checks: tt.checks,
+				},
+			}
+			if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
+				t.Fatalf("ApplyPullRequestSnapshot() error = %v; JSON null must not violate ao_pull_requests_checks_check", err)
+			}
+			got, err := store.PullRequestSnapshot(ctx, fixture.orgID, pr.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got.Observation.Checks) != "[]" {
+				t.Fatalf("checks = %s, want []", got.Observation.Checks)
+			}
+		})
+	}
+}
 
 func TestApplyPullRequestSnapshotPersistsCommentedReviewAndInlineFeedback(t *testing.T) {
 	store, _, fixture := openNotificationTestStore(t)
@@ -29,7 +70,7 @@ func TestApplyPullRequestSnapshotPersistsCommentedReviewAndInlineFeedback(t *tes
 		Threads:  []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "main.go", Line: 12}},
 		Comments: []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", ReviewProviderID: "11", Author: "mohak", Body: "rename this", Path: "main.go", Line: 12}},
 	}
-	transition, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot)
+	transition, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot, domain.PullRequestRefreshContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,13 +102,13 @@ func TestApplyPullRequestSnapshotCompleteRefreshRemovesMissingFeedback(t *testin
 		Threads:     []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "a.go", Line: 1}},
 		Comments:    []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", Author: "alice", Body: "fix", Path: "a.go", Line: 1}},
 	}
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, first); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, first, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 	first.Reviews = nil
 	first.Threads = nil
 	first.Comments = nil
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, first); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, first, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.PullRequestSnapshot(ctx, fixture.orgID, pr.ID)
@@ -94,7 +135,7 @@ func TestPRFactsBySessionIncludesUnresolvedHumanReviewComments(t *testing.T) {
 		Threads:     []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "main.go", Line: 7}},
 		Comments:    []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", Author: "alice", Body: "fix this", Path: "main.go", Line: 7}},
 	}
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,7 +164,7 @@ func TestApplyPullRequestSnapshotNotifiesAndResolvesReviewFeedback(t *testing.T)
 		Threads:     []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "main.go", Line: 7}},
 		Comments:    []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", Author: "alice", Body: "fix this", Path: "main.go", Line: 7}},
 	}
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +179,7 @@ func TestApplyPullRequestSnapshotNotifiesAndResolvesReviewFeedback(t *testing.T)
 
 	snapshot.Threads[0].Resolved = true
 	snapshot.Comments[0].Resolved = true
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 	page, err = store.ListNotifications(ctx, principal, fixture.orgID, domain.NotificationFilter{Limit: 20})
@@ -167,7 +208,7 @@ func TestApplyPullRequestSnapshotBackfillsMissingReviewFeedbackNotification(t *t
 		Threads:     []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "main.go", Line: 7}},
 		Comments:    []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", Author: "alice", Body: "fix this", Path: "main.go", Line: 7}},
 	}
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := admin.Begin(ctx)
@@ -184,7 +225,7 @@ func TestApplyPullRequestSnapshotBackfillsMissingReviewFeedbackNotification(t *t
 		t.Fatal(err)
 	}
 
-	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot, domain.PullRequestRefreshContext{}); err != nil {
 		t.Fatal(err)
 	}
 	page, err := store.ListNotifications(ctx, principal, fixture.orgID, domain.NotificationFilter{Limit: 20})

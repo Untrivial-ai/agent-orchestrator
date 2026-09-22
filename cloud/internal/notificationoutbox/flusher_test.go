@@ -21,7 +21,7 @@ func TestFlusherDeletesOnlyAfterDurableDelivery(t *testing.T) {
 	if err != nil || !processed || delivered != 1 {
 		t.Fatalf("FlushOne() = %v, %v; delivered=%d", processed, err, delivered)
 	}
-	count, _, _ := outbox.Usage(context.Background())
+	count := outboxRowCount(t, outbox)
 	if count != 0 {
 		t.Fatalf("outbox retained %d ACKed rows", count)
 	}
@@ -61,7 +61,7 @@ func TestFlusherDiscardsRowsFromSupersededEpochWithoutDelivery(t *testing.T) {
 	if err != nil || !processed || delivered != 0 {
 		t.Fatalf("FlushOne() = %v, %v; delivered=%d", processed, err, delivered)
 	}
-	count, _, _ := outbox.Usage(context.Background())
+	count := outboxRowCount(t, outbox)
 	if count != 0 {
 		t.Fatalf("superseded row count = %d", count)
 	}

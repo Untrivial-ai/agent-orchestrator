@@ -212,11 +212,22 @@ func (s *Server) githubSetupCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) githubOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	setGitHubCallbackHeaders(w)
-	_, err := s.github.CompleteOAuth(
-		r.Context(),
-		strings.TrimSpace(r.URL.Query().Get("state")),
-		strings.TrimSpace(r.URL.Query().Get("code")),
-	)
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	installationIDValue := strings.TrimSpace(r.URL.Query().Get("installation_id"))
+	var err error
+	if installationIDValue == "" {
+		_, err = s.github.CompleteOAuth(r.Context(), state, code)
+	} else {
+		installationID, parseErr := strconv.ParseInt(installationIDValue, 10, 64)
+		if parseErr != nil || installationID <= 0 {
+			s.githubCallbackError(w, r, postgres.ErrInvalid)
+			return
+		}
+		_, err = s.github.CompleteInstallationOAuth(
+			r.Context(), state, code, installationID,
+		)
+	}
 	if err != nil {
 		s.githubCallbackError(w, r, err)
 		return

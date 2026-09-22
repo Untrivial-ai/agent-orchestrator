@@ -44,3 +44,26 @@ func TestCloudSCMObservationParityMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestPullRequestRefreshFallbackMigrationContract(t *testing.T) {
+	body, err := migrationFiles.ReadFile("migrations/00049_pr_refresh_fallback.sql")
+	if err != nil {
+		t.Fatalf("read PR refresh fallback migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE TABLE ao_pr_refresh_fallbacks",
+		"CHECK (reason IN ('', 'webhook_failed', 'webhook_silent'))",
+		"FOREIGN KEY (org_id, pull_request_id)",
+		"REFERENCES ao_pull_requests(org_id, id) ON DELETE CASCADE",
+		"CREATE INDEX ao_pr_refresh_fallbacks_due_idx",
+		"ENABLE ROW LEVEL SECURITY",
+		"FORCE ROW LEVEL SECURITY",
+		"CREATE POLICY ao_pr_refresh_fallbacks_tenant_policy",
+		"org_id = ao_current_org_id()",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("fallback migration missing %q", required)
+		}
+	}
+}

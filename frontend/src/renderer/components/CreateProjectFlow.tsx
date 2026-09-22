@@ -35,7 +35,7 @@ import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { cloudAgentInfos } from "../lib/cloud-agents";
 import { aoBridge } from "../lib/bridge";
 import { CloudCpError } from "../lib/cloud-cp";
-import { getGitHubStatus, isGitHubAuthInvalidError, listGitHubRepos, saveGitHubPAT } from "../lib/github-daemon";
+import { isGitHubAuthInvalidError, saveGitHubPAT } from "../lib/github-daemon";
 import { useCloudSession } from "../lib/cloud-session";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { useUiStore } from "../stores/ui-store";
@@ -1325,7 +1325,7 @@ function CloudProjectCard({
 	onCreated: () => void;
 }) {
 	const { t } = useTranslation();
-	const { client, baseUrl } = useCloudCp();
+	const { client } = useCloudCp();
 	const { org } = useCloudOrg();
 	const queryClient = useQueryClient();
 
@@ -1347,49 +1347,39 @@ function CloudProjectCard({
 	const [readOnlyWarning, setReadOnlyWarning] = useState(false);
 	const [isCreating, setIsCreating] = useState(false);
 
-	const githubStatus = useQuery({
-		queryKey: ["github-status"],
+	const githubInstallations = useQuery({
+		queryKey: ["cloud-github-installations", org?.id],
+		enabled: org !== undefined,
 		staleTime: 0,
 		refetchOnMount: "always",
-		queryFn: getGitHubStatus,
-	});
-
-	// Cloud project creation needs the credential in two places: the daemon
-	// lists the user's repositories, while the control plane gives the sandbox
-	// access to the selected private repository. A local-only token must not be
-	// presented as fully connected or project creation fails later with
-	// `token_missing` even though the repository picker looked authenticated.
-	const cloudGithubStatus = useQuery({
-		queryKey: ["cloud-user-providers"],
-		staleTime: 0,
-		refetchOnMount: "always",
-		queryFn: async () => {
-			const { providerConnections } = await client.listUserProviderConnections();
-			return providerConnections.some(
-				(connection) => connection.provider === "github" && connection.validationState === "valid",
-			);
+		refetchInterval: (query) => {
+			const installations = query.state.data;
+			const syncInProgress = installations?.some(
+				(installation) => installation.status === "active" && installation.syncStatus !== "ready",
+			) ?? false;
+			return githubOAuthBusy || syncInProgress ? 1_000 : false;
 		},
+		queryFn: () => client.listGitHubInstallations(org!.id),
 	});
 
-	const hasGithubConnection =
-		(githubStatus.data?.connected ?? false) && (cloudGithubStatus.data ?? false);
+	const hasGithubConnection = githubInstallations.data?.some(
+		(installation) => installation.status === "active" && installation.syncStatus === "ready",
+	) ?? false;
 
 	const githubRepos = useQuery({
-		queryKey: ["github-repos"],
+		queryKey: ["cloud-github-repositories", org?.id],
 		enabled: hasGithubConnection,
 		staleTime: 60_000,
 		retry: (failureCount, error) => !isGitHubAuthInvalidError(error) && failureCount < 3,
-		queryFn: async () => {
-			const { repos } = await listGitHubRepos();
-			return repos.map((r) => ({
-				name: r.name,
-				fullName: r.full_name,
-				private: r.private,
-				defaultBranch: r.default_branch,
-				cloneUrl: r.clone_url,
-			}));
-		},
+		queryFn: async () => (await client.listGitHubRepositories(org!.id)).items,
 	});
+
+	useEffect(() => {
+		if (!githubOAuthBusy || !hasGithubConnection) return;
+		setGithubOAuthBusy(false);
+		setGithubOAuthError(null);
+		void queryClient.invalidateQueries({ queryKey: ["cloud-github-repositories", org?.id] });
+	}, [githubOAuthBusy, hasGithubConnection, org?.id, queryClient]);
 
 	const urlError = projectSubmitted && !isHttpsRepositoryUrl(repositoryUrl) ? t("createProject.cloudInvalidUrl") : null;
 	const nameError = nameSubmitted && projectName.trim() === "" ? t("createProject.cloudDisplayNameRequired", { defaultValue: "Project name is required" }) : null;
@@ -1408,7 +1398,6 @@ function CloudProjectCard({
 			await Promise.all([
 				queryClient.invalidateQueries({ queryKey: ["github-status"] }),
 				queryClient.invalidateQueries({ queryKey: ["cloud-user-providers"] }),
-				queryClient.invalidateQueries({ queryKey: ["github-repos"] }),
 			]);
 			setGithubToken("");
 			setSubmitError(null);
@@ -1430,25 +1419,11 @@ function CloudProjectCard({
 		setGithubOAuthBusy(true);
 		setGithubOAuthError(null);
 		try {
-			const token = await aoBridge.cloud.connectProviderAuth({
-				baseUrl,
-				orgId: org.id,
-				provider: "github",
-			});
-			if (typeof token === "string" && token) {
-				await Promise.all([
-					saveGitHubPAT(token),
-					client.putGitHubPAT({ secret: token }),
-				]);
-			}
-			await Promise.all([
-				queryClient.invalidateQueries({ queryKey: ["github-status"] }),
-				queryClient.invalidateQueries({ queryKey: ["cloud-user-providers"] }),
-				queryClient.invalidateQueries({ queryKey: ["github-repos"] }),
-			]);
+			const { installationUrl } = await client.startGitHubInstallation(org.id);
+			await aoBridge.app.openExternal(installationUrl);
+			await queryClient.invalidateQueries({ queryKey: ["cloud-github-installations", org.id] });
 		} catch (err) {
 			setGithubOAuthError(err instanceof Error ? err.message : t("createProject.githubAuthFailed", { defaultValue: "GitHub authentication failed" }));
-		} finally {
 			setGithubOAuthBusy(false);
 		}
 	};
@@ -1465,24 +1440,33 @@ function CloudProjectCard({
 		setReadOnlyWarning(false);
 		setIsCreating(true);
 		try {
-			const result = await client.validateSavedRepositoryAccess({
-				repositoryUrl: repositoryUrl.trim(),
-			});
-			if (!result.writeAccess) {
-				setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
-				setReadOnlyWarning(true);
-				setIsCreating(false);
-				return;
+			const config = {
+				worker: { agent: selection.workerAgent },
+				orchestrator: { agent: selection.orchestratorAgent },
+			};
+			if (useManualPat) {
+				const result = await client.validateSavedRepositoryAccess({ repositoryUrl: repositoryUrl.trim() });
+				if (!result.writeAccess) {
+					setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
+					setReadOnlyWarning(true);
+					setIsCreating(false);
+					return;
+				}
+				await client.createProject(org.id, {
+					displayName: projectName.trim(),
+					repositoryUrl: repositoryUrl.trim(),
+					defaultBranch: defaultBranch.trim(),
+					config,
+				});
+			} else {
+				const selectedRepository = githubRepos.data?.find((repo) => repo.htmlUrl === repositoryUrl);
+				if (!selectedRepository) throw new Error(t("createProject.cloudInvalidUrl"));
+				await client.createProjectFromGitHub(org.id, {
+					githubRepositoryId: selectedRepository.githubRepositoryId,
+					displayName: projectName.trim(),
+					config,
+				});
 			}
-			await client.createProject(org.id, {
-				displayName: projectName.trim(),
-				repositoryUrl: repositoryUrl.trim(),
-				defaultBranch: defaultBranch.trim(),
-				config: {
-					worker: { agent: selection.workerAgent },
-					orchestrator: { agent: selection.orchestratorAgent },
-				},
-			});
 			await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
 			onCreated();
 		} catch (err) {
@@ -1623,10 +1607,13 @@ function CloudProjectCard({
 											value={repositoryUrl}
 											onChange={(event) => {
 												const nextRepositoryUrl = event.target.value;
-												const selectedRepository = githubRepos.data?.find((repo) => repo.cloneUrl === nextRepositoryUrl);
+												const selectedRepository = githubRepos.data?.find(
+													(repo) => repo.htmlUrl === nextRepositoryUrl,
+												);
 												setRepositoryUrl(nextRepositoryUrl);
 												if (selectedRepository) {
 													setProjectName(selectedRepository.name);
+													setDefaultBranch(selectedRepository.defaultBranch);
 													if (nameSubmitted) setNameSubmitted(false);
 												}
 												if (projectSubmitted) setProjectSubmitted(false);
@@ -1636,8 +1623,8 @@ function CloudProjectCard({
 												{githubRepos.isLoading ? "Loading repos..." : "Select a repository"}
 											</option>
 											{githubRepos.data?.map((repo) => (
-												<option key={repo.fullName} value={repo.cloneUrl}>
-													{repo.private ? "🔒 " : ""}{repo.fullName}
+												<option key={repo.githubRepositoryId} value={repo.htmlUrl}>
+													{repo.isPrivate ? "🔒 " : ""}{repo.fullName}
 												</option>
 											))}
 										</select>

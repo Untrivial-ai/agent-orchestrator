@@ -169,6 +169,9 @@ tunnel and use the tunnel URL above. The tunnel is test-only; production uses
 control plane runs with `AO_CLOUD_ENVIRONMENT=production`, including a local
 end-to-end webhook test.
 
-The 30-second PR status scanner remains a recovery path for missed webhook
-deliveries and fields GitHub events do not carry. It is not the normal update
-path for an installed GitHub App.
+`AO_CLOUD_PR_STATUS_POLL_INTERVAL` controls only how often the control plane
+looks in PostgreSQL for targeted recovery work. Each tick leases at most one PR
+whose received webhook failed or whose authoritative observation is older than
+`AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE` (two minutes by default). Healthy PRs
+updated by webhooks make no GitHub polling request; the scanner never lists and
+refreshes every open PR.

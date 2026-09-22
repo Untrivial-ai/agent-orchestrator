@@ -198,6 +198,54 @@ export interface CloudCpProjectDeletedResponse {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub App installations (`github_handlers.go`)
+// ---------------------------------------------------------------------------
+
+export interface CloudCpGitHubInstallation {
+	id: string;
+	githubInstallationId: string;
+	accountLogin: string;
+	accountType: "User" | "Organization" | "Enterprise";
+	status: "active" | "suspended" | "removed";
+	repositorySelection: "all" | "selected";
+	syncStatus: "pending" | "syncing" | "ready" | "retry" | "failed";
+	lastSyncedAt?: string;
+	lastError?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CloudCpGitHubInstallationStart {
+	installationUrl: string;
+	expiresAt: string;
+}
+
+export interface CloudCpGitHubRepository {
+	githubRepositoryId: string;
+	name: string;
+	fullName: string;
+	htmlUrl: string;
+	defaultBranch: string;
+	visibility: string;
+	isPrivate: boolean;
+	isArchived: boolean;
+	access: "active" | "revoked";
+	grantedAt: string;
+	revokedAt?: string;
+}
+
+export interface CloudCpGitHubRepositoryPage {
+	items: CloudCpGitHubRepository[];
+	page: CloudCpPageInfo;
+}
+
+export interface CloudCpCreateGitHubProjectRequest {
+	githubRepositoryId: string;
+	displayName?: string;
+	config?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
 // Sessions (`resource_handlers.go`)
 // ---------------------------------------------------------------------------
 

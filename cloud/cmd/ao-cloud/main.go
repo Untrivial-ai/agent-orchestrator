@@ -29,6 +29,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandboxresolve"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+	"github.com/google/uuid"
 )
 
 // readSSHPubKeys loads the operator SSH keys authorized on every sandbox. They
@@ -357,8 +358,10 @@ func run(logger *slog.Logger) error {
 	var prStatusScanner *prstatus.Scanner
 	if githubService != nil {
 		prStatusScanner = prstatus.New(store, githubService, prstatus.Options{
-			Interval: cfg.PRStatusPollInterval,
-			Logger:   logger,
+			Interval:     cfg.PRStatusPollInterval,
+			WorkerID:     "pr-fallback-" + uuid.NewString(),
+			SilenceGrace: cfg.PRWebhookSilenceGrace,
+			Logger:       logger,
 		})
 	}
 	// Worker tokens are only issued where sandboxes are provisioned. Leaving
@@ -474,9 +477,12 @@ func run(logger *slog.Logger) error {
 
 	if prStatusScanner != nil {
 		go func() {
-			logger.Info("pull request status scanner started", "interval", cfg.PRStatusPollInterval)
+			logger.Info("pull request fallback scanner started",
+				"interval", cfg.PRStatusPollInterval,
+				"silence_grace", cfg.PRWebhookSilenceGrace,
+			)
 			if err := prStatusScanner.Run(ctx); err != nil {
-				logger.Error("pull request status scanner stopped", "error", err)
+				logger.Error("pull request fallback scanner stopped", "error", err)
 			}
 		}()
 	}

@@ -2,6 +2,52 @@ import { describe, expect, it, vi } from "vitest";
 import { createCloudCpClient } from "./client";
 
 describe("cloud control-plane session lifecycle", () => {
+	it("uses the organization GitHub App installation and repository routes", async () => {
+		const responses = [
+			{ installationUrl: "https://github.com/apps/ao/installations/new", expiresAt: "2026-09-22T12:00:00Z" },
+			{ installations: [] },
+			{ items: [], page: { hasMore: false } },
+			{ project: { id: "project-1" } },
+		];
+		const fetchMock = vi.fn(async () =>
+			new Response(JSON.stringify(responses.shift()), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+		const client = createCloudCpClient({
+			baseUrl: "https://cloud.example.test",
+			getToken: async () => "token",
+			fetchImpl: fetchMock as typeof fetch,
+		});
+
+		await client.startGitHubInstallation("org/1");
+		await client.listGitHubInstallations("org/1");
+		await client.listGitHubRepositories("org/1");
+		await client.createProjectFromGitHub("org/1", {
+			githubRepositoryId: "42",
+			displayName: "widgets",
+			config: { worker: { agent: "codex" } },
+		});
+
+		const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+		expect(calls.map(([url]) => url)).toEqual([
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/github/installations/start",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/github/installations",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/github/repositories",
+			"https://cloud.example.test/api/cloud/v1/orgs/org%2F1/github/projects",
+		]);
+		expect(calls[0]?.[1]).toEqual(expect.objectContaining({ method: "POST" }));
+		expect(calls[3]?.[1]).toEqual(expect.objectContaining({
+			method: "POST",
+			body: JSON.stringify({
+				githubRepositoryId: "42",
+				displayName: "widgets",
+				config: { worker: { agent: "codex" } },
+			}),
+		}));
+	});
+
 	it("loads detailed pull requests for a cloud session", async () => {
 		const fetchMock = vi.fn(async () =>
 			new Response(JSON.stringify({ sessionId: "session/1", pullRequests: [] }), {

@@ -45,6 +45,9 @@ func (s *Store) CreatePullRequestRecord(
 		if err != nil {
 			return err
 		}
+		if err := ensurePullRequestRefreshStateTx(ctx, tx, orgID, record.ID); err != nil {
+			return err
+		}
 		// PR creation changes both the worker's activity projection and the
 		// project's aggregate inspector. The session timestamp is the durable
 		// invalidation key observed by the UI's session stream.
@@ -116,6 +119,9 @@ func (s *Store) ClaimPullRequestRecord(
 			input.Additions, input.Deletions, input.ChangedFiles,
 		))
 		if err != nil {
+			return err
+		}
+		if err := ensurePullRequestRefreshStateTx(ctx, tx, orgID, record.ID); err != nil {
 			return err
 		}
 		_, err = tx.Exec(
@@ -307,81 +313,6 @@ func (s *Store) PullRequestsBySessions(
 		return nil, err
 	}
 	return records, nil
-}
-
-// OpenPullRequestRefs lists open pull requests across organizations.
-func (s *Store) OpenPullRequestRefs(ctx context.Context) ([]domain.PullRequestRef, error) {
-	var refs []domain.PullRequestRef
-	err := s.withService(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(
-			ctx,
-			`SELECT id, org_id, provider, repository, number
-			FROM ao_pull_requests
-			WHERE state = 'open'`,
-		)
-		if err != nil {
-			return fmt.Errorf("list open pull requests: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var ref domain.PullRequestRef
-			if err := rows.Scan(&ref.ID, &ref.OrgID, &ref.Provider, &ref.Repository, &ref.Number); err != nil {
-				return err
-			}
-			refs = append(refs, ref)
-		}
-		return rows.Err()
-	})
-	if err != nil {
-		return nil, err
-	}
-	return refs, nil
-}
-
-// UpdatePullRequestObservation applies a freshly fetched GitHub snapshot over
-// a pull request's durable record.
-func (s *Store) UpdatePullRequestObservation(
-	ctx context.Context,
-	orgID, pullRequestID string,
-	observation domain.PullRequestObservation,
-) (domain.PullRequest, error) {
-	state := observation.State
-	if state == contract.PRStateDraft {
-		state = contract.PRStateOpen
-	}
-	var record domain.PullRequest
-	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
-		previous, err := scanPullRequest(tx.QueryRow(ctx,
-			`SELECT `+pullRequestColumns+` FROM ao_pull_requests
-			WHERE org_id = $1 AND id = $2 FOR UPDATE`, orgID, pullRequestID))
-		if err != nil {
-			return err
-		}
-		record, err = scanPullRequest(tx.QueryRow(
-			ctx,
-			`UPDATE ao_pull_requests
-			SET state = $3, draft = $4, head_sha = $5, additions = $6, deletions = $7,
-				changed_files = $8, ci_state = $9, review_state = $10, mergeability = $11,
-				checks = $12,
-				observed_at = now(), updated_at = now()
-			WHERE org_id = $1 AND id = $2
-			RETURNING `+pullRequestColumns,
-			orgID, pullRequestID,
-			string(state), observation.Draft, observation.HeadSHA,
-			observation.Additions, observation.Deletions, observation.ChangedFiles,
-			string(observation.CIState), string(observation.ReviewState), string(observation.Mergeability),
-			observation.Checks,
-		))
-		if err != nil {
-			return err
-		}
-		_, err = recordPullRequestTransitionTx(ctx, tx, previous, record)
-		return err
-	})
-	if err != nil {
-		return domain.PullRequest{}, normalizeConstraintError(err)
-	}
-	return record, nil
 }
 
 // PullRequestByGitHubReference resolves a tracked PR through the repository
