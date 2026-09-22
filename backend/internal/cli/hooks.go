@@ -50,6 +50,7 @@ type setActivityAPIRequest struct {
 	ObservedAt                   time.Time                           `json:"observedAt,omitempty"`
 	State                        string                              `json:"state,omitempty"`
 	Event                        string                              `json:"event,omitempty"`
+	TurnOutcome                  domain.TurnOutcome                  `json:"turnOutcome,omitempty"`
 	ToolName                     string                              `json:"toolName,omitempty"`
 	ToolUseID                    string                              `json:"toolUseId,omitempty"`
 	AgentSessionID               string                              `json:"agentSessionId,omitempty"`
@@ -516,6 +517,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	req := setActivityAPIRequest{
 		ObservedAt:                   observedAt,
 		Event:                        event,
+		TurnOutcome:                  hookTurnOutcome(domain.AgentHarness(agent), event, payload),
 		ToolName:                     toolName,
 		ToolUseID:                    toolUseID,
 		AgentSessionID:               agentSessionID,
@@ -546,6 +548,44 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		c.reportHookFailure(agent, event, sessionID, err)
 	}
 	return nil
+}
+
+func hookTurnOutcome(agent domain.AgentHarness, event string, payload []byte) domain.TurnOutcome {
+	if event == "cancel" {
+		return domain.TurnOutcomeInterrupted
+	}
+	if event != "stop" {
+		return domain.TurnOutcomeUnknown
+	}
+	switch agent {
+	case domain.HarnessAmp:
+		var native struct {
+			Status string `json:"status"`
+		}
+		if json.Unmarshal(payload, &native) == nil {
+			switch native.Status {
+			case "cancelled":
+				return domain.TurnOutcomeInterrupted
+			case "error":
+				return domain.TurnOutcomeFailed
+			}
+		}
+	case domain.HarnessAuggie:
+		var native struct {
+			Cause string `json:"agent_stop_cause"`
+		}
+		if json.Unmarshal(payload, &native) == nil {
+			switch native.Cause {
+			case "interrupted":
+				return domain.TurnOutcomeInterrupted
+			case "error", "max_iterations":
+				return domain.TurnOutcomeFailed
+			case "end_turn":
+				return domain.TurnOutcomeCompleted
+			}
+		}
+	}
+	return domain.TurnOutcomeUnknown
 }
 
 func (c *commandContext) postActivityHook(ctx context.Context, path string, req setActivityAPIRequest) error {

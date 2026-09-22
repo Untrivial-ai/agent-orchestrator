@@ -101,13 +101,26 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			}
 			// Only a new notification buzzes a phone. Resolution events exist so
 			// open dashboards can drop a row; there is nothing to push about.
-			if event.Kind != domain.NotificationCreated {
+			if event.Kind != domain.NotificationCreated || !mobilePushNotification(event.Record.Type) {
 				continue
 			}
 			d.dispatch(ctx, event.Record)
 		case <-ticker.C:
 			d.sweepReceipts(ctx)
 		}
+	}
+}
+
+// mobilePushNotification keeps the phone channel on its established contract.
+// Desktop-only turn and CI events can be high volume and must not inherit the
+// dispatcher's high-priority sound merely because they share the same hub.
+func mobilePushNotification(typ domain.NotificationType) bool {
+	switch typ {
+	case domain.NotificationNeedsInput, domain.NotificationReadyToMerge,
+		domain.NotificationPRMerged, domain.NotificationPRClosedUnmerged:
+		return true
+	default:
+		return false
 	}
 }
 

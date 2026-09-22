@@ -352,13 +352,27 @@ func TestSessionsAPI_ActivityThreadsAgentSessionIDWithState(t *testing.T) {
 	srv := newActivityTestServer(t, rec)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
-		`{"state":"idle","event":"stop","agentSessionId":"native-session-1","observedAt":"2026-09-13T00:00:00Z"}`)
+		`{"state":"idle","event":"stop","turnOutcome":"interrupted","agentSessionId":"native-session-1","observedAt":"2026-09-13T00:00:00Z"}`)
 	if status != http.StatusOK {
 		t.Fatalf("activity = %d, want 200; body=%s", status, body)
 	}
-	want := ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop", AgentSessionID: "native-session-1", Timestamp: time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)}
+	want := ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop", TurnOutcome: domain.TurnOutcomeInterrupted, AgentSessionID: "native-session-1", Timestamp: time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)}
 	if rec.gotSignal != want {
 		t.Fatalf("recorder signal = %#v, want %#v", rec.gotSignal, want)
+	}
+}
+
+func TestSessionsAPI_ActivityRejectsUnknownTurnOutcome(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"idle","event":"stop","turnOutcome":"cancelled-ish"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("activity = %d, want 400; body=%s", status, body)
+	}
+	if !strings.Contains(string(body), `"code":"INVALID_TURN_OUTCOME"`) {
+		t.Fatalf("body = %s, want stable turn-outcome error code", body)
 	}
 }
 

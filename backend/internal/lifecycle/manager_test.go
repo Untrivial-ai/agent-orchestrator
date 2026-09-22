@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -4248,6 +4249,53 @@ func TestActivity_TurnBoundaryEmitsCompletionNotification(t *testing.T) {
 	}
 }
 
+func TestActivity_InterruptedTurnDoesNotEmitCompletionNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	now := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(-time.Minute)},
+		FirstSignalAt: now.Add(-time.Minute),
+	}
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", Timestamp: now,
+		TurnOutcome: domain.TurnOutcomeInterrupted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("interrupted turn emitted %+v", sink.intents)
+	}
+}
+
+func TestActivity_LateTurnBoundaryAfterObserverIdleEmitsCompletionNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	idleAt := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", DisplayName: "checkout-flow",
+		Activity:      domain.Activity{State: domain.ActivityIdle, LastActivityAt: idleAt},
+		FirstSignalAt: idleAt.Add(-time.Minute),
+	}
+
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, Event: "stop", Timestamp: idleAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationTurnCompleted {
+		t.Fatalf("late completion intents = %+v, want one completion", sink.intents)
+	}
+	wantKey := fmt.Sprintf("stop:%d", idleAt.UnixNano())
+	if sink.intents[0].EventKey != wantKey {
+		t.Fatalf("event key = %q, want %q", sink.intents[0].EventKey, wantKey)
+	}
+}
+
 func TestActivity_ChatFailureEmitsFailureNotification(t *testing.T) {
 	st := newFakeStore()
 	sink := &fakeNotificationSink{}
@@ -4637,7 +4685,8 @@ func TestSCMObservation_PersistedAnchoredBotReviewSuppressesReadyNotification(t 
 	if len(sink.intents) != 0 {
 		t.Fatalf("ready notification ignored persisted actionable bot feedback: %+v", sink.intents)
 	}
-	if len(sink.resolutions) != 1 || sink.resolutions[0].Type != domain.NotificationReadyToMerge {
+	readyResolutions := notificationResolutionsOfType(sink.resolutions, domain.NotificationReadyToMerge)
+	if len(readyResolutions) != 1 {
 		t.Fatalf("ready notification was not resolved from persisted actionable bot feedback: %+v", sink.resolutions)
 	}
 }
@@ -4682,13 +4731,24 @@ func TestSCMObservation_AnchoredBotReviewResolvesExistingReadyNotification(t *te
 	if len(sink.intents) != 1 {
 		t.Fatalf("bot feedback emitted a competing intent: %+v", sink.intents)
 	}
-	if len(sink.resolutions) != 1 {
+	readyResolutions := notificationResolutionsOfType(sink.resolutions, domain.NotificationReadyToMerge)
+	if len(readyResolutions) != 1 {
 		t.Fatalf("resolutions = %+v, want existing ready notification resolved", sink.resolutions)
 	}
-	got := sink.resolutions[0]
+	got := readyResolutions[0]
 	if got.Type != domain.NotificationReadyToMerge || got.SessionID != "mer-1" || got.PRURL != prURL {
 		t.Fatalf("resolution = %+v", got)
 	}
+}
+
+func notificationResolutionsOfType(all []ports.NotificationResolution, typ domain.NotificationType) []ports.NotificationResolution {
+	filtered := make([]ports.NotificationResolution, 0, len(all))
+	for _, resolution := range all {
+		if resolution.Type == typ {
+			filtered = append(filtered, resolution)
+		}
+	}
+	return filtered
 }
 
 func TestSCMObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {

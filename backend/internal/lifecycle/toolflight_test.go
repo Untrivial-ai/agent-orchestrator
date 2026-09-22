@@ -212,6 +212,7 @@ func TestToolPrecedence_TurnBoundariesClearBlocked(t *testing.T) {
 	}{
 		{"user-prompt-submit", sig(domain.ActivityActive, "user-prompt-submit", "", ""), domain.ActivityActive},
 		{"stop", sig(domain.ActivityIdle, "stop", "", ""), domain.ActivityIdle},
+		{"cancel", sig(domain.ActivityIdle, "cancel", "", ""), domain.ActivityIdle},
 		{"session-end", sig(domain.ActivityExited, "session-end", "", ""), domain.ActivityExited},
 		{"chat-controller-stopped", sig(domain.ActivityExited, "chat.controller.stopped", "", ""), domain.ActivityExited},
 	}

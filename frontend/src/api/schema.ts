@@ -4172,6 +4172,11 @@ export interface components {
             toolUseId?: string;
             /** @description Read-only provider-native transcript path exposed by the hook. */
             transcriptPath?: string;
+            /**
+             * @description Provider-reported terminal outcome when the hook distinguishes completion from interruption.
+             * @enum {string}
+             */
+            turnOutcome?: "completed" | "failed" | "interrupted";
             /** @description Provider transcript metadata used by the local usage pipeline. */
             usage?: components["schemas"]["UsageHookMetadata"];
         };

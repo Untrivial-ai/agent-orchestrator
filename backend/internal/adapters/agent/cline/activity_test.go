@@ -75,6 +75,7 @@ func TestDetectTerminalActivityDoesNotOverrideToolApproval(t *testing.T) {
 func TestClineManagedHooksClearCompletedTurns(t *testing.T) {
 	want := map[string]string{
 		"TaskComplete": "stop",
+		"TaskCancel":   "cancel",
 	}
 	for _, spec := range clineManagedHooks {
 		if subcommand, ok := want[spec.Event]; ok {
