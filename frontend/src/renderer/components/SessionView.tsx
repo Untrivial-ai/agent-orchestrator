@@ -723,8 +723,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// full-screen lifecycle loader over the terminal for the rest of the turn.
 	// Only a genuine workspace (re)start — VM stopped/resuming/provisioning/
 	// bootstrapping — should block after the session has connected once.
+	// "Connected enough to show the terminal": either the lifecycle stage is
+	// fully connected, OR the agent terminal is already live -- a worker epoch has
+	// been minted (terminalGeneration set) and the relay is connected -- even
+	// while the sandbox still reports "bootstrapping". On a fresh spawn the agent
+	// runs its first turn DURING bootstrapping (observed flips to "running" only
+	// afterwards), so gating on the live terminal instead of observed keeps the
+	// streaming terminal visible instead of a full-screen loader over it.
+	const agentTerminalLive = Boolean(session?.runtimeConnected) && Boolean(session?.terminalGeneration);
 	const connectedSessionRef = useRef("");
-	if (cloudStage === "connected") connectedSessionRef.current = sessionId;
+	if (cloudStage === "connected" || agentTerminalLive) connectedSessionRef.current = sessionId;
 	const hasConnectedOnce = connectedSessionRef.current === sessionId;
 	const workspaceRestarting = cloudStage === "resuming_workspace"
 		|| cloudStage === "waiting_for_coder_agent"
