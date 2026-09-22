@@ -17,4 +17,12 @@ describe("AgentAvatar", () => {
 
 		expect(screen.getByRole("img", { name: "omp" })).toHaveAttribute("src", expect.stringContaining("omp.png"));
 	});
+
+	it("renders the Gemini CLI brand asset", () => {
+		render(<AgentAvatar provider="gemini" />);
+
+		const img = screen.getByRole("img", { name: "gemini" });
+		expect(img).toHaveAttribute("src", expect.stringContaining("data:image/svg+xml"));
+		expect(img).toHaveAttribute("src", expect.stringContaining("Gemini"));
+	});
 });
