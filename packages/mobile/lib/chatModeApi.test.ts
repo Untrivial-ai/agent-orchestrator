@@ -12,7 +12,12 @@ import type { ServerConfig } from "./config";
 const {
 	acknowledgeSessionInterfaceTransitionNotice,
 	getConversationPage,
+	getReviewerConversationPage,
 	getWorkspacePaths,
+	interruptReviewerConversation,
+	resolveReviewerApproval,
+	resolveReviewerInput,
+	sendReviewerConversationMessage,
 } = chatApi;
 
 const cfg: ServerConfig = { host: "ao.test", httpPort: "3011", muxPort: "3011", secure: false, password: "secret12" };
@@ -263,6 +268,33 @@ describe("mobile Chat API boundaries", () => {
 		expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
 			"http://ao.test:3011/api/v1/sessions/w-1/conversation?limit=50",
 			"http://ao.test:3011/api/v1/sessions/w-1/conversation?limit=200&beforeSequence=100",
+		]);
+	});
+
+	it("uses reviewer-owned conversation routes for mobile review chat", async () => {
+		const wire = {
+			conversationId: "review-chat-1", sessionId: "w-1", harness: "codex", mode: "chat", controller: "ready",
+			latestSequence: 0, oldestSequence: 0, hasMoreBefore: false, settings: {}, turns: [], messages: [], activities: [],
+			capabilities: ["steer", "rollback", "config_options"],
+		};
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response(wire))
+			.mockResolvedValueOnce(response({ turnId: "turn-1", duplicate: false }, 202))
+			.mockResolvedValue(response({}));
+
+		const page = await getReviewerConversationPage(cfg, "review/1");
+		await sendReviewerConversationMessage(cfg, "review/1", { text: "fix this", clientMessageId: "mobile-1" });
+		await resolveReviewerApproval(cfg, "review/1", "request/1", "accept");
+		await resolveReviewerInput(cfg, "review/1", "input/1", "accept", { answer: "yes" });
+		await interruptReviewerConversation(cfg, "review/1");
+
+		expect(page.capabilities).toEqual([]);
+		expect(vi.mocked(fetch).mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation?limit=50", undefined],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/messages", "POST"],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/approvals/request%2F1/resolve", "POST"],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/inputs/input%2F1/resolve", "POST"],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/interrupt", "POST"],
 		]);
 	});
 

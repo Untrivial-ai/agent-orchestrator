@@ -7,19 +7,24 @@ import {
 	getConversationConfigOptions,
 	getConversationModels,
 	getConversationPage,
+	getReviewerConversationPage,
 	getConversationSkills,
 	mergeConversationPages,
 	reloadMcpServers,
 	resolveApproval,
+	resolveReviewerApproval,
 	resolveInput,
+	resolveReviewerInput,
 	rollbackConversation,
 	sendConversationMessage,
+	sendReviewerConversationMessage,
 	setConversationConfigOption,
 	setConversationSettings,
 	setConversationTitle,
 	stageConversationAttachments,
 	steerConversation,
 	interruptConversation,
+	interruptReviewerConversation,
 	promoteQueuedConversationTurn,
 	type ConversationPage,
 } from "./api";
@@ -99,8 +104,9 @@ export type MobileConversation = {
 export function useMobileConversation(
 	cfg: ServerConfig | null,
 	sessionId: string,
+	options?: { reviewId?: string; eventSessionId?: string },
 ): MobileConversation {
-	const cacheKey = cfg ? conversationPageCacheKey(cfg, sessionId) : "";
+	const cacheKey = cfg ? conversationPageCacheKey(cfg, options?.reviewId ? `review:${options.reviewId}` : sessionId) : "";
 	const [initialState] = useState(() => cacheKey
 		? cachedConversationState(conversationPageCache, cacheKey)
 		: { pages: [] as ConversationPage[], loading: true });
@@ -131,7 +137,9 @@ export function useMobileConversation(
 		const request = refreshGate.begin();
 		setRefreshing(true);
 		try {
-			const live = await getConversationPage(cfg, sessionId);
+			const live = options?.reviewId
+				? await getReviewerConversationPage(cfg, options.reviewId)
+				: await getConversationPage(cfg, sessionId);
 			if (!mounted.current || !refreshGate.isCurrent(request)) return;
 			setPages((old) => {
 				const next = old[0]?.conversationId && old[0].conversationId !== live.conversationId
@@ -153,7 +161,7 @@ export function useMobileConversation(
 				setRefreshing(false);
 			}
 		}
-	}, [cacheKey, cfg, refreshGate, sessionId]);
+	}, [cacheKey, cfg, options?.reviewId, refreshGate, sessionId]);
 
 	const scheduleRefresh = useCallback(() => {
 		if (refreshTimer.current) clearTimeout(refreshTimer.current);
@@ -164,14 +172,16 @@ export function useMobileConversation(
 		if (!cfg || !snapshot?.hasMoreBefore || loadingOlder) return;
 		setLoadingOlder(true);
 		try {
-			const older = await getConversationPage(cfg, sessionId, snapshot.oldestSequence);
+			const older = options?.reviewId
+				? await getReviewerConversationPage(cfg, options.reviewId, snapshot.oldestSequence)
+				: await getConversationPage(cfg, sessionId, snapshot.oldestSequence);
 			if (mounted.current) setPages((old) => [...old, older]);
 		} catch (cause) {
 			if (mounted.current) setActionError(conversationActionError(cause));
 		} finally {
 			if (mounted.current) setLoadingOlder(false);
 		}
-	}, [cfg, sessionId, snapshot?.hasMoreBefore, snapshot?.oldestSequence, loadingOlder]);
+	}, [cfg, options?.reviewId, sessionId, snapshot?.hasMoreBefore, snapshot?.oldestSequence, loadingOlder]);
 
 	useEffect(() => {
 		mounted.current = true;
@@ -219,10 +229,10 @@ export function useMobileConversation(
 
 	useEffect(() => {
 		if (!cfg || unavailable) return;
-		return subscribeConversationEvents(sessionId, (event) => {
+		return subscribeConversationEvents(options?.eventSessionId ?? sessionId, (event) => {
 			if (event.payload?.conversationId) scheduleRefresh();
 		});
-	}, [cfg, sessionId, scheduleRefresh, unavailable]);
+	}, [cfg, options?.eventSessionId, sessionId, scheduleRefresh, unavailable]);
 
 	// Poll the conversation on paths where the event stream cannot deliver.
 	// Over a Cloudflare quick tunnel the subscription above never fires — the
@@ -272,7 +282,8 @@ export function useMobileConversation(
 			if (!cfg) throw new Error("No AO server configured");
 			setPendingSends((old) => upsertPending(old, { ...pending, state: "sending", error: undefined }));
 			try {
-				await sendConversationMessage(cfg, sessionId, {
+				const sendMessage = options?.reviewId ? sendReviewerConversationMessage : sendConversationMessage;
+				await sendMessage(cfg, options?.reviewId ?? sessionId, {
 					text: pending.text,
 					clientMessageId: pending.id,
 					attachments: pending.attachments,
@@ -286,7 +297,7 @@ export function useMobileConversation(
 				throw new Error(message);
 			}
 		},
-		[cfg, sessionId, refresh],
+		[cfg, options?.reviewId, sessionId, refresh],
 	);
 
 	const send = useCallback(
@@ -328,18 +339,24 @@ export function useMobileConversation(
 		[cfg, runAction, sessionId],
 	);
 	const interrupt = useCallback(
-		() => runAction("interrupt", () => requireConfig(cfg, (c) => interruptConversation(c, sessionId))),
-		[cfg, runAction, sessionId],
+		() => runAction("interrupt", () => requireConfig(cfg, (c) => options?.reviewId
+			? interruptReviewerConversation(c, options.reviewId)
+			: interruptConversation(c, sessionId))),
+		[cfg, options?.reviewId, runAction, sessionId],
 	);
 	const resolveApprovalAction = useCallback(
 		(requestId: string, decisionId: string) =>
-			runAction("approval", () => requireConfig(cfg, (c) => resolveApproval(c, sessionId, requestId, decisionId))),
-		[cfg, runAction, sessionId],
+			runAction("approval", () => requireConfig(cfg, (c) => options?.reviewId
+				? resolveReviewerApproval(c, options.reviewId, requestId, decisionId)
+				: resolveApproval(c, sessionId, requestId, decisionId))),
+		[cfg, options?.reviewId, runAction, sessionId],
 	);
 	const resolveInputAction = useCallback(
 		(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) =>
-			runAction("input", () => requireConfig(cfg, (c) => resolveInput(c, sessionId, requestId, action, content))),
-		[cfg, runAction, sessionId],
+			runAction("input", () => requireConfig(cfg, (c) => options?.reviewId
+				? resolveReviewerInput(c, options.reviewId, requestId, action, content)
+				: resolveInput(c, sessionId, requestId, action, content))),
+		[cfg, options?.reviewId, runAction, sessionId],
 	);
 	const compact = useCallback(
 		() => runAction("compact", () => requireConfig(cfg, (c) => compactConversation(c, sessionId))),

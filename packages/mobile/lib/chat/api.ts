@@ -135,12 +135,41 @@ export async function getConversationPage(
 	return toSnapshot((await res.json()) as WireSnapshot);
 }
 
+export async function getReviewerConversationPage(
+	cfg: ServerConfig,
+	reviewId: string,
+	beforeSequence?: number,
+): Promise<ConversationPage> {
+	const limit = beforeSequence === undefined ? CHAT_INITIAL_PAGE_SIZE : CHAT_HISTORY_PAGE_SIZE;
+	const query = new URLSearchParams({ limit: String(limit) });
+	if (beforeSequence !== undefined) query.set("beforeSequence", String(beforeSequence));
+	const res = await apiRequest(cfg, `${reviewConversationPath(reviewId)}?${query.toString()}`);
+	const snapshot = toSnapshot((await res.json()) as WireSnapshot);
+	return {
+		...snapshot,
+		capabilities: snapshot.capabilities?.filter((capability) =>
+			capability !== "steer" && capability !== "rollback" && capability !== "config_options"),
+	};
+}
+
 export async function sendConversationMessage(
 	cfg: ServerConfig,
 	sessionId: string,
 	input: SendMessageInput,
 ): Promise<SendMessageResult> {
 	const res = await apiRequest(cfg, conversationPath(sessionId, "/messages"), {
+		method: "POST",
+		body: JSON.stringify(input),
+	});
+	return (await res.json()) as SendMessageResult;
+}
+
+export async function sendReviewerConversationMessage(
+	cfg: ServerConfig,
+	reviewId: string,
+	input: SendMessageInput,
+): Promise<SendMessageResult> {
+	const res = await apiRequest(cfg, reviewConversationPath(reviewId, "/messages"), {
 		method: "POST",
 		body: JSON.stringify(input),
 	});
@@ -157,6 +186,10 @@ export async function steerConversation(cfg: ServerConfig, sessionId: string, te
 
 export async function interruptConversation(cfg: ServerConfig, sessionId: string): Promise<void> {
 	await apiRequest(cfg, conversationPath(sessionId, "/interrupt"), { method: "POST" });
+}
+
+export async function interruptReviewerConversation(cfg: ServerConfig, reviewId: string): Promise<void> {
+	await apiRequest(cfg, reviewConversationPath(reviewId, "/interrupt"), { method: "POST" });
 }
 
 export async function cancelQueuedConversationTurn(cfg: ServerConfig, sessionId: string, turnId: string): Promise<void> {
@@ -183,6 +216,18 @@ export async function resolveApproval(
 	});
 }
 
+export async function resolveReviewerApproval(
+	cfg: ServerConfig,
+	reviewId: string,
+	requestId: string,
+	decisionId: string,
+): Promise<void> {
+	await apiRequest(cfg, reviewConversationPath(reviewId, `/approvals/${encodeURIComponent(requestId)}/resolve`), {
+		method: "POST",
+		body: JSON.stringify({ decisionId }),
+	});
+}
+
 export async function resolveInput(
 	cfg: ServerConfig,
 	sessionId: string,
@@ -191,6 +236,19 @@ export async function resolveInput(
 	content?: Record<string, unknown>,
 ): Promise<void> {
 	await apiRequest(cfg, conversationPath(sessionId, `/inputs/${encodeURIComponent(requestId)}/resolve`), {
+		method: "POST",
+		body: JSON.stringify({ action, content }),
+	});
+}
+
+export async function resolveReviewerInput(
+	cfg: ServerConfig,
+	reviewId: string,
+	requestId: string,
+	action: "accept" | "decline" | "cancel",
+	content?: Record<string, unknown>,
+): Promise<void> {
+	await apiRequest(cfg, reviewConversationPath(reviewId, `/inputs/${encodeURIComponent(requestId)}/resolve`), {
 		method: "POST",
 		body: JSON.stringify({ action, content }),
 	});
@@ -399,6 +457,10 @@ export async function streamGlobalConversationEvents(
 
 function conversationPath(sessionId: string, suffix = ""): string {
 	return `${API}/sessions/${encodeURIComponent(sessionId)}/conversation${suffix}`;
+}
+
+function reviewConversationPath(reviewId: string, suffix = ""): string {
+	return `${API}/reviews/${encodeURIComponent(reviewId)}/conversation${suffix}`;
 }
 
 function toSnapshot(wire: WireSnapshot): ConversationSnapshot {

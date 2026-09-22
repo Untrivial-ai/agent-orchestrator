@@ -115,6 +115,7 @@ function Shell() {
 				/>
 				<Stack.Screen name="session/[id]" options={{ title: "Session", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="review/[sessionId]" options={{ title: "Review", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
+				<Stack.Screen name="reviewer/[reviewId]" options={{ title: "Reviewer", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="shell/[handleId]" options={{ title: "Worktree shell", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen name="preview/[id]" options={{ title: "Preview", headerBackButtonDisplayMode: "minimal", headerLeft: () => <MinimalBackButton /> }} />
 				<Stack.Screen

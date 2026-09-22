@@ -1,5 +1,5 @@
 import { Feather } from "@expo/vector-icons";
-import { useLocalSearchParams, useNavigation } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { cancelSessionReview, getSessionReviews, triggerSessionReview, type ReviewRun, type SessionReviews } from "../../lib/api";
@@ -16,6 +16,7 @@ export default function ReviewDetailScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const navigation = useNavigation();
+	const router = useRouter();
 	const { sessionId, prUrl, prNumber } = useLocalSearchParams<{ sessionId: string; prUrl?: string; prNumber?: string }>();
 	const { config } = useApp();
 	const [data, setData] = useState<SessionReviews>();
@@ -47,6 +48,17 @@ export default function ReviewDetailScreen() {
 	if (!data && !error) return <View style={styles.center}><ActivityIndicator color={t.blue} /></View>;
 	if (!data || !review) return <EmptyState icon={error ? "alert-triangle" : "git-pull-request"} title={error ? "Could not load review" : "No review found"} message={error || "AO has no review state for this pull request yet."} action={<Button title="Try again" icon="refresh-cw" variant="ghost" onPress={() => void load()} />} />;
 	const primaryAction = reviewPrimaryAction(review);
+	const openReviewer = () => {
+		const surface = data.reviewerSurface;
+		if (!surface) return;
+		haptics.tap();
+		if (surface.mode === "chat") {
+			router.push({ pathname: "/reviewer/[reviewId]", params: { reviewId: surface.reviewId, sessionId, title: review.title } });
+			return;
+		}
+		const handleId = surface.handleId || data.reviewerHandleId;
+		if (handleId) router.push({ pathname: "/shell/[handleId]", params: { handleId, sessionId, title: `Review · PR #${review.prNumber}` } });
+	};
 	const runPrimaryAction = async () => {
 		if (!config || primaryAction === "none") return;
 		haptics.tap();
@@ -80,6 +92,7 @@ export default function ReviewDetailScreen() {
 				<Meta label="Commit" value={shortCommit(review.targetSha)} mono />
 				{data.reviewerActivityState ? <Meta label="Activity" value={data.reviewerActivityState.replaceAll("_", " ")} /> : null}
 			</Card>
+			{data.reviewerSurface ? <Button title={data.reviewerSurface.mode === "chat" ? "Open reviewer chat" : "Open reviewer terminal"} icon={data.reviewerSurface.mode === "chat" ? "message-circle" : "terminal"} variant="ghost" onPress={openReviewer} /> : null}
 			{primaryAction !== "none" ? <Button title={reviewPrimaryActionLabel(primaryAction)} icon={primaryAction === "cancel" ? "x" : "play"} variant={primaryAction === "cancel" ? "danger" : "primary"} loading={acting} disabled={acting} onPress={() => void runPrimaryAction()} /> : null}
 			{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 

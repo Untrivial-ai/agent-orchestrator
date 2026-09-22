@@ -22,6 +22,7 @@ const screenRoutes = [
 	"preview/[id].tsx",
 	"project/[id].tsx",
 	"review/[sessionId].tsx",
+	"reviewer/[reviewId].tsx",
 	"session/[id].tsx",
 	"settings.tsx",
 	"shell/[handleId].tsx",
