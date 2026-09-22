@@ -224,6 +224,11 @@ const makeStyles = (t: Theme) =>
 			right: 0,
 			bottom: 0,
 			width: WORKER_ACTION_REVEAL_WIDTH,
+			// The rail is the row's full height; the buttons are a fixed 76pt block.
+			// Without this the block is top-pinned, so any row taller than the minimum
+			// — a rename in progress, a larger text size, a wrapped line — leaves both
+			// controls sitting above the row's own centre.
+			justifyContent: "center",
 			backgroundColor: t.bgElevated,
 			borderLeftWidth: StyleSheet.hairlineWidth,
 			borderLeftColor: t.borderSubtle,
