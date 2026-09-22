@@ -21,6 +21,7 @@ export default function ReviewerConversationScreen() {
 	const conversation = useMobileConversation(config, reviewId, { reviewId, eventSessionId: sessionId });
 	const [text, setText] = useState("");
 	const [sending, setSending] = useState(false);
+	const [sendError, setSendError] = useState("");
 
 	useLayoutEffect(() => navigation.setOptions({ title: title ? `Review · ${title}` : "Reviewer chat" }), [navigation, title]);
 
@@ -32,20 +33,23 @@ export default function ReviewerConversationScreen() {
 		if (!message || sending) return;
 		haptics.tap();
 		setSending(true);
+		setSendError("");
 		try {
 			await conversation.send(message);
 			setText("");
+		} catch (value) {
+			setSendError(value instanceof Error ? value.message : "Could not send this reply.");
 		} finally {
 			setSending(false);
 		}
 	};
 
 	return <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={88}>
-		{conversation.error ? <Text accessibilityRole="alert" style={styles.error}>{conversation.error}</Text> : null}
+		{conversation.error || conversation.actionError || sendError ? <Text accessibilityRole="alert" style={styles.error}>{conversation.error || conversation.actionError || sendError}</Text> : null}
 		<ChatTimeline snapshot={conversation.snapshot} loadingOlder={conversation.loadingOlder} onLoadOlder={() => void conversation.loadOlder()} approvalPending={conversation.pendingActions.includes("approval")} inputPending={conversation.pendingActions.includes("input")} onDecide={conversation.resolveApproval} onResolveInput={conversation.resolveInput} onRollback={async () => 0} />
 		<View style={styles.composer}>
 			<TextInput value={text} onChangeText={setText} placeholder="Reply to reviewer…" placeholderTextColor={t.textTertiary} multiline style={styles.input} editable={!sending} />
-			{conversation.snapshot.controller.state === "busy" ? <Pressable accessibilityRole="button" accessibilityLabel="Stop reviewer" onPress={() => void conversation.interrupt()} style={styles.stop}><Feather name="square" size={14} color={t.red} /></Pressable> : null}
+			{conversation.snapshot.controller.state === "busy" ? <Pressable accessibilityRole="button" accessibilityLabel="Stop reviewer" onPress={() => void conversation.interrupt().catch(() => {})} style={styles.stop}><Feather name="square" size={14} color={t.red} /></Pressable> : null}
 			<Pressable accessibilityRole="button" accessibilityLabel="Send reply" disabled={!text.trim() || sending} onPress={() => void send()} style={[styles.send, (!text.trim() || sending) && styles.disabled]}>{sending ? <ActivityIndicator size="small" color="#fff" /> : <Feather name="arrow-up" size={18} color="#fff" />}</Pressable>
 		</View>
 	</KeyboardAvoidingView>;

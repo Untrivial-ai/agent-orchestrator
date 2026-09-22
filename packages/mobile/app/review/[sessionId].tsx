@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
-import { cancelSessionReview, getSessionReviews, triggerSessionReview, type ReviewRun, type SessionReviews } from "../../lib/api";
+import { cancelSessionReview, getSessionReviews, restoreSessionReviewer, triggerSessionReview, type ReviewRun, type SessionReviews } from "../../lib/api";
 import { haptics } from "../../lib/haptics";
 import { reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewStatusLabel, reviewVerdictLabel, shortCommit } from "../../lib/reviewView";
 import { useApp } from "../../lib/store";
@@ -23,6 +23,7 @@ export default function ReviewDetailScreen() {
 	const [error, setError] = useState("");
 	const [refreshing, setRefreshing] = useState(false);
 	const [acting, setActing] = useState(false);
+	const [restoring, setRestoring] = useState(false);
 
 	const load = useCallback(async () => {
 		if (!config || !sessionId) return;
@@ -59,6 +60,20 @@ export default function ReviewDetailScreen() {
 		const handleId = surface.handleId || data.reviewerHandleId;
 		if (handleId) router.push({ pathname: "/shell/[handleId]", params: { handleId, sessionId, title: `Review · PR #${review.prNumber}` } });
 	};
+	const restoreReviewer = async () => {
+		if (!config) return;
+		haptics.tap();
+		setRestoring(true);
+		setError("");
+		try {
+			await restoreSessionReviewer(config, sessionId);
+			await load();
+		} catch (value) {
+			setError(value instanceof Error ? value.message : "Could not restore the reviewer.");
+		} finally {
+			setRestoring(false);
+		}
+	};
 	const runPrimaryAction = async () => {
 		if (!config || primaryAction === "none") return;
 		haptics.tap();
@@ -92,7 +107,10 @@ export default function ReviewDetailScreen() {
 				<Meta label="Commit" value={shortCommit(review.targetSha)} mono />
 				{data.reviewerActivityState ? <Meta label="Activity" value={data.reviewerActivityState.replaceAll("_", " ")} /> : null}
 			</Card>
-			{data.reviewerSurface ? <Button title={data.reviewerSurface.mode === "chat" ? "Open reviewer chat" : "Open reviewer terminal"} icon={data.reviewerSurface.mode === "chat" ? "message-circle" : "terminal"} variant="ghost" onPress={openReviewer} /> : null}
+			{data.reviewerActivityState === "exited" || data.reviewerSurface?.controllerError
+				? <Button title="Restore reviewer" icon="refresh-cw" variant="ghost" loading={restoring} disabled={restoring} onPress={() => void restoreReviewer()} />
+				: data.reviewerSurface ? <Button title={data.reviewerSurface.mode === "chat" ? "Open reviewer chat" : "Open reviewer terminal"} icon={data.reviewerSurface.mode === "chat" ? "message-circle" : "terminal"} variant="ghost" onPress={openReviewer} /> : null}
+			{data.reviewerSurface?.controllerError ? <Text accessibilityRole="alert" style={styles.error}>{data.reviewerSurface.controllerError}</Text> : null}
 			{primaryAction !== "none" ? <Button title={reviewPrimaryActionLabel(primaryAction)} icon={primaryAction === "cancel" ? "x" : "play"} variant={primaryAction === "cancel" ? "danger" : "primary"} loading={acting} disabled={acting} onPress={() => void runPrimaryAction()} /> : null}
 			{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 
