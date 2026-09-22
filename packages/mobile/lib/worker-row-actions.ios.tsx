@@ -1,5 +1,5 @@
 import { Host } from "@expo/ui";
-import { Button, GlassEffectContainer, HStack, Image } from "@expo/ui/swift-ui";
+import { Button, HStack, Image } from "@expo/ui/swift-ui";
 import {
 	accessibilityIdentifier,
 	accessibilityLabel,
@@ -33,9 +33,11 @@ export function WorkerRowActions({
 
 	return (
 		<Host style={{ width: ACTION_WIDTH * 2, height: 76 }} colorScheme={scheme}>
-			{/* One container for both controls: the system renders their glass in a
-			    single pass and blends them as they come together. */}
-			<GlassEffectContainer spacing={16}>
+			{/* Deliberately not a `GlassEffectContainer`. That is the right wrapper
+			    when two glass controls should read as one surface, but inside one the
+			    system blends their material as they approach, so pin and delete
+			    morphed into a single blob mid-swipe. Each button keeps its own glass
+			    here, and the 16pt gap is what separates them. */}
 			<HStack spacing={16} modifiers={[frame({ width: ACTION_WIDTH * 2, height: 76 })]}>
 				<Button
 					onPress={() => onSetPinned(!pinned)}
@@ -73,7 +75,6 @@ export function WorkerRowActions({
 					<Image systemName="trash" size={iconSize.lg} color={t.red} />
 				</Button>
 			</HStack>
-			</GlassEffectContainer>
 		</Host>
 	);
 }
