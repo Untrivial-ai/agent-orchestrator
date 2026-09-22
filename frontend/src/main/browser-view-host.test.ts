@@ -3514,3 +3514,244 @@ describe("scaleBoundsForZoom", () => {
 		expect(scaleBoundsForZoom(rect, Number.NaN)).toBe(rect);
 	});
 });
+
+describe("browser snapshot deltas", () => {
+	type NativeSnapshot = Record<string, unknown>;
+	function setupDeltaHost(respond: (args: Record<string, unknown>) => NativeSnapshot) {
+		const runtime = {
+			runAction: vi.fn(async (_sessionId: string, action: string, args: Record<string, unknown>) =>
+				action === "snapshot" ? { snapshot: respond(args), _boundary: { nonce: "n1", origin: "http://localhost:3000/" } } : {},
+			),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const snapshotCalls = () =>
+			(runtime.runAction as unknown as ReturnType<typeof vi.fn>).mock.calls
+				.filter((call: unknown[]) => call[1] === "snapshot")
+				.map((call: unknown[]) => call[2]);
+		return { ...setupHost(runtime), snapshotCalls };
+	}
+	const full = (revision: number) => ({
+		kind: "full",
+		revision,
+		tree: '- button "Save" [ref=e1]',
+		refs: { e1: { role: "button", name: "Save" } },
+	});
+
+	it("requests a full baseline first and returns it as snapshot text", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		const result = await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls()).toEqual([{ interactive: false, delta: true, full: true }]);
+		expect(result).toEqual({
+			kind: "full",
+			revision: 1,
+			text: '- button "Save" [ref=e1]',
+			refs: { e1: { role: "button", name: "Save" } },
+			_boundary: { nonce: "n1", origin: "http://localhost:3000/" },
+			untrustedExternalContent: true,
+		});
+	});
+
+	it("returns unchanged and structural deltas measured from the revision the agent last received", async () => {
+		const responses: NativeSnapshot[] = [
+			full(1),
+			{ kind: "unchanged", baseRevision: 1, revision: 2 },
+			{
+				kind: "delta",
+				baseRevision: 2,
+				revision: 3,
+				changes: [{ op: "remove", ref: "@e1" }],
+				treeChange: { startLine: 0, deleteCount: 1, lines: [] },
+			},
+		];
+		const { host, snapshotCalls } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		const unchanged = await host.execute("sess-1", "snapshot", { delta: true });
+		const delta = await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls().slice(1)).toEqual([
+			{ interactive: false, delta: true },
+			{ interactive: false, delta: true },
+		]);
+		expect(unchanged).toMatchObject({ kind: "unchanged", baseRevision: 1, revision: 2 });
+		expect(delta).toMatchObject({
+			kind: "delta",
+			baseRevision: 2,
+			revision: 3,
+			changes: [{ op: "remove", ref: "@e1" }],
+			treeChange: { startLine: 0, deleteCount: 1, lines: [] },
+		});
+	});
+
+	it("refetches full state when the native baseline moved without the agent seeing it", async () => {
+		const responses: NativeSnapshot[] = [full(1), { kind: "unchanged", baseRevision: 2, revision: 3 }, full(4)];
+		const { host, snapshotCalls } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		const result = await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls().slice(1)).toEqual([
+			{ interactive: false, delta: true },
+			{ interactive: false, delta: true, full: true },
+		]);
+		expect(result).toMatchObject({ kind: "full", revision: 4, text: '- button "Save" [ref=e1]' });
+	});
+
+	it("forces full state when the agent asks for it or switches the interactive option set", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "snapshot", { delta: true, full: true });
+		await host.execute("sess-1", "snapshot", { delta: true, interactive: true });
+
+		expect(snapshotCalls()).toEqual([
+			{ interactive: false, delta: true, full: true },
+			{ interactive: false, delta: true, full: true },
+			{ interactive: true, delta: true, full: true },
+		]);
+	});
+
+	it("forces full state after the agent switches frames", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "frame", { target: "main" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls()[1]).toEqual({ interactive: false, delta: true, full: true });
+	});
+
+	it("forces full state after the agent switches tabs", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "tab-select", { tabId: "t1" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls()[1]).toEqual({ interactive: false, delta: true, full: true });
+	});
+
+	it("rejects a forced refetch that still is not full state", async () => {
+		const responses: NativeSnapshot[] = [
+			full(1),
+			{ kind: "unchanged", baseRevision: 2, revision: 3 },
+			{ kind: "unchanged", baseRevision: 3, revision: 4 },
+		];
+		const { host } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		await expect(host.execute("sess-1", "snapshot", { delta: true })).rejects.toMatchObject({
+			code: "BROWSER_AUTOMATION_INVALID_OUTPUT",
+		});
+	});
+
+	it("rejects a partial answer to an explicit --full request", async () => {
+		const responses: NativeSnapshot[] = [full(1), { kind: "unchanged", baseRevision: 1, revision: 2 }];
+		const { host } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		await expect(host.execute("sess-1", "snapshot", { delta: true, full: true })).rejects.toMatchObject({
+			code: "BROWSER_AUTOMATION_INVALID_OUTPUT",
+		});
+	});
+
+	it("forces full state after the agent takes a plain snapshot, but not after act", async () => {
+		const { host, snapshotCalls } = setupDeltaHost((args) =>
+			args.delta ? full(1) : ('- button "Save" [ref=e1]' as unknown as NativeSnapshot),
+		);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "act", { instruction: "nothing matches this" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "snapshot", {});
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		const deltaCalls = snapshotCalls().filter((call) => (call as { delta?: boolean }).delta);
+		expect(deltaCalls).toEqual([
+			{ interactive: false, delta: true, full: true },
+			{ interactive: false, delta: true },
+			{ interactive: false, delta: true, full: true },
+		]);
+	});
+
+	it("rejects delta output it cannot interpret", async () => {
+		const { host } = setupDeltaHost(() => ({ kind: "delta", revision: "two" }));
+
+		await expect(host.execute("sess-1", "snapshot", { delta: true })).rejects.toMatchObject({
+			code: "BROWSER_AUTOMATION_INVALID_OUTPUT",
+		});
+	});
+
+	it("keeps plain snapshots on the existing full-text contract", async () => {
+		const runtime = {
+			runAction: vi.fn(async () => ({ snapshot: '- button "Save" [ref=e1]', refs: {} })),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const { host } = setupHost(runtime);
+
+		const result = await host.execute("sess-1", "snapshot", { interactive: true });
+
+		expect(runtime.runAction).toHaveBeenCalledWith(
+			"sess-1",
+			"snapshot",
+			{ interactive: true },
+			expect.anything(),
+			undefined,
+		);
+		expect(result).toEqual({ text: '- button "Save" [ref=e1]', refs: {}, untrustedExternalContent: true });
+	});
+});
+
+describe("browser human pointer and annotated screenshots", () => {
+	function setupPointerHost() {
+		const runtime = {
+			runAction: vi.fn(async () => ({})),
+			screenshot: vi.fn(async () => ({
+				data: "",
+				width: 1,
+				height: 1,
+				annotations: [{ number: 1, ref: "e1", role: "button", name: "Save" }],
+				untrustedExternalContent: true as const,
+			})),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		return { ...setupHost(runtime), runtime };
+	}
+
+	it("forwards the human pointer option for clicks and drags only when asked", async () => {
+		const { host, runtime } = setupPointerHost();
+		const nativeArgs = () =>
+			(runtime.runAction as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call: unknown[]) => call[2]);
+
+		await host.execute("sess-1", "click", { ref: "e1" });
+		await host.execute("sess-1", "click", { ref: "e1", human: true });
+		await host.execute("sess-1", "drag", { ref: "e1", targetRef: "e2", human: true });
+		await host.execute("sess-1", "dblclick", { ref: "e1", human: true });
+
+		expect(nativeArgs()).toEqual([
+			{ ref: "e1" },
+			{ ref: "e1", human: true },
+			{ ref: "e1", targetRef: "e2", human: true },
+			{ ref: "e1" },
+		]);
+	});
+
+	it("passes the annotate option to the screenshot runtime and returns its annotations", async () => {
+		const { host, runtime } = setupPointerHost();
+
+		const plain = await host.execute("sess-1", "screenshot", {});
+		const annotated = await host.execute("sess-1", "screenshot", { annotate: true });
+
+		expect(runtime.screenshot).toHaveBeenNthCalledWith(1, "sess-1", expect.anything(), undefined, { annotate: false });
+		expect(runtime.screenshot).toHaveBeenNthCalledWith(2, "sess-1", expect.anything(), undefined, { annotate: true });
+		expect(plain).toMatchObject({ width: 1, height: 1 });
+		expect(annotated).toMatchObject({ annotations: [{ number: 1, ref: "e1", role: "button", name: "Save" }] });
+	});
+});

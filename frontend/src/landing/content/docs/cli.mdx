@@ -187,7 +187,7 @@ Controls the live, session-isolated Electron browser owned by the desktop app. I
 
 The command family includes status/open, accessibility snapshots and references, click/drag/fill/type/press/hover, highlight, scroll, select/check state, property reads, tabs and popups, DevTools, frames, dialogs, waits, screenshots, console/page errors, and bounded opt-in network metadata capture.
 
-References become stale after navigation, DOM replacement, frame changes, or tab changes. Take another snapshot when AO reports `STALE_REFERENCE`. Network capture is off by default, metadata-only, bounded, and automatically expires.
+References become stale after navigation, DOM replacement, frame changes, or tab changes. Take another snapshot when AO reports `STALE_REFERENCE`. `ao browser snapshot --delta` returns the full tree once, then only `unchanged` or the changes since the last snapshot the agent received; add `--full` to get the full tree again. `click` and `drag` accept `--human` for curved pointer movement on pages that ignore instant clicks, and `ao browser screenshot --annotate` numbers interactive elements in the image and lists their refs. Network capture is off by default, metadata-only, bounded, and automatically expires.
 
 ## Migration and shell integration
 
