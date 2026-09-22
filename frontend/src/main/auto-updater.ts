@@ -1397,16 +1397,81 @@ function clearUnrecoverableRememberedBuild(): void {
   stopEscalationTimer();
 }
 
+// Shorter than a typical electron-updater HttpError dump (body + headers +
+// stack). Plain recovery lines stay under this; anything longer is treated as a
+// technical dump and rewritten before it reaches Settings.
+const USER_FACING_UPDATE_ERROR_MAX_CHARS = 280;
+
+const UPDATE_CHECK_SERVER_UNAVAILABLE =
+  "Couldn't check for updates — the update server is temporarily unavailable. Try again in a few minutes.";
+const UPDATE_DOWNLOAD_SERVER_UNAVAILABLE =
+  "Download failed — the update server is temporarily unavailable. Try again in a few minutes.";
+const UPDATE_CHECK_SERVER_ERROR =
+  "Couldn't check for updates — the update server returned an error. Try again later.";
+const UPDATE_DOWNLOAD_SERVER_ERROR =
+  "Download failed — the update server returned an error. Try again later.";
+const UPDATE_CHECK_FAILED_GENERIC = "Couldn't check for updates. Try again.";
+const UPDATE_DOWNLOAD_FAILED_GENERIC = "Download failed. Try again.";
+
+function updateErrorIsForDownload(): boolean {
+  return activeUpdaterPhase === "download" || activeUpdaterOperation === "manual-download";
+}
+
+/**
+ * True when the string looks like an electron-updater / Electron dump rather
+ * than a short recovery line we wrote ourselves. Matching on shape (not only
+ * known phrases) so a new GitHubProvider wording still cannot fill Settings.
+ */
+function looksLikeTechnicalUpdateDump(raw: string): boolean {
+  if (raw.length > USER_FACING_UPDATE_ERROR_MAX_CHARS) return true;
+  if (/\n\s*at\s+/.test(raw)) return true;
+  if (/Headers:\s*\{/i.test(raw)) return true;
+  if (/<html[\s>]/i.test(raw)) return true;
+  if (/app\.asar/i.test(raw)) return true;
+  if (/HttpError:\s*\d{3}/i.test(raw)) return true;
+  return false;
+}
+
+/**
+ * Rewrites electron-updater's verbose Error.message (HTML bodies, response
+ * headers, stacks, asar paths) into a short line for UpdateStatus.message /
+ * checkError. Known GitHub feed / HTTP failures get specific copy; anything
+ * else that still looks like a dump falls back to a generic line. Short plain
+ * messages (and net:: strings, which the renderer replaces via netError) pass
+ * through unchanged.
+ */
+function userFacingUpdateError(raw: string): string {
+  const forDownload = updateErrorIsForDownload();
+  if (
+    /HttpError:\s*5\d\d/i.test(raw) ||
+    /Gateway Time-?out/i.test(raw) ||
+    /Unable to find latest version on GitHub/i.test(raw) ||
+    /Cannot parse releases feed/i.test(raw)
+  ) {
+    return forDownload ? UPDATE_DOWNLOAD_SERVER_UNAVAILABLE : UPDATE_CHECK_SERVER_UNAVAILABLE;
+  }
+  if (/HttpError:\s*\d{3}/i.test(raw)) {
+    return forDownload ? UPDATE_DOWNLOAD_SERVER_ERROR : UPDATE_CHECK_SERVER_ERROR;
+  }
+  if (looksLikeTechnicalUpdateDump(raw)) {
+    return forDownload ? UPDATE_DOWNLOAD_FAILED_GENERIC : UPDATE_CHECK_FAILED_GENERIC;
+  }
+  return raw;
+}
+
 // errorMessage extracts the user-facing message for an update error status,
 // defaulting null/undefined to a generic label. Net-error restart guidance is
 // localized in the renderer from the netError flag instead of being built here
-// (#3526).
+// (#3526). electron-updater HttpError dumps are rewritten here so Settings never
+// shows HTML bodies, headers, or stacks.
 function errorMessage(err: unknown): string {
-  return err instanceof Error
-    ? err.message
-    : err == null
-      ? "Update check failed"
-      : String(err);
+  const raw =
+    err instanceof Error
+      ? err.message
+      : err == null
+        ? "Update check failed"
+        : String(err);
+  return userFacingUpdateError(raw);
 }
 
 // isManifest404Error checks whether the error is a 404 on a release
@@ -2429,7 +2494,7 @@ export async function returnToHome(
     broadcast({
       state: "error",
       message:
-        (err as Error)?.message ??
+        errorMessage(err) ??
         (failed.phase === "download" ? "Download failed" : "Return failed"),
       ...(requestId === undefined ? {} : { requestId }),
     });
@@ -2494,7 +2559,7 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
     } else {
       broadcast({
         state: "error",
-        message: (err as Error)?.message ?? "Download failed",
+        message: errorMessage(err) ?? "Download failed",
         requestId,
       });
     }

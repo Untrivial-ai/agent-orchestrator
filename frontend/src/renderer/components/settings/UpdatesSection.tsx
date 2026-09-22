@@ -31,6 +31,20 @@ const MIN_MANUAL_CHECK_VISIBLE_MS = 1_000;
 // serializes updater operations, so a redundant check queues rather than racing.
 const MAX_MANUAL_CHECK_MS = 90_000;
 
+// Last-resort guard: if an error message looks like a raw electron-updater dump
+// (HTML, headers, stack traces), hide it from the UI. The main process already
+// rewrites most cases; this catches anything that slips through.
+const RAW_DUMP_MAX_CHARS = 280;
+function isLikelyRawDump(msg: string): boolean {
+	if (msg.length > RAW_DUMP_MAX_CHARS) return true;
+	if (/\n\s*at\s+/.test(msg)) return true;
+	if (/Headers:\s*\{/i.test(msg)) return true;
+	if (/<html[\s>]/i.test(msg)) return true;
+	if (/app\.asar/i.test(msg)) return true;
+	if (/HttpError:\s*\d{3}/i.test(msg)) return true;
+	return false;
+}
+
 let updateRequestSequence = 0;
 
 function nextUpdateRequestId(prefix = "feature-update"): string {
@@ -70,7 +84,13 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 	};
 
 	const finishManualCheck = (requestId: string, error?: unknown) => {
-		if (error) setManualCheckFailure(error instanceof Error ? error.message : t("settings.updates.updateFailed"));
+		if (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			// Guard: raw electron-updater dumps (HTML bodies, headers, stacks)
+			// must never reach Settings. The main process rewrites most cases;
+			// this is the last line of defence for anything that slips through.
+			setManualCheckFailure(isLikelyRawDump(msg) ? t("settings.updates.updateFailed") : msg);
+		}
 		clearManualCheckWatchdog();
 		if (manualCheckFinishTimerRef.current !== null) clearTimeout(manualCheckFinishTimerRef.current);
 		const elapsed = manualCheckStartedAtRef.current === null ? MIN_MANUAL_CHECK_VISIBLE_MS : Date.now() - manualCheckStartedAtRef.current;
