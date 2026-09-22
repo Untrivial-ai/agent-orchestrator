@@ -15,6 +15,11 @@ export function ChatTurnSettingsControl({ snapshot, models, options, disabled, o
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
-	control: { alignSelf: "flex-start", maxWidth: "100%", minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm },
+	// Stretched, not content-sized: the label is the longest thing in the composer's
+	// meta row, and a content-sized box let it decide how wide it wanted to be
+	// rather than how wide it was allowed. `overflow: "hidden"` is the backstop —
+	// with it, a label that fails to truncate is clipped instead of drawn across the
+	// context meter beside it.
+	control: { alignSelf: "stretch", maxWidth: "100%", minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, overflow: "hidden" },
 	label: { fontFamily: "Geist_600SemiBold", flexShrink: 1, color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
 });

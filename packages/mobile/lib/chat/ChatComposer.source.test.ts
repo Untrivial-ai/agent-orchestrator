@@ -71,3 +71,22 @@ describe("chat composer pill", () => {
 		expect(composer).not.toContain("dockInset(");
 	});
 });
+
+describe("composer meta row", () => {
+	const control = source("./ChatTurnSettingsControl.tsx");
+
+	// "GPT-5.6-Sol · Medium · Ask when unsure" is the longest thing in the row, and
+	// two others can join it: the queued-message note and the context meter. The
+	// label was drawn straight across both — the settings control is the one that
+	// yields, and it is clipped so a label that fails to truncate cannot paint over
+	// its neighbours.
+	it("lets the settings label yield instead of the meter", () => {
+		const meta = styleRule("metaRow");
+		expect(meta).toContain("gap: space.sm");
+		expect(styleRule("settingsSlot")).toContain("overflow: \"hidden\"");
+		expect(styleRule("contextMeter")).toContain("flexShrink: 0");
+		expect(styleRule("deliveryNote")).toContain("flexShrink: 0");
+		expect(control).toContain('alignSelf: "stretch"');
+		expect(control).toContain('overflow: "hidden"');
+	});
+});

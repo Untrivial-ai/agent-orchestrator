@@ -415,8 +415,14 @@ export function ChatComposer({
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	dock: { paddingHorizontal: space.md, paddingTop: space.xs, gap: space.xs, backgroundColor: t.bgBase },
-	metaRow: { width: "100%", height: 44, flexDirection: "row", alignItems: "center" },
-	settingsSlot: { flex: 1, minWidth: 0, height: 44, alignItems: "flex-start", justifyContent: "center" },
+	// Three things can share this row — the turn settings, the queued-message note
+	// and the context meter — and the settings label is the only one that can be
+	// long. It is the one that yields: `flex: 1` with `minWidth: 0` to allow the
+	// squeeze, and `overflow: "hidden"` so a label that does not truncate cleanly
+	// cannot paint over its neighbours. The `gap` is the floor under that: even
+	// when everything fits, the two never touch.
+	metaRow: { width: "100%", height: 44, flexDirection: "row", alignItems: "center", gap: space.sm },
+	settingsSlot: { flex: 1, minWidth: 0, height: 44, alignItems: "flex-start", justifyContent: "center", overflow: "hidden" },
 	// One pill for the whole row: attach, the field, dictation, and the one filled
 	// control that commits. The pill's radius is half its resting height, so a
 	// single line reads as a capsule and a long message grows a rounded panel —
@@ -444,11 +450,11 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	restoreText: { fontFamily: "Geist_600SemiBold", flex: 1, minWidth: 0, color: t.amber, fontSize: type.caption1.fontSize, fontWeight: "600" },
 	restoreAction: { fontFamily: "Geist_600SemiBold", color: t.amber, fontSize: type.caption1.fontSize, fontWeight: "600", textDecorationLine: "underline" },
 	// Sits at the end of the meta row; the bar carries the reading, the label names it.
-	contextMeter: { flexDirection: "row", alignItems: "center", gap: space.xs, height: 32, paddingLeft: space.sm },
+	contextMeter: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: space.xs, height: 32, paddingLeft: space.sm },
 	contextTrack: { width: 34, height: 4, borderRadius: 2, overflow: "hidden", backgroundColor: t.bgSubtle },
 	contextFill: { height: 4, borderRadius: 2 },
 	contextText: { fontFamily: "Geist_600SemiBold", fontSize: type.caption2.fontSize, fontWeight: "600" },
-	deliveryNote: { maxWidth: "46%", height: 32, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.xxs, paddingRight: space.xxs },
+	deliveryNote: { flexShrink: 0, maxWidth: "46%", height: 32, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.xxs, paddingRight: space.xxs },
 	deliveryNoteText: { fontFamily: "Geist_600SemiBold", flexShrink: 1, color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "600" },
 	steerAction: { width: 30, height: 30, alignItems: "center", justifyContent: "center", borderRadius: 16, backgroundColor: t.accentTint },
 	queueDock: { overflow: "hidden", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, borderRadius: 16, borderCurve: "continuous" },
