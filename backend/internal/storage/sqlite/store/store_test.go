@@ -2149,6 +2149,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
 		row.ProvisionState = domain.SessionProvisionReady
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
+		row.OutputType = domain.SessionOutputNone
 		row.Metadata.Permissions = tc.want
 		if tc.saved == "" {
 			row.Revision++ // Pinning permissions writes even without changing updated_at.
