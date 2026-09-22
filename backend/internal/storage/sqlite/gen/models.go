@@ -206,6 +206,7 @@ type Conversation struct {
 	UsageCurrency              sql.NullString
 	ActiveBranchID             string
 	OpencodeMode               string
+	SkillsJson                 sql.NullString
 }
 
 type ConversationActivity struct {

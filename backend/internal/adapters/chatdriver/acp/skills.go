@@ -54,6 +54,10 @@ func (c *conversation) replaceAvailableCommands(commands []acpsdk.AvailableComma
 		c.capabilities[ports.ChatCapabilityCompaction] = hasCompact
 	}
 	c.mu.Unlock()
+
+	// Emitted so the catalog outlives this process: nothing re-sends it when AO
+	// reattaches to a surviving provider (migration 0149).
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: cloneSkills(skills)})
 }
 
 func cloneSkills(skills []ports.ChatSkill) []ports.ChatSkill {

@@ -2,10 +2,13 @@ package chat_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 // skillfulConversation is a provider double that can enumerate skills.
@@ -68,4 +71,120 @@ func TestSkillsRequiresALiveController(t *testing.T) {
 	if !errorsIs(err, chatsvc.ErrNoController) {
 		t.Fatalf("err = %v, want ErrNoController", err)
 	}
+}
+
+// The catalog arrives by push and by push alone: ACP sends it on session/new and on
+// commands_changed, and nothing re-sends it when a controller reattaches to a
+// provider that outlived the daemon. Persisting it is what keeps a restart from
+// leaving every session unable to say what it can run.
+func TestSkillsSurviveARestartThroughTheStoredCatalog(t *testing.T) {
+	conv := &skillfulConversation{
+		fakeConversation: newFakeConversation(),
+		skills: []ports.ChatSkill{
+			{Name: "ship", DisplayName: "ship", Description: "Open a PR", InputHint: "<title>", Source: "repo"},
+		},
+	}
+	h := newHarnessWithConversation(t, conv)
+	ctx := context.Background()
+
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, ProviderEventID: "skills-1", Skills: conv.skills})
+	awaitStoredSkills(t, h, 1)
+	archived, err := h.st.ProviderEventsSince(ctx, h.ctrl.ConversationID(), 0, 10)
+	if err != nil {
+		t.Fatalf("ProviderEventsSince: %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("archived events = %d, want 1", len(archived))
+	}
+	var payload struct {
+		Skills []ports.ChatSkill `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(archived[0].PayloadJson), &payload); err != nil {
+		t.Fatalf("decode archived skills: %v", err)
+	}
+	if len(payload.Skills) != 1 || payload.Skills[0] != conv.skills[0] {
+		t.Fatalf("archived skills = %+v, want %+v", payload.Skills, conv.skills)
+	}
+
+	// The provider now answers empty, which is what a reattached ACP conversation
+	// does for the whole life of the controller.
+	conv.skills = nil
+
+	skills, err := h.svc.Skills(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Skills: %v", err)
+	}
+	if len(skills) != 1 || skills[0].Name != "ship" {
+		t.Fatalf("got %+v, want the stored catalog", skills)
+	}
+	if skills[0].InputHint != "<title>" || skills[0].Source != "repo" {
+		t.Errorf("stored catalog lost detail: %+v", skills[0])
+	}
+}
+
+// An empty push is the provider answering "none", and it has to overwrite what was
+// stored -- otherwise uninstalling every skill leaves the old menu in place.
+func TestAnEmptyPushClearsTheStoredCatalog(t *testing.T) {
+	conv := &skillfulConversation{
+		fakeConversation: newFakeConversation(),
+		skills:           []ports.ChatSkill{{Name: "ship", DisplayName: "ship"}},
+	}
+	h := newHarnessWithConversation(t, conv)
+
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
+	awaitStoredSkills(t, h, 1)
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: nil})
+	awaitStoredSkills(t, h, 0)
+
+	conv.skills = nil
+	skills, err := h.svc.Skills(context.Background(), testSession)
+	if err != nil {
+		t.Fatalf("Skills: %v", err)
+	}
+	if len(skills) != 0 {
+		t.Fatalf("got %+v, want none", skills)
+	}
+}
+
+func TestSkillsDoNotCrossProviderOwnershipBranches(t *testing.T) {
+	conv := &skillfulConversation{
+		fakeConversation: newFakeConversation(),
+		skills:           []ports.ChatSkill{{Name: "provider-a"}},
+	}
+	h := newHarnessWithConversation(t, conv)
+	ctx := context.Background()
+
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventSkills, Skills: conv.skills})
+	awaitStoredSkills(t, h, 1)
+	record, err := h.st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatalf("ConversationForSession: %v", err)
+	}
+	branch := domain.ConversationBranch{
+		ID: "provider-b", ConversationID: record.ID, SessionID: testSession,
+		ProviderConversationID: "thread-b", ParentBranchID: record.ActiveBranchID,
+		ForkAfterSequence: record.LatestSequence, ProviderScopeID: "provider-b",
+	}
+	if err := h.st.CreateConversationBranch(ctx, branch, h.now()); err != nil {
+		t.Fatalf("CreateConversationBranch: %v", err)
+	}
+	if err := h.st.ActivateConversationBranch(ctx, testSession, record.ID, branch.ID,
+		branch.ProviderConversationID, "provider-b-generation", h.now()); err != nil {
+		t.Fatalf("ActivateConversationBranch: %v", err)
+	}
+
+	conv.skills = nil
+	skills, err := h.svc.Skills(ctx, testSession)
+	if err != nil {
+		t.Fatalf("Skills: %v", err)
+	}
+	if len(skills) != 0 {
+		t.Fatalf("got %+v from the previous provider owner, want none", skills)
+	}
+}
+
+// awaitStoredSkills waits for the projection goroutine to record a push.
+func awaitStoredSkills(t *testing.T, h *harness, want int) {
+	t.Helper()
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Conversation.Skills) == want })
 }

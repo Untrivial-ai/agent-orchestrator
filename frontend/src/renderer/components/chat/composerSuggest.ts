@@ -100,12 +100,13 @@ export interface Suggestion {
 }
 
 /**
- * How many ranked rows the menu will hold.
+ * How many ranked file rows the menu will hold.
  *
  * Set well above what fits so the panel's own scrollbar is what tells the user
- * there is more: a hard cap at the visible row count showed 8 of 99 installed
- * skills with nothing to suggest the rest existed. The cap is still there to stop a
- * five-thousand-file worktree from rendering itself into the menu.
+ * there is more, and kept only for files: a five-thousand-file worktree must not
+ * render itself into the menu. Skills are not capped — the provider's own catalog
+ * is the whole list, and Claude's runs to hundreds of commands, so a cap silently
+ * hid everything past the fiftieth name.
  */
 export const MAX_SUGGESTIONS = 50;
 
@@ -147,7 +148,7 @@ export function rankSkills(skills: readonly ChatSkill[], query: string): Suggest
 	// Name is the tie-break so the order is stable across renders: two skills with
 	// the same score must not swap places as the list is refetched.
 	scored.sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
-	return scored.slice(0, MAX_SUGGESTIONS).map((entry) => entry.suggestion);
+	return scored.map((entry) => entry.suggestion);
 }
 
 function skillDetail(skill: ChatSkill): string | undefined {

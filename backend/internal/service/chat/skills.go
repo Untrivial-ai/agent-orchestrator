@@ -32,5 +32,38 @@ func (s *Service) Skills(ctx context.Context, id domain.SessionID) ([]ports.Chat
 	if !ok {
 		return nil, ErrSkillsUnsupported
 	}
-	return lister.ListSkills(ctx)
+	skills, err := lister.ListSkills(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(skills) > 0 {
+		return skills, nil
+	}
+	// A reattached ACP conversation answers empty for the rest of its life: the
+	// catalog only ever arrives by push, and nothing re-sends it (migration 0149).
+	// The stored catalog is the better answer, and a provider that genuinely has
+	// none stored an empty list, so this stays empty for it.
+	record, err := s.store.ConversationForSession(ctx, id)
+	if err != nil {
+		// Reported rather than swallowed into an empty list: "AO could not read its
+		// own row" and "this agent has no skills" render identically, and only one
+		// of them is worth retrying.
+		return nil, err
+	}
+	return persistedSkills(record), nil
+}
+
+// persistedSkills converts the stored catalog back to the driver's shape.
+func persistedSkills(record domain.ConversationRecord) []ports.ChatSkill {
+	out := make([]ports.ChatSkill, 0, len(record.Skills))
+	for _, skill := range record.Skills {
+		out = append(out, ports.ChatSkill{
+			Name:        skill.Name,
+			DisplayName: skill.DisplayName,
+			Description: skill.Description,
+			InputHint:   skill.InputHint,
+			Source:      skill.Source,
+		})
+	}
+	return out
 }
