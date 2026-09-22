@@ -418,6 +418,7 @@ export function TaskComposer({
 			path={projectQuery.data?.path}
 			projectName={projectQuery.data?.name ?? cloudProject?.displayName ?? projectId}
 			repositories={projectQuery.data ? projectRepositories(projectQuery.data) : cloudProject ? [cloudProject.repositoryUrl] : []}
+			variant="compact"
 			workerAgent={projectWorkerAgent ? selectedAgentLabelFor(projectWorkerAgent, agentCatalog?.agents) : undefined}
 		/>
 	) : undefined;

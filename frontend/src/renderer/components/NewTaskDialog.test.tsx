@@ -126,10 +126,13 @@ describe("NewTaskDialog", () => {
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Agent" })).toHaveTextContent("Claude Code");
 		expect(screen.getByTestId("execution-context")).toHaveTextContent("careerops");
-		expect(screen.getByTestId("execution-context")).toHaveTextContent("github.com/team/careerops");
-		expect(screen.getByTestId("execution-context")).toHaveTextContent("github.com/team/careerops-api");
 		expect(screen.getByTestId("execution-context")).toHaveTextContent("main");
 		expect(screen.getByTestId("execution-context")).toHaveTextContent("/work/careerops");
+		expect(screen.getByTestId("execution-context")).not.toHaveAttribute("open");
+		expect(screen.getByTestId("execution-context-toggle")).toHaveTextContent("careerops");
+		expect(screen.getByTestId("execution-context-toggle")).toHaveTextContent("main");
+		await userEvent.click(screen.getByTestId("execution-context-toggle"));
+		expect(screen.getByTestId("execution-context")).toHaveAttribute("open");
 		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Use Claude Code's default");
 		expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
 		expect(screen.getByLabelText("Task").getAttribute("placeholder")).toBeTruthy();

@@ -646,7 +646,7 @@ describe("TaskComposer", () => {
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(screen.getByText("nope")).toBeInTheDocument());
-		expect(onSubmittingChange).toHaveBeenLastCalledWith(false);
+		await waitFor(() => expect(onSubmittingChange).toHaveBeenLastCalledWith(false));
 	});
 
 	it("silently routes agents without Chat support to Terminal UI", async () => {

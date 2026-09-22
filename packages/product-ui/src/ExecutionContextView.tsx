@@ -1,3 +1,5 @@
+import { ChevronIcon } from "./icons";
+
 export type ExecutionContextLabels = {
 	active: string;
 	baseBranch: string;
@@ -23,6 +25,7 @@ export type ExecutionContextViewProps = {
 	path?: string;
 	projectName: string;
 	repositories?: string[];
+	variant?: "full" | "compact";
 	workerAgent?: string;
 };
 
@@ -39,6 +42,7 @@ export function ExecutionContextView({
 	path,
 	projectName,
 	repositories = [],
+	variant = "full",
 	workerAgent,
 }: ExecutionContextViewProps) {
 	const facts: Array<{ label: string; value: string; emphasis?: boolean }> = [];
@@ -57,6 +61,49 @@ export function ExecutionContextView({
 	}
 	if (orchestratorAgent && orchestratorAgent !== activeAgent) {
 		facts.push({ label: `${labels.orchestrator} (${labels.configured})`, value: orchestratorAgent });
+	}
+	const displayBranch = branch ?? baseBranch;
+
+	if (variant === "compact") {
+		return (
+			<details
+				className="group border-b border-border/50"
+				data-testid="execution-context"
+			>
+				<summary
+					aria-label={labels.executionContext}
+					className="flex h-8 cursor-pointer list-none items-center gap-1.5 px-4 text-xs text-passive outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden"
+					data-testid="execution-context-toggle"
+				>
+					<span className="truncate font-medium text-foreground" title={projectName}>{projectName}</span>
+					{displayBranch ? (
+						<>
+							<span aria-hidden="true">·</span>
+							<span className="truncate" title={displayBranch}>{displayBranch}</span>
+						</>
+					) : null}
+					{loading ? (
+						<span aria-label={labels.loading} className="truncate" role="status">· {labels.loading}</span>
+					) : null}
+					{error ? <span className="truncate text-error">· {error}</span> : null}
+					{activeAgent ? (
+						<span className="hidden min-w-0 items-center gap-1.5 group-open:inline-flex">
+							<span aria-hidden="true">·</span>
+							<span className="truncate text-foreground">{activeAgent}</span>
+						</span>
+					) : null}
+					<ChevronIcon
+						className="ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-180"
+						direction="down"
+					/>
+				</summary>
+				{path ? (
+					<div className="flex min-w-0 items-center gap-2 px-4 pb-2 text-2xs text-passive">
+						<span className="truncate">{path}</span>
+					</div>
+				) : null}
+			</details>
+		);
 	}
 
 	return (
