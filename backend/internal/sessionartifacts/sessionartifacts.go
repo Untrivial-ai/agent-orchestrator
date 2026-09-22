@@ -1,4 +1,8 @@
-package session
+// Package sessionartifacts scans a session's artifact directory and
+// classifies its durable output type. It only imports domain so both the
+// session service (the read path) and the lifecycle reducer (the persist
+// path) can depend on it without an import cycle.
+package sessionartifacts
 
 import (
 	"errors"
@@ -13,7 +17,9 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-func listSessionArtifactFiles(dir string) ([]domain.SessionArtifactFile, error) {
+// List walks a session's artifact directory and returns its regular files,
+// sorted by path.
+func List(dir string) ([]domain.SessionArtifactFile, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, nil
@@ -51,7 +57,7 @@ func listSessionArtifactFiles(dir string) ([]domain.SessionArtifactFile, error) 
 		files = append(files, domain.SessionArtifactFile{
 			Path:      rel,
 			Name:      filepath.Base(path),
-			Kind:      inferSessionArtifactKind(path, rel),
+			Kind:      inferKind(path, rel),
 			Size:      info.Size(),
 			UpdatedAt: info.ModTime().UTC(),
 		})
@@ -69,7 +75,7 @@ func listSessionArtifactFiles(dir string) ([]domain.SessionArtifactFile, error) 
 	return files, nil
 }
 
-func inferSessionArtifactKind(absPath, relPath string) domain.SessionArtifactKind {
+func inferKind(absPath, relPath string) domain.SessionArtifactKind {
 	switch strings.ToLower(filepath.Ext(relPath)) {
 	case ".html", ".htm":
 		return domain.SessionArtifactHTML
@@ -89,11 +95,16 @@ func inferSessionArtifactKind(absPath, relPath string) domain.SessionArtifactKin
 	return domain.SessionArtifactGeneric
 }
 
-func deriveSessionOutputType(prs []domain.PRFacts, artifacts []domain.SessionArtifactFile) domain.SessionOutputType {
+// DeriveOutputType classifies a session's durable output from counts alone: a
+// PR outranks an artifact, and neither ever reverts once observed, since a
+// caller comparing this against a session's current OutputType before
+// persisting is expected to only ever move forward (none -> artifact/pr,
+// artifact -> pr).
+func DeriveOutputType(prCount, artifactFileCount int) domain.SessionOutputType {
 	switch {
-	case len(prs) > 0:
+	case prCount > 0:
 		return domain.SessionOutputPR
-	case len(artifacts) > 0:
+	case artifactFileCount > 0:
 		return domain.SessionOutputArtifact
 	default:
 		return domain.SessionOutputNone

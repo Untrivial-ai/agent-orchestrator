@@ -4335,6 +4335,71 @@ func TestClaimPRAllowsDraftPR(t *testing.T) {
 	}
 }
 
+type fakeOutputTypeReconciler struct {
+	reconciled []domain.SessionID
+	err        error
+}
+
+func (f *fakeOutputTypeReconciler) ReconcileSessionOutputType(_ context.Context, id domain.SessionID) error {
+	f.reconciled = append(f.reconciled, id)
+	return f.err
+}
+
+// A session that already produced artifacts must flip to pr OutputType as
+// soon as a PR is claimed, not on the next artifact-output poll tick — the
+// same immediacy claiming a PR always had before OutputType was persisted.
+func TestClaimPRReconcilesOutputTypeImmediately(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata:   domain.SessionMetadata{WorkspacePath: "/ws"},
+		OutputType: domain.SessionOutputArtifact,
+	}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", RepoOriginURL: "https://github.com/acme/repo"}
+	st.pr["mer-1"] = domain.PRFacts{URL: "https://github.com/acme/repo/pull/7", Number: 7, CI: domain.CIPending}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{
+		Store:     st,
+		PRClaimer: &fakePRClaimer{out: errorFreeClaimOutcome{ports.ClaimOutcome{}}},
+		SCM: fakeSCM{obs: ports.SCMObservation{
+			Fetched: true, Provider: "github", Host: "github.com", Repo: "acme/repo",
+			PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
+		}},
+		OutputTypeReconciler: reconciler,
+	})
+
+	if _, err := svc.ClaimPR(context.Background(), "mer-1", "7", ClaimPROptions{}); err != nil {
+		t.Fatalf("claim PR: %v", err)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want [mer-1]", reconciler.reconciled)
+	}
+}
+
+// A reconcile failure must not fail an otherwise-successful claim: the
+// artifact-output poller still corrects OutputType on its next tick.
+func TestClaimPRSucceedsWhenOutputTypeReconcileFails(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Metadata: domain.SessionMetadata{WorkspacePath: "/ws"}}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", RepoOriginURL: "https://github.com/acme/repo"}
+	st.pr["mer-1"] = domain.PRFacts{URL: "https://github.com/acme/repo/pull/7", Number: 7, CI: domain.CIPending}
+
+	svc := NewWithDeps(Deps{
+		Store:     st,
+		PRClaimer: &fakePRClaimer{out: errorFreeClaimOutcome{ports.ClaimOutcome{}}},
+		SCM: fakeSCM{obs: ports.SCMObservation{
+			Fetched: true, Provider: "github", Host: "github.com", Repo: "acme/repo",
+			PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
+		}},
+		OutputTypeReconciler: &fakeOutputTypeReconciler{err: errors.New("boom")},
+	})
+
+	if _, err := svc.ClaimPR(context.Background(), "mer-1", "7", ClaimPROptions{}); err != nil {
+		t.Fatalf("claim PR should succeed despite reconcile failure: %v", err)
+	}
+}
+
 func TestClaimPRGitLabMR(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["gl-1"] = domain.SessionRecord{ID: "gl-1", ProjectID: "gl", Kind: domain.KindWorker, Metadata: domain.SessionMetadata{WorkspacePath: "/ws"}}

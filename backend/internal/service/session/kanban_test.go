@@ -256,6 +256,11 @@ func TestSessionGetInfersArtifactOutputAndValidatingKanban(t *testing.T) {
 		ProjectID: "mer",
 		Activity:  domain.Activity{State: domain.ActivityActive},
 		Metadata:  domain.SessionMetadata{ArtifactDir: artifactDir},
+		// OutputType is the persisted column lifecycle.Manager.
+		// ReconcileSessionOutputType maintains; Get() no longer re-derives it
+		// from the live artifact scan, so it must be set here directly for
+		// Kanban placement to see it as artifact output.
+		OutputType: domain.SessionOutputArtifact,
 	}
 
 	got, err := (&Service{store: st}).Get(context.Background(), "mer-1")

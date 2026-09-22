@@ -19,6 +19,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
+	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
@@ -169,6 +170,14 @@ type scmProvider interface {
 	FetchReviewThreads(ctx context.Context, ref ports.SCMPRRef) (ports.SCMReviewObservation, error)
 }
 
+// outputTypeReconciler recomputes and persists a session's durable OutputType
+// column. Production wiring supplies *lifecycle.Manager; declaring the
+// capability locally (rather than importing lifecycle) keeps this package
+// from depending on the reducer that already depends on it transitively.
+type outputTypeReconciler interface {
+	ReconcileSessionOutputType(ctx context.Context, id domain.SessionID) error
+}
+
 // Service is the controller-facing session service. It delegates command-side
 // session operations to the internal sessionmanager.Manager and owns read-model
 // assembly, including user-facing display status derivation.
@@ -207,6 +216,13 @@ type Service struct {
 	titleRefinementSlots   chan struct{}
 	titleRefinementMu      sync.Mutex
 	titleRefinementCancels map[domain.SessionID]context.CancelFunc
+	// outputTypeReconciler lets ClaimPR persist the pr OutputType immediately
+	// instead of waiting for the next artifact-output poll tick, so raising a
+	// PR on a session that already produced artifacts flips its Kanban
+	// placement with the same latency claiming a PR always had. Nil in
+	// service tests that construct Service directly; ClaimPR degrades to
+	// relying on the poller in that case.
+	outputTypeReconciler outputTypeReconciler
 }
 
 // SetChatProviderPreserver wires the live Chat lifetime observation after both
@@ -246,6 +262,11 @@ type Deps struct {
 	// GithubIdentity resolves the operator's authenticated GitHub account so the
 	// handle rides along with product telemetry.
 	GithubIdentity ports.ScopedIdentityResolver
+	// OutputTypeReconciler persists the durable OutputType column; daemon
+	// wiring passes the shared *lifecycle.Manager. Left nil, ClaimPR still
+	// succeeds but the pr OutputType only lands on the next artifact-output
+	// poll tick.
+	OutputTypeReconciler outputTypeReconciler
 }
 
 // NewWithDeps wires a session service with optional PR-claim dependencies.
@@ -254,7 +275,7 @@ func NewWithDeps(d Deps) *Service {
 	if backgroundContext == nil {
 		backgroundContext = context.Background()
 	}
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity, titleRefinementSlots: make(chan struct{}, delegatedTaskTitleConcurrency), titleRefinementCancels: map[domain.SessionID]context.CancelFunc{}}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity, titleRefinementSlots: make(chan struct{}, delegatedTaskTitleConcurrency), titleRefinementCancels: map[domain.SessionID]context.CancelFunc{}, outputTypeReconciler: d.OutputTypeReconciler}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -1109,7 +1130,7 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 }
 
 func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
-	artifactFiles, err := listSessionArtifactFiles(rec.Metadata.ArtifactDir)
+	artifactFiles, err := sessionartifacts.List(rec.Metadata.ArtifactDir)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("artifact files %s: %w", rec.ID, err)
 	}
@@ -1119,8 +1140,11 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 	// the no-signal rule, and two reads could put them either side of its grace
 	// period and have the card contradict its own status.
 	now := s.now()
-	rec.OutputType = deriveSessionOutputType(prs, artifactFiles)
-	presentation := deriveKanbanPresentation(rec, prs, runs, artifactFiles, now, s.harnessSignals(rec.Harness))
+	// rec.OutputType is the persisted column (lifecycle.Manager.
+	// ReconcileSessionOutputType is the sole writer); it is deliberately not
+	// recomputed here so the API and Kanban see the same durable
+	// classification rather than a value that can differ read to read.
+	presentation := deriveKanbanPresentation(rec, prs, runs, now, s.harnessSignals(rec.Harness))
 	readiness := "ready"
 	if recovery, ok := s.manager.(interface {
 		SessionStatusReadiness(domain.SessionRecord) string
