@@ -61,9 +61,11 @@ type APIDeps struct {
 	HostID string
 	// Endpoints reports how this daemon can currently be reached, for the
 	// phone's endpoint-refresh route.
-	Endpoints         controllers.EndpointSource
-	Installer         controllers.Installer
-	AgentAuth         controllers.AgentAuthService
+	Endpoints controllers.EndpointSource
+	Installer controllers.Installer
+	AgentAuth controllers.AgentAuthService
+	// GitHub is the local GitHub PAT + repos surface.
+	GitHub            controllers.GitHubPATService
 	AgentSwitchPolicy AgentSwitchPolicyControl
 	// LinkPreview unfurls external URLs for the renderer's hover cards; nil
 	// leaves the route answering 501.
@@ -133,6 +135,7 @@ type API struct {
 	systemInstall *controllers.SystemInstallController
 	agentAuth     *controllers.AgentAuthController
 	linkPreview   *controllers.LinkPreviewController
+	github        *controllers.GitHubController
 	events        *EventsController
 }
 
@@ -177,6 +180,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
 		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
 		linkPreview:   &controllers.LinkPreviewController{Svc: deps.LinkPreview},
+		github:        &controllers.GitHubController{Svc: deps.GitHub},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -218,6 +222,7 @@ func (a *API) Register(root chi.Router) {
 			a.systemInstall.Register(r)
 			a.agentAuth.Register(r)
 			a.linkPreview.Register(r)
+			a.github.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
