@@ -15,14 +15,20 @@ jobs:
     name: Post trailing 7-day review stats
     runs-on: ubuntu-latest
     steps:
-      - name: Comment review leaderboard
-        # v3.2.3, pinned to an immutable commit for supply-chain safety.
-        uses: flowwer-dev/pull-request-stats@6236a6616b9c683d6aff201a289e96b731b9cdd7
+      - name: Check out trusted leaderboard code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          githubToken: ${{ github.token }}
-          period: 7
-          stats: totalComments,totalReviews
-          sortBy: totalComments
-          publishAs: COMMENT
-          exclude: '/\[bot\]$/i'
-          disableLinks: true
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Test leaderboard calculation
+        run: node --test .github/scripts/pr-review-leaderboard.test.mjs
+
+      - name: Comment review leaderboard
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const modulePath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-review-leaderboard.mjs`;
+            const { run } = await import(modulePath);
+            await run({ github, context });

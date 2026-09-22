@@ -29,6 +29,7 @@ import type {
 	CloudCpProjectResponse,
 	CloudCpProviderConnectionResponse,
 	CloudCpProviderConnectionsResponse,
+	CloudCpGitHubReposResponse,
 	CloudCpPutAgentConnectionRequest,
 	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
@@ -45,6 +46,20 @@ import type {
 	CloudCpInterfaceTransitionStatusResponse,
 	CloudCpStartInterfaceTransitionRequest,
 	CloudCpStartInterfaceTransitionResponse,
+	CloudCpWorkspaceDiff,
+	CloudCpWorkspaceDiffFileDetail,
+	CloudCpWorkspaceReviewDiffsRequest,
+	CloudCpWorkspaceReviewDiffsResponse,
+	CloudCpWorkspaceReviewFileQuery,
+	CloudCpWorkspaceReviewFileResponse,
+	CloudCpWorkspaceReviewResponse,
+	CloudCpWorkspaceReviewRevisionQuery,
+	CloudCpWorkspaceReviewRevisionResponse,
+	CloudCpWorkspaceReviewSearchQuery,
+	CloudCpWorkspaceReviewSearchResponse,
+	CloudCpWorkspaceReviewTreeResponse,
+	CloudCpWorkspaceReviewWriteRequest,
+	CloudCpWorkspaceReviewWriteResponse,
 	CloudCpTerminalTicketRequest,
 	CloudCpTerminalTicketResponse,
 	CloudCpUpdateProjectRequest,
@@ -163,6 +178,22 @@ export interface CloudCpClient {
 		sessionId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpResumeSessionResponse>;
+	/** Docker-only changed-file summary for a cloud session. */
+	getWorkspaceDiff(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceDiff>;
+	/** Docker-only selected-file review details for a cloud session. */
+	readWorkspaceDiffFile(
+		orgId: string,
+		sessionId: string,
+		path: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpWorkspaceDiffFileDetail>;
+	getWorkspaceReview(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceReviewResponse>;
+	getWorkspaceReviewTree(orgId: string, sessionId: string, path?: string, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceReviewTreeResponse>;
+	searchWorkspaceReview(orgId: string, sessionId: string, query: CloudCpWorkspaceReviewSearchQuery, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceReviewSearchResponse>;
+	getWorkspaceReviewFile(orgId: string, sessionId: string, query: CloudCpWorkspaceReviewFileQuery, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceReviewFileResponse>;
+	getWorkspaceReviewDiffs(orgId: string, sessionId: string, body: CloudCpWorkspaceReviewDiffsRequest, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceReviewDiffsResponse>;
+	getWorkspaceReviewRevision(orgId: string, sessionId: string, query: CloudCpWorkspaceReviewRevisionQuery, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceReviewRevisionResponse>;
+	updateWorkspaceReviewFile(orgId: string, sessionId: string, body: CloudCpWorkspaceReviewWriteRequest, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceReviewWriteResponse>;
 	/** Re-provision a deleted session, keeping its conversation and work intact. */
 	restoreSession(
 		orgId: string,
@@ -223,6 +254,7 @@ export interface CloudCpClient {
 	deleteAgentConnection(orgId: string, agent: CloudCpAgentProvider, options?: CloudCpRequestOptions): Promise<void>;
 	putGitHubPAT(body: CloudCpPutGitHubPATRequest, options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionResponse>;
 	deleteGitHubPAT(options?: CloudCpRequestOptions): Promise<void>;
+	listGitHubRepos(options?: CloudCpRequestOptions): Promise<CloudCpGitHubReposResponse>;
 	validateSavedRepositoryAccess(
 		body: CloudCpValidateRepositoryAccessRequest,
 		options?: CloudCpRequestOptions,
@@ -450,6 +482,44 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/resume`, {
 				signal: o?.signal,
 			}),
+		getWorkspaceDiff: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/diff`, {
+				signal: o?.signal,
+			}),
+		readWorkspaceDiffFile: (orgId, sessionId, path, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/file/diff`, {
+				query: { path },
+				signal: o?.signal,
+			}),
+		getWorkspaceReview: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/review`, { signal: o?.signal }),
+		getWorkspaceReviewTree: (orgId, sessionId, path, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/tree`, {
+				query: { path }, signal: o?.signal,
+			}),
+		searchWorkspaceReview: (orgId, sessionId, query, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/search`, {
+				query: { query: query.query, cursor: query.cursor, limit: query.limit }, signal: o?.signal,
+			}),
+		getWorkspaceReviewFile: (orgId, sessionId, query, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/review/file`, {
+				query: { path: query.path, scope: query.scope, commitSha: query.commitSha }, signal: o?.signal,
+			}),
+		getWorkspaceReviewDiffs: (orgId, sessionId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/review/diffs`, {
+				body, signal: o?.signal,
+			}),
+		getWorkspaceReviewRevision: (orgId, sessionId, query, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/review/revision`, {
+				query: {
+					path: query.path, scope: query.scope, side: query.side, workspaceVersion: query.workspaceVersion,
+					expectedRevision: query.expectedRevision, commitSha: query.commitSha,
+				}, signal: o?.signal,
+			}),
+		updateWorkspaceReviewFile: (orgId, sessionId, body, o) =>
+			requestJson("PUT", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/review/file`, {
+				body, signal: o?.signal,
+			}),
 		restoreSession: (orgId, sessionId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/restore`, {
 				signal: o?.signal,
@@ -498,6 +568,7 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		putGitHubPAT: (body, o) => requestJson("PUT", "/me/github-pat", { body, signal: o?.signal }),
 		deleteGitHubPAT: (o) => requestVoid("DELETE", "/me/github-pat", { signal: o?.signal }),
+		listGitHubRepos: (o) => requestJson("GET", "/me/github/repos", { signal: o?.signal }),
 		validateSavedRepositoryAccess: (body, o) =>
 			requestJson("POST", "/me/github-pat/validate-saved-repository", { body, signal: o?.signal }),
 	};

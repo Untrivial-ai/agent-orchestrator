@@ -16,6 +16,11 @@ type Principal struct {
 	ExternalOrgID string
 	OrgName       string
 	OrgRole       string
+	// OrgCapabilities are entitlement flags for the active organization, seeded
+	// from WorkOS organization metadata (metadata.capabilities). They gate
+	// optional features such as the coder sandbox provider. Empty for personal or
+	// local organizations.
+	OrgCapabilities []string
 }
 
 type Membership struct {

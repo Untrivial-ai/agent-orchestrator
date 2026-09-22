@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { parsePatchFiles, type DiffLineAnnotation, type FileDiffMetadata } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useTranslation } from "react-i18next";
-import { fetchWorkspaceFileRevision, type WorkspaceDiffScope, type WorkspaceFileDetail } from "../../hooks/useSessionWorkspaceFiles";
+import { fetchPRFileRevision, fetchWorkspaceFileRevision, type FilesSource, type WorkspaceDiffScope, type WorkspaceFileDetail } from "../../hooks/useSessionWorkspaceFiles";
 import { parseUnifiedDiff, type DiffRow } from "../../lib/diff-parser";
 import { useUiStore } from "../../stores/ui-store";
 import { FileAnnotationComposer, LineFeedbackButtonControl, type FileAnnotationModel } from "../WorkspaceDiffView";
@@ -46,6 +46,7 @@ export function AoDiffFile({
 	sessionId,
 	split,
 	commitSha,
+	source = { kind: "workspace" },
 }: {
 	annotation: FileAnnotationModel;
 	detail: WorkspaceFileDetail;
@@ -55,6 +56,7 @@ export function AoDiffFile({
 	sessionId: string;
 	split: boolean;
 	commitSha?: string;
+	source?: FilesSource;
 }) {
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
@@ -82,8 +84,8 @@ export function AoDiffFile({
 	const loadDiffFiles = useCallback(
 		async (fileDiff: FileDiffMetadata) => {
 			const [before, after] = await Promise.all([
-				fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "before", workspaceVersion: detail.workspaceVersion }),
-				fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "after", workspaceVersion: detail.workspaceVersion }),
+				source.kind === "pull_request" ? fetchPRFileRevision(sessionId, source.number, source.url, detail.path, "before") : fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "before", workspaceVersion: detail.workspaceVersion }),
+				source.kind === "pull_request" ? fetchPRFileRevision(sessionId, source.number, source.url, detail.path, "after") : fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "after", workspaceVersion: detail.workspaceVersion }),
 			]);
 			if (before.binary || after.binary || before.truncated || after.truncated) {
 				throw new Error(t("files.explorer.tooLarge", { size: Math.max(before.size, after.size) }));
@@ -95,7 +97,7 @@ export function AoDiffFile({
 				newFile,
 			};
 		},
-		[commitSha, detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, t],
+		[commitSha, detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, source, t],
 	);
 	const beginLineAnnotation = useCallback((side: "deletions" | "additions", lineNumber: number) => {
 		const { row, rowIndex } = rowForLine(rows, side, lineNumber);

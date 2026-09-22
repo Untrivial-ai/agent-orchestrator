@@ -612,3 +612,82 @@ func TestForwardTurnWaitsForReservedAgentPTY(t *testing.T) {
 		t.Fatalf("claimed %d turns after the agent PTY started, want 1", control.claims)
 	}
 }
+
+type reviewDispatchControl struct {
+	Control
+	completed   any
+	failureCode string
+}
+
+func (c *reviewDispatchControl) CompleteTransport(_ context.Context, _ string, _ int, response any) error {
+	c.completed = response
+	return nil
+}
+
+func (c *reviewDispatchControl) FailTransport(_ context.Context, _ string, _ int, code, _ string) error {
+	c.failureCode = code
+	return nil
+}
+
+func TestWorkspaceReviewDispatchHandlesEveryOperation(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeWorkspaceFile(t, repo, "README.md", "base\n")
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	review, err := workspace.ReviewSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		kind       string
+		payload    any
+		assertType func(any) bool
+	}{
+		{"workspace.review.summary", map[string]any{}, func(value any) bool { _, ok := value.(worker.WorkspaceReviewResponse); return ok }},
+		{"workspace.review.tree", worker.WorkspaceReviewTreeRequest{}, func(value any) bool { _, ok := value.(worker.WorkspaceReviewTreeResponse); return ok }},
+		{"workspace.review.search", worker.WorkspaceReviewSearchRequest{Query: "README"}, func(value any) bool { _, ok := value.(worker.WorkspaceReviewSearchResponse); return ok }},
+		{"workspace.review.file", worker.WorkspaceReviewFileRequest{Path: "README.md"}, func(value any) bool { _, ok := value.(worker.WorkspaceReviewFileResponse); return ok }},
+		{"workspace.review.diffs", worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewCombined, Paths: []string{"README.md"}, ContextLines: 3, WorkspaceVersion: review.WorkspaceVersion}, func(value any) bool { _, ok := value.(worker.WorkspaceReviewDiffsResponse); return ok }},
+		{"workspace.review.revision", worker.WorkspaceReviewRevisionRequest{Path: "README.md", Scope: worker.WorkspaceReviewCombined, Side: worker.WorkspaceReviewAfter, WorkspaceVersion: review.WorkspaceVersion}, func(value any) bool { _, ok := value.(worker.WorkspaceReviewRevisionResponse); return ok }},
+		{"workspace.review.write", worker.WorkspaceReviewWriteRequest{Path: "README.md", Content: "changed\n", ExpectedFileFingerprint: review.Files[0].FileFingerprint}, func(value any) bool { _, ok := value.(worker.WorkspaceReviewWriteResponse); return ok }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			control := &reviewDispatchControl{}
+			supervisor := &Supervisor{Control: control, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			supervisor.handle(context.Background(), workspace, &worker.TransportRequest{ID: "request-1", Attempt: 1, Kind: tc.kind, Payload: tc.payload})
+			if control.failureCode != "" || !tc.assertType(control.completed) {
+				t.Fatalf("completed=%T failure=%q", control.completed, control.failureCode)
+			}
+		})
+	}
+}
+
+func TestWorkspaceReviewDispatchMapsStaleSnapshot(t *testing.T) {
+	repo := newGitWorkspace(t)
+	writeWorkspaceFile(t, repo, "README.md", "base\n")
+	gitWorkspace(t, repo, "add", ".")
+	gitWorkspace(t, repo, "commit", "-m", "base")
+	gitWorkspace(t, repo, "update-ref", worker.WorkspaceReviewBaseRef, "HEAD")
+	workspace, err := openWorkspace(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	control := &reviewDispatchControl{}
+	supervisor := &Supervisor{Control: control, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	supervisor.handle(context.Background(), workspace, &worker.TransportRequest{
+		ID: "request-1", Attempt: 1, Kind: "workspace.review.diffs",
+		Payload: worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewCombined, Paths: []string{"README.md"}, WorkspaceVersion: "stale"},
+	})
+	if control.failureCode != "WORKSPACE_SNAPSHOT_STALE" || control.completed != nil {
+		t.Fatalf("completed=%T failure=%q", control.completed, control.failureCode)
+	}
+}

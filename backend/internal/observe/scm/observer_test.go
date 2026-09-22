@@ -870,7 +870,7 @@ func TestPoll_DiscoversWorkspaceChildRepoPR(t *testing.T) {
 
 func TestPoll_DiscoversWorkspaceChildRepoUpstreamPR(t *testing.T) {
 	oldRemoteURLs := gitRemoteURLsFunc
-	gitRemoteURLsFunc = func(path string) []string {
+	gitRemoteURLsFunc = func(_ context.Context, path string) []string {
 		if strings.HasSuffix(filepath.ToSlash(path), "/api") {
 			return []string{"https://github.com/o/api.git", "https://github.com/upstream/api.git"}
 		}
@@ -3141,7 +3141,7 @@ func TestPoll_SecondScanNameDoesNotRebaselineTrackedPR(t *testing.T) {
 	oldRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old", Name: "r", Repo: "old/r"}
 	newRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "new", Name: "r", Repo: "new/r"}
 	restoreRemotes := gitRemoteURLsFunc
-	gitRemoteURLsFunc = func(string) []string {
+	gitRemoteURLsFunc = func(context.Context, string) []string {
 		return []string{"https://github.com/new/r.git", "https://github.com/old/r.git"}
 	}
 	defer func() { gitRemoteURLsFunc = restoreRemotes }()

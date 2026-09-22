@@ -153,21 +153,6 @@ func TestEnsureAgentReadinessDecodesBatchAndPurpose(t *testing.T) {
 	}
 }
 
-func TestEnsureAgentReadinessAcceptsSettingsPurpose(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	catalog := &fakeAgentCatalog{readiness: agentsvc.Readiness{Agents: []domain.AgentReadinessSnapshot{}}}
-	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Agents: catalog}, httpd.ControlDeps{}))
-	defer srv.Close()
-
-	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/agents/readiness/ensure", `{"agentIds":["codex"],"purpose":"settings"}`)
-	if status != http.StatusOK {
-		t.Fatalf("POST /agents/readiness/ensure = %d, body=%s", status, body)
-	}
-	if catalog.ensurePurpose != domain.AgentReadinessPurposeSettings {
-		t.Fatalf("ensure purpose = %q, want settings", catalog.ensurePurpose)
-	}
-}
-
 func TestEnsureAgentReadinessRejectsInvalidJSON(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	catalog := &fakeAgentCatalog{}

@@ -42,18 +42,6 @@ function postCallsFor(path: string) {
   return postMock.mock.calls.filter(([calledPath]) => calledPath === path);
 }
 
-function mockPostsWithResponse(response: unknown) {
-  postMock.mockImplementation(async (path: string) => {
-    if (path === "/api/v1/agents/readiness/ensure") {
-      const agents = ["claude-code", "codex", "opencode"].map((id) =>
-        agentReadiness(id),
-      );
-      return { data: { agents } };
-    }
-    return response;
-  });
-}
-
 function setRenderedOverflow(element: HTMLElement, overflowing: boolean) {
   Object.defineProperties(element, {
     clientHeight: { configurable: true, value: 64 },
@@ -300,7 +288,7 @@ beforeEach(() => {
     error: undefined,
     response: { status: 200 },
   });
-  mockPostsWithResponse({
+  postMock.mockResolvedValue({
     data: { ok: true, sessionId: "sess-1" },
     error: undefined,
   });
@@ -1665,6 +1653,12 @@ describe("SessionInspector Activity section", () => {
       );
     }
   });
+
+	it("keeps execution context out of the summary", () => {
+		renderWithQuery(<SessionInspector session={session([], { branch: "feature/session" })} />);
+
+		expect(screen.queryByTestId("execution-context")).not.toBeInTheDocument();
+	});
 
   it("keeps workspace, PR, and SCM context rows in the Activity timeline", () => {
     renderWithQuery(
@@ -3071,7 +3065,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });
@@ -3128,7 +3122,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3184,7 +3178,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3239,7 +3233,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3301,7 +3295,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3347,7 +3341,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3460,7 +3454,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });

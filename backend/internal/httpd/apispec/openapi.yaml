@@ -1222,6 +1222,155 @@ paths:
       summary: Stream CDC events with durable replay
       tags:
       - events
+  /api/v1/fs/dirs:
+    get:
+      operationId: listDirs
+      parameters:
+      - description: Absolute directory on the daemon host to list. When omitted,
+          the daemon user's home directory.
+        in: query
+        name: path
+        schema:
+          description: Absolute directory on the daemon host to list. When omitted,
+            the daemon user's home directory.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDirsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List the subdirectories of a directory on the daemon host
+      tags:
+      - fs
+  /api/v1/github/pat:
+    delete:
+      operationId: deleteGitHubPAT
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Remove the stored GitHub personal access token
+      tags:
+      - github
+    put:
+      operationId: putGitHubPAT
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutGitHubPATRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Store a GitHub personal access token locally
+      tags:
+      - github
+  /api/v1/github/repos:
+    get:
+      operationId: listGitHubRepos
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items:
+                    $ref: '#/components/schemas/GitHubRepo'
+                  type: array
+                type: object
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unauthorized
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List repositories accessible with the stored GitHub token
+      tags:
+      - github
+  /api/v1/github/status:
+    get:
+      operationId: getGitHubStatus
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: boolean
+                type: object
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Check whether a GitHub personal access token is stored locally
+      tags:
+      - github
   /api/v1/identity:
     get:
       operationId: getIdentity
@@ -4980,6 +5129,196 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: List pull requests owned by a session
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/pr/{prNumber}/file:
+    get:
+      operationId: getSessionPRFile
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Associated pull request number.
+        in: path
+        name: prNumber
+        required: true
+        schema:
+          description: Associated pull request number.
+          minimum: 1
+          type: integer
+      - description: Repository-relative file path.
+        in: query
+        name: path
+        required: true
+        schema:
+          description: Repository-relative file path.
+          type: string
+      - description: Previous repository-relative path supplied by the selected PR
+          file summary for rename detection.
+        in: query
+        name: previousPath
+        schema:
+          description: Previous repository-relative path supplied by the selected
+            PR file summary for rename detection.
+          type: string
+      - description: Stable URL of the selected associated pull request.
+        in: query
+        name: sourceUrl
+        schema:
+          description: Stable URL of the selected associated pull request.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Read one file from an associated pull request base-to-head diff
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision:
+    get:
+      operationId: getSessionPRFileRevision
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Associated pull request number.
+        in: path
+        name: prNumber
+        required: true
+        schema:
+          description: Associated pull request number.
+          minimum: 1
+          type: integer
+      - description: Repository-relative file path.
+        in: query
+        name: path
+        required: true
+        schema:
+          description: Repository-relative file path.
+          type: string
+      - description: Comparison side. Defaults to after.
+        in: query
+        name: side
+        schema:
+          description: Comparison side. Defaults to after.
+          enum:
+          - before
+          - after
+          type: string
+      - description: Stable URL of the selected associated pull request.
+        in: query
+        name: sourceUrl
+        schema:
+          description: Stable URL of the selected associated pull request.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileRevisionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Read one text-capable side of a pull request comparison
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/pr/{prNumber}/files:
+    get:
+      operationId: listSessionPRFiles
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Associated pull request number.
+        in: path
+        name: prNumber
+        required: true
+        schema:
+          description: Associated pull request number.
+          minimum: 1
+          type: integer
+      - description: Stable URL of the selected associated pull request.
+        in: query
+        name: sourceUrl
+        schema:
+          description: Stable URL of the selected associated pull request.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPRFilesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List the exact base-to-head changed files for an associated pull request
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/pr/claim:
@@ -9566,7 +9905,6 @@ components:
         purpose:
           enum:
           - display
-          - settings
           - launch
           type: string
       required:
@@ -9643,6 +9981,42 @@ components:
       - ok
       - sessionId
       - session
+      type: object
+    FSEntry:
+      properties:
+        gitRepo:
+          description: True when the directory carries a .git entry (clone or worktree
+            checkout).
+          type: boolean
+        name:
+          description: Directory name.
+          type: string
+        path:
+          description: Absolute path of the directory on the daemon host.
+          type: string
+      required:
+      - name
+      - path
+      - gitRepo
+      type: object
+    GitHubRepo:
+      properties:
+        clone_url:
+          type: string
+        default_branch:
+          type: string
+        full_name:
+          type: string
+        name:
+          type: string
+        private:
+          type: boolean
+      required:
+      - name
+      - full_name
+      - private
+      - default_branch
+      - clone_url
       type: object
     GitHubRepositoryPreparation:
       properties:
@@ -10037,6 +10411,29 @@ components:
       required:
       - sessions
       type: object
+    ListDirsResponse:
+      properties:
+        entries:
+          description: Subdirectories, excluding dotted names.
+          items:
+            $ref: '#/components/schemas/FSEntry'
+          type: array
+        parent:
+          description: Absolute path of the listed directory's parent; equals path
+            at the filesystem root.
+          type: string
+        path:
+          description: Absolute path that was listed.
+          type: string
+        truncated:
+          description: True when the listing hit the entry cap and more subdirectories
+            exist.
+          type: boolean
+      required:
+      - path
+      - parent
+      - entries
+      type: object
     ListNotificationsResponse:
       properties:
         nextCursor:
@@ -10053,6 +10450,24 @@ components:
       - notifications
       - unreadCount
       - unresolvedCount
+      type: object
+    ListPRFilesResponse:
+      properties:
+        files:
+          items:
+            $ref: '#/components/schemas/WorkspaceFileSummary'
+          type: array
+        sessionId:
+          type: string
+        summary:
+          $ref: '#/components/schemas/WorkspaceSummary'
+        truncated:
+          type: boolean
+      required:
+      - sessionId
+      - files
+      - truncated
+      - summary
       type: object
     ListProjectsResponse:
       properties:
@@ -10744,6 +11159,13 @@ components:
       - createdAt
       - lastSeenAt
       type: object
+    PutGitHubPATRequest:
+      properties:
+        pat:
+          type: string
+      required:
+      - pat
+      type: object
     RegisterPushDeviceRequest:
       properties:
         deviceName:
@@ -10787,6 +11209,7 @@ components:
     RenameSessionRequest:
       properties:
         displayName:
+          maxLength: 100
           minLength: 1
           type: string
       required:
@@ -11896,7 +12319,7 @@ components:
         branch:
           type: string
         displayName:
-          maxLength: 20
+          maxLength: 100
           type: string
         harness:
           enum:
@@ -12326,7 +12749,7 @@ components:
         config:
           $ref: '#/components/schemas/ProjectConfig'
         displayName:
-          maxLength: 20
+          maxLength: 100
           minLength: 1
           type: string
       required:
@@ -12893,8 +13316,12 @@ tags:
   name: mobile
 - description: Target-isolated desktop browser runtime (loopback only)
   name: browser
+- description: Read-only filesystem browsing for remote clients
+  name: fs
 - description: Local machine readiness checks the desktop app runs before showing
     the board
   name: system
 - description: Server-side unfurl of external links for the CSP-locked renderer
   name: link-preview
+- description: Local GitHub personal access token storage and repository listing
+  name: github
