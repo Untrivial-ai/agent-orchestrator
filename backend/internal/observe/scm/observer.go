@@ -298,7 +298,7 @@ type subject struct {
 	hasPR   bool
 }
 
-// sessionRepo pairs a live session with a repo to scan and its branch for
+// sessionRepo pairs a session with a repo to scan and its branch for
 // per-repo branch-prefix discovery of new (including stacked) pull requests.
 // A session is scanned against its push origin plus every other remote in the
 // project checkout, so repo is the repo whose open-PR list is listed while
@@ -311,6 +311,9 @@ type sessionRepo struct {
 	headRepo  ports.SCMRepo
 	branch    string
 	workspace bool
+	// refreshOnly keeps a terminated session's already-tracked open PRs
+	// observable without making that session eligible for new PR discovery.
+	refreshOnly bool
 }
 
 type repoGuardState struct {
@@ -579,7 +582,8 @@ func (o *Observer) Poll(ctx context.Context) error {
 		// changed hashes at their local values until lifecycle succeeds; if the
 		// daemon restarts after a lifecycle failure, the stale hashes force the
 		// same observation to be fetched and delivered again.
-		if o.lifecycle != nil {
+		runLifecycle := o.lifecycle != nil && !subj.session.IsTerminated
+		if runLifecycle {
 			pendingOpts := opts
 			if prepared.Changed.Metadata {
 				pendingOpts.preserveLocalMetadataHash = true
@@ -597,7 +601,7 @@ func (o *Observer) Poll(ctx context.Context) error {
 			markRepoRefreshFailed(subj.repo)
 			continue
 		}
-		if o.lifecycle != nil {
+		if runLifecycle {
 			if err := o.lifecycle.ApplySCMObservation(ctx, subj.session.ID, prepared); err != nil {
 				o.logger.Error("scm observer: lifecycle notification failed", "session", subj.session.ID, "pr", firstNonEmpty(prepared.PR.URL, prepared.PR.HTMLURL, local.URL), "err", err)
 				markRepoRefreshFailed(subj.repo)
@@ -726,11 +730,9 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 	out := map[string]*subject{}
 	var sessionRepos []sessionRepo
 	for _, sess := range sessions {
-		if sess.IsTerminated {
-			continue
-		}
+		sessionRepoStart := len(sessionRepos)
 		branch := strings.TrimSpace(sess.Metadata.Branch)
-		if branch == "" {
+		if branch == "" && !sess.IsTerminated {
 			continue
 		}
 		proj, ok := projects[sess.ProjectID]
@@ -760,7 +762,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		repos := make([]ports.SCMRepo, 0, len(scanRepos[sess.ProjectID]))
 		if origin, ok := originRepos[sess.ProjectID]; ok {
 			for _, repo := range scanRepos[sess.ProjectID] {
-				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch, workspace: proj.Kind.WithDefault() == domain.ProjectKindWorkspace})
+				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch, workspace: proj.Kind.WithDefault() == domain.ProjectKindWorkspace, refreshOnly: sess.IsTerminated})
 				repos = append(repos, repo)
 			}
 		}
@@ -769,6 +771,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 			return nil, nil, err
 		}
 		for _, child := range childRepos {
+			child.refreshOnly = sess.IsTerminated
 			sessionRepos = append(sessionRepos, child)
 			repos = append(repos, child.repo)
 		}
@@ -780,7 +783,12 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		if err != nil {
 			return nil, nil, err
 		}
-		for _, pr := range trackedPRsForSession(sess, prs) {
+		tracked := trackedPRsForSession(sess, prs)
+		if sess.IsTerminated {
+			tracked = openTrackedPRs(prs)
+		}
+		hasTrackedSubject := false
+		for _, pr := range tracked {
 			prRepo, ok := repoForTrackedPR(pr, repos)
 			if !ok {
 				o.logger.Warn("scm observer: tracked PR repo no longer belongs to project", "session", sess.ID, "pr", pr.URL, "repo", pr.Repo)
@@ -795,6 +803,12 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 				continue
 			}
 			out[key] = &subject{session: sess, repo: prRepo, branch: branch, known: pr, hasPR: true}
+			hasTrackedSubject = true
+		}
+		if sess.IsTerminated && !hasTrackedSubject {
+			// A terminated session participates only while it has a locally open
+			// tracked PR. Do not keep scanning repositories after reconciliation.
+			sessionRepos = sessionRepos[:sessionRepoStart]
 		}
 	}
 	return out, sessionRepos, nil
@@ -971,7 +985,9 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	repos := map[string]ports.SCMRepo{}
 	for _, sr := range sessionRepos {
 		key := prKey(sr.repo, 0)
-		byRepo[key] = append(byRepo[key], sr)
+		if !sr.refreshOnly {
+			byRepo[key] = append(byRepo[key], sr)
+		}
 		repos[key] = sr.repo
 	}
 	// listed tracks which repos had their PR list fetched this poll, and

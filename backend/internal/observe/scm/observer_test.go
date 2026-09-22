@@ -2644,6 +2644,97 @@ func TestPoll_GitHubTerminalReconciliation_TerminalTransition(t *testing.T) {
 	}
 }
 
+func TestPoll_TerminatedSessionRefreshesTrackedOpenPRWithoutLifecycleOrDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		state  domain.PRState
+		merged bool
+		closed bool
+	}{
+		{name: "merged", state: domain.PRStateMerged, merged: true},
+		{name: "closed", state: domain.PRStateClosed, closed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testStoreWithSession()
+			store.sessions[0].IsTerminated = true
+			local := knownPR(1)
+			local.MetadataHash = "durable-meta"
+			local.CIHash = "durable-ci"
+			local.ReviewHash = "durable-review"
+			store.prs["p-1"] = []domain.PullRequest{local}
+
+			terminal := testObs(1)
+			terminal.PR.State = string(tc.state)
+			terminal.PR.Merged = tc.merged
+			terminal.PR.Closed = tc.closed
+			provider := &fakeProvider{
+				repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo2"}},
+				// A matching untracked PR must not be claimed by a terminated owner.
+				openPRs: map[string][]ports.SCMPRObservation{prKey(testRepo, 0): {{
+					URL: "https://github.com/o/r/pull/2", Number: 2, SourceBranch: "feat/stack", HeadRepo: "o/r",
+				}}},
+				observations: map[string]ports.SCMObservation{prKey(testRepo, 1): terminal},
+			}
+			lc := &fakeLifecycle{}
+			obs := newTestObserver(store, provider, lc, time.Unix(1300, 0).UTC())
+
+			if err := obs.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			var terminalPR domain.PullRequest
+			for _, write := range store.writes {
+				if write.pr.Number == 2 {
+					t.Fatalf("terminated session discovered a new PR: %#v", write.pr)
+				}
+				if write.pr.Number == 1 && write.pr.Merged == tc.merged && write.pr.Closed == tc.closed {
+					terminalPR = write.pr
+				}
+			}
+			if terminalPR.Number == 0 {
+				t.Fatalf("terminal state was not persisted: writes=%#v", store.writes)
+			}
+			if len(lc.observed) != 0 {
+				t.Fatalf("terminated session triggered lifecycle: %#v", lc.observed)
+			}
+
+			// Once the durable row is terminal, later polls must stop scanning it.
+			store.prs["p-1"] = []domain.PullRequest{terminalPR}
+			provider.fetchBatches = nil
+			guardCalls, listCalls := provider.repoGuardCalls, provider.listCalls
+			if err := obs.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(provider.fetchBatches) != 0 || provider.repoGuardCalls != guardCalls || provider.listCalls != listCalls {
+				t.Fatalf("terminal row remained eligible: batches=%#v guard calls=%d list calls=%d", provider.fetchBatches, provider.repoGuardCalls, provider.listCalls)
+			}
+		})
+	}
+}
+
+func TestPoll_TerminatedSessionProviderFailurePreservesTrackedPR(t *testing.T) {
+	store := testStoreWithSession()
+	store.sessions[0].IsTerminated = true
+	store.prs["p-1"] = []domain.PullRequest{knownPR(1)}
+	provider := &fakeProvider{
+		repoGuards:     map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo2"}},
+		openPRs:        map[string][]ports.SCMPRObservation{},
+		fetchObsErrors: map[string]error{prKey(testRepo, 1): errors.New("provider unavailable")},
+	}
+	obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(1300, 0).UTC())
+	obs.Cache.RepoPRListETag[prKey(testRepo, 0)] = "repo1"
+
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) != 0 {
+		t.Fatalf("provider failure overwrote tracked PR: %#v", store.writes)
+	}
+	if got := obs.Cache.RepoPRListETag[prKey(testRepo, 0)]; got != "repo1" {
+		t.Fatalf("repo ETag advanced after provider failure: %q", got)
+	}
+}
+
 // TestPoll_GitHubTerminalReconciliation_SecondPollNoReconcile (Item 2)
 // verifies the reviewer's explicit multi-poll requirement: after a PR is
 // reconciled on poll N (still-open, no-op), poll N+1 does NOT re-reconcile it

@@ -97,7 +97,7 @@ discovery overlap 5m.
 
 ```mermaid
 flowchart TD
-    A[discoverSubjects<br/>live sessions → tracked PR rows → subjects] --> B[checkCredentials]
+    A[discoverSubjects<br/>eligible tracked PR rows → subjects] --> B[checkCredentials]
     B --> C[guardRepos<br/>conditional repo-list ETag probes]
     C --> D[discoverNewPRs<br/>list open PRs, attribute, persist baselines]
     D --> E[selectRefreshCandidates<br/>listed? stale? commit-check ETag changed?]
@@ -110,9 +110,11 @@ flowchart TD
 
 Stage notes:
 
-- **Subjects** are the observer's in-memory unit of tracking: one live session
-  + one tracked PR row + the repo identity to poll it under. Terminated
-  sessions produce no subjects; their PRs stop being observed.
+- **Subjects** are the observer's in-memory unit of tracking: one session + one
+  tracked PR row + the repo identity to poll it under. Live sessions contribute
+  their eligible tracked PRs and participate in new-PR discovery. Terminated
+  sessions contribute only already-tracked, locally open PRs as refresh-only
+  subjects; provider updates persist without lifecycle reactions or discovery.
 - **Repo scan set** (`resolveScanRepos`): the project origin plus every other
   GitHub/GitLab remote in the checkout (upstreams, mirrors). Attribution still
   requires the PR's head repo to be a session's push origin, so extra remotes
