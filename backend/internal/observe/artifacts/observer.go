@@ -60,17 +60,20 @@ func (o *Observer) Start(ctx context.Context) <-chan struct{} {
 	return observe.StartPollLoop(ctx, o.tick, o.Poll, o.logger, "artifact output observer")
 }
 
-// Poll rescans every non-terminated session not already classified as PR
-// output — PR output never reverts, so it is skipped — and reconciles the
-// rest so a session whose agent writes an artifact file gets its OutputType
-// (and therefore its Kanban column) updated without a PR ever landing.
+// Poll rescans every non-terminated session not already classified as having
+// artifact output — that classification never reverts, so it is skipped —
+// and reconciles the rest so a session whose agent writes an artifact file
+// gets its OutputType (and therefore its Kanban column) updated. A
+// PR-only session is deliberately not skipped: it may still gain artifact
+// output later and needs this poll to notice, since PR observation and
+// claim only reconcile the PR side of OutputType.
 func (o *Observer) Poll(ctx context.Context) error {
 	sessions, err := o.sessions.ListAllSessions(ctx)
 	if err != nil {
 		return err
 	}
 	for _, sess := range sessions {
-		if sess.IsTerminated || sess.OutputType == domain.SessionOutputPR {
+		if sess.IsTerminated || sess.OutputType.HasArtifact() {
 			continue
 		}
 		if err := o.sink.ReconcileSessionOutputType(ctx, sess.ID); err != nil {

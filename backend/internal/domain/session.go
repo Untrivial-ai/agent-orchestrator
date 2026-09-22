@@ -71,12 +71,27 @@ func (o ConversationCheckpointOrigin) Valid() bool {
 // currently owns.
 type SessionOutputType string
 
-// Session output types.
+// Session output types. PRAndArtifact is a distinct value rather than two
+// independent flags: the output-kind set is small and expected to stay that
+// way, so an explicit enumerated combination is simpler to persist, validate,
+// and read than a bitmask or a join table.
 const (
-	SessionOutputNone     SessionOutputType = "none"
-	SessionOutputPR       SessionOutputType = "pr"
-	SessionOutputArtifact SessionOutputType = "artifact"
+	SessionOutputNone          SessionOutputType = "none"
+	SessionOutputPR            SessionOutputType = "pr"
+	SessionOutputArtifact      SessionOutputType = "artifact"
+	SessionOutputPRAndArtifact SessionOutputType = "pr_artifact"
 )
+
+// HasPR reports whether a session's output includes a claimed/observed PR.
+func (t SessionOutputType) HasPR() bool {
+	return t == SessionOutputPR || t == SessionOutputPRAndArtifact
+}
+
+// HasArtifact reports whether a session's output includes at least one
+// artifact file.
+func (t SessionOutputType) HasArtifact() bool {
+	return t == SessionOutputArtifact || t == SessionOutputPRAndArtifact
+}
 
 // SessionArtifactKind is the UI-facing kind of one file artifact.
 type SessionArtifactKind string
@@ -219,7 +234,7 @@ type SessionRecord struct {
 	TerminateOnPRMerge bool              `json:"terminateOnPrMerge"`
 	AutoInjectReview   bool              `json:"autoInjectReview"`
 	AutoInjectCI       bool              `json:"autoInjectCI"`
-	OutputType         SessionOutputType `json:"outputType" enum:"none,pr,artifact"`
+	OutputType         SessionOutputType `json:"outputType" enum:"none,pr,artifact,pr_artifact"`
 	Metadata           SessionMetadata   `json:"-"`
 	// CleanupGeneration is a monotonic counter bumped each time the session is
 	// un-terminated (spawn/restore). The terminal-resource reconciler stamps its

@@ -41,7 +41,7 @@ func TestReconcileSessionOutputType_ArtifactFilesPersistArtifactOutput(t *testin
 	}
 }
 
-func TestReconcileSessionOutputType_PRRowOutranksArtifactFiles(t *testing.T) {
+func TestReconcileSessionOutputType_PRAndArtifactFilesCombine(t *testing.T) {
 	m, st, _ := newManager()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
@@ -56,8 +56,8 @@ func TestReconcileSessionOutputType_PRRowOutranksArtifactFiles(t *testing.T) {
 	if err := m.ReconcileSessionOutputType(ctx, "mer-1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := st.sessions["mer-1"].OutputType; got != domain.SessionOutputPR {
-		t.Fatalf("outputType = %q, want %q", got, domain.SessionOutputPR)
+	if got := st.sessions["mer-1"].OutputType; got != domain.SessionOutputPRAndArtifact {
+		t.Fatalf("outputType = %q, want %q", got, domain.SessionOutputPRAndArtifact)
 	}
 }
 

@@ -3244,7 +3244,7 @@ export interface components {
             mode: "chat" | "tui";
             model?: string;
             /** @enum {string} */
-            outputType: "none" | "pr" | "artifact";
+            outputType: "none" | "pr" | "artifact" | "pr_artifact";
             /** Format: date-time */
             pinnedAt?: null | string;
             /** Format: int64 */

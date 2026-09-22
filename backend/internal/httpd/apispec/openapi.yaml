@@ -9358,6 +9358,7 @@ components:
           - none
           - pr
           - artifact
+          - pr_artifact
           type: string
         pinnedAt:
           format: date-time

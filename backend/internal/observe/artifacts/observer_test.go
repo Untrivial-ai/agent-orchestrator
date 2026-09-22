@@ -27,11 +27,13 @@ func (f *fakeSink) ReconcileSessionOutputType(_ context.Context, id domain.Sessi
 	return f.err
 }
 
-func TestPoll_SkipsTerminatedAndAlreadyPRSessions(t *testing.T) {
+func TestPoll_SkipsTerminatedAndAlreadyArtifactSessions(t *testing.T) {
 	sessions := fakeSessions{rows: []domain.SessionRecord{
 		{ID: "live"},
+		{ID: "pr-only", OutputType: domain.SessionOutputPR}, // still polled: may later gain artifact output too.
 		{ID: "terminated", IsTerminated: true},
-		{ID: "already-pr", OutputType: domain.SessionOutputPR},
+		{ID: "already-artifact", OutputType: domain.SessionOutputArtifact},
+		{ID: "already-pr-and-artifact", OutputType: domain.SessionOutputPRAndArtifact},
 	}}
 	sink := &fakeSink{}
 	o := New(sessions, sink, Config{})
@@ -39,8 +41,8 @@ func TestPoll_SkipsTerminatedAndAlreadyPRSessions(t *testing.T) {
 	if err := o.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(sink.reconciled) != 1 || sink.reconciled[0] != "live" {
-		t.Fatalf("reconciled = %v, want only [live]", sink.reconciled)
+	if len(sink.reconciled) != 2 || sink.reconciled[0] != "live" || sink.reconciled[1] != "pr-only" {
+		t.Fatalf("reconciled = %v, want [live pr-only]", sink.reconciled)
 	}
 }
 

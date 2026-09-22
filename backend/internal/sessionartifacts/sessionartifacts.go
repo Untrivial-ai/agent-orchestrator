@@ -95,16 +95,22 @@ func inferKind(absPath, relPath string) domain.SessionArtifactKind {
 	return domain.SessionArtifactGeneric
 }
 
-// DeriveOutputType classifies a session's durable output from counts alone: a
-// PR outranks an artifact, and neither ever reverts once observed, since a
-// caller comparing this against a session's current OutputType before
-// persisting is expected to only ever move forward (none -> artifact/pr,
-// artifact -> pr).
+// DeriveOutputType classifies a session's durable output from counts alone.
+// PR and artifact are independent facts that combine into PRAndArtifact when
+// both are present. Once a PR row exists for a session it is never deleted
+// (merge/close does not remove it), so prCount only grows; combined with
+// artifact files only ever being added, never removed from this
+// classification's perspective, the result never reverts (none -> artifact
+// and/or pr -> pr_artifact).
 func DeriveOutputType(prCount, artifactFileCount int) domain.SessionOutputType {
+	hasPR := prCount > 0
+	hasArtifact := artifactFileCount > 0
 	switch {
-	case prCount > 0:
+	case hasPR && hasArtifact:
+		return domain.SessionOutputPRAndArtifact
+	case hasPR:
 		return domain.SessionOutputPR
-	case artifactFileCount > 0:
+	case hasArtifact:
 		return domain.SessionOutputArtifact
 	default:
 		return domain.SessionOutputNone
