@@ -29,8 +29,3 @@ export function applyCloudNotificationEvent(state: CloudNotificationState, event
 		pending: state.pending.filter((hint) => hint.eventId !== event.notification.eventId),
 	};
 }
-
-export function reconcileCloudNotifications(state: CloudNotificationState, items: CloudCpNotification[], latestSequence: number): CloudNotificationState {
-	const eventIDs = new Set(items.flatMap((item) => item.eventId === undefined ? [] : [item.eventId]));
-	return { sequence: Math.max(state.sequence, latestSequence), durable: items, pending: state.pending.filter((hint) => !eventIDs.has(hint.eventId)) };
-}

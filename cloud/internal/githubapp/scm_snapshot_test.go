@@ -2,10 +2,37 @@ package githubapp
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 )
+
+func TestPullRequestSnapshotQueryHasBalancedDelimiters(t *testing.T) {
+	if err := validateGraphQLDelimiters(pullRequestSnapshotQuery); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validateGraphQLDelimiters(document string) error {
+	openers := map[rune]rune{'}': '{', ')': '(', ']': '['}
+	var stack []rune
+	for offset, current := range document {
+		switch current {
+		case '{', '(', '[':
+			stack = append(stack, current)
+		case '}', ')', ']':
+			if len(stack) == 0 || stack[len(stack)-1] != openers[current] {
+				return fmt.Errorf("GraphQL query has unmatched %q at byte %d", current, offset)
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	if len(stack) > 0 {
+		return fmt.Errorf("GraphQL query has unclosed %q", stack[len(stack)-1])
+	}
+	return nil
+}
 
 func TestNormalizePullRequestSnapshotIncludesReviewsThreadsAndStatusContexts(t *testing.T) {
 	var response githubPullRequestSnapshotResponse

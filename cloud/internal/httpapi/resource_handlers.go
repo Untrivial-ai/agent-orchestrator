@@ -133,28 +133,9 @@ func toSessionChildResponse(
 	facts []contract.PRFacts,
 	prs []domain.PullRequest,
 ) sessionChildResponse {
-	rendered := make([]sessionPRFactsResponse, 0, len(prs))
-	for _, pr := range prs {
-		state := string(pr.State)
-		if pr.Draft && pr.State == contract.PRStateOpen {
-			state = "draft"
-		}
-		rendered = append(rendered, sessionPRFactsResponse{
-			URL:           pr.URL,
-			Number:        pr.Number,
-			State:         state,
-			CI:            string(pr.CIState),
-			Review:        string(pr.ReviewState),
-			Mergeability:  string(pr.Mergeability),
-			FailingChecks: pullRequestFailingChecks(pr.Checks),
-			SourceBranch:  pr.SourceBranch,
-			TargetBranch:  pr.TargetBranch,
-			UpdatedAt:     pr.UpdatedAt,
-		})
-	}
 	return sessionChildResponse{
 		sessionResponse: toSessionResponse(session, facts),
-		PRs:             rendered,
+		PRs:             toSessionPRFactsResponses(prs, facts),
 	}
 }
 
@@ -549,7 +530,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	items := make([]sessionResponse, 0, len(sessions))
 	for _, session := range sessions {
 		response := toSessionResponse(session, prFacts[session.ID])
-		response.PRs = toSessionPRFactsResponses(pullRequests[session.ID])
+		response.PRs = toSessionPRFactsResponses(pullRequests[session.ID], prFacts[session.ID])
 		items = append(items, response)
 	}
 	page := pageInfo{HasMore: hasMore}
@@ -668,7 +649,7 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := toSessionResponse(session, prFacts[sessionID])
-	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID], prFacts[sessionID])
 	writeJSON(w, http.StatusOK, map[string]any{"session": response})
 }
 
@@ -702,7 +683,7 @@ func (s *Server) setCloudSessionAutoInjectCI(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	response := toSessionResponse(session, prFacts[sessionID])
-	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID], prFacts[sessionID])
 	writeJSON(w, http.StatusOK, map[string]any{"session": response})
 }
 
@@ -751,7 +732,7 @@ func (s *Server) setCloudSessionBooleanPolicy(
 		return
 	}
 	response := toSessionResponse(session, prFacts[sessionID])
-	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID], prFacts[sessionID])
 	writeJSON(w, http.StatusOK, map[string]any{"session": response})
 }
 
@@ -945,7 +926,11 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 	}
 }
 
-func toSessionPRFactsResponses(prs []domain.PullRequest) []sessionPRFactsResponse {
+func toSessionPRFactsResponses(prs []domain.PullRequest, facts []contract.PRFacts) []sessionPRFactsResponse {
+	reviewCommentsByURL := make(map[string]bool, len(facts))
+	for _, fact := range facts {
+		reviewCommentsByURL[fact.URL] = fact.ReviewComments
+	}
 	items := make([]sessionPRFactsResponse, 0, len(prs))
 	for _, pr := range prs {
 		state := string(pr.State)
@@ -955,8 +940,9 @@ func toSessionPRFactsResponses(prs []domain.PullRequest) []sessionPRFactsRespons
 		items = append(items, sessionPRFactsResponse{
 			URL: pr.URL, Number: pr.Number, State: state, CI: string(pr.CIState),
 			Review: string(pr.ReviewState), Mergeability: string(pr.Mergeability),
-			FailingChecks: pullRequestFailingChecks(pr.Checks),
-			SourceBranch:  pr.SourceBranch, TargetBranch: pr.TargetBranch, UpdatedAt: pr.UpdatedAt,
+			FailingChecks:  pullRequestFailingChecks(pr.Checks),
+			ReviewComments: reviewCommentsByURL[pr.URL],
+			SourceBranch:   pr.SourceBranch, TargetBranch: pr.TargetBranch, UpdatedAt: pr.UpdatedAt,
 		})
 	}
 	return items

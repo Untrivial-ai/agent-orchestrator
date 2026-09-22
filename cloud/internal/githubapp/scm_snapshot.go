@@ -28,7 +28,7 @@ const pullRequestSnapshotQuery = `query($owner:String!,$repo:String!,$number:Int
   reviewThreads(last:100){nodes{id isResolved isOutdated path line comments(first:100){nodes{
    id databaseId body url author{login __typename} pullRequestReview{databaseId}
   }}} pageInfo{hasNextPage}}
- }}}
+ }}
 }`
 
 type githubActor struct {

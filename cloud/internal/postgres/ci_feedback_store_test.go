@@ -5,10 +5,59 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 )
+
+func TestRetryCIFeedbackReturnsItemToReadyQueue(t *testing.T) {
+	store, _, fixture := openNotificationTestStore(t)
+	ctx := context.Background()
+	pullRequest, err := store.CreatePullRequestRecord(
+		ctx, fixture.orgID, fixture.sessionID, "github", "octo/widgets", "octocat", 20,
+		"https://github.test/octo/widgets/pull/20", "feature", "main", "sha-20",
+		"Retry feedback", 1, 0, 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.PullRequestSnapshot{
+		URL: pullRequest.URL, Title: pullRequest.Title, Author: pullRequest.Author,
+		SourceBranch: pullRequest.SourceBranch, TargetBranch: pullRequest.TargetBranch,
+		Observation: domain.PullRequestObservation{
+			State: contract.PRStateOpen, HeadSHA: pullRequest.HeadSHA,
+			CIState: contract.CIPassing, ReviewState: contract.ReviewNone,
+			Mergeability: contract.MergeMergeable,
+		},
+		Threads: []domain.PullRequestReviewThread{{ProviderID: "thread-1", Path: "main.go", Line: 7}},
+		Comments: []domain.PullRequestReviewComment{{
+			ProviderID: "comment-1", ThreadProviderID: "thread-1", Author: "reviewer",
+			Body: "please rename this", Path: "main.go", Line: 7,
+		}},
+	}
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pullRequest.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, ok, err := store.ClaimCIFeedback(ctx, "dispatcher-1", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("claim feedback: ok=%v err=%v", ok, err)
+	}
+	if claimed.WorkerID != fixture.workerID || claimed.WorkerEpoch != fixture.epoch {
+		t.Fatalf("claimed worker = %q epoch %d, want %q epoch %d", claimed.WorkerID, claimed.WorkerEpoch, fixture.workerID, fixture.epoch)
+	}
+	if err := store.RetryCIFeedback(ctx, claimed.ID, "dispatcher-1", "worker disconnected", time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("retry feedback: %v", err)
+	}
+	retried, ok, err := store.ClaimCIFeedback(ctx, "dispatcher-2", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("reclaim feedback: ok=%v err=%v", ok, err)
+	}
+	if retried.ID != claimed.ID || retried.AttemptCount != claimed.AttemptCount+1 {
+		t.Fatalf("retried feedback = %+v, want id %q attempt %d", retried, claimed.ID, claimed.AttemptCount+1)
+	}
+}
 
 func TestCIFailureNotificationPersistsAndResolvesUnderRecipientRLS(t *testing.T) {
 	store, _, fixture := openNotificationTestStore(t)

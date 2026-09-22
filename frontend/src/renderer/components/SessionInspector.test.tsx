@@ -409,6 +409,30 @@ describe("SessionInspector tabs", () => {
     );
   });
 
+  it("does not query the local workspace files endpoint for a cloud session", async () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          id: "cloud-session-1",
+          cloud: {
+            orgId: "cloud-org-1",
+            sandboxProvider: "docker",
+            desiredState: "running",
+            observedState: "running",
+          },
+        })}
+      />,
+    );
+
+    await waitFor(() => expect(getMock.mock.calls.length).toBeGreaterThan(0));
+
+    expect(
+      getMock.mock.calls.some(
+        ([path]) => path === "/api/v1/sessions/{sessionId}/workspace/files",
+      ),
+    ).toBe(false);
+  });
+
   it("shows a live changed-file count on the Files tab once the shared cache is populated", () => {
     renderWithQuery(
       <SessionInspector session={session([])} />,

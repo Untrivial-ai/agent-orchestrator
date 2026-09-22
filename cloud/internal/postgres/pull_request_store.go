@@ -215,10 +215,21 @@ func (s *Store) PRFactsBySession(
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(
 			ctx,
-			`SELECT session_id, url, state, draft, source_branch, target_branch,
-				ci_state, review_state, mergeability
-			FROM ao_pull_requests
-			WHERE org_id = $1 AND session_id = ANY($2)`,
+			`SELECT pr.session_id, pr.url, pr.state, pr.draft, pr.source_branch, pr.target_branch,
+				pr.ci_state, pr.review_state, pr.mergeability,
+				EXISTS (
+					SELECT 1
+					FROM ao_pr_review_comments comment
+					WHERE comment.org_id = pr.org_id
+						AND comment.pull_request_id = pr.id
+						AND comment.is_resolved = false
+						AND comment.is_outdated = false
+						AND comment.is_bot = false
+						AND comment.path <> ''
+						AND comment.line IS NOT NULL
+				) AS review_comments
+			FROM ao_pull_requests pr
+			WHERE pr.org_id = $1 AND pr.session_id = ANY($2)`,
 			orgID, sessionIDs,
 		)
 		if err != nil {
@@ -228,24 +239,25 @@ func (s *Store) PRFactsBySession(
 		for rows.Next() {
 			var sessionID, url, state, sourceBranch, targetBranch string
 			var ciState, reviewState, mergeability string
-			var draft bool
+			var draft, reviewComments bool
 			if err := rows.Scan(
 				&sessionID, &url, &state, &draft, &sourceBranch, &targetBranch,
-				&ciState, &reviewState, &mergeability,
+				&ciState, &reviewState, &mergeability, &reviewComments,
 			); err != nil {
 				return fmt.Errorf("scan pull request facts: %w", err)
 			}
 			prState := contract.PRState(state)
 			facts[sessionID] = append(facts[sessionID], contract.PRFacts{
-				URL:          url,
-				Draft:        draft,
-				Merged:       prState == contract.PRStateMerged,
-				Closed:       prState == contract.PRStateClosed,
-				CI:           contract.CIState(ciState),
-				Review:       contract.ReviewDecision(reviewState),
-				Mergeability: contract.Mergeability(mergeability),
-				SourceBranch: sourceBranch,
-				TargetBranch: targetBranch,
+				URL:            url,
+				Draft:          draft,
+				Merged:         prState == contract.PRStateMerged,
+				Closed:         prState == contract.PRStateClosed,
+				CI:             contract.CIState(ciState),
+				Review:         contract.ReviewDecision(reviewState),
+				Mergeability:   contract.Mergeability(mergeability),
+				ReviewComments: reviewComments,
+				SourceBranch:   sourceBranch,
+				TargetBranch:   targetBranch,
 			})
 		}
 		return rows.Err()

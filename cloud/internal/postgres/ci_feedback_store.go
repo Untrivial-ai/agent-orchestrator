@@ -178,7 +178,7 @@ func resolveCIFailureNotificationTx(ctx context.Context, tx pgx.Tx, failed domai
 func (s *Store) ClaimCIFeedback(ctx context.Context, owner string, leaseDuration time.Duration) (domain.CIFeedback, bool, error) {
 	var item domain.CIFeedback
 	err := s.withService(ctx, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			WITH candidate AS (
 				SELECT id FROM ao_ci_feedback_outbox
 				WHERE (status IN ('pending', 'retry') AND COALESCE(next_attempt_at, created_at) <= now())
@@ -193,17 +193,24 @@ func (s *Store) ClaimCIFeedback(ctx context.Context, owner string, leaseDuration
 			FROM candidate WHERE outbox.id = candidate.id
 			RETURNING outbox.id::text, outbox.application_key, outbox.org_id::text,
 				outbox.session_id::text, outbox.pull_request_id::text, outbox.payload,
-				outbox.attempt_count, outbox.lease_owner, outbox.lease_until,
-				COALESCE((SELECT worker_id FROM ao_worker_connections
-					WHERE org_id = outbox.org_id AND session_id = outbox.session_id
-					  AND disconnected_at IS NULL ORDER BY connected_at DESC LIMIT 1), ''),
-				COALESCE((SELECT epoch FROM ao_worker_connections
-					WHERE org_id = outbox.org_id AND session_id = outbox.session_id
-					  AND disconnected_at IS NULL ORDER BY connected_at DESC LIMIT 1), 0)`,
+				outbox.attempt_count, outbox.lease_owner, outbox.lease_until`,
 			owner, intervalString(leaseDuration)).Scan(
 			&item.ID, &item.ApplicationKey, &item.OrgID, &item.SessionID,
 			&item.PullRequestID, &item.Payload, &item.AttemptCount,
-			&item.LeaseOwner, &item.LeaseUntil, &item.WorkerID, &item.WorkerEpoch)
+			&item.LeaseOwner, &item.LeaseUntil); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, item.OrgID); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT
+			COALESCE((SELECT worker_id FROM ao_worker_connections
+				WHERE org_id = $1 AND session_id = $2 AND disconnected_at IS NULL
+				ORDER BY connected_at DESC LIMIT 1), ''),
+			COALESCE((SELECT epoch FROM ao_worker_connections
+				WHERE org_id = $1 AND session_id = $2 AND disconnected_at IS NULL
+				ORDER BY connected_at DESC LIMIT 1), 0)`, item.OrgID, item.SessionID).Scan(
+			&item.WorkerID, &item.WorkerEpoch)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.CIFeedback{}, false, nil
@@ -227,7 +234,7 @@ func (s *Store) finishCIFeedback(ctx context.Context, id, owner, status, message
 		tag, err := tx.Exec(ctx, `
 			UPDATE ao_ci_feedback_outbox
 			SET status = $3, lease_owner = '', lease_until = NULL, last_error = $4,
-				next_attempt_at = CASE WHEN $3 = 'retry' THEN $5 ELSE NULL END,
+				next_attempt_at = CASE WHEN $3 = 'retry' THEN $5::timestamptz ELSE NULL END,
 				delivered_at = CASE WHEN $3 = 'delivered' THEN now() ELSE delivered_at END,
 				updated_at = now()
 			WHERE id = $1 AND lease_owner = $2`, id, owner, status, message, retryAt)

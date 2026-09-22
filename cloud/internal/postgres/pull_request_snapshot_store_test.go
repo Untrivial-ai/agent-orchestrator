@@ -78,3 +78,129 @@ func TestApplyPullRequestSnapshotCompleteRefreshRemovesMissingFeedback(t *testin
 		t.Fatalf("stale feedback remains: %+v", got)
 	}
 }
+
+func TestPRFactsBySessionIncludesUnresolvedHumanReviewComments(t *testing.T) {
+	store, _, fixture := openNotificationTestStore(t)
+	ctx := context.Background()
+	pr, err := store.CreatePullRequestRecord(ctx, fixture.orgID, fixture.sessionID,
+		"github", "octo/widgets", "owner", 33, "https://github.test/octo/widgets/pull/33",
+		"feature", "main", "head", "Title", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.PullRequestSnapshot{
+		URL: pr.URL, Title: pr.Title, Author: pr.Author, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch,
+		Observation: domain.PullRequestObservation{State: contract.PRStateOpen, HeadSHA: "head", CIState: contract.CIPassing, ReviewState: contract.ReviewNone, Mergeability: contract.MergeMergeable},
+		Threads:     []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "main.go", Line: 7}},
+		Comments:    []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", Author: "alice", Body: "fix this", Path: "main.go", Line: 7}},
+	}
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	facts, err := store.PRFactsBySession(ctx, fixture.orgID, []string{fixture.sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts[fixture.sessionID]) != 1 || !facts[fixture.sessionID][0].ReviewComments {
+		t.Fatalf("facts = %+v, want unresolved review comments", facts[fixture.sessionID])
+	}
+}
+
+func TestApplyPullRequestSnapshotNotifiesAndResolvesReviewFeedback(t *testing.T) {
+	store, _, fixture := openNotificationTestStore(t)
+	ctx := context.Background()
+	principal := domain.Principal{UserID: fixture.userID, Provider: "local"}
+	pr, err := store.CreatePullRequestRecord(ctx, fixture.orgID, fixture.sessionID,
+		"github", "octo/widgets", "owner", 34, "https://github.test/octo/widgets/pull/34",
+		"feature", "main", "head", "Title", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.PullRequestSnapshot{
+		URL: pr.URL, Title: pr.Title, Author: pr.Author, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch,
+		Observation: domain.PullRequestObservation{State: contract.PRStateOpen, HeadSHA: "head", CIState: contract.CIPassing, ReviewState: contract.ReviewNone, Mergeability: contract.MergeMergeable},
+		Threads:     []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "main.go", Line: 7}},
+		Comments:    []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", Author: "alice", Body: "fix this", Path: "main.go", Line: 7}},
+	}
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := store.ListNotifications(ctx, principal, fixture.orgID, domain.NotificationFilter{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedback := notificationByType(page.Items, "review_feedback")
+	if feedback == nil || feedback.Status != string(domain.NotificationStatusUnread) || feedback.ResolvedAt != nil {
+		t.Fatalf("review feedback notification = %+v, notifications = %+v", feedback, page.Items)
+	}
+
+	snapshot.Threads[0].Resolved = true
+	snapshot.Comments[0].Resolved = true
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	page, err = store.ListNotifications(ctx, principal, fixture.orgID, domain.NotificationFilter{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedback = notificationByType(page.Items, "review_feedback")
+	if feedback == nil || feedback.ResolvedAt == nil {
+		t.Fatalf("resolved review feedback notification = %+v, notifications = %+v", feedback, page.Items)
+	}
+}
+
+func TestApplyPullRequestSnapshotBackfillsMissingReviewFeedbackNotification(t *testing.T) {
+	store, admin, fixture := openNotificationTestStore(t)
+	ctx := context.Background()
+	principal := domain.Principal{UserID: fixture.userID, Provider: "local"}
+	pr, err := store.CreatePullRequestRecord(ctx, fixture.orgID, fixture.sessionID,
+		"github", "octo/widgets", "owner", 35, "https://github.test/octo/widgets/pull/35",
+		"feature", "main", "head", "Title", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.PullRequestSnapshot{
+		URL: pr.URL, Title: pr.Title, Author: pr.Author, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch,
+		Observation: domain.PullRequestObservation{State: contract.PRStateOpen, HeadSHA: "head", CIState: contract.CIPassing, ReviewState: contract.ReviewNone, Mergeability: contract.MergeMergeable},
+		Threads:     []domain.PullRequestReviewThread{{ProviderID: "T1", Path: "main.go", Line: 7}},
+		Comments:    []domain.PullRequestReviewComment{{ProviderID: "C1", ThreadProviderID: "T1", Author: "alice", Body: "fix this", Path: "main.go", Line: 7}},
+	}
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := admin.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('ao.service','control-plane',true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM ao_notifications WHERE pull_request_id=$1 AND type='review_feedback'`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.ApplyPullRequestSnapshot(ctx, fixture.orgID, pr.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListNotifications(ctx, principal, fixture.orgID, domain.NotificationFilter{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feedback := notificationByType(page.Items, "review_feedback"); feedback == nil {
+		t.Fatalf("notifications = %+v, want backfilled review feedback", page.Items)
+	}
+}
+
+func notificationByType(notifications []domain.Notification, kind string) *domain.Notification {
+	for index := range notifications {
+		if notifications[index].Type == kind {
+			return &notifications[index]
+		}
+	}
+	return nil
+}

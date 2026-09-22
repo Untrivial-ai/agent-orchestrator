@@ -33,21 +33,58 @@ func pullRequestNotificationTransition(previous, current domain.PullRequest, pre
 	}
 }
 
-func recordPullRequestNotificationsTx(ctx context.Context, tx pgx.Tx, previous, current domain.PullRequest, previousComments, currentComments bool) error {
+func recordPullRequestNotificationsTx(ctx context.Context, tx pgx.Tx, transition domain.PullRequestTransition, previousComments, currentComments bool) error {
+	previous, current := transition.Previous, transition.Current
 	create, resolve := pullRequestNotificationTransition(previous, current, previousComments, currentComments)
 	if resolve != "" {
 		if err := resolvePullRequestNotificationTx(ctx, tx, current, resolve); err != nil {
 			return err
 		}
 	}
-	if create == "" {
-		return nil
+	if create != "" {
+		if err := createPullRequestNotificationTx(ctx, tx, current, create); err != nil {
+			return err
+		}
 	}
-	return createPullRequestNotificationTx(ctx, tx, current, create)
+	previousFeedback := pullRequestHasReviewFeedback(previous, previousComments)
+	currentFeedback := pullRequestHasReviewFeedback(current, currentComments)
+	if previousFeedback && !currentFeedback {
+		return resolvePullRequestNotificationTx(ctx, tx, current, "review_feedback")
+	}
+	if currentFeedback {
+		exists, err := activePullRequestNotificationExistsTx(ctx, tx, current, "review_feedback")
+		if err != nil {
+			return err
+		}
+		if !exists || !previousFeedback || transitionHasNewHumanReviewFeedback(transition) {
+			return createPullRequestNotificationTx(ctx, tx, current, "review_feedback")
+		}
+	}
+	return nil
+}
+
+func pullRequestHasReviewFeedback(pr domain.PullRequest, unresolvedHumanComments bool) bool {
+	return pr.ReviewState == contract.ReviewChangesRequest || unresolvedHumanComments
+}
+
+func transitionHasNewHumanReviewFeedback(transition domain.PullRequestTransition) bool {
+	for _, review := range transition.NewReviews {
+		if !review.IsBot && review.State == contract.ReviewChangesRequest {
+			return true
+		}
+	}
+	for _, comment := range transition.NewComments {
+		if !comment.IsBot && !comment.Resolved && !comment.Outdated {
+			return true
+		}
+	}
+	return false
 }
 
 func pullRequestNotificationCopy(kind string, pr domain.PullRequest) (string, string) {
 	switch kind {
+	case "review_feedback":
+		return "Review changes requested", fmt.Sprintf("%s#%d has unresolved review feedback.", pr.Repository, pr.Number)
 	case "ready_to_merge":
 		return "Pull request ready to merge", fmt.Sprintf("%s#%d is ready to merge.", pr.Repository, pr.Number)
 	case "pr_merged":
@@ -55,6 +92,22 @@ func pullRequestNotificationCopy(kind string, pr domain.PullRequest) (string, st
 	default:
 		return "Pull request closed", fmt.Sprintf("%s#%d was closed without merging.", pr.Repository, pr.Number)
 	}
+}
+
+func activePullRequestNotificationExistsTx(ctx context.Context, tx pgx.Tx, pr domain.PullRequest, kind string) (bool, error) {
+	var recipientID string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(created_by_user_id::text,'') FROM ao_sessions WHERE org_id=$1 AND id=$2`, pr.OrgID, pr.SessionID).Scan(&recipientID); err != nil {
+		return false, err
+	}
+	if recipientID == "" {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('ao.user_id',$1,true)`, recipientID); err != nil {
+		return false, err
+	}
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ao_notifications WHERE org_id=$1 AND recipient_user_id=$2 AND dedupe_key=$3 AND resolved_at IS NULL)`, pr.OrgID, recipientID, kind+":"+pr.ID).Scan(&exists)
+	return exists, err
 }
 
 func createPullRequestNotificationTx(ctx context.Context, tx pgx.Tx, pr domain.PullRequest, kind string) error {
@@ -88,17 +141,27 @@ func resolvePullRequestNotificationTx(ctx context.Context, tx pgx.Tx, pr domain.
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	type resolvedNotification struct{ id, recipient string }
+	var resolved []resolvedNotification
 	for rows.Next() {
-		var id, recipient string
-		if err := rows.Scan(&id, &recipient); err != nil {
+		var notification resolvedNotification
+		if err := rows.Scan(&notification.id, &notification.recipient); err != nil {
+			rows.Close()
 			return err
 		}
-		if err := publishPullRequestNotificationEventTx(ctx, tx, pr.OrgID, recipient, id, "notification_resolved", "resolved:"+dedupe); err != nil {
+		resolved = append(resolved, notification)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, notification := range resolved {
+		if err := publishPullRequestNotificationEventTx(ctx, tx, pr.OrgID, notification.recipient, notification.id, "notification_resolved", "resolved:"+dedupe); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func publishPullRequestNotificationEventTx(ctx context.Context, tx pgx.Tx, orgID, recipientID, notificationID, kind, eventID string) error {

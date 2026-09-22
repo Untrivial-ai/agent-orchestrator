@@ -139,7 +139,7 @@ func (s *Store) ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequest
 		if _, err := recordPullRequestTransitionTx(ctx, tx, previous, current); err != nil {
 			return err
 		}
-		if err := recordPullRequestNotificationsTx(ctx, tx, previous, current, previousComments, currentComments); err != nil {
+		if err := recordPullRequestNotificationsTx(ctx, tx, transition, previousComments, currentComments); err != nil {
 			return err
 		}
 		if err := recordSCMFeedbackTx(ctx, tx, transition); err != nil {

@@ -203,7 +203,9 @@ export const SessionInspector = memo(function SessionInspector({
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
 	const inspectorQueryClient = useQueryClient();
-	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(
+		browserOnly || session?.cloud ? undefined : session?.id,
+	);
 	const localWorkspaceData = session ? inspectorQueryClient.getQueryData<{ files?: unknown[] }>(sessionWorkspaceFilesQueryKey(session.id)) : undefined;
 	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
 	const cloudOrgId = session?.cloud?.orgId;
