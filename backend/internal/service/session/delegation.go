@@ -83,6 +83,13 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	return DelegateTaskOutcome{WorkerID: worker.ID}, nil
 }
 
+func optionalTuningValue(value *string) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	return strings.TrimSpace(*value), true
+}
+
 func delegatedTaskDisplayName(brief string) string {
 	title := strings.Join(strings.Fields(brief), " ")
 	if title == "" {
