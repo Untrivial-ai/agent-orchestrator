@@ -29,6 +29,7 @@ import { MinimalBackButton } from "../lib/MinimalBackButton";
 import { MOBILE_EVENTS } from "../lib/telemetry/events";
 import { mobileTelemetry } from "../lib/telemetry/runtime";
 import { iconSize, space, type } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 export default function PairScreen() {
 	const t = useTheme();
@@ -75,7 +76,7 @@ export default function PairScreen() {
 		await clearOnboardingSkipped();
 		await reloadConfig(); // reconnect with the new credentials
 		if (fromOnboarding) router.replace("/");
-		else router.back();
+		else backOr(router);
 	}
 
 	async function onScan({ data }: { data: string }) {
@@ -143,7 +144,7 @@ export default function PairScreen() {
 		scanned.current = false;
 	}
 
-	const back = () => (router.canGoBack() ? router.back() : router.replace("/"));
+	const back = () => backOr(router);
 
 	return (
 		<View style={[styles.screen, { paddingTop: insets.top }]}>

@@ -5,6 +5,7 @@ import { haptics } from "./haptics";
 import { captureMobileException } from "./sentry";
 import { Button, EmptyState } from "./ui";
 import { space } from "./tokens";
+import { backOr } from "./backNavigation";
 
 /**
  * What a route shows when it throws while rendering, instead of the app
@@ -73,7 +74,7 @@ export function SheetErrorBoundary({ error }: ErrorBoundaryProps) {
 				icon="alert-triangle"
 				title="This sheet hit an unexpected error"
 				message="Close it and open it again."
-				action={<Button title="Close" icon="x" variant="ghost" onPress={() => router.back()} />}
+				action={<Button title="Close" icon="x" variant="ghost" onPress={() => backOr(router)} />}
 			/>
 		</View>
 	);

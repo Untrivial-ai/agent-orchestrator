@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { ConversationActionsSheet } from "../../lib/chat/ConversationActionsSheet";
 import { readChatSheet, releaseChatSheet } from "../../lib/chat/chatSheetRegistry";
 import { useSheetEntryPresent } from "../../lib/chat/useSheetEntryPresent";
+import { backOr } from "../../lib/backNavigation";
 
 export default function ConversationActionsRoute() {
 	const router = useRouter();
@@ -13,7 +14,7 @@ export default function ConversationActionsRoute() {
 	useSheetEntryPresent(entry?.kind === "conversation-actions");
 	if (entry?.kind !== "conversation-actions") return null;
 	const closeThen = (action: () => void) => {
-		router.back();
+		backOr(router);
 		setTimeout(action, 220);
 	};
 	return <ConversationActionsSheet entry={entry} onAction={closeThen} />;

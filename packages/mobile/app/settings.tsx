@@ -47,6 +47,7 @@ import { useTheme, useThemedStyles, useThemeState } from "../lib/ThemeProvider";
 import { checkAndDownload, describeUpdateRow, type UpdateOutcome } from "../lib/updates";
 import { VERSION_FLOOR } from "../lib/versionFloor";
 import { type, space } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
@@ -75,7 +76,7 @@ export default function SettingsScreen() {
 			<View style={styles.header}>
 				<Text style={styles.headerTitle}>Settings</Text>
 				<View style={styles.closeButton}>
-					<NativeHeaderButton icon="close" label="Close settings" onPress={() => router.back()} />
+					<NativeHeaderButton icon="close" label="Close settings" onPress={() => backOr(router)} />
 				</View>
 			</View>
 			<ScrollView

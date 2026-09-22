@@ -40,6 +40,7 @@ import { terminalInterfaceFailureRecovery } from "./terminalInterfaceRecovery";
 import { adjustTerminalViewport } from "./terminalViewport";
 import type { RouteSession } from "./sessionRoute";
 import { iconSize, press, space, type } from "../tokens";
+import { backOr } from "../backNavigation";
 
 const FONT_SIZE = 12;
 
@@ -595,13 +596,10 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 	);
 	const insets = useSafeAreaInsets();
 
-	// Leaving the screen: pop when there's history, otherwise go to the board.
-	// Guards against a missing/broken back button when this route was cold-started
-	// with no back-stack - e.g. a reload while on the terminal, or a deep link.
-	const leave = useCallback(() => {
-		if (router.canGoBack()) router.back();
-		else router.replace("/");
-	}, [router]);
+	// Leaving the screen. This route is cold-started with no back stack often
+	// enough — a reload while on the terminal, or a deep link — that the rule lives
+	// in one place; see `backOr`.
+	const leave = useCallback(() => backOr(router), [router]);
 
 	const xtermRef = useRef<XtermWebViewHandle | null>(null);
 	// Theme changes still replace xterm. Retain bytes arriving between the old

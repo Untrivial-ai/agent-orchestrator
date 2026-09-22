@@ -30,6 +30,7 @@ import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { Button } from "../lib/ui";
 import { iconSize, space, type } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 export { SheetErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
 
@@ -251,7 +252,7 @@ export default function SpawnModal() {
 			// transition to finish so the two happen back-to-back, not on top of each
 			// other. The session screen shows its own "connecting" state while the
 			// terminal attaches, so landing on it before the PTY is ready is expected.
-			router.back();
+			backOr(router);
 			InteractionManager.runAfterInteractions(() => {
 				router.push({
 					pathname: "/session/[id]",
@@ -338,7 +339,7 @@ export default function SpawnModal() {
 					enablePanDownToClose
 					enableDynamicSizing
 					backgroundStyle={{ backgroundColor: t.bgBase }}
-					onClose={() => router.back()}
+					onClose={() => backOr(router)}
 				>
 					<BottomSheetView style={styles.androidSheet}>
 						{content}

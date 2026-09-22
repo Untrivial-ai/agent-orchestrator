@@ -7,14 +7,14 @@ import { minimalBackButtonStyle } from "./navigationChrome";
 import { NativeHeaderButton } from "./native-header-button";
 import { useTheme } from "./ThemeProvider";
 import { iconSize, type } from "./tokens";
+import { backOr } from "./backNavigation";
 
 export function MinimalBackButton({ onPress, label = "Back" }: { onPress?(): void; label?: string }) {
 	const router = useRouter();
 	const t = useTheme();
 	const goBack = () => {
 		if (onPress) onPress();
-		else if (router.canGoBack()) router.back();
-		else router.replace("/");
+		else backOr(router);
 	};
 
 	// iOS: the same glass circle as every other top control, rather than the

@@ -45,6 +45,7 @@ import { conversationMarkers } from "./timelineModel";
 import { brokenMcpServers, can } from "./types";
 import { useMobileConversation } from "./useConversation";
 import { type, space } from "../tokens";
+import { backOr } from "../backNavigation";
 
 type MobileChatSession = DashboardSession | OrchestratorLink;
 
@@ -360,7 +361,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 						{ text: "Cancel", style: "cancel" },
 						// Leave first: the session this screen is showing is about to stop
 						// existing, and the board is where its row disappears from.
-						{ text: "Delete session", style: "destructive", onPress: () => { router.back(); void kill(session.id).catch(() => {}); } },
+						{ text: "Delete session", style: "destructive", onPress: () => { backOr(router); void kill(session.id).catch(() => {}); } },
 					],
 				);
 			},

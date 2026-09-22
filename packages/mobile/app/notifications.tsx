@@ -32,6 +32,7 @@ import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { Dot, EmptyState, HeaderIconButton, ScreenHeader } from "../lib/ui";
 import { press, space, type } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
 
@@ -178,7 +179,7 @@ export default function NotificationsScreen() {
 			<View style={{ height: insets.top }} />
 			<ScreenHeader
 				title="Notifications"
-				left={<HeaderIconButton icon="back" label="Back" onPress={() => router.back()} />}
+				left={<HeaderIconButton icon="back" label="Back" onPress={() => backOr(router)} />}
 				right={
 					unreadCount > 0 ? (
 						<HeaderIconButton icon="check" label="Mark all read" onPress={() => void markAll()} />
