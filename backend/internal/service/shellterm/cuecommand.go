@@ -17,6 +17,13 @@ func buildCueCommandArgv(shellArgv []string, command, goos string) ([]string, er
 	}
 	argv := append([]string(nil), shellArgv...)
 	base := strings.ToLower(filepath.Base(argv[0]))
+	if goos == "windows" {
+		// filepath.Base follows the host OS. Tests and tooling may construct a
+		// Windows argv on Unix, so split both Windows separators explicitly.
+		if index := strings.LastIndexAny(argv[0], `\/`); index >= 0 {
+			base = strings.ToLower(argv[0][index+1:])
+		}
+	}
 	if goos != "windows" {
 		return append(argv, "-lc", command), nil
 	}

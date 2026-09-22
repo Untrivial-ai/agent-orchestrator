@@ -89,6 +89,22 @@ export function useShellTerminals() {
 	return useQuery(shellTerminalsQueryOptions);
 }
 
+export async function getCommandCueTerminalStatus(handleId: string) {
+	const { data, error } = await apiClient.GET("/api/v1/shell-terminals/{handleId}/command-status", {
+		params: { path: { handleId } },
+	});
+	if (error) throw error;
+	return data;
+}
+
+export async function stopCommandCueTerminal(handleId: string) {
+	const { data, error } = await apiClient.POST("/api/v1/shell-terminals/{handleId}/stop-command", {
+		params: { path: { handleId } },
+	});
+	if (error) throw error;
+	return data;
+}
+
 export type OpenShellTerminalInput = {
 	projectId?: string;
 	sessionId?: string;

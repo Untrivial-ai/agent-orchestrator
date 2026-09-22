@@ -1057,12 +1057,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Forbidden
         "404":
           content:
             application/json:
@@ -7560,6 +7554,90 @@ paths:
       summary: Rename a standalone shell terminal tab
       tags:
       - shellTerminals
+  /api/v1/shell-terminals/{handleId}/command-status:
+    get:
+      operationId: getCueCommandTerminalStatus
+      parameters:
+      - description: Shell terminal runtime handle identifier.
+        in: path
+        name: handleId
+        required: true
+        schema:
+          description: Shell terminal runtime handle identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueCommandTerminalStatusResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read the derived state of a command Cue terminal
+      tags:
+      - shellTerminals
+  /api/v1/shell-terminals/{handleId}/stop-command:
+    post:
+      operationId: stopCueCommandTerminal
+      parameters:
+      - description: Shell terminal runtime handle identifier.
+        in: path
+        name: handleId
+        required: true
+        schema:
+          description: Shell terminal runtime handle identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueCommandTerminalStatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Stop a command Cue while retaining its terminal output
+      tags:
+      - shellTerminals
   /api/v1/system/github-auth:
     get:
       operationId: getGitHubAuthRequirement
@@ -9912,6 +9990,20 @@ components:
       - outputTokens
       - cachedTokens
       - totalTokens
+      type: object
+    CueCommandTerminalStatusResponse:
+      properties:
+        handleId:
+          type: string
+        state:
+          enum:
+          - running
+          - exited
+          - stopped
+          type: string
+      required:
+      - handleId
+      - state
       type: object
     CueDefinitionRequest:
       properties:

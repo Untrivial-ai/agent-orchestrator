@@ -2544,6 +2544,40 @@ export interface paths {
         patch: operations["renameShellTerminal"];
         trace?: never;
     };
+    "/api/v1/shell-terminals/{handleId}/command-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the derived state of a command Cue terminal */
+        get: operations["getCueCommandTerminalStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shell-terminals/{handleId}/stop-command": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop a command Cue while retaining its terminal output */
+        post: operations["stopCueCommandTerminal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/github-auth": {
         parameters: {
             query?: never;
@@ -3420,6 +3454,11 @@ export interface components {
             outputTokens: number;
             /** Format: int64 */
             totalTokens: number;
+        };
+        CueCommandTerminalStatusResponse: {
+            handleId: string;
+            /** @enum {string} */
+            state: "running" | "exited" | "stopped";
         };
         CueDefinitionRequest: {
             /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
@@ -6241,15 +6280,6 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14336,6 +14366,115 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getCueCommandTerminalStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Shell terminal runtime handle identifier. */
+                handleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CueCommandTerminalStatusResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    stopCueCommandTerminal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Shell terminal runtime handle identifier. */
+                handleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CueCommandTerminalStatusResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

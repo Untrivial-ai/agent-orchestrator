@@ -116,6 +116,7 @@ import { TurnPlan } from "./TurnPlan";
 import { TurnSettingsBar } from "./TurnSettingsBar";
 import { ElicitationDock } from "./ElicitationDock";
 import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBanners";
+import { useCommandCueStore } from "../../stores/command-cue-store";
 import {
 	activeTurn,
 	activityPlan,
@@ -443,6 +444,8 @@ export interface ChatWorkspaceProps {
 	onReloadMcpServers?: () => void;
 	reloadingMcpServers?: boolean;
 	mcpReloadError?: string;
+	/** Renderer-lifetime command Cue cards shown above the composer. */
+	commandCueCards?: ReactNode;
 }
 
 type ChatWorkspaceActivation =
@@ -614,9 +617,11 @@ function ChatWorkspaceContent({
 	onReloadMcpServers,
 	reloadingMcpServers,
 	mcpReloadError,
+	commandCueCards,
 	draftScope,
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
+	const commandCueInputEnabled = useCommandCueStore((state) => shellTarget ? state.cards[shellTarget.handleId]?.inputEnabled : undefined);
 	const turn = activeTurn(snapshot);
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
@@ -1356,6 +1361,8 @@ function ChatWorkspaceContent({
 								session={session}
 								terminalTarget={shellTarget}
 								theme={theme ?? "dark"}
+								inputDisabled={commandCueInputEnabled === false}
+								blockInterruptInput={commandCueInputEnabled === true}
 							/>
 						</div>
 					</div>
@@ -1433,6 +1440,7 @@ function ChatWorkspaceContent({
 								data-empty={conversationEmpty || undefined}
 								className="mx-auto flex w-full max-w-3xl flex-col gap-2 transition-[max-width] duration-500 ease-out data-[empty]:max-w-2xl"
 							>
+								{commandCueCards}
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}

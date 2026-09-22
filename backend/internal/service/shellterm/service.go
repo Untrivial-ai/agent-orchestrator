@@ -76,7 +76,9 @@ type Service struct {
 	// validates a session id BEFORE calling sessionGateFor, so an invalid id
 	// never allocates an entry here — only real sessions do, bounding growth to
 	// the shape AO's single-user daemon actually runs.
-	gates map[domain.SessionID]*sessionGate
+	gates      map[domain.SessionID]*sessionGate
+	cueMu      sync.RWMutex
+	cueHandles map[string]bool
 
 	// onSessionGateWait, when set, is called the instant a session-scoped
 	// OpenShellTerminal or CloseShellTerminal is about to attempt gate.mu.Lock()
@@ -175,6 +177,7 @@ func NewService(runtime ShellRuntime, store Store, projects ProjectRootLocator, 
 		newHandleID: newShellTerminalHandleID,
 		executable:  os.Executable,
 		gates:       map[domain.SessionID]*sessionGate{},
+		cueHandles:  map[string]bool{},
 	}
 }
 
@@ -360,7 +363,7 @@ func (s *Service) OpenCueCommandTerminal(ctx context.Context, in OpenCueCommandT
 		}
 	}
 
-	return s.openTerminal(ctx, openTerminalConfig{
+	terminal, err := s.openTerminal(ctx, openTerminalConfig{
 		argv:       argv,
 		env:        s.pinnedEnv(),
 		projectID:  projectID,
@@ -369,6 +372,64 @@ func (s *Service) OpenCueCommandTerminal(ctx context.Context, in OpenCueCommandT
 		title:      in.Title,
 		transient:  true,
 	})
+	if err != nil {
+		return ShellTerminal{}, err
+	}
+	s.cueMu.Lock()
+	s.cueHandles[terminal.HandleID] = false
+	s.cueMu.Unlock()
+	return terminal, nil
+}
+
+type shellRuntimeInterrupter interface {
+	Interrupt(context.Context, ports.RuntimeHandle) error
+}
+
+// CueCommandTerminalStatus derives command state from child liveness while
+// retaining the terminal host and its scrollback after exit.
+func (s *Service) CueCommandTerminalStatus(ctx context.Context, handleID string) (CueCommandTerminalStatus, error) {
+	handleID = strings.TrimSpace(handleID)
+	s.cueMu.RLock()
+	stopped, ok := s.cueHandles[handleID]
+	s.cueMu.RUnlock()
+	if !ok {
+		return CueCommandTerminalStatus{}, apierr.NotFound("CUE_COMMAND_TERMINAL_NOT_FOUND", "No such command Cue terminal: "+handleID)
+	}
+	if stopped {
+		return CueCommandTerminalStatus{HandleID: handleID, State: "stopped"}, nil
+	}
+	alive, err := s.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: handleID})
+	if err != nil {
+		return CueCommandTerminalStatus{}, fmt.Errorf("command Cue terminal status %s: %w", handleID, err)
+	}
+	state := "exited"
+	if alive {
+		state = "running"
+	}
+	return CueCommandTerminalStatus{HandleID: handleID, State: state}, nil
+}
+
+// StopCueCommandTerminal deliberately interrupts a live command without
+// destroying its terminal host, preserving output and scrollback for review.
+func (s *Service) StopCueCommandTerminal(ctx context.Context, handleID string) (CueCommandTerminalStatus, error) {
+	status, err := s.CueCommandTerminalStatus(ctx, handleID)
+	if err != nil {
+		return CueCommandTerminalStatus{}, err
+	}
+	if status.State != "running" {
+		return status, nil
+	}
+	interrupter, ok := s.runtime.(shellRuntimeInterrupter)
+	if !ok {
+		return CueCommandTerminalStatus{}, apierr.Internal("CUE_COMMAND_STOP_UNAVAILABLE", "This terminal runtime cannot stop commands")
+	}
+	if err := interrupter.Interrupt(ctx, ports.RuntimeHandle{ID: handleID}); err != nil {
+		return CueCommandTerminalStatus{}, fmt.Errorf("stop command Cue terminal %s: %w", handleID, err)
+	}
+	s.cueMu.Lock()
+	s.cueHandles[handleID] = true
+	s.cueMu.Unlock()
+	return CueCommandTerminalStatus{HandleID: handleID, State: "stopped"}, nil
 }
 
 func (s *Service) resolveCueCommandWorkingDir(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) (string, domain.ProjectID, error) {
@@ -663,6 +724,13 @@ func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]She
 			continue
 		}
 		if !alive {
+			s.cueMu.RLock()
+			_, isCueCommand := s.cueHandles[rec.HandleID]
+			s.cueMu.RUnlock()
+			if rec.Transient && rec.AppRunID == s.appRunID && isCueCommand {
+				out = append(out, shellTerminalFromRecord(rec))
+				continue
+			}
 			// Native hosts retain scrollback after child exit. Tear down that
 			// host before forgetting its row; preserve failures for retry.
 			if stillAlive, destroyErr := s.destroyConfirmed(ctx, rec); stillAlive {

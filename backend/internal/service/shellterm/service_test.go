@@ -28,9 +28,10 @@ func testLogger() *slog.Logger {
 // fakeShellRuntime records every runtime call so tests can assert on what was
 // spawned and what was torn down.
 type fakeShellRuntime struct {
-	created   []ports.RuntimeConfig
-	destroyed []string
-	sentCh    chan sentInput
+	created     []ports.RuntimeConfig
+	destroyed   []string
+	interrupted []string
+	sentCh      chan sentInput
 
 	createErr    error
 	createCtxErr bool
@@ -80,6 +81,12 @@ func (f *fakeShellRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle
 		delete(f.aliveByHandle, handle.ID)
 	}
 	return f.destroyErr
+}
+
+func (f *fakeShellRuntime) Interrupt(_ context.Context, handle ports.RuntimeHandle) error {
+	f.interrupted = append(f.interrupted, handle.ID)
+	f.childExited = true
+	return nil
 }
 
 func (f *fakeShellRuntime) SendInput(_ context.Context, handle ports.RuntimeHandle, input string) error {

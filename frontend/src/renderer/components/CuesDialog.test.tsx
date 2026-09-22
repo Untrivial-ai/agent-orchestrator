@@ -6,6 +6,7 @@ import { CuesSettings } from "./CuesDialog";
 import { CueRunMenu } from "./chat/CueRunMenu";
 import { TooltipProvider } from "./ui/tooltip";
 import * as cues from "../lib/cues";
+import { resetCommandCueStore, useCommandCueStore } from "../stores/command-cue-store";
 
 const { toast, navigate, navigateTerminals, openProjectSettings, setActiveShellTerminal, loadShellPreference } = vi.hoisted(() => ({
 	toast: vi.fn(),
@@ -53,6 +54,7 @@ function setup(node: ReactNode) {
 }
 beforeEach(() => {
 	vi.resetAllMocks();
+	resetCommandCueStore();
 	vi.mocked(cues.fetchProjectCues).mockResolvedValue([cue]);
 	vi.mocked(cues.createCue).mockResolvedValue(cue);
 	vi.mocked(cues.updateCue).mockResolvedValue(cue);
@@ -153,6 +155,12 @@ test("project topbar command invocation opens the returned terminal once", async
 	await act(async () => invocation.resolve(commandResult));
 	expect(navigateTerminals).toHaveBeenCalledOnce();
 	expect(setActiveShellTerminal).toHaveBeenCalledWith("shellterm-cue");
+	expect(useCommandCueStore.getState().cards["shellterm-cue"]).toMatchObject({
+		projectId: "project",
+		sessionId: undefined,
+		command: "npm test",
+		inputEnabled: false,
+	});
 	expect(view.client.getQueryData<Array<{ handleId: string }>>(["shell-terminals"])?.[0]?.handleId).toBe("shellterm-cue");
 	expect(toast).toHaveBeenCalledWith("Command started", "Tests started in a terminal");
 });

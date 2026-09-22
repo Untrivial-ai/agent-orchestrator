@@ -74,6 +74,57 @@ func TestOpenCueCommandTerminalUsesProjectRootWithoutSession(t *testing.T) {
 	}
 }
 
+func TestCueCommandTerminalStatusAndStopRetainTerminal(t *testing.T) {
+	root := t.TempDir()
+	rt := newFakeShellRuntime()
+	st := &fakeShellTerminalStore{}
+	svc := newTestService(rt, st, &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": root}})
+	term, err := svc.OpenCueCommandTerminal(context.Background(), OpenCueCommandTerminalInput{
+		ProjectID: "portfolio", Shell: cueTestShell(t), Command: "sleep 10", Title: "Wait",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.CueCommandTerminalStatus(context.Background(), term.HandleID)
+	if err != nil || status.State != "running" {
+		t.Fatalf("running status=%+v err=%v", status, err)
+	}
+	status, err = svc.StopCueCommandTerminal(context.Background(), term.HandleID)
+	if err != nil || status.State != "stopped" || !slices.Equal(rt.interrupted, []string{term.HandleID}) {
+		t.Fatalf("stop status=%+v err=%v interrupts=%v", status, err, rt.interrupted)
+	}
+	listed, err := svc.ListShellTerminalsForCurrentAppRun(context.Background())
+	if err != nil || len(listed) != 1 || listed[0].HandleID != term.HandleID || len(st.records) != 1 {
+		t.Fatalf("listed=%+v records=%+v err=%v", listed, st.records, err)
+	}
+	status, err = svc.StopCueCommandTerminal(context.Background(), term.HandleID)
+	if err != nil || status.State != "stopped" || len(rt.interrupted) != 1 {
+		t.Fatalf("idempotent stop status=%+v err=%v interrupts=%v", status, err, rt.interrupted)
+	}
+}
+
+func TestCueCommandTerminalStatusReportsExitAndRejectsOtherShells(t *testing.T) {
+	root := t.TempDir()
+	rt := newFakeShellRuntime()
+	svc := newTestService(rt, &fakeShellTerminalStore{}, &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": root}})
+	term, err := svc.OpenCueCommandTerminal(context.Background(), OpenCueCommandTerminalInput{
+		ProjectID: "portfolio", Shell: cueTestShell(t), Command: "true", Title: "Done",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.childExited = true
+	status, err := svc.CueCommandTerminalStatus(context.Background(), term.HandleID)
+	if err != nil || status.State != "exited" {
+		t.Fatalf("exit status=%+v err=%v", status, err)
+	}
+	_, err = svc.CueCommandTerminalStatus(context.Background(), "shellterm-other")
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindNotFound {
+		t.Fatalf("other status error=%v", err)
+	}
+}
+
 func TestOpenCueCommandTerminalUsesExactSessionWorktree(t *testing.T) {
 	root := t.TempDir()
 	worktree := t.TempDir()

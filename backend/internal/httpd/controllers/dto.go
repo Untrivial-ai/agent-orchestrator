@@ -1691,6 +1691,12 @@ type ShellTerminalEnvelope struct {
 	ShellTerminal ShellTerminalResponse `json:"shellTerminal"`
 }
 
+// CueCommandTerminalStatusResponse is the derived lifecycle state of a command Cue terminal.
+type CueCommandTerminalStatusResponse struct {
+	HandleID string `json:"handleId"`
+	State    string `json:"state" enum:"running,exited,stopped"`
+}
+
 // CueIDParam is the {cueId} path parameter of the /cues/{cueId} routes.
 type CueIDParam struct {
 	CueID string `path:"cueId" description:"Cue identifier."`

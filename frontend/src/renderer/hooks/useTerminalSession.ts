@@ -69,6 +69,8 @@ export type UseTerminalSessionOptions = {
 	daemonReady: boolean;
 	/** Refuse user bytes without detaching while a controller handoff owns input. */
 	inputDisabled?: boolean;
+	/** Reject terminal interrupt bytes while allowing other explicitly unlocked input. */
+	blockInterruptInput?: boolean;
 	/** Coalesce and cover the initial replay. Disable for non-retained reviewer panes. */
 	coverInitialReplay?: boolean;
 	/** Keep the initial cover up until the terminal emits its first bytes. */
@@ -744,6 +746,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			if (optionsRef.current.inputDisabled || optionsRef.current.isVisible === false) {
 				return false;
 			}
+			if (optionsRef.current.blockInterruptInput && data.includes("\x03")) return false;
 			// Input is accepted from `opened`, which lands before the replay — so a
 			// user can type while the gate still holds the burst, and their echo
 			// would sit in the buffer behind an opaque cover. Someone typing has

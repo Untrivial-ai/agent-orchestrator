@@ -56,6 +56,8 @@ type TerminalPaneProps = {
 	onToggleFullscreen?: () => void | Promise<void>;
 	/** Refuse agent PTY input while a controller transition owns the source. */
 	inputDisabled?: boolean;
+	/** Allow normal input but keep Ctrl+C reserved for the command-card Stop action. */
+	blockInterruptInput?: boolean;
 	/** Focus the terminal when an in-flight controller asks for human input. */
 	focusRequested?: boolean;
 	/** Observe attachment state without taking ownership of the terminal lifecycle. */
@@ -126,6 +128,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 		left.isFullscreen === right.isFullscreen &&
 		left.onToggleFullscreen === right.onToggleFullscreen &&
 		left.inputDisabled === right.inputDisabled &&
+		left.blockInterruptInput === right.blockInterruptInput &&
 		left.focusRequested === right.focusRequested &&
 		left.onTerminalStateChange === right.onTerminalStateChange &&
 		left.inputRequest === right.inputRequest &&
@@ -678,6 +681,7 @@ export function TerminalPane({
 	isFullscreen,
 	onToggleFullscreen,
 	inputDisabled,
+	blockInterruptInput,
 	focusRequested,
 	onTerminalStateChange,
 	inputRequest,
@@ -778,6 +782,7 @@ export function TerminalPane({
 		isFullscreen,
 		onToggleFullscreen,
 		inputDisabled,
+		blockInterruptInput,
 		focusRequested,
 		onTerminalStateChange,
 		inputRequest,
@@ -797,6 +802,7 @@ export function TerminalPane({
 			fontSize={fontSize}
 			isFullscreen={isFullscreen}
 			inputDisabled={inputDisabled}
+			blockInterruptInput={blockInterruptInput}
 			onChangeFontSize={onChangeFontSize}
 			onToggleFullscreen={onToggleFullscreen}
 			focusRequested={focusRequested}
@@ -961,6 +967,7 @@ function AttachedTerminal({
 	isFullscreen,
 	onToggleFullscreen,
 	inputDisabled,
+	blockInterruptInput,
 	focusRequested,
 	onTerminalStateChange,
 	inputRequest,
@@ -1003,6 +1010,7 @@ function AttachedTerminal({
 		createMux,
 		daemonReady,
 		inputDisabled,
+		blockInterruptInput,
 		isVisible,
 		shellTerminalHandleId,
 	});

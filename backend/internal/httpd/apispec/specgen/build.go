@@ -399,6 +399,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersShellTerminalResponse":                 "ShellTerminalResponse",
 	"ControllersListShellTerminalsResponse":            "ListShellTerminalsResponse",
 	"ControllersShellTerminalEnvelope":                 "ShellTerminalEnvelope",
+	"ControllersCueCommandTerminalStatusResponse":      "CueCommandTerminalStatusResponse",
 	"ControllersOpenCodexAccountLoginTerminalResponse": "OpenCodexAccountLoginTerminalResponse",
 	"ControllersCodexAccountLoginTerminalResponse":     "CodexAccountLoginTerminalResponse",
 	// httpd/controllers — project cue wire envelopes
@@ -718,7 +719,6 @@ func browserOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, controllers.BrowserStatusResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
-				{http.StatusForbidden, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
@@ -1150,6 +1150,29 @@ func shellTerminalOperations() []operation {
 			resps: []respUnit{
 				{http.StatusNoContent, nil},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/shell-terminals/{handleId}/command-status", id: "getCueCommandTerminalStatus", tag: "shellTerminals",
+			summary:    "Read the derived state of a command Cue terminal",
+			pathParams: []any{controllers.ShellTerminalHandleIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.CueCommandTerminalStatusResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/shell-terminals/{handleId}/stop-command", id: "stopCueCommandTerminal", tag: "shellTerminals",
+			summary:    "Stop a command Cue while retaining its terminal output",
+			pathParams: []any{controllers.ShellTerminalHandleIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.CueCommandTerminalStatusResponse{}},
+				{http.StatusForbidden, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},

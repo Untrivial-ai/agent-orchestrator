@@ -2158,5 +2158,17 @@
 	"executionContext.active": "activo",
 	"executionContext.configured": "configurado",
 	"executionContext.title": "contexto de ejecución",
-	"executionContext.loading": "cargando el contexto del proyecto…"
+	"executionContext.loading": "cargando el contexto del proyecto…",
+	"cues.viewTerminal": "View terminal",
+	"cues.enableInput": "Enable input",
+	"cues.stop": "Stop",
+	"cues.stopTitle": "Stop this command?",
+	"cues.stopBody": "The terminal and its output will remain available.",
+	"cues.stopCommand": "Stop command",
+	"cues.commandState.starting": "Starting",
+	"cues.commandState.running": "Running",
+	"cues.commandState.exited": "Exited",
+	"cues.commandState.stopped": "Stopped",
+	"cues.commandState.failed": "Failed",
+	"cues.inputLocked": "Input is locked for command Cue terminals."
 }

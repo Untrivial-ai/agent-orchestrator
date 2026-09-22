@@ -84,3 +84,9 @@ type CueCommandSessionTarget struct {
 	Activity      domain.ActivityState
 	IsTerminated  bool
 }
+
+// CueCommandTerminalStatus is the derived state of a command Cue terminal.
+type CueCommandTerminalStatus struct {
+	HandleID string
+	State    string
+}

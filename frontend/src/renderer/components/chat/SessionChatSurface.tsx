@@ -47,6 +47,7 @@ import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace
 import { AgentSwitchProgressTrack } from "../AgentSwitchProgressTrack";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { hasProviderPermissionMode } from "./TurnSettingsBar";
+import { CommandCueCards } from "./CommandCueCards";
 
 export interface ConversationWorkState {
 	controllerBusy: boolean;
@@ -582,6 +583,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				}
 				reloadingMcpServers={commands.reloadingMcpServers}
 				mcpReloadError={commands.mcpReloadError}
+				commandCueCards={<CommandCueCards sessionId={session.id} onViewTerminal={(handleId) => onSelectShellTerminal?.(handleId)} />}
 			/>
 			{shownSwitchPresentation ? (
 				<ChatAgentSwitchStatus

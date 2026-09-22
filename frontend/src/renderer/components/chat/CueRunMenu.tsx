@@ -10,6 +10,7 @@ import { fetchProjectCues, projectCuesQueryKey, type CueDTO } from "../../lib/cu
 import { shellTerminalsQueryKey, toShellTerminal, type ShellTerminal } from "../../hooks/useShellTerminals";
 import { markTerminalHandleFresh } from "../../lib/fresh-terminal-handles";
 import { terminalShellRequestValue, useTerminalShellStore } from "../../stores/terminal-shell-store";
+import { useCommandCueStore } from "../../stores/command-cue-store";
 import { TopbarButton } from "../TopbarButton";
 import {
 	DropdownMenu,
@@ -63,6 +64,7 @@ function CueRunMenuTrigger({
 	const navigateToSession = useNavigateToSession();
 	const navigateToTerminals = useNavigateToTerminals();
 	const setActiveShellTerminal = useUiStore((state) => state.setActiveShellTerminal);
+	const registerCommandCue = useCommandCueStore((state) => state.register);
 	const [open, setOpen] = useState(false);
 	const [runningPrimary, setRunningPrimary] = useState(false);
 	const pending = useRef(false);
@@ -148,6 +150,14 @@ function CueRunMenuTrigger({
 					...current.filter((item) => item.handleId !== terminal.handleId),
 				]);
 				setActiveShellTerminal(terminal.handleId);
+				registerCommandCue({
+					projectId,
+					sessionId,
+					handleId: terminal.handleId,
+					name: cue.name,
+					command: cue.command ?? "",
+					state: "starting",
+				});
 				showGlobalToast(t("cues.invokeCommandStarted"), t("cues.invokeCommandStartedBody", { name: cue.name }));
 				if (!sessionId) navigateToTerminals();
 				return;
