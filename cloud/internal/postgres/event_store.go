@@ -28,6 +28,7 @@ var clientEventTypes = []string{
 	"chat.turn_interrupted",
 	"chat.turn_aborted",
 	"chat.interrupt_requested",
+	"chat.turn_steered",
 }
 
 func (s *Store) SendMessage(

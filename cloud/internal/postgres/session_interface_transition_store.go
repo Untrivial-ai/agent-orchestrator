@@ -234,6 +234,20 @@ func (s *Store) AdvanceSessionInterfaceTransition(
 	errorCode, errorDetail string,
 ) error {
 	return s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		var sessionID string
+		if err := tx.QueryRow(ctx, `SELECT session_id FROM ao_interface_transitions
+			WHERE id = $1 AND org_id = $2 AND phase = $3 FOR UPDATE`,
+			transitionID, orgID, from).Scan(&sessionID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrTransitionStale
+			}
+			return err
+		}
+		if to.Terminal() {
+			if err := deliverInterfaceTransitionMessages(ctx, tx, orgID, sessionID, transitionID); err != nil {
+				return err
+			}
+		}
 		tag, err := tx.Exec(
 			ctx,
 			`UPDATE ao_interface_transitions
@@ -303,28 +317,6 @@ func (s *Store) AcknowledgeSessionInterfaceTransitionNotice(
 	})
 }
 
-// EnqueueSessionInterfaceTransitionMessage holds a message while neither
-// controller is allowed to accept work.
-func (s *Store) EnqueueSessionInterfaceTransitionMessage(
-	ctx context.Context,
-	orgID, transitionID, clientMessageID, message string,
-) error {
-	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
-		_, err := tx.Exec(
-			ctx,
-			`INSERT INTO ao_interface_transition_messages (
-				org_id, transition_id, client_message_id, message
-			) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (org_id, transition_id, client_message_id) DO NOTHING`,
-			orgID,
-			transitionID,
-			clientMessageID,
-			message,
-		)
-		return err
-	})
-}
-
 // CompleteCoordinatedInterfaceTransition atomically releases every prompt held
 // by an active handoff and marks the transition complete. The transition row is
 // locked first, which pairs with appendUserMessage's lock: a message is either
@@ -347,34 +339,7 @@ func (s *Store) CompleteCoordinatedInterfaceTransition(ctx context.Context, owne
 		if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, orgID); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT id, turn_id, user_message_sequence, mode_cap, denied_commands
-			FROM ao_interface_transition_messages
-			WHERE org_id = $1 AND transition_id = $2 AND delivered_at IS NULL
-			ORDER BY id FOR UPDATE`, orgID, transitionID)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var messageID int64
-			var turnID string
-			var sequence int64
-			var modeCap string
-			var denied []string
-			if err := rows.Scan(&messageID, &turnID, &sequence, &modeCap, &denied); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `INSERT INTO ao_turns (
-				id, org_id, session_id, user_message_sequence, mode_cap, denied_commands
-			) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6)
-			ON CONFLICT (id) DO NOTHING`, turnID, orgID, sessionID, sequence, modeCap, nonNilStrings(denied)); err != nil {
-				return normalizeConstraintError(err)
-			}
-			if _, err := tx.Exec(ctx, `UPDATE ao_interface_transition_messages SET delivered_at = now() WHERE id = $1`, messageID); err != nil {
-				return err
-			}
-		}
-		if err := rows.Err(); err != nil {
+		if err := deliverInterfaceTransitionMessages(ctx, tx, orgID, sessionID, transitionID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE ao_interface_transitions
@@ -382,11 +347,53 @@ func (s *Store) CompleteCoordinatedInterfaceTransition(ctx context.Context, owne
 			WHERE id = $1 AND claimed_by = $2 AND phase = 'activating'`, transitionID, owner); err != nil {
 			return err
 		}
+		return nil
+	})
+}
+
+// deliverInterfaceTransitionMessages turns every prompt held by one handoff
+// into regular worker work. It is called while the transition row is locked,
+// including every terminal outcome, so an accepted message is never stranded
+// when a handoff is cancelled, fails, or needs recovery.
+func deliverInterfaceTransitionMessages(ctx context.Context, tx pgx.Tx, orgID, sessionID, transitionID string) error {
+	rows, err := tx.Query(ctx, `SELECT id, turn_id, user_message_sequence, mode_cap, denied_commands
+		FROM ao_interface_transition_messages
+		WHERE org_id = $1 AND transition_id = $2 AND delivered_at IS NULL
+		ORDER BY id FOR UPDATE`, orgID, transitionID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	delivered := false
+	for rows.Next() {
+		var messageID int64
+		var turnID string
+		var sequence int64
+		var modeCap string
+		var denied []string
+		if err := rows.Scan(&messageID, &turnID, &sequence, &modeCap, &denied); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO ao_turns (
+			id, org_id, session_id, user_message_sequence, mode_cap, denied_commands
+		) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6)
+		ON CONFLICT (id) DO NOTHING`, turnID, orgID, sessionID, sequence, modeCap, nonNilStrings(denied)); err != nil {
+			return normalizeConstraintError(err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE ao_interface_transition_messages SET delivered_at = now() WHERE id = $1`, messageID); err != nil {
+			return err
+		}
+		delivered = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if delivered {
 		if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, sessionID); err != nil {
 			return err
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // CoordinatedInterfaceTransition is the service-context view the coordinator
@@ -508,6 +515,23 @@ func (s *Store) AdvanceCoordinatedInterfaceTransition(
 	errorCode, errorDetail string,
 ) error {
 	return s.withService(ctx, func(tx pgx.Tx) error {
+		var orgID, sessionID string
+		if err := tx.QueryRow(ctx, `SELECT org_id, session_id FROM ao_interface_transitions
+			WHERE id = $1 AND claimed_by = $2 AND phase = $3 FOR UPDATE`,
+			transitionID, owner, from).Scan(&orgID, &sessionID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrTransitionStale
+			}
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, orgID); err != nil {
+			return err
+		}
+		if to.Terminal() {
+			if err := deliverInterfaceTransitionMessages(ctx, tx, orgID, sessionID, transitionID); err != nil {
+				return err
+			}
+		}
 		tag, err := tx.Exec(ctx,
 			`UPDATE ao_interface_transitions
 			SET phase = $1,

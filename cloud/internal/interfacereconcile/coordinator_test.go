@@ -87,9 +87,6 @@ func (f *fakeStore) CompleteCoordinatedInterfaceTransition(ctx context.Context, 
 func (f *fakeStore) ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error {
 	return nil
 }
-func (f *fakeStore) EnqueueSessionInterfaceTransitionMessage(ctx context.Context, orgID, transitionID, clientMessageID, message string) error {
-	return nil
-}
 
 type fakeDriver struct {
 	Inspection  SourceInspection

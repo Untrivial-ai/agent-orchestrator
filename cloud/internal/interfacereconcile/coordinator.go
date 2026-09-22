@@ -24,7 +24,6 @@ type Store interface {
 	CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, transitionID string, interfaceValue domain.SessionInterface) (bool, error)
 	CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error
 	ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error
-	EnqueueSessionInterfaceTransitionMessage(ctx context.Context, orgID, transitionID, clientMessageID, message string) error
 }
 
 // WorkerDriver is the worker-facing side of a handoff. Because the control

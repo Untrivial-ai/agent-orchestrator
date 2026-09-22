@@ -96,8 +96,8 @@ func (s *Server) cancelTurn(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-// steerTurn interrupts the active turn and durably queues the replacement
-// instruction with the caller-supplied idempotency key.
+// steerTurn durably records guidance against the active turn with the
+// caller-supplied idempotency key.
 func (s *Server) steerTurn(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgId")
 	sessionID := chi.URLParam(r, "sessionId")

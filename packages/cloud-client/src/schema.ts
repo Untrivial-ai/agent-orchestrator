@@ -1816,6 +1816,8 @@ export interface components {
             type: "chat.user_message";
             payload: {
                 text: string;
+                /** Format: uuid */
+                turnId?: string;
             };
             /** Format: date-time */
             createdAt: string;
@@ -1902,7 +1904,22 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
-        ClientEvent: components["schemas"]["UserMessageEvent"] | components["schemas"]["AssistantDeltaEvent"] | components["schemas"]["TurnStartedEvent"] | components["schemas"]["TurnCompletedEvent"] | components["schemas"]["TurnInterruptedEvent"] | components["schemas"]["TurnAbortedEvent"] | components["schemas"]["InterruptRequestedEvent"];
+        TurnSteeredEvent: {
+            sessionId: string;
+            /** Format: int64 */
+            sequence: number;
+            /** @constant */
+            type: "chat.turn_steered";
+            payload: {
+                /** Format: uuid */
+                turnId: string;
+                text: string;
+                clientMessageId: string;
+            };
+            /** Format: date-time */
+            createdAt: string;
+        };
+        ClientEvent: components["schemas"]["UserMessageEvent"] | components["schemas"]["AssistantDeltaEvent"] | components["schemas"]["TurnStartedEvent"] | components["schemas"]["TurnCompletedEvent"] | components["schemas"]["TurnInterruptedEvent"] | components["schemas"]["TurnAbortedEvent"] | components["schemas"]["InterruptRequestedEvent"] | components["schemas"]["TurnSteeredEvent"];
         ClientEventPage: {
             events: components["schemas"]["ClientEvent"][];
             hasMore: boolean;

@@ -2,12 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import type { CloudCpClientEvent } from "../../lib/cloud-cp";
-import type { ChatModel, ConversationMessage, ConversationSnapshot, ConversationTurn, TurnSettings } from "../../types/conversation";
+import type { ChatModel, ConversationItem, ConversationMessage, ConversationSnapshot, ConversationTurn, TurnSettings } from "../../types/conversation";
 import type { WorkspaceSession } from "../../types/workspace";
 import { ChatWorkspace } from "./ChatWorkspace";
 
 type EventPayload = {
 	attempt?: unknown;
+	clientMessageId?: unknown;
 	error?: unknown;
 	text?: unknown;
 	turnId?: unknown;
@@ -37,7 +38,7 @@ const CLOUD_MODELS: Record<string, ChatModel[]> = {
 export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
 	const turns = new Map<string, ConversationTurn>();
 	const assistant = new Map<string, ConversationMessage>();
-	const items: ConversationMessage[] = [];
+	const items: ConversationItem[] = [];
 	for (const event of events) {
 		const turnID = eventTurnID(event);
 		if (turnID && !turns.has(turnID)) {
@@ -61,6 +62,16 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 			items.push({
 				kind: "message", id: `cloud-event-${event.sequence}`, sequence: event.sequence, revision: 1,
 				turnId: turnID, role: "user", origin: "human", text, streaming: false, delivery: "accepted", createdAt: event.createdAt,
+			});
+			continue;
+		}
+		if (event.type === "chat.turn_steered") {
+			const clientMessageID = eventPayload(event).clientMessageId;
+			items.push({
+				kind: "activity", id: `cloud-steer-${event.sequence}`, turnId: turnID, sequence: event.sequence,
+				revision: 1, activityKind: "system", status: "completed", summary: text,
+				detail: { event: "steer", text, origin: "human", clientMessageId: typeof clientMessageID === "string" ? clientMessageID : undefined },
+				createdAt: event.createdAt,
 			});
 			continue;
 		}

@@ -730,10 +730,28 @@ func createSessionTx(
 		return domain.Session{}, normalizeConstraintError(err)
 	}
 	if input.Prompt != "" {
-		if _, err := appendUserMessageEvent(
-			ctx, tx, orgID, session.ID, input.Prompt,
-		); err != nil {
+		event, err := appendUserMessageEvent(ctx, tx, orgID, session.ID, input.Prompt)
+		if err != nil {
 			return domain.Session{}, err
+		}
+		// Chat-first sessions have no interactive bootstrap terminal to consume
+		// the creation prompt. Queue it as the first durable turn in the same
+		// transaction so the Chat runner executes exactly the brief rendered in
+		// history.
+		if input.Interface == domain.SessionInterfaceChat {
+			var turnID string
+			if err := tx.QueryRow(ctx, `INSERT INTO ao_turns (
+				org_id, session_id, user_message_sequence, mode_cap, denied_commands
+			) VALUES ($1, $2, $3, NULL, ARRAY[]::text[])
+			RETURNING id`, orgID, session.ID, event.Sequence).Scan(&turnID); err != nil {
+				return domain.Session{}, normalizeConstraintError(err)
+			}
+			if err := attachTurnID(ctx, tx, orgID, session.ID, event.Sequence, turnID, &event); err != nil {
+				return domain.Session{}, err
+			}
+			if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_worker_work', $1)`, session.ID); err != nil {
+				return domain.Session{}, err
+			}
 		}
 	}
 
