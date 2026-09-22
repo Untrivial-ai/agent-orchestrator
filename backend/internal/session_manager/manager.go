@@ -5010,8 +5010,9 @@ func (m *Manager) artifactPrompt(id domain.SessionID) string {
 		return ""
 	}
 	return "## Session Artifacts\n\n" +
-		"For non-PR deliverables, write the final files into `" + dir + "` instead of the git workspace. " +
-		"Keep artifacts out of git, preserve any relative asset links between files you place there, and continue using the workspace for code changes that belong in a PR."
+		"Any deliverable that is not part of a pull request — a one-pager, analysis, plan, design doc, report, or other generated file — must be written to `" + dir + "`, never into the git workspace, even temporarily. " +
+		"This applies even when a workspace-relative path like `docs/`, `docs/plans/`, or `notes/` would otherwise feel like the natural place for it: if it is not shipping in a PR, it does not belong in the workspace at all. " +
+		"Keep the workspace limited to code changes that will ship in a PR. Preserve any relative asset links between files you place in the artifact directory."
 }
 
 func (m *Manager) cleanupSystemPromptDir(id domain.SessionID) {
