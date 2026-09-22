@@ -43,3 +43,26 @@ describe("worker row second line", () => {
 		expect(row).not.toContain("const details = prs?.text ?? \"\";");
 	});
 });
+
+describe("worker row working indicator", () => {
+	const row = source("./worker-list-row.tsx");
+	const ui = source("./ui.tsx");
+
+	// The shape for "working" is a circle, and a still circle reads as stuck or
+	// decided rather than live. It was drawn as a bare glyph, so the one status
+	// that means "still going" was the one status that never moved — and the same
+	// word breathed on the project cards, which use `<Dot breathing>`.
+	it("breathes the status glyph a working row is showing", () => {
+		expect(row).toContain("<Breathing enabled={Boolean(visual.breathing)}>");
+		expect(row).not.toContain("<Feather name={glyph} size={12} color={visual.color} />\n\t\t\t\t) : null}");
+	});
+
+	// One loop, one decision: the setting is read inside the primitive, so a new
+	// consumer cannot forget it.
+	it("drives both the dot and the glyph from the shared loop", () => {
+		expect(ui).toContain("export function useBreathing(");
+		expect(ui).toContain("shouldBreathe(reduceMotion, enabled)");
+		expect(ui).toContain("const pulse = useBreathing(breathing);");
+		expect(ui.match(/useBreathing\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+	});
+});

@@ -26,25 +26,22 @@ import { useTheme, useThemedStyles } from "./ThemeProvider";
 // AO mascot glyph (transparent) shown beside each screen heading.
 import MASCOT from "../assets/mascot.png";
 
-// A gently breathing dot - the only motion in the UI, reserved for "working".
-// Memoized so an unrelated parent re-render doesn't tear down and restart the
-// Animated loop (which causes a visible flicker and per-tick allocations).
-export const Dot = memo(function Dot({
-	color,
-	size = 9,
-	breathing = false,
-}: {
-	color: string;
-	size?: number;
-	breathing?: boolean;
-}) {
+/**
+ * The app's breathing loop, in one place.
+ *
+ * "Working" is the only state that moves, and it moves the same way wherever it
+ * appears: a slow opacity pulse. Returns the animated value to drive it, or
+ * `undefined` when the loop must not run — which is every state that is not
+ * working, and everything at all under Reduce Motion.
+ *
+ * The setting is consumed here rather than at the call sites, so honouring it
+ * once fixes every consumer — status badges, the connection lamp, project rows —
+ * without touching any of them.
+ */
+export function useBreathing(enabled: boolean): Animated.Value | undefined {
 	const pulse = useRef(new Animated.Value(1)).current;
-	// Consumed here rather than at the call sites: this is the most-repeated
-	// animation in the app, so honouring the setting once inside the primitive
-	// fixes every `<Dot breathing>` — status badges, the connection lamp, project
-	// rows — without touching any of them.
 	const reduceMotion = useReducedMotion();
-	const animate = shouldBreathe(reduceMotion, breathing);
+	const animate = shouldBreathe(reduceMotion, enabled);
 	useEffect(() => {
 		// Deliberately not a zero duration: a zero-length loop is a busy loop, so
 		// the animation must not start at all.
@@ -66,12 +63,27 @@ export const Dot = memo(function Dot({
 		loop.start();
 		return () => {
 			loop.stop();
-			// Leave the dot at full opacity; a stopped loop otherwise freezes it
-			// mid-fade, which reads as a rendering bug rather than a resting state.
+			// Leave it at full opacity; a stopped loop otherwise freezes mid-fade,
+			// which reads as a rendering bug rather than a resting state.
 			pulse.setValue(1);
 		};
 	}, [animate, pulse]);
+	return animate ? pulse : undefined;
+}
 
+// A gently breathing dot - the only motion in the UI, reserved for "working".
+// Memoized so an unrelated parent re-render doesn't tear down and restart the
+// Animated loop (which causes a visible flicker and per-tick allocations).
+export const Dot = memo(function Dot({
+	color,
+	size = 9,
+	breathing = false,
+}: {
+	color: string;
+	size?: number;
+	breathing?: boolean;
+}) {
+	const pulse = useBreathing(breathing);
 	return (
 		<Animated.View
 			style={{
@@ -79,11 +91,25 @@ export const Dot = memo(function Dot({
 				height: size,
 				borderRadius: size / 2,
 				backgroundColor: color,
-				opacity: animate ? pulse : 1,
+				opacity: pulse ?? 1,
 			}}
 		/>
 	);
 });
+
+/**
+ * The same loop around something that is not a dot.
+ *
+ * A shape carries a status as well as a colour (see `workerStatusGlyph`), and the
+ * shape for "working" is a circle — which, drawn still, reads as a stuck or
+ * decided state rather than a live one. Returning a fragment when the loop is off
+ * keeps the rest state free of an extra view.
+ */
+export function Breathing({ enabled, children }: { enabled: boolean; children: ReactNode }) {
+	const pulse = useBreathing(enabled);
+	if (!pulse) return <>{children}</>;
+	return <Animated.View style={{ opacity: pulse }}>{children}</Animated.View>;
+}
 
 // A selectable pill - used by the project switcher, PR filters, and spawn picker
 // so the active/inactive color logic lives in exactly one place.
