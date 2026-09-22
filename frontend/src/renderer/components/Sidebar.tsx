@@ -15,6 +15,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
 	AlertTriangle,
+	Archive,
 	ChevronRight,
 	Download,
 	Folder,
@@ -123,6 +124,7 @@ import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { SessionArchiveDialog } from "./SessionArchiveDialog";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
 import { ResizeHandle } from "./ResizeHandle";
 import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
@@ -2262,6 +2264,7 @@ const SessionActions = memo(function SessionActions({
 	const { t } = useTranslation();
 	const { mutate: pinSession } = usePinSession();
 	const { mutate: unpinSession } = useUnpinSession();
+	const [confirmOpen, setConfirmOpen] = useState(false);
 	// Optimistic: navigate + drop the row as soon as kill starts (onMutate),
 	// not after the daemon round-trip.
 	const onKilledRef = useRef(onKilled);
@@ -2272,8 +2275,15 @@ const SessionActions = memo(function SessionActions({
 		},
 	});
 
-	const handleKill = (event: React.MouseEvent) => {
+	// The row used to archive on the bare click while the session page asked
+	// first; both surfaces now open the same confirm before anything moves.
+	const handleArchive = (event: React.MouseEvent) => {
 		event.stopPropagation();
+		setConfirmOpen(true);
+	};
+
+	const confirmArchive = () => {
+		setConfirmOpen(false);
 		terminateSession(session);
 	};
 
@@ -2318,15 +2328,25 @@ const SessionActions = memo(function SessionActions({
 				</Tooltip>
 				<Tooltip>
 					<TooltipTrigger asChild>
-						<button
-							aria-label={t("shell.killSession")}
-							className={cn(SESSION_ACTION_CLASS, "hover:text-destructive focus-visible:text-destructive")}
-							disabled={isKilling}
-							onClick={handleKill}
-							type="button"
-						>
-							<Trash2 aria-hidden="true" />
-						</button>
+						<span className="inline-flex">
+							<SessionArchiveDialog
+								onConfirm={confirmArchive}
+								onOpenChange={setConfirmOpen}
+								open={confirmOpen}
+								session={session}
+								trigger={
+									<button
+										aria-label={t("shell.killSession")}
+										className={cn(SESSION_ACTION_CLASS, "focus-visible:text-foreground")}
+										disabled={isKilling}
+										onClick={handleArchive}
+										type="button"
+									>
+										<Archive aria-hidden="true" />
+									</button>
+								}
+							/>
+						</span>
 					</TooltipTrigger>
 					<TooltipContent side="top">{t("shell.killSession")}</TooltipContent>
 				</Tooltip>
