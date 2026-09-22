@@ -81,6 +81,7 @@ async function waitForAgentCatalog() {
 }
 
 beforeEach(() => {
+	window.localStorage.removeItem("ao.taskComposer.preferences.v1");
 	ensureAgentReadinessMock.mockReset();
 	getMock.mockReset().mockImplementation(async (path: string) => {
 		if (path === "/api/v1/agents/readiness") {
