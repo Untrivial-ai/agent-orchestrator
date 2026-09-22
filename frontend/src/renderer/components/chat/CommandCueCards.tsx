@@ -9,9 +9,20 @@ import { ConfirmDialog } from "../ConfirmDialog";
 
 const ACTIVE_STATES = new Set(["starting", "running"]);
 
-export function CommandCueCards({ sessionId, onViewTerminal }: { sessionId: string; onViewTerminal: (handleId: string) => void }) {
+export function CommandCueCards({
+	projectId,
+	sessionId,
+	onViewTerminal,
+}: {
+	projectId: string;
+	sessionId: string;
+	onViewTerminal: (handleId: string) => void;
+}) {
 	const cardsByHandle = useCommandCueStore((state) => state.cards);
-	const cards = useMemo(() => Object.values(cardsByHandle).filter((card) => card.sessionId === sessionId), [cardsByHandle, sessionId]);
+	const cards = useMemo(
+		() => Object.values(cardsByHandle).filter((card) => card.projectId === projectId && card.sessionId === sessionId),
+		[cardsByHandle, projectId, sessionId],
+	);
 	return cards.length ? (
 		<div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-2" data-testid="command-cue-cards">
 			{cards.map((card) => <CommandCueCardView key={card.handleId} card={card} onViewTerminal={onViewTerminal} />)}

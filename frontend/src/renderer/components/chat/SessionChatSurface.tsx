@@ -583,7 +583,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				}
 				reloadingMcpServers={commands.reloadingMcpServers}
 				mcpReloadError={commands.mcpReloadError}
-				commandCueCards={<CommandCueCards sessionId={session.id} onViewTerminal={(handleId) => onSelectShellTerminal?.(handleId)} />}
+				commandCueCards={<CommandCueCards projectId={session.workspaceId} sessionId={session.id} onViewTerminal={(handleId) => onSelectShellTerminal?.(handleId)} />}
 			/>
 			{shownSwitchPresentation ? (
 				<ChatAgentSwitchStatus

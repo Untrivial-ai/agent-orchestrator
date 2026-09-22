@@ -4,6 +4,7 @@ package conpty
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -53,5 +54,35 @@ func TestConPTYChildExitClosesOutputAndRejectsResize(t *testing.T) {
 	}
 	if code, exited := conn.ExitCode(); !exited || code != 0 {
 		t.Fatalf("ExitCode() = (%d, %v), want (0, true)", code, exited)
+	}
+}
+
+func TestConPTYCmdOneShotPreservesQuotedPaths(t *testing.T) {
+	cmdPath := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
+	target := filepath.Join(t.TempDir(), "result with spaces.txt")
+	command := fmt.Sprintf(`echo alpha ^| beta> "%s"`, target)
+	conn, err := newConPTY(t.TempDir(), cmdPath, []string{"/d", "/s", "/c", command})
+	if err != nil {
+		t.Fatalf("newConPTY: %v", err)
+	}
+	defer conn.Close()
+
+	select {
+	case <-conn.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("cmd.exe did not exit")
+	}
+	contents, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read quoted output path: %v", err)
+	}
+	if got := string(bytes.TrimSpace(contents)); got != "alpha | beta" {
+		t.Fatalf("output = %q, want %q", got, "alpha | beta")
+	}
+}
+
+func TestCmdOneShotCommandLineLeavesInteractiveCmdUntouched(t *testing.T) {
+	if got, ok := cmdOneShotCommandLine("cmd.exe", []string{"/d", "/q", "/k"}); ok || got != "" {
+		t.Fatalf("cmdOneShotCommandLine() = %q, %v; want unchanged", got, ok)
 	}
 }

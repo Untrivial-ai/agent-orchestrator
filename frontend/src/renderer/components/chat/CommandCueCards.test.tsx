@@ -44,9 +44,18 @@ test("shows only this session's command cards and tracks terminal exit", async (
 	});
 	vi.mocked(getCommandCueTerminalStatus).mockResolvedValue({ handleId: "shellterm-cue", state: "exited" });
 
-	render(<CommandCueCards sessionId="session" onViewTerminal={vi.fn()} />);
+	useCommandCueStore.getState().register({
+		projectId: "other-project",
+		sessionId: "session",
+		handleId: "other-project-handle",
+		name: "Other project command",
+		command: "echo wrong project",
+		state: "running",
+	});
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
 	expect(screen.getByText("npm test -- --run")).toBeInTheDocument();
 	expect(screen.queryByText("Other command")).toBeNull();
+	expect(screen.queryByText("Other project command")).toBeNull();
 	await screen.findByText("Exited");
 	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
 });
@@ -54,7 +63,7 @@ test("shows only this session's command cards and tracks terminal exit", async (
 test("opens the terminal and explicitly unlocks input", async () => {
 	register();
 	const onView = vi.fn();
-	render(<CommandCueCards sessionId="session" onViewTerminal={onView} />);
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={onView} />);
 
 	fireEvent.click(screen.getByRole("button", { name: "View terminal" }));
 	expect(onView).toHaveBeenCalledWith("shellterm-cue");
@@ -67,7 +76,7 @@ test("keeps failed stop confirmation open for retry and blocks duplicate stops",
 	let reject!: (error: Error) => void;
 	const firstStop = new Promise<never>((_, no) => { reject = no; });
 	vi.mocked(stopCommandCueTerminal).mockReturnValueOnce(firstStop);
-	render(<CommandCueCards sessionId="session" onViewTerminal={vi.fn()} />);
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
 	await screen.findByText("Running");
 
 	fireEvent.click(screen.getByRole("button", { name: "Stop" }));
@@ -88,7 +97,7 @@ test("keeps failed stop confirmation open for retry and blocks duplicate stops",
 test("marks a card failed when status polling fails and stops polling", async () => {
 	register();
 	vi.mocked(getCommandCueTerminalStatus).mockRejectedValue(new Error("daemon offline"));
-	render(<CommandCueCards sessionId="session" onViewTerminal={vi.fn()} />);
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
 	await screen.findByText("Failed");
 	expect(screen.getByRole("alert")).toHaveTextContent("daemon offline");
 	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
