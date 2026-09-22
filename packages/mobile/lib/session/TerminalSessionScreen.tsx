@@ -1291,7 +1291,7 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 	}, [restore, id, terminalHandleId, projectId]);
 
 	const xtermOptions = useMemo(
-		() => ({ fontFamily: "Geist_400Regular",
+		() => ({
 			fontSize: FONT_SIZE,
 			cursorBlink: true,
 			scrollback: 5000,
