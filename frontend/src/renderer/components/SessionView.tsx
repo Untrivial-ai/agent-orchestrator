@@ -29,6 +29,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
+import { CloudFileContentPane, CloudWorkspaceDiff } from "./CloudWorkspaceDiff";
 import { SessionFileTab } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import { SessionActionsMenu } from "./SessionActionsMenu";
@@ -1451,7 +1452,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		) : null,
 		[addShellTerminal, isOrchestrator, newTerminalError, session, t],
 	);
-	const fileAnnotation = useFileAnnotation(sessionId);
+	const sendCloudFileAnnotation = useCallback(async (message: string) => {
+		const orgId = session?.cloud?.orgId;
+		if (!orgId) throw new Error(t("files.feedbackError"));
+		await cloudCpClient.sendSessionMessage(orgId, sessionId, { text: message });
+	}, [cloudCpClient, session?.cloud?.orgId, sessionId, t]);
+	const fileAnnotation = useFileAnnotation(sessionId, { sendMessage: session?.cloud ? sendCloudFileAnnotation : undefined });
 	const centerFileTabs = useMemo(
 		() =>
 			fileTabs.openPaths.map((path) => ({
@@ -2017,19 +2023,34 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							</div>
 							{fileTabs.activePath ? (
 								<div className="absolute inset-0">
-									<SessionFileWorkspace
-										annotation={fileAnnotation}
-										commitSha={activeCenterFileRequest?.commitSha}
-										initialEditing={activeCenterFileInitialEditing}
-										initialMode={activeCenterFileRequest?.mode ?? "file"}
-										initialRequestKey={activeCenterFileRequest?.key ?? 0}
-										onDirtyChange={setCenterFileDirty}
-										onInitialEditingConsumed={markCenterFileEditingConsumed}
-										path={fileTabs.activePath}
-										sessionId={sessionId}
-										split={filesSplit}
-										scope={activeCenterFileRequest?.scope}
-									/>
+					{session?.cloud ? (
+						<CloudFileContentPane
+							annotation={fileAnnotation}
+							commitSha={activeCenterFileRequest?.commitSha}
+							initialEditing={activeCenterFileInitialEditing}
+							initialMode={activeCenterFileRequest?.mode ?? "file"}
+							initialRequestKey={activeCenterFileRequest?.key ?? 0}
+							onDirtyChange={setCenterFileDirty}
+							path={fileTabs.activePath}
+							scope={activeCenterFileRequest?.scope}
+							session={session}
+							split={filesSplit}
+						/>
+									) : (
+										<SessionFileWorkspace
+											annotation={fileAnnotation}
+											commitSha={activeCenterFileRequest?.commitSha}
+											initialEditing={activeCenterFileInitialEditing}
+											initialMode={activeCenterFileRequest?.mode ?? "file"}
+											initialRequestKey={activeCenterFileRequest?.key ?? 0}
+											onDirtyChange={setCenterFileDirty}
+											onInitialEditingConsumed={markCenterFileEditingConsumed}
+											path={fileTabs.activePath}
+											sessionId={sessionId}
+											split={filesSplit}
+											scope={activeCenterFileRequest?.scope}
+										/>
+									)}
 								</div>
 							) : null}
 							{interfaceSwitch.startError && !interfaceSwitchDialogOpen && !historyRecoveryNotice && !restartRequiredNotice ? (
@@ -2088,14 +2109,18 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							browserPoppedOut={browserPoppedOut}
 							filesView={
 								inspectorView === "files" && session ? (
-									<SessionFileExplorer
+									session.cloud ? (
+										<CloudWorkspaceDiff annotation={fileAnnotation} onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
+									) : (
+										<SessionFileExplorer
 										onOpenFile={openCenterFile}
 										onSplitChange={setFilesSplit}
 										onToggleMaximized={handleToggleFilesPopOut}
 										revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
 										sessionId={session.id}
 										split={filesSplit}
-									/>
+										/>
+									)
 								) : null
 							}
 							isInspectorVisible={inspectorPanelVisible}
@@ -2186,13 +2211,17 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-overlay--mac-windowed",
 							)}
 						>
-							<SessionFileExplorer
-								isMaximized
-								onSplitChange={setFilesSplit}
-								onToggleMaximized={handleToggleFilesPopOut}
-								sessionId={session.id}
-								split={filesSplit}
-							/>
+							{session.cloud ? (
+								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
+							) : (
+								<SessionFileExplorer
+									isMaximized
+									onSplitChange={setFilesSplit}
+									onToggleMaximized={handleToggleFilesPopOut}
+									sessionId={session.id}
+									split={filesSplit}
+								/>
+							)}
 						</div>,
 						document.body,
 					)

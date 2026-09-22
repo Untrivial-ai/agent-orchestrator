@@ -972,6 +972,7 @@ let cachedShellEnv: Record<string, string> | null = null;
 // Memoize the in-flight resolution so concurrent/repeat awaits are cheap.
 let shellEnvPromise: Promise<void> | null = null;
 let terminalShellPreference: TerminalShellPreference = { ...DEFAULT_TERMINAL_SHELL };
+const configuredLoginShell = process.platform === "darwin" ? (os.userInfo().shell ?? undefined) : undefined;
 
 // Telemetry defaults stamped on the daemon env on every platform; explicit env
 // always wins.
@@ -1078,7 +1079,7 @@ function ensureShellEnv(): Promise<void> {
 			});
 			return shellEnvPromise;
 		}
-		shellEnvPromise = resolveShellEnv(process.env, runLoginShell).then((resolved) => {
+		shellEnvPromise = resolveShellEnv(process.env, runLoginShell, configuredLoginShell).then((resolved) => {
 			cachedShellEnv = resolved;
 			if (!resolved) {
 				console.error("AO: could not read the login-shell environment; falling back to a static PATH floor.");
@@ -1177,7 +1178,12 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	if (process.platform === "win32") {
 		return { ...process.env, ...(cachedShellEnv ?? {}), ...devExtras, ...telemetryOverrides(), ...ownerTag };
 	}
-	return buildDaemonEnv(process.env, cachedShellEnv, { ...devExtras, ...telemetryOverrides(), ...ownerTag });
+	return buildDaemonEnv(
+		process.env,
+		cachedShellEnv,
+		{ ...devExtras, ...telemetryOverrides(), ...ownerTag },
+		configuredLoginShell,
+	);
 }
 
 function pathKey(value: string): string {

@@ -4,6 +4,7 @@ export * from "./UserAvatar";
 export * from "./agent-capabilities";
 export * from "./agents";
 export * from "./external-link";
+export * from "./ExecutionContextView";
 export * from "./formatting";
 export * from "./overlay-auto-focus";
 export * from "./PRSummaryDisplay";

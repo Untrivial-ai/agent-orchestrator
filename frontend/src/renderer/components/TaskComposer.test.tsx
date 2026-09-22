@@ -74,6 +74,11 @@ function Wrap({ children, queryClient = new QueryClient({ defaultOptions: { quer
 }
 
 const task = () => screen.getByRole("textbox", { name: "Task" });
+const startTask = () => screen.getByRole("button", { name: "Start task" });
+
+async function waitForTaskReady() {
+	await waitFor(() => expect(startTask()).toBeEnabled());
+}
 
 beforeEach(() => {
 	h.get.mockImplementation(async (path: string) => {
@@ -172,6 +177,35 @@ describe("TaskComposer", () => {
 		);
 	});
 
+	it("waits for project context before allowing a local task to start", async () => {
+		let resolveProject!: (value: unknown) => void;
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return new Promise((resolve) => {
+				resolveProject = resolve;
+			});
+		});
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		expect(startTask()).toBeDisabled();
+		expect(screen.getByRole("status", { name: "loading project context…" })).toBeInTheDocument();
+		fireEvent.change(task(), { target: { value: "should wait" } });
+		fireEvent.keyDown(task(), { key: "Enter", shiftKey: false, altKey: false });
+		expect(h.post).not.toHaveBeenCalled();
+
+		await act(async () =>
+			resolveProject({ data: { status: "ok", project: { name: "my-app", repo: "acme/my-app", defaultBranch: "main", path: "/repo", config: {} } } }),
+		);
+		await waitForTaskReady();
+	});
+
 	it("waits for and caches targeted readiness after a binary launch failure", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
@@ -223,7 +257,7 @@ describe("TaskComposer", () => {
 
 		expect(task().getAttribute("placeholder")).toBeTruthy();
 		expect(task()).toHaveClass("min-h-[calc(3lh+1.75rem)]");
-		expect(screen.getByRole("button", { name: "Start task" })).toBeEnabled();
+		await waitForTaskReady();
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() =>
@@ -317,6 +351,7 @@ describe("TaskComposer", () => {
 		);
 
 		fireEvent.change(task(), { target: { value: "Do the thing" } });
+		await waitForTaskReady();
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(onSubmittingChange).toHaveBeenLastCalledWith(true));
@@ -471,6 +506,7 @@ describe("TaskComposer", () => {
 		expect(await screen.findByText("notes.txt")).toBeInTheDocument();
 
 		fireEvent.change(task(), { target: { value: "Use the notes" } });
+		await waitForTaskReady();
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
@@ -511,6 +547,7 @@ describe("TaskComposer", () => {
 			target: { files: [new File([new Uint8Array([1, 2, 3])], "slow.txt", { type: "text/plain" })] },
 		});
 		fireEvent.change(task(), { target: { value: "Use the slow file" } });
+		await waitForTaskReady();
 		fireEvent.click(screen.getByText("Start task"));
 
 		expect(h.post).not.toHaveBeenCalled();
@@ -552,6 +589,7 @@ describe("TaskComposer", () => {
 			target: { files: [new File([new Uint8Array([2])], "second.txt", { type: "text/plain" })] },
 		});
 		fireEvent.change(task(), { target: { value: "Use both files" } });
+		await waitForTaskReady();
 		fireEvent.click(screen.getByText("Start task"));
 		expect(h.post).not.toHaveBeenCalled();
 
@@ -604,10 +642,11 @@ describe("TaskComposer", () => {
 		);
 
 		fireEvent.change(task(), { target: { value: "B" } });
+		await waitForTaskReady();
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(screen.getByText("nope")).toBeInTheDocument());
-		expect(onSubmittingChange).toHaveBeenLastCalledWith(false);
+		await waitFor(() => expect(onSubmittingChange).toHaveBeenLastCalledWith(false));
 	});
 
 	it("silently routes agents without Chat support to Terminal UI", async () => {
@@ -677,6 +716,7 @@ describe("TaskComposer", () => {
 		await userEvent.click(await screen.findByRole("button", { name: "Effort" }));
 		await userEvent.click(await screen.findByRole("menuitem", { name: "High" }));
 		fireEvent.change(task(), { target: { value: "Do the thing" } });
+		await waitForTaskReady();
 		fireEvent.click(screen.getByText("Start task"));
 
 		const fallback = await screen.findByRole("button", { name: "Create as Terminal UI" });
