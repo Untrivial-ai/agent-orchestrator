@@ -187,11 +187,15 @@ type DisplayStatus string
 // can produce them.
 const (
 	// Building.
-	DisplayWorking    DisplayStatus = "Working"
-	DisplayBlocked    DisplayStatus = "Blocked"
-	DisplayExited     DisplayStatus = "Exited"
-	DisplayNoSignal   DisplayStatus = "No signal"
-	DisplayAwaitingPR DisplayStatus = "Awaiting PR"
+	DisplayWorking           DisplayStatus = "Working"
+	DisplayBlocked           DisplayStatus = "Blocked"
+	DisplayExited            DisplayStatus = "Exited"
+	DisplayNoSignal          DisplayStatus = "No signal"
+	DisplayAwaitingPR        DisplayStatus = "Awaiting PR"
+	DisplayStarting          DisplayStatus = "Starting"
+	DisplayNeedsInputToStart DisplayStatus = "Needs input to start"
+	DisplayLaunchFailed      DisplayStatus = "Failed to start"
+	DisplayResumeInvalid     DisplayStatus = "Resume invalid"
 	// Validating.
 	DisplayFixingCI           DisplayStatus = "Fixing CI failures"
 	DisplayAddressingComments DisplayStatus = "Addressing comments"
@@ -238,7 +242,7 @@ func DeriveKanbanPresentation(
 	if session.IsTerminated {
 		return KanbanPresentation{Column: KanbanArchive, DisplayStatus: DisplayTerminated}
 	}
-	if len(prs) == 0 {
+	if !session.Readiness.Ready() || len(prs) == 0 {
 		return KanbanPresentation{
 			Column:        KanbanBuilding,
 			DisplayStatus: buildingDisplayStatus(session, now, noSignalGrace),
@@ -287,6 +291,20 @@ func displayStatusInColumn(
 // buildingDisplayStatus explains worker progress, because a session with no PR
 // has produced no delivery facts to report yet.
 func buildingDisplayStatus(session KanbanSessionFacts, now time.Time, noSignalGrace time.Duration) DisplayStatus {
+	if status, ok := readinessStatus(session.SessionFacts, now, noSignalGrace); ok {
+		switch status {
+		case StatusStarting:
+			return DisplayStarting
+		case StatusNoSignal:
+			return DisplayNoSignal
+		case StatusNeedsInput:
+			return DisplayNeedsInputToStart
+		case StatusLaunchFailed:
+			return DisplayLaunchFailed
+		case StatusResumeInvalid:
+			return DisplayResumeInvalid
+		}
+	}
 	switch {
 	case session.Activity == ActivityActive:
 		return DisplayWorking

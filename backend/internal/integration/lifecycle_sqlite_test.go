@@ -352,11 +352,15 @@ func TestMergedPRUsesSessionManagerOnlyWhenOptedIn(t *testing.T) {
 func TestSpawnPRKillRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	st := newStack(t)
+	st.sm = sessionsvc.NewWithDeps(sessionsvc.Deps{
+		Manager: st.mgr, Store: st.store,
+		SignalCapable: func(domain.AgentHarness) bool { return true },
+	})
 	sess, _, _, err := st.sm.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Branch: "b", Prompt: "do it"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sess.ID != "mer-1" || sess.Status != domain.StatusIdle {
+	if sess.ID != "mer-1" || sess.Status != domain.StatusStarting {
 		t.Fatalf("spawn got %+v", sess)
 	}
 	rec, ok, _ := st.store.GetSession(ctx, sess.ID)
@@ -367,6 +371,18 @@ func TestSpawnPRKillRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := st.sm.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusStarting {
+		t.Fatalf("PR facts hid unresolved readiness: %q", got.Status)
+	}
+	if err := st.lcm.ApplyActivitySignal(ctx, sess.ID, ports.ActivitySignal{
+		Valid: true, State: domain.ActivityIdle, LaunchID: rec.Metadata.RuntimeLaunchID, AgentSessionID: "native-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.sm.Get(ctx, sess.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

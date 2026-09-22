@@ -64,6 +64,12 @@ describe("toSessionStatus", () => {
 		expect(toSessionStatus("exited")).toBe("exited");
 	});
 
+	it("passes through the pre-readiness launch statuses", () => {
+		expect(toSessionStatus("starting")).toBe("starting");
+		expect(toSessionStatus("launch_failed")).toBe("launch_failed");
+		expect(toSessionStatus("resume_invalid")).toBe("resume_invalid");
+	});
+
 	it("keeps a backend merged status even when the session is terminated", () => {
 		expect(toSessionStatus("merged", true)).toBe("merged");
 	});
@@ -212,12 +218,22 @@ describe("findProjectOrchestrator", () => {
 });
 
 describe("sessionNeedsAttention", () => {
-	it.each(["needs_input", "exited", "no_signal", "changes_requested", "ci_failed", "unknown"] as const)(
-		"is true for %s",
-		(status) => {
-			expect(sessionNeedsAttention(sessionWith({ status }))).toBe(true);
-		},
-	);
+	it.each([
+		"needs_input",
+		"exited",
+		"no_signal",
+		"changes_requested",
+		"ci_failed",
+		"unknown",
+		"launch_failed",
+		"resume_invalid",
+	] as const)("is true for %s", (status) => {
+		expect(sessionNeedsAttention(sessionWith({ status }))).toBe(true);
+	});
+
+	it("does not flag a session that is still starting", () => {
+		expect(sessionNeedsAttention(sessionWith({ status: "starting" }))).toBe(false);
+	});
 
 	it("treats no_signal as needing attention", () => {
 		expect(sessionNeedsAttention(sessionWith({ status: "no_signal" }))).toBe(true);
@@ -343,6 +359,9 @@ describe("attentionZone", () => {
 		["draft", "pending"],
 		["working", "working"],
 		["idle", "working"],
+		["starting", "working"],
+		["launch_failed", "action"],
+		["resume_invalid", "action"],
 		["merged", "merge"],
 		["terminated", "done"],
 	];

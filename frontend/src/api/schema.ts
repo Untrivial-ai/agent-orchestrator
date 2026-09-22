@@ -3011,7 +3011,7 @@ export interface components {
             createdAt: string;
             displayName?: string;
             /** @enum {string} */
-            displayStatus: "Working" | "Blocked" | "Exited" | "No signal" | "Awaiting PR" | "Fixing CI failures" | "Addressing comments" | "Needs review" | "Review scheduled" | "Reviewing" | "Review pending" | "Draft" | "CI failing" | "Commented" | "Changes requested" | "Needs human review" | "Mergeable" | "Approved" | "Merged" | "Closed without merge" | "Terminated";
+            displayStatus: "Working" | "Blocked" | "Exited" | "No signal" | "Starting" | "Needs input to start" | "Failed to start" | "Resume invalid" | "Awaiting PR" | "Fixing CI failures" | "Addressing comments" | "Needs review" | "Review scheduled" | "Reviewing" | "Review pending" | "Draft" | "CI failing" | "Commented" | "Changes requested" | "Needs human review" | "Mergeable" | "Approved" | "Merged" | "Closed without merge" | "Terminated";
             harness?: string;
             id: string;
             isPinned: boolean;
@@ -3022,6 +3022,7 @@ export interface components {
             kind: string;
             /** Format: date-time */
             lastUserMessageAt?: null | string;
+            launchReadiness?: components["schemas"]["LaunchReadiness"];
             /** @enum {string} */
             mode: "chat" | "tui";
             model?: string;
@@ -3038,7 +3039,7 @@ export interface components {
             /** @enum {string} */
             scmStatus?: "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged";
             /** @enum {string} */
-            status: "working" | "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged" | "needs_input" | "exited" | "idle" | "terminated" | "no_signal";
+            status: "working" | "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged" | "needs_input" | "exited" | "idle" | "starting" | "launch_failed" | "resume_invalid" | "terminated" | "no_signal";
             /** @enum {string} */
             statusReadiness: "checking" | "ready" | "unavailable";
             terminalGeneration?: string;
@@ -3534,6 +3535,13 @@ export interface components {
             freed?: boolean;
             ok: boolean;
             sessionId: string;
+        };
+        LaunchReadiness: {
+            cause?: string;
+            /** @enum {string} */
+            state: "" | "launching" | "ready" | "needs_input" | "launch_failed" | "resume_invalid";
+            /** Format: date-time */
+            updatedAt: string;
         };
         LinkPreviewResponse: {
             description?: string;
@@ -4146,10 +4154,13 @@ export interface components {
             conversationCheckpointOrigin?: "human" | "coordination";
             /** @description AO hook sub-command that produced this state (e.g. post-tool-use). */
             event?: string;
+            exitCode?: null | number;
             /** @description Latest assistant update exposed by the provider hook. */
             latestAssistantUpdate?: string;
             /** @description Latest real user prompt exposed by the provider hook. */
             latestUserPrompt?: string;
+            /** @enum {string} */
+            launchFailureCause?: "resume_invalid" | "process_start_failed";
             /** @description AO process generation that produced the signal. */
             launchId?: string;
             /**

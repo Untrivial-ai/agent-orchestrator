@@ -175,8 +175,9 @@ type SessionRecord struct {
 	// activity state. Zero means no hook has ever reported, which deriveStatus
 	// surfaces as StatusNoSignal after a grace period. Internal fact, not part
 	// of the API read model.
-	FirstSignalAt time.Time `json:"-"`
-	IsTerminated  bool      `json:"isTerminated"`
+	FirstSignalAt   time.Time       `json:"-"`
+	IsTerminated    bool            `json:"isTerminated"`
+	LaunchReadiness LaunchReadiness `json:"launchReadiness,omitempty"`
 	// TerminateOnPRMerge is a user-controlled lifecycle policy. When enabled,
 	// completing the session's PR set through a merge tears down the session.
 	TerminateOnPRMerge bool            `json:"terminateOnPrMerge"`
@@ -238,7 +239,7 @@ type Session struct {
 	// ChatProviderPreserved is a live-controller observation, never stored.
 	// False also covers recovery/unknown ownership; callers must not infer safety.
 	ChatProviderPreserved bool          `json:"chatProviderPreserved"`
-	Status                SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
+	Status                SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged,needs_input,exited,idle,starting,launch_failed,resume_invalid,terminated,no_signal"`
 	SCMStatus             SessionStatus `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
 	// KanbanColumn is where the session sits in its delivery lifecycle and
 	// which loop is turning it: an AO-driven one (validating) or the
@@ -249,7 +250,7 @@ type Session struct {
 	// important current fact about the session at the stage it sits in. It is
 	// derived after the column, from the facts that column reads, and ships in
 	// renderable form so clients print it without a mapping table of their own.
-	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
+	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Starting,Needs input to start,Failed to start,Resume invalid,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
 	TerminalHandleID  string        `json:"terminalHandleId,omitempty"`
 	ActiveAgentSwitch *AgentSwitch  `json:"-"`
 	// PRs are the session's attributed pull requests (one session can own many).

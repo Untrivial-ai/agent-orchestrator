@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 const supervisedExitReportTimeout = 5 * time.Second
@@ -63,7 +65,7 @@ func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, la
 
 	if err := child.Start(); err != nil {
 		_, _ = fmt.Fprintf(c.deps.Err, "ao: start managed agent: %v\n", err)
-		c.reportSupervisedExit(sessionID, launchID)
+		c.reportSupervisedExit(sessionID, launchID, nil, domain.LaunchFailureProcessStartFailed)
 		return
 	}
 
@@ -75,14 +77,26 @@ func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, la
 	_ = child.Wait()
 	signal.Stop(interrupts)
 
-	c.reportSupervisedExit(sessionID, launchID)
+	c.reportSupervisedExit(sessionID, launchID, childExitCode(child), "")
 }
 
-func (c *commandContext) reportSupervisedExit(sessionID, launchID string) {
+// childExitCode reports the reaped child's exit code, or nil when the process
+// was terminated by a signal (ExitCode reports -1, which names no cause).
+func childExitCode(child *exec.Cmd) *int {
+	if child.ProcessState == nil {
+		return nil
+	}
+	if code := child.ProcessState.ExitCode(); code >= 0 {
+		return &code
+	}
+	return nil
+}
+
+func (c *commandContext) reportSupervisedExit(sessionID, launchID string, exitCode *int, cause domain.LaunchFailureCause) {
 	ctx, cancel := context.WithTimeout(context.Background(), supervisedExitReportTimeout)
 	defer cancel()
 	path := "sessions/" + sessionID + "/activity"
-	req := setActivityAPIRequest{State: "exited", Event: "process-exited", LaunchID: launchID}
+	req := setActivityAPIRequest{State: "exited", Event: "process-exited", LaunchID: launchID, ExitCode: exitCode, LaunchFailureCause: cause}
 	if err := c.postJSON(ctx, path, req, nil); err != nil {
 		// Reconciliation will recover this event from process absence. Keep the
 		// delivery failure visible without preventing the terminal's shell.

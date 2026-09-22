@@ -22,6 +22,10 @@ describe("sessionsAtRiskFromInstall", () => {
 		expect(sessionsAtRiskFromInstall([session({ status: "no_signal" })])).toHaveLength(1);
 	});
 
+	it("treats a launch that has not proven readiness as possibly mid-turn", () => {
+		expect(sessionsAtRiskFromInstall([session({ status: "starting" })])).toHaveLength(1);
+	});
+
 	it("flags a chat turn paused for approval or input", () => {
 		expect(sessionsAtRiskFromInstall([session({ status: "needs_input" })])).toHaveLength(1);
 	});

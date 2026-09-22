@@ -33,6 +33,9 @@ describe("session presentation", () => {
 		expect(getSessionStatusView("working", (key) => `translated:${key}`).label).toBe(
 			"translated:status.working",
 		);
+		expect(getSessionStatusView("launch_failed", (key) => `translated:${key}`).label).toBe(
+			"translated:status.launch_failed",
+		);
 		expect(getAttentionZoneView("approved", (key) => `translated:${key}`).label).toBe(
 			"translated:zone.merge",
 		);
@@ -44,6 +47,9 @@ describe("session presentation", () => {
 		["review_pending", "pending"],
 		["working", "working"],
 		["terminated", "done"],
+		["starting", "working"],
+		["launch_failed", "action"],
+		["resume_invalid", "action"],
 	] as const)("maps %s to the %s attention zone", (status, zone) => {
 		expect(attentionZone(status)).toBe(zone);
 	});
@@ -62,6 +68,9 @@ describe("session presentation", () => {
 		["approved", "text-status-ready", "bg-status-ready"],
 		["mergeable", "text-status-ready", "bg-status-ready"],
 		["merged", "text-status-merged", "bg-status-merged"],
+		["starting", "text-status-working", "bg-status-working"],
+		["launch_failed", "text-status-exited", "bg-status-exited"],
+		["resume_invalid", "text-status-exited", "bg-status-exited"],
 		["unknown", "text-status-unknown", "bg-status-unknown"],
 	] as const)("pairs the %s text tone with a matching dot tone", (status, className, dotClassName) => {
 		expect(getSessionStatusView(status)).toMatchObject({ className, dotClassName });
@@ -127,6 +136,9 @@ describe("session presentation", () => {
 		["pr_open", "validating"],
 		["working", "building"],
 		["idle", "building"],
+		["starting", "building"],
+		["launch_failed", "needs_review"],
+		["resume_invalid", "needs_review"],
 		["terminated", "archive"],
 	] as const)("places a %s session from an older daemon in %s", (status, column) => {
 		expect(toKanbanColumn(undefined, status)).toBe(column);

@@ -215,7 +215,18 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 					}
 					if tc.changeTerminalIdentity {
 						// Simulate a native context change after launch.
+						current := getSession()
+						if err := lcm.ApplyActivitySignal(ctx, sess.ID, ports.ActivitySignal{
+							Valid: true, State: domain.ActivityIdle, AgentSessionID: terminalID, LaunchID: current.Metadata.RuntimeLaunchID,
+						}); err != nil {
+							t.Fatal(err)
+						}
 						terminalID = freshID(string(sess.ID))
+						if err := lcm.ApplyActivitySignal(ctx, sess.ID, ports.ActivitySignal{
+							Event: "session-start", AgentSessionID: terminalID, LaunchID: current.Metadata.RuntimeLaunchID, Timestamp: time.Now().UTC(),
+						}); err != nil {
+							t.Fatal(err)
+						}
 					}
 					if tc.replaceOrchestrator || tc.changeTerminalIdentity || tc.removeTranscript {
 						expectedNativeID = freshID(string(sess.ID))

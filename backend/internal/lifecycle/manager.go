@@ -457,6 +457,9 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 			}
 			next := cur
 			next.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: timeOr(f.ObservedAt, now)}
+			if next.LaunchReadiness.LaunchID == currentLaunch {
+				applyLaunchFailure(&next, "workload_exited", timeOr(f.ObservedAt, now))
+			}
 			delete(m.flights, id)
 			return next, true
 		}
@@ -678,6 +681,20 @@ retryProjection:
 		m.mu.Unlock()
 		return nil
 	}
+	if readinessConversationMismatch(rec, s) {
+		// A fresh SessionStart may replace a settled conversation in the same
+		// process. It must not satisfy an unresolved launch's expected identity.
+		if !rec.LaunchReadiness.Unresolved() && s.Event == "session-start" &&
+			!s.Timestamp.IsZero() && s.Timestamp.After(rec.Metadata.NativeIdentityObservedAt) {
+			rec.LaunchReadiness = domain.LaunchReadiness{
+				State: domain.LaunchReadinessLaunching, LaunchID: rec.LaunchReadiness.LaunchID,
+				ConversationID: s.AgentSessionID, UpdatedAt: now,
+			}
+		} else {
+			m.mu.Unlock()
+			return nil
+		}
+	}
 	resetConversationCheckpoint :=
 		nativeIdentityChanged ||
 			(s.AgentSessionID != "" && s.LaunchID != "" &&
@@ -873,7 +890,8 @@ retryProjection:
 	if s.Valid {
 		s = m.applyToolPrecedenceLocked(id, rec.Activity.State, s)
 	}
-	if !s.Valid && !metadataChanged {
+	readinessChanged := applyLaunchReadiness(&rec, s, now)
+	if !s.Valid && !metadataChanged && !readinessChanged {
 		m.mu.Unlock()
 		return nil
 	}
@@ -930,7 +948,7 @@ retryProjection:
 	// first to ARRIVE may match the seeded state — e.g. a turn's "active"
 	// POST is lost and its Stop hook lands idle on the idle-seeded row.
 	if sameState && !rec.FirstSignalAt.IsZero() {
-		if metadataChanged || s.Event == "user-prompt-submit" {
+		if metadataChanged || readinessChanged || s.Event == "user-prompt-submit" {
 			rec.UpdatedAt = now
 			applied, retry, err := project(rec)
 			if err != nil {
@@ -1522,6 +1540,7 @@ func (m *Manager) markSpawned(
 		// a relaunch with broken hooks degrades to no_signal instead of inheriting
 		// a stale "signals worked once" fact.
 		rec.FirstSignalAt = time.Time{}
+		rec.LaunchReadiness = seedLaunchReadiness(rec, metadata, now)
 		rec.Metadata = mergeMetadata(rec.Metadata, metadata)
 		if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 			strings.TrimSpace(metadata.ControllerGeneration) != "" {

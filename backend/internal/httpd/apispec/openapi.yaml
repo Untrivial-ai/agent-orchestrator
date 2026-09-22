@@ -8677,6 +8677,10 @@ components:
           - Blocked
           - Exited
           - No signal
+          - Starting
+          - Needs input to start
+          - Failed to start
+          - Resume invalid
           - Awaiting PR
           - Fixing CI failures
           - Addressing comments
@@ -8720,6 +8724,8 @@ components:
           type:
           - "null"
           - string
+        launchReadiness:
+          $ref: '#/components/schemas/LaunchReadiness'
         mode:
           enum:
           - chat
@@ -8794,6 +8800,9 @@ components:
           - needs_input
           - exited
           - idle
+          - starting
+          - launch_failed
+          - resume_invalid
           - terminated
           - no_signal
           type: string
@@ -10157,6 +10166,26 @@ components:
       required:
       - ok
       - sessionId
+      type: object
+    LaunchReadiness:
+      properties:
+        cause:
+          type: string
+        state:
+          enum:
+          - ""
+          - launching
+          - ready
+          - needs_input
+          - launch_failed
+          - resume_invalid
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - state
+      - updatedAt
       type: object
     LinkPreviewResponse:
       properties:
@@ -11765,6 +11794,10 @@ components:
         event:
           description: AO hook sub-command that produced this state (e.g. post-tool-use).
           type: string
+        exitCode:
+          type:
+          - "null"
+          - integer
         latestAssistantUpdate:
           description: Latest assistant update exposed by the provider hook.
           maxLength: 16384
@@ -11772,6 +11805,11 @@ components:
         latestUserPrompt:
           description: Latest real user prompt exposed by the provider hook.
           maxLength: 16384
+          type: string
+        launchFailureCause:
+          enum:
+          - resume_invalid
+          - process_start_failed
           type: string
         launchId:
           description: AO process generation that produced the signal.

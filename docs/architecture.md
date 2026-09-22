@@ -42,6 +42,28 @@ The only persistent session state is:
 - `session_interface_transitions` — Durable checkpoints for an in-progress or completed TUI↔Chat handoff
 - PR facts — `pr`, `pr_checks`, `pr_comment` tables
 
+Launch readiness is also persisted as `launch_readiness_*` facts, scoped to the
+current launch and its observed conversation. Spawn seeds `launching`; a valid
+activity signal establishes `ready`, while an input request before readiness
+records `needs_input`. Metadata-only hooks bind the conversation without proving
+readiness. A fresh, timestamped `session-start` may replace a settled conversation
+within the same process; the replacement must establish readiness again.
+
+An exit before readiness records `launch_failed`. The activity endpoint accepts
+an optional `exitCode` and `launchFailureCause` on exited signals. Supported
+explicit diagnoses are `process_start_failed` and `resume_invalid`; the latter
+also requires matching conversation evidence. An exit code alone never proves
+an invalid resume. A later matching-launch report may enrich a generic failure
+cause without reviving the process. Readiness failures preserve session context.
+
+The API exposes `launchReadiness.state`, `cause`, and `updatedAt`. Display status
+remains derived: Chat and TUI harnesses with reliable startup activity show
+`starting` for up to 90 seconds, then `no_signal`. Partial/no-hook TUI harnesses
+retain their existing presentation during silence; explicit input and failure
+evidence still takes precedence. Known input requests remain actionable as
+`needs_input`. Legacy rows with empty readiness retain their previous status behavior. This contract
+does not add a pre-spawn gate or change message delivery policy.
+
 ### What is NOT Durable
 
 Display status like `working`, `needs_input`, `ci_failed`, `mergeable` are **computed at read time** by the service layer from the durable facts above.

@@ -113,6 +113,13 @@ func (s *Store) UpdateSessionFromActivitySignal(
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.UpdateSessionFromActivitySignal(ctx, gen.UpdateSessionFromActivitySignalParams{
+		LaunchReadinessState:          string(rec.LaunchReadiness.State),
+		LaunchReadinessLaunchID:       rec.LaunchReadiness.LaunchID,
+		LaunchReadinessConversationID: rec.LaunchReadiness.ConversationID,
+		LaunchReadinessCause:          rec.LaunchReadiness.Cause,
+		LaunchReadinessResume:         rec.LaunchReadiness.Resume,
+		LaunchReadinessUpdatedAt:      timeToNullTime(rec.LaunchReadiness.UpdatedAt),
+
 		ActivityState:                    activity.State,
 		ActivityLastAt:                   activity.LastActivityAt,
 		FirstSignalAt:                    timeToNullTime(rec.FirstSignalAt),
@@ -485,6 +492,14 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			State:          row.ActivityState,
 			LastActivityAt: row.ActivityLastAt,
 		},
+		LaunchReadiness: domain.LaunchReadiness{
+			State:          domain.LaunchReadinessState(row.LaunchReadinessState),
+			LaunchID:       row.LaunchReadinessLaunchID,
+			ConversationID: row.LaunchReadinessConversationID,
+			Cause:          row.LaunchReadinessCause,
+			Resume:         row.LaunchReadinessResume,
+			UpdatedAt:      nullTimeToTime(row.LaunchReadinessUpdatedAt),
+		},
 		FirstSignalAt:      nullTimeToTime(row.FirstSignalAt),
 		IsTerminated:       row.IsTerminated,
 		IsPinned:           row.IsPinned,
@@ -544,6 +559,13 @@ func listAllSessionsRowToRecord(row gen.ListAllSessionsRow) domain.SessionRecord
 func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams {
 	activity := normalActivity(rec.Activity, rec.CreatedAt)
 	return gen.InsertSessionParams{
+		LaunchReadinessState:          string(rec.LaunchReadiness.State),
+		LaunchReadinessLaunchID:       rec.LaunchReadiness.LaunchID,
+		LaunchReadinessConversationID: rec.LaunchReadiness.ConversationID,
+		LaunchReadinessCause:          rec.LaunchReadiness.Cause,
+		LaunchReadinessResume:         rec.LaunchReadiness.Resume,
+		LaunchReadinessUpdatedAt:      timeToNullTime(rec.LaunchReadiness.UpdatedAt),
+
 		ID:                               rec.ID,
 		ProjectID:                        optionalProjectID(rec.ProjectID),
 		Num:                              num,
@@ -604,6 +626,13 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	return gen.UpdateSessionParams{
+		LaunchReadinessState:          string(rec.LaunchReadiness.State),
+		LaunchReadinessLaunchID:       rec.LaunchReadiness.LaunchID,
+		LaunchReadinessConversationID: rec.LaunchReadiness.ConversationID,
+		LaunchReadinessCause:          rec.LaunchReadiness.Cause,
+		LaunchReadinessResume:         rec.LaunchReadiness.Resume,
+		LaunchReadinessUpdatedAt:      timeToNullTime(rec.LaunchReadiness.UpdatedAt),
+
 		ID:                               rec.ID,
 		IssueID:                          rec.IssueID,
 		Kind:                             rec.Kind,

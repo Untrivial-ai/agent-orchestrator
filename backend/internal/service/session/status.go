@@ -37,6 +37,11 @@ func toContractSessionFacts(rec domain.SessionRecord, signalCapable bool) contra
 		HasSignal:      !rec.FirstSignalAt.IsZero(),
 		SignalExpected: signalCapable && rec.Mode != domain.SessionModeChat,
 		IsTerminated:   rec.IsTerminated,
+		Readiness: contract.LaunchReadiness{
+			State:          contract.LaunchReadinessState(rec.LaunchReadiness.State),
+			UpdatedAt:      rec.LaunchReadiness.UpdatedAt,
+			SignalExpected: signalCapable || domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat,
+		},
 	}
 }
 

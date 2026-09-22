@@ -144,7 +144,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions,
+    launch_readiness_state, launch_readiness_launch_id, launch_readiness_conversation_id, launch_readiness_cause, launch_readiness_resume, launch_readiness_updated_at
 FROM sessions WHERE id = ?
 `
 
@@ -202,6 +203,12 @@ type GetSessionRow struct {
 	AutoReviewEnabled                bool
 	Model                            string
 	SessionPermissions               string
+	LaunchReadinessState             string
+	LaunchReadinessLaunchID          string
+	LaunchReadinessConversationID    string
+	LaunchReadinessCause             string
+	LaunchReadinessResume            bool
+	LaunchReadinessUpdatedAt         sql.NullTime
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -261,6 +268,12 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.AutoReviewEnabled,
 		&i.Model,
 		&i.SessionPermissions,
+		&i.LaunchReadinessState,
+		&i.LaunchReadinessLaunchID,
+		&i.LaunchReadinessConversationID,
+		&i.LaunchReadinessCause,
+		&i.LaunchReadinessResume,
+		&i.LaunchReadinessUpdatedAt,
 	)
 	return i, err
 }
@@ -277,9 +290,10 @@ INSERT INTO sessions (
     native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, session_permissions,
+    launch_readiness_state, launch_readiness_launch_id, launch_readiness_conversation_id, launch_readiness_cause, launch_readiness_resume, launch_readiness_updated_at,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -330,6 +344,12 @@ type InsertSessionParams struct {
 	ControllerGeneration             string
 	Model                            string
 	SessionPermissions               string
+	LaunchReadinessState             string
+	LaunchReadinessLaunchID          string
+	LaunchReadinessConversationID    string
+	LaunchReadinessCause             string
+	LaunchReadinessResume            bool
+	LaunchReadinessUpdatedAt         sql.NullTime
 	CreatedAt                        time.Time
 	UpdatedAt                        time.Time
 	IsPinned                         bool
@@ -386,6 +406,12 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ControllerGeneration,
 		arg.Model,
 		arg.SessionPermissions,
+		arg.LaunchReadinessState,
+		arg.LaunchReadinessLaunchID,
+		arg.LaunchReadinessConversationID,
+		arg.LaunchReadinessCause,
+		arg.LaunchReadinessResume,
+		arg.LaunchReadinessUpdatedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.IsPinned,
@@ -408,7 +434,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions,
+    launch_readiness_state, launch_readiness_launch_id, launch_readiness_conversation_id, launch_readiness_cause, launch_readiness_resume, launch_readiness_updated_at
 FROM sessions ORDER BY project_id, num
 `
 
@@ -466,6 +493,12 @@ type ListAllSessionsRow struct {
 	AutoReviewEnabled                bool
 	Model                            string
 	SessionPermissions               string
+	LaunchReadinessState             string
+	LaunchReadinessLaunchID          string
+	LaunchReadinessConversationID    string
+	LaunchReadinessCause             string
+	LaunchReadinessResume            bool
+	LaunchReadinessUpdatedAt         sql.NullTime
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -531,6 +564,12 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.AutoReviewEnabled,
 			&i.Model,
 			&i.SessionPermissions,
+			&i.LaunchReadinessState,
+			&i.LaunchReadinessLaunchID,
+			&i.LaunchReadinessConversationID,
+			&i.LaunchReadinessCause,
+			&i.LaunchReadinessResume,
+			&i.LaunchReadinessUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -557,7 +596,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions,
+    launch_readiness_state, launch_readiness_launch_id, launch_readiness_conversation_id, launch_readiness_cause, launch_readiness_resume, launch_readiness_updated_at
 FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
@@ -615,6 +655,12 @@ type ListSessionsByProjectRow struct {
 	AutoReviewEnabled                bool
 	Model                            string
 	SessionPermissions               string
+	LaunchReadinessState             string
+	LaunchReadinessLaunchID          string
+	LaunchReadinessConversationID    string
+	LaunchReadinessCause             string
+	LaunchReadinessResume            bool
+	LaunchReadinessUpdatedAt         sql.NullTime
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -680,6 +726,12 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.AutoReviewEnabled,
 			&i.Model,
 			&i.SessionPermissions,
+			&i.LaunchReadinessState,
+			&i.LaunchReadinessLaunchID,
+			&i.LaunchReadinessConversationID,
+			&i.LaunchReadinessCause,
+			&i.LaunchReadinessResume,
+			&i.LaunchReadinessUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1081,6 +1133,7 @@ UPDATE sessions SET
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
+    launch_readiness_state = ?, launch_readiness_launch_id = ?, launch_readiness_conversation_id = ?, launch_readiness_cause = ?, launch_readiness_resume = ?, launch_readiness_updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
 WHERE id = ?
 `
@@ -1128,6 +1181,12 @@ type UpdateSessionParams struct {
 	ControllerGeneration             string
 	Model                            string
 	UpdatedAt                        time.Time
+	LaunchReadinessState             string
+	LaunchReadinessLaunchID          string
+	LaunchReadinessConversationID    string
+	LaunchReadinessCause             string
+	LaunchReadinessResume            bool
+	LaunchReadinessUpdatedAt         sql.NullTime
 	IsPinned                         bool
 	PinnedAt                         sql.NullTime
 	AutoInjectReview                 bool
@@ -1179,6 +1238,12 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.ControllerGeneration,
 		arg.Model,
 		arg.UpdatedAt,
+		arg.LaunchReadinessState,
+		arg.LaunchReadinessLaunchID,
+		arg.LaunchReadinessConversationID,
+		arg.LaunchReadinessCause,
+		arg.LaunchReadinessResume,
+		arg.LaunchReadinessUpdatedAt,
 		arg.IsPinned,
 		arg.PinnedAt,
 		arg.AutoInjectReview,

@@ -75,4 +75,6 @@ type ActivitySignal struct {
 	// the public hook endpoint): lifecycle rejects a Chat signal without the
 	// current generation, as well as one received after a handoff or replacement.
 	ControllerGeneration string
+	ExitCode             *int
+	LaunchFailureCause   domain.LaunchFailureCause
 }

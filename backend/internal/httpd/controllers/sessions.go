@@ -1677,6 +1677,13 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !in.LaunchFailureCause.Valid() || (in.LaunchFailureCause != "" && state != domain.ActivityExited) {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_LAUNCH_FAILURE_CAUSE", "Launch failure cause requires an exited state and a supported diagnosis", nil)
+		return
+	}
+	if in.ExitCode != nil && (*in.ExitCode < 0 || state != domain.ActivityExited) {
+		in.ExitCode = nil
+	}
 	agentSessionID := capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.AgentSessionID)))
 	checkpointOrigin := domain.ConversationCheckpointOrigin(strings.TrimSpace(string(in.ConversationCheckpointOrigin)))
 	if !checkpointOrigin.Valid() {
@@ -1707,6 +1714,8 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		SubmissionID:                 capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.SubmissionID))),
 		TranscriptPath:               capActivityText(domain.SanitizeControlChars(strings.TrimSpace(in.TranscriptPath)), 4096),
 		LaunchID:                     capActivityMeta(domain.SanitizeControlChars(strings.TrimSpace(in.LaunchID))),
+		ExitCode:                     in.ExitCode,
+		LaunchFailureCause:           in.LaunchFailureCause,
 	}
 	var activityErr error
 	if c.Activity != nil && (sig.Valid || sig.AgentSessionID != "") {

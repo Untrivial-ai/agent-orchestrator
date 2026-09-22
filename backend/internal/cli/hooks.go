@@ -61,6 +61,8 @@ type setActivityAPIRequest struct {
 	TranscriptPath               string                              `json:"transcriptPath,omitempty"`
 	LaunchID                     string                              `json:"launchId,omitempty"`
 	Usage                        *usageHookMetadata                  `json:"usage,omitempty"`
+	ExitCode                     *int                                `json:"exitCode,omitempty"`
+	LaunchFailureCause           domain.LaunchFailureCause           `json:"launchFailureCause,omitempty" enum:"resume_invalid,process_start_failed"`
 }
 
 type usageHookMetadata struct {

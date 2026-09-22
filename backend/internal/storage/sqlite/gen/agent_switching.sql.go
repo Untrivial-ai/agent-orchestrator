@@ -69,6 +69,12 @@ UPDATE sessions SET
     latest_user_prompt = '',
     latest_assistant_update = '',
     native_transcript_path = '',
+    launch_readiness_state = 'launching',
+    launch_readiness_launch_id = ?2,
+    launch_readiness_conversation_id = ?3,
+    launch_readiness_cause = '',
+    launch_readiness_resume = ?3 <> '',
+    launch_readiness_updated_at = ?5,
     updated_at = ?5
 WHERE id = ?6
   AND is_terminated = 0
@@ -126,6 +132,12 @@ UPDATE sessions SET
     latest_user_prompt = '',
     latest_assistant_update = '',
     native_transcript_path = ?6,
+    launch_readiness_state = 'launching',
+    launch_readiness_launch_id = ?4,
+    launch_readiness_conversation_id = ?5,
+    launch_readiness_cause = '',
+    launch_readiness_resume = ?5 <> '',
+    launch_readiness_updated_at = ?2,
     updated_at = ?2
 WHERE id = ?7
   AND is_terminated = 0
@@ -885,6 +897,9 @@ const markChatSessionAgentSwitchSourceStopped = `-- name: MarkChatSessionAgentSw
 UPDATE sessions SET
     activity_state = 'exited',
     activity_last_at = ?1,
+    launch_readiness_state = CASE WHEN launch_readiness_state IN ('launching', 'needs_input') THEN 'launch_failed' ELSE launch_readiness_state END,
+    launch_readiness_cause = CASE WHEN launch_readiness_state IN ('launching', 'needs_input') THEN 'switch_source_stopped' ELSE launch_readiness_cause END,
+    launch_readiness_updated_at = CASE WHEN launch_readiness_state IN ('launching', 'needs_input') THEN ?1 ELSE launch_readiness_updated_at END,
     updated_at = ?1
 WHERE id = ?2
   AND is_terminated = 0
@@ -918,6 +933,9 @@ const markSessionAgentSwitchSourceStopped = `-- name: MarkSessionAgentSwitchSour
 UPDATE sessions SET
     activity_state = 'exited',
     activity_last_at = ?1,
+    launch_readiness_state = CASE WHEN launch_readiness_state IN ('launching', 'needs_input') THEN 'launch_failed' ELSE launch_readiness_state END,
+    launch_readiness_cause = CASE WHEN launch_readiness_state IN ('launching', 'needs_input') THEN 'switch_source_stopped' ELSE launch_readiness_cause END,
+    launch_readiness_updated_at = CASE WHEN launch_readiness_state IN ('launching', 'needs_input') THEN ?1 ELSE launch_readiness_updated_at END,
     updated_at = ?1
 WHERE id = ?2
   AND is_terminated = 0
@@ -1146,21 +1164,27 @@ UPDATE sessions SET
     conversation_checkpoint_turn_id = ?15,
     native_checkpoint_evidence = ?16,
     native_transcript_path = ?17,
-    updated_at = ?18
-WHERE sessions.id = ?19
-  AND sessions.revision = ?20
+    launch_readiness_state = ?18,
+    launch_readiness_launch_id = ?19,
+    launch_readiness_conversation_id = ?20,
+    launch_readiness_cause = ?21,
+    launch_readiness_resume = ?22,
+    launch_readiness_updated_at = ?23,
+    updated_at = ?24
+WHERE sessions.id = ?25
+  AND sessions.revision = ?26
   AND sessions.is_terminated = 0
-  AND sessions.harness = ?21
-  AND sessions.session_mode = ?22
+  AND sessions.harness = ?27
+  AND sessions.session_mode = ?28
   AND (
       (
-          ?22 <> 'chat'
-          AND sessions.runtime_launch_id = ?23
+          ?28 <> 'chat'
+          AND sessions.runtime_launch_id = ?29
       )
       OR
       (
-          ?22 = 'chat'
-          AND sessions.controller_generation = ?24
+          ?28 = 'chat'
+          AND sessions.controller_generation = ?30
       )
   )
   AND NOT EXISTS (
@@ -1192,6 +1216,12 @@ type UpdateSessionFromActivitySignalParams struct {
 	ConversationCheckpointTurnID     string
 	NativeCheckpointEvidence         string
 	NativeTranscriptPath             string
+	LaunchReadinessState             string
+	LaunchReadinessLaunchID          string
+	LaunchReadinessConversationID    string
+	LaunchReadinessCause             string
+	LaunchReadinessResume            bool
+	LaunchReadinessUpdatedAt         sql.NullTime
 	UpdatedAt                        time.Time
 	ID                               domain.SessionID
 	ExpectedRevision                 int64
@@ -1225,6 +1255,12 @@ func (q *Queries) UpdateSessionFromActivitySignal(ctx context.Context, arg Updat
 		arg.ConversationCheckpointTurnID,
 		arg.NativeCheckpointEvidence,
 		arg.NativeTranscriptPath,
+		arg.LaunchReadinessState,
+		arg.LaunchReadinessLaunchID,
+		arg.LaunchReadinessConversationID,
+		arg.LaunchReadinessCause,
+		arg.LaunchReadinessResume,
+		arg.LaunchReadinessUpdatedAt,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedRevision,

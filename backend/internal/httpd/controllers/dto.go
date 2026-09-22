@@ -1171,6 +1171,8 @@ type SetActivityRequest struct {
 	TranscriptPath               string                              `json:"transcriptPath,omitempty" maxLength:"4096" description:"Read-only provider-native transcript path exposed by the hook."`
 	LaunchID                     string                              `json:"launchId,omitempty" description:"AO process generation that produced the signal."`
 	Usage                        *UsageHookMetadata                  `json:"usage,omitempty" description:"Provider transcript metadata used by the local usage pipeline."`
+	ExitCode                     *int                                `json:"exitCode,omitempty"`
+	LaunchFailureCause           domain.LaunchFailureCause           `json:"launchFailureCause,omitempty" enum:"resume_invalid,process_start_failed"`
 }
 
 // UsageHookMetadata is the transcript metadata carried by supported Claude

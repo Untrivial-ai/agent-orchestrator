@@ -33,6 +33,9 @@ const (
 	StatusIdle             SessionStatus = "idle"
 	StatusTerminated       SessionStatus = "terminated"
 	StatusNoSignal         SessionStatus = "no_signal"
+	StatusStarting         SessionStatus = "starting"
+	StatusLaunchFailed     SessionStatus = "launch_failed"
+	StatusResumeInvalid    SessionStatus = "resume_invalid"
 )
 
 // SessionFacts are the durable-agnostic facts used to derive session status.
@@ -42,6 +45,7 @@ type SessionFacts struct {
 	HasSignal      bool
 	SignalExpected bool
 	IsTerminated   bool
+	Readiness      LaunchReadiness
 }
 
 // CIState is the aggregate CI state of a pull request.
@@ -112,6 +116,9 @@ func DeriveStatus(
 		return StatusTerminated
 	}
 
+	if status, ok := readinessStatus(session, now, noSignalGrace); ok {
+		return status
+	}
 	switch session.Activity {
 	case ActivityActive:
 		return StatusWorking

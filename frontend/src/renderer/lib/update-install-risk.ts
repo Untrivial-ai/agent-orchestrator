@@ -6,7 +6,12 @@ import type { AgentProvider } from "../types/workspace";
  * registrations here. Missing/unknown ownership remains conservatively at risk
  * while a turn may be active, including one parked for approval or user input.
  */
-const TURN_MAY_BE_IN_FLIGHT: ReadonlySet<string> = new Set(["working", "no_signal", "needs_input"]);
+const TURN_MAY_BE_IN_FLIGHT: ReadonlySet<string> = new Set([
+	"working",
+	"no_signal",
+	"starting",
+	"needs_input",
+]);
 
 export type UpdateRiskSession = {
 	id: string;

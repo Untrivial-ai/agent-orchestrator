@@ -19,6 +19,17 @@ const (
 	StatusExited           SessionStatus = "exited"
 	StatusIdle             SessionStatus = "idle"
 	StatusTerminated       SessionStatus = "terminated"
+	// StatusStarting marks a live session whose current launch has not proven
+	// readiness yet: the agent process exists but AO is still waiting for its
+	// first hook truth. Rendered instead of a confident Working.
+	StatusStarting SessionStatus = "starting"
+	// StatusLaunchFailed marks a live session whose current launch ended before
+	// proving readiness. The session is not dead (it can be respawned), but
+	// AO can prove "Failed to start" rather than guess.
+	StatusLaunchFailed SessionStatus = "launch_failed"
+	// StatusResumeInvalid marks a live session whose current launch was a
+	// resume that could not pick the conversation back up.
+	StatusResumeInvalid SessionStatus = "resume_invalid"
 	// StatusNoSignal marks a live session whose agent has never delivered a
 	// hook callback for the current spawn/restore: AO cannot tell whether the
 	// agent is working or stuck (broken hook pipeline, blocked interactive

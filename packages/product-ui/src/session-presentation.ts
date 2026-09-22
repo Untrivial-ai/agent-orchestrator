@@ -47,6 +47,11 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
 	"status.merged": "Merged",
 	"status.terminated": "Terminated",
 	"status.unknown": "Unknown status",
+	// Pre-readiness launch facts: the daemon can tell "still starting" and
+	// "failed to start" apart from a confident working/idle reading.
+	"status.starting": "Starting",
+	"status.launch_failed": "Failed to start",
+	"status.resume_invalid": "Resume invalid",
 	"zone.merge": "Ready to merge",
 	"zone.action": "Needs you",
 	"zone.pending": "In review",
@@ -72,6 +77,10 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
 	"displayStatus.blocked": "Blocked",
 	"displayStatus.exited": "Exited",
 	"displayStatus.noSignal": "No signal",
+	"displayStatus.starting": "Starting",
+	"displayStatus.needsInputToStart": "Needs input to start",
+	"displayStatus.launchFailed": "Failed to start",
+	"displayStatus.resumeInvalid": "Resume invalid",
 	"displayStatus.awaitingPr": "Awaiting PR",
 	"displayStatus.fixingCiFailures": "Fixing CI failures",
 	"displayStatus.addressingComments": "Addressing comments",
@@ -101,6 +110,10 @@ export const displayStatusLabelKeys: Record<DisplayStatus, `displayStatus.${stri
 	Blocked: "displayStatus.blocked",
 	Exited: "displayStatus.exited",
 	"No signal": "displayStatus.noSignal",
+	Starting: "displayStatus.starting",
+	"Needs input to start": "displayStatus.needsInputToStart",
+	"Failed to start": "displayStatus.launchFailed",
+	"Resume invalid": "displayStatus.resumeInvalid",
 	"Awaiting PR": "displayStatus.awaitingPr",
 	"Fixing CI failures": "displayStatus.fixingCiFailures",
 	"Addressing comments": "displayStatus.addressingComments",
@@ -235,6 +248,11 @@ const sessionStatusStyles: Record<SessionStatus, Omit<SessionStatusView, "label"
 	approved: { className: "text-status-ready", dotClassName: "bg-status-ready" },
 	mergeable: { className: "text-status-ready", dotClassName: "bg-status-ready" },
 	merged: { className: "text-status-merged", dotClassName: "bg-status-merged" },
+	// A launch that has not proven readiness yet reads as in progress, and a
+	// launch that died pre-readiness reads as a failure the user must resolve.
+	starting: { className: "text-status-working", dotClassName: "bg-status-working" },
+	launch_failed: { className: "text-status-exited", dotClassName: "bg-status-exited" },
+	resume_invalid: { className: "text-status-exited", dotClassName: "bg-status-exited" },
 	terminated: {
 		className: "text-status-terminated-foreground",
 		dotClassName: "bg-status-terminated",
@@ -446,6 +464,8 @@ export function attentionZone(input: SessionStatus | SessionStatusModel): Attent
 		case "no_signal":
 		case "ci_failed":
 		case "changes_requested":
+		case "launch_failed":
+		case "resume_invalid":
 		case "unknown":
 			return "action";
 		case "review_pending":
@@ -454,6 +474,7 @@ export function attentionZone(input: SessionStatus | SessionStatusModel): Attent
 			return "pending";
 		case "working":
 		case "idle":
+		case "starting":
 			return "working";
 	}
 }
