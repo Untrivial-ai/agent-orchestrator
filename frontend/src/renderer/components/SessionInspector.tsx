@@ -25,6 +25,7 @@ import {
 	type InspectorView,
 } from "@aoagents/product-ui";
 import {
+	Archive,
 	ArrowUpRight,
 	ChevronDown,
 	ChevronRight,
@@ -72,7 +73,7 @@ import type { BrowserViewModel } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
-import { SessionTerminationPopover } from "./SessionTerminationPopover";
+import { SessionArchiveDialog } from "./SessionArchiveDialog";
 import { ReviewerSelect } from "./ReviewerSelect";
 import { agentLabel } from "../lib/agent-options";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
@@ -1166,7 +1167,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<span className="inline-flex">
-						<SessionTerminationPopover
+						<SessionArchiveDialog
 							onConfirm={confirmTermination}
 							onOpenChange={setConfirmOpen}
 							open={confirmOpen}
@@ -1174,16 +1175,15 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 							trigger={
 								<button
 									aria-label={t("inspector.terminate")}
-									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 									onClick={() => {
 										clearTerminateSessionState(queryClient, session.id);
-										// Force the confirm open instead of toggling it, so repeated
-										// trash taps keep the dialog up rather than dismissing it.
+										// Always open the confirm; the modal owns its own dismissal.
 										setConfirmOpen(true);
 									}}
 									type="button"
 								>
-									<Trash2 className="size-icon-sm" aria-hidden="true" />
+									<Archive className="size-icon-sm" aria-hidden="true" />
 								</button>
 							}
 						/>

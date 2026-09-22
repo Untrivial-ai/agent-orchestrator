@@ -202,8 +202,8 @@ function renderKill(session: WorkspaceSession = worker, orchestratorId?: string)
 }
 
 async function clickKillDialogConfirm() {
-	const dialog = await screen.findByRole("dialog", { name: "Terminate do the thing?" });
-	await userEvent.click(within(dialog).getByRole("button", { name: "Yes, terminate session" }));
+	const dialog = await screen.findByRole("dialog", { name: "Are you sure you want to archive do the thing?" });
+	await userEvent.click(within(dialog).getByRole("button", { name: "Confirm, archive session" }));
 }
 
 beforeEach(() => {
@@ -285,7 +285,7 @@ describe("ShellTopbar status pill", () => {
 		expect(localActions.contains(screen.getByRole("button", { name: "New terminal" }))).toBe(true);
 		expect(localActions.contains(screen.getByRole("button", { name: "Switch agent" }))).toBe(true);
 		expect(localActions.contains(screen.getByRole("button", { name: "Switch to chat UI" }))).toBe(true);
-		expect(localActions.contains(screen.getByRole("button", { name: "Kill session" }))).toBe(true);
+		expect(localActions.contains(screen.getByRole("button", { name: "Archive session" }))).toBe(true);
 		expect(localActions.contains(screen.getByRole("button", { name: "Open orchestrator" }))).toBe(false);
 	});
 
@@ -529,7 +529,7 @@ describe("ShellTopbar orchestrator actions", () => {
 		postMock.mockReturnValue(new Promise(() => {}));
 		renderTopbarSessions([worker, orchestrator], worker.id);
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 
 		expect(navigateMock).toHaveBeenCalledWith({
@@ -613,18 +613,18 @@ describe("ShellTopbar open-in-editor control", () => {
 });
 
 describe("TopbarKillButton", () => {
-	it("opens a compact confirmation card below the kill control", async () => {
+	it("asks for confirmation in the shared modal before archiving", async () => {
 		renderKill();
 
-		const killButton = screen.getByRole("button", { name: "Kill session" });
-		await userEvent.click(killButton);
+		const archiveButton = screen.getByRole("button", { name: "Archive session" });
+		expect(archiveButton.querySelector("svg")).toHaveClass("lucide-archive");
+		await userEvent.click(archiveButton);
 		expect(postMock).not.toHaveBeenCalled();
-		expect(killButton).toHaveAttribute("aria-expanded", "true");
-		const confirmation = screen.getByRole("dialog", { name: "Terminate do the thing?" });
-		expect(confirmation).toHaveClass("w-64", "bg-popover", "p-3");
-		expect(confirmation).toHaveAttribute("data-side", "bottom");
+		const confirmation = screen.getByRole("dialog", { name: "Are you sure you want to archive do the thing?" });
+		expect(confirmation).toHaveClass("left-[50%]", "top-[50%]", "bg-popover", "p-0");
+		expect(confirmation).toHaveTextContent("You can always restore do the thing from the Archive section later.");
 		expect(within(confirmation).getByRole("button", { name: "No" })).toBeInTheDocument();
-		expect(within(confirmation).getByRole("button", { name: "Yes, terminate session" })).toHaveTextContent("Yes");
+		expect(within(confirmation).getByRole("button", { name: "Confirm, archive session" })).toHaveTextContent("Confirm");
 
 		await clickKillDialogConfirm();
 
@@ -638,10 +638,10 @@ describe("TopbarKillButton", () => {
 	it("can back out of the confirmation without killing", async () => {
 		renderKill();
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await userEvent.click(screen.getByRole("button", { name: "No" }));
 
-		expect(screen.getByRole("button", { name: "Kill session" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Archive session" })).toBeInTheDocument();
 		expect(postMock).not.toHaveBeenCalled();
 	});
 
@@ -649,11 +649,11 @@ describe("TopbarKillButton", () => {
 		postMock.mockResolvedValue({ data: undefined, error: { message: "session not found" } });
 		renderKill();
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 
 		expect(await screen.findByText("session not found")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Kill session" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Archive session" })).toBeEnabled();
 	});
 
 	it("clears a stale daemon error before retrying the kill", async () => {
@@ -662,11 +662,11 @@ describe("TopbarKillButton", () => {
 			.mockReturnValue(new Promise(() => {}));
 		renderKill();
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 		expect(await screen.findByText("session not found")).toBeInTheDocument();
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 
 		await waitFor(() => expect(screen.queryByText("session not found")).not.toBeInTheDocument());
@@ -681,7 +681,7 @@ describe("TopbarKillButton", () => {
 		);
 		renderKill(worker, orchestrator.id);
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 
 		expect(onKilledMock).toHaveBeenCalledWith("proj-1", "orch-1");
@@ -702,12 +702,12 @@ describe("TopbarKillButton", () => {
 		);
 		const view = renderTopbarSessions([worker, orchestrator], worker.id);
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 		paramsMock.sessionId = orchestrator.id;
 		view.rerenderTopbar();
 
-		expect(screen.getByRole("status")).toHaveTextContent("Killing do the thing");
+		expect(screen.getByRole("status")).toHaveTextContent("Archiving do the thing");
 		finishKill({
 			data: undefined,
 			error: { message: "runtime teardown failed" },
@@ -720,7 +720,7 @@ describe("TopbarKillButton", () => {
 	it("falls back to the project board when no orchestrator is available", async () => {
 		renderKill();
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 
 		await waitFor(() => {
@@ -728,7 +728,7 @@ describe("TopbarKillButton", () => {
 		});
 	});
 
-	it("scopes Killing state to the worker id during rapid switching", async () => {
+	it("scopes Archiving state to the worker id during rapid switching", async () => {
 		let resolveKill!: (value: { data: { ok: boolean; sessionId: string }; error: undefined }) => void;
 		postMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -737,22 +737,22 @@ describe("TopbarKillButton", () => {
 		);
 		const view = renderTopbarSessions([worker, secondWorker], "sess-1");
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
-		expect(await screen.findByRole("button", { name: "Killing..." })).toBeDisabled();
+		expect(await screen.findByRole("button", { name: "Archiving…" })).toBeDisabled();
 
 		paramsMock.sessionId = "sess-2";
 		view.rerenderTopbar();
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Kill session" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Archive session" })).toBeEnabled();
 
 		paramsMock.sessionId = "sess-1";
 		view.rerenderTopbar();
-		expect(screen.getByRole("button", { name: "Killing..." })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Archiving…" })).toBeDisabled();
 
 		resolveKill({ data: { ok: true, sessionId: "sess-1" }, error: undefined });
-		await waitFor(() => expect(screen.getByRole("button", { name: "Kill session" })).toBeEnabled());
+		await waitFor(() => expect(screen.getByRole("button", { name: "Archive session" })).toBeEnabled());
 	});
 
 	it("keeps kill failures with their worker and clears only that worker pending state", async () => {
@@ -764,19 +764,19 @@ describe("TopbarKillButton", () => {
 		);
 		const view = renderTopbarSessions([worker, secondWorker], "sess-1");
 
-		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive session" }));
 		await clickKillDialogConfirm();
 		paramsMock.sessionId = "sess-2";
 		view.rerenderTopbar();
 		resolveKill({ data: undefined, error: { message: "worker one failed" }, response: { status: 500 } });
 
 		await waitFor(() => expect(view.queryClient.isMutating()).toBe(0));
-		expect(screen.getByRole("button", { name: "Kill session" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Archive session" })).toBeEnabled();
 		expect(screen.queryByText("worker one failed")).not.toBeInTheDocument();
 
 		paramsMock.sessionId = "sess-1";
 		view.rerenderTopbar();
 		expect(await screen.findByText("worker one failed")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Kill session" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Archive session" })).toBeEnabled();
 	});
 });
