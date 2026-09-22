@@ -26,6 +26,10 @@ const apiMocks = vi.hoisted(() => ({
 	),
 }));
 
+vi.mock("./DetectedHarnesses", () => ({
+	DetectedHarnesses: () => <div data-testid="detected-harnesses" />,
+}));
+
 vi.mock("../lib/bridge", () => ({
 	aoBridge: {
 		app: {
@@ -1305,6 +1309,42 @@ describe("CreateProjectFlow project import validation", () => {
 			}),
 		);
 		expect(bridgeMocks.getRepositoryBranch).toHaveBeenCalledWith("/repo/project");
+	});
+
+	it("opens agent setup for a committed remoteless repository and records its branch", async () => {
+		const user = userEvent.setup();
+		const onCreateProject = vi.fn().mockResolvedValue(undefined);
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/local-only");
+		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
+		apiMocks.POST.mockResolvedValueOnce({
+			data: projectValidation("/repo/local-only", {
+				nextStep: "continue",
+				root: {
+					isRepo: true,
+					hasCommit: true,
+					hasOrigin: false,
+					requiredActions: [],
+				},
+			}),
+		});
+
+		renderChooseFlow({ onCreateProject });
+		await openSource(user, "Import an existing project");
+
+		expect(await screen.findByTestId("agent-sheet")).toHaveAttribute("data-path", "/repo/local-only");
+		expect(screen.queryByText(/does not have a GitHub remote/i)).not.toBeInTheDocument();
+		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
+
+		await waitFor(() =>
+			expect(onCreateProject).toHaveBeenCalledWith({
+				path: "/repo/local-only",
+				asWorkspace: false,
+				defaultBranch: "main",
+				workerAgent: "codex",
+				orchestratorAgent: "codex",
+			}),
+		);
+		expect(bridgeMocks.getRepositoryBranch).toHaveBeenCalledWith("/repo/local-only");
 	});
 
 	it("shows queued and running setup progress after continue is clicked", async () => {

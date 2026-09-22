@@ -12,10 +12,9 @@ import { TopbarButton } from "./TopbarButton";
 
 const GITHUB_CLI_INSTALL_URL = "https://cli.github.com/";
 
-/** Onboarding advisory. GitHub is not required for local work, but surfacing
- * missing auth before task creation prevents a late PR-creation failure inside
- * an agent session. */
-export function GitHubOnboardingNotice() {
+/** Onboarding advisory shown at PR-related surfaces. GitHub is not required for
+ * local work; ask only when the user reaches pull-request context. */
+export function GitHubOnboardingNotice({ autoStartLogin = false }: { autoStartLogin?: boolean }) {
 	const { t } = useTranslation();
 	const gate = useSystemRequirementsGate();
 	const startLogin = useStartGitHubAuthTerminal();
@@ -63,6 +62,7 @@ export function GitHubOnboardingNotice() {
 	}, [auth?.satisfied, closeTerminal, showGlobalToast, t, terminal, terminalQuery.clear]);
 	useEffect(() => {
 		if (
+			!autoStartLogin ||
 			!auth ||
 			auth.satisfied ||
 			gh?.satisfied !== true ||
@@ -74,7 +74,7 @@ export function GitHubOnboardingNotice() {
 		}
 		autoLogin.markOffered();
 		startLogin.mutate();
-	}, [auth, autoLogin.markOffered, autoLogin.offered, gh?.satisfied, startLogin.isPending, startLogin.mutate, terminal]);
+	}, [auth, autoLogin.markOffered, autoLogin.offered, autoStartLogin, gh?.satisfied, startLogin.isPending, startLogin.mutate, terminal]);
 
 	if (!auth || auth.satisfied) return null;
 
@@ -118,7 +118,7 @@ export function GitHubOnboardingNotice() {
 					<div className="min-w-0 flex-1">
 						<p className="text-[14px] font-semibold text-[var(--color-text-import-title)]">{t("startup.githubSetupTitle")}</p>
 						<p className="mt-0.5 text-[12px] leading-5 text-[var(--color-text-import-muted)]">
-							{t(cliMissing ? "startup.githubSetupMissingCli" : "startup.githubSetupSignedOut")}
+							{t(cliMissing ? "startup.githubSetupMissingCli" : "startup.githubSetupSignedOutPr")}
 						</p>
 						<div className="mt-2 flex flex-wrap items-center gap-2">
 							<TopbarButton

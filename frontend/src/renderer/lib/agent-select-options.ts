@@ -105,10 +105,10 @@ function isRoleSession(session: RoleSession, role: "worker" | "orchestrator"): b
 
 function agentStatus(agent: AgentInfo): Pick<RankedAgentOption, "status" | "statusTone"> {
 	if (agent.installation.state === "not_installed") {
-		return { status: "Needs install", statusTone: "muted" };
+		return { status: "Install CLI to use", statusTone: "muted" };
 	}
 	if (agent.authentication.state === "unauthorized") {
-		return { status: "Needs auth", statusTone: "warning" };
+		return { status: "Sign in to use", statusTone: "warning" };
 	}
 	if (agent.installation.state === "unknown") {
 		return { status: "Install unknown", statusTone: "warning" };
