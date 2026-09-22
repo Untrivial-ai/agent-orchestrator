@@ -2097,7 +2097,7 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
-    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Reviewer agent" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
     await waitFor(() => expect(useUiStore.getState().settingsModal).not.toBeNull());
 
