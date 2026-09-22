@@ -81,7 +81,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/t
 import { appI18n } from "../i18n";
 import type { MessageKey } from "../i18n";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
-import { useCloudCp } from "../hooks/useCloudCp";
 import {
 	openReviewStatesFor,
 	reviewHasLiveActivity,
