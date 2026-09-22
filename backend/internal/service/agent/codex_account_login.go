@@ -15,6 +15,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
+const codexLoginTerminalPollInterval = 250 * time.Millisecond
+
 func (m *codexAccountManager) openLoginTerminal(ctx context.Context, targetAccountID string) (CodexAccountLoginTerminalStart, error) {
 	release, err := m.acquireAccountMutation(ctx)
 	if err != nil {
@@ -25,7 +27,7 @@ func (m *codexAccountManager) openLoginTerminal(ctx context.Context, targetAccou
 		return CodexAccountLoginTerminalStart{}, apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex login terminal is unavailable")
 	}
 	targetAccountID = strings.TrimSpace(targetAccountID)
-	deviceCredential, deviceState, deviceErr := readCodexFileState(m.globalCredentialPath(), true)
+	deviceCredential, deviceState, deviceErr := readCodexDeviceFileState(m.globalCredentialPath(), true)
 	if deviceErr != nil {
 		if targetAccountID != "" {
 			return CodexAccountLoginTerminalStart{}, apierr.Unavailable("CODEX_ACCOUNT_RECONCILIATION_UNAVAILABLE", "The device Codex account could not be refreshed")
@@ -99,8 +101,39 @@ func (m *codexAccountManager) openLoginTerminal(ctx context.Context, targetAccou
 	m.login.terminalTitle, m.login.terminalCreated = terminal.Title, terminal.CreatedAt
 	m.mu.Unlock()
 	go m.expireLogin(m.ctx, id, snapshot.ExpiresAt)
+	go m.monitorLoginTerminal(m.ctx, id, terminal.HandleID)
 	m.publish()
 	return CodexAccountLoginTerminalStart{Operation: snapshot, ShellTerminal: terminal}, nil
+}
+
+// monitorLoginTerminal owns login completion in the daemon. On Windows the
+// ConPTY host can outlive its command to preserve scrollback, so host liveness
+// is not a reliable signal that Codex has finished writing the credential.
+func (m *codexAccountManager) monitorLoginTerminal(ctx context.Context, operationID, handleID string) {
+	for {
+		m.mu.Lock()
+		op := m.login
+		finished := op == nil || op.snapshot.OperationID != operationID ||
+			terminalLoginStatus(op.snapshot.Status) || op.closing || op.committing
+		m.mu.Unlock()
+		if finished {
+			return
+		}
+
+		alive, err := m.terminal.IsShellTerminalChildAlive(ctx, handleID)
+		if err == nil && !alive {
+			if _, verifyErr := m.verifyLogin(ctx, operationID); verifyErr != nil && !errors.Is(verifyErr, context.Canceled) {
+				m.logger.Warn("automatic Codex login verification failed", "operationId", operationID, "error", verifyErr)
+			}
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.after(codexLoginTerminalPollInterval):
+		}
+	}
 }
 
 func (m *codexAccountManager) clearLoginReservation(id string) {
@@ -164,6 +197,9 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 	if identityErr != nil || latestErr != nil || !sameCodexFileState(admitted, latest) || !bytes.Equal(pendingCredential, latestCredential) {
 		return m.finishLoginRetryable(operationID), nil
 	}
+	if terminalErr := m.prepareLoginTerminalForCommit(ctx, terminalHandle); terminalErr != nil {
+		return m.finishLoginRetryable(operationID), nil
+	}
 	observation := ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnknown, Method: identity.Method}
 	exclusive, exclusiveErr := m.acquireGlobalMutation(ctx)
 	if exclusiveErr != nil {
@@ -207,7 +243,7 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 		if !targetFound || !loginCredentialIdentifiesRecord(target, identity, pendingCredential) {
 			return m.finishLogin(operationID, domain.CodexAccountLoginFailed, domain.CodexAccountLoginReasonFailed, "Sign in with the same Codex account to replace its credentials.", nil), nil
 		}
-		currentGlobal, currentState, currentErr := readCodexFileState(m.globalCredentialPath(), true)
+		currentGlobal, currentState, currentErr := readCodexDeviceFileState(m.globalCredentialPath(), true)
 		if currentErr != nil || !sameCodexFileState(op.deviceState, currentState) || !bytes.Equal(op.startingGlobalCredential, currentGlobal) {
 			return m.finishLoginRetryable(operationID), nil
 		}

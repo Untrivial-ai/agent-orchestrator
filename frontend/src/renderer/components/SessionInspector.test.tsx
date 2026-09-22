@@ -15,9 +15,11 @@ import { TooltipProvider } from "./ui/tooltip";
 import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
 import { sessionWorkspaceFilesQueryKey } from "../hooks/useSessionWorkspaceFiles";
+import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { useUiStore } from "../stores/ui-store";
+import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
 import type {
   PRState,
   PullRequestFacts,
@@ -38,6 +40,18 @@ const { getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
 
 function postCallsFor(path: string) {
   return postMock.mock.calls.filter(([calledPath]) => calledPath === path);
+}
+
+function mockPostsWithResponse(response: unknown) {
+  postMock.mockImplementation(async (path: string) => {
+    if (path === "/api/v1/agents/readiness/ensure") {
+      const agents = ["claude-code", "codex", "opencode"].map((id) =>
+        agentReadiness(id),
+      );
+      return { data: { agents } };
+    }
+    return response;
+  });
 }
 
 function setRenderedOverflow(element: HTMLElement, overflowing: boolean) {
@@ -278,7 +292,7 @@ beforeEach(() => {
   navigateMock.mockReset();
   patchMock.mockReset();
   postMock.mockReset();
-  useUiStore.setState({ developerMode: false, inspectorSessions: {} });
+  useUiStore.setState({ developerMode: false, inspectorSessions: {}, settingsModal: null });
   putMock.mockReset();
   mockCommonGets();
   patchMock.mockResolvedValue({
@@ -286,7 +300,7 @@ beforeEach(() => {
     error: undefined,
     response: { status: 200 },
   });
-  postMock.mockResolvedValue({
+  mockPostsWithResponse({
     data: { ok: true, sessionId: "sess-1" },
     error: undefined,
   });
@@ -1212,7 +1226,7 @@ describe("SessionInspector completion controls", () => {
       <SessionInspector
         session={session([], {
           workspaceId: STANDALONE_WORKSPACE_ID,
-          workspaceName: "Ad hoc agents",
+          workspaceName: "Scratchpad",
           status: "idle",
         })}
       />,
@@ -1305,12 +1319,11 @@ describe("SessionInspector completion controls", () => {
 });
 
 describe("SessionInspector Activity section", () => {
-  const activitySection = () =>
-    within(
-      screen
-        .getByText("Activity")
-        .closest("[data-testid='inspector-section']") as HTMLElement,
-    );
+  const activitySectionElement = () =>
+    screen
+      .getByText("Activity")
+      .closest("[data-testid='inspector-section']") as HTMLElement;
+  const activitySection = () => within(activitySectionElement());
 
   it("offers a managed resume only for an exited, nonterminated agent", async () => {
     renderWithQuery(
@@ -1349,6 +1362,9 @@ describe("SessionInspector Activity section", () => {
     expect(
       screen.queryByRole("button", { name: "Resume agent" }),
     ).not.toBeInTheDocument();
+    expect(
+      activitySectionElement().querySelector(".mt-3.border-t.pt-3"),
+    ).not.toBeInTheDocument();
 
     live.unmount();
     renderWithQuery(
@@ -1384,6 +1400,31 @@ describe("SessionInspector Activity section", () => {
 
     expect(
       screen.queryByRole("button", { name: "Resume agent" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer agent resume during an interface transition", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          status: "exited",
+          activity: { state: "exited", lastActivityAt: "2026-06-15T10:00:00Z" },
+        })}
+      />,
+      undefined,
+      (client) => {
+        client.setQueryData(
+          sessionInterfaceTransitionQueryKey("sess-1"),
+          sessionInterfaceTransitionStatus("sess-1"),
+        );
+      },
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Resume agent" }),
+    ).not.toBeInTheDocument();
+    expect(
+      activitySectionElement().querySelector(".mt-3.border-t.pt-3"),
     ).not.toBeInTheDocument();
   });
 
@@ -1623,6 +1664,19 @@ describe("SessionInspector Activity section", () => {
         "inspector-section",
       );
     }
+  });
+
+  it("surfaces project, repository, branch, and active agent context in the summary", async () => {
+    renderWithQuery(<SessionInspector session={session([], { branch: "feature/session" })} />);
+
+    const context = await screen.findByTestId("execution-context");
+    await waitFor(() => expect(context).toHaveTextContent("feature/session"));
+    expect(within(context).getByText("Branch", { exact: true })).toBeInTheDocument();
+    expect(within(context).getByText("Default branch", { exact: true })).toBeInTheDocument();
+    expect(context).toHaveTextContent("main");
+    expect(context).toHaveTextContent("my-app");
+    expect(context).toHaveTextContent("/repo");
+    expect(context).toHaveTextContent("Claude");
   });
 
   it("keeps workspace, PR, and SCM context rows in the Activity timeline", () => {
@@ -2024,6 +2078,35 @@ describe("SessionInspector summary reviews", () => {
     });
     expect(trigger).toHaveTextContent("Claude Code");
     expect(trigger).not.toHaveTextContent("claude-code");
+  });
+
+  it("opens Harness from the reviewer menu for its unavailable selection", async () => {
+    const responder = commonGetsResponder();
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents/readiness") {
+        return {
+          data: {
+            agents: [
+              agentReadiness("claude-code", "Claude Code"),
+              agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+            ],
+          },
+        };
+      }
+      return responder(path);
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+    await waitFor(() => expect(useUiStore.getState().settingsModal).not.toBeNull());
+
+    expect(useUiStore.getState().settingsModal).toEqual({
+      scope: "global",
+      section: "harness",
+      focusAgentId: "codex",
+    });
   });
 
   it("configures session auto-review and disables manual controls", async () => {
@@ -3001,7 +3084,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });
@@ -3058,7 +3141,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3114,7 +3197,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3169,7 +3252,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3231,7 +3314,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3277,7 +3360,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3390,7 +3473,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });

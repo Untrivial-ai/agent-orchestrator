@@ -43,14 +43,14 @@ func (m *codexAccountManager) logout(ctx context.Context, accountID string) erro
 	logoutHome := record.Home
 	logoutCredentialPath := credentialPath
 	if active {
-		globalCredential, admitted, globalErr := readCodexFileState(m.globalCredentialPath(), true)
+		globalCredential, admitted, globalErr := readCodexDeviceFileState(m.globalCredentialPath(), true)
 		if globalErr != nil {
 			return apierr.Conflict("CODEX_ACCOUNT_LOGOUT_UNCONFIRMED", "Codex could not safely log out this account", nil)
 		}
 		if admitted.exists {
 			identity, identityErr := parseCodexCredentialIdentity(globalCredential)
 			matched, match := m.matchGlobalCredentialForReconciliation(globalCredential, identity, identityErr)
-			latest, latestState, latestErr := readCodexFileState(m.globalCredentialPath(), false)
+			latest, latestState, latestErr := readCodexDeviceFileState(m.globalCredentialPath(), false)
 			if match != codexCredentialMatchManaged || matched.Snapshot.ID != accountID || latestErr != nil ||
 				!sameCodexFileState(admitted, latestState) || !bytes.Equal(globalCredential, latest) {
 				return apierr.Conflict("CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed", nil)
@@ -60,7 +60,11 @@ func (m *codexAccountManager) logout(ctx context.Context, accountID string) erro
 		}
 	}
 
-	_, credentialState, credentialErr := readCodexFileState(logoutCredentialPath, true)
+	readLogoutCredential := readCodexFileState
+	if canonicalPath(logoutHome) == m.globalHome {
+		readLogoutCredential = readCodexDeviceFileState
+	}
+	_, credentialState, credentialErr := readLogoutCredential(logoutCredentialPath, true)
 	if credentialErr != nil {
 		return apierr.Conflict("CODEX_ACCOUNT_LOGOUT_UNCONFIRMED", "Codex could not safely log out this account", nil)
 	}
@@ -74,7 +78,7 @@ func (m *codexAccountManager) logout(ctx context.Context, accountID string) erro
 		logoutErr := client.Logout(logoutCtx)
 		_ = client.Close()
 		cancel()
-		_, after, afterErr := readCodexFileState(logoutCredentialPath, true)
+		_, after, afterErr := readLogoutCredential(logoutCredentialPath, true)
 		if errors.Is(logoutErr, ports.ErrCodexAccountLogoutUnsupported) {
 			return apierr.NotImplemented("CODEX_ACCOUNT_LOGOUT_UNSUPPORTED", "Update Codex to log out this account")
 		}
@@ -193,7 +197,7 @@ func (m *codexAccountManager) activateFromCredentialLocked(ctx context.Context, 
 		return notCommitted(err)
 	}
 	globalPath := m.globalCredentialPath()
-	previousCredential, previousErr := readOpaqueCredential(globalPath)
+	previousCredential, previousErr := readDeviceOpaqueCredential(globalPath)
 	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
 		return notCommitted(ports.ErrCodexGlobalCredentialStoreUnsupported)
 	}
@@ -209,8 +213,8 @@ func (m *codexAccountManager) activateFromCredentialLocked(ctx context.Context, 
 	if err := writeGlobalCredentialSettled(globalPath, targetCredential); err != nil {
 		return err
 	}
-	currentCredential, currentState, currentErr := readCodexFileState(globalPath, false)
-	latestCredential, latestState, latestErr := readCodexFileState(globalPath, false)
+	currentCredential, currentState, currentErr := readCodexDeviceFileState(globalPath, false)
+	latestCredential, latestState, latestErr := readCodexDeviceFileState(globalPath, false)
 	if currentErr != nil || latestErr != nil || !sameCodexFileState(currentState, latestState) ||
 		!bytes.Equal(currentCredential, latestCredential) || !bytes.Equal(currentCredential, targetCredential) {
 		return ports.ErrCodexGlobalAccountChanged
@@ -222,7 +226,7 @@ func (m *codexAccountManager) activateFromCredentialLocked(ctx context.Context, 
 	m.deviceCredentialPresent = true
 	m.markDeviceReconciledLocked(true, now)
 	m.mu.Unlock()
-	if refreshed, readErr := readOpaqueCredential(globalPath); readErr == nil {
+	if refreshed, readErr := readDeviceOpaqueCredential(globalPath); readErr == nil {
 		_ = writePrivateFileAtomic(filepath.Join(record.Home, codexCredentialFilename), refreshed)
 	}
 	m.invalidate(accountID)
@@ -235,7 +239,13 @@ func writeGlobalCredentialSettled(path string, data []byte) error {
 	if err == nil {
 		return nil
 	}
-	current, readErr := readOpaqueCredential(path)
+	var mutationErr *codexFileMutationError
+	if errors.As(err, &mutationErr) && mutationErr.committed {
+		if protectErr := protectCodexDeviceCredentialFile(path); protectErr != nil {
+			return errors.Join(err, protectErr)
+		}
+	}
+	current, readErr := readDeviceOpaqueCredential(path)
 	if readErr == nil && bytes.Equal(current, data) {
 		return nil
 	}
@@ -244,6 +254,11 @@ func writeGlobalCredentialSettled(path string, data []byte) error {
 
 func readOpaqueCredential(source string) ([]byte, error) {
 	data, _, err := readCodexFileState(source, false)
+	return data, err
+}
+
+func readDeviceOpaqueCredential(source string) ([]byte, error) {
+	data, _, err := readCodexDeviceFileState(source, false)
 	return data, err
 }
 
@@ -262,12 +277,18 @@ func writeGlobalCredentialAtomic(path string, data []byte) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || validateCodexDirectory(parent, false) != nil {
 		return ports.ErrCodexGlobalCredentialStoreUnsupported
 	}
-	replacement, err := prepareCodexFileReplacementInDirectory(path, data, false)
+	replacement, err := prepareCodexDeviceFileReplacementInDirectory(path, data)
 	if err != nil {
 		return err
 	}
 	defer replacement.Abort()
-	return replacement.Commit()
+	if err := replacement.Commit(); err != nil {
+		return err
+	}
+	if err := protectCodexDeviceCredentialFile(path); err != nil {
+		return &codexFileMutationError{err: errors.New("global Codex credential ACL could not be protected"), committed: true}
+	}
+	return nil
 }
 
 func (m *codexAccountManager) globalCredentialPath() string {
@@ -282,7 +303,7 @@ func (m *codexAccountManager) validateGlobalCredentialStore() error {
 	// mean that Codex is using a non-file-backed credential store. Validate the
 	// path and any credential that is present, while allowing activation to
 	// create the file (and, when needed, its private parent directory).
-	_, _, err := readCodexFileState(m.globalCredentialPath(), true)
+	_, _, err := readCodexDeviceFileState(m.globalCredentialPath(), true)
 	if err != nil {
 		return ports.ErrCodexGlobalCredentialStoreUnsupported
 	}

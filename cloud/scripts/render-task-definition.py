@@ -31,9 +31,24 @@ def main() -> None:
     parser.add_argument(
         "--sandbox-provider", choices=("nodeops", "coder"), default="nodeops"
     )
+    parser.add_argument(
+        "--sandbox-providers",
+        default="",
+        help=(
+            "Comma-separated list of every sandbox provider this control plane "
+            "serves (for example nodeops,coder). Defaults to --sandbox-provider "
+            "for a single-provider deployment. All listed providers' secrets are "
+            "plumbed and preserved."
+        ),
+    )
     parser.add_argument("--set-environment", action="append", default=[])
     parser.add_argument("--set-secret", action="append", default=[])
     args = parser.parse_args()
+    sandbox_providers = [
+        provider.strip()
+        for provider in args.sandbox_providers.split(",")
+        if provider.strip()
+    ] or None
     source = json.load(sys.stdin)
     payload = build_task_definition(
         source,
@@ -47,6 +62,7 @@ def main() -> None:
         runtime_database_user=args.runtime_database_user,
         worker_image=args.worker_image,
         sandbox_provider=args.sandbox_provider,
+        sandbox_providers=sandbox_providers,
         environment_overrides=assignments(args.set_environment),
         secret_overrides=assignments(args.set_secret),
     )

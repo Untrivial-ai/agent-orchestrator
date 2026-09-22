@@ -74,50 +74,56 @@ func (b HarnessBuilder) BuildInteractive(
 	if launch.Kind == "orchestrator" {
 		systemPrompt = orchestratorSystemPrompt(skillDir)
 	}
-	if launch.Harness == "cursor" {
-		// The cursor launch builder drops SystemPrompt entirely (see
-		// agentruntime.buildCursorLaunch); the installed skill on disk is the
-		// only guidance a cursor agent gets. Known limitation.
-		systemPrompt = ""
+	if projectPrompt := strings.TrimSpace(launch.SystemPrompt); projectPrompt != "" {
+		systemPrompt += "\n\n" + projectPrompt
+	}
+	systemPromptFile, err := b.writeSystemPromptFile(launch.SessionID, systemPrompt)
+	if err != nil {
+		return Command{}, err
 	}
 	var providerArgs []string
 	switch launch.Harness {
 	case "codex":
 		providerArgs = codexActivityHookArgs(hookHelperPath(b.DataDir))
 	case "cursor":
-		providerArgs = []string{"--trust"}
+		pluginDir, err := b.writeCursorPromptPlugin(launch.SessionID, systemPrompt)
+		if err != nil {
+			return Command{}, err
+		}
+		providerArgs = []string{"--trust", "--plugin-dir", pluginDir}
 	}
 	harness := agentruntime.Harness(launch.Harness)
 	permission := agentruntime.PermissionPolicyForMode(
 		agentruntime.SessionMode(launch.Mode),
 	)
 	var argv []string
-	var err error
 	if identity := b.interactiveRestoreIdentity(launch); identity != "" {
 		var ok bool
 		argv, ok, err = agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
-			Harness:       harness,
-			Binary:        binary,
-			SessionID:     launch.SessionID,
-			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
-			WorkspacePath: workspace,
-			SystemPrompt:  systemPrompt,
-			ProviderArgs:  providerArgs,
-			Permission:    permission,
+			Harness:          harness,
+			Binary:           binary,
+			SessionID:        launch.SessionID,
+			Metadata:         map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
+			WorkspacePath:    workspace,
+			SystemPrompt:     systemPrompt,
+			SystemPromptFile: systemPromptFile,
+			ProviderArgs:     providerArgs,
+			Permission:       permission,
 		})
 		if err == nil && !ok {
 			err = errors.New("coding-agent conversation cannot be restored")
 		}
 	} else {
 		argv, err = agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
-			Harness:       harness,
-			Binary:        binary,
-			SessionID:     launch.SessionID,
-			WorkspacePath: workspace,
-			Prompt:        launch.Prompt,
-			SystemPrompt:  systemPrompt,
-			ProviderArgs:  providerArgs,
-			Permission:    permission,
+			Harness:          harness,
+			Binary:           binary,
+			SessionID:        launch.SessionID,
+			WorkspacePath:    workspace,
+			Prompt:           launch.Prompt,
+			SystemPrompt:     systemPrompt,
+			SystemPromptFile: systemPromptFile,
+			ProviderArgs:     providerArgs,
+			Permission:       permission,
 		})
 	}
 	if err != nil {

@@ -584,6 +584,20 @@ func (f *fakeSessionService) ListWorkspaceFiles(_ context.Context, id domain.Ses
 	return sessionsvc.WorkspaceFiles{SessionID: id}, nil
 }
 
+func (f *fakeSessionService) ListPRFiles(_ context.Context, id domain.SessionID, _ int, _ string) (sessionsvc.PRFiles, error) {
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.PRFiles{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	return sessionsvc.PRFiles{SessionID: id}, nil
+}
+
+func (f *fakeSessionService) GetPRFile(_ context.Context, id domain.SessionID, _ int, _ string, path string, _ *string) (sessionsvc.WorkspaceFileDetail, error) {
+	if _, ok := f.sessions[id]; !ok {
+		return sessionsvc.WorkspaceFileDetail{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
+}
+
 func (f *fakeSessionService) WorkspaceWatchPaths(_ context.Context, id domain.SessionID) ([]string, error) {
 	if f.workspaceErr != nil {
 		return nil, f.workspaceErr
@@ -671,6 +685,10 @@ func (f *fakeSessionService) GetWorkspaceFileRevision(_ context.Context, id doma
 		return f.workspaceRevision, nil
 	}
 	return sessionsvc.WorkspaceFileRevision{SessionID: id, Path: path, Side: side, Revision: expectedRevision, Exists: true}, nil
+}
+
+func (f *fakeSessionService) GetPRFileRevision(ctx context.Context, id domain.SessionID, number int, _ string, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileRevision, error) {
+	return f.GetWorkspaceFileRevision(ctx, id, path, sessionsvc.WorkspaceDiffCommitted, side, "", "")
 }
 
 func (f *fakeSessionService) GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (sessionsvc.WorkspaceFileRevision, error) {
@@ -1014,6 +1032,10 @@ func TestSessionsRoutes_DefaultToStubsWithoutService(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	body, status, headers := doRequest(t, srv, "GET", "/api/v1/sessions", "")
+	assertJSON(t, headers)
+	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
+
+	body, status, headers = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/file/revision?path=README.md", "")
 	assertJSON(t, headers)
 	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
 }
@@ -1798,7 +1820,7 @@ func TestSessionsAPI_SetPreviewLocalRelativePathResolvesToPreviewOrigin(t *testi
 	svc.sessions["ao-1"] = s
 	srv := newSessionTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":"./dist/index.html"}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":"./dist/index.html","requireWorkspaceFile":true}`)
 	if status != http.StatusOK {
 		t.Fatalf("set preview = %d, want 200; body=%s", status, body)
 	}
@@ -2276,10 +2298,17 @@ func TestSessionsAPI_SetPreviewMissingOrMalformedFileFailsWithoutOverwriting(t *
 	svc.sessions["ao-1"] = s
 	srv := newSessionTestServer(t, svc)
 
-	for _, target := range []string{missing, "file:///%"} {
-		body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":`+strconv.Quote(target)+`}`)
+	for _, testCase := range []struct {
+		target               string
+		requireWorkspaceFile bool
+	}{
+		{target: missing},
+		{target: "file:///%"},
+		{target: "reports/missing.html", requireWorkspaceFile: true},
+	} {
+		body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/preview", `{"url":`+strconv.Quote(testCase.target)+`,"requireWorkspaceFile":`+strconv.FormatBool(testCase.requireWorkspaceFile)+`}`)
 		if status != http.StatusNotFound || !bytes.Contains(body, []byte(`"code":"PREVIEW_FILE_NOT_FOUND"`)) {
-			t.Fatalf("set unavailable file preview %q = %d, want 404; body=%s", target, status, body)
+			t.Fatalf("set unavailable file preview %q = %d, want 404; body=%s", testCase.target, status, body)
 		}
 	}
 	if got := svc.sessions["ao-1"].Metadata.PreviewURL; got != "http://localhost:4321/docs" {
@@ -2532,6 +2561,31 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 	}
 	if got.Files[1].Path != "notes.txt" || got.Files[1].PreviousPath != "old-notes.txt" || got.Files[1].Status != "renamed" {
 		t.Fatalf("second file = %#v", got.Files[1])
+	}
+}
+
+func TestSessionsAPI_ListPRFiles(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/files", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET PR files = %d, want 200; body=%s", status, body)
+	}
+	var got controllers.ListPRFilesResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != "ao-1" {
+		t.Fatalf("response = %+v", got)
+	}
+}
+
+func TestSessionsAPI_ListPRFilesRejectsInvalidNumber(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	_, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/nope/files", "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("GET PR files = %d, want 400", status)
 	}
 }
 
@@ -2847,14 +2901,20 @@ func TestSessionsAPI_SpawnBranchNotFetchedReturnsTypedError(t *testing.T) {
 }
 
 // TestSessionsAPI_SpawnRejectsOverlongDisplayName asserts the spawn endpoint
-// caps displayName at 20 characters even though the field itself is optional
+// caps displayName at 100 characters even though the field itself is optional
 // (the desktop new-task dialog omits it). `ao spawn` enforces the same limit
 // CLI-side before the request is sent.
 func TestSessionsAPI_SpawnRejectsOverlongDisplayName(t *testing.T) {
 	srv := newSessionTestServer(t, newFakeSessionService())
 
-	overlong := strings.Repeat("x", 21)
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","harness":"codex","displayName":"`+overlong+`"}`)
+	exact := strings.Repeat("x", 100)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","harness":"codex","displayName":"`+exact+`"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn 100-char displayName = %d, want 201; body=%s", status, body)
+	}
+
+	overlong := strings.Repeat("x", 101)
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","harness":"codex","displayName":"`+overlong+`"}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_TOO_LONG")
 }
 
@@ -2868,8 +2928,18 @@ func TestSessionsAPI_RenameNotFound(t *testing.T) {
 func TestSessionsAPI_RenameValidation(t *testing.T) {
 	srv := newSessionTestServer(t, newFakeSessionService())
 
-	body, status, _ := doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-1", `{"displayName":"  "}`)
+	exact := strings.Repeat("x", 100)
+	body, status, _ := doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-1", `{"displayName":"`+exact+`"}`)
+	if status != http.StatusOK {
+		t.Fatalf("rename 100-char displayName = %d, want 200; body=%s", status, body)
+	}
+
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-1", `{"displayName":"  "}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_REQUIRED")
+
+	overlong := strings.Repeat("x", 101)
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-1", `{"displayName":"`+overlong+`"}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_TOO_LONG")
 
 	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-1", `{`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")

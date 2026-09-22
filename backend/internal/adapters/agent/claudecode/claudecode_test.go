@@ -996,6 +996,76 @@ func TestClaudeAuthStatusFromOutputUnknownForUnrecognizedFailure(t *testing.T) {
 	}
 }
 
+func TestClaudeAuthStatusFromOutputUnknownWithoutLoggedIn(t *testing.T) {
+	status, ok := claudeAuthStatusFromOutput([]byte(`{"error":"authentication unavailable"}`))
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
+func TestClaudeAuthStatusPrefersCLILoggedOutOverStaleProfileIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"userID":"stale-user","oauthAccount":{"accountUuid":"stale-account"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":false}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := (&Plugin{resolvedBinary: binary}).AuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("AuthStatus() = %q, want %q", status, ports.AgentAuthStatusUnauthorized)
+	}
+}
+
+func TestClaudeAuthStatusUsesRecognizedCLIOutputWhenLocalProfileIsMalformed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   ports.AgentAuthStatus
+	}{
+		{name: "logged in", output: `{"loggedIn":true}`, want: ports.AgentAuthStatusAuthorized},
+		{name: "logged out", output: `{"loggedIn":false}`, want: ports.AgentAuthStatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"oauthAccount":`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			binary := filepath.Join(t.TempDir(), "claude")
+			if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '%s\\n' '"+tc.output+"'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			status, err := (&Plugin{resolvedBinary: binary}).AuthStatus(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != tc.want {
+				t.Fatalf("AuthStatus() = %q, want %q", status, tc.want)
+			}
+		})
+	}
+}
+
 func TestEnsureWorkspaceTrustedCreatesEntry(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".claude.json")

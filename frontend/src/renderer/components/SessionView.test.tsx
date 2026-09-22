@@ -487,6 +487,12 @@ vi.mock("./SessionFileWorkspace", () => ({
 		</div>
 	),
 }));
+vi.mock("./CloudWorkspaceDiff", () => ({
+	CloudFileContentPane: ({ path }: { path: string }) => <div data-testid="cloud-file-workspace">{path}</div>,
+	CloudWorkspaceDiff: ({ onOpenFile }: { onOpenFile?: (path: string) => void }) => (
+		<button onClick={() => onOpenFile?.("src/cloud.ts")} type="button">open cloud file</button>
+	),
+}));
 const { browserDestroy, browserViewOptions, browserViewState } = vi.hoisted(() => ({
 	browserDestroy: vi.fn(),
 	browserViewOptions: { current: undefined as { active: boolean; sessionId: string; terminated: boolean } | undefined },
@@ -906,7 +912,7 @@ describe("SessionView", () => {
 		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses generic copy while a cloud workspace is connecting", () => {
+	it("shows a generic elapsed timer, not Coder-specific copy, while a cloud workspace is connecting", () => {
 		const session = workerSession("sess-2");
 		session.runtimeConnected = false;
 		session.cloud = {
@@ -918,7 +924,9 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-2" />);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Connecting");
+		// The connecting top-right status is a bare elapsed-time counter (e.g. "0s"),
+		// never a provider-specific label like "Waiting for Coder agent".
+		expect(screen.getByRole("status").textContent ?? "").toMatch(/^\d+s$/);
 		expect(screen.getByRole("status")).not.toHaveTextContent("Coder");
 	});
 
@@ -3119,6 +3127,18 @@ describe("SessionView", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "files center" })).not.toBeInTheDocument();
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
+	});
+
+	it("opens a selected cloud diff file in the shared center file tab", () => {
+		workerSession("sess-1").cloud = { orgId: "cloud-org", sandboxProvider: "docker" };
+		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
+		render(<SessionView sessionId="sess-1" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		fireEvent.click(screen.getByRole("button", { name: "open cloud file" }));
+
+		expect(screen.getByRole("tab", { name: "cloud.ts" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.getByTestId("cloud-file-workspace")).toHaveTextContent("src/cloud.ts");
 	});
 
 	it("opens a selected tree file in a center tab while retaining the right-side tree", () => {

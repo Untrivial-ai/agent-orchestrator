@@ -16,6 +16,7 @@ import (
 
 const (
 	defaultDisplayReadinessTTL = 5 * time.Minute
+	defaultSettingsAuthTTL     = 15 * time.Second
 	defaultLaunchReadinessTTL  = 30 * time.Second
 	defaultInstallCheckTimeout = 2 * time.Second
 	defaultAuthCheckTimeout    = 10 * time.Second
@@ -39,6 +40,7 @@ type readinessCoordinatorConfig struct {
 	Logger              *slog.Logger
 	Now                 func() time.Time
 	DisplayTTL          time.Duration
+	SettingsAuthTTL     time.Duration
 	LaunchTTL           time.Duration
 	InstallTimeout      time.Duration
 	AuthTimeout         time.Duration
@@ -77,6 +79,7 @@ type readinessCoordinator struct {
 	logger              *slog.Logger
 	now                 func() time.Time
 	displayTTL          time.Duration
+	settingsAuthTTL     time.Duration
 	launchTTL           time.Duration
 	installTimeout      time.Duration
 	authTimeout         time.Duration
@@ -106,6 +109,9 @@ func newReadinessCoordinator(cfg readinessCoordinatorConfig) *readinessCoordinat
 	if cfg.DisplayTTL <= 0 {
 		cfg.DisplayTTL = defaultDisplayReadinessTTL
 	}
+	if cfg.SettingsAuthTTL <= 0 {
+		cfg.SettingsAuthTTL = defaultSettingsAuthTTL
+	}
 	if cfg.LaunchTTL <= 0 {
 		cfg.LaunchTTL = defaultLaunchReadinessTTL
 	}
@@ -131,7 +137,7 @@ func newReadinessCoordinator(cfg readinessCoordinatorConfig) *readinessCoordinat
 	}
 	c := &readinessCoordinator{
 		ctx: cfg.Context, factory: cfg.Factory, logger: cfg.Logger, now: cfg.Now,
-		displayTTL: cfg.DisplayTTL, launchTTL: cfg.LaunchTTL,
+		displayTTL: cfg.DisplayTTL, settingsAuthTTL: cfg.SettingsAuthTTL, launchTTL: cfg.LaunchTTL,
 		installTimeout: cfg.InstallTimeout, authTimeout: cfg.AuthTimeout,
 		retryDelays: cfg.RetryDelays, workers: cfg.Workers,
 		authenticationCheck: cfg.AuthenticationCheck,
@@ -641,16 +647,21 @@ func (c *readinessCoordinator) sortedIDsLocked() []string {
 }
 
 func (c *readinessCoordinator) neededChecksLocked(entry *readinessEntry, purpose domain.AgentReadinessPurpose) readinessInvalidation {
-	ttl := c.displayTTL
-	if purpose == domain.AgentReadinessPurposeLaunch {
-		ttl = c.launchTTL
+	installTTL := c.displayTTL
+	authTTL := c.displayTTL
+	switch purpose {
+	case domain.AgentReadinessPurposeLaunch:
+		installTTL = c.launchTTL
+		authTTL = c.launchTTL
+	case domain.AgentReadinessPurposeSettings:
+		authTTL = c.settingsAuthTTL
 	}
 	now := c.now()
 	needed := entry.invalidated
-	if entry.snapshot.Installation.CheckedAt == nil || now.Sub(*entry.snapshot.Installation.CheckedAt) >= ttl {
+	if entry.snapshot.Installation.CheckedAt == nil || now.Sub(*entry.snapshot.Installation.CheckedAt) >= installTTL {
 		needed |= readinessInvalidateInstallation
 	}
-	if entry.snapshot.Authentication.CheckedAt == nil || now.Sub(*entry.snapshot.Authentication.CheckedAt) >= ttl {
+	if entry.snapshot.Authentication.CheckedAt == nil || now.Sub(*entry.snapshot.Authentication.CheckedAt) >= authTTL {
 		needed |= readinessInvalidateAuthentication
 	}
 	return needed
