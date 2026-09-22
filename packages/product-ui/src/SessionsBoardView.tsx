@@ -151,7 +151,7 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 			className="board-horizontal-scrollbar h-full overflow-x-auto overflow-y-hidden"
 			data-testid="board-horizontal-scroll"
 		>
-			<div className="relative grid h-full min-w-[72rem] grid-cols-4 gap-2 bg-background p-2 xl:min-w-0">
+			<div className="relative grid h-full min-w-[64rem] grid-cols-4 gap-2 bg-background p-2 xl:min-w-0">
 				{columns.map((column) => (
 					<BoardColumnView
 						column={column}
@@ -195,7 +195,7 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 					className="size-[var(--size-swatch)] rounded-full"
 					style={{ backgroundColor: column.dot }}
 				/>
-				<span className={cn("text-xs font-medium", column.titleClassName)}>
+				<span className={cn("text-sm font-semibold", column.titleClassName)}>
 					{column.label}
 				</span>
 				<span className="ml-auto inline-flex min-w-6 items-center justify-center rounded-full bg-background px-1.5 py-1 tabular-nums text-xs leading-none text-muted-foreground">{ordered.length}</span>
@@ -329,7 +329,7 @@ export function SessionCardView({
 				<div className="flex min-w-0 items-start gap-2.5">
 					{renderAvatar(session.provider)}
 					<div
-						className="min-w-0 flex-1 line-clamp-3 overflow-hidden text-sm-md font-semibold leading-snug tracking-tight text-foreground"
+						className="min-w-0 flex-1 line-clamp-3 overflow-hidden text-sm font-semibold leading-snug tracking-tight text-foreground"
 						title={session.title}
 					>
 						{session.title}

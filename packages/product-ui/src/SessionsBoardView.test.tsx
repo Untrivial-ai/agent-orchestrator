@@ -118,7 +118,7 @@ describe("SessionsBoardView", () => {
 		expect(swatch).toHaveClass("size-[var(--size-swatch)]", "rounded-full");
 		expect(swatch.style.boxShadow).toBe("");
 		const title = within(buildingLane).getByText("Building");
-		expect(title).toHaveClass("text-xs", "font-medium");
+		expect(title).toHaveClass("text-sm", "font-semibold");
 		expect(title).not.toHaveClass("font-mono", "uppercase", "tracking-wide-sm");
 		const count = within(buildingLane).getByText("2");
 		expect(count).toHaveClass("tabular-nums", "text-xs");
