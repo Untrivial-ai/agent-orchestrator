@@ -110,10 +110,11 @@ export default function SpawnModal() {
 	const project = projects.find((item) => item.id === projectId);
 	const projectWorkerAgent = projectDetail?.config?.worker?.agent ?? projectDetail?.agent ?? "";
 	const projectWorkerModel = projectDetail?.config?.worker?.agentConfig?.model ?? projectDetail?.config?.agentConfig?.model ?? "";
-	const catalogDefault = modelCatalog?.models.find((item) => item.isDefault)?.id ?? "";
-	const resolvedModel = resolveSpawnModel({ selectedAgent: harness, projectWorkerAgent, projectWorkerModel, catalogDefault });
+	const resolvedModel = resolveSpawnModel({ selectedAgent: harness, projectWorkerAgent, projectWorkerModel });
 	const displayedModel = modelTouched ? model : resolvedModel;
-	const displayedModelLabel = displayedModel ? modelCatalog?.models.find((item) => item.id === displayedModel)?.label ?? displayedModel : "Auto";
+	// "Automatic" when the project pins nothing, because that is the truth: the
+	// provider picks, and naming a model here promised one the session never ran.
+	const displayedModelLabel = displayedModel ? modelCatalog?.models.find((item) => item.id === displayedModel)?.label ?? displayedModel : "Automatic";
 	const modelSelection = modelTouched ? model : "__auto__";
 	const hasComposerMessage = Boolean(
 		(mode === "chat" && !loading && agents.length === 0)
@@ -238,7 +239,7 @@ export default function SpawnModal() {
 				projectId: projectId ?? undefined,
 				prompt: prompt.trim() || undefined,
 				harness: harness || undefined,
-				model: modelOverride(displayedModel, resolvedModel, modelTouched),
+				model: modelOverride(displayedModel, modelTouched),
 				mode,
 				attachments: attachments.map(({ mimeType, data }) => ({ mimeType, data })),
 			});
