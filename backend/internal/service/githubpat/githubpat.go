@@ -42,20 +42,6 @@ func newWithClient(dataDir string, client *http.Client, apiURL string) *Service 
 	return &Service{dataDir: dataDir, httpClient: client, apiURL: apiURL}
 }
 
-func (s *Service) deleteTokenIfMatches(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, err := s.loadToken()
-	if err != nil || current != token {
-		return nil
-	}
-	err = os.Remove(s.patPath())
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
-}
-
 func (s *Service) patPath() string {
 	return filepath.Join(s.dataDir, "github-pat.json")
 }
@@ -141,9 +127,12 @@ func (s *Service) ListRepos(ctx context.Context) ([]Repo, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		if err := s.deleteTokenIfMatches(token); err != nil {
-			return nil, fmt.Errorf("%w: removing rejected credential: %w", ErrInvalidCredentials, err)
-		}
+		// Do NOT delete the stored token on a 401. A transient GitHub 401 would
+		// otherwise permanently wipe a still-valid credential and force a full
+		// reconnect (observed: connect succeeds, then a re-list on a fresh mount
+		// hits one 401 and the token is gone). The token stays on disk so a retry
+		// can recover; a genuinely invalid token is inert at rest (0600, local)
+		// and is overwritten on the next connect or cleared by DeletePAT.
 		return nil, ErrInvalidCredentials
 	}
 	if resp.StatusCode != http.StatusOK {

@@ -25,9 +25,9 @@ func githubClient(status int) *http.Client {
 	})}
 }
 
-func TestListReposRemovesRevokedToken(t *testing.T) {
+func TestListReposKeepsTokenOnUnauthorized(t *testing.T) {
 	service := newWithClient(t.TempDir(), githubClient(http.StatusUnauthorized), "https://github.example")
-	if err := service.StorePAT(context.Background(), "revoked-token"); err != nil {
+	if err := service.StorePAT(context.Background(), "rejected-token"); err != nil {
 		t.Fatalf("StorePAT: %v", err)
 	}
 
@@ -35,8 +35,12 @@ func TestListReposRemovesRevokedToken(t *testing.T) {
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("ListRepos error = %v, want ErrInvalidCredentials", err)
 	}
-	if service.HasPAT(context.Background()) {
-		t.Fatal("HasPAT = true after GitHub rejected the credential")
+	// A 401 must NOT delete the stored token. A transient GitHub 401 would
+	// otherwise permanently wipe a still-valid credential and force a full
+	// reconnect. The token is preserved until the user reconnects (overwrite)
+	// or explicitly disconnects (DeletePAT).
+	if !service.HasPAT(context.Background()) {
+		t.Fatal("HasPAT = false: token was deleted on a 401 (it must be preserved)")
 	}
 }
 
