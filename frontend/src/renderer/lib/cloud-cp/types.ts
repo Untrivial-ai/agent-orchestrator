@@ -247,6 +247,8 @@ export interface CloudCpSession {
 	runtimeError?: string;
 	isTerminated: boolean;
 	autoInjectCI?: boolean;
+	autoInjectReview?: boolean;
+	terminateOnPrMerge?: boolean;
 	prs: CloudCpSessionPullRequest[];
 	/**
 	 * Highest worker epoch the session has minted for its agent terminal. It
@@ -298,6 +300,78 @@ export interface CloudCpSessionChild extends CloudCpSession {
 export interface CloudCpSessionChildrenResponse {
 	items: CloudCpSessionChild[];
 	page: CloudCpPageInfo;
+}
+
+/** Detailed PR data used by the shared local/cloud inspector UI. */
+export interface CloudCpPullRequestSummary {
+	url: string;
+	htmlUrl?: string;
+	number: number;
+	title: string;
+	state: "draft" | "open" | "merged" | "closed";
+	provider: string;
+	repository: string;
+	author: string;
+	authorAvatarUrl?: string;
+	sourceBranch: string;
+	targetBranch: string;
+	headSha: string;
+	additions: number;
+	deletions: number;
+	changedFiles: number;
+	ci: {
+		state: "unknown" | "pending" | "passing" | "failing";
+		failingChecks: Array<{
+			name: string;
+			status: "failed" | "cancelled";
+			conclusion: string;
+			url?: string;
+		}>;
+	};
+	review: {
+		decision: "none" | "approved" | "changes_requested" | "review_required";
+		hasUnresolvedHumanComments: boolean;
+		unresolvedBy: Array<{
+			reviewerId: string;
+			count: number;
+			links: Array<{ url?: string; reviewId?: string; file?: string; line?: number; body?: string; autoInjectReview: boolean }>;
+			reviewUrl?: string;
+			isBot?: boolean;
+		}>;
+		resolvedBy: Array<{
+			reviewerId: string;
+			count: number;
+			links: Array<{ url?: string; reviewId?: string; file?: string; line?: number; body?: string; autoInjectReview: boolean }>;
+			reviewUrl?: string;
+			isBot?: boolean;
+		}>;
+		reviews: Array<{
+			reviewerId: string;
+			verdict: "none" | "approved" | "changes_requested" | "review_required";
+			body?: string;
+			reviewUrl?: string;
+			submittedAt: string;
+			isBot?: boolean;
+			autoInjectReview: boolean;
+		}>;
+	};
+	mergeability: {
+		state: "unknown" | "mergeable" | "conflicting" | "blocked" | "unstable";
+		reasons: string[];
+		pullRequestUrl: string;
+		conflictFiles: Array<{ path: string; url?: string }>;
+	};
+	stateChangedAt?: string;
+	createdAt?: string;
+	updatedAt: string;
+	observedAt: string;
+	ciObservedAt: string;
+	reviewObservedAt: string;
+}
+
+export interface CloudCpSessionPullRequestsResponse {
+	sessionId: string;
+	pullRequests: CloudCpPullRequestSummary[];
 }
 
 export interface CloudCpListSessionsQuery extends CloudCpListQuery {

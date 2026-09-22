@@ -2,7 +2,6 @@ package githubapp
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
@@ -15,50 +14,18 @@ func (s *Service) RefreshPullRequestStatus(
 	ctx context.Context,
 	ref domain.PullRequestRef,
 ) (domain.PullRequest, error) {
-	owner, repo, ok := strings.Cut(ref.Repository, "/")
-	if !ok || owner == "" || repo == "" {
+	if _, _, ok := strings.Cut(ref.Repository, "/"); !ok {
 		return domain.PullRequest{}, postgres.ErrInvalid
 	}
-	installationID, repositoryID, err := s.store.GitHubInstallationForRepository(ctx, ref.OrgID, ref.Repository)
+	snapshot, err := s.FetchPullRequestSnapshot(ctx, ref)
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	access, err := s.client.statusReadToken(ctx, installationID, repositoryID)
+	transition, err := s.store.ApplyPullRequestSnapshot(ctx, ref.OrgID, ref.ID, snapshot)
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	detail, err := s.client.GetPullRequest(ctx, access.Token, owner, repo, ref.Number)
-	if err != nil {
-		return domain.PullRequest{}, err
-	}
-	var checks []CheckRun
-	if detail.Head.SHA != "" {
-		checks, err = s.client.ListCheckRuns(ctx, access.Token, owner, repo, detail.Head.SHA)
-		if err != nil {
-			return domain.PullRequest{}, err
-		}
-	}
-	reviews, err := s.client.ListPullRequestReviews(ctx, access.Token, owner, repo, ref.Number)
-	if err != nil {
-		return domain.PullRequest{}, err
-	}
-	checksSnapshot, err := json.Marshal(checks)
-	if err != nil {
-		return domain.PullRequest{}, err
-	}
-	observation := domain.PullRequestObservation{
-		State:        pullRequestLifecycleState(detail),
-		Draft:        detail.Draft,
-		HeadSHA:      detail.Head.SHA,
-		Additions:    detail.Additions,
-		Deletions:    detail.Deletions,
-		ChangedFiles: detail.ChangedFiles,
-		CIState:      aggregateCIState(checks),
-		ReviewState:  aggregateReviewState(reviews),
-		Mergeability: mapMergeability(detail),
-		Checks:       checksSnapshot,
-	}
-	return s.store.UpdatePullRequestObservation(ctx, ref.OrgID, ref.ID, observation)
+	return transition.Current, nil
 }
 
 func pullRequestLifecycleState(detail PullRequestDetail) contract.PRState {
@@ -76,7 +43,7 @@ func pullRequestLifecycleState(detail PullRequestDetail) contract.PRState {
 
 func aggregateCIState(checks []CheckRun) contract.CIState {
 	if len(checks) == 0 {
-		return contract.CIUnknown
+		return contract.CIPassing
 	}
 	pending := false
 	for _, check := range checks {

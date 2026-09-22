@@ -57,6 +57,8 @@ type Store interface {
 	ListSessions(context.Context, domain.Principal, string, string, *domain.Cursor, int) ([]domain.Session, bool, error)
 	GetSession(context.Context, domain.Principal, string, string) (domain.Session, error)
 	SetCloudSessionAutoInjectCI(context.Context, domain.Principal, string, string, bool) (domain.Session, error)
+	SetCloudSessionAutoInjectReview(context.Context, domain.Principal, string, string, bool) (domain.Session, error)
+	SetCloudSessionTerminateOnPRMerge(context.Context, domain.Principal, string, string, bool) (domain.Session, error)
 	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
@@ -102,6 +104,7 @@ type Store interface {
 	EnsureWorkerAgentTerminal(context.Context, string, string, string, int64, time.Duration) (domain.TerminalSession, error)
 	ListTerminalOutput(context.Context, domain.TerminalSession, int64, int) ([]domain.TerminalOutput, string, error)
 	ListPullRequestsBySession(context.Context, domain.Principal, string, string) ([]domain.PullRequest, error)
+	PullRequestSnapshot(context.Context, string, string) (domain.PullRequestSnapshot, error)
 	ListReviewRunsBySession(context.Context, domain.Principal, string, string) ([]domain.ReviewRunPullRequest, error)
 	PRFactsBySession(ctx context.Context, orgID string, sessionIDs []string) (map[string][]contract.PRFacts, error)
 	PullRequestsBySessions(ctx context.Context, orgID string, sessionIDs []string) (map[string][]domain.PullRequest, error)
@@ -434,6 +437,8 @@ func New(options Options) *Server {
 			router.Post("/sessions", server.createSession)
 			router.Get("/sessions/{sessionId}", server.getSession)
 			router.Patch("/sessions/{sessionId}/auto-inject-ci", server.setCloudSessionAutoInjectCI)
+			router.Patch("/sessions/{sessionId}/auto-inject-review", server.setCloudSessionAutoInjectReview)
+			router.Patch("/sessions/{sessionId}/merge-policy", server.setCloudSessionMergePolicy)
 			router.Post("/sessions/wake", server.wakePausedSessions)
 			router.Post("/sessions/{sessionId}/resume", server.resumeSession)
 			router.Post("/sessions/{sessionId}/restore", server.restoreSession)
@@ -522,6 +527,15 @@ func (w *statusResponseWriter) Write(body []byte) (int, error) {
 
 func (w *statusResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+func (w *statusResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (s *Server) requestLog(next http.Handler) http.Handler {

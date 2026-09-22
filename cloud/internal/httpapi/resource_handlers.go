@@ -65,26 +65,28 @@ type createSessionRequest struct {
 }
 
 type sessionResponse struct {
-	ID               string                   `json:"id"`
-	OrgID            string                   `json:"orgId"`
-	ProjectID        string                   `json:"projectId"`
-	Kind             string                   `json:"kind"`
-	Harness          string                   `json:"harness"`
-	DisplayName      string                   `json:"displayName"`
-	Branch           string                   `json:"branch"`
-	Mode             string                   `json:"mode"`
-	DeniedCommands   []string                 `json:"deniedCommands"`
-	ActivityState    string                   `json:"activityState"`
-	Status           string                   `json:"status"`
-	RuntimeConnected bool                     `json:"runtimeConnected"`
-	SandboxProvider  string                   `json:"sandboxProvider,omitempty"`
-	DesiredState     string                   `json:"desiredState,omitempty"`
-	ObservedState    string                   `json:"observedState,omitempty"`
-	RuntimeState     string                   `json:"runtimeState,omitempty"`
-	RuntimeError     string                   `json:"runtimeError,omitempty"`
-	IsTerminated     bool                     `json:"isTerminated"`
-	AutoInjectCI     bool                     `json:"autoInjectCI"`
-	PRs              []sessionPRFactsResponse `json:"prs"`
+	ID                 string                   `json:"id"`
+	OrgID              string                   `json:"orgId"`
+	ProjectID          string                   `json:"projectId"`
+	Kind               string                   `json:"kind"`
+	Harness            string                   `json:"harness"`
+	DisplayName        string                   `json:"displayName"`
+	Branch             string                   `json:"branch"`
+	Mode               string                   `json:"mode"`
+	DeniedCommands     []string                 `json:"deniedCommands"`
+	ActivityState      string                   `json:"activityState"`
+	Status             string                   `json:"status"`
+	RuntimeConnected   bool                     `json:"runtimeConnected"`
+	SandboxProvider    string                   `json:"sandboxProvider,omitempty"`
+	DesiredState       string                   `json:"desiredState,omitempty"`
+	ObservedState      string                   `json:"observedState,omitempty"`
+	RuntimeState       string                   `json:"runtimeState,omitempty"`
+	RuntimeError       string                   `json:"runtimeError,omitempty"`
+	IsTerminated       bool                     `json:"isTerminated"`
+	AutoInjectCI       bool                     `json:"autoInjectCI"`
+	AutoInjectReview   bool                     `json:"autoInjectReview"`
+	TerminateOnPRMerge bool                     `json:"terminateOnPrMerge"`
+	PRs                []sessionPRFactsResponse `json:"prs"`
 	// WorkerEpoch advances on every fresh worker connection (resume, restore,
 	// re-provision). Clients key their terminal on it so a resumed session
 	// re-attaches to the live agent instead of the dead epoch's terminal.
@@ -693,6 +695,55 @@ func (s *Server) setCloudSessionAutoInjectCI(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"session": response})
 }
 
+func (s *Server) setCloudSessionAutoInjectReview(w http.ResponseWriter, r *http.Request) {
+	s.setCloudSessionBooleanPolicy(w, r, "autoInjectReview", func(ctx context.Context, principal domain.Principal, orgID, sessionID string, enabled bool) (domain.Session, error) {
+		return s.store.SetCloudSessionAutoInjectReview(ctx, principal, orgID, sessionID, enabled)
+	})
+}
+
+func (s *Server) setCloudSessionMergePolicy(w http.ResponseWriter, r *http.Request) {
+	s.setCloudSessionBooleanPolicy(w, r, "terminateOnPrMerge", func(ctx context.Context, principal domain.Principal, orgID, sessionID string, enabled bool) (domain.Session, error) {
+		return s.store.SetCloudSessionTerminateOnPRMerge(ctx, principal, orgID, sessionID, enabled)
+	})
+}
+
+func (s *Server) setCloudSessionBooleanPolicy(
+	w http.ResponseWriter,
+	r *http.Request,
+	field string,
+	update func(context.Context, domain.Principal, string, string, bool) (domain.Session, error),
+) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	input := map[string]*bool{}
+	if err := decodeJSON(w, r, &input); err != nil || input[field] == nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", field+" must be a boolean.")
+		return
+	}
+	session, err := update(r.Context(), principalFrom(r), orgID, sessionID, *input[field])
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	prFacts, err := s.store.PRFactsBySession(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	response := toSessionResponse(session, prFacts[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID])
+	writeJSON(w, http.StatusOK, map[string]any{"session": response})
+}
+
 // deleteSession records the intent to tear a session's sandbox down. It does
 // not call the provider: the reconciler owns every slow provider call, so a
 // degraded provider cannot stall this request. The reconciler releases quota
@@ -855,29 +906,31 @@ func toProjectResponse(project domain.Project) projectResponse {
 // pass nil only for a session that provably has none yet (just created).
 func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionResponse {
 	return sessionResponse{
-		ID:               session.ID,
-		OrgID:            session.OrgID,
-		ProjectID:        session.ProjectID,
-		Kind:             session.Kind,
-		Harness:          session.Harness,
-		DisplayName:      session.DisplayName,
-		Branch:           session.Branch,
-		Mode:             session.Mode,
-		DeniedCommands:   nonNilStrings(session.DeniedCommands),
-		ActivityState:    string(session.ActivityState),
-		Status:           string(session.Status(time.Now().UTC(), prs)),
-		RuntimeConnected: session.RuntimeConnected,
-		SandboxProvider:  session.SandboxProvider,
-		DesiredState:     session.DesiredState,
-		ObservedState:    session.ObservedState,
-		RuntimeState:     session.RuntimeState,
-		RuntimeError:     session.RuntimeError,
-		IsTerminated:     session.IsTerminated,
-		AutoInjectCI:     session.AutoInjectCI,
-		WorkerEpoch:      session.WorkerEpoch,
-		CreatedAt:        session.CreatedAt,
-		UpdatedAt:        session.UpdatedAt,
-		PRs:              []sessionPRFactsResponse{},
+		ID:                 session.ID,
+		OrgID:              session.OrgID,
+		ProjectID:          session.ProjectID,
+		Kind:               session.Kind,
+		Harness:            session.Harness,
+		DisplayName:        session.DisplayName,
+		Branch:             session.Branch,
+		Mode:               session.Mode,
+		DeniedCommands:     nonNilStrings(session.DeniedCommands),
+		ActivityState:      string(session.ActivityState),
+		Status:             string(session.Status(time.Now().UTC(), prs)),
+		RuntimeConnected:   session.RuntimeConnected,
+		SandboxProvider:    session.SandboxProvider,
+		DesiredState:       session.DesiredState,
+		ObservedState:      session.ObservedState,
+		RuntimeState:       session.RuntimeState,
+		RuntimeError:       session.RuntimeError,
+		IsTerminated:       session.IsTerminated,
+		AutoInjectCI:       session.AutoInjectCI,
+		AutoInjectReview:   session.AutoInjectReview,
+		TerminateOnPRMerge: session.TerminateOnPRMerge,
+		WorkerEpoch:        session.WorkerEpoch,
+		CreatedAt:          session.CreatedAt,
+		UpdatedAt:          session.UpdatedAt,
+		PRs:                []sessionPRFactsResponse{},
 	}
 }
 

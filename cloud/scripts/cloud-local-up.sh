@@ -44,8 +44,18 @@ export AO_CLOUD_DOCKER_GID
 AO_CLOUD_DOCKER_GID="$(ao_docker_socket_gid)"
 export AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION="true"
 
+compose_env_args=()
+if [[ "${AO_CLOUD_GITHUB_LOCAL_TEST:-false}" == "1" || "${AO_CLOUD_GITHUB_LOCAL_TEST:-false}" == "true" ]]; then
+	local_env_file="$repository_root/.env.local"
+	if [[ ! -f "$local_env_file" ]]; then
+		echo "AO_CLOUD_GITHUB_LOCAL_TEST requires $local_env_file" >&2
+		exit 1
+	fi
+	compose_env_args=(--env-file "$local_env_file")
+fi
+
 compose() {
-	docker compose --project-directory "$repository_root" "$@"
+	docker compose --project-directory "$repository_root" "${compose_env_args[@]}" "$@"
 }
 
 wait_for_ready() {

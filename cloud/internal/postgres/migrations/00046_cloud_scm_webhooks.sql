@@ -1,6 +1,6 @@
 -- +goose Up
 ALTER TABLE ao_sessions
-    ADD COLUMN auto_inject_ci BOOLEAN NOT NULL DEFAULT TRUE;
+    ADD COLUMN IF NOT EXISTS auto_inject_ci BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE ao_github_pr_applications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -39,4 +39,3 @@ DROP INDEX IF EXISTS ao_ci_feedback_outbox_ready_idx;
 DROP TABLE IF EXISTS ao_ci_feedback_outbox;
 DROP TABLE IF EXISTS ao_github_pr_applications;
 ALTER TABLE ao_sessions DROP COLUMN IF EXISTS auto_inject_ci;
-

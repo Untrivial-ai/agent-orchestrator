@@ -954,6 +954,11 @@ func (c *Client) userJSON(ctx context.Context, token, method, path string, body,
 	return c.jsonRequest(ctx, method, c.apiBaseURL+path, "Bearer "+token, body, destination)
 }
 
+func (c *Client) graphQL(ctx context.Context, token, query string, variables map[string]any, destination any) error {
+	return c.jsonRequest(ctx, http.MethodPost, c.apiBaseURL+"/graphql", "Bearer "+token,
+		map[string]any{"query": query, "variables": variables}, destination)
+}
+
 func (c *Client) jsonRequest(
 	ctx context.Context,
 	method, endpoint, authorization string,

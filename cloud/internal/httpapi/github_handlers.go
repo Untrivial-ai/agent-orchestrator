@@ -691,7 +691,9 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 func supportedGitHubWebhookEvent(event string) bool {
 	switch event {
 	case "installation", "installation_repositories", "github_app_authorization",
-		"pull_request", "check_suite", "check_run", "pull_request_review":
+		"pull_request", "check_suite", "check_run", "pull_request_review",
+		"pull_request_review_comment", "pull_request_review_thread",
+		"status", "push":
 		return true
 	default:
 		return false

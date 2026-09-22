@@ -307,6 +307,8 @@ function toCloudWorkspaceSession(
 		status: toSessionStatus(session.status, session.isTerminated),
 		isTerminated: session.isTerminated,
 		autoInjectCI: session.autoInjectCI ?? true,
+		autoInjectReview: session.autoInjectReview ?? true,
+		terminateOnPrMerge: session.terminateOnPrMerge ?? true,
 		runtimeConnected: session.runtimeConnected,
 		createdAt: session.createdAt,
 		updatedAt: session.updatedAt,

@@ -935,6 +935,45 @@ func (s *Store) SetCloudSessionAutoInjectCI(
 	return session, err
 }
 
+func (s *Store) SetCloudSessionAutoInjectReview(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+	enabled bool,
+) (domain.Session, error) {
+	return s.setCloudSessionBooleanPolicy(ctx, principal, orgID, sessionID, "auto_inject_review", enabled)
+}
+
+func (s *Store) SetCloudSessionTerminateOnPRMerge(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+	enabled bool,
+) (domain.Session, error) {
+	return s.setCloudSessionBooleanPolicy(ctx, principal, orgID, sessionID, "terminate_on_pr_merge", enabled)
+}
+
+func (s *Store) setCloudSessionBooleanPolicy(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID, column string,
+	enabled bool,
+) (domain.Session, error) {
+	var session domain.Session
+	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		query := `UPDATE ao_sessions SET ` + column + ` = $3, updated_at = now() WHERE org_id = $1 AND id = $2`
+		tag, err := tx.Exec(ctx, query, orgID, sessionID, enabled)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrNotFound
+		}
+		return getSession(ctx, tx, orgID, sessionID, &session)
+	})
+	return session, err
+}
+
 const sessionSelect = `
 	SELECT session.id, session.org_id, session.project_id, session.kind,
 		session.harness, session.display_name, session.branch,
@@ -949,6 +988,8 @@ const sessionSelect = `
 		END AS activity_state,
 		session.is_terminated,
 		session.auto_inject_ci,
+		session.auto_inject_review,
+		session.terminate_on_pr_merge,
 		EXISTS (
 			SELECT 1 FROM ao_worker_connections worker
 			WHERE worker.session_id = session.id AND worker.disconnected_at IS NULL
@@ -1023,6 +1064,8 @@ func scanSession(row scanner, session *domain.Session) error {
 		&activity,
 		&session.IsTerminated,
 		&session.AutoInjectCI,
+		&session.AutoInjectReview,
+		&session.TerminateOnPRMerge,
 		&session.RuntimeConnected,
 		&session.SandboxProvider,
 		&session.DesiredState,

@@ -306,7 +306,7 @@ const SummaryView = memo(function SummaryView({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
-	const query = useSessionScmSummary(session.id, session.cloud === undefined);
+	const query = useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
 	const showUsage =
@@ -681,12 +681,18 @@ function ProviderUsageDetails({ harness }: { harness: SessionUsage["harnesses"][
 function AutoInjectReviewPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectReview ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectReview ?? true);
 	}, [session.id, session.autoInjectReview]);
 	const save = useMutation({
 		mutationFn: async (autoInjectReview: boolean) => {
+			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.setSessionAutoInjectReview(session.cloud.orgId, session.id, autoInjectReview);
+				return;
+			}
 			const { error } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-review", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectReview },
@@ -1107,9 +1113,14 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const terminate = useTerminateSession();
+	const { client: cloudClient } = useCloudCp();
 	const policy = useMutation({
 		mutationFn: async (terminateOnPrMerge: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.setSessionMergePolicy(session.cloud.orgId, session.id, terminateOnPrMerge);
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/merge-policy", {
 				params: { path: { sessionId: session.id } },
 				body: { terminateOnPrMerge },
@@ -1671,7 +1682,7 @@ function ReviewsSection({
 	});
 	const reviewStates = reviewsQuery.data?.reviews ?? [];
 	const autoReviewEnabled = session.autoReviewEnabled === true;
-	const scmSummary = useSessionScmSummary(session.id, session.cloud === undefined);
+	const scmSummary = useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true);
 	const prSummaries = sessionPRDisplaySummaries(session, scmSummary.data);
 	const githubReviews = prSummaries.filter(
 		(pr) =>

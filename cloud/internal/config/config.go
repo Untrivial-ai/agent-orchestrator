@@ -153,6 +153,7 @@ const defaultPRStatusPollInterval = 30 * time.Second
 
 func Load() (Config, error) {
 	environment := strings.ToLower(strings.TrimSpace(os.Getenv("AO_CLOUD_ENV")))
+	githubLocalTest := boolEnv("AO_CLOUD_GITHUB_LOCAL_TEST", false)
 	hosted := environment == "staging" || environment == "production"
 	defaultHTTPAddress := ":8080"
 	if environment == "development" || environment == "test" {
@@ -297,6 +298,9 @@ func Load() (Config, error) {
 	case "development", "test", "staging", "production":
 	default:
 		return Config{}, errors.New("AO_CLOUD_ENV must be development, test, staging, or production")
+	}
+	if githubLocalTest && cfg.Environment != "development" {
+		return Config{}, errors.New("AO_CLOUD_GITHUB_LOCAL_TEST may only be enabled in development")
 	}
 	workosValues := []string{cfg.WorkOSIssuer, cfg.WorkOSClientID, cfg.WorkOSAPIKey}
 	configuredWorkOSValues := 0
@@ -523,7 +527,9 @@ func Load() (Config, error) {
 	if cfg.GitHub.Enabled() && cfg.GitHub.PublicURL == "" {
 		return Config{}, errors.New("AO_CLOUD_PUBLIC_URL is required when the GitHub App is configured")
 	}
-	if cfg.GitHub.Enabled() && cfg.Environment != "production" {
+	githubAllowed := cfg.Environment == "production" ||
+		(cfg.Environment == "development" && githubLocalTest)
+	if cfg.GitHub.Enabled() && !githubAllowed {
 		return Config{}, errors.New("GitHub App credentials may only be configured in production")
 	}
 	if cfg.GitHub.Enabled() {

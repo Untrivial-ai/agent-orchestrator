@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,10 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const pullRequestColumns = `id, org_id, session_id, provider, repository, author, number, url, title,
-	state, draft, head_sha, source_branch, target_branch, additions, deletions, changed_files,
+const pullRequestColumns = `id, org_id, session_id, provider, repository, author, author_avatar_url, number, url, title,
+	state, draft, head_sha, base_sha, merge_commit_sha, source_branch, target_branch, additions, deletions, changed_files,
 	ci_state, review_state, mergeability, checks, claimed_by_session_id, claimed_at, released_at,
-	ao_review_state, observed_at, created_at, updated_at`
+	ao_review_state, review_partial, created_at_provider, updated_at_provider, merged_at_provider, closed_at_provider,
+	observed_at, created_at, updated_at`
 
 // CreatePullRequestRecord persists a pull request already created on GitHub.
 func (s *Store) CreatePullRequestRecord(
@@ -384,12 +386,11 @@ func (s *Store) PullRequestByGitHubReference(
 		var err error
 		record, err = scanPullRequest(tx.QueryRow(ctx,
 			`SELECT `+pullRequestColumns+`
-			FROM ao_pull_requests
-			WHERE org_id = $1 AND number = $3 AND session_id IN (
-				SELECT session.id FROM ao_sessions session
-				JOIN ao_projects project
-				  ON project.org_id = session.org_id AND project.id = session.project_id
-				WHERE session.org_id = $1 AND project.github_repository_id = $2
+			FROM ao_pull_requests pull_request
+			WHERE org_id = $1 AND number = $3 AND EXISTS (
+				SELECT 1 FROM ao_github_repositories repository
+				WHERE repository.github_repository_id = $2
+				  AND lower(repository.full_name) = lower(pull_request.repository)
 			)
 			ORDER BY updated_at DESC LIMIT 1`,
 			orgID, repositoryID, number,
@@ -415,12 +416,11 @@ func (s *Store) PullRequestByGitHubHead(
 		var err error
 		record, err = scanPullRequest(tx.QueryRow(ctx,
 			`SELECT `+pullRequestColumns+`
-			FROM ao_pull_requests
-			WHERE org_id = $1 AND head_sha = $3 AND session_id IN (
-				SELECT session.id FROM ao_sessions session
-				JOIN ao_projects project
-				  ON project.org_id = session.org_id AND project.id = session.project_id
-				WHERE session.org_id = $1 AND project.github_repository_id = $2
+			FROM ao_pull_requests pull_request
+			WHERE org_id = $1 AND head_sha = $3 AND EXISTS (
+				SELECT 1 FROM ao_github_repositories repository
+				WHERE repository.github_repository_id = $2
+				  AND lower(repository.full_name) = lower(pull_request.repository)
 			)
 			ORDER BY updated_at DESC LIMIT 1`,
 			orgID, repositoryID, headSHA,
@@ -433,6 +433,112 @@ func (s *Store) PullRequestByGitHubHead(
 	return record, nil
 }
 
+// PullRequestsByGitHubRepository returns tracked open PRs for repository-wide
+// invalidations such as base-branch pushes. Repository identity is resolved
+// inside the installation-routed organization boundary.
+func (s *Store) PullRequestsByGitHubRepository(
+	ctx context.Context,
+	orgID string,
+	repositoryID int64,
+) ([]domain.PullRequest, error) {
+	var records []domain.PullRequest
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT `+pullRequestColumns+`
+			FROM ao_pull_requests pull_request
+			WHERE org_id = $1 AND state = 'open' AND EXISTS (
+				SELECT 1 FROM ao_github_repositories repository
+				WHERE repository.github_repository_id = $2
+				  AND lower(repository.full_name) = lower(pull_request.repository)
+			)
+			ORDER BY updated_at DESC`, orgID, repositoryID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			record, err := scanPullRequest(rows)
+			if err != nil {
+				return err
+			}
+			records = append(records, record)
+		}
+		return rows.Err()
+	})
+	return records, err
+}
+
+// RecordPullRequestOpened creates or refreshes the durable bell notification
+// for an AO-tracked pull request opened through the installed GitHub App.
+func (s *Store) RecordPullRequestOpened(
+	ctx context.Context,
+	orgID string,
+	pr domain.PullRequest,
+	deliveryID string,
+) error {
+	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var projectID, recipientID string
+		if err := tx.QueryRow(ctx, `
+			SELECT project_id::text, COALESCE(created_by_user_id::text, '')
+			FROM ao_sessions WHERE org_id = $1 AND id = $2`,
+			orgID, pr.SessionID).Scan(&projectID, &recipientID); err != nil {
+			return err
+		}
+		if recipientID == "" {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('ao.user_id', $1, true)`, recipientID); err != nil {
+			return err
+		}
+		metadata, err := json.Marshal(map[string]any{
+			"pullRequestId": pr.ID, "pullRequestUrl": pr.URL,
+			"pullRequestNumber": pr.Number, "repository": pr.Repository,
+		})
+		if err != nil {
+			return err
+		}
+		dedupeKey := "pr-opened:" + pr.ID
+		var notificationID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO ao_notifications (
+				org_id, recipient_user_id, project_id, session_id, pull_request_id,
+				source, type, title, body, metadata, dedupe_key, source_event_id, status
+			) VALUES ($1, $2, $3, $4, $5, 'cloud', 'pr_opened',
+				'Pull request opened', $6, $7, $8, $9, 'unread')
+			ON CONFLICT (org_id, recipient_user_id, dedupe_key)
+				WHERE resolved_at IS NULL
+			DO UPDATE SET body = EXCLUDED.body, metadata = EXCLUDED.metadata,
+				source_event_id = EXCLUDED.source_event_id, status = 'unread', updated_at = now()
+			RETURNING id::text`,
+			orgID, recipientID, projectID, pr.SessionID, pr.ID,
+			fmt.Sprintf("%s#%d is ready for review.", pr.Repository, pr.Number),
+			metadata, dedupeKey, deliveryID).Scan(&notificationID); err != nil {
+			return err
+		}
+		var snapshot []byte
+		if err := tx.QueryRow(ctx, `
+			SELECT jsonb_build_object(
+				'id', id::text, 'orgId', org_id::text,
+				'recipientUserId', recipient_user_id::text,
+				'projectId', project_id::text, 'sessionId', session_id::text,
+				'source', source, 'type', type, 'title', title, 'body', body,
+				'status', status, 'eventId', source_event_id, 'metadata', metadata,
+				'createdAt', created_at, 'updatedAt', updated_at
+			) FROM ao_notifications
+			WHERE org_id = $1 AND id = $2`, orgID, notificationID).Scan(&snapshot); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ao_notification_events (
+				org_id, recipient_user_id, notification_id, kind, source_event_id, snapshot
+			) VALUES ($1, $2, $3, 'notification_created', $4, $5)`,
+			orgID, recipientID, notificationID, deliveryID, snapshot); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `SELECT pg_notify('ao_notification_event', $1)`, orgID)
+		return err
+	})
+}
+
 type pullRequestRow interface {
 	Scan(dest ...any) error
 }
@@ -442,11 +548,12 @@ func scanPullRequest(row pullRequestRow) (domain.PullRequest, error) {
 	var state, reviewState, mergeability, ciState, aoReviewState string
 	err := row.Scan(
 		&record.ID, &record.OrgID, &record.SessionID, &record.Provider, &record.Repository,
-		&record.Author, &record.Number, &record.URL, &record.Title, &state, &record.Draft, &record.HeadSHA,
-		&record.SourceBranch, &record.TargetBranch, &record.Additions, &record.Deletions, &record.ChangedFiles,
+		&record.Author, &record.AuthorAvatarURL, &record.Number, &record.URL, &record.Title, &state, &record.Draft, &record.HeadSHA,
+		&record.BaseSHA, &record.MergeCommitSHA, &record.SourceBranch, &record.TargetBranch, &record.Additions, &record.Deletions, &record.ChangedFiles,
 		&ciState, &reviewState, &mergeability,
 		&record.Checks, &record.ClaimedBySessionID, &record.ClaimedAt, &record.ReleasedAt,
-		&aoReviewState, &record.ObservedAt, &record.CreatedAt, &record.UpdatedAt,
+		&aoReviewState, &record.ReviewPartial, &record.CreatedAtProvider, &record.UpdatedAtProvider,
+		&record.MergedAtProvider, &record.ClosedAtProvider, &record.ObservedAt, &record.CreatedAt, &record.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.PullRequest{}, ErrNotFound

@@ -59,6 +59,12 @@ vi.mock("../lib/api-client", () => ({
 
 vi.mock("../lib/bridge", () => ({
 	aoBridge: {
+		cloud: {
+			getSession: vi.fn().mockResolvedValue(null),
+			onSessionChanged: vi.fn(() => () => {}),
+			signIn: vi.fn().mockResolvedValue(undefined),
+			signOut: vi.fn().mockResolvedValue(undefined),
+		},
 		clipboard: {
 			writeText: vi.fn(),
 		},

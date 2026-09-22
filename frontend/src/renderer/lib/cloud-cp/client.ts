@@ -39,6 +39,7 @@ import type {
 	CloudCpSessionChildrenResponse,
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
+	CloudCpSessionPullRequestsResponse,
 	CloudCpResumeSessionResponse,
 	CloudCpRestoreSessionResponse,
 	CloudCpSessionResponse,
@@ -133,6 +134,8 @@ export interface CloudCpClient {
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
 	setSessionAutoInjectCI(orgId: string, sessionId: string, autoInjectCI: boolean, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	setSessionAutoInjectReview(orgId: string, sessionId: string, autoInjectReview: boolean, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	setSessionMergePolicy(orgId: string, sessionId: string, terminateOnPrMerge: boolean, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
 	/** Lists the sessions an orchestrator spawned, with each child's pull requests. */
 	listSessionChildren(
 		orgId: string,
@@ -140,6 +143,11 @@ export interface CloudCpClient {
 		query?: CloudCpListQuery,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpSessionChildrenResponse>;
+	listSessionPullRequests(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionPullRequestsResponse>;
 	deleteSession(
 		orgId: string,
 		sessionId: string,
@@ -432,9 +440,17 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
 		setSessionAutoInjectCI: (orgId, sessionId, autoInjectCI, o) =>
 			requestJson("PATCH", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/auto-inject-ci`, { body: { autoInjectCI }, signal: o?.signal }),
+		setSessionAutoInjectReview: (orgId, sessionId, autoInjectReview, o) =>
+			requestJson("PATCH", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/auto-inject-review`, { body: { autoInjectReview }, signal: o?.signal }),
+		setSessionMergePolicy: (orgId, sessionId, terminateOnPrMerge, o) =>
+			requestJson("PATCH", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/merge-policy`, { body: { terminateOnPrMerge }, signal: o?.signal }),
 		listSessionChildren: (orgId, sessionId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/children`, {
 				query: { limit: query?.limit, cursor: query?.cursor },
+				signal: o?.signal,
+			}),
+		listSessionPullRequests: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/pull-requests`, {
 				signal: o?.signal,
 			}),
 		deleteSession: (orgId, sessionId, o) =>

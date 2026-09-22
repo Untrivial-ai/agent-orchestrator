@@ -11,6 +11,31 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 )
 
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed bool
+}
+
+func (r *flushRecorder) Flush() {
+	r.flushed = true
+	r.ResponseRecorder.Flush()
+}
+
+func TestStatusResponseWriterPreservesStreaming(t *testing.T) {
+	t.Parallel()
+	underlying := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	response := &statusResponseWriter{ResponseWriter: underlying}
+
+	flusher, ok := any(response).(http.Flusher)
+	if !ok {
+		t.Fatal("request logging response writer does not preserve http.Flusher")
+	}
+	flusher.Flush()
+	if !underlying.flushed {
+		t.Fatal("flush was not delegated to the underlying response writer")
+	}
+}
+
 func TestNotificationEventStreamReplaysInSequenceAndStopsOnDrain(t *testing.T) {
 	store := &notificationStreamStore{events: []domain.NotificationEvent{
 		{Sequence: 4, Kind: domain.NotificationEventCreated, EventID: "evt-4", Notification: domain.Notification{ID: "n-4", Source: "cloud"}},

@@ -15,12 +15,15 @@ type PullRequest struct {
 	Provider           string
 	Repository         string
 	Author             string
+	AuthorAvatarURL    string
 	Number             int
 	URL                string
 	Title              string
 	State              contract.PRState
 	Draft              bool
 	HeadSHA            string
+	BaseSHA            string
+	MergeCommitSHA     string
 	SourceBranch       string
 	TargetBranch       string
 	Additions          int
@@ -34,6 +37,11 @@ type PullRequest struct {
 	ClaimedAt          *time.Time
 	ReleasedAt         *time.Time
 	AOReviewState      contract.AOReviewState
+	ReviewPartial      bool
+	CreatedAtProvider  *time.Time
+	UpdatedAtProvider  *time.Time
+	MergedAtProvider   *time.Time
+	ClosedAtProvider   *time.Time
 	ObservedAt         time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -68,6 +76,90 @@ type PullRequestObservation struct {
 	ReviewState  contract.ReviewDecision
 	Mergeability contract.Mergeability
 	Checks       json.RawMessage
+}
+
+// PullRequestCheck is one normalized check run or legacy commit status.
+type PullRequestCheck struct {
+	ProviderID string          `json:"providerId,omitempty"`
+	Name       string          `json:"name"`
+	Status     string          `json:"status"`
+	Conclusion string          `json:"conclusion"`
+	URL        string          `json:"url,omitempty"`
+	HeadSHA    string          `json:"headSha,omitempty"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+// PullRequestReview is one submitted provider review summary.
+type PullRequestReview struct {
+	ProviderID       string                  `json:"providerId"`
+	DatabaseID       int64                   `json:"databaseId,omitempty"`
+	Author           string                  `json:"author"`
+	State            contract.ReviewDecision `json:"state"`
+	Body             string                  `json:"body,omitempty"`
+	URL              string                  `json:"url,omitempty"`
+	TargetSHA        string                  `json:"targetSha,omitempty"`
+	IsBot            bool                    `json:"isBot"`
+	AutoInjectReview bool                    `json:"autoInjectReview"`
+	SubmittedAt      *time.Time              `json:"submittedAt,omitempty"`
+}
+
+// PullRequestReviewThread is one provider review thread.
+type PullRequestReviewThread struct {
+	ProviderID string `json:"providerId"`
+	Path       string `json:"path,omitempty"`
+	Line       int    `json:"line,omitempty"`
+	Resolved   bool   `json:"resolved"`
+	Outdated   bool   `json:"outdated"`
+	IsBot      bool   `json:"isBot"`
+}
+
+// PullRequestReviewComment is one comment within a review thread.
+type PullRequestReviewComment struct {
+	ProviderID       string `json:"providerId"`
+	DatabaseID       int64  `json:"databaseId,omitempty"`
+	ThreadProviderID string `json:"threadProviderId"`
+	ReviewProviderID string `json:"reviewProviderId,omitempty"`
+	Author           string `json:"author"`
+	Body             string `json:"body"`
+	URL              string `json:"url,omitempty"`
+	Path             string `json:"path,omitempty"`
+	Line             int    `json:"line,omitempty"`
+	Resolved         bool   `json:"resolved"`
+	Outdated         bool   `json:"outdated"`
+	IsBot            bool   `json:"isBot"`
+	AutoInjectReview bool   `json:"autoInjectReview"`
+}
+
+// PullRequestSnapshot is the authoritative Cloud SCM read model fetched after
+// a webhook invalidates a tracked PR.
+type PullRequestSnapshot struct {
+	Observation       PullRequestObservation
+	Author            string
+	AuthorAvatarURL   string
+	Title             string
+	URL               string
+	SourceBranch      string
+	TargetBranch      string
+	BaseSHA           string
+	MergeCommitSHA    string
+	CreatedAtProvider *time.Time
+	UpdatedAtProvider *time.Time
+	MergedAtProvider  *time.Time
+	ClosedAtProvider  *time.Time
+	Checks            []PullRequestCheck
+	Reviews           []PullRequestReview
+	Threads           []PullRequestReviewThread
+	Comments          []PullRequestReviewComment
+	ReviewsPartial    bool
+}
+
+// PullRequestTransition describes one atomic authoritative refresh and the
+// newly observed feedback eligible for side effects.
+type PullRequestTransition struct {
+	Previous    PullRequest
+	Current     PullRequest
+	NewReviews  []PullRequestReview
+	NewComments []PullRequestReviewComment
 }
 
 // ReviewRun is one automated review of a pull request commit.

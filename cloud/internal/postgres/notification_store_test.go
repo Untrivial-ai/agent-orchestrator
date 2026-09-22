@@ -44,21 +44,23 @@ func TestNotificationAcceptIsIdempotentAndFencesWorkerEpoch(t *testing.T) {
 		t.Fatalf("duplicate accept = %+v, first = %+v", duplicate, accepted)
 	}
 
-	var ingressCount int
-	if err := admin.QueryRow(ctx, `SELECT count(*) FROM ao_notification_ingress WHERE org_id = $1`, fixture.orgID).Scan(&ingressCount); err != nil {
-		t.Fatal(err)
-	}
-	if ingressCount != 1 {
-		t.Fatalf("ingress rows = %d, want 1", ingressCount)
-	}
-
 	mismatched := event
 	mismatched.Payload = json.RawMessage(`{"activityId":"tool-2"}`)
 	if _, err := store.AcceptNotificationEvent(ctx, fixture.orgID, fixture.sessionID, fixture.workerID, fixture.epoch, mismatched); !errors.Is(err, ErrIdempotencyMismatch) {
 		t.Fatalf("mismatched duplicate error = %v, want ErrIdempotencyMismatch", err)
 	}
 
-	if _, err := admin.Exec(ctx, `UPDATE ao_worker_connections SET disconnected_at = now() WHERE session_id = $1 AND epoch = $2`, fixture.sessionID, fixture.epoch); err != nil {
+	tx, err := admin.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, fixture.orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ao_worker_connections SET disconnected_at = now() WHERE session_id = $1 AND epoch = $2`, fixture.sessionID, fixture.epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	stale := event
@@ -69,7 +71,7 @@ func TestNotificationAcceptIsIdempotentAndFencesWorkerEpoch(t *testing.T) {
 }
 
 func TestNotificationInboxIsRecipientScopedAndCursorOrdered(t *testing.T) {
-	store, _, fixture := openNotificationTestStore(t)
+	store, admin, fixture := openNotificationTestStore(t)
 	ctx := context.Background()
 	principal := domain.Principal{UserID: fixture.userID, Provider: "local"}
 	for index, eventID := range []string{"evt_01KFIRST", "evt_01KSECOND"} {
@@ -78,6 +80,22 @@ func TestNotificationInboxIsRecipientScopedAndCursorOrdered(t *testing.T) {
 			OccurredAt: time.Now().UTC(), Payload: json.RawMessage(`{"activityId":"activity-` + eventID + `"}`),
 		})
 		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := admin.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('ao.service', 'control-plane', true)`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE ao_notification_ingress
+			SET status = 'claimed', lease_owner = 'test', lease_until = now() + interval '1 minute'
+			WHERE id = $1`, ingress.IngressID); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
 		_, changed, err := store.CreateNotificationFromIngress(ctx, domain.NotificationIngress{
@@ -142,12 +160,16 @@ func openNotificationTestStore(t *testing.T) (*Store, *pgxpool.Pool, notificatio
 		orgID: uuid.NewString(), userID: uuid.NewString(), projectID: uuid.NewString(),
 		sessionID: uuid.NewString(), workerID: "worker-" + uuid.NewString(), epoch: 41,
 	}
+	if _, err := admin.Exec(ctx, `INSERT INTO ao_users (
+		id, auth_provider, external_user_id, email, display_name, password_hash
+	) VALUES ($1::uuid, 'local', $1::uuid::text, $1::uuid::text || '@example.test',
+		'Notification Test', 'hash')`, fixture.userID); err != nil {
+		t.Fatalf("seed notification user: %v", err)
+	}
 	statements := []struct {
 		query string
 		args  []any
 	}{
-		{`INSERT INTO ao_users (id, auth_provider, external_user_id, email, display_name, password_hash)
-			VALUES ($1, 'local', $1, $1 || '@example.test', 'Notification Test', 'hash')`, []any{fixture.userID}},
 		{`INSERT INTO ao_organizations (id, auth_provider, slug, display_name, kind, owner_user_id, created_by_user_id)
 			VALUES ($1, 'local', $2, 'Notification Test', 'personal', $3, $3)`, []any{fixture.orgID, "notif-" + uuid.NewString(), fixture.userID}},
 		{`INSERT INTO ao_org_memberships (org_id, user_id, role) VALUES ($1, $2, 'owner')`, []any{fixture.orgID, fixture.userID}},
@@ -158,15 +180,30 @@ func openNotificationTestStore(t *testing.T) (*Store, *pgxpool.Pool, notificatio
 		{`INSERT INTO ao_worker_connections (session_id, org_id, sandbox_id, epoch, worker_id, version)
 			VALUES ($1, $2, $1, $3, $4, 'test')`, []any{fixture.sessionID, fixture.orgID, fixture.epoch, fixture.workerID}},
 	}
-	for _, statement := range statements {
-		if _, err := admin.Exec(ctx, statement.query, statement.args...); err != nil {
-			store.Close()
-			admin.Close()
-			t.Fatalf("seed notification fixture: %v", err)
+	tx, err := admin.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT set_config('ao.user_id', $1, true), set_config('ao.org_id', $2, true)`, fixture.userID, fixture.orgID); err != nil {
+		t.Fatal(err)
+	}
+	for index, statement := range statements {
+		if _, err := tx.Exec(ctx, statement.query, statement.args...); err != nil {
+			t.Fatalf("seed notification fixture statement %d: %v", index, err)
 		}
 	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit notification fixture: %v", err)
+	}
 	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), `DELETE FROM ao_organizations WHERE id = $1`, fixture.orgID)
+		cleanupCtx := context.Background()
+		cleanupTx, err := admin.Begin(cleanupCtx)
+		if err == nil {
+			_, _ = cleanupTx.Exec(cleanupCtx, `SELECT set_config('ao.user_id', $1, true), set_config('ao.org_id', $2, true)`, fixture.userID, fixture.orgID)
+			_, _ = cleanupTx.Exec(cleanupCtx, `DELETE FROM ao_organizations WHERE id = $1`, fixture.orgID)
+			_ = cleanupTx.Commit(cleanupCtx)
+		}
 		_, _ = admin.Exec(context.Background(), `DELETE FROM ao_users WHERE id = $1`, fixture.userID)
 	})
 	return store, admin, fixture

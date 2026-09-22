@@ -61,11 +61,14 @@ type Store interface {
 	GitHubInstallationForRepository(ctx context.Context, orgID, repository string) (installationID, repositoryID int64, err error)
 	PullRequestByGitHubReference(ctx context.Context, orgID string, repositoryID int64, number int) (domain.PullRequest, error)
 	PullRequestByGitHubHead(ctx context.Context, orgID string, repositoryID int64, headSHA string) (domain.PullRequest, error)
+	PullRequestsByGitHubRepository(ctx context.Context, orgID string, repositoryID int64) ([]domain.PullRequest, error)
+	RecordPullRequestOpened(ctx context.Context, orgID string, pr domain.PullRequest, deliveryID string) error
 	UpdatePullRequestObservation(
 		ctx context.Context,
 		orgID, pullRequestID string,
 		observation domain.PullRequestObservation,
 	) (domain.PullRequest, error)
+	ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequestID string, snapshot domain.PullRequestSnapshot) (domain.PullRequestTransition, error)
 	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA string) (domain.ReviewRun, bool, error)
 	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt string) error
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error
@@ -727,7 +730,8 @@ func (s *Service) processWebhook(
 		return err
 	}
 	switch delivery.Event {
-	case "pull_request", "check_suite", "check_run", "pull_request_review":
+	case "pull_request", "check_suite", "check_run", "pull_request_review",
+		"pull_request_review_comment", "pull_request_review_thread", "status", "push":
 		return s.processSCMWebhook(ctx, orgID, delivery)
 	case "installation":
 		action := "unsuspend"
