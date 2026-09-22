@@ -12,7 +12,7 @@ describe("TopbarButton", () => {
 
 		const button = screen.getByRole("button", { name: "Unavailable action" });
 		expect(button).toHaveClass("size-control-md");
-		expect(button).toHaveClass("active:scale-[0.96]", "focus-visible:ring-2");
+		expect(button).toHaveClass("scale-press", "focus-visible:outline-2");
 		expect(button).toHaveClass("topbar-control--disabled-affordance");
 		expect(button).not.toHaveClass("disabled:opacity-35");
 		expect(button).not.toHaveClass("disabled:opacity-60");

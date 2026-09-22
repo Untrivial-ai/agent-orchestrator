@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Download, LoaderCircle, LogIn, RefreshCw, Search, TriangleAlert, X } from "lucide-react";
+import { Check, Copy, Download, LoaderCircle, LogIn, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../../api/schema";
@@ -28,6 +28,7 @@ import { Button } from "../ui/button";
 import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
 import { SettingsSection } from "./SettingsSection";
 import { SettingsOptionMenu } from "./SettingsOptionMenu";
+import { SearchField } from "../ui/search-field";
 
 type AgentInstallPlan = components["schemas"]["AgentInstallPlan"];
 type InstallJob = components["schemas"]["InstallJob"];
@@ -443,11 +444,13 @@ export function HarnessSettingsSection({
 	return (
 		<SettingsSection title={t("settings.harness")} titleHidden={titleHidden} sectionId="harness">
 			<div className="sticky top-0 z-10 flex items-center gap-2 bg-card pb-2">
-				<label className="flex h-9! min-w-0 flex-1 items-center gap-2 rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3">
-					<Search aria-hidden="true" className="size-4 shrink-0 text-settings-muted" />
-					<span className="sr-only">{t("settings.harness.search")}</span>
-					<input aria-label={t("settings.harness.search")} className="min-w-0 flex-1 bg-transparent text-sm text-settings-label outline-none placeholder:text-settings-muted" placeholder={t("settings.harness.searchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} />
-				</label>
+				<SearchField
+					className="flex-1"
+					label={t("settings.harness.search")}
+					placeholder={t("settings.harness.searchPlaceholder")}
+					onChange={setSearch}
+					value={search}
+				/>
 				<Button
 					aria-label={t("settings.harness.refresh")}
 					className="h-9! w-9! min-h-9! min-w-9! shrink-0 aspect-square p-0"
@@ -460,7 +463,7 @@ export function HarnessSettingsSection({
 			</div>
 
 			{installers.error || authPlans.error || agents.error || jobs.error || readinessPoll.error || refreshError ? (
-				<div className="flex items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+				<div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
 					<TriangleAlert className="size-4" aria-hidden="true" />
 					{refreshError ?? readinessPollError ?? (jobs.error instanceof Error ? jobs.error.message : t("settings.harness.loadFailed"))}
 				</div>
@@ -535,7 +538,7 @@ export function HarnessSettingsSection({
 						) : isReady ? (
 							<Badge className="h-8 rounded-md bg-success/10 px-2.5" role="status" variant="success"><Check aria-hidden="true" />{t("settings.harness.configured")}</Badge>
 						) : !authPlan && authPlans.isPending ? (
-							<LoaderCircle className="size-4 animate-spin text-settings-muted" aria-hidden="true" />
+							<LoaderCircle className="size-4 animate-spin text-muted-foreground" aria-hidden="true" />
 						) : authPlan && authPlan.action !== "instructions" ? (
 							<Button data-harness-primary-action="" data-terminal-focus-handoff="true" disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
 								{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
@@ -556,14 +559,14 @@ export function HarnessSettingsSection({
 						>
 							<AgentAvatar className="size-7 shrink-0" decorative provider={agentId} />
 							<div className="min-w-0 flex-1">
-								<p className="truncate text-sm font-medium text-settings-label" id={`harness-agent-${agentId}`}>{agentLabel(agentId)}</p>
-								{!isInstalled || authSummary || isReady ? <p className={cn("truncate text-xs text-settings-muted", rowHasError && "text-error")} title={authState?.error ?? (readinessAuthFailed ? readinessAgent?.authentication.reason : null) ?? actionError ?? job?.error ?? authPlan?.reason ?? plan?.reason}>
+								<p className="truncate text-sm font-medium text-foreground" id={`harness-agent-${agentId}`}>{agentLabel(agentId)}</p>
+								{!isInstalled || authSummary || isReady ? <p className={cn("truncate text-xs text-muted-foreground", rowHasError && "text-destructive")} title={authState?.error ?? (readinessAuthFailed ? readinessAgent?.authentication.reason : null) ?? actionError ?? job?.error ?? authPlan?.reason ?? plan?.reason}>
 										{isInstalled ? (authSummary ?? t("settings.harness.installed")) : actionError ?? (job?.status === "interrupted" ? t("settings.harness.interrupted") : failed ? (job?.error ?? t("settings.harness.installFailed")) : plan?.available ? t("settings.harness.availableWith", { method: availableMethodsLabel }) : (plan?.reason ?? t("settings.harness.manualRequired")))}
 								</p> : null}
 							</div>
 
 			{active ? (
-				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "installing" ? t("settings.harness.installing") : t("settings.harness.verifying")}</span>
+				<span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "installing" ? t("settings.harness.installing") : t("settings.harness.verifying")}</span>
 							) : isInstalled ? (
 							<div className="flex shrink-0 items-center">
 								{authControls}
@@ -575,7 +578,7 @@ export function HarnessSettingsSection({
 									{selectedMethodId ? <Button className={MENU_TRIGGER_CHROME} size="sm" variant="ghost" onClick={() => void startInstall(agentId, selectedMethodId)} disabled={pending}>{t("settings.harness.retry")}</Button> : null}
 								</div>
 							) : !plan && installers.isPending ? (
-								<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" /></span>
+								<span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" /></span>
 							) : availableMethods.length > 0 ? (
 				<div className="flex items-stretch overflow-hidden rounded-md bg-[var(--color-bg-settings-trigger)]">
 									<Button
@@ -603,10 +606,10 @@ export function HarnessSettingsSection({
 				<div className="basis-full">
 					<div className={cn("grid transition-[grid-template-rows] duration-200 ease-out", expandedDiagnostics[agentId] ? "grid-rows-[1fr]" : "grid-rows-[0fr]")}>
 						<div className="min-h-0 overflow-hidden">
-							<div className="mt-1 rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) p-3 text-xs text-settings-muted">
-								{job?.method ? <p><span className="font-medium text-settings-label">{t("settings.harness.method")}:</span> {job.method}</p> : null}
-								{job?.expectedDestination ? <p className="break-all"><span className="font-medium text-settings-label">{t("settings.harness.expectedDestination")}:</span> {job.expectedDestination}</p> : null}
-								{job?.error ? <p className="mt-2 whitespace-pre-wrap text-error">{job.error}</p> : null}
+							<div className="mt-1 rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) p-3 text-xs text-muted-foreground">
+								{job?.method ? <p><span className="font-medium text-foreground">{t("settings.harness.method")}:</span> {job.method}</p> : null}
+								{job?.expectedDestination ? <p className="break-all"><span className="font-medium text-foreground">{t("settings.harness.expectedDestination")}:</span> {job.expectedDestination}</p> : null}
+								{job?.error ? <p className="mt-2 whitespace-pre-wrap text-destructive">{job.error}</p> : null}
 								{job?.output ? <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono">{job.output}</pre> : null}
 								<Button className="mt-2" size="sm" variant="outline" onClick={() => job && void copyText(agentId, diagnosticsText(agentId, job))}><Copy aria-hidden="true" />{t("settings.harness.copyDiagnostics")}</Button>
 							</div>
@@ -632,7 +635,7 @@ export function HarnessSettingsSection({
 						</div>
 					);
 				})}
-				{rows.length === 0 ? <p className="px-3 py-6 text-center text-sm text-settings-muted">{t("settings.harness.noResults")}</p> : null}
+				{rows.length === 0 ? <p className="px-3 py-6 text-center text-sm text-muted-foreground">{t("settings.harness.noResults")}</p> : null}
 			</div>
 		</SettingsSection>
 	);
@@ -686,10 +689,10 @@ function HarnessAuthTerminalPanel({ workflow, onClose, onRetry, onTerminalState 
 	return (
 		<div ref={panelRef} className="mt-1 scroll-my-3 overflow-hidden rounded-md border border-(--color-border-settings-input) bg-terminal" data-testid="harness-auth-terminal">
 			<div className="flex min-h-10 items-center justify-between gap-3 border-b border-(--color-border-settings-input) bg-surface/90 px-3 py-2">
-				<div className="min-w-0"><p className="truncate text-xs font-medium text-settings-label">{workflow.terminal.title}</p><p className="truncate text-[11px] text-settings-muted" aria-live="polite" role="status">{status}</p></div>
+				<div className="min-w-0"><p className="truncate text-xs font-medium text-foreground">{workflow.terminal.title}</p><p className="truncate text-[11px] text-muted-foreground" aria-live="polite" role="status">{status}</p></div>
 				<div className="flex shrink-0 items-center gap-2">
 					{workflow.terminalInput && workflow.phase === "running" ? <Button type="button" size="sm" variant="outline" disabled={terminalState !== "attached" || commandPending || commandSent} onClick={openAuthAction}>{commandSent ? <Check aria-hidden="true" /> : <LogIn aria-hidden="true" />}{workflow.action === "setup" ? commandSent ? t("settings.harness.setupOpened") : t("settings.harness.openSetup") : commandSent ? t("settings.harness.loginOpened") : t("settings.harness.openLogin")}</Button> : null}
-					<button type="button" aria-label={t("settings.close")} className="grid size-7 place-items-center rounded text-settings-muted hover:bg-interactive-hover" disabled={workflow.phase === "closing" || workflow.phase === "verifying"} onClick={onClose}><X className="size-4" aria-hidden="true" /></button>
+					<button type="button" aria-label={t("settings.close")} className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-interactive-hover" disabled={workflow.phase === "closing" || workflow.phase === "verifying"} onClick={onClose}><X className="size-4" aria-hidden="true" /></button>
 				</div>
 			</div>
 			<div className="h-[300px] min-h-0"><TerminalPane daemonReady={shell ? shell.daemonStatus.state === "ready" : true} focusRequested={workflow.phase === "running" && terminalState === "attached"} fontSize={12} inputRequest={inputRequest} onInputRequestResult={handleInputRequestResult} onTerminalStateChange={handleTerminalState} terminalTarget={{ kind: "shell", handleId: workflow.terminal.handleId, generation: workflow.terminal.createdAt, title: workflow.terminal.title }} theme={theme} /></div>

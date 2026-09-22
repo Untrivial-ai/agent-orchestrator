@@ -46,7 +46,7 @@ export function ConfirmDialog({
 	// frame (575px, 38px footer pills) reads oversized around one question, so
 	// the confirm narrows the dialog and compacts the buttons while keeping the
 	// settings family's colors, borders, and typography.
-	const compactButtonClass = "h-8 rounded-[10px] px-4 text-sm";
+	const compactButtonClass = "h-8 rounded-lg px-4 text-sm";
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent
@@ -68,13 +68,13 @@ export function ConfirmDialog({
 				<div className={cn(settingsDialogHeaderClass, "p-5 pr-12")}>
 					<DialogTitle className="settings-dialog-title text-base">{title}</DialogTitle>
 					<DialogDescription asChild>
-						<div className="text-control leading-5 text-settings-muted">{description}</div>
+						<div className="text-control leading-5 text-muted-foreground">{description}</div>
 					</DialogDescription>
 				</div>
 
 				{error ? (
 					<div className={cn(settingsDialogBodyClass, "p-5 py-3")}>
-						<p role="alert" className="text-caption leading-4 text-error">
+						<p role="alert" className="text-caption leading-4 text-destructive">
 							{error}
 						</p>
 					</div>
@@ -89,7 +89,7 @@ export function ConfirmDialog({
 					<Button
 						type="button"
 						variant="footer-primary"
-						className={cn(compactButtonClass, destructive && "bg-danger-strong hover:bg-danger-strong")}
+						className={cn(compactButtonClass, destructive && "bg-destructive-strong hover:bg-destructive-strong")}
 						disabled={busy}
 						onClick={onConfirm}
 					>

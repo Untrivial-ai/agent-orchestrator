@@ -1,7 +1,7 @@
-import { Search } from "lucide-react";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
+import { SearchField } from "../ui/search-field";
 
 /** Mounted inside menu content so closing either menu also clears its query. */
 export function ModelMenuChoices<T extends { id: string; label: string }>({
@@ -60,21 +60,14 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 						}
 					}}
 				>
-					<div className="relative">
-						<Search
-							className="pointer-events-none absolute left-3 top-1/2 size-icon-sm -translate-y-1/2 text-settings-muted"
-							aria-hidden="true"
-						/>
-						<input
-							ref={searchRef}
-							type="search"
-							aria-label={t("settings.models.searchAria", { label: "models" })}
-							value={search}
-							onChange={(event) => setSearch(event.target.value)}
-							placeholder={t("settings.models.searchPlaceholder")}
-							className="menu-search-input h-control-form! rounded-[10px] pl-8!"
-						/>
-					</div>
+					<SearchField
+						inputRef={searchRef}
+						label={t("settings.models.searchAria", { label: "models" })}
+						onChange={setSearch}
+						placeholder={t("settings.models.searchPlaceholder")}
+						value={search}
+						variant="menu"
+					/>
 				</div>
 			)}
 			<div className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden">
@@ -112,7 +105,7 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 				>
 					{children(matches)}
 					{matches.length === 0 && (
-						<p className="px-2 py-1.5 text-xs text-settings-muted">{t("settings.models.noMatches")}</p>
+						<p className="px-2 py-1.5 text-xs text-muted-foreground">{t("settings.models.noMatches")}</p>
 					)}
 				</div>
 				<div
@@ -121,7 +114,7 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 				/>
 			</div>
 			{showSearch && (
-				<p className="shrink-0 px-2 py-1.5 text-xs text-settings-muted" aria-live="polite">
+				<p className="shrink-0 px-2 py-1.5 text-xs text-muted-foreground" aria-live="polite">
 					{t("settings.models.matchingCount", {
 						visible: matches.length.toLocaleString(),
 						total: matches.length.toLocaleString(),

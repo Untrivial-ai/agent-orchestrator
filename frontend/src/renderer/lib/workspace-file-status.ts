@@ -15,7 +15,7 @@ export const statusLabel: Record<WorkspaceFileStatus, string> = {
 
 export const statusTone: Record<WorkspaceFileStatus, string> = {
 	added: "text-success",
-	deleted: "text-error",
+	deleted: "text-destructive",
 	modified: "text-warning",
 	renamed: "text-accent",
 	unmodified: "text-passive",

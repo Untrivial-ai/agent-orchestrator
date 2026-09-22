@@ -70,7 +70,7 @@ export function RestoreUnavailableDialog({ open, session, onOpenChange, onRecrea
 					</button>
 					<div className={settingsDialogHeaderClass}>
 						<Dialog.Title className="settings-dialog-title">{t("restoreUnavailable.title")}</Dialog.Title>
-						<Dialog.Description className="text-control text-settings-muted">
+						<Dialog.Description className="text-control text-muted-foreground">
 							{orchestrator ? t("restoreUnavailable.orchestratorBody") : t("restoreUnavailable.sessionBody")}
 						</Dialog.Description>
 					</div>

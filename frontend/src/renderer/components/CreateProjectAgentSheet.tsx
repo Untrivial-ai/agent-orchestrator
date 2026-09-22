@@ -445,7 +445,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					onCloseAutoFocus={management.onCloseAutoFocus}
 					disabled={disabled}
 					onChange={onChange}
-					triggerClassName={invalid ? "text-error" : undefined}
+					triggerClassName={invalid ? "text-destructive" : undefined}
 					menuClassName={cn("settings-agent-menu-surface", AGENT_MENU_WIDTH)}
 					menuItemClassName="settings-agent-menu-item"
 					renderTrigger={() => (
@@ -501,7 +501,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 				menuAlign="start"
 				triggerClassName={cn(
 					"composer-chip composer-toolbar-option w-full justify-between",
-					invalid && "text-error",
+					invalid && "text-destructive",
 					triggerClassName,
 				)}
 				menuClassName={cn(

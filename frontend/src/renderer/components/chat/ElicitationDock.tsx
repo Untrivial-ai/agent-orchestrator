@@ -59,7 +59,7 @@ export function ElicitationDock({
 			)}
 
 			{error ? (
-				<p role="alert" className="px-3 pb-2 text-[11px] leading-snug text-destructive">
+				<p role="alert" className="px-3 pb-2 text-caption leading-snug text-destructive">
 					{error}
 				</p>
 			) : null}
@@ -75,7 +75,7 @@ function DockHeader({ id, title, pager }: { id?: string; title: string; pager?: 
 				{title}
 			</p>
 			{pager ? (
-				<span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{pager}</span>
+				<span className="shrink-0 text-caption tabular-nums text-muted-foreground">{pager}</span>
 			) : null}
 		</div>
 	);
@@ -122,18 +122,18 @@ function URLRequest({
 				<div className="flex min-h-10 min-w-0 items-center gap-2.5 px-3 py-2">
 					<div className="min-w-0 flex-1">
 						<p className="truncate text-xs leading-relaxed text-foreground">{parsed.hostname}</p>
-						<p className="mt-0.5 break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
+						<p className="mt-0.5 break-all font-mono text-caption leading-relaxed text-muted-foreground">
 							{parsed.href}
 						</p>
 					</div>
 				</div>
 			) : (
-				<p role="alert" className="px-3 py-2 text-[11px] leading-snug text-destructive">
+				<p role="alert" className="px-3 py-2 text-caption leading-snug text-destructive">
 					The provider supplied an unsafe or invalid URL. It was not opened.
 				</p>
 			)}
 			{openError ? (
-				<p role="alert" className="px-3 pb-1 text-[11px] leading-snug text-destructive">
+				<p role="alert" className="px-3 pb-1 text-caption leading-snug text-destructive">
 					{openError}
 				</p>
 			) : null}
@@ -153,9 +153,9 @@ function URLRequest({
 					onClick={() => void consent()}
 				>
 					{opening ? (
-						<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+						<Loader2 aria-hidden="true" className="size-icon-md animate-spin" />
 					) : (
-						<ExternalLink aria-hidden="true" className="size-3.5" />
+						<ExternalLink aria-hidden="true" className="size-icon-md" />
 					)}
 					Open {parsed?.hostname ?? "link"}
 				</button>
@@ -214,7 +214,7 @@ function FormRequest({
 		<form onSubmit={submit}>
 			<DockHeader id={headerId} title={title} pager={pager} />
 			{!questionGroups && schema?.description ? (
-				<p className="px-3 pb-1 text-[11px] leading-relaxed text-muted-foreground">{schema.description}</p>
+				<p className="px-3 pb-1 text-caption leading-relaxed text-muted-foreground">{schema.description}</p>
 			) : null}
 			<div className={cn(questionGroups ? "flex flex-col" : "flex flex-col gap-3 px-3 pb-1")}>
 				{visibleProperties.map(([name, property], index) => (
@@ -267,7 +267,7 @@ function FormRequest({
 					) : null}
 					<button type="submit" className={cn(ACCENT_ACTION_PILL, "min-w-20 justify-center")} disabled={disabled}>
 						{disabled ? (
-							<Loader2 aria-label="Sending answer" className="size-3.5 animate-spin" />
+							<Loader2 aria-label="Sending answer" className="size-icon-md animate-spin" />
 						) : hasNextQuestion ? (
 							"Next"
 						) : (
@@ -321,13 +321,13 @@ function FormField({
 				aria-describedby={invalid ? errorId : undefined}
 			>
 				{labelledBy ? null : (
-					<legend className="px-3 pb-1 text-[11px] font-medium text-muted-foreground">
+					<legend className="px-3 pb-1 text-caption font-medium text-muted-foreground">
 						{label}
 						{required ? " *" : ""}
 					</legend>
 				)}
 				{description && !labelledBy ? (
-					<p className="px-3 pb-1 text-[11px] leading-relaxed text-muted-foreground">{description}</p>
+					<p className="px-3 pb-1 text-caption leading-relaxed text-muted-foreground">{description}</p>
 				) : null}
 				<div className={cn(rows ? "flex flex-col" : "flex flex-col px-1")}>
 					{options.map((option) => {
@@ -351,12 +351,12 @@ function FormField({
 									onChange={() =>
 										onChange(multi ? toggleValue(Array.isArray(value) ? value : [], option.value) : option.value)
 									}
-									className="size-3 shrink-0 accent-[var(--logo-accent)]"
+									className="size-icon-2xs shrink-0 accent-[var(--logo-accent)]"
 								/>
 								<span className="min-w-0 flex-1">
 									<span className="block text-xs leading-relaxed text-foreground">{option.label}</span>
 									{option.description ? (
-										<span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+										<span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">
 											{option.description}
 										</span>
 									) : null}
@@ -366,7 +366,7 @@ function FormField({
 					})}
 				</div>
 				{invalid ? (
-					<p id={errorId} className="px-3 pt-1 text-[11px] text-destructive">
+					<p id={errorId} className="px-3 pt-1 text-caption text-destructive">
 						Choose an answer.
 					</p>
 				) : null}
@@ -391,19 +391,19 @@ function FormField({
 						aria-invalid={invalid || undefined}
 						aria-describedby={invalid ? errorId : undefined}
 						onChange={(event) => onChange(event.target.checked)}
-						className="size-3 shrink-0 accent-[var(--logo-accent)]"
+						className="size-icon-2xs shrink-0 accent-[var(--logo-accent)]"
 					/>
 					<span className="min-w-0 flex-1">
 						<span className="block text-xs leading-relaxed text-foreground">{label}</span>
 						{description ? (
-							<span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+							<span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">
 								{description}
 							</span>
 						) : null}
 					</span>
 				</label>
 				{invalid ? (
-					<p id={errorId} className={cn("px-3 text-[11px] text-destructive", rows ? "pb-1" : "pt-1")}>
+					<p id={errorId} className={cn("px-3 text-caption text-destructive", rows ? "pb-1" : "pt-1")}>
 						This field is required.
 					</p>
 				) : null}
@@ -444,9 +444,9 @@ function FormField({
 		return (
 			<>
 				<div className="flex min-w-0 items-start gap-2.5 px-3 py-2">
-					<span aria-hidden="true" className="size-3 shrink-0" />
+					<span aria-hidden="true" className="size-icon-2xs shrink-0" />
 					<span className="flex min-w-0 flex-1 flex-col">
-						<label htmlFor={id} className="text-[11px] leading-snug text-muted-foreground">
+						<label htmlFor={id} className="text-caption leading-snug text-muted-foreground">
 							{label}
 							{required ? " *" : ""}
 						</label>
@@ -454,7 +454,7 @@ function FormField({
 					</span>
 				</div>
 				{invalid ? (
-					<p id={errorId} className="px-3 pb-1 text-[11px] text-destructive">
+					<p id={errorId} className="px-3 pb-1 text-caption text-destructive">
 						This field is required.
 					</p>
 				) : null}
@@ -469,11 +469,11 @@ function FormField({
 				{required ? " *" : ""}
 			</span>
 			{description ? (
-				<span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">{description}</span>
+				<span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">{description}</span>
 			) : null}
 			{control}
 			{invalid ? (
-				<span id={errorId} className="mt-1 block text-[11px] text-destructive">
+				<span id={errorId} className="mt-1 block text-caption text-destructive">
 					This field is required.
 				</span>
 			) : null}

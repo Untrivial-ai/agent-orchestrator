@@ -420,7 +420,7 @@ export function TaskComposerView({
 				<button
 					type="button"
 					disabled={submission.isSubmitting}
-					className="inline-flex size-(--size-settings-action-height) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+					className="inline-flex size-(--size-settings-action-height) shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
 					aria-label={labels.addFile}
 					onClick={() => {
 						if (!submission.isSubmitting) fileInputRef.current?.click();

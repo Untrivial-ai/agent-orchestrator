@@ -44,23 +44,23 @@ export const ReauthBanner = memo(function ReauthBanner({
 			role="alert"
 			className="flex shrink-0 items-start gap-2.5 border-b border-destructive/40 bg-destructive/10 px-4 py-3"
 		>
-			<KeyRound aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />
+			<KeyRound aria-hidden="true" className="mt-0.5 size-icon-base shrink-0 text-destructive" />
 			<div className="flex min-w-0 flex-col gap-1">
 				<strong className="text-xs font-semibold text-destructive">
 					Sign in again to keep going
 				</strong>
 				{!reasonInTimeline ? (
-					<p className="text-[11px] leading-relaxed text-foreground">
+					<p className="text-caption leading-relaxed text-foreground">
 						{account.reauthReason ??
 							"The provider rejected this session's credentials."}{" "}
 						Nothing will run until it is fixed, and the worktree is untouched.
 					</p>
 				) : null}
-				<p className="text-[11px] leading-relaxed text-muted-foreground">
+				<p className="text-caption leading-relaxed text-muted-foreground">
 					{command ? (
 						<>
 							Run{" "}
-							<code className="rounded bg-background px-1 py-0.5 font-mono text-[10.5px] text-foreground">
+							<code className="rounded bg-background px-1 py-0.5 font-mono text-2xs text-foreground">
 								{command}
 							</code>{" "}
 							in a terminal, then send your message again. AO holds no credentials of its own.
@@ -134,12 +134,12 @@ export const ThreadStateBanner = memo(function ThreadStateBanner({
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
-			<TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+			<TriangleAlert aria-hidden="true" className="mt-0.5 size-icon-md shrink-0 text-warning" />
 			<div className="flex min-w-0 flex-col gap-0.5">
 				<strong className="text-xs font-medium text-warning">{copy.title}</strong>
-				<span className="text-[11px] leading-snug text-muted-foreground">{copy.body}</span>
+				<span className="text-caption leading-snug text-muted-foreground">{copy.body}</span>
 				{threadState.waitingOn?.length ? (
-					<span className="text-[11px] leading-snug text-muted-foreground">
+					<span className="text-caption leading-snug text-muted-foreground">
 						Waiting on: {threadState.waitingOn.join(", ")}
 					</span>
 				) : null}
@@ -181,20 +181,20 @@ export const McpServerBanner = memo(function McpServerBanner({
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
-			<Plug aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+			<Plug aria-hidden="true" className="mt-0.5 size-icon-md shrink-0 text-warning" />
 			<div className="flex min-w-0 flex-1 flex-col gap-1">
 				<strong className="text-xs font-medium text-warning">
 					{servers.length === 1
 						? "A tool server did not start"
 						: `${servers.length} tool servers did not start`}
 				</strong>
-				<span className="text-[11px] leading-snug text-muted-foreground">
+				<span className="text-caption leading-snug text-muted-foreground">
 					The agent has none of their tools and will not say so — it works around them
 					silently.
 				</span>
 				<ul className="flex flex-col gap-0.5">
 					{servers.map((server) => (
-						<li key={server.name} className="text-[11px] leading-snug">
+						<li key={server.name} className="text-caption leading-snug">
 							<span className="font-mono text-foreground">{server.name}</span>
 							<span className="text-muted-foreground">
 								{" · "}
@@ -204,14 +204,14 @@ export const McpServerBanner = memo(function McpServerBanner({
 								{server.failureReason ? ` · ${server.failureReason}` : ""}
 							</span>
 							{server.error ? (
-								<span className="block truncate text-[10.5px] text-muted-foreground/70" title={server.error}>
+								<span className="block truncate text-2xs text-muted-foreground/70" title={server.error}>
 									{server.error}
 								</span>
 							) : null}
 						</li>
 					))}
 				</ul>
-				{error ? <span className="text-[11px] text-destructive">{error}</span> : null}
+				{error ? <span className="text-caption text-destructive">{error}</span> : null}
 			</div>
 			{onReload ? (
 				<Button
@@ -229,7 +229,7 @@ export const McpServerBanner = memo(function McpServerBanner({
 				>
 					<RefreshCw
 						aria-hidden="true"
-						className={cn("size-3", reloading && "animate-spin")}
+						className={cn("size-icon-2xs", reloading && "animate-spin")}
 					/>
 					{reloading ? "Reloading…" : "Reload"}
 				</Button>

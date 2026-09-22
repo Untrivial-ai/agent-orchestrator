@@ -90,7 +90,7 @@ export function TerminalSwitchAgentButton({
 							aria-busy={switching && controlPresentation?.animate ? true : undefined}
 							aria-label={label}
 							className={cn(
-								warning && "text-warning hover:bg-warning/10 hover:text-warning",
+								warning && "text-warning hover:bg-warning/18 hover:text-warning",
 							)}
 							disabled={blocksNewSwitch}
 							onClick={() => {

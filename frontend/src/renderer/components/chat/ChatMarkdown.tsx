@@ -126,7 +126,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 			<div
 				className={cn(
 					"chat-md leading-[1.58]",
-					muted ? "text-[13px] text-muted-foreground" : "text-sm text-foreground",
+					muted ? "text-control text-muted-foreground" : "text-sm text-foreground",
 				)}
 			>
 				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS} urlTransform={chatUrlTransform}>
@@ -167,13 +167,13 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
 			data-wrap={wrap ? "true" : "false"}
 		>
 			<div className="flex items-center gap-2 border-b border-border bg-raised/40 px-2.5 py-1">
-				<span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+				<span className="font-mono text-micro uppercase tracking-wide text-muted-foreground">
 					{language || "text"}
 				</span>
 				{/* Hover-revealed, and focus-revealed so the keyboard can reach it. The
 				    timeline's whole point is that prose dominates; a permanent row of
 				    controls on every fence is the opposite. */}
-				<div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/code:opacity-100">
+				<div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-normal focus-within:opacity-100 group-hover/code:opacity-100">
 					<button
 						type="button"
 						onClick={() => {
@@ -188,13 +188,13 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
 							wrap ? "text-accent" : "text-muted-foreground",
 						)}
 					>
-						<WrapText aria-hidden="true" className="size-3" />
+						<WrapText aria-hidden="true" className="size-icon-2xs" />
 					</button>
 					<CopyButton text={code} label="Copy code" />
 				</div>
 			</div>
 			<pre className="scrollbar-none overflow-x-auto px-3 py-2.5">
-				<code className="font-mono text-[12px] leading-[1.6] text-foreground">
+				<code className="font-mono text-xs leading-[1.6] text-foreground">
 					<HighlightedCode code={code} language={grammar} streaming={streaming} />
 				</code>
 			</pre>
@@ -272,12 +272,12 @@ const COMPONENTS: Components = {
 	// Headings step down in size but stay in the conversation's voice — an agent's
 	// "## Findings" is a paragraph label, not a page title.
 	h1: ({ children }) => (
-		<h3 className="mb-1.5 mt-4 text-[15px] font-semibold leading-snug text-foreground first:mt-0">
+		<h3 className="mb-1.5 mt-4 text-subtitle font-semibold leading-snug text-foreground first:mt-0">
 			{children}
 		</h3>
 	),
 	h2: ({ children }) => (
-		<h4 className="mb-1.5 mt-3.5 text-[14px] font-semibold leading-snug text-foreground first:mt-0">
+		<h4 className="mb-1.5 mt-3.5 text-sm font-semibold leading-snug text-foreground first:mt-0">
 			{children}
 		</h4>
 	),
@@ -287,7 +287,7 @@ const COMPONENTS: Components = {
 		</h5>
 	),
 	h4: ({ children }) => (
-		<h6 className="mb-1 mt-3 text-[13px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-0">
+		<h6 className="mb-1 mt-3 text-control font-semibold uppercase tracking-wide text-muted-foreground first:mt-0">
 			{children}
 		</h6>
 	),
@@ -319,7 +319,7 @@ const COMPONENTS: Components = {
 				checked={Boolean(checked)}
 				readOnly
 				aria-label={checked ? "done" : "not done"}
-				className="mr-1.5 -ml-4 size-3 translate-y-[1px] accent-accent"
+				className="mr-1.5 -ml-4 size-icon-2xs translate-y-[1px] accent-accent"
 			/>
 		) : null,
 
@@ -337,7 +337,7 @@ const COMPONENTS: Components = {
 	},
 	// Only inline code reaches here; `pre` above takes every fence.
 	code: ({ children }) => (
-		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-[11.5px] text-markdown-code">
+		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-sm-md text-markdown-code">
 			{children}
 		</code>
 	),
@@ -346,7 +346,7 @@ const COMPONENTS: Components = {
 	// never scrolls sideways.
 	table: ({ children }) => (
 		<div className="my-2.5 overflow-x-auto rounded-lg border border-border">
-			<table className="w-full border-collapse text-[12.5px]">{children}</table>
+			<table className="w-full border-collapse text-md-sm">{children}</table>
 		</div>
 	),
 	thead: ({ children }) => <thead className="bg-raised/40">{children}</thead>,

@@ -94,7 +94,7 @@ export function ShellTerminalsView() {
 							<button
 								aria-label={t("terminal.scrollTabsLeft")}
 								className={cn(
-									"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-0",
+									"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-0",
 									!tabsOverflow.canScrollLeft && "invisible",
 								)}
 								disabled={!tabsOverflow.canScrollLeft}
@@ -136,7 +136,7 @@ export function ShellTerminalsView() {
 							<button
 								aria-label={t("terminal.scrollTabsRight")}
 								className={cn(
-									"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:pointer-events-none disabled:opacity-0",
+									"inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-0",
 									!tabsOverflow.canScrollRight && "invisible",
 								)}
 								disabled={!tabsOverflow.canScrollRight}
@@ -153,7 +153,7 @@ export function ShellTerminalsView() {
 					<TooltipTrigger asChild>
 						<button
 							aria-label={t("shortcut.new-shell-terminal")}
-							className="ml-auto inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
+							className="ml-auto inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 							onClick={requestNewShellTerminal}
 							type="button"
 						>

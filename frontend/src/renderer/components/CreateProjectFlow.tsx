@@ -751,7 +751,7 @@ export function CreateProjectFlow({
 						<ImportSourcePicker cloudEnabled={cloudEnabled} disabled={isBusy} onCloudSelect={() => setOffering("cloud")} onSelect={selectSource} onCreateStandaloneAgent={onCreateStandaloneAgent} />
 					)}
 					{error && !folderPickerOpen && selectedPath === null && (
-						<p className="text-caption leading-body text-error" role="status">
+						<p className="text-caption leading-body text-destructive" role="status">
 							{error}
 						</p>
 					)}
@@ -1097,7 +1097,7 @@ function CreateProjectProgressDialog({ message, open, progress }: { message: str
 		onInteractOutside={(event) => event.preventDefault()}
 		onPointerDownOutside={(event) => event.preventDefault()}
 	><div className="px-5 pb-5 pt-5">
-		<Dialog.Title className="text-[18px] font-semibold text-[var(--color-text-import-title)]">{t("createProject.cloneProgressTitle", { defaultValue: "Creating the project" })}</Dialog.Title>
+		<Dialog.Title className="text-[18px] font-semibold text-foreground">{t("createProject.cloneProgressTitle", { defaultValue: "Creating the project" })}</Dialog.Title>
 		<Dialog.Description className="sr-only">{t("createProject.cloneProgressDescription", { defaultValue: "Creating the project" })}</Dialog.Description>
 		<div className="mt-6 space-y-3">
 			<div aria-label={`${roundedProgress}%`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={roundedProgress} className="h-2 w-full overflow-hidden rounded-full bg-muted" role="progressbar"><div className="h-full rounded-full bg-primary transition-[width] duration-300 ease-out" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} /></div>
@@ -1257,7 +1257,7 @@ function CloudAgentSetupStep({
 	return (
 		<div className="flex flex-col gap-5">
 			<div className="flex flex-col gap-1 rounded-lg border border-border/50 bg-[var(--color-bg-import-card)] px-4 py-3">
-				<span className="truncate text-[13px] font-medium text-[var(--color-text-import-title)]">{displayName}</span>
+				<span className="truncate text-[13px] font-medium text-foreground">{displayName}</span>
 				<span className="truncate font-mono text-[11.5px] text-muted-foreground">
 					{repositoryUrl} · {defaultBranch}
 				</span>
@@ -1286,14 +1286,16 @@ function CloudAgentSetupStep({
 				onChange={setOrchestratorAgent}
 			/>
 			{!anyAgentReady ? (
-				<button
-					type="button"
-					className="flex items-center gap-1.5 self-start text-[12px] font-medium text-[var(--color-accent-import,#4d8dff)] hover:underline"
+				<Button
+					className="flex items-center gap-1.5 self-start text-xs font-medium"
 					onClick={openCredentialDialog}
+					size="none"
+					type="button"
+					variant="link"
 				>
-					<KeyRound className="size-3.5" aria-hidden="true" />
+					<KeyRound className="size-icon-md" aria-hidden="true" />
 					{t("createProject.addAgentCredential", { defaultValue: "Add a coding agent credential →" })}
-				</button>
+				</Button>
 			) : null}
 			<div className={onboardingFooterActionsClass}>
 				<Button type="button" variant="outline" onClick={onBack} disabled={isCreating}>
@@ -1483,11 +1485,11 @@ function CloudProjectCard({
 				<div className="min-w-0 flex-1">
 				{dialog ? (
 					<>
-						<Dialog.Title className="text-[18px] font-semibold text-[var(--color-text-import-title)]">{title}</Dialog.Title>
+						<Dialog.Title className="text-[18px] font-semibold text-foreground">{title}</Dialog.Title>
 						<Dialog.Description className="sr-only">{t("createProject.cloudDescription")}</Dialog.Description>
 					</>
 				) : (
-					<h2 className="text-[18px] font-semibold text-[var(--color-text-import-title)]">{title}</h2>
+					<h2 className="text-[18px] font-semibold text-foreground">{title}</h2>
 				)}
 				</div>
 			</div>
@@ -1945,7 +1947,7 @@ function ProjectImportDialog({
 							<ChevronRight className="size-4 rotate-180" aria-hidden="true" />
 						</Button>
 						<div className="min-w-0 flex-1 pr-8">
-							<Dialog.Title className="text-[18px] font-semibold text-[var(--color-text-import-title)]">
+							<Dialog.Title className="text-[18px] font-semibold text-foreground">
 								{step === "prepare_git"
 									? t("createProject.prepareProjectTitle")
 									: t("createProject.importProject")}
@@ -1964,7 +1966,7 @@ function ProjectImportDialog({
 					</div>
 					<div className="min-h-0 space-y-4 overflow-y-auto px-4 pb-1 pt-4">
 						<div className="space-y-2">
-							<Label htmlFor="projectImportFolder" className="text-[13px] font-semibold text-[var(--color-text-import-title)]">
+							<Label htmlFor="projectImportFolder" className="text-[13px] font-semibold text-foreground">
 								{t("createProject.projectFolder")}
 							</Label>
 							<PathRow
@@ -2004,7 +2006,7 @@ function ProjectImportDialog({
 								{needsRemote ? (
 									<div className="space-y-3 pt-1">
 											<div className="space-y-1.5">
-												<Label htmlFor="githubRepoOwner" className="text-[12px] font-medium text-[var(--color-text-import-title)]">{t("createProject.githubOwner")}</Label>
+												<Label htmlFor="githubRepoOwner" className="text-[12px] font-medium text-foreground">{t("createProject.githubOwner")}</Label>
 												<Select
 													value={customGitHubOwner ? "__custom__" : githubRepository?.owner ?? ""}
 													disabled={disabled}
@@ -2069,7 +2071,7 @@ function ProjectImportDialog({
 											</div>
 											<div className="space-y-1.5">
 												<div className="relative">
-													<Label htmlFor="githubRepoName" className="text-[12px] font-medium text-[var(--color-text-import-title)]">{t("createProject.githubRepositoryName")}</Label>
+													<Label htmlFor="githubRepoName" className="text-[12px] font-medium text-foreground">{t("createProject.githubRepositoryName")}</Label>
 													<AnimatePresence initial={false}>
 														{availability.state === "unavailable" ? (
 															<motion.p
@@ -2126,7 +2128,7 @@ function ProjectImportDialog({
 														<Globe className="size-4 shrink-0 text-[var(--color-text-import-muted)]" aria-hidden="true" />
 													)}
 													<div className="min-w-0 space-y-0.5">
-														<span className="block text-[12px] font-medium leading-4 text-[var(--color-text-import-title)]">
+														<span className="block text-[12px] font-medium leading-4 text-foreground">
 															{visibilityLabel}
 														</span>
 														<span id="githubRepoVisibilityHelp" className="block text-[11px] leading-4 text-[var(--color-text-import-muted)]">
@@ -2276,7 +2278,7 @@ function CreateProjectFolderDialog({
 							<ChevronRight className="size-4 rotate-180" aria-hidden="true" />
 						</Button>
 						<div className="min-w-0 flex-1 pr-8">
-							<Dialog.Title className="text-[18px] font-semibold text-[var(--color-text-import-title)]">
+							<Dialog.Title className="text-[18px] font-semibold text-foreground">
 								{isWorkspace ? t("createProject.importWorkspace") : t("createProject.importProject")}
 							</Dialog.Title>
 							<Dialog.Description className="sr-only">
@@ -2381,7 +2383,7 @@ function ImportRepoRow({ failed = false, onSetup, repo, setupExpanded = false }:
 			<div className="flex size-4 shrink-0 items-center justify-center">
 				{failed ? <XCircle className="size-4 text-destructive" aria-hidden="true" /> : isPlainFolder ? <Folder className="size-4 text-[var(--color-text-import-muted)]" aria-hidden="true" /> : repositoryAvatar ? <ImportRepositoryAvatar owner={repositoryAvatar.owner} url={repositoryAvatar.url} /> : <Folder className="size-4 text-[var(--color-text-import-muted)]" aria-hidden="true" />}
 			</div>
-			<div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-[var(--color-text-import-title)]">{repo.name}</div>
+			<div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">{repo.name}</div>
 			<div className="flex max-w-[220px] shrink-0 items-center gap-1 truncate text-right text-[11px] text-[var(--color-text-import-muted)]">
 				{needsSetup ? onSetup ? <button type="button" aria-expanded={setupExpanded} className="rounded-sm border border-orange-400/40 bg-orange-500/15 px-2 py-0.5 text-orange-300 hover:bg-orange-500/25" onClick={onSetup}>{setupExpanded ? "Hide setup" : `${workspaceSetupLabel(repo)} · Set up`}</button> : <span className="rounded-sm border border-orange-400/40 bg-orange-500/15 px-2 py-0.5 text-orange-300">{t("createProject.setupRequired")}</span> : repositoryUrl ? <><GitBranch className="size-3.5 shrink-0" aria-hidden="true" /><AppLink className="truncate underline decoration-border underline-offset-2 hover:text-foreground" href={repositoryUrl} rel="noreferrer" target="_blank">{repo.branch}</AppLink></> : <><span className={cn("truncate", isPlainFolder && "rounded-sm bg-orange-500/15 px-2 py-0.5 text-orange-300")}>{isPlainFolder ? "Needs git init" : failed ? (repo.reason ?? t("createProject.repoCannotImport")) : repo.branch}</span></>}
 			</div>
@@ -2421,7 +2423,7 @@ function GitSetupFields({ actions, approved, disabled, onApprovalChange, onRemot
 }) {
 	const { t } = useTranslation();
 	return <div className="space-y-2">
-		<label className="flex items-start gap-2 text-[12px] text-[var(--color-text-import-title)]">
+		<label className="flex items-start gap-2 text-[12px] text-foreground">
 			<Checkbox checked={approved} className="mt-0.5" disabled={disabled} onCheckedChange={(checked) => onApprovalChange(checked === true)} />
 			<span className="min-w-0 flex-1"><span className="block font-medium">{t("createProject.setupGitProject")}</span>{showActionSummary ? <span className="block text-[11px] leading-4 text-[var(--color-text-import-muted)]">{actions.map(gitActionLabel).join(", ")}</span> : null}</span>
 		</label>

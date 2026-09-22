@@ -2,15 +2,16 @@ import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import { cn } from "../../lib/utils";
+import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "../NavRowHighlight";
 
 const SURFACE =
 	"settings-menu-surface min-w-[14rem] rounded-(--radius-settings-panel) border-settings-menu bg-settings-menu p-1 gap-0!";
 
 const ROW =
-	"relative isolate flex min-w-0 cursor-default items-center rounded-none px-3 py-2 outline-none whitespace-nowrap transition-none! before:pointer-events-none before:absolute before:inset-x-0 before:inset-y-px before:-z-10 before:rounded-[10px] first:before:top-0 last:before:bottom-0 focus:before:bg-settings-menu-selected focus:text-settings-title focus:text-foreground data-highlighted:before:bg-settings-menu-selected data-highlighted:text-settings-title data-highlighted:text-foreground data-[active=true]:before:bg-settings-menu-selected data-[active=true]:text-foreground";
+	"relative isolate flex min-w-0 cursor-default items-center rounded-none px-3 py-2 outline-none whitespace-nowrap transition-none! before:pointer-events-none before:absolute before:inset-x-0 before:inset-y-px before:-z-10 before:rounded-lg first:before:top-0 last:before:bottom-0 focus:before:bg-settings-menu-selected focus:text-settings-title focus:text-foreground data-highlighted:before:bg-settings-menu-selected data-highlighted:text-settings-title data-highlighted:text-foreground data-[active=true]:before:bg-settings-menu-selected data-[active=true]:text-foreground";
 
 const LABEL =
-	"px-3 py-2 text-[length:var(--font-size-base)] font-normal tracking-normal text-settings-muted";
+	"px-3 py-2 text-[length:var(--font-size-base)] font-normal tracking-normal text-muted-foreground";
 
 /**
  * The quiet filled trigger both this menu and the Settings pickers wear —
@@ -19,7 +20,7 @@ const LABEL =
  * same control: a visual tweak here should never need making twice.
  */
 export const MENU_TRIGGER_CHROME =
-	"settings-option-trigger max-w-full min-w-0 bg-[var(--color-bg-settings-trigger)] text-[var(--color-text-settings-trigger)] hover:bg-[var(--color-bg-settings-trigger-hover)] hover:text-[var(--color-text-settings-trigger)] data-[state=open]:bg-[var(--color-bg-settings-trigger-hover)] focus:outline-none focus-visible:outline-none focus-visible:ring-0 data-[state=open]:outline-none data-[state=open]:ring-0 disabled:cursor-not-allowed disabled:opacity-50";
+	"settings-option-trigger max-w-full min-w-0 bg-[var(--color-bg-settings-trigger)] text-[var(--color-text-settings-trigger)] hover:bg-[var(--color-bg-settings-trigger-hover)] hover:text-[var(--color-text-settings-trigger)] data-[state=open]:bg-[var(--color-bg-settings-trigger-hover)] data-[state=open]:outline-none data-[state=open]:ring-0 disabled:cursor-not-allowed disabled:opacity-50";
 
 const TRIGGER = cn("group/option-menu-trigger", MENU_TRIGGER_CHROME);
 
@@ -35,16 +36,29 @@ export const OptionMenu = DropdownMenuPrimitive.Root;
 
 export const OptionMenuTrigger = forwardRef<
 	HTMLButtonElement,
-	ButtonHTMLAttributes<HTMLButtonElement>
->(function OptionMenuTrigger({ className, children, ...props }, ref) {
+	ButtonHTMLAttributes<HTMLButtonElement> & {
+		/** Growing hover fill, for triggers whose chrome is transparent at rest. */
+		highlight?: boolean;
+		/** Drop the disclosure caret, for triggers that read as plain controls. */
+		hideCaret?: boolean;
+	}
+>(function OptionMenuTrigger({ className, children, hideCaret = false, highlight = false, ...props }, ref) {
 	return (
 		<DropdownMenuPrimitive.Trigger asChild>
-			<button ref={ref} type="button" className={cn(TRIGGER, className)} {...props}>
+			<button
+				className={cn(TRIGGER, highlight && NAV_ROW_HIGHLIGHT_HOST_CLASS, className)}
+				ref={ref}
+				type="button"
+				{...props}
+			>
+				{highlight ? <NavRowHighlight disabled={Boolean(props.disabled)} /> : null}
 				{children}
-				<ChevronDown
-					className="size-icon-sm shrink-0 group-data-[state=open]/option-menu-trigger:rotate-180"
-					aria-hidden="true"
-				/>
+				{hideCaret ? null : (
+					<ChevronDown
+						className="size-icon-sm shrink-0 group-data-[state=open]/option-menu-trigger:rotate-180"
+						aria-hidden="true"
+					/>
+				)}
 			</button>
 		</DropdownMenuPrimitive.Trigger>
 	);

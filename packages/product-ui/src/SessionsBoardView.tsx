@@ -569,7 +569,7 @@ function lifecycleClassName(state: BoardPullRequestState): string {
 		case "merged":
 			return "text-status-merged";
 		case "closed":
-			return "text-error";
+			return "text-destructive";
 		case "open":
 			return "text-success";
 	}

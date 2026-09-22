@@ -115,7 +115,7 @@ export const PairingQr = memo(function PairingQr({
 			<div className="flex h-6 items-center justify-center px-2">
 				{!resolved && (
 					<p
-						className="flex items-center justify-center gap-2 text-center text-caption leading-(--leading-settings-mobile-hint) text-settings-muted"
+						className="flex items-center justify-center gap-2 text-center text-caption leading-(--leading-settings-mobile-hint) text-muted-foreground"
 						role="status"
 					>
 						<Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />

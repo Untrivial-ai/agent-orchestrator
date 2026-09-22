@@ -81,8 +81,8 @@ export function AgentModelPicker({
 				aria-label={t("settings.models.loading")}
 				aria-busy="true"
 			>
-				<Loader2 className="size-icon-sm shrink-0 animate-spin text-settings-muted" aria-hidden="true" />
-				<span className="truncate text-settings-muted">{t("settings.models.loading")}</span>
+				<Loader2 className="size-icon-sm shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+				<span className="truncate text-muted-foreground">{t("settings.models.loading")}</span>
 			</span>
 		);
 	}

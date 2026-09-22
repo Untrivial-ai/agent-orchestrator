@@ -170,7 +170,7 @@ function AndroidIcon({ className }: { className?: string }) {
 /** Trailing store link at the end of a walkthrough step. Border-bottom instead
  *  of text-decoration so the underline runs under the arrow too. */
 const STEP_LINK_CLASS =
-	"inline-flex items-center gap-0.5 border-b border-[color-mix(in_oklch,var(--color-settings-label)_45%,transparent)] align-baseline text-settings-label transition-colors hover:border-current hover:text-settings-title";
+	"inline-flex items-center gap-0.5 border-b border-[color-mix(in_oklch,var(--color-settings-label)_45%,transparent)] align-baseline text-foreground transition-colors hover:border-current hover:text-settings-title";
 
 interface MobileStatus {
 	enabled: boolean;
@@ -409,11 +409,11 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		null;
 
 	if (query.isLoading) {
-		return <p className="py-4 text-center text-xs text-settings-muted">{t("mobile.checkingStatus")}</p>;
+		return <p className="py-4 text-center text-xs text-muted-foreground">{t("mobile.checkingStatus")}</p>;
 	}
 	if (query.isError) {
 		return (
-			<p className="py-4 text-center text-xs text-error">
+			<p className="py-4 text-center text-xs text-destructive">
 				{query.error instanceof Error ? query.error.message : t("mobile.loadFailed")}
 			</p>
 		);
@@ -446,7 +446,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 
 	return (
 		<div className="flex flex-col gap-4">
-			<p className="text-xs leading-4 text-settings-muted">{t("mobile.description")}</p>
+			<p className="text-xs leading-4 text-muted-foreground">{t("mobile.description")}</p>
 
 			<div className="flex flex-col gap-6 sm:flex-row sm:items-start">
 				{/* Left: the walkthrough. */}
@@ -475,7 +475,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 					{/* One walkthrough per connection method. Steps are plain text with
 					    trailing store links; address/password join the list once the QR
 					    is generated. */}
-					<ol className="settings-mobile-steps mt-4 !text-[13px] !leading-6 !text-[color-mix(in_oklch,var(--color-settings-label)_75%,var(--color-text-settings-muted))]">
+					<ol className="settings-mobile-steps mt-4 !text-[13px] !leading-6 !text-[color-mix(in_oklch,var(--color-settings-label)_75%,var(--muted-foreground))]">
 						{/* Both stores are a public one-tap listing now, so the step names
 						    both rather than making people pick a platform first — the
 						    choice only ever selected which of these two links to show. */}
@@ -483,7 +483,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 							{t("mobile.getApp.step1")}{" "}
 							{STORE_LINKS.map(({ key, Icon, url, labelKey, ariaKey, testId }, index) => (
 								<Fragment key={key}>
-									{index > 0 ? <span className="mx-1 text-settings-muted">{t("mobile.getApp.or")}</span> : null}
+									{index > 0 ? <span className="mx-1 text-muted-foreground">{t("mobile.getApp.or")}</span> : null}
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<button
@@ -512,15 +512,15 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 							<>
 								<li data-testid="mobile-pairing-address">
 									{t("mobile.address")}:{" "}
-									<span className="tracking-settings-mono text-settings-label">{`${activeHost}:${activePort}`}</span>
+									<span className="tracking-settings-mono text-foreground">{`${activeHost}:${activePort}`}</span>
 								</li>
 								<li>
 									{t("mobile.password")}:{" "}
-									<span className="tracking-settings-mono text-settings-label">{status.password}</span>
+									<span className="tracking-settings-mono text-foreground">{status.password}</span>
 									<button
 										type="button"
 										aria-label={copied ? t("mobile.passwordCopied") : t("mobile.copyPassword")}
-										className="ml-1.5 inline-flex size-5 items-center justify-center align-middle text-settings-muted transition-colors hover:text-settings-label"
+										className="ml-1.5 inline-flex size-5 items-center justify-center align-middle text-muted-foreground transition-colors hover:text-foreground"
 										onClick={() => void copyPassword()}
 									>
 										{copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
@@ -531,7 +531,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 												<button
 													type="button"
 													aria-label={t("mobile.regenerate")}
-													className="ml-0.5 inline-flex size-5 items-center justify-center align-middle text-settings-muted transition-colors hover:text-settings-label disabled:opacity-50"
+													className="ml-0.5 inline-flex size-5 items-center justify-center align-middle text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
 													disabled={busy}
 													onClick={() => {
 														clearActionErrors();
@@ -569,7 +569,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 						// error. Without it the QR looks entirely normal and the user
 						// discovers the gap only by being away from home.
 						<div className="mt-3">
-							<p className="text-xs text-settings-muted" data-testid="mobile-remote-unavailable">
+							<p className="text-xs text-muted-foreground" data-testid="mobile-remote-unavailable">
 								{t(
 									"mobile.remoteAccessUnavailable",
 									"Works on this network only — cloudflared isn't installed, so this machine can't be reached from elsewhere.",
@@ -582,7 +582,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 							<InstallCloudflared onInstalled={() => void startRemoteAccess.mutate()} />
 						</div>
 					)}
-					{actionError && <p className="mt-3 text-xs text-error">{actionError}</p>}
+					{actionError && <p className="mt-3 text-xs text-destructive">{actionError}</p>}
 				</div>
 
 				{/* Right: dedicated pairing-QR panel — square, clipping, flush with
@@ -614,7 +614,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 							<div className="relative aspect-square w-full overflow-hidden rounded-md">
 								{enabled && !activeHost ? (
 									<div className="flex size-full items-center justify-center bg-(--color-bg-settings-input) p-4">
-										<p className="text-center text-caption leading-(--leading-settings-mobile-hint) text-settings-muted">
+										<p className="text-center text-caption leading-(--leading-settings-mobile-hint) text-muted-foreground">
 											{mode === "tailscale" ? t("mobile.noTailscaleHost") : t("mobile.noPairingHost")}
 										</p>
 									</div>

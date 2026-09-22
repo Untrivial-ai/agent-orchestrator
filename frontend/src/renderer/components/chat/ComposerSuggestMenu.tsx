@@ -105,7 +105,7 @@ export function ComposerSuggestMenu({
 				</span>
 				<ArrowDownUp
 					aria-label="Use the up and down arrow keys to navigate"
-					className="size-3.5 text-muted-foreground"
+					className="size-icon-md text-muted-foreground"
 				/>
 			</div>
 
@@ -140,7 +140,7 @@ export function ComposerSuggestMenu({
 													aria-hidden="true"
 													className="flex h-4 shrink-0 items-center text-muted-foreground"
 												>
-													<Icon className="size-3.5" />
+													<Icon className="size-icon-md" />
 												</span>
 											);
 										})()
@@ -155,7 +155,7 @@ export function ComposerSuggestMenu({
 										{kind === "skill" ? `/${item.label}` : item.label}
 									</span>
 									{item.detail ? (
-										<span className="block truncate text-[11px] leading-snug text-muted-foreground">
+										<span className="block truncate text-caption leading-snug text-muted-foreground">
 											{item.detail}
 										</span>
 									) : null}
@@ -170,10 +170,10 @@ export function ComposerSuggestMenu({
 										aria-label="Press Tab or Enter to insert"
 										className="flex shrink-0 items-center gap-1 text-micro text-muted-foreground"
 									>
-										<kbd className="rounded border border-border-strong bg-background/40 px-1 py-0.5 font-sans text-[10px] leading-none">
+										<kbd className="rounded border border-border-strong bg-background/40 px-1 py-0.5 font-sans text-micro leading-none">
 											Tab
 										</kbd>
-										<CornerDownLeft aria-hidden="true" className="size-3" />
+										<CornerDownLeft aria-hidden="true" className="size-icon-2xs" />
 									</span>
 								) : null}
 							</button>

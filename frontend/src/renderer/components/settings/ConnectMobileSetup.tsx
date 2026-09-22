@@ -88,10 +88,10 @@ export function ConnectMobileSetup({ mode, onModeChange, enabled, busy = false, 
 				<div className="mt-3 w-full px-(--size-settings-mobile-details-pad-x)">
 					<div className="relative flex items-start justify-between gap-3 rounded-(--radius-settings-dialog-lg) border border-[var(--color-border-settings-input)] bg-[var(--color-bg-settings-input)] px-3.5 py-2.5">
 						<div className="flex min-w-0 flex-col gap-1 pr-2">
-							<span className="text-subtitle leading-(--leading-settings-mobile-title) text-settings-label">
+							<span className="text-subtitle leading-(--leading-settings-mobile-title) text-foreground">
 								{t("mobile.securePairing")}
 							</span>
-							<span className="text-caption leading-(--leading-settings-mobile-hint) text-settings-muted">
+							<span className="text-caption leading-(--leading-settings-mobile-hint) text-muted-foreground">
 								{t("mobile.securePairing.hint")}
 							</span>
 						</div>
@@ -104,7 +104,6 @@ export function ConnectMobileSetup({ mode, onModeChange, enabled, busy = false, 
 							className={cn(
 								"h-(--size-settings-mobile-switch-h) w-(--size-settings-mobile-switch-w) shrink-0 transition-colors duration-300 ease-out",
 								"data-[state=checked]:bg-settings-switch-on data-[state=unchecked]:bg-[var(--color-border-settings-input)]",
-								"focus-visible:ring-0 focus-visible:ring-offset-0",
 								"**:data-[slot=switch-thumb]:size-5 **:data-[slot=switch-thumb]:bg-white **:data-[slot=switch-thumb]:transition-transform **:data-[slot=switch-thumb]:duration-300 **:data-[slot=switch-thumb]:ease-out",
 								"data-[state=checked]:**:data-[slot=switch-thumb]:translate-x-(--size-settings-mobile-switch-travel)",
 								"data-[state=unchecked]:**:data-[slot=switch-thumb]:translate-x-0.5",
@@ -112,7 +111,7 @@ export function ConnectMobileSetup({ mode, onModeChange, enabled, busy = false, 
 						/>
 					</div>
 
-					<p className="mt-3 text-caption leading-(--leading-settings-mobile-hint) text-settings-muted">
+					<p className="mt-3 text-caption leading-(--leading-settings-mobile-hint) text-muted-foreground">
 						{t("mobile.tailscale.iosHint")}
 					</p>
 
@@ -124,7 +123,7 @@ export function ConnectMobileSetup({ mode, onModeChange, enabled, busy = false, 
 						<li>{t("mobile.tailscale.step1")}</li>
 						<li>
 							{t("mobile.tailscale.step2Lead")}{" "}
-							<span className="tracking-settings-mono text-settings-label">tailscale ip -4</span>{" "}
+							<span className="tracking-settings-mono text-foreground">tailscale ip -4</span>{" "}
 							{t("mobile.tailscale.step2Trail")}
 						</li>
 						<li>{t("mobile.tailscale.step3")}</li>

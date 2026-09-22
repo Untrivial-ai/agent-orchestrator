@@ -97,7 +97,7 @@ function ImageDiffPane({
 		<figure className="min-w-0 overflow-hidden rounded-md border border-border/60">
 			<figcaption className="flex items-center justify-between gap-2 border-b border-border/60 bg-background/60 px-2 py-1">
 				<span
-					className={cn("text-2xs font-medium uppercase tracking-wide", side === "before" ? "text-error" : "text-success")}
+					className={cn("text-2xs font-medium uppercase tracking-wide", side === "before" ? "text-destructive" : "text-success")}
 				>
 					{label}
 				</span>

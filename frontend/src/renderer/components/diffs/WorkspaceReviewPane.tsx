@@ -479,7 +479,7 @@ export function WorkspaceReviewPane({
 											{file.path}
 										</button>
 										<span className="text-caption text-success">+{file.additions}</span>
-										<span className="text-caption text-error">−{file.deletions}</span>
+										<span className="text-caption text-destructive">−{file.deletions}</span>
 										<div className="flex shrink-0 items-center">
 											{file.editable && file.fileFingerprint ? (
 												<HeaderActionTooltip label={t("files.editFile")}>

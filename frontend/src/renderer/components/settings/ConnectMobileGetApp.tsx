@@ -30,13 +30,13 @@ export function ConnectMobileGetApp() {
 
 	return (
 		<div className="flex flex-col">
-			<span className="px-3 py-3 text-subtitle leading-(--leading-settings-mobile-title) text-settings-label">{t("mobile.getApp")}</span>
+			<span className="px-3 py-3 text-subtitle leading-(--leading-settings-mobile-title) text-foreground">{t("mobile.getApp")}</span>
 
 			{/* iOS — items-center so the action cluster sits on the row's optical centre. */}
 			<div className="flex items-center justify-between gap-3 px-3 py-3">
 				<div className="flex min-w-0 flex-col">
-					<span className="text-sm leading-5 text-settings-label">{t("mobile.ios")}</span>
-					<span className="text-caption leading-(--leading-settings-mobile-hint) text-settings-muted">
+					<span className="text-sm leading-5 text-foreground">{t("mobile.ios")}</span>
+					<span className="text-caption leading-(--leading-settings-mobile-hint) text-muted-foreground">
 						{t("mobile.iosHint")}
 					</span>
 				</div>
@@ -57,7 +57,7 @@ export function ConnectMobileGetApp() {
 						onClick={() => setShowQR((v) => !v)}
 						className={cn(
 							"inline-flex size-(--size-settings-action-height) items-center justify-center rounded-md border border-transparent transition-colors hover:border-(--color-border-settings-input) hover:bg-[var(--color-bg-settings-input)]",
-							showQR ? "bg-[var(--color-bg-settings-input)] text-settings-title" : "text-settings-muted",
+							showQR ? "bg-[var(--color-bg-settings-input)] text-settings-title" : "text-muted-foreground",
 						)}
 					>
 						<QrCode className="size-4" aria-hidden="true" />
@@ -83,7 +83,7 @@ export function ConnectMobileGetApp() {
 						<div className="rounded-md border border-(--color-border-settings-input) bg-white p-2">
 							<QRCodeSVG value={IOS_APP_STORE_URL} size={STORE_QR_SIZE} className="block" />
 						</div>
-						<p className="mt-2 text-caption text-settings-muted">{t("mobile.qrHint")}</p>
+						<p className="mt-2 text-caption text-muted-foreground">{t("mobile.qrHint")}</p>
 					</div>
 				</div>
 			</div>
@@ -91,8 +91,8 @@ export function ConnectMobileGetApp() {
 			{/* Android — available directly from Google Play. */}
 			<div className="flex items-center justify-between gap-3 px-3 py-3">
 				<div className="flex min-w-0 flex-col">
-					<span className="text-sm leading-5 text-settings-label">{t("mobile.android")}</span>
-					<span className="text-caption leading-(--leading-settings-mobile-hint) text-settings-muted">
+					<span className="text-sm leading-5 text-foreground">{t("mobile.android")}</span>
+					<span className="text-caption leading-(--leading-settings-mobile-hint) text-muted-foreground">
 						{t("mobile.androidHint")}
 					</span>
 				</div>

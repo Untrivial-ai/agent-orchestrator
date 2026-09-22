@@ -48,20 +48,20 @@ export const TurnPlan = memo(function TurnPlan({
 					onClick={() => setExpanded((open) => !open)}
 					aria-expanded={expanded}
 					aria-label={expanded ? "Collapse plan" : "Expand plan"}
-					className="inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="inline-flex size-control-sm shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 				>
-					<ListChecks aria-hidden="true" className="size-4" />
+					<ListChecks aria-hidden="true" className="size-icon-base" />
 				</button>
 				<strong className="shrink-0 text-xs font-semibold text-foreground">Plan</strong>
 				{live && done < plan.steps.length ? (
 					<Loader2
 						aria-label="still planning"
-						className="size-3 shrink-0 animate-spin text-muted-foreground/60"
+						className="size-icon-2xs shrink-0 animate-spin text-muted-foreground/60"
 					/>
 				) : null}
 				<span className="flex-1" />
 				{/* Tabular so the count does not jitter the header as it climbs. */}
-				<span className="shrink-0 font-mono text-[10.5px] tabular-nums text-muted-foreground">
+				<span className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground">
 					{done}/{plan.steps.length}
 				</span>
 			</div>
@@ -69,7 +69,7 @@ export const TurnPlan = memo(function TurnPlan({
 			{expanded ? (
 				<>
 					{plan.explanation ? (
-						<p className="px-3.5 pb-2 text-[11px] leading-relaxed text-muted-foreground">
+						<p className="px-3.5 pb-2 text-caption leading-relaxed text-muted-foreground">
 							{plan.explanation}
 						</p>
 					) : null}
@@ -86,7 +86,7 @@ export const TurnPlan = memo(function TurnPlan({
 								<StepMark status={step.status} />
 								<span
 									className={cn(
-										"min-w-0 flex-1 text-[11.5px] leading-[1.45]",
+										"min-w-0 flex-1 text-sm-md leading-[1.45]",
 										step.status === "completed" && "text-muted-foreground/70 line-through",
 										step.status === "in_progress" && "text-foreground",
 										step.status === "pending" && "text-muted-foreground",
@@ -114,12 +114,12 @@ function StepMark({ status }: { status: PlanStepStatus }) {
 	return (
 		<span
 			aria-hidden="true"
-			className="mt-[3px] flex size-3 shrink-0 items-center justify-center"
+			className="mt-[3px] flex size-icon-2xs shrink-0 items-center justify-center"
 		>
 			{status === "completed" ? (
-				<Check className="size-3 text-success" />
+				<Check className="size-icon-2xs text-success" />
 			) : status === "in_progress" ? (
-				<Loader2 className="size-3 animate-spin text-accent" />
+				<Loader2 className="size-icon-2xs animate-spin text-accent" />
 			) : (
 				<span className="size-[7px] rounded-full border border-border-strong" />
 			)}

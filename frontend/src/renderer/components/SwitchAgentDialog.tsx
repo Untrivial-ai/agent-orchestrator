@@ -81,12 +81,12 @@ function SwitchTargetPicker({
 						<AgentAvatar className="size-icon-base" decorative provider={option.value} />
 						<span className="min-w-0 flex-1 truncate">{option.label}</span>
 						{!supported ? (
-							<span className="shrink-0 text-micro text-settings-muted">
+							<span className="shrink-0 text-micro text-muted-foreground">
 								<span className="sr-only">, </span>
 								{t("switchAgent.comingSoon")}
 							</span>
 						) : current ? (
-							<span className="shrink-0 text-micro text-settings-muted">
+							<span className="shrink-0 text-micro text-muted-foreground">
 								<span className="sr-only">, </span>
 								{t("switchAgent.current")}
 							</span>
@@ -250,7 +250,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 
 					{recoveryRequired ? (
 						<div className="flex flex-col gap-4 px-4 pb-4 pt-4">
-							<div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/5 px-3 py-3">
+							<div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-3">
 								<TriangleAlert aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-warning" />
 								<div className="min-w-0">
 									<p className="font-mono text-control font-medium text-foreground">
@@ -260,7 +260,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 										{t(recoveryDescriptionKey, { source: sourceLabel })}
 									</p>
 									{sourceRecoveryRequired && recoverAgentSwitch.error instanceof Error ? (
-										<p className="mt-2 text-caption leading-4 text-error" role="alert">
+										<p className="mt-2 text-caption leading-4 text-destructive" role="alert">
 											{recoverAgentSwitch.error.message}
 										</p>
 									) : null}
@@ -302,7 +302,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 						{error || modelWarning ? (
 							<div>
 								{error ? (
-									<p className="text-caption leading-4 text-error" role="alert">
+									<p className="text-caption leading-4 text-destructive" role="alert">
 										{error}
 									</p>
 								) : null}

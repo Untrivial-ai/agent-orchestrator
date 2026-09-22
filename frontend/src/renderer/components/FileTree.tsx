@@ -158,7 +158,7 @@ export function FileTree({
 				<p className="p-3 text-xs text-muted-foreground">{t("files.loading")}</p>
 			) : null}
 			{activeError ? (
-				<p className="p-3 text-xs text-error">{activeError.message || t("files.error.loadWorkspaceTree")}</p>
+				<p className="p-3 text-xs text-destructive">{activeError.message || t("files.error.loadWorkspaceTree")}</p>
 			) : null}
 			{isEmpty ? <p className="p-3 text-xs text-muted-foreground">{t("files.explorer.empty")}</p> : null}
 			{size.width > 0 && size.height > 0 ? (

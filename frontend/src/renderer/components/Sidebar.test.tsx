@@ -1862,7 +1862,7 @@ describe("Sidebar", () => {
 
 		expect(input).toHaveAttribute("data-session-inline-editor");
 		expect(input).toHaveClass("border-0", "bg-transparent!", "p-0", "ring-0");
-		expect(input).not.toHaveClass("rounded-xs", "border-accent", "px-1", "focus-visible:ring-1");
+		expect(input).not.toHaveClass("rounded-xs", "border-accent", "px-1", "focus-visible:outline-2");
 		expect(input.parentElement).toHaveAttribute("data-session-row");
 		expect(input.parentElement?.className).toContain("group/nav-row");
 		expect(input.parentElement).toHaveClass("text-foreground", "pr-1");
@@ -2622,7 +2622,7 @@ describe("Sidebar", () => {
 		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
 		const readyRow = screen.getByTestId("sidebar-update-ready");
 		expect(readyRow).toHaveClass("bg-muted", "rounded-lg", "w-full");
-		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/12", "border-primary/35", "bg-primary/12");
+		expect(readyRow).not.toHaveClass("shadow-md", "rounded-xl", "absolute", "bottom-2", "text-success", "border-success/35", "bg-success/10", "border-primary/35", "bg-primary/12");
 		expect(within(readyRow).getByText("Restart to update")).toBeVisible();
 		expect(within(readyRow).getByText("9.9.9")).toBeVisible();
 		expect(within(readyRow).queryByText(/ready|Nightly/)).not.toBeInTheDocument();

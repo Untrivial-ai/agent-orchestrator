@@ -80,7 +80,7 @@ export function OrchestratorReplacementDialog({
 							</div>
 							<div className="min-w-0 flex-1">
 								<Dialog.Title className="settings-dialog-title">{t("orchestratorReplacement.title")}</Dialog.Title>
-								<Dialog.Description className="mt-1 text-control leading-5 text-settings-muted">
+								<Dialog.Description className="mt-1 text-control leading-5 text-muted-foreground">
 									{error?.message ?? t("orchestratorReplacement.fallback")}
 								</Dialog.Description>
 							</div>

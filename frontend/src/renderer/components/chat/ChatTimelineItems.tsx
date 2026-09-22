@@ -64,6 +64,7 @@ import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-poli
 import { ActivityTitle, ChatMarkdown } from "./ChatMarkdown";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
+import { Button } from "../ui/button";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ConversationBranchNavigator } from "./ConversationBranchNavigator";
 import { ConversationContentItems } from "./ConversationContentItems";
@@ -295,7 +296,7 @@ function TwoRowTimelineMarker({
 }) {
 	return (
 		<div className="flex min-w-0 flex-col gap-1 py-1">
-			<div className={cn("flex min-w-0 items-baseline gap-2 text-[11px]", tone)}>
+			<div className={cn("flex min-w-0 items-baseline gap-2 text-caption", tone)}>
 				<span className="shrink-0">{message}</span>
 				{detail ? (
 					<span
@@ -358,7 +359,7 @@ export function TurnOutcome({
 	const action = retry ? (
 		<>
 			{retry.error ? (
-				<span role="alert" className="max-w-[50%] text-pretty text-right text-[10px] leading-tight text-destructive">
+				<span role="alert" className="max-w-[50%] text-pretty text-right text-micro leading-tight text-destructive">
 					{retry.error}
 				</span>
 			) : null}
@@ -369,7 +370,7 @@ export function TurnOutcome({
 				aria-label="Retry this turn"
 				title={retry.error ?? (retry.disabled ? "Wait for the current turn to finish" : "Send this prompt again as a new turn")}
 				data-testid="retry-turn"
-				className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
+				className="shrink-0 rounded px-1.5 py-0.5 text-micro text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
 			>
 				{retry.pending ? "Retrying…" : "Retry"}
 			</button>
@@ -430,7 +431,7 @@ function StagedAttachmentItems({
 						title={path}
 						className="flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground"
 					>
-						<FileIcon aria-hidden="true" className="size-3.5 shrink-0" />
+						<FileIcon aria-hidden="true" className="size-icon-md shrink-0" />
 						<span className="truncate">{name}</span>
 					</li>
 				);
@@ -556,7 +557,7 @@ export function HumanMessage({
 					   apart in CSS because it paints an enclosure only around a sent one. */
 					data-queued={queued ? "" : undefined}
 					className={cn(
-						"cursor-chat-human-message w-fit max-w-[min(78%,560px)] rounded-[10px] px-3 py-2.5 text-sm leading-[1.55]",
+						"cursor-chat-human-message w-fit max-w-[min(78%,560px)] rounded-lg px-3 py-2.5 text-sm leading-[1.55]",
 						animateIn && "chat-human-message-enter",
 						queued
 							? "border border-dashed border-border-strong bg-transparent text-muted-foreground"
@@ -575,9 +576,9 @@ export function HumanMessage({
 			)}
 			{editing ? null : (
 				<div className="mt-1 flex h-7 items-center gap-1">
-					<div className="flex items-center gap-1 opacity-0 transition-opacity duration-150 ease-out focus-within:opacity-100 group-hover/message:opacity-100 motion-reduce:transition-none">
+					<div className="flex items-center gap-1 opacity-0 transition-opacity duration-normal ease-out focus-within:opacity-100 group-hover/message:opacity-100 motion-reduce:transition-none">
 						<span
-							className="shrink-0 px-0.5 text-[11px] tabular-nums text-muted-foreground/75"
+							className="shrink-0 px-0.5 text-caption tabular-nums text-muted-foreground/75"
 							aria-label={`Sent ${formatMessageTimestamp(message.createdAt)}`}
 						>
 							{formatMessageTimestamp(message.createdAt)}
@@ -585,14 +586,15 @@ export function HumanMessage({
 						{onEdit && onEditStart && message.turnId ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<button
+									<Button
 										type="button"
 										onClick={onEditStart}
 										aria-label="Edit user message"
-										className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+										variant="quiet"
+										size="icon-sm"
 									>
-										<Pencil aria-hidden="true" className="size-3" />
-									</button>
+										<Pencil aria-hidden="true" className="size-icon-2xs" />
+									</Button>
 								</TooltipTrigger>
 								<TooltipContent side="bottom">Edit user message</TooltipContent>
 							</Tooltip>
@@ -601,7 +603,7 @@ export function HumanMessage({
 							text={message.text}
 							label="Copy user message"
 							compact
-							className="size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+							className="size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-normal ease-out hover:bg-interactive-hover hover:text-foreground scale-press motion-reduce:transition-none motion-reduce:active:scale-100"
 						/>
 					</div>
 					{branchPoint && onActivateBranch ? (
@@ -615,7 +617,7 @@ export function HumanMessage({
 				</div>
 			)}
 			{queued ? (
-				<div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+				<div className="flex items-center gap-2 text-caption text-muted-foreground">
 					<span>Queued · sends when the agent finishes</span>
 				</div>
 			) : null}
@@ -644,8 +646,8 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 
 	return (
 		<div className="cursor-chat-origin-message rounded-md border border-border border-l-2 border-l-logo-accent/60 px-3.5 py-2.5">
-			<div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-				<CircleAlert aria-hidden="true" className="size-3.5 shrink-0 text-logo-accent" />
+			<div className="mb-1.5 flex items-center gap-2 text-caption font-medium uppercase tracking-wide text-muted-foreground">
+				<CircleAlert aria-hidden="true" className="size-icon-md shrink-0 text-logo-accent" />
 				<span className="truncate">{message.senderLabel ?? message.origin}</span>
 				<span className="ml-auto shrink-0 font-normal tabular-nums">
 					{formatTime(message.createdAt)}
@@ -663,11 +665,11 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 					type="button"
 					onClick={() => setExpanded((current) => !current)}
 					aria-expanded={expanded}
-					className="mt-2 flex items-center gap-1 text-[11px] font-medium text-logo-accent transition-colors hover:text-markdown-link-hover"
+					className="mt-2 flex items-center gap-1 text-caption font-medium text-logo-accent transition-colors hover:text-markdown-link-hover"
 				>
 					<ChevronRight
 						aria-hidden="true"
-						className={cn("size-3 transition-transform", expanded && "rotate-90")}
+						className={cn("size-icon-2xs transition-transform", expanded && "rotate-90")}
 					/>
 					{expanded ? "Hide report" : "Show full report"}
 				</button>
@@ -686,8 +688,8 @@ function BrowserAnnotationOrigin({
 	const count = annotations.items.length;
 	return (
 		<div className="cursor-chat-origin-message rounded-md border border-border border-l-2 border-l-logo-accent/60 px-3.5 py-2.5">
-			<div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-				<MousePointer2 aria-hidden="true" className="size-3.5 shrink-0 text-logo-accent" />
+			<div className="mb-2 flex items-center gap-2 text-caption font-medium uppercase tracking-wide text-muted-foreground">
+				<MousePointer2 aria-hidden="true" className="size-icon-md shrink-0 text-logo-accent" />
 				<span>Browser feedback</span>
 				<span className="ml-auto shrink-0 font-normal tabular-nums">{formatTime(message.createdAt)}</span>
 			</div>
@@ -697,7 +699,7 @@ function BrowserAnnotationOrigin({
 			<div className="mt-2 space-y-1.5">
 				{annotations.items.map((item) => (
 					<div key={item.number} className="flex min-w-0 items-start gap-2 text-xs text-muted-foreground">
-						<span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-logo-accent text-[10px] font-semibold text-white">
+						<span className="flex size-icon-base shrink-0 items-center justify-center rounded-full bg-logo-accent text-micro font-semibold text-white">
 							{item.number}
 						</span>
 						<div className="min-w-0">
@@ -713,7 +715,7 @@ function BrowserAnnotationOrigin({
 				))}
 			</div>
 			{annotations.screenshotCount > 0 ? (
-				<p className="mt-2 text-[11px] text-muted-foreground">
+				<p className="mt-2 text-caption text-muted-foreground">
 					{annotations.screenshotCount} reference screenshot{annotations.screenshotCount === 1 ? "" : "s"}
 				</p>
 			) : null}
@@ -758,27 +760,28 @@ export function AssistantMessage({
 							text={message.text}
 							label="Copy message as markdown"
 							compact
-							className="-ml-1.5 size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+							className="-ml-1.5 size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-normal ease-out hover:bg-interactive-hover hover:text-foreground scale-press motion-reduce:transition-none motion-reduce:active:scale-100"
 						/>
 					) : null}
 					{onRollback ? (
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<button
+								<Button
 									type="button"
 									onClick={onRollback}
 									aria-label="Roll back to here"
-									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+									variant="quiet"
+									size="icon-sm"
 								>
-									<Undo2 aria-hidden="true" className="size-3" />
-								</button>
+									<Undo2 aria-hidden="true" className="size-icon-2xs" />
+								</Button>
 							</TooltipTrigger>
 							<TooltipContent side="bottom">Roll back to here</TooltipContent>
 						</Tooltip>
 					) : null}
 					{hasDuration ? <TurnDuration durationMs={durationMs} /> : null}
 					<span
-						className="w-auto shrink-0 px-1 text-[11px] tabular-nums text-muted-foreground/75 opacity-0 transition-opacity duration-150 ease-out group-hover/message:opacity-100 group-focus-within/message:opacity-100 motion-reduce:transition-none"
+						className="w-auto shrink-0 px-1 text-caption tabular-nums text-muted-foreground/75 opacity-0 transition-opacity duration-normal ease-out group-hover/message:opacity-100 group-focus-within/message:opacity-100 motion-reduce:transition-none"
 						aria-label={`Sent ${formatMessageTimestamp(message.createdAt)}`}
 					>
 						{formatMessageTimestamp(message.createdAt)}
@@ -805,7 +808,7 @@ function DeliveryNote({ state }: { state: DeliveryState }) {
 	return (
 		<span
 			className={cn(
-				"text-[11px] leading-none",
+				"text-caption leading-none",
 				state === "uncertain" || state === "failed" ? "text-warning" : "text-muted-foreground",
 			)}
 		>
@@ -940,7 +943,7 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 				className={cn(
 					compactSummary
 						? ACTIVITY_SUMMARY_BUTTON_CLASS
-						: "flex min-h-[35px] w-full min-w-0 select-none items-center gap-[9px] px-[11px] py-2 text-left text-[11px]",
+						: "flex min-h-[35px] w-full min-w-0 select-none items-center gap-[9px] px-[11px] py-2 text-left text-caption",
 					"activity-row-toggle",
 					hasBody && !compactSummary && "hover:text-foreground",
 					!hasBody && "cursor-default",
@@ -957,18 +960,18 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 					/>
 				)}
 				{singleEdit ? (
-					<span className="flex min-w-0 items-center gap-1 text-[11.5px] font-normal">
+					<span className="flex min-w-0 items-center gap-1 text-sm-md font-normal">
 						<span className="shrink-0 text-muted-foreground">
 							{fileChangeVerb(singleEdit.status ?? "modified")}
 						</span>
 						<FileLocationLabel path={singleEdit.path} oldPath={singleEdit.oldPath} />
 						{singleEdit.additions > 0 ? (
-							<span className="shrink-0 font-mono text-[10px] tabular-nums text-success">
+							<span className="shrink-0 font-mono text-micro tabular-nums text-success">
 								+{singleEdit.additions}
 						</span>
 						) : null}
 						{singleEdit.deletions > 0 ? (
-							<span className="shrink-0 font-mono text-[10px] tabular-nums text-destructive">
+							<span className="shrink-0 font-mono text-micro tabular-nums text-destructive">
 								&minus;{singleEdit.deletions}
 							</span>
 						) : null}
@@ -977,7 +980,7 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 					<strong
 						className={cn(
 							compactSummary
-								? "activity-row-label shrink-0 text-[11.5px] font-normal text-muted-foreground group-hover/activity:text-foreground"
+								? "activity-row-label shrink-0 text-sm-md font-normal text-muted-foreground group-hover/activity:text-foreground"
 								: "min-w-0 truncate font-medium",
 							!compactSummary &&
 								(activity.status === "failed" ? "text-destructive" : "text-foreground"),
@@ -989,7 +992,7 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 				)}
 				{path && !singleEdit ? (
 					<span
-						className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted-foreground group-hover/activity:text-foreground"
+						className="min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground group-hover/activity:text-foreground"
 						title={path}
 					>
 						{path}
@@ -1008,7 +1011,7 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 					<ChevronRight
 						aria-hidden="true"
 						className={cn(
-							"size-3 shrink-0 text-muted-foreground/40 transition-transform group-hover/run:text-muted-foreground",
+							"size-icon-2xs shrink-0 text-muted-foreground/40 transition-transform group-hover/run:text-muted-foreground",
 							open && "rotate-90",
 						)}
 					/>
@@ -1040,12 +1043,12 @@ function GenericActivityRow({ activity }: { activity: ConversationActivity }) {
 							// Said explicitly rather than implied by the label: "Ran command"
 							// alone never tells the reader what ran, and the collapsed row
 							// deliberately keeps only the category.
-							<pre className="scrollbar-none overflow-x-auto border border-border bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-foreground">
+							<pre className="scrollbar-none overflow-x-auto border border-border bg-background px-2.5 py-1.5 font-mono text-2xs leading-relaxed text-foreground">
 								{detail.command}
 							</pre>
 						) : null}
 						{!isFileChange && (detail?.reason || detail?.text) ? (
-							<p className="whitespace-pre-wrap px-1 text-[11px] leading-relaxed text-muted-foreground">
+							<p className="whitespace-pre-wrap px-1 text-caption leading-relaxed text-muted-foreground">
 								{detail.reason ?? detail.text}
 							</p>
 						) : null}
@@ -1083,16 +1086,16 @@ function CommandExploreBody({ activity }: { activity: ConversationActivity }) {
 				<div className="flex min-w-0 items-start gap-2 border-b border-border/60 px-3 py-2">
 					<span
 						aria-hidden="true"
-						className="shrink-0 select-none pt-px font-mono text-[11px] leading-relaxed text-muted-foreground/70"
+						className="shrink-0 select-none pt-px font-mono text-caption leading-relaxed text-muted-foreground/70"
 					>
 						&gt;_
 					</span>
 					<div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-						<span className="min-w-0 break-words text-[12px] leading-relaxed text-foreground/90">
+						<span className="min-w-0 break-words text-xs leading-relaxed text-foreground/90">
 							{reason}
 						</span>
 						{binary ? (
-							<span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/55">
+							<span className="shrink-0 font-mono text-2xs text-muted-foreground/55">
 								{binary}
 							</span>
 						) : null}
@@ -1103,7 +1106,7 @@ function CommandExploreBody({ activity }: { activity: ConversationActivity }) {
 			{command ? (
 				<pre
 					className={cn(
-						"cursor-chat-explore-command overflow-x-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/85",
+						"cursor-chat-explore-command overflow-x-auto px-3 py-2 font-mono text-caption leading-relaxed text-foreground/85",
 						(detail?.output || detail?.terminalInput) && "border-b border-border/60",
 					)}
 				>
@@ -1141,15 +1144,15 @@ function TerminalInput({ text, truncated }: { text: string; truncated?: boolean 
 	const shown = useMemo(() => caretNotation(text), [text]);
 	return (
 		<div className="flex flex-col gap-1">
-			<span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70">
-				<Keyboard aria-hidden="true" className="size-3" />
+			<span className="flex items-center gap-1.5 text-micro uppercase tracking-[0.08em] text-muted-foreground/70">
+				<Keyboard aria-hidden="true" className="size-icon-2xs" />
 				Agent typed
 			</span>
-			<pre className="scrollbar-none overflow-x-auto border border-dashed border-border-strong bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-accent">
+			<pre className="scrollbar-none overflow-x-auto border border-dashed border-border-strong bg-background px-2.5 py-1.5 font-mono text-2xs leading-relaxed text-accent">
 				{shown}
 			</pre>
 			{truncated ? (
-				<p className="text-[10px] text-muted-foreground/70">
+				<p className="text-micro text-muted-foreground/70">
 					AO stopped recording keystrokes at its cap; more were sent.
 				</p>
 			) : null}
@@ -1209,14 +1212,14 @@ function CommandOutput({
 				className={cn(
 					"scrollbar-none max-h-64 overflow-auto font-mono leading-relaxed text-muted-foreground",
 					embedded
-						? "cursor-chat-explore-output px-3 py-2 text-[11px]"
-						: "border border-border bg-background px-2.5 py-2 text-[10.5px]",
+						? "cursor-chat-explore-output px-3 py-2 text-caption"
+						: "border border-border bg-background px-2.5 py-2 text-2xs",
 				)}
 			>
 				{output}
 			</pre>
 			{detail?.outputTruncated ? (
-				<p className="text-[10px] leading-relaxed text-warning">
+				<p className="text-micro leading-relaxed text-warning">
 					This command printed more than AO stores, so the output above stops early. Open a shell in
 					the worktree to see the rest.
 				</p>
@@ -1288,7 +1291,7 @@ function ActivityState({
 		return (
 			<Loader2
 				aria-label="running"
-				className="size-3 shrink-0 animate-spin self-center text-muted-foreground/60"
+				className="size-icon-2xs shrink-0 animate-spin self-center text-muted-foreground/60"
 			/>
 		);
 	}
@@ -1296,7 +1299,7 @@ function ActivityState({
 		const additions = files.reduce((sum, file) => sum + file.additions, 0);
 		const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
 		return (
-			<span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+			<span className="shrink-0 font-mono text-micro tabular-nums text-muted-foreground/70">
 				<span className="text-success">+{additions}</span>{" "}
 				<span className="text-destructive">&minus;{deletions}</span>
 			</span>
@@ -1306,7 +1309,7 @@ function ActivityState({
 		return (
 			<span
 				className={cn(
-					"shrink-0 font-mono text-[10px] tabular-nums",
+					"shrink-0 font-mono text-micro tabular-nums",
 					isNonzeroCommandExit(activity) ? "text-muted-foreground/70" : "text-destructive",
 				)}
 			>
@@ -1316,14 +1319,14 @@ function ActivityState({
 	}
 	if (status === "recovered") {
 		return (
-			<span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+			<span className="shrink-0 font-mono text-micro text-muted-foreground/70">
 				outcome unknown
 			</span>
 		);
 	}
 	if (status === "cancelled") {
 		return (
-			<span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+			<span className="shrink-0 font-mono text-micro text-muted-foreground/70">
 				stopped
 			</span>
 		);
@@ -1336,7 +1339,7 @@ function ActivityState({
 			<ChevronRight
 				aria-hidden="true"
 				className={cn(
-					"size-3 shrink-0 self-center text-muted-foreground/50 transition-all",
+					"size-icon-2xs shrink-0 self-center text-muted-foreground/50 transition-all",
 					open ? "rotate-90 opacity-100" : "opacity-0 group-hover/activity:opacity-100",
 				)}
 			/>
@@ -1372,14 +1375,14 @@ function FileChangeRow({ file }: { file: FileChangeFile }) {
 	const line = (
 		<>
 			<span className="sr-only">{status.label}</span>
-			<span className="shrink-0 text-[11.5px] text-muted-foreground">
+			<span className="shrink-0 text-sm-md text-muted-foreground">
 				{fileChangeVerb(file.status ?? "modified")}
 			</span>
 			<FileLocationLabel path={file.path} oldPath={file.oldPath} />
-			<span className="shrink-0 font-mono text-[10px] tabular-nums text-success">
+			<span className="shrink-0 font-mono text-micro tabular-nums text-success">
 				+{file.additions}
 			</span>
-			<span className="shrink-0 font-mono text-[10px] tabular-nums text-destructive">
+			<span className="shrink-0 font-mono text-micro tabular-nums text-destructive">
 				&minus;{file.deletions}
 			</span>
 		</>
@@ -1408,7 +1411,7 @@ function FileChangeRow({ file }: { file: FileChangeFile }) {
 				<ChevronRight
 					aria-hidden="true"
 					className={cn(
-						"size-3 shrink-0 text-muted-foreground/40 transition-transform",
+						"size-icon-2xs shrink-0 text-muted-foreground/40 transition-transform",
 						open && "rotate-90",
 					)}
 				/>
@@ -1450,7 +1453,7 @@ function Patch({ patch, truncated }: { patch: string; truncated?: boolean }) {
 			<div className="mb-1 mt-0.5 overflow-hidden bg-background">
 			<ToolDiffCode text={patch} />
 			{truncated ? (
-				<p className="border-t border-border px-2.5 py-1.5 text-[10px] leading-relaxed text-warning">
+				<p className="border-t border-border px-2.5 py-1.5 text-micro leading-relaxed text-warning">
 					This patch is longer than AO stores, so it stops early. The whole change is in the
 					worktree and in the turn&rsquo;s diff.
 				</p>
@@ -1484,22 +1487,22 @@ function ReasoningBlock({ activity }: { activity: ConversationActivity }) {
 
 	return (
 		<div className="flex gap-2.5 border-l-2 border-border-strong py-0.5 pl-3">
-			<Brain aria-hidden="true" className="mt-[3px] size-3.5 shrink-0 text-muted-foreground/70" />
+			<Brain aria-hidden="true" className="mt-[3px] size-icon-md shrink-0 text-muted-foreground/70" />
 			<div className="min-w-0 flex-1">
 				<div className="flex items-center gap-2">
-					<span className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70">
+					<span className="text-micro uppercase tracking-[0.08em] text-muted-foreground/70">
 						{streaming ? "Thinking" : "Thought"}
 					</span>
 					{streaming ? (
 						<Loader2
 							aria-label="still thinking"
-							className="size-3 animate-spin text-muted-foreground/50"
+							className="size-icon-2xs animate-spin text-muted-foreground/50"
 						/>
 					) : null}
 				</div>
 				<ChatMarkdown text={text} streaming={streaming} muted />
 				{activity.detail?.textTruncated ? (
-					<p className="mt-1 text-[10px] text-muted-foreground/70">
+					<p className="mt-1 text-micro text-muted-foreground/70">
 						This summary is longer than AO stores, so it stops early.
 					</p>
 				) : null}
@@ -1552,32 +1555,32 @@ function McpToolRow({ activity }: { activity: ConversationActivity }) {
 			>
 				<strong
 					className={cn(
-						"activity-row-label shrink-0 text-[11.5px] font-normal",
+						"activity-row-label shrink-0 text-sm-md font-normal",
 						failed ? "text-destructive" : "text-muted-foreground",
 					)}
 				>
 					<span>{tool}</span>
 				</strong>
 				{sourceLabel ? (
-					<span className="min-w-0 flex-1 truncate text-[10.5px] text-muted-foreground group-hover/activity:text-foreground">
+					<span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground group-hover/activity:text-foreground">
 						{sourceLabel}
 					</span>
 				) : null}
 				{activity.status === "running" ? (
 					<Loader2
 						aria-label="running"
-						className="size-3 shrink-0 animate-spin text-muted-foreground/60"
+						className="size-icon-2xs shrink-0 animate-spin text-muted-foreground/60"
 					/>
 				) : failed ? (
-					<span className="shrink-0 text-[10px] text-destructive">failed</span>
+					<span className="shrink-0 text-micro text-destructive">failed</span>
 				) : activity.status === "recovered" ? (
-					<span className="shrink-0 text-[10px] text-muted-foreground/70">outcome unknown</span>
+					<span className="shrink-0 text-micro text-muted-foreground/70">outcome unknown</span>
 				) : activity.status === "cancelled" ? (
-					<span className="shrink-0 text-[10px] text-muted-foreground/70">stopped</span>
+					<span className="shrink-0 text-micro text-muted-foreground/70">stopped</span>
 				) : hasBody ? (
 					<ChevronRight
 						aria-hidden="true"
-						className={cn("size-3 shrink-0 text-muted-foreground/40 transition-transform", open && "rotate-90")}
+						className={cn("size-icon-2xs shrink-0 text-muted-foreground/40 transition-transform", open && "rotate-90")}
 					/>
 				) : null}
 			</button>
@@ -1593,7 +1596,7 @@ function McpToolRow({ activity }: { activity: ConversationActivity }) {
 					>
 						<div className="flex flex-col gap-2 pb-2.5">
 					{detail?.error ? (
-						<p className="border border-destructive/30 bg-background px-2.5 py-1.5 text-[10.5px] leading-relaxed text-destructive">
+						<p className="border border-destructive/30 bg-background px-2.5 py-1.5 text-2xs leading-relaxed text-destructive">
 							{detail.error}
 						</p>
 					) : null}
@@ -1606,10 +1609,10 @@ function McpToolRow({ activity }: { activity: ConversationActivity }) {
 					{detail?.content !== undefined ? <ToolContent value={detail.content} /> : null}
 					{detail?.progress ? (
 						<div className="flex flex-col gap-1">
-							<span className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70">
+							<span className="text-micro uppercase tracking-[0.08em] text-muted-foreground/70">
 								Progress
 							</span>
-							<pre className="scrollbar-none max-h-40 overflow-auto border border-border bg-background px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+							<pre className="scrollbar-none max-h-40 overflow-auto border border-border bg-background px-2.5 py-1.5 font-mono text-2xs leading-relaxed text-muted-foreground">
 								{detail.progress}
 							</pre>
 						</div>
@@ -1628,7 +1631,7 @@ function ToolContent({ value }: { value: unknown }) {
 		if (looksLikeUnifiedDiff(text)) return <ToolDiffCode text={text} />;
 		return (
 			<pre className="chat-code max-h-64 overflow-auto whitespace-pre rounded-lg border border-border bg-background px-2.5 py-1.5">
-				<code className="block whitespace-pre font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+				<code className="block whitespace-pre font-mono text-2xs leading-relaxed text-muted-foreground">
 					{ text }
 				</code>
 			</pre>
@@ -1637,7 +1640,7 @@ function ToolContent({ value }: { value: unknown }) {
 	const truncated = truncationNote(value);
 	return (
 		<pre className="chat-code max-h-56 overflow-auto rounded-lg border border-border bg-background px-2.5 py-1.5">
-			<code className="font-mono text-[10.5px] leading-[1.55] text-foreground">
+			<code className="font-mono text-2xs leading-[1.55] text-foreground">
 				{truncated ?? formatJson(value)}
 			</code>
 		</pre>
@@ -1660,7 +1663,7 @@ function looksLikeUnifiedDiff(text: string): boolean {
 
 function ToolDiffCode({ text }: { text: string }) {
 	return (
-		<div className="chat-code max-h-64 overflow-auto rounded-lg border border-border bg-background px-0 py-1 font-mono text-[10.5px] leading-[1.55]">
+		<div className="chat-code max-h-64 overflow-auto rounded-lg border border-border bg-background px-0 py-1 font-mono text-2xs leading-[1.55]">
 			{ text.split("\n").map((line, index) => {
 				const kind = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "context";
 				const marker = kind === "add" ? "+" : kind === "del" ? "-" : " ";
@@ -1672,7 +1675,7 @@ function ToolDiffCode({ text }: { text: string }) {
 						className={cn(
 							"flex min-w-max whitespace-pre px-2.5",
 							kind === "add" && "bg-success/10",
-							kind === "del" && "bg-error/10",
+							kind === "del" && "bg-destructive/10",
 						)}
 					>
 						<span
@@ -1680,7 +1683,7 @@ function ToolDiffCode({ text }: { text: string }) {
 							className={cn(
 								"w-4 shrink-0 select-none text-center",
 								kind === "add" && "text-success",
-								kind === "del" && "text-error",
+								kind === "del" && "text-destructive",
 							)}
 						>
 							{marker}
@@ -1718,16 +1721,16 @@ function JsonPayload({ label, value }: { label: string; value: unknown }) {
 
 	return (
 		<div className="flex flex-col gap-1">
-			<span className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70">
+			<span className="text-micro uppercase tracking-[0.08em] text-muted-foreground/70">
 				{label}
 			</span>
 			{capped ? (
-				<p className="border border-border bg-background px-2.5 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">
+				<p className="border border-border bg-background px-2.5 py-1.5 text-2xs leading-relaxed text-muted-foreground">
 					{capped}
 				</p>
 			) : (
 				<pre className="chat-code max-h-56 overflow-auto rounded-lg border border-border bg-background px-2.5 py-1.5">
-					<code className="font-mono text-[10.5px] leading-[1.55] text-foreground">
+					<code className="font-mono text-2xs leading-[1.55] text-foreground">
 						<HighlightedCode code={text} language="json" />
 					</code>
 				</pre>
@@ -1804,7 +1807,7 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 				disabled={!hasBody}
 				aria-expanded={hasBody ? open : undefined}
 				className={cn(
-					"activity-row-toggle flex min-h-[35px] w-full select-none items-center gap-[9px] px-[11px] py-2 text-left text-[11px]",
+					"activity-row-toggle flex min-h-[35px] w-full select-none items-center gap-[9px] px-[11px] py-2 text-left text-caption",
 					hasBody && "hover:text-foreground",
 					!hasBody && "cursor-default",
 				)}
@@ -1821,7 +1824,7 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 					{denied ? "Auto-declined" : "Auto-approved"}
 				</strong>
 				<span
-					className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted-foreground"
+					className="min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground"
 					title={activity.summary}
 				>
 					<ActivityTitle text={shortenPaths(activity.summary)} />
@@ -1829,7 +1832,7 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 				{detail?.riskLevel ? (
 					<span
 						className={cn(
-							"shrink-0 text-[10px] uppercase tracking-[0.06em]",
+							"shrink-0 text-micro uppercase tracking-[0.06em]",
 							RISK_TONE[detail.riskLevel.toLowerCase()] ?? "text-muted-foreground",
 						)}
 						title={`Risk assessed as ${detail.riskLevel}`}
@@ -1841,7 +1844,7 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 					<ChevronRight
 						aria-hidden="true"
 						className={cn(
-							"size-3 shrink-0 text-muted-foreground/50 transition-all",
+							"size-icon-2xs shrink-0 text-muted-foreground/50 transition-all",
 							open ? "rotate-90 opacity-100" : "opacity-0 group-hover/activity:opacity-100",
 						)}
 					/>
@@ -1852,17 +1855,17 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 				<div className="flex flex-col gap-2 px-[11px] pb-2.5">
 					{/* Said in full rather than implied by the label: "auto-approved" alone
 					    leaves it ambiguous whether the user set something up that did this. */}
-					<p className="text-[11px] leading-relaxed text-muted-foreground">
+					<p className="text-caption leading-relaxed text-muted-foreground">
 						{denied
 							? "The agent asked to do this and the provider declined on your behalf. You were not asked."
 							: "The agent asked to do this and the provider allowed it on your behalf. You were not asked."}
 					</p>
 					{detail?.rationale ? (
-						<p className="rounded border border-border bg-background px-2.5 py-1.5 text-[11px] leading-relaxed text-foreground">
+						<p className="rounded border border-border bg-background px-2.5 py-1.5 text-caption leading-relaxed text-foreground">
 							{detail.rationale}
 						</p>
 					) : null}
-					<dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono text-[10.5px] leading-relaxed">
+					<dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono text-2xs leading-relaxed">
 						{detail?.command ? (
 							<>
 								<dt className="text-muted-foreground/70">command</dt>
@@ -1927,9 +1930,9 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
 	const detail = activity.detail;
 	return (
 		<div className="flex items-start gap-2.5 rounded-md border border-border bg-surface/60 px-3 py-2">
-			<Shuffle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+			<Shuffle aria-hidden="true" className="mt-0.5 size-icon-md shrink-0 text-muted-foreground" />
 			<div className="flex min-w-0 flex-col gap-0.5">
-				<span className="text-[11px] text-foreground">
+				<span className="text-caption text-foreground">
 					Answered by{" "}
 					<strong className="font-medium">{detail?.toModel ?? "another model"}</strong>
 					{detail?.fromModel ? (
@@ -1940,7 +1943,7 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
 					) : null}
 				</span>
 				{detail?.reason ? (
-					<span className="text-[10.5px] leading-snug text-muted-foreground">{detail.reason}</span>
+					<span className="text-2xs leading-snug text-muted-foreground">{detail.reason}</span>
 				) : null}
 			</div>
 		</div>
@@ -1965,7 +1968,7 @@ function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
 	const actionUrl = String(activity.detail?.actionUrl ?? "").trim();
 	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
 	return (
-		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
+		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-sm-md leading-snug text-muted-foreground">
 			<span className="wrap-anywhere min-w-0 whitespace-pre-wrap">
 				<span>{linkifiedProviderErrorText(headline)}</span>
 				{detail ? (
@@ -2119,13 +2122,13 @@ function parseJsonObjectSuffix(raw: string): Record<string, unknown> | undefined
 function ReauthRow({ activity }: { activity: ConversationActivity }) {
 	return (
 		<div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-surface px-3 py-2">
-			<KeyRound aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+			<KeyRound aria-hidden="true" className="mt-0.5 size-icon-md shrink-0 text-destructive" />
 			<div className="flex min-w-0 flex-col gap-0.5">
-				<strong className="text-[11px] font-medium text-destructive">
+				<strong className="text-caption font-medium text-destructive">
 					The provider asked you to sign in again
 				</strong>
 				{activity.detail?.reason ? (
-					<span className="text-[10.5px] leading-snug text-muted-foreground">
+					<span className="text-2xs leading-snug text-muted-foreground">
 						{activity.detail.reason}
 					</span>
 				) : null}
@@ -2165,7 +2168,7 @@ export function SteerMessage({
 	});
 	return (
 		<div className="flex flex-col items-end gap-1">
-			<div className="w-fit max-w-[min(78%,560px)] break-words whitespace-pre-wrap rounded-[10px] border border-accent-dim bg-raised px-3 py-2.5 text-sm leading-[1.55] text-foreground">
+			<div className="w-fit max-w-[min(78%,560px)] break-words whitespace-pre-wrap rounded-lg border border-accent-dim bg-raised px-3 py-2.5 text-sm leading-[1.55] text-foreground">
 				{body ? <p>{body}</p> : null}
 				<StagedAttachmentItems
 					paths={attachments}
@@ -2182,8 +2185,8 @@ export function SteerMessage({
 					className={cn((body || attachments.length > 0) && "mt-2")}
 				/>
 			</div>
-			<span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-				<CornerDownRight aria-hidden="true" className="size-3" />
+			<span className="flex items-center gap-1 text-caption text-muted-foreground">
+				<CornerDownRight aria-hidden="true" className="size-icon-2xs" />
 				Steered into the running turn
 			</span>
 		</div>
@@ -2281,7 +2284,7 @@ export function ApprovalCard({
 					{detail?.reason ?? approvalPrompt(subjectKind)}
 				</p>
 
-				<pre className="mt-2 scrollbar-none max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/70 bg-background/45 px-2.5 py-1.5 font-mono text-[12px] leading-[1.45] text-muted-foreground">
+				<pre className="mt-2 scrollbar-none max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/70 bg-background/45 px-2.5 py-1.5 font-mono text-xs leading-[1.45] text-muted-foreground">
 					{detail?.rawCommand ?? command}
 				</pre>
 
@@ -2295,7 +2298,7 @@ export function ApprovalCard({
 						>
 							{approvalDecisionLabel(denyDecision, subjectKind)}
 							{denyDecision === rejectOnceDecision ? (
-								<kbd className="rounded-full bg-foreground/10 px-1.5 py-0.5 font-sans text-[10.5px] leading-none text-muted-foreground">
+								<kbd className="rounded-full bg-foreground/10 px-1.5 py-0.5 font-sans text-2xs leading-none text-muted-foreground">
 									Esc
 								</kbd>
 							) : null}
@@ -2312,7 +2315,7 @@ export function ApprovalCard({
 							>
 								Allow once
 								<kbd className="rounded-full bg-logo-accent-foreground/15 p-0.5" aria-label="Press Return">
-									<CornerDownLeft aria-hidden="true" className="size-3" />
+									<CornerDownLeft aria-hidden="true" className="size-icon-2xs" />
 								</kbd>
 							</button>
 							{alternateAllowDecisions.length > 0 ? (
@@ -2321,10 +2324,10 @@ export function ApprovalCard({
 										<button
 											type="button"
 											aria-label="More approval options"
-											className="flex w-7 items-center justify-center border-l border-logo-accent-foreground/20 transition-colors hover:bg-logo-accent-bright focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+											className="flex w-7 items-center justify-center border-l border-logo-accent-foreground/20 transition-colors hover:bg-logo-accent-bright focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
 											disabled={busy}
 										>
-											<ChevronDown aria-hidden="true" className="size-3.5" />
+											<ChevronDown aria-hidden="true" className="size-icon-md" />
 										</button>
 									</DropdownMenuTrigger>
 									<DropdownMenuContent
@@ -2360,7 +2363,7 @@ export function ApprovalCard({
 						</button>
 					))}
 					{decisions.length === 0 ? (
-						<p className="text-[11px] text-warning">
+						<p className="text-caption text-warning">
 							The agent offered no decisions AO can present. Open diagnostics.
 						</p>
 					) : null}
@@ -2443,7 +2446,7 @@ function ResolvedApprovalRow({
 	const title = detail?.cwd ? `${command}\n${detail.cwd}` : command;
 
 	return (
-		<div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-md border border-border/80 bg-surface/45 px-2.5 py-1.5 text-[11.5px] text-muted-foreground">
+		<div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-md border border-border/80 bg-surface/45 px-2.5 py-1.5 text-sm-md text-muted-foreground">
 			<strong className="shrink-0 font-medium text-foreground">{outcome.label}</strong>
 			<span className="min-w-0 truncate text-right font-mono" title={title}>
 				{command}
@@ -2545,13 +2548,13 @@ export function TurnChangedFiles({
 	return (
 		<div className="overflow-hidden rounded-lg bg-surface">
 			<div className="flex items-center gap-2 px-3 py-2">
-				<span className="shrink-0 text-[11px] text-muted-foreground">
+				<span className="shrink-0 text-caption text-muted-foreground">
 					{diff.files.length === 1 ? "1 File Changed" : `${diff.files.length} Files Changed`}
 				</span>
 				{live ? (
 					<Loader2
 						aria-label="still changing"
-						className="size-3 shrink-0 animate-spin text-muted-foreground/60"
+						className="size-icon-2xs shrink-0 animate-spin text-muted-foreground/60"
 					/>
 				) : null}
 				<span className="flex-1" />
@@ -2559,7 +2562,7 @@ export function TurnChangedFiles({
 					<button
 						type="button"
 						onClick={onReview}
-						className="shrink-0 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+						className="shrink-0 text-caption text-muted-foreground transition-colors hover:text-foreground"
 					>
 						Review
 					</button>
@@ -2581,25 +2584,25 @@ export function TurnChangedFiles({
 					const body = (
 						<>
 							<span className="sr-only">{status.label}</span>
-							<FileIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+							<FileIcon aria-hidden="true" className="size-icon-md shrink-0 text-muted-foreground" />
 							<span
-								className="min-w-0 flex-1 truncate text-[12px] text-foreground/80"
+								className="min-w-0 flex-1 truncate text-xs text-foreground/80"
 								title=""
 							>
 								{fileBasename(file.path)}
 							</span>
 							{file.additions > 0 ? (
-								<span className="shrink-0 font-mono text-[11px] tabular-nums text-success">
+								<span className="shrink-0 font-mono text-caption tabular-nums text-success">
 									+{file.additions}
 								</span>
 							) : null}
 							{file.deletions > 0 ? (
-								<span className="shrink-0 font-mono text-[11px] tabular-nums text-destructive">
+								<span className="shrink-0 font-mono text-caption tabular-nums text-destructive">
 									&minus;{file.deletions}
 								</span>
 							) : null}
 							{file.additions === 0 && file.deletions === 0 ? (
-								<span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/50">
+								<span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground/50">
 									0
 								</span>
 							) : null}
@@ -2620,33 +2623,33 @@ export function TurnChangedFiles({
 											{body}
 										</button>
 									</TooltipTrigger>
-									<TooltipContent side="top" className="max-w-[min(28rem,90vw)] font-mono text-[11px] font-normal">
+									<TooltipContent side="top" className="max-w-[min(28rem,90vw)] font-mono text-caption font-normal">
 										{location}
 									</TooltipContent>
 								</Tooltip>
 							) : (
 								<div className={rowClass}>
 									<span className="sr-only">{status.label}</span>
-									<FileIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+									<FileIcon aria-hidden="true" className="size-icon-md shrink-0 text-muted-foreground" />
 									<FileLocationLabel
 										path={file.path}
 										oldPath={file.oldPath}
 										locationPath={tooltipPath}
 										locationOldPath={tooltipOldPath}
-										className="min-w-0 flex-1 truncate text-[12px] text-foreground/80"
+										className="min-w-0 flex-1 truncate text-xs text-foreground/80"
 									/>
 									{file.additions > 0 ? (
-										<span className="shrink-0 font-mono text-[11px] tabular-nums text-success">
+										<span className="shrink-0 font-mono text-caption tabular-nums text-success">
 											+{file.additions}
 										</span>
 									) : null}
 									{file.deletions > 0 ? (
-										<span className="shrink-0 font-mono text-[11px] tabular-nums text-destructive">
+										<span className="shrink-0 font-mono text-caption tabular-nums text-destructive">
 											&minus;{file.deletions}
 										</span>
 									) : null}
 									{file.additions === 0 && file.deletions === 0 ? (
-										<span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/50">
+										<span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground/50">
 											0
 										</span>
 									) : null}
@@ -2662,14 +2665,14 @@ export function TurnChangedFiles({
 					type="button"
 					onClick={() => setExpanded((prev) => !prev)}
 					aria-expanded={expanded}
-					className="flex w-full items-center gap-1.5 px-3 pb-2 text-left text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+					className="flex w-full items-center gap-1.5 px-3 pb-2 text-left text-caption text-muted-foreground transition-colors hover:text-foreground"
 				>
 					{expanded ? "Show less" : `Show ${hidden} more`}
 				</button>
 			) : null}
 
 			{diff.truncated ? (
-				<p className="px-3 pb-2 text-[10px] leading-relaxed text-warning">
+				<p className="px-3 pb-2 text-micro leading-relaxed text-warning">
 					This turn changed more files than AO lists here.
 					{onReview ? " Use Review for the whole change." : " Open the Files tab for the whole change."}
 				</p>
@@ -2705,7 +2708,7 @@ function FileLocationLabel({
 				    path tooltip below appears — otherwise hover shows the basename. */}
 				<span
 					className={cn(
-						"min-w-0 truncate text-[11.5px] text-foreground/65 outline-none",
+						"min-w-0 truncate text-sm-md text-foreground/65 outline-none",
 						className,
 					)}
 					title=""
@@ -2713,7 +2716,7 @@ function FileLocationLabel({
 					{fileBasename(path)}
 				</span>
 			</TooltipTrigger>
-			<TooltipContent side="top" className="max-w-[min(28rem,90vw)] font-mono text-[11px] font-normal">
+			<TooltipContent side="top" className="max-w-[min(28rem,90vw)] font-mono text-caption font-normal">
 				{location}
 			</TooltipContent>
 		</Tooltip>
@@ -2738,7 +2741,7 @@ function fileBasename(path: string): string {
 export function TurnDuration({ durationMs }: { durationMs: number }) {
 	if (durationMs <= 0) return null;
 	return (
-		<span className="shrink-0 px-1 font-sans text-[12px] leading-none tabular-nums text-muted-foreground">
+		<span className="shrink-0 px-1 font-sans text-xs leading-none tabular-nums text-muted-foreground">
 			{formatDuration(durationMs)}
 		</span>
 	);

@@ -1393,7 +1393,7 @@ export const ChatComposer = memo(function ChatComposer({
 			>
 				{approval}
 				{commandError ? (
-					<p role="alert" className="px-1.5 text-[11px] leading-snug text-destructive">
+					<p role="alert" className="px-1.5 text-caption leading-snug text-destructive">
 						{commandError}
 					</p>
 				) : null}
@@ -1467,11 +1467,11 @@ export const ChatComposer = memo(function ChatComposer({
 									<img src={preview} alt="" className="size-6 rounded-sm object-cover" />
 								) : (
 									<div className="flex size-6 items-center justify-center rounded-sm bg-surface">
-										<File aria-hidden="true" className="size-3.5 text-muted-foreground" />
+										<File aria-hidden="true" className="size-icon-md text-muted-foreground" />
 									</div>
 								)}
 								<span
-									className="max-w-[120px] truncate text-[11px] text-muted-foreground"
+									className="max-w-[120px] truncate text-caption text-muted-foreground"
 									title={file.name}
 								>
 									{file.name}
@@ -1490,7 +1490,7 @@ export const ChatComposer = memo(function ChatComposer({
 									aria-label={`Remove ${file.name}`}
 									className="text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
 								>
-									<X aria-hidden="true" className="size-3" />
+									<X aria-hidden="true" className="size-icon-2xs" />
 								</button>
 							</li>
 							);
@@ -1521,7 +1521,7 @@ export const ChatComposer = memo(function ChatComposer({
 				/>
 
 				{attachmentError ? (
-					<p role="alert" className="px-1.5 text-[11px] leading-snug text-destructive">
+					<p role="alert" className="px-1.5 text-caption leading-snug text-destructive">
 						{translateDraft(attachmentError)}
 					</p>
 				) : null}
@@ -1538,7 +1538,7 @@ export const ChatComposer = memo(function ChatComposer({
 					</div>
 				) : null}
 				{fileAttachments.preparing ? (
-					<p role="status" className="px-1.5 text-[11px] leading-snug text-muted-foreground">
+					<p role="status" className="px-1.5 text-caption leading-snug text-muted-foreground">
 						Saving attachments… Wait before leaving this chat.
 					</p>
 				) : null}
@@ -1547,7 +1547,7 @@ export const ChatComposer = memo(function ChatComposer({
 			    in the box and the message says which of "send it instead" and "try again
 			    in a moment" applies. */}
 				{steerRefusal ?? steerOutcomeNotice ? (
-					<p role="status" className="px-1.5 text-[11px] leading-snug text-warning">
+					<p role="status" className="px-1.5 text-caption leading-snug text-warning">
 						{translateDraft(steerRefusal ?? steerOutcomeNotice)}
 					</p>
 				) : null}
@@ -1582,7 +1582,7 @@ export const ChatComposer = memo(function ChatComposer({
 												aria-label="Attach a file"
 												className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:bg-white/5! hover:text-foreground"
 											>
-												<Plus aria-hidden="true" className="size-3.5 text-muted-foreground" />
+												<Plus aria-hidden="true" className="size-icon-md text-muted-foreground" />
 											</Button>
 										</span>
 									</TooltipTrigger>
@@ -1605,7 +1605,7 @@ export const ChatComposer = memo(function ChatComposer({
 										onClick={canStopTurn ? onInterrupt : undefined}
 										aria-label={canStopTurn ? "Stop turn" : sendActionLabel}
 										className={cn(
-											"size-7 rounded-full border-transparent focus-visible:ring-ring/40",
+											"size-7 rounded-full border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
 											canStopTurn || sendActionEnabled
 												? "bg-foreground text-background hover:bg-foreground/90 hover:text-background dark:hover:bg-foreground/90 dark:hover:text-background"
 												: "bg-primary text-primary-foreground",
@@ -1614,9 +1614,9 @@ export const ChatComposer = memo(function ChatComposer({
 										{canStopTurn ? (
 											<Square aria-hidden="true" className="size-2.5 fill-current" />
 										) : submitting || steerPending || savingQueuedEditPending || sendPending ? (
-											<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+											<Loader2 aria-hidden="true" className="size-icon-md animate-spin" />
 										) : (
-											<ArrowUp aria-hidden="true" className="size-3.5" />
+											<ArrowUp aria-hidden="true" className="size-icon-md" />
 										)}
 									</Button>
 								</span>

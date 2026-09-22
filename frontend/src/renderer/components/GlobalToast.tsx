@@ -53,7 +53,7 @@ function GlobalToastItem({ toast }: { toast: Toast }) {
 			}`}
 			role={isError ? "alert" : "status"}
 		>
-			<p className={`font-medium ${isError ? "text-destructive" : "text-(--color-text-import-title)"}`}>{toast.title}</p>
+			<p className={`font-medium ${isError ? "text-destructive" : "text-foreground"}`}>{toast.title}</p>
 			{toast.body ? <p className="mt-0.5 wrap-break-word text-pretty text-[var(--color-text-import-muted)]">{toast.body}</p> : null}
 		</section>
 	);

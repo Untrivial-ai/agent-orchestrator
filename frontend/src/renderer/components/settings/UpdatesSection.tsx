@@ -266,12 +266,12 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 					<div className="settings-row-bar h-auto min-h-(--size-settings-row) items-start gap-3 py-3">
 						<Badge className="mt-0.5" variant="accent">PR #{featurePr}</Badge>
 						<div className="min-w-0 flex-1">
-							<p className="text-sm leading-5 text-settings-label">
+							<p className="text-sm leading-5 text-foreground">
 								{activeBuild
 									? t("settings.updates.onFeatureBuild", { pr: featurePr })
 									: t("settings.updates.featurePinned", { pr: featurePr })}
 							</p>
-							<p className="mt-1 text-xs leading-4 text-settings-muted">
+							<p className="mt-1 text-xs leading-4 text-muted-foreground">
 								{t("settings.updates.featureTracking", { pr: featurePr })}
 							</p>
 						</div>
@@ -320,14 +320,14 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 					// --destructive: rendered in it, a permanent note read as a permanent
 					// failure. Red is kept for states that are actually broken and
 					// actionable — failing checks, a stale network stack, update errors.
-					<p className="nightly-warning -mt-1 flex items-start gap-2 px-(--size-settings-row-padding) pb-(--size-settings-row-padding) text-xs leading-4 text-settings-muted">
+					<p className="nightly-warning -mt-1 flex items-start gap-2 px-(--size-settings-row-padding) pb-(--size-settings-row-padding) text-xs leading-4 text-muted-foreground">
 						<Info className="mt-px size-icon-sm shrink-0" aria-hidden="true" />
 						<span className="min-w-0">{t("settings.updates.nightlyWarning")}</span>
 					</p>
 				)}
 
 				{save.isError && (
-					<p className="mt-2 px-(--size-settings-row-padding) text-xs text-error">
+					<p className="mt-2 px-(--size-settings-row-padding) text-xs text-destructive">
 						{save.error instanceof Error ? save.error.message : t("settings.updates.saveFailed")}
 					</p>
 				)}
@@ -356,7 +356,7 @@ function FeatureBuildsSelect({
 	const builds = buildsQuery.data ?? [];
 
 	if (!buildsQuery.isLoading && builds.length === 0) {
-		return <p className="px-3 text-xs text-settings-muted">{t("settings.updates.noFeatureReleases")}</p>;
+		return <p className="px-3 text-xs text-muted-foreground">{t("settings.updates.noFeatureReleases")}</p>;
 	}
 
 	return (
@@ -459,13 +459,13 @@ function UpdateActions({
 				{/* Identity. The nightly stamp lives on its own monospace line: as one
 				    heading it wrapped mid-token and swallowed the row. */}
 				<div className="min-w-0 flex-1">
-					<p className="text-caption font-medium uppercase tracking-wide text-settings-muted">
+					<p className="text-caption font-medium uppercase tracking-wide text-muted-foreground">
 						{t("settings.updates.installedVersion")}
 					</p>
 					<div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 						<span
 							aria-label={t("settings.updates.currentVersion", { version: version.data ? `v${version.data}` : "…" })}
-							className="text-2xl font-semibold leading-none tracking-tight tabular-nums text-settings-label"
+							className="text-2xl font-semibold leading-none tracking-tight tabular-nums text-foreground"
 							data-testid="app-version"
 						>
 							{version.data ? `v${installed?.base ?? version.data}` : "…"}
@@ -478,7 +478,7 @@ function UpdateActions({
 						// Two spans, not one string: the version needs break-all so a long
 						// nightly stamp can never overflow, but break-all applied to the
 						// whole line also snapped the date mid-word ("20/26, 5:21 PM").
-						<p className="mt-1.5 flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-caption leading-4 text-settings-muted">
+						<p className="mt-1.5 flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-caption leading-4 text-muted-foreground">
 							<span className="min-w-0 break-all font-mono">{version.data}</span>
 							<span className="whitespace-nowrap">
 								{t("settings.updates.nightlyBuiltAt", {
@@ -553,10 +553,10 @@ function UpdateActions({
 			>
 				{showStatusState && <UpdateStatusLine state={displayState} status={status} />}
 				{status.state === "downloading" && status.percent !== undefined && <progress aria-label={t("settings.updates.progress")} max={100} value={status.percent} className="h-1 w-full" />}
-				{status.transferred !== undefined && status.total !== undefined && <p className="text-xs tabular-nums text-settings-muted">{t("settings.updates.bytes", { downloaded: (status.transferred / 1_000_000).toFixed(1), total: (status.total / 1_000_000).toFixed(1) })}</p>}
-				{channelSwitchMessage && <p className="text-xs leading-4 text-settings-muted">{channelSwitchMessage}</p>}
+				{status.transferred !== undefined && status.total !== undefined && <p className="text-xs tabular-nums text-muted-foreground">{t("settings.updates.bytes", { downloaded: (status.transferred / 1_000_000).toFixed(1), total: (status.total / 1_000_000).toFixed(1) })}</p>}
+				{channelSwitchMessage && <p className="text-xs leading-4 text-muted-foreground">{channelSwitchMessage}</p>}
 				{checkedAt ? (
-					<p className="flex min-w-0 items-start gap-2 text-xs leading-4 tabular-nums text-settings-muted" data-testid="update-checked-at">
+					<p className="flex min-w-0 items-start gap-2 text-xs leading-4 tabular-nums text-muted-foreground" data-testid="update-checked-at">
 						<span className="flex h-4 shrink-0 items-center">
 							<Clock3 className="size-icon-sm shrink-0" aria-hidden="true" />
 						</span>
@@ -572,10 +572,10 @@ function UpdateActions({
 			    process, and nothing here injects markup. */}
 			{(status.state === "downloaded" || status.staged) && status.releaseNotes ? (
 				<div className="mt-3" data-testid="update-release-notes">
-					<p className="text-caption font-medium uppercase tracking-wide text-settings-muted">
+					<p className="text-caption font-medium uppercase tracking-wide text-muted-foreground">
 						{t("update.restart.whatsNew")}
 					</p>
-					<p className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-line text-pretty text-sm leading-5 text-settings-label">
+					<p className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-line text-pretty text-sm leading-5 text-foreground">
 						{status.releaseNotes}
 					</p>
 				</div>
@@ -602,7 +602,7 @@ function UpdateNotice({ tone, text }: { tone: "warning" | "error"; text: string 
 		<p
 			className={cn(
 				"flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-5",
-				tone === "warning" ? "border-warning/30 bg-warning/8 text-warning" : "border-error/30 bg-error/8 text-error",
+				tone === "warning" ? "border-warning/30 bg-warning/10 text-warning" : "border-destructive/30 bg-destructive/10 text-destructive",
 			)}
 		>
 			<AlertTriangle className="mt-0.5 size-icon-sm shrink-0" aria-hidden="true" />
@@ -641,7 +641,7 @@ function UpdateStatusLine({
 	status: UpdateStatus;
 }) {
 	const { t } = useTranslation();
-	let className = "text-settings-muted";
+	let className = "text-muted-foreground";
 	let icon: ReactNode = null;
 	let label: string;
 	let detail: string | null = null;
@@ -653,13 +653,13 @@ function UpdateStatusLine({
 			label = t("settings.updates.checking");
 			break;
 		case "available":
-			className = "text-settings-label";
+			className = "text-foreground";
 			icon = <Download className="size-icon-sm shrink-0" aria-hidden="true" />;
 			label = t("settings.updates.availableNow");
 			detail = status.version ? t("settings.updates.targetVersion", { version: status.version }) : null;
 			break;
 		case "downloading":
-			className = "text-settings-label tabular-nums";
+			className = "text-foreground tabular-nums";
 			icon = <DownloadProgressIcon percent={status.percent ?? 0} />;
 			label = status.percent === undefined ? t("settings.updates.startingDownload", { defaultValue: "Starting download…" }) : t("settings.updates.downloading", { percent: status.percent });
 			detail = status.version ? t("settings.updates.targetVersion", { version: status.version }) : null;
@@ -685,7 +685,7 @@ function UpdateStatusLine({
 			label = status.message ?? t("settings.updates.needInstalledApp");
 			break;
 		case "error":
-			className = "text-error";
+			className = "text-destructive";
 			icon = <AlertTriangle className="size-icon-sm shrink-0" aria-hidden="true" />;
 			label = status.netError
 				? t("settings.updates.netErrorRestartGuidance")
@@ -701,7 +701,7 @@ function UpdateStatusLine({
 			<div className="min-w-0">
 				<p className="text-pretty text-sm font-medium leading-5">{label}</p>
 				{detail !== null && (
-					<p className="mt-0.5 truncate text-xs leading-4 font-normal text-settings-muted">{detail}</p>
+					<p className="mt-0.5 truncate text-xs leading-4 font-normal text-muted-foreground">{detail}</p>
 				)}
 			</div>
 		</div>

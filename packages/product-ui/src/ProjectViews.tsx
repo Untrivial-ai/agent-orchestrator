@@ -100,7 +100,7 @@ export function ProjectSourcePickerView({
 				type="button"
 				aria-label={labels.workspace}
 				className={cn(
-					"relative z-[2] flex min-h-18 w-full items-center gap-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50",
+					"relative z-[2] flex min-h-18 w-full items-center gap-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50",
 					dialog
 						? "rounded-md border border-border bg-muted/50 px-3 py-3 hover:bg-muted"
 						: "rounded-welcome-panel border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-card)] px-5 py-4 hover:bg-[var(--color-bg-import-card-hover)]",
@@ -119,7 +119,7 @@ export function ProjectSourcePickerView({
 					{workspaceIcon}
 				</span>
 				<span className="min-w-0 flex-1">
-					<span className={dialog ? "block text-sm font-medium text-foreground" : "block text-[15px] font-bold leading-5 text-[var(--color-text-import-title)]"}>
+					<span className={dialog ? "block text-sm font-medium text-foreground" : "block text-[15px] font-bold leading-5 text-foreground"}>
 						{labels.workspace}
 					</span>
 					<span className={dialog ? "mt-0.5 block text-xs text-muted-foreground" : "mt-1 block text-pretty text-[13px] leading-5 text-[var(--color-text-import-muted)]"}>
@@ -171,7 +171,7 @@ function ProjectSourceButton({
 			type="button"
 			aria-label={title}
 			className={cn(
-				"flex w-full flex-col justify-start text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50",
+				"flex w-full flex-col justify-start text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50",
 				dialog
 					? "min-h-36 gap-3 rounded-md border border-border bg-muted/50 p-4 hover:bg-muted"
 					: "min-h-56 gap-5 rounded-welcome-panel border border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-card)] p-6 hover:bg-[var(--color-bg-import-card-hover)]",
@@ -205,7 +205,7 @@ function ProjectSourceButton({
 								className={
 									dialog
 										? "font-mono text-xs font-medium text-foreground"
-										: "font-mono text-[12px] font-bold leading-4 text-[var(--color-text-import-title)]"
+										: "font-mono text-[12px] font-bold leading-4 text-foreground"
 								}
 							>
 							{branch}
@@ -218,7 +218,7 @@ function ProjectSourceButton({
 					className={
 						dialog
 							? "text-sm font-medium text-foreground"
-							: "text-[16px] font-bold leading-6 text-[var(--color-text-import-title)]"
+							: "text-[16px] font-bold leading-6 text-foreground"
 					}
 				>
 					{title}
@@ -446,7 +446,7 @@ export function ProjectSettingsSection({
 	return (
 		<section className="flex w-full flex-col items-stretch gap-(--size-settings-section-inner-gap)">
 			{!titleHidden && (
-				<h2 className="px-3 text-xs font-medium leading-4 text-settings-muted">
+				<h2 className="px-3 text-xs font-medium leading-4 text-muted-foreground">
 					{title}
 				</h2>
 			)}
@@ -479,7 +479,7 @@ export function ProjectSettingsRow({
 		<div className={cn("settings-row-bar", className)}>
 			<div className="flex shrink-0 items-center gap-(--size-settings-row-icon-gap)">
 				{icon}
-				<span className="whitespace-nowrap text-sm leading-5 text-settings-label">{label}</span>
+				<span className="whitespace-nowrap text-sm leading-5 text-foreground">{label}</span>
 			</div>
 			<div className="flex min-w-0 flex-1 items-center justify-end">{children}</div>
 		</div>
@@ -575,7 +575,7 @@ export function ProjectSettingsValueRow({
 			{href && ExternalLink ? (
 				<ExternalLink
 					href={href}
-					className="settings-row-value text-settings-accent hover:underline"
+					className="settings-row-value text-accent hover:underline"
 					title={value}
 				>
 					{value}
@@ -651,7 +651,7 @@ export function ProjectGeneralSettingsView({
 							</ProjectSettingsRow>
 						))
 					) : (
-						<p className="px-1 text-xs text-settings-muted">{labels.workspaceReposEmpty}</p>
+						<p className="px-1 text-xs text-muted-foreground">{labels.workspaceReposEmpty}</p>
 					)}
 				</ProjectSettingsSection>
 			)}
@@ -693,7 +693,7 @@ export function ProjectAgentsSettingsView({
 				</ProjectSettingsRow>
 			) : null}
 			{missingRequiredMessage && (
-				<p className="px-1 text-xs leading-row text-error" role="alert">{missingRequiredMessage}</p>
+				<p className="px-1 text-xs leading-row text-destructive" role="alert">{missingRequiredMessage}</p>
 			)}
 		</ProjectSettingsSection>
 	);

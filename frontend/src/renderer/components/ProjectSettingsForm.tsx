@@ -89,9 +89,9 @@ export function ProjectSettingsForm({
 	return (
 		<>
 			{query.isLoading ? (
-				<p className="text-sm text-settings-muted">{t("settings.project.loading")}</p>
+				<p className="text-sm text-muted-foreground">{t("settings.project.loading")}</p>
 			) : query.isError || !query.data ? (
-				<p className="text-sm text-error">
+				<p className="text-sm text-destructive">
 					{query.error instanceof Error ? query.error.message : t("settings.project.loadFailed")}
 				</p>
 			) : (
@@ -587,14 +587,14 @@ function SettingsBody({
 						)}
 						<div className="settings-row-bar">
 							<div className="flex shrink-0 items-center gap-1.5">
-								<span className="whitespace-nowrap text-sm leading-5 text-settings-label">
+								<span className="whitespace-nowrap text-sm leading-5 text-foreground">
 									{t("settings.project.autoReviewToggle")}
 								</span>
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<button
 											type="button"
-											className="inline-flex size-5 items-center justify-center rounded-md text-settings-muted transition-colors hover:bg-settings-menu-selected hover:text-settings-label focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+											className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-settings-menu-selected hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring focus-visible:outline-none"
 											aria-label={t("settings.project.autoReviewDescription")}
 										>
 											<Info className="size-icon-sm" aria-hidden="true" />
@@ -647,7 +647,7 @@ function SettingsBody({
 							/>
 						</>
 					) : (
-						<p className="px-1 text-xs text-settings-muted">{t("settings.project.workflow")}</p>
+						<p className="px-1 text-xs text-muted-foreground">{t("settings.project.workflow")}</p>
 					)}
 				</>
 			)}
@@ -664,7 +664,7 @@ function SettingsBody({
 							/>
 						</ProjectSettingsSection>
 					) : (
-						<p className="px-1 text-xs text-settings-muted">{t("settings.project.trackerIntake")}</p>
+						<p className="px-1 text-xs text-muted-foreground">{t("settings.project.trackerIntake")}</p>
 					)}
 				</>
 			)}
@@ -725,7 +725,7 @@ function AgentModelField({
 	if (agentId !== "" && query.isFetching && catalog === undefined) {
 		return (
 			<SettingsRow label={label}>
-				<span className="text-xs text-settings-muted" role="status" aria-label={t("settings.models.loading")}>
+				<span className="text-xs text-muted-foreground" role="status" aria-label={t("settings.models.loading")}>
 					{t("settings.models.loading")}
 				</span>
 			</SettingsRow>

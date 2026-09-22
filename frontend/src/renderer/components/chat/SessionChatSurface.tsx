@@ -433,7 +433,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	if (isLoading && !renderShellFallback) {
 		return (
 			<Centered>
-				<Loader2 aria-hidden="true" className="size-4 animate-spin text-muted-foreground" />
+				<Loader2 aria-hidden="true" className="size-icon-base animate-spin text-muted-foreground" />
 				<span className="text-xs text-muted-foreground">Loading conversation…</span>
 			</Centered>
 		);
@@ -446,7 +446,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	if (unavailable && !renderShellFallback) {
 		return (
 			<Centered>
-				<AlertTriangle aria-hidden="true" className="size-4 text-warning" />
+				<AlertTriangle aria-hidden="true" className="size-icon-base text-warning" />
 				<strong className="text-sm text-foreground">Conversation unavailable</strong>
 				<p className="max-w-sm text-center text-xs leading-relaxed text-muted-foreground">
 					{unavailable.message}
@@ -461,7 +461,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	if (error || !renderSnapshot) {
 		return (
 			<Centered>
-				<AlertTriangle aria-hidden="true" className="size-4 text-destructive" />
+				<AlertTriangle aria-hidden="true" className="size-icon-base text-destructive" />
 				<p className="max-w-sm text-center text-xs leading-relaxed text-muted-foreground">
 					{error ?? "Could not load this conversation."}
 				</p>
@@ -634,23 +634,23 @@ function ChatAgentSwitchStatus({
 						? "border-success/40"
 						: warning
 							? presentation.tone === "danger"
-								? "border-danger/40"
+								? "border-destructive/40"
 								: "border-warning/40"
 							: "border-border",
 				)}
 			>
 				{success ? (
-					<CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
+					<CheckCircle2 aria-hidden="true" className="mt-0.5 size-icon-base shrink-0 text-success" />
 				) : warning ? (
 					<AlertTriangle
 						aria-hidden="true"
 						className={cn(
-							"mt-0.5 size-4 shrink-0",
-							presentation.tone === "danger" ? "text-danger" : "text-warning",
+							"mt-0.5 size-icon-base shrink-0",
+							presentation.tone === "danger" ? "text-destructive" : "text-warning",
 						)}
 					/>
 				) : (
-					<Loader2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 animate-spin text-status-working" />
+					<Loader2 aria-hidden="true" className="mt-0.5 size-icon-base shrink-0 animate-spin text-status-working" />
 				)}
 				<div className="min-w-0 flex-1">
 					<strong className="block text-sm text-foreground">

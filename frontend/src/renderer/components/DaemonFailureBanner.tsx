@@ -77,10 +77,10 @@ function DaemonFailureContent({ status }: { status: DaemonStatus }) {
 						aria-hidden="true"
 					/>
 				) : (
-					<AlertTriangle className="mt-0.5 size-icon-base shrink-0 text-error" aria-hidden="true" />
+					<AlertTriangle className="mt-0.5 size-icon-base shrink-0 text-destructive" aria-hidden="true" />
 				)}
 				<div className="min-w-0 flex-1">
-					<p className="font-medium text-(--color-text-import-title)">{title}</p>
+					<p className="font-medium text-foreground">{title}</p>
 					<p className="mt-0.5 wrap-break-word text-pretty text-[var(--color-text-import-muted)]">
 						{daemonFailureMessage(status, t)}
 					</p>
@@ -95,19 +95,19 @@ function DaemonFailureContent({ status }: { status: DaemonStatus }) {
 							{restarting ? t("daemon.restarting") : t("daemon.restart")}
 						</button>
 					) : null}
-					{restartError ? <p className="mt-2 text-error">{restartError}</p> : null}
+					{restartError ? <p className="mt-2 text-destructive">{restartError}</p> : null}
 					{details ? (
 						<div className="mt-2 flex items-center gap-3">
 							<button
 								type="button"
-								className="text-xs text-[var(--color-text-import-title)] underline-offset-2 hover:underline"
+								className="text-xs text-foreground underline-offset-2 hover:underline"
 								onClick={() => setDetailsOpen((open) => !open)}
 							>
 								{detailsOpen ? t("daemon.hideDetails") : t("daemon.showDetails")}
 							</button>
 							<button
 								type="button"
-								className="text-xs text-[var(--color-text-import-title)] underline-offset-2 hover:underline"
+								className="text-xs text-foreground underline-offset-2 hover:underline"
 								onClick={() => void copyDetails()}
 							>
 								{copied ? t("daemon.copied") : t("daemon.copyDetails")}

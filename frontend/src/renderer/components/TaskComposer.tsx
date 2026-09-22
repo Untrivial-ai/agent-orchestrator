@@ -645,7 +645,7 @@ function TaskModelPicker({
 				aria-disabled="true"
 				aria-label={t("newTask.model")}
 			>
-				<span className="truncate text-settings-muted">{t("newTask.selectAgent")}</span>
+				<span className="truncate text-muted-foreground">{t("newTask.selectAgent")}</span>
 			</span>
 		);
 	}
@@ -662,8 +662,8 @@ function TaskModelPicker({
 					aria-label={t("settings.models.loading")}
 					aria-busy="true"
 				>
-					<Loader2 className="size-icon-sm shrink-0 animate-spin text-settings-muted" aria-hidden="true" />
-					<span className="truncate text-settings-muted">{t("settings.models.loading")}</span>
+					<Loader2 className="size-icon-sm shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+					<span className="truncate text-muted-foreground">{t("settings.models.loading")}</span>
 				</span>
 			</span>
 		);

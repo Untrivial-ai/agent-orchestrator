@@ -142,7 +142,7 @@ export function IntakeFields({
 										href={`https://${repoPreview.host ?? "github.com"}/${repoPreview.value}`}
 										target="_blank"
 										rel="noopener noreferrer"
-										className="settings-row-value text-settings-accent hover:underline"
+										className="settings-row-value text-accent hover:underline"
 									>
 										{repoPreview.value}
 									</AppLink>
@@ -224,7 +224,7 @@ export function IntakeFields({
 						<input
 							id="intakeAssignee"
 							className={cn(
-								"h-control-form w-full rounded-md border border-input bg-transparent px-2.5 text-control text-foreground placeholder:text-passive focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-weak",
+								"h-control-form w-full rounded-md border border-input bg-transparent px-2.5 text-control text-foreground placeholder:text-passive focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
 								controlClassName,
 							)}
 							value={form.assignee}
@@ -242,8 +242,8 @@ export function IntakeFields({
 function IntakeAssigneeError() {
 	const { t } = useTranslation();
 	return (
-		<p className="flex items-center gap-1.5 px-1 text-xs leading-row text-error">
-			<TriangleAlert className="size-3 shrink-0 text-error" aria-hidden="true" />
+		<p className="flex items-center gap-1.5 px-1 text-xs leading-row text-destructive">
+			<TriangleAlert className="size-3 shrink-0 text-destructive" aria-hidden="true" />
 			{t("settings.project.intakeAssigneeRequired")}
 		</p>
 	);

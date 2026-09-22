@@ -161,7 +161,7 @@ describe("SessionInspectorShellView", () => {
       />,
     );
     expect(screen.getByText("Loading session…")).toHaveClass(
-      "text-settings-muted",
+      "text-muted-foreground",
     );
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
   });
@@ -680,7 +680,7 @@ describe("portable inspector presentations", () => {
 
     await waitFor(() =>
       expect(screen.getByText("Unable to send. Retry.")).toHaveClass(
-        "text-error",
+        "text-destructive",
       ),
     );
     fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));

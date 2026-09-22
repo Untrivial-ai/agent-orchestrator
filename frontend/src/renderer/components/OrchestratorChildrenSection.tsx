@@ -88,7 +88,7 @@ function ChildRow({ child, onOpen }: { child: OrchestratorChildView; onOpen: () 
 				/>
 				<AgentAvatar className="size-4 shrink-0" decorative provider={child.provider} />
 				<span className="min-w-0 flex-1 truncate text-xs">{child.title}</span>
-				<span className="shrink-0 text-2xs text-settings-muted">{statusLabel}</span>
+				<span className="shrink-0 text-2xs text-muted-foreground">{statusLabel}</span>
 			</button>
 			{child.prs.length > 0 ? (
 				<div className="mt-1 flex flex-wrap items-center gap-1.5 pl-4">
@@ -108,7 +108,7 @@ function PullRequestChip({ pr }: { pr: PullRequestFacts }) {
 	return (
 		<ProductExternalLink
 			ariaLabel={`${t("pr.short")} #${pr.number}`}
-			className="truncate text-2xs text-settings-muted underline-offset-2 hover:underline"
+			className="truncate text-2xs text-muted-foreground underline-offset-2 hover:underline"
 			href={pr.url}
 			stopPropagation
 		>

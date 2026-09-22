@@ -48,7 +48,7 @@ export function AgentProviderGroup({
 					type="button"
 					aria-controls={contentId}
 					aria-expanded={expanded}
-					className="flex min-w-0 flex-1 items-center gap-3 rounded-sm text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+					className="flex min-w-0 flex-1 items-center gap-3 rounded-sm text-left focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-default"
 					disabled={collapseLocked}
 					onClick={() => onExpandedChange(!expanded)}
 				>

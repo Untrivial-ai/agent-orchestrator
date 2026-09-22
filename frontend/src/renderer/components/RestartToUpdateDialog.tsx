@@ -153,7 +153,7 @@ function RestartToUpdateDialogBody() {
 					{(workspace.isError || !workspace.data) && <p role="status">{t("update.restart.unknownWorkers", { defaultValue: "Current worker state could not be confirmed. Installing restarts AO and may interrupt current tasks." })}</p>}
 					{atRisk.length > 0 && (
 						<div
-							className="mb-4 rounded-md border border-warning/30 bg-warning/8 px-3 py-2.5"
+							className="mb-4 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5"
 							data-testid="restart-sessions-warning"
 						>
 							<p className="flex items-start gap-2 text-xs font-medium leading-5 text-warning">
@@ -164,32 +164,32 @@ function RestartToUpdateDialogBody() {
 							</p>
 							<ul className="mt-2 space-y-1 pl-6">
 								{atRisk.map((session) => (
-									<li key={session.id} className="truncate text-xs leading-4 text-settings-label">
+									<li key={session.id} className="truncate text-xs leading-4 text-foreground">
 										{session.workspaceName} · {session.title}
 									</li>
 								))}
 							</ul>
-							<p className="mt-2 pl-6 text-xs leading-4 text-settings-muted">
+							<p className="mt-2 pl-6 text-xs leading-4 text-muted-foreground">
 								{t("update.restart.sessionsBody")}
 							</p>
 						</div>
 					)}
 
-					<p className="text-caption font-medium uppercase tracking-wide text-settings-muted">
+					<p className="text-caption font-medium uppercase tracking-wide text-muted-foreground">
 						{t("update.restart.whatsNew")}
 					</p>
 					{releaseNotes ? (
 						// Plain text on purpose. The notes are the remote release body,
 						// sanitized in the main process; nothing here injects markup.
-						<p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-line text-pretty text-sm leading-5 text-settings-label">
+						<p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-line text-pretty text-sm leading-5 text-foreground">
 							{releaseNotes}
 						</p>
 					) : (
-						<p className="mt-1.5 text-sm leading-5 text-settings-muted">{t("update.restart.noNotes")}</p>
+						<p className="mt-1.5 text-sm leading-5 text-muted-foreground">{t("update.restart.noNotes")}</p>
 					)}
 
 					{targetChanged && (
-						<p role="status" className="mt-3 text-sm text-settings-label">
+						<p role="status" className="mt-3 text-sm text-foreground">
 							{t("update.restart.targetChanged")}
 						</p>
 					)}
@@ -202,7 +202,7 @@ function RestartToUpdateDialogBody() {
 					{/* On failure the main process turns off install-on-quit, so hide
 					    this line rather than contradict the error above. */}
 					{failureDetail === null && (
-						<p className="mt-2 text-xs leading-4 text-settings-muted">{t("update.restart.installsOnQuit")}</p>
+						<p className="mt-2 text-xs leading-4 text-muted-foreground">{t("update.restart.installsOnQuit")}</p>
 					)}
 				</div>
 

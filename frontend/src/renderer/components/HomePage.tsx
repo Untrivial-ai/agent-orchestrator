@@ -39,7 +39,7 @@ import { Badge } from "./ui/badge";
 const GITHUB_REPOSITORY_URL = "https://github.com/Untrivial-ai/agent-orchestrator";
 const RECENT_PROJECT_LIMIT = 3;
 const HOME_BUTTON_CLASS =
-	"flex w-full items-center gap-3 rounded-lg bg-[var(--color-bg-import-card)] px-4 py-3 text-left transition-[scale] duration-fast ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transform-none";
+	"flex w-full items-center gap-3 rounded-lg bg-[var(--color-bg-import-card)] px-4 py-3 text-left transition-[scale] duration-fast ease-out hover:bg-interactive-hover hover:text-foreground scale-press focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring motion-reduce:transform-none";
 const HOME_ICON_SLOT_CLASS =
 	"grid size-8 shrink-0 place-items-center text-muted-foreground [&_svg]:size-4";
 const HOME_PROJECT_ICON_CLASS =
@@ -101,7 +101,7 @@ function ProjectRow({ project, onClick, emptyTimeLabel, justNowLabel }: { projec
 			// Host must use NAV_ROW_HIGHLIGHT_HOST_CLASS — pill owns the fill.
 			className={cn(
 				"flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left text-muted-foreground",
-				"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+				"focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
 				NAV_ROW_HIGHLIGHT_HOST_CLASS,
 			)}
 			onClick={onClick}
@@ -207,7 +207,7 @@ export function HomePage() {
 							<h1 className={HOME_SECTION_TITLE_CLASS}>{t("home.jumpBack")}</h1>
 							{/* Quiet text link — not TopbarButton / accent. Dashed underline only on hover. */}
 							<button
-								className="inline-flex shrink-0 items-center gap-1.5 border-b border-dashed border-transparent pb-px text-sm text-muted-foreground hover:border-current hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+								className="inline-flex shrink-0 items-center gap-1.5 border-b border-dashed border-transparent pb-px text-sm text-muted-foreground hover:border-current hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 								onClick={() => void aoBridge.app.openExternal(GITHUB_REPOSITORY_URL)}
 								type="button"
 							>

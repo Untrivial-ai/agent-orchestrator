@@ -21,7 +21,7 @@ const toneClass: Record<PRDisplayTone, string> = {
 	success: "text-success",
 	review: "text-status-in-review",
 	warning: "text-warning",
-	error: "text-error",
+	error: "text-destructive",
 };
 
 export type CountNounLabel = (count: number, noun: PRNoun) => string;
@@ -50,7 +50,7 @@ export function PRSummaryMeta({
 		author =
 			pr.provider === "github" ? (
 				<ExternalLink
-					className="inline-flex min-w-0 items-center gap-1 text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+					className="inline-flex min-w-0 items-center gap-1 text-foreground underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 					href={`https://github.com/${encodeURIComponent(authorHandle)}`}
 				>
 					<UserAvatar
@@ -109,7 +109,7 @@ function PRDiffMeta({
 	}
 	if (pr.deletions > 0) {
 		parts.push(
-			<span className="text-error" key="deletions">
+			<span className="text-destructive" key="deletions">
 				-{pr.deletions}
 			</span>,
 		);
@@ -262,7 +262,7 @@ function PRCardStatusLink({
 	}
 	return (
 		<ExternalLink
-			className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+			className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 			href={status.href}
 		>
 			{status.label}
@@ -364,7 +364,7 @@ function SummaryLink({
 		return (
 			<ExternalLink
 				className={cn(
-					"inline-flex max-w-full min-w-0 items-center gap-0.5 text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+					"inline-flex max-w-full min-w-0 items-center gap-0.5 text-foreground underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
 					className,
 				)}
 				href={link.href}

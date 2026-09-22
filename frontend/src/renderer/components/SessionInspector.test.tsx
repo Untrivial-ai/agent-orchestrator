@@ -863,8 +863,8 @@ describe("SessionInspector PR section", () => {
       prSection("Pull requests (2)").getByRole("link", { name: "Open PR #42" }),
     ];
     expect(links[0]).toHaveClass(
-      "text-settings-label",
-      "hover:text-settings-label",
+      "text-foreground",
+      "hover:text-foreground",
     );
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
       "https://example.com/pr/41",

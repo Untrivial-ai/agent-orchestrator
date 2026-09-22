@@ -44,7 +44,7 @@ function statusClass(status: MigrationStatus): string {
 		case "completed":
 			return "text-success";
 		case "failed":
-			return "text-error";
+			return "text-destructive";
 		default:
 			return "text-muted-foreground";
 	}
@@ -153,12 +153,12 @@ export function MigrationSection() {
 				</div>
 
 				{migration.status === "failed" && migration.error && (
-					<p className="text-xs leading-row text-error">
+					<p className="text-xs leading-row text-destructive">
 						{t("settings.migration.failedPreserved", { error: migration.error })}
 					</p>
 				)}
 				{run.isError && (
-					<p className="text-xs leading-row text-error">
+					<p className="text-xs leading-row text-destructive">
 						{run.error instanceof Error ? run.error.message : t("settings.migration.failed")}
 					</p>
 				)}

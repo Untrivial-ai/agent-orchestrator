@@ -1002,7 +1002,7 @@ function ShellLayout() {
 							<span className="grid size-11 place-items-center rounded-xl bg-[var(--color-bg-import-chip)] text-[var(--color-text-import-muted)]">
 								<FolderPlus className="size-5" aria-hidden="true" />
 							</span>
-							<p className="text-[15px] font-semibold text-[var(--color-text-import-title)]">
+							<p className="text-[15px] font-semibold text-foreground">
 								{t("createProject.dropToAdd")}
 							</p>
 						</div>

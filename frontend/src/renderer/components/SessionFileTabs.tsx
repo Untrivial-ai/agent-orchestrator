@@ -63,7 +63,7 @@ export function SessionFileTab({
 					<button
 						aria-label={t("files.closeTab", { name })}
 						className={cn(
-							"grid size-icon-sm place-items-center rounded-sm text-passive hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50",
+							"grid size-icon-sm place-items-center rounded-sm text-passive hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
 							dirty
 								? "pointer-events-auto opacity-100"
 								: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100",

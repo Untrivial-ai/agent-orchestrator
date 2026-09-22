@@ -51,8 +51,8 @@ function CapacityWindowRow({ window, label, reached, locale }: { window: Capacit
 	const percentage = formatPercentage(remaining, locale);
 	const reset = formatResetTime(window.resetsAt, locale);
 	const tone = reached || remaining <= 0 ? "exhausted" : remaining <= 25 ? "near" : "available";
-	const fillClass = tone === "exhausted" ? "bg-error" : tone === "near" ? "bg-warning" : "bg-foreground/80";
-	const valueClass = tone === "exhausted" ? "text-error" : tone === "near" ? "text-warning" : "text-muted-foreground";
+	const fillClass = tone === "exhausted" ? "bg-destructive" : tone === "near" ? "bg-warning" : "bg-foreground/80";
+	const valueClass = tone === "exhausted" ? "text-destructive" : tone === "near" ? "text-warning" : "text-muted-foreground";
 	return <div className="grid gap-2 px-3.5 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(8rem,11rem)_auto] sm:items-center sm:gap-4"><div className="min-w-0"><p className="font-medium text-foreground">{label}</p>{reset ? <p className="mt-0.5 text-muted-foreground" title={reset.full}>{t("settings.codexAccounts.capacityResets", { value: reset.visible })}</p> : null}</div><div role="progressbar" aria-label={t("settings.codexAccounts.remainingForLimit", { label, value: percentage })} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} className="h-1.5 w-full overflow-hidden rounded-full bg-muted"><div className={`h-full rounded-full transition-[width] ${fillClass}`} style={{ width: `${remaining}%` }} /></div><p className={`whitespace-nowrap text-right tabular-nums ${valueClass}`}>{t("settings.codexAccounts.percentLeft", { value: percentage })}</p></div>;
 }
 
@@ -77,7 +77,7 @@ function AccountActivity({ usage, locale }: { usage: UsageSummaryValue | null | 
 
 function CapacityNotice({ reason, tone, checking }: { reason: string; tone: "warning" | "error" | "muted"; checking?: boolean }) {
 	const { t } = useTranslation();
-	const color = tone === "error" ? "border-error/30 bg-error/8 text-error" : tone === "warning" ? "border-warning/30 bg-warning/10 text-warning" : "border-border bg-muted/20 text-muted-foreground";
+	const color = tone === "error" ? "border-destructive/30 bg-destructive/10 text-destructive" : tone === "warning" ? "border-warning/30 bg-warning/10 text-warning" : "border-border bg-muted/20 text-muted-foreground";
 	return <p className={`flex items-start gap-2 rounded-md border px-3 py-2.5 leading-5 ${color}`} role={tone === "error" ? "alert" : "status"}>{checking ? <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin" aria-label={t("settings.codexAccounts.checking")} /> : <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />}<span>{reason}</span></p>;
 }
 

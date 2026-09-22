@@ -52,9 +52,9 @@ export function ConversationContentItems({
 					<li
 						key={key}
 						title={item.uri || label}
-						className="flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground"
+						className="flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-caption text-muted-foreground"
 					>
-						<Icon aria-hidden="true" className="size-3 shrink-0" />
+						<Icon aria-hidden="true" className="size-icon-2xs shrink-0" />
 						<span className="truncate">{label}</span>
 					</li>
 				);

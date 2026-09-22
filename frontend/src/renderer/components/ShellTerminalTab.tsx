@@ -126,7 +126,7 @@ export function ShellTerminalTab({
 				<TooltipTrigger asChild>
 					<button
 						{...closeControl}
-						className="relative grid size-icon-sm place-items-center text-passive opacity-0 pointer-events-none before:absolute before:-inset-1.5 before:content-[''] transition-colors duration-fast ease-out hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 motion-reduce:transition-none"
+						className="relative grid size-icon-sm place-items-center text-passive opacity-0 pointer-events-none before:absolute before:-inset-1.5 before:content-[''] transition-colors duration-fast ease-out hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring motion-reduce:transition-none"
 					>
 						<X aria-hidden="true" className="size-icon-sm translate-y-px" />
 					</button>
@@ -279,8 +279,8 @@ export function ShellTerminalTab({
 							{...closeControl}
 							className={
 								isConnected
-									? "absolute inset-y-0 right-2 z-20 grid size-icon-sm place-items-center text-passive opacity-0 pointer-events-none before:absolute before:-inset-1.5 before:content-[''] transition-colors duration-fast ease-out hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 motion-reduce:transition-none"
-									: "inline-flex h-control-sm w-control-sm shrink-0 items-center justify-center overflow-hidden text-passive opacity-0 transition-colors duration-fast ease-out hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 motion-reduce:transition-none"
+									? "absolute inset-y-0 right-2 z-20 grid size-icon-sm place-items-center text-passive opacity-0 pointer-events-none before:absolute before:-inset-1.5 before:content-[''] transition-colors duration-fast ease-out hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring motion-reduce:transition-none"
+									: "inline-flex h-control-sm w-control-sm shrink-0 items-center justify-center overflow-hidden text-passive opacity-0 transition-colors duration-fast ease-out hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring motion-reduce:transition-none"
 								}
 							>
 							<X

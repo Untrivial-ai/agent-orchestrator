@@ -122,7 +122,7 @@ export function ReviewDiffBody({
 
 const diffRowTone: Record<Exclude<DiffRowKind, "hunk">, string> = {
 	add: "bg-success/10",
-	del: "bg-error/10",
+	del: "bg-destructive/10",
 	context: "",
 };
 
@@ -385,7 +385,7 @@ function DiffRowContentInner({ annotation, index, path, previousPath, row, runs,
 					className={cn(
 						"w-4 shrink-0 select-none text-center",
 						row.kind === "add" && "text-success",
-						row.kind === "del" && "text-error",
+						row.kind === "del" && "text-destructive",
 					)}
 				>
 					{diffMarkerGlyph[row.kind]}
@@ -697,7 +697,7 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 			<textarea
 				aria-label={t("files.feedbackLabel", { target: targetLabel })}
 				autoFocus
-				className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground outline-none placeholder:text-passive focus-visible:outline-none disabled:opacity-60"
+				className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground placeholder:text-passive focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:opacity-60"
 				disabled={annotation.status === "sending" || annotation.status === "sent"}
 				onChange={(event) => annotation.setDraft(event.target.value)}
 				onKeyDown={(event) => {
@@ -714,7 +714,7 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 				value={annotation.draft}
 			/>
 			{annotation.status === "error" ? (
-				<p className="mt-1.5 text-xs text-error" role="alert">
+				<p className="mt-1.5 text-xs text-destructive" role="alert">
 					{annotation.error}
 				</p>
 			) : null}
@@ -745,7 +745,7 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 function renderDiffRuns(runs: DiffRun[], add: boolean): ReactNode {
 	return runs.map((run, index) =>
 		run.changed ? (
-			<span className={cn(run.className, "rounded-sm", add ? "bg-success/35" : "bg-error/35")} key={index}>
+			<span className={cn(run.className, "rounded-sm", add ? "bg-success/35" : "bg-destructive/35")} key={index}>
 				{run.text}
 			</span>
 		) : run.className ? (
@@ -762,7 +762,7 @@ export function ChangeBadges({ additions, deletions }: { additions: number; dele
 	return (
 		<span className="flex shrink-0 items-center gap-1 font-mono text-caption font-medium">
 			{additions > 0 ? <span className="px-0.5 text-success">+{additions}</span> : null}
-			{deletions > 0 ? <span className="px-0.5 text-error">-{deletions}</span> : null}
+			{deletions > 0 ? <span className="px-0.5 text-destructive">-{deletions}</span> : null}
 		</span>
 	);
 }

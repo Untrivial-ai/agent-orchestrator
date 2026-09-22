@@ -77,17 +77,17 @@ export function InstallCloudflared({ onInstalled }: { onInstalled: () => void })
 				</Button>
 			)}
 			{view.kind === "running" && (
-				<p className="flex items-center gap-1.5 text-xs text-settings-muted">
+				<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
 					<Loader2 className="size-3 shrink-0 animate-spin" aria-hidden="true" />
 					{t("mobile.installingConnector", "Installing cloudflared…")}
 				</p>
 			)}
 			{view.kind === "manual" && (
 				<>
-					<p className="text-xs text-settings-muted">
+					<p className="text-xs text-muted-foreground">
 						{view.reason || t("mobile.installConnectorManual", "Run this in a terminal, then try again.")}
 					</p>
-					<code className="block overflow-x-auto rounded bg-(--color-bg-settings-input) px-2 py-1 text-xs text-settings-label">
+					<code className="block overflow-x-auto rounded bg-(--color-bg-settings-input) px-2 py-1 text-xs text-foreground">
 						{view.command}
 					</code>
 					<Button type="button" variant="footer" className="w-full" onClick={onInstalled}>
@@ -95,8 +95,8 @@ export function InstallCloudflared({ onInstalled }: { onInstalled: () => void })
 					</Button>
 				</>
 			)}
-			{view.kind === "failed" && <p className="text-xs text-error">{view.reason}</p>}
-			{error && <p className="text-xs text-error">{error}</p>}
+			{view.kind === "failed" && <p className="text-xs text-destructive">{view.reason}</p>}
+			{error && <p className="text-xs text-destructive">{error}</p>}
 		</div>
 	);
 }

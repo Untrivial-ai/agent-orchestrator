@@ -167,7 +167,7 @@ function ContextReadout({ usage }: { usage: ConversationUsage }) {
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<span className="tabular-nums text-[11px] text-muted-foreground">
+					<span className="tabular-nums text-caption text-muted-foreground">
 						{formatTokens(contextUsed || usage.totalTokens)} tokens
 					</span>
 				</TooltipTrigger>
@@ -206,7 +206,7 @@ function ContextReadout({ usage }: { usage: ConversationUsage }) {
 							style={{ width: `${Math.max(fraction * 100, 2)}%` }}
 						/>
 					</div>
-					<span className={cn("tabular-nums text-[11px]", TEXT[severity])}>{percent}%</span>
+					<span className={cn("tabular-nums text-caption", TEXT[severity])}>{percent}%</span>
 				</div>
 			</TooltipTrigger>
 			<TooltipContent>
@@ -252,13 +252,13 @@ function QuotaWarning({
 			<TooltipTrigger asChild>
 				<span
 					className={cn(
-						"flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] tabular-nums",
+						"flex items-center gap-1 rounded border px-1.5 py-0.5 text-caption tabular-nums",
 						severity === "critical"
 							? "border-status-exited/40 text-status-exited"
 							: "border-status-needs-you/40 text-status-needs-you",
 					)}
 				>
-					<AlertTriangle aria-hidden="true" className="size-3" />
+					<AlertTriangle aria-hidden="true" className="size-icon-2xs" />
 					{percent}% quota
 				</span>
 			</TooltipTrigger>

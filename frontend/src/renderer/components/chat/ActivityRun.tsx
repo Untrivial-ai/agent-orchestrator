@@ -76,26 +76,26 @@ export function ActivityRun({ activities }: { activities: ConversationActivity[]
 				aria-expanded={open}
 				className={cn(ACTIVITY_SUMMARY_BUTTON_CLASS, "activity-run-toggle")}
 			>
-				<span className="activity-summary-label text-[11.5px] text-muted-foreground">
+				<span className="activity-summary-label text-sm-md text-muted-foreground">
 					<ActivityTransition value={summary} inline>{summary}</ActivityTransition>
 				</span>
 				{nonzeroExits > 0 ? (
-					<span className="text-[11px] text-muted-foreground/70">
+					<span className="text-caption text-muted-foreground/70">
 						{nonzeroExits} exited
 					</span>
 				) : null}
 				{failed > 0 ? (
-					<span className="text-[11px] text-destructive">
+					<span className="text-caption text-destructive">
 						{failed} failed
 					</span>
 				) : null}
 				{cancelled > 0 ? (
-					<span className="text-[11px] text-muted-foreground/70">
+					<span className="text-caption text-muted-foreground/70">
 						{cancelled} stopped
 					</span>
 				) : null}
 				{diffTotals.additions > 0 || diffTotals.deletions > 0 ? (
-					<span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+					<span className="shrink-0 font-mono text-micro tabular-nums text-muted-foreground/70">
 						{diffTotals.additions > 0 ? (
 							<span className="text-success">+{diffTotals.additions}</span>
 						) : null}
@@ -106,14 +106,14 @@ export function ActivityRun({ activities }: { activities: ConversationActivity[]
 					</span>
 				) : null}
 				{running ? (
-					<Loader2 aria-hidden="true" className="size-3 animate-spin text-muted-foreground/60" />
+					<Loader2 aria-hidden="true" className="size-icon-2xs animate-spin text-muted-foreground/60" />
 				) : null}
 				{/* Always visible: the line has to read as openable, or a reader who
 				    wants the detail has no reason to think it is there. */}
 				<ChevronRight
 					aria-hidden="true"
 					className={cn(
-						"size-3 shrink-0 text-muted-foreground/40 transition-transform group-hover/run:text-muted-foreground",
+						"size-icon-2xs shrink-0 text-muted-foreground/40 transition-transform group-hover/run:text-muted-foreground",
 						open && "rotate-90",
 					)}
 				/>
@@ -210,12 +210,12 @@ function ActivitySubgroup({
 				aria-expanded={open}
 				className={cn(ACTIVITY_SUMMARY_BUTTON_CLASS, "activity-subgroup-toggle")}
 			>
-				<span className="activity-summary-label text-[11px] text-muted-foreground">
+				<span className="activity-summary-label text-caption text-muted-foreground">
 					<ActivityTransition value={summarizeSubgroup(activities)} inline>
 						{summarizeSubgroup(activities)}
 					</ActivityTransition>
 				</span>
-				<ChevronRight aria-hidden="true" className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
+				<ChevronRight aria-hidden="true" className={cn("size-icon-2xs shrink-0 transition-transform", open && "rotate-90")} />
 			</button>
 			<AnimatePresence initial={false}>
 				{open ? (
@@ -288,12 +288,12 @@ function NestedAgentRun({ nodes }: { nodes: ActivityNode[] }) {
 				onClick={() => setOpen((current) => !current)}
 				aria-label={`Subagent ${count} ${count === 1 ? "step" : "steps"}`}
 				aria-expanded={open}
-				className="activity-row-toggle flex min-h-8 w-full select-none items-center gap-2 text-left text-[11px] text-muted-foreground outline-none hover:text-foreground focus-visible:outline-none"
+				className="activity-row-toggle flex min-h-8 w-full select-none items-center gap-2 text-left text-caption text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 			>
 				<span className="font-medium text-foreground/80">Subagent</span>
 				<span>{count} {count === 1 ? "step" : "steps"}</span>
-				{running ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : null}
-				<ChevronRight aria-hidden="true" className={cn("size-3 transition-transform", open && "rotate-90")} />
+				{running ? <Loader2 aria-hidden="true" className="size-icon-2xs animate-spin" /> : null}
+				<ChevronRight aria-hidden="true" className={cn("size-icon-2xs transition-transform", open && "rotate-90")} />
 			</button>
 			<AnimatePresence initial={false}>
 				{open ? (

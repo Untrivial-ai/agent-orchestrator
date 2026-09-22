@@ -333,7 +333,7 @@ export function KeyboardShortcutsSettingsDialog({
 					</DialogClose>
 					<DialogHeader className={settingsDialogHeaderClass}>
 						<DialogTitle className="settings-dialog-title">{t("shortcut.dialogTitle")}</DialogTitle>
-						<DialogDescription className="text-control leading-4 text-settings-muted">
+						<DialogDescription className="text-control leading-4 text-muted-foreground">
 							{t("shortcut.dialogDescriptionSettings")}
 						</DialogDescription>
 					</DialogHeader>
@@ -341,7 +341,7 @@ export function KeyboardShortcutsSettingsDialog({
 					<div className={cn(settingsDialogBodyClass, "min-h-0 flex-1 gap-3")}>
 						<label className="relative">
 							<Search
-								className="pointer-events-none absolute left-3 top-1/2 size-icon-base -translate-y-1/2 text-settings-muted"
+								className="pointer-events-none absolute left-3 top-1/2 size-icon-base -translate-y-1/2 text-muted-foreground"
 								aria-hidden="true"
 							/>
 							<Input
@@ -369,46 +369,48 @@ export function KeyboardShortcutsSettingsDialog({
 										<div className="flex min-w-0 flex-1 items-center gap-3">
 											<div className="min-w-0 flex-1">
 												<div className="flex items-center gap-2">
-													<span className="text-sm font-medium text-settings-label">{shortcutLabel(shortcut.id, t)}</span>
+													<span className="text-sm font-medium text-foreground">{shortcutLabel(shortcut.id, t)}</span>
 													{modified ? (
-														<span className="rounded-full bg-settings-menu-selected px-2 py-0.5 text-micro text-settings-muted">
+														<span className="rounded-full bg-settings-menu-selected px-2 py-0.5 text-micro text-muted-foreground">
 															{t("shortcut.modified")}
 														</span>
 													) : null}
 												</div>
-												<span className="text-caption text-settings-muted">{shortcutCategoryLabel(shortcut.category, t)}</span>
+												<span className="text-caption text-muted-foreground">{shortcutCategoryLabel(shortcut.category, t)}</span>
 											</div>
 
 											{shortcut.customizable === false ? (
-												<span className="ml-auto text-caption text-settings-muted">{t("shortcut.fixedIndexed")}</span>
+												<span className="ml-auto text-caption text-muted-foreground">{t("shortcut.fixedIndexed")}</span>
 											) : isRecording ? (
-												<div className="ml-auto flex min-w-52 items-center gap-2 rounded-md border border-(--color-settings-accent) px-3 py-2 text-caption text-settings-label">
+												<div className="ml-auto flex min-w-52 items-center gap-2 rounded-md border border-(--color-accent) px-3 py-2 text-caption text-foreground">
 													<Keyboard className="size-icon-base animate-pulse" aria-hidden="true" />
 													{t("shortcut.pressRecording")}
 												</div>
 											) : (
 													<div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
 													{bindings.length === 0 ? (
-														<span className="text-caption text-settings-muted">{t("shortcut.unassigned")}</span>
+														<span className="text-caption text-muted-foreground">{t("shortcut.unassigned")}</span>
 													) : (
 														bindings.map((candidate, index) => (
 															<span
 																className="inline-flex items-center rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input)"
 																key={`${candidate.key}-${index}`}
 															>
-																<kbd className="px-2 py-1.5 font-mono text-caption text-settings-label">
+																<kbd className="px-2 py-1.5 font-mono text-caption text-foreground">
 																	{shortcutBindingLabel(candidate, isMac)}
 																</kbd>
 																<Tooltip>
 																	<TooltipTrigger asChild>
-																		<button
+																		<Button
+																			variant="quiet"
+																			size="icon-xs"
+																			className="mr-1 rounded-xs"
 																			type="button"
-																			className="mr-1 inline-flex size-5 items-center justify-center rounded text-settings-muted hover:bg-settings-menu-selected hover:text-settings-label"
 																			aria-label={t("shortcut.removeBindingAria", { binding: shortcutBindingLabel(candidate, isMac), name: shortcutLabel(shortcut.id, t) })}
 																			onClick={() => void handleRemoveBinding(shortcut.id, index)}
 																		>
 																			<X className="size-3" aria-hidden="true" />
-																		</button>
+																		</Button>
 																	</TooltipTrigger>
 																	<TooltipContent>{t("shortcut.remove")}</TooltipContent>
 																</Tooltip>
@@ -417,28 +419,30 @@ export function KeyboardShortcutsSettingsDialog({
 													)}
 													<Tooltip>
 														<TooltipTrigger asChild>
-															<button
+															<Button
+																variant="quiet"
+																size="icon"
 																type="button"
-																className="inline-flex size-8 items-center justify-center rounded-md text-settings-muted hover:bg-settings-menu-selected hover:text-settings-label"
 																aria-label={t("shortcut.changeAria", { name: shortcutLabel(shortcut.id, t) })}
 																onClick={() => void beginRecording({ id: shortcut.id, mode: "replace" })}
 															>
 																<Pencil className="size-icon-base" aria-hidden="true" />
-															</button>
+															</Button>
 														</TooltipTrigger>
 														<TooltipContent>{t("shortcut.change")}</TooltipContent>
 													</Tooltip>
 													{bindings.length < 2 ? (
 														<Tooltip>
 															<TooltipTrigger asChild>
-																<button
+																<Button
+																	variant="quiet"
+																	size="icon"
 																	type="button"
-																	className="inline-flex size-8 items-center justify-center rounded-md text-settings-muted hover:bg-settings-menu-selected hover:text-settings-label"
 																	aria-label={t("shortcut.addAltAria", { name: shortcutLabel(shortcut.id, t) })}
 																	onClick={() => void beginRecording({ id: shortcut.id, mode: "add" })}
 																>
 																	<Plus className="size-icon-base" aria-hidden="true" />
-																</button>
+																</Button>
 															</TooltipTrigger>
 															<TooltipContent>{t("shortcut.add")}</TooltipContent>
 														</Tooltip>
@@ -446,14 +450,15 @@ export function KeyboardShortcutsSettingsDialog({
 													{modified ? (
 														<Tooltip>
 															<TooltipTrigger asChild>
-																<button
+																<Button
+																	variant="quiet"
+																	size="icon"
 																	type="button"
-																	className="inline-flex size-8 items-center justify-center rounded-md text-settings-muted hover:bg-settings-menu-selected hover:text-settings-label"
 																	aria-label={t("shortcut.resetAria", { name: shortcutLabel(shortcut.id, t) })}
 																	onClick={() => void handleResetBinding(shortcut.id)}
 																>
 																	<RotateCcw className="size-icon-base" aria-hidden="true" />
-																</button>
+																</Button>
 															</TooltipTrigger>
 															<TooltipContent>{t("shortcut.reset")}</TooltipContent>
 														</Tooltip>
@@ -465,7 +470,7 @@ export function KeyboardShortcutsSettingsDialog({
 								);
 							})}
 							{filteredShortcuts.length === 0 ? (
-								<p className="py-8 text-center text-sm text-settings-muted">{t("shortcut.noMatching")}</p>
+								<p className="py-8 text-center text-sm text-muted-foreground">{t("shortcut.noMatching")}</p>
 							) : null}
 						</div>
 					</div>
@@ -473,7 +478,7 @@ export function KeyboardShortcutsSettingsDialog({
 					<div className={settingsDialogFooterClass}>
 						{confirmResetAll ? (
 							<>
-								<span className="mr-auto text-caption text-settings-muted">{t("shortcut.resetAllConfirm")}</span>
+								<span className="mr-auto text-caption text-muted-foreground">{t("shortcut.resetAllConfirm")}</span>
 								<Button type="button" variant="footer" className="rounded-md" onClick={() => setConfirmResetAll(false)}>
 									{t("confirm.cancel")}
 								</Button>
@@ -514,13 +519,13 @@ export function KeyboardShortcutsSettingsDialog({
 						>
 							<Check className="mt-0.5 size-icon-base shrink-0 text-success" aria-hidden="true" />
 							<div className="min-w-0 flex-1">
-								<p className="text-sm font-medium text-settings-label">{toast.title}</p>
-								{toast.body ? <p className="mt-0.5 text-caption text-settings-muted">{toast.body}</p> : null}
+								<p className="text-sm font-medium text-foreground">{toast.title}</p>
+								{toast.body ? <p className="mt-0.5 text-caption text-muted-foreground">{toast.body}</p> : null}
 							</div>
 							{toast.undo ? (
 								<button
 									type="button"
-									className="text-caption font-medium text-settings-label hover:underline"
+									className="text-caption font-medium text-foreground hover:underline"
 									onClick={() => void toast.undo?.()}
 								>
 									{t("shortcut.undo")}
@@ -528,7 +533,7 @@ export function KeyboardShortcutsSettingsDialog({
 							) : null}
 							<button
 								type="button"
-								className="text-settings-muted hover:text-settings-label"
+								className="text-muted-foreground hover:text-foreground"
 								aria-label={t("shortcut.dismissNotification")}
 								onClick={() => setToast(null)}
 							>

@@ -56,14 +56,14 @@ export function CopyButton({
 			className={cn(
 				compact
 					? "flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground"
-					: "flex h-7 items-center gap-1 rounded-md px-2 text-[10.5px] text-muted-foreground transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground",
+					: "flex h-7 items-center gap-1 rounded-md px-2 text-2xs text-muted-foreground transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground",
 				className,
 			)}
 		>
 			{copied ? (
-				<Check aria-hidden="true" className="size-3 text-success" />
+				<Check aria-hidden="true" className="size-icon-2xs text-success" />
 			) : (
-				<Copy aria-hidden="true" className="size-3" />
+				<Copy aria-hidden="true" className="size-icon-2xs" />
 			)}
 			{compact ? null : copied ? "Copied" : "Copy"}
 		</button>

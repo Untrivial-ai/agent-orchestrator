@@ -12,6 +12,8 @@ import { aoBridge } from "../../lib/bridge";
 import { isWindowsPlatform } from "../../lib/platform";
 import { captureRendererEvent } from "../../lib/telemetry";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
@@ -138,10 +140,10 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 				<label className="settings-field-label" htmlFor={titleId}>
 					{t("report.titleLabel")}
 				</label>
-				<input
+				<Input
 					ref={titleRef}
 					id={titleId}
-					className="settings-field-control h-(--size-settings-action-height) rounded-md!"
+					variant="field"
 					value={summary}
 					onChange={(event) => {
 						setSummary(event.target.value);
@@ -155,9 +157,9 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 				<label className="settings-field-label" htmlFor={detailsId}>
 					{t("report.whatHappened")}
 				</label>
-				<textarea
+				<Textarea
 					id={detailsId}
-					className="settings-field-control min-h-(--size-textarea-min) resize-none overflow-y-auto py-2.5 rounded-md!"
+					className="min-h-(--size-textarea-min) resize-none overflow-y-auto"
 					value={details}
 					onChange={(event) => {
 						setDetails(event.target.value);
@@ -169,7 +171,7 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 
 			<div role="group" aria-label={t("report.destination")} className="flex flex-wrap items-center justify-end gap-3">
 				{copyError ? (
-					<p role="alert" className="text-caption leading-4 text-error">
+					<p role="alert" className="text-caption leading-4 text-destructive">
 						{copyError}
 					</p>
 				) : null}

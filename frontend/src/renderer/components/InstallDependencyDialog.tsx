@@ -206,14 +206,14 @@ export function InstallDependencyDialog({
 				<div className={settingsDialogHeaderClass}>
 					<DialogTitle className="settings-dialog-title">{title}</DialogTitle>
 					<DialogDescription asChild>
-						<div className="text-control leading-4 text-settings-muted">{t("startup.blockedBody")}</div>
+						<div className="text-control leading-4 text-muted-foreground">{t("startup.blockedBody")}</div>
 					</DialogDescription>
 				</div>
 
 				<div className={cn(settingsDialogBodyClass, "gap-5")}>
 					{gitBlocking && git ? (
 						<IssueSection label={requirementDisplayLabel(git, t)} detail={requirementDetailText(git, t)}>
-							<p className="text-caption leading-snug text-settings-muted">{t("startup.installGitInstructions")}</p>
+							<p className="text-caption leading-snug text-muted-foreground">{t("startup.installGitInstructions")}</p>
 						</IssueSection>
 					) : null}
 
@@ -244,7 +244,7 @@ export function InstallDependencyDialog({
 										key={option.target}
 										value={option.target}
 										disabled={install.running}
-										className="group flex items-start gap-2.5 rounded-md border border-border px-3 py-2 text-left transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-accent data-[state=checked]:bg-accent-weak"
+										className="group flex items-start gap-2.5 rounded-md border border-border px-3 py-2 text-left transition-colors hover:bg-interactive-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-accent data-[state=checked]:bg-accent-weak"
 									>
 										<span
 											aria-hidden="true"
@@ -254,7 +254,7 @@ export function InstallDependencyDialog({
 										</span>
 										<span className="min-w-0">
 											<span className="block text-control font-medium text-settings-title">{option.label}</span>
-											<span className="block text-caption text-settings-muted">
+											<span className="block text-caption text-muted-foreground">
 												{t(AGENT_INSTALL_DESCRIPTION_KEYS[option.target])}
 											</span>
 										</span>
@@ -280,7 +280,7 @@ export function InstallDependencyDialog({
 					{ghAdvisory && gh && !ghDismissed ? (
 						<div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs leading-body-md">
 							<p className="font-medium text-settings-title">{t("startup.recommendedInstallGh")}</p>
-							<p className="mt-0.5 text-settings-muted">{requirementDetailText(gh, t)}</p>
+							<p className="mt-0.5 text-muted-foreground">{requirementDetailText(gh, t)}</p>
 							<div className="mt-2">
 								<InstallAction
 									primaryLabel={t("startup.installGh")}
@@ -294,7 +294,7 @@ export function InstallDependencyDialog({
 							</div>
 							<button
 								type="button"
-								className="mt-2 text-caption text-settings-muted underline-offset-2 hover:underline"
+								className="mt-2 text-caption text-muted-foreground underline-offset-2 hover:underline"
 								onClick={() => setGhDismissed(true)}
 							>
 								{t("startup.dismissGhSession")}
@@ -305,7 +305,7 @@ export function InstallDependencyDialog({
 
 				<div className={settingsDialogFooterClass}>
 					{checkAgainError ? (
-						<p role="alert" className="basis-full text-caption leading-4 text-error">
+						<p role="alert" className="basis-full text-caption leading-4 text-destructive">
 							{checkAgainError}
 						</p>
 					) : null}
@@ -345,7 +345,7 @@ function IssueSection({
 				<XCircle className="mt-0.5 size-icon-sm shrink-0 text-destructive" aria-hidden="true" />
 				<div className="min-w-0">
 					<p className="text-control font-medium text-settings-title">{label}</p>
-					{detail ? <p className="text-caption text-settings-muted">{detail}</p> : null}
+					{detail ? <p className="text-caption text-muted-foreground">{detail}</p> : null}
 				</div>
 			</div>
 			{children ? <div className="pl-[calc(var(--size-icon-sm)+0.625rem)]">{children}</div> : null}
@@ -375,13 +375,13 @@ function InstallAction({
 	const unsupported = job?.status === "unsupported";
 
 	if (!planChecked) {
-		return <p className="text-caption text-settings-muted">{t("startup.checkingInstallOptions")}</p>;
+		return <p className="text-caption text-muted-foreground">{t("startup.checkingInstallOptions")}</p>;
 	}
 
 	if (running) {
 		return (
 			<div className="flex flex-col gap-1.5">
-				<p className="text-caption text-settings-muted">
+				<p className="text-caption text-muted-foreground">
 					{job?.command ? t("startup.installingCommand", { command: job.command }) : t("startup.installingEllipsis")}
 				</p>
 				<div className="ao-install-progress" aria-hidden="true">
@@ -394,7 +394,7 @@ function InstallAction({
 	if (unsupported) {
 		return (
 			<div className="flex flex-col gap-1.5">
-				{job.error ? <p className="text-caption text-settings-muted">{job.error}</p> : null}
+				{job.error ? <p className="text-caption text-muted-foreground">{job.error}</p> : null}
 				{job.command ? <ManualCommand command={job.command} t={t} /> : null}
 			</div>
 		);
@@ -410,12 +410,12 @@ function InstallAction({
 			>
 				{failed ? t("startup.retryPrefix", { label: primaryLabel }) : primaryLabel}
 			</button>
-			{error ? <p className="text-caption text-error">{error}</p> : null}
+			{error ? <p className="text-caption text-destructive">{error}</p> : null}
 			{failed ? (
 				<>
-					{job?.error ? <p className="text-caption text-error">{job.error}</p> : null}
+					{job?.error ? <p className="text-caption text-destructive">{job.error}</p> : null}
 					{job?.output ? (
-						<pre className="max-h-daemon-failure-details-max overflow-auto rounded-md border border-[var(--color-border-settings-dialog)] bg-[var(--color-bg-settings-input)] px-2 py-1.5 font-mono text-caption leading-relaxed text-settings-muted">
+						<pre className="max-h-daemon-failure-details-max overflow-auto rounded-md border border-[var(--color-border-settings-dialog)] bg-[var(--color-bg-settings-input)] px-2 py-1.5 font-mono text-caption leading-relaxed text-muted-foreground">
 							{job.output}
 						</pre>
 					) : null}

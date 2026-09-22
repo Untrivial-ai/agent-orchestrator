@@ -6,7 +6,7 @@ import { AgentAvatar } from "../AgentAvatar";
 const STATUS_TONE_CLASS: Record<AgentStatusTone, string> = {
 	success: "text-success",
 	warning: "text-warning",
-	muted: "text-settings-muted",
+	muted: "text-muted-foreground",
 };
 
 export function AgentSelectMenuItem({
@@ -35,7 +35,7 @@ export function AgentSelectMenuItem({
 			{status ? (
 				<span className={cn("shrink-0 text-caption", STATUS_TONE_CLASS[statusTone ?? "muted"])}>{status}</span>
 			) : null}
-			{selected ? <Check className="size-3 shrink-0 text-settings-label" aria-hidden="true" /> : null}
+			{selected ? <Check className="size-3 shrink-0 text-foreground" aria-hidden="true" /> : null}
 		</span>
 	);
 }

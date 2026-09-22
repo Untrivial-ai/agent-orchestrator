@@ -113,7 +113,7 @@ function TerminalShellRows() {
 				/>
 			) : null}
 			{saveError ? (
-				<p role="alert" className="px-3 text-caption leading-4 text-error">
+				<p role="alert" className="px-3 text-caption leading-4 text-destructive">
 					{t("settings.terminalShell.saveFailed")}
 				</p>
 			) : null}
@@ -203,7 +203,7 @@ export function GeneralSettingsSection({
 					/>
 				</SettingsRow>
 				{localeSaveError ? (
-					<p role="alert" className="px-3 text-caption leading-4 text-error">
+					<p role="alert" className="px-3 text-caption leading-4 text-destructive">
 						{t("settings.language.saveFailed")}
 					</p>
 				) : null}
@@ -224,7 +224,7 @@ export function GeneralSettingsSection({
 					/>
 				</SettingsRow>
 				{soundNotificationsSaveError ? (
-					<p role="alert" className="px-3 text-caption leading-4 text-error">
+					<p role="alert" className="px-3 text-caption leading-4 text-destructive">
 						{t("settings.soundNotifications.saveFailed")}
 					</p>
 				) : null}
@@ -319,7 +319,7 @@ function CloudOfferingRow() {
 			/>
 			<p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">{t("settings.cloudToggleHint")}</p>
 			{error ? (
-				<p role="alert" className="px-3 pb-2 text-caption leading-4 text-error">
+				<p role="alert" className="px-3 pb-2 text-caption leading-4 text-destructive">
 					{error}
 				</p>
 			) : null}

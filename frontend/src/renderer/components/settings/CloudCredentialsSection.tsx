@@ -98,7 +98,7 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 			<div className="flex w-full flex-col gap-1.5">
 				{rows.filter((connection) => connection.provider !== "github").map((connection) => (
 					<SettingsRow key={connection.id} icon={KeyRound} label={AGENT_LABELS[connection.provider] ?? connection.provider}>
-						<span className="text-sm leading-5 text-settings-muted">
+						<span className="text-sm leading-5 text-muted-foreground">
 							{connection.validationState === "valid"
 								? t("settings.cloudAgents.valid")
 								: connection.validationState}
@@ -116,7 +116,7 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 				</div>
 				<div className="mt-3 border-t border-border px-3 pt-3">
 					<SettingsRow key="github-pat" icon={KeyRound} label={t("settings.cloudAgents.github.title")}>
-						<span className="text-sm leading-5 text-settings-muted">{githubPATConnected ? t("settings.cloudAgents.github.connected") : t("settings.cloudAgents.github.notConnected")}</span>
+						<span className="text-sm leading-5 text-muted-foreground">{githubPATConnected ? t("settings.cloudAgents.github.connected") : t("settings.cloudAgents.github.notConnected")}</span>
 					</SettingsRow>
 					<GitHubTokenField
 						id="settings-github-pat"

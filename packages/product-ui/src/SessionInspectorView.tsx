@@ -35,7 +35,7 @@ export type InspectorTab = {
 const inspectorShellClass = "@container/inspector flex h-full min-h-0 flex-col overflow-hidden";
 const inspectorBodyBaseClass = "min-h-0 flex-1";
 const inspectorScrollableBodyClass = "board-scrollbar overflow-x-hidden overflow-y-auto p-3 pb-4 @max-[300px]/inspector:px-2.5";
-export const inspectorEmptyClass = "text-xs text-settings-muted leading-normal";
+export const inspectorEmptyClass = "text-xs text-muted-foreground leading-normal";
 
 export function SessionInspectorShellView({
 	activeView,
@@ -132,13 +132,29 @@ export function SessionInspectorShellView({
 								aria-selected={activeView === tab.id}
 								tabIndex={activeView === tab.id ? 0 : -1}
 								className={cn(
-									"session-inspector__tab-button relative inline-flex size-control-md shrink-0 items-center justify-center rounded-md p-0 font-semibold text-passive transition-[color] duration-fast hover:bg-interactive-hover hover:text-foreground",
+									"session-inspector__tab-button group/nav-row relative inline-flex size-control-md shrink-0 items-center justify-center rounded-md p-0 font-semibold text-passive transition-[color] duration-fast hover:bg-transparent! hover:text-foreground",
 									activeView === tab.id && "text-foreground",
 								)}
 								onClick={() => onViewChange(tab.id)}
 								onKeyDown={(event) => selectAdjacentTab(event, index)}
 								title={tab.label}
 							>
+								{/* The sidebar rows' growing hover fill. The package can't import the
+								    app's NavRowHighlight (layering), so this repeats its markup — the
+								    animation and the hover/focus gates are the app's, in styles.css. */}
+								<span
+									aria-hidden="true"
+									className={cn(
+										"pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-lg bg-interactive-hover",
+										"transition-[width,height] duration-normal ease-[var(--ease-out)]",
+										"motion-reduce:h-full motion-reduce:w-full motion-reduce:transition-none",
+										activeView === tab.id
+											? "h-full w-full opacity-0!"
+											: "h-[calc(100%-8px)] w-[calc(100%-8px)] opacity-0",
+									)}
+									data-nav-row-highlight=""
+									data-nav-row-highlight-idle={activeView === tab.id ? undefined : ""}
+								/>
 								{activeView === tab.id ? (
 									<motion.span
 										aria-hidden="true"
@@ -210,7 +226,7 @@ export function InspectorSection({
 }) {
 	const heading =
 		title || action ? (
-			<div className={cn("mb-1 flex items-center justify-between gap-2 text-2xs font-bold uppercase tracking-settings-section text-settings-muted", titleClassName)}>
+			<div className={cn("mb-1 flex items-center justify-between gap-2 text-2xs font-bold uppercase tracking-settings-section text-muted-foreground", titleClassName)}>
 				{title ? <span>{title}</span> : <span />}
 				{action ?? null}
 			</div>
@@ -285,7 +301,7 @@ const prStateTone: Record<InspectorPullRequestState, string> = {
 	open: "border-border-strong bg-overlay text-muted-foreground",
 	draft: "border-status-in-review/35 bg-status-in-review/10 text-status-in-review",
 	merged: "border-border-strong bg-overlay text-success",
-	closed: "border-error/40 bg-error/10 text-error",
+	closed: "border-destructive/40 bg-destructive/10 text-destructive",
 };
 
 export function InspectorPullRequestCardView({
@@ -313,7 +329,7 @@ export function InspectorPullRequestCardView({
 		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2.5">
 			{pr.title ? (
 				<ExternalLink
-					className="inline text-sm font-semibold leading-snug tracking-tight text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+					className="inline text-sm font-semibold leading-snug tracking-tight text-foreground underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 					href={pr.href}
 				>
 					{pr.title}
@@ -322,7 +338,7 @@ export function InspectorPullRequestCardView({
 			<div className={cn("flex min-w-0 items-center gap-2", pr.title && "mt-1.5")}>
 				<ExternalLink
 					ariaLabel={openLabel}
-					className="inline-flex min-w-0 items-center gap-1 font-mono text-xs font-medium text-settings-label decoration-muted-foreground underline-offset-2 hover:text-settings-label hover:underline focus-visible:rounded-sm focus-visible:text-settings-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+					className="inline-flex min-w-0 items-center gap-1 font-mono text-xs font-medium text-foreground decoration-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:rounded-sm focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 					href={pr.href}
 				>
 					{pullRequestIcon ?? <GitPullRequestIcon className="size-icon-sm shrink-0" />}
@@ -358,7 +374,7 @@ export function InspectorPullRequestCardView({
 					/>
 					{statusNotice}
 					{mergeError ? (
-						<p className="mt-2 text-2xs leading-normal text-error" role="status">
+						<p className="mt-2 text-2xs leading-normal text-destructive" role="status">
 							{mergeError}
 						</p>
 					) : null}
@@ -645,7 +661,7 @@ const reviewerVerdictTone: Record<InspectorVerdict["tone"], string> = {
 	neutral: "text-muted-foreground",
 	running: "text-working",
 	success: "text-success",
-	danger: "text-error",
+	danger: "text-destructive",
 };
 
 function VerdictBadge({ className, verdict }: { className?: string; verdict: InspectorVerdict }) {
@@ -1282,8 +1298,8 @@ function InlineCommentRow({
 				{body ? <span data-overflow-axis="horizontal" ref={previewRef} className={cn("mt-1 block min-w-0 text-muted-foreground", expanded ? "whitespace-pre-wrap break-words" : "truncate")}>{expanded ? body : preview}</span> : null}
 			</div>
 			{resolvedSuccess ? <p className="m-0 text-2xs font-medium text-success">{labels.resolvedReview}</p> : null}
-			{resolveError ? <p className="m-0 text-2xs font-medium text-error">{labels.resolveReviewFailed}</p> : null}
-			{sendError && !sent ? <p className="m-0 text-2xs font-medium text-error">{labels.sendToWorkerAgentError}</p> : null}
+			{resolveError ? <p className="m-0 text-2xs font-medium text-destructive">{labels.resolveReviewFailed}</p> : null}
+			{sendError && !sent ? <p className="m-0 text-2xs font-medium text-destructive">{labels.sendToWorkerAgentError}</p> : null}
 		</div>
 	);
 }
@@ -1486,8 +1502,8 @@ function ReviewSummaryActions({
 			</button>
 			{menuOpen ? (
 				<span className="isolate absolute right-0 top-8 z-[100] flex w-48 flex-col rounded-md border border-border-strong bg-[var(--color-bg-settings-menu)] p-1 text-2xs shadow-[0_16px_40px_rgba(0,0,0,0.65)]">
-					{canSend ? <button className={cn("rounded px-2 py-1.5 text-left hover:bg-interactive-hover disabled:pointer-events-none", sendState === "sent" ? "text-success" : sendState === "error" ? "text-error" : "text-muted-foreground hover:text-foreground")} disabled={sendState === "sending" || sendState === "sent"} onClick={() => void send()} type="button">{sendState === "sent" ? labels.sentToWorkerAgent : sendState === "error" ? labels.sendToWorkerAgentError : labels.sendToWorkerAgent}</button> : null}
-					{onRequestRereview ? <button className={cn("rounded px-2 py-1.5 text-left hover:bg-interactive-hover disabled:pointer-events-none", rereviewState === "requested" ? "text-success" : rereviewState === "error" ? "text-error" : "text-muted-foreground hover:text-foreground")} disabled={rereviewState === "requesting" || rereviewState === "requested"} onClick={() => void requestRereview()} type="button">{rereviewState === "requested" ? labels.rereviewRequested : rereviewState === "error" ? labels.rereviewRequestFailed : labels.requestRereviewPR}</button> : null}
+					{canSend ? <button className={cn("rounded px-2 py-1.5 text-left hover:bg-interactive-hover disabled:pointer-events-none", sendState === "sent" ? "text-success" : sendState === "error" ? "text-destructive" : "text-muted-foreground hover:text-foreground")} disabled={sendState === "sending" || sendState === "sent"} onClick={() => void send()} type="button">{sendState === "sent" ? labels.sentToWorkerAgent : sendState === "error" ? labels.sendToWorkerAgentError : labels.sendToWorkerAgent}</button> : null}
+					{onRequestRereview ? <button className={cn("rounded px-2 py-1.5 text-left hover:bg-interactive-hover disabled:pointer-events-none", rereviewState === "requested" ? "text-success" : rereviewState === "error" ? "text-destructive" : "text-muted-foreground hover:text-foreground")} disabled={rereviewState === "requesting" || rereviewState === "requested"} onClick={() => void requestRereview()} type="button">{rereviewState === "requested" ? labels.rereviewRequested : rereviewState === "error" ? labels.rereviewRequestFailed : labels.requestRereviewPR}</button> : null}
 					{url && onOpenInAOBrowser ? <button className="rounded px-2 py-1.5 text-left text-muted-foreground hover:bg-interactive-hover hover:text-foreground" onClick={() => onOpenInAOBrowser(url)} type="button">{labels.openInAOBrowser}</button> : null}
 					{url ? <ExternalLink className="rounded px-2 py-1.5 text-muted-foreground no-underline hover:bg-interactive-hover hover:text-foreground" href={url}>{labels.openInSystemBrowser}</ExternalLink> : null}
 				</span>

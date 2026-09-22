@@ -46,6 +46,7 @@ import { captureRendererEvent } from "../lib/telemetry";
 import { cn } from "../lib/utils";
 import { TopbarButton } from "./TopbarButton";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type NotificationCenterProps = {
@@ -372,14 +373,16 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 			>
 				<div className="flex items-center justify-between gap-2 border-b border-border bg-[var(--color-overlay-subtle)] px-4 py-3.5">
 					<p className="text-subtitle font-semibold tracking-tight text-foreground">{t("notify.title")}</p>
-					<button
-						className="shrink-0 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+					<Button
+						className="shrink-0 text-caption"
 						disabled={isEmpty || clearAll.isPending}
 						onClick={handleClearAll}
+						size="none"
 						type="button"
+						variant="link-quiet"
 					>
 						{t("notify.clearAll")}
-					</button>
+					</Button>
 				</div>
 				<NotificationWorkspaceState>
 					{({ retryWorkspace, sessionMeta, sessionsReady, terminatedIds, workspaceError }) => (
@@ -387,34 +390,34 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 							{markReadError ? (
 					<div
 						aria-live="polite"
-						className="flex items-center justify-between gap-2 border-b border-border bg-error/5 px-4 py-2 text-caption text-error"
+						className="flex items-center justify-between gap-2 border-b border-border bg-destructive/10 px-4 py-2 text-caption text-destructive"
 					>
 						<span>{markReadError}</span>
-						<button
-							className="shrink-0 font-medium underline underline-offset-2 hover:text-foreground"
+						<Button
+							className="shrink-0 text-destructive underline"
 							onClick={retryMarkRead}
 							type="button"
 						>
 							{t("notify.retry")}
-						</button>
+						</Button>
 					</div>
 				) : null}
 				{actionError ? (
-					<div className="border-b border-border bg-error/5 px-4 py-2 text-caption text-error">{actionError}</div>
+					<div className="border-b border-border bg-destructive/10 px-4 py-2 text-caption text-destructive">{actionError}</div>
 				) : null}
 				{workspaceError ? (
 					<div
 						aria-live="polite"
-						className="flex items-center justify-between gap-2 border-b border-border bg-error/5 px-4 py-2 text-caption text-error"
+						className="flex items-center justify-between gap-2 border-b border-border bg-destructive/10 px-4 py-2 text-caption text-destructive"
 					>
 						<span>{t("notify.workspaceLoadFailed")}</span>
-						<button
-							className="shrink-0 font-medium underline underline-offset-2 hover:text-foreground"
+						<Button
+							className="shrink-0 text-destructive underline"
 							onClick={retryWorkspace}
 							type="button"
 						>
 							{t("notify.retry")}
-						</button>
+						</Button>
 					</div>
 				) : null}
 				{allQuery.isError && isEmpty && !confirmedClearSnapshot ? (
@@ -463,16 +466,16 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 						{allQuery.isFetchNextPageError ? (
 							<div
 								aria-live="polite"
-								className="flex items-center justify-center gap-2 px-4 py-3 text-caption text-error"
+								className="flex items-center justify-center gap-2 px-4 py-3 text-caption text-destructive"
 							>
 								{t("notify.earlierLoadFailed")}
-								<button
-									className="font-medium underline underline-offset-2 hover:text-foreground"
+								<Button
+									className="text-destructive underline"
 									onClick={() => void allQuery.fetchNextPage()}
 									type="button"
 								>
 									{t("notify.retry")}
-								</button>
+								</Button>
 							</div>
 						) : allQuery.isFetchingNextPage ? (
 							<div
@@ -560,7 +563,7 @@ const NotificationItem = memo(function NotificationItem({
 					"group grid grid-cols-notification items-start gap-3 px-4 py-3 text-left transition-[background-color,opacity,transform] duration-fast will-change-transform",
 					highlighted && "notification-row-enter",
 					canOpenSession
-						? "cursor-pointer hover:bg-interactive-hover active:scale-[0.99] active:bg-interactive-active"
+						? "cursor-pointer hover:bg-interactive-hover scale-press active:bg-interactive-active"
 						: "cursor-default",
 					!highlighted && "opacity-55 hover:opacity-80",
 				)}
@@ -577,7 +580,7 @@ const NotificationItem = memo(function NotificationItem({
 			>
 				<div
 					className={cn(
-						"grid size-notification-icon shrink-0 place-items-center transition-transform duration-fast group-hover:brightness-110 group-active:scale-90",
+						"grid size-notification-icon shrink-0 place-items-center transition-transform duration-fast group-hover:brightness-110 group-scale-press",
 						notificationIconClass(notification.type),
 					)}
 				>
@@ -598,7 +601,7 @@ const NotificationItem = memo(function NotificationItem({
 									{titleLink.before}
 									<AppLink
 										aria-label={t("inspector.openPR", { number: titleLink.number })}
-										className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+										className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 										href={titleLink.url}
 										onClick={(event) => {
 											event.stopPropagation();
@@ -640,9 +643,10 @@ const NotificationItem = memo(function NotificationItem({
 					{offerRestore && sessionId ? (
 						<Tooltip delayDuration={0}>
 							<TooltipTrigger asChild>
-								<button
+								<Button
 									aria-label={t("shell.restoreSession")}
-									className="grid size-notification-icon place-items-center rounded-md text-passive transition-colors hover:bg-interactive-active hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+									size="icon-sm"
+									variant="quiet"
 									disabled={restoreDisabled}
 									onClick={(event) => {
 										event.stopPropagation();
@@ -651,7 +655,7 @@ const NotificationItem = memo(function NotificationItem({
 									type="button"
 								>
 									<RotateCcw className={cn("size-icon-md", restoring && "animate-spin")} aria-hidden="true" />
-								</button>
+								</Button>
 							</TooltipTrigger>
 							<TooltipContent side="top">
 								{restoring ? t("shell.restoringSession") : t("shell.restoreSession")}
@@ -660,9 +664,10 @@ const NotificationItem = memo(function NotificationItem({
 					) : null}
 					<Tooltip delayDuration={0}>
 						<TooltipTrigger asChild>
-							<button
+							<Button
 								aria-label={t("notify.clearOne", { title: copy.title })}
-								className="grid size-notification-icon place-items-center rounded-md text-passive transition-colors hover:bg-interactive-active hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+								size="icon-sm"
+								variant="quiet"
 								disabled={clearDisabled}
 								onClick={(event) => {
 									event.stopPropagation();
@@ -676,7 +681,7 @@ const NotificationItem = memo(function NotificationItem({
 								) : (
 									<X className="size-icon-sm" aria-hidden="true" />
 								)}
-							</button>
+							</Button>
 						</TooltipTrigger>
 						<TooltipContent side="top">{t("notify.clearOneShort")}</TooltipContent>
 					</Tooltip>
@@ -767,7 +772,7 @@ function notificationIconClass(type: string): string {
 		case "pr_merged":
 			return "text-[#a371f7]";
 		case "pr_closed_unmerged":
-			return "text-error";
+			return "text-destructive";
 		default:
 			return "text-muted-foreground";
 	}

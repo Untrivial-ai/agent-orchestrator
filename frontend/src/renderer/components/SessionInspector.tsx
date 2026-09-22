@@ -423,19 +423,21 @@ function InspectorPolicyRow({
 	return (
 		<div className="flex items-center justify-between gap-3 py-1" data-slot="inspector-policy-row">
 			<div className="flex min-w-0 items-center gap-1.5">
-				<label className="min-w-0 text-xs font-medium text-settings-label" htmlFor={id}>
+				<label className="min-w-0 text-xs font-medium text-foreground" htmlFor={id}>
 					{label}
 				</label>
 				{description ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
-							<button
+							<Button
 								aria-label={description}
-								className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								className="shrink-0 rounded-full"
+								size="icon-xs"
 								type="button"
+								variant="quiet"
 							>
 								<Info aria-hidden="true" className="size-icon-2xs" />
-							</button>
+							</Button>
 						</TooltipTrigger>
 						<TooltipContent className={cn("leading-normal", tooltipClassName)}>{description}</TooltipContent>
 					</Tooltip>
@@ -463,14 +465,14 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 		<div>
 			<div className="grid grid-cols-2 gap-4">
 				<div className="min-w-0">
-					<p className="text-2xs text-settings-muted">{t("inspector.usage.processedTokens")}</p>
+					<p className="text-2xs text-muted-foreground">{t("inspector.usage.processedTokens")}</p>
 					<p
 						aria-label={
 							processedTokens === null
 								? t("inspector.usage.processedTokensUnavailable")
 								: t("inspector.usage.processedTokensAria", { count: exactProcessed })
 						}
-						className="mt-0.5 truncate font-mono text-md-sm font-medium text-settings-label"
+						className="mt-0.5 truncate font-mono text-md-sm font-medium text-foreground"
 						title={processedTokens === null ? undefined : t("inspector.usage.processedTokensAria", { count: exactProcessed })}
 					>
 						{processedTokens === null ? t("inspector.usage.noUsageYet") : formatTelemetryTokenValue(processedTokens)}
@@ -478,10 +480,10 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 				</div>
 				<div className="min-w-0 text-right">
 					<div className="flex items-center justify-end gap-1">
-						<p className="text-2xs text-settings-muted">{t("inspector.usage.estimatedCost")}</p>
+						<p className="text-2xs text-muted-foreground">{t("inspector.usage.estimatedCost")}</p>
 						<EstimatedCostInfo cost={usage.totals.estimatedCost} />
 					</div>
-					<p className="mt-0.5 truncate font-mono text-sm-md font-medium text-settings-label">
+					<p className="mt-0.5 truncate font-mono text-sm-md font-medium text-foreground">
 						{estimatedCost ?? t("usage.unavailable")}
 					</p>
 				</div>
@@ -501,7 +503,7 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 			) : usage.harnesses.length > 1 ? (
 				<div className="mt-2 border-t border-(--color-border-settings-input) pt-1.5">
 					<div
-						className={`grid ${usageRowColumns(showsAgentCost)} items-center gap-2 px-1 pb-0.5 text-2xs text-settings-muted`}
+						className={`grid ${usageRowColumns(showsAgentCost)} items-center gap-2 px-1 pb-0.5 text-2xs text-muted-foreground`}
 					>
 						<span>{t("inspector.usage.agent")}</span>
 						<span className="text-right">{t("inspector.usage.tokens")}</span>
@@ -536,13 +538,13 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 	const attribution = (
 		<>
 			<AgentAvatar className="size-4" decorative provider={harness.harness} />
-			<span className="shrink-0 text-sm-md text-settings-label">{harnessName}</span>
+			<span className="shrink-0 text-sm-md text-foreground">{harnessName}</span>
 			{modelSummary ? (
 				<>
-					<span aria-hidden="true" className="text-settings-muted">
+					<span aria-hidden="true" className="text-muted-foreground">
 						·
 					</span>
-					<span className="truncate text-2xs text-settings-muted" title={modelSummaryTitle ?? undefined}>
+					<span className="truncate text-2xs text-muted-foreground" title={modelSummaryTitle ?? undefined}>
 						{modelSummary}
 					</span>
 				</>
@@ -554,21 +556,23 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 		<div className="mt-2 border-t border-(--color-border-settings-input) pt-1.5">
 			{canExpand ? (
 				<>
-					<button
+					<Button
 						aria-controls={detailID}
 						aria-expanded={open}
 						aria-label={t("inspector.usage.providerDetails", { name: harnessName })}
-						className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-interactive-hover focus-visible:bg-interactive-hover focus-visible:ring-1 focus-visible:ring-ring"
+						className="w-full justify-start gap-1.5 px-1 py-0.5 text-left"
 						onClick={() => setOpen((current) => !current)}
+						size="none"
 						type="button"
+						variant="quiet"
 					>
 						{open ? (
-							<ChevronDown aria-hidden="true" className="size-3 shrink-0 text-settings-muted" />
+							<ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
 						) : (
-							<ChevronRight aria-hidden="true" className="size-3 shrink-0 text-settings-muted" />
+							<ChevronRight aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
 						)}
 						{attribution}
-					</button>
+					</Button>
 					{open ? (
 						<div
 							aria-label={t("inspector.usage.providerPeek", { name: harnessName })}
@@ -636,7 +640,7 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 				tooltipClassName="max-w-64"
 			/>
 			{error ? (
-				<p className="mt-1 text-2xs leading-normal text-error" role="status">
+				<p className="mt-1 text-2xs leading-normal text-destructive" role="status">
 					{error}
 				</p>
 			) : null}
@@ -684,7 +688,7 @@ function ProviderUsageDetails({ harness }: { harness: SessionUsage["harnesses"][
 					/>
 				))
 			) : (
-				<p className="px-1 py-1 text-2xs text-settings-muted">{t("inspector.usage.noModelTelemetry")}</p>
+				<p className="px-1 py-1 text-2xs text-muted-foreground">{t("inspector.usage.noModelTelemetry")}</p>
 			)}
 		</div>
 	);
@@ -729,7 +733,7 @@ function AutoInjectReviewPolicyControl({ session }: { session: WorkspaceSession 
 				tooltipClassName="max-w-60"
 			/>
 			{error ? (
-				<p className="mt-1 text-2xs leading-normal text-error" role="status">
+				<p className="mt-1 text-2xs leading-normal text-destructive" role="status">
 					{error}
 				</p>
 			) : null}
@@ -811,31 +815,33 @@ function UsageDisclosureRow({
 
 	return (
 		<div className="px-1 py-0.5">
-			<button
+			<Button
 				aria-controls={detailID}
 				aria-expanded={open}
 				aria-label={detailsLabel}
-				className={`grid w-full ${usageRowColumns(showCost)} items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors hover:bg-interactive-hover focus-visible:bg-interactive-hover focus-visible:ring-1 focus-visible:ring-ring`}
+				className={`grid w-full ${usageRowColumns(showCost)} items-center gap-2 px-1 py-1 text-left`}
 				onClick={() => setOpen((current) => !current)}
+				size="none"
 				type="button"
+				variant="quiet"
 			>
-				<span className={`flex min-w-0 items-center gap-1 text-settings-label ${nameClassName}`}>
+				<span className={`flex min-w-0 items-center gap-1 text-foreground ${nameClassName}`}>
 					{open ? (
-						<ChevronDown aria-hidden="true" className="size-3 shrink-0 text-settings-muted" />
+						<ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
 					) : (
-						<ChevronRight aria-hidden="true" className="size-3 shrink-0 text-settings-muted" />
+						<ChevronRight aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
 					)}
 					{icon}
 					<span className="truncate" title={nameTitle}>{name}</span>
 				</span>
 				<span
-					className="text-right font-mono text-2xs text-settings-label"
+					className="text-right font-mono text-2xs text-foreground"
 					title={processedTokens === null ? undefined : t("inspector.usage.processedTokensAria", { count: exactProcessed })}
 				>
 					{processedTokens === null ? "—" : formatTelemetryTokenValue(processedTokens)}
 				</span>
 				{showCost ? <UsageCostValue cost={totals.estimatedCost} /> : null}
-			</button>
+			</Button>
 			{open ? (
 				<div
 					aria-label={regionLabel}
@@ -859,7 +865,7 @@ function UsageCostValue({ cost }: { cost: EstimatedCost | null }) {
 	const value = formatEstimatedCost(cost);
 	const label = value ?? t("inspector.usage.metricUnavailable", { label: t("inspector.usage.cost") });
 	return (
-		<span aria-label={label} className="text-right font-mono text-2xs text-settings-label" title={label}>
+		<span aria-label={label} className="text-right font-mono text-2xs text-foreground" title={label}>
 			{value ?? t("usage.unavailable")}
 		</span>
 	);
@@ -885,7 +891,7 @@ function EstimatedCostInfo({ cost }: { cost: EstimatedCost | null }) {
 			<TooltipTrigger asChild>
 				<button
 					aria-label={label}
-					className="rounded-sm text-settings-muted outline-none transition-colors hover:text-settings-label focus-visible:ring-1 focus-visible:ring-ring"
+					className="rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 					type="button"
 				>
 					<Info aria-hidden="true" className="size-3" />
@@ -925,10 +931,10 @@ function UsageRateMetric({ rate }: { rate: string | null }) {
 			: t("inspector.usage.cacheHitRateDescription", { rate });
 	return (
 		<div className="min-w-0">
-			<dt className="truncate text-2xs text-settings-muted">{label}</dt>
+			<dt className="truncate text-2xs text-muted-foreground">{label}</dt>
 			<dd
 				aria-label={description}
-				className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
+				className="mt-0.5 truncate font-mono text-sm-md text-foreground"
 				title={description}
 			>
 				{rate === null ? "—" : `${rate}%`}
@@ -947,10 +953,10 @@ function UsageMetric({ label, metric }: { label: string; metric: number | null |
 			: t("inspector.usage.metricAria", { label, count: exactValue });
 	return (
 		<div className="min-w-0">
-			<dt className="truncate text-2xs text-settings-muted">{label}</dt>
+			<dt className="truncate text-2xs text-muted-foreground">{label}</dt>
 			<dd
 				aria-label={accessibleLabel}
-				className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
+				className="mt-0.5 truncate font-mono text-sm-md text-foreground"
 				title={
 					value === null
 						? t("inspector.usage.metricUnavailable", { label })
@@ -1120,7 +1126,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 
 	const terminateAction = (
 		<div className="flex items-center justify-between gap-3 py-1">
-			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
+			<span className="min-w-0 text-xs font-medium text-foreground">{t("inspector.terminateShort")}</span>
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<span className="inline-flex">
@@ -1130,9 +1136,9 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 							open={confirmOpen}
 							session={session}
 							trigger={
-								<button
+								<Button
 									aria-label={t("inspector.terminate")}
-									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+									size="icon-sm"
 									onClick={() => {
 										clearTerminateSessionState(queryClient, session.id);
 										// Force the confirm open instead of toggling it, so repeated
@@ -1140,9 +1146,10 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 										setConfirmOpen(true);
 									}}
 									type="button"
+									variant="danger"
 								>
 									<Trash2 className="size-icon-sm" aria-hidden="true" />
-								</button>
+								</Button>
 							}
 						/>
 					</span>
@@ -1175,7 +1182,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 						tooltipClassName="max-w-60"
 					/>
 					{policyError ? (
-						<p className="mt-1 text-2xs leading-normal text-error" role="status">
+						<p className="mt-1 text-2xs leading-normal text-destructive" role="status">
 							{policyError}
 						</p>
 					) : null}
@@ -1236,7 +1243,7 @@ function PRSummaryCard({
 		href: prBrowserUrl(pr),
 		stateLabel: t(prStateLabelKeys[pr.state]),
 		reviewDetailsAction: canOpenReviews && pr.review.decision !== "none" ? (
-			<button className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline" onClick={onOpenReviews} type="button">
+			<button className="whitespace-nowrap text-2xs text-muted-foreground underline-offset-2 hover:underline" onClick={onOpenReviews} type="button">
 				{t("pr.review.viewDetails")} ↗
 			</button>
 		) : undefined,
@@ -1414,7 +1421,7 @@ function timelineSortTime(timestamp: string | null | undefined): number {
 type ScmTimelineState = "ci_failed" | "changes_requested" | "conflict";
 
 function conflictPill() {
-	return { label: appI18n.t("inspector.conflict"), tone: "var(--color-danger)", breathe: false };
+	return { label: appI18n.t("inspector.conflict"), tone: "var(--destructive)", breathe: false };
 }
 
 function InspectorActivityPill({ activity }: { activity?: WorkspaceSession["activity"] }) {
@@ -2235,12 +2242,12 @@ function ReviewPanel({
 		<div className="mb-2.5 flex flex-col">
 				<Section surface title={t("inspector.review.controls")}>
 					{error ? (
-						<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error">
+						<p className="m-0 rounded-md border border-destructive/28 bg-destructive/10 px-2.5 py-2 text-sm-md leading-normal text-destructive">
 							{apiErrorMessage(error, t("inspector.reviewRequestFailed"))}
 					</p>
 				) : null}
 				{autoReviewFailure ? (
-					<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error" role="status">
+					<p className="m-0 rounded-md border border-destructive/28 bg-destructive/10 px-2.5 py-2 text-sm-md leading-normal text-destructive" role="status">
 						<span className="font-semibold">
 							{t("inspector.autoReview")} {t("inspector.review.failed")}:
 						</span>{" "}
@@ -2261,7 +2268,7 @@ function ReviewPanel({
 							<TooltipTrigger asChild>
 								<button
 									aria-label={notice}
-									className="mb-2 flex max-w-full shrink-0 items-start gap-1 self-start rounded-sm text-left text-2xs font-medium leading-normal text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+									className="mb-2 flex max-w-full shrink-0 items-start gap-1 self-start rounded-sm text-left text-2xs font-medium leading-normal text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 									type="button"
 								>
 									<Info aria-hidden="true" className="mt-px size-icon-2xs shrink-0" />
@@ -2327,7 +2334,7 @@ function ReviewPanel({
 										<span className="inline-flex">
 											<Button
 												aria-label={isKilling ? t("inspector.review.killingSession") : t("inspector.review.killSession")}
-												className="h-control-md w-control-md shrink-0 p-0 text-error [&_svg]:size-icon-sm"
+												className="h-control-md w-control-md shrink-0 p-0 text-destructive [&_svg]:size-icon-sm"
 												disabled={killDisabled}
 												onClick={onKill}
 												size="sm"

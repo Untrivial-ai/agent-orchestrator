@@ -128,7 +128,7 @@ describe("ReviewDiffBody", () => {
 
 		await screen.findByText(diffLine("const value = 1;"));
 		expect(container.querySelector('[class*="bg-success/35"]')?.textContent).toBe("1");
-		expect(container.querySelector('[class*="bg-error/35"]')?.textContent).toBe("0");
+		expect(container.querySelector('[class*="bg-destructive/35"]')?.textContent).toBe("0");
 	});
 
 	it("renders both sides side by side when split is requested", async () => {

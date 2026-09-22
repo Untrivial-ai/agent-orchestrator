@@ -116,7 +116,7 @@ export function GitHubOnboardingNotice() {
 						<GitPullRequest className="size-4" aria-hidden="true" />
 					</span>
 					<div className="min-w-0 flex-1">
-						<p className="text-[14px] font-semibold text-[var(--color-text-import-title)]">{t("startup.githubSetupTitle")}</p>
+						<p className="text-[14px] font-semibold text-foreground">{t("startup.githubSetupTitle")}</p>
 						<p className="mt-0.5 text-[12px] leading-5 text-[var(--color-text-import-muted)]">
 							{t(cliMissing ? "startup.githubSetupMissingCli" : "startup.githubSetupSignedOut")}
 						</p>
@@ -154,7 +154,7 @@ export function GitHubOnboardingNotice() {
 							<div className="mt-3 overflow-hidden rounded-lg border border-[var(--color-border-import-modal)] bg-terminal" data-testid="github-auth-terminal">
 								<div className="flex min-h-9 items-center justify-between gap-3 border-b border-[var(--color-border-import-modal)] bg-[var(--color-bg-import-modal)] px-3 py-1.5">
 									<div className="min-w-0">
-										<p className="truncate text-xs font-medium text-[var(--color-text-import-title)]">{terminal.title}</p>
+										<p className="truncate text-xs font-medium text-foreground">{terminal.title}</p>
 										<p className="truncate text-[11px] text-[var(--color-text-import-muted)]">
 											{t(loginEnded ? "startup.githubLoginStopped" : "startup.githubLoginRunning")}
 										</p>

@@ -38,7 +38,7 @@ export const SETTINGS_MENU_ROW =
 
 /** A heading inside the panel, inset to the entries rather than the panel edge. */
 export const SETTINGS_MENU_LABEL =
-	"px-3 pb-1 text-[length:var(--font-size-base)] font-normal tracking-normal text-settings-muted";
+	"px-3 pb-1 text-[length:var(--font-size-base)] font-normal tracking-normal text-muted-foreground";
 
 const TRIGGER = cn("group/settings-option-trigger", MENU_TRIGGER_CHROME);
 

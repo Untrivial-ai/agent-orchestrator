@@ -104,17 +104,17 @@ export function HumanMessageEditor({
 			className="mt-2"
 		/>
 		{reconstructedContext ? (
-			<p id={reconstructedContextId} className="px-1.5 text-pretty text-[11px] text-muted-foreground">
+			<p id={reconstructedContextId} className="px-1.5 text-pretty text-caption text-muted-foreground">
 				{t("chat.edit.reconstructedContext")}
 			</p>
 		) : null}
 		<div className="mt-2 flex min-h-7 items-center justify-end gap-1.5">
 			{error ? (
-				<span role="alert" className="mr-auto text-[11px] text-destructive">
+				<span role="alert" className="mr-auto text-caption text-destructive">
 					{error}
 				</span>
 			) : busyMessage ? (
-				<span className="mr-auto text-[11px] text-muted-foreground">{busyMessage}</span>
+				<span className="mr-auto text-caption text-muted-foreground">{busyMessage}</span>
 			) : null}
 			{onAbandonRecovery ? (
 				<Button
@@ -138,7 +138,7 @@ export function HumanMessageEditor({
 							aria-label={t("chat.edit.cancel")}
 							className="size-7"
 						>
-							<X aria-hidden="true" className="size-3.5" />
+							<X aria-hidden="true" className="size-icon-md" />
 						</Button>
 					</span>
 				</TooltipTrigger>
@@ -161,7 +161,7 @@ export function HumanMessageEditor({
 									: "bg-foreground text-background hover:bg-foreground/90 hover:text-background dark:hover:bg-foreground/90 dark:hover:text-background",
 							)}
 						>
-							{pending ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin" /> : <ArrowUp aria-hidden="true" className="size-3.5" />}
+							{pending ? <Loader2 aria-hidden="true" className="size-icon-md animate-spin" /> : <ArrowUp aria-hidden="true" className="size-icon-md" />}
 						</Button>
 					</span>
 				</TooltipTrigger>

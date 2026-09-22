@@ -15,17 +15,17 @@ function SettingsRowLabel({
 	if (description === undefined) {
 		return (
 			<div className="flex shrink-0 items-center gap-(--size-settings-row-icon-gap)">
-				{Icon ? <Icon className="size-icon-lg shrink-0 text-settings-muted" aria-hidden="true" /> : null}
-				<span className="whitespace-nowrap text-sm leading-5 text-settings-label">{label}</span>
+				{Icon ? <Icon className="size-icon-lg shrink-0 text-muted-foreground" aria-hidden="true" /> : null}
+				<span className="whitespace-nowrap text-sm leading-5 text-foreground">{label}</span>
 			</div>
 		);
 	}
 	return (
 		<div className="flex min-w-0 shrink items-start gap-(--size-settings-row-icon-gap)">
-			{Icon ? <Icon className="mt-0.5 size-icon-lg shrink-0 text-settings-muted" aria-hidden="true" /> : null}
+			{Icon ? <Icon className="mt-0.5 size-icon-lg shrink-0 text-muted-foreground" aria-hidden="true" /> : null}
 			<span className="min-w-0">
-				<span className="block text-sm leading-5 text-settings-label">{label}</span>
-				<span className="mt-0.5 block text-pretty text-xs leading-4 text-settings-muted">{description}</span>
+				<span className="block text-sm leading-5 text-foreground">{label}</span>
+				<span className="mt-0.5 block text-pretty text-xs leading-4 text-muted-foreground">{description}</span>
 			</span>
 		</div>
 	);

@@ -1,6 +1,7 @@
 import { type ReactNode, type Ref, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
+import { SearchField } from "../ui/search-field";
 import { useSuppressStrayFocusRing } from "../../hooks/useSuppressStrayFocusRing";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../ui/dropdown-menu";
 import {
@@ -117,13 +118,12 @@ export function SettingsOptionMenu<T extends string>({
 			>
 				{searchable && (
 					<div className="shrink-0 p-1" onKeyDown={(event) => event.stopPropagation()}>
-						<input
-							type="search"
-							aria-label={t("settings.options.searchAria", { label: ariaLabel.toLocaleLowerCase() })}
-							value={search}
-							onChange={(event) => setSearch(event.target.value)}
+						<SearchField
+							label={t("settings.options.searchAria", { label: ariaLabel.toLocaleLowerCase() })}
+							onChange={setSearch}
 							placeholder={searchPlaceholder ?? t("settings.options.searchPlaceholder")}
-							className="settings-inline-input w-full"
+							value={search}
+							variant="menu"
 						/>
 					</div>
 				)}
@@ -158,7 +158,7 @@ export function SettingsOptionMenu<T extends string>({
 							</DropdownMenuItem>
 						))}
 						{visibleOptions.length === 0 && (
-							<p className="px-2 py-1.5 text-xs text-settings-muted">{emptyLabel ?? t("settings.options.noMatches")}</p>
+							<p className="px-2 py-1.5 text-xs text-muted-foreground">{emptyLabel ?? t("settings.options.noMatches")}</p>
 						)}
 					</div>
 					<div

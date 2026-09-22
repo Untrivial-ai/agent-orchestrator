@@ -133,7 +133,7 @@ export function CloudLocalSignInDialog() {
 				</DialogClose>
 
 				<div className="flex items-center gap-2 px-4 pr-12 pt-3">
-					<DialogTitle className="text-balance text-[18px] font-semibold text-[var(--color-text-import-title)]">{t("cloudLocalAuth.title")}</DialogTitle>
+					<DialogTitle className="text-balance text-[18px] font-semibold text-foreground">{t("cloudLocalAuth.title")}</DialogTitle>
 					<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 						{t("cloudLocalAuth.devBadge")}
 					</span>

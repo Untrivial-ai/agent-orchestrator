@@ -74,8 +74,8 @@ const CODEX_APPROVAL_ORDER: ApprovalMode[] = [
 ];
 
 const TRIGGER_CLASS =
-	"h-7 gap-1 bg-transparent rounded-lg px-3 text-[12px]! leading-none text-muted-foreground hover:bg-white/5 hover:text-foreground data-[state=open]:bg-white/5 data-[state=open]:text-foreground";
-const CHAT_MENU_CLASS = "chat-settings-menu text-[12px]!";
+	"h-7 gap-1 bg-transparent rounded-lg px-3 text-xs! leading-none text-muted-foreground hover:text-foreground data-[state=open]:bg-interactive-hover data-[state=open]:text-foreground";
+const CHAT_MENU_CLASS = "chat-settings-menu text-xs!";
 
 export function TurnSettingsBar({
 	models,
@@ -274,15 +274,15 @@ export function TurnSettingsBar({
 				) : null}
 			</div>
 			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
-				<p role="status" className="px-1 text-[11px] text-muted-foreground">
+				<p role="status" className="px-1 text-caption text-muted-foreground">
 					{rememberPermissionsPending ? "Saving project default…" : "Permission mode saved for new sessions in this project."}
 				</p>
 			) : null}
 			{rememberPermissionsError ? (
-				<p role="alert" className="px-1 text-[11px] text-destructive">{rememberPermissionsError}</p>
+				<p role="alert" className="px-1 text-caption text-destructive">{rememberPermissionsError}</p>
 			) : null}
 			{error ? (
-				<p role="alert" className="px-1 text-[11px] leading-snug text-destructive">
+				<p role="alert" className="px-1 text-caption leading-snug text-destructive">
 					{error}
 				</p>
 			) : null}
@@ -340,6 +340,8 @@ function ModelEffortPicker({
 								}`
 							: "Model and reasoning effort for the next turn"
 					}
+					highlight
+					hideCaret
 					className={TRIGGER_CLASS}
 				>
 					<span className="min-w-0 max-w-[22ch] truncate">{groupLabel}</span>
@@ -348,7 +350,7 @@ function ModelEffortPicker({
 						// less legible than one readable name plus a flag that says it is not
 						// the one that was asked for; the tooltip and the menu spell out which.
 						<Shuffle
-							className="size-3 shrink-0 text-warning"
+							className="size-icon-2xs shrink-0 text-warning"
 							aria-label={`Substituted for ${reroute.fromModel ?? chosenLabel}`}
 						/>
 					) : null}
@@ -469,6 +471,8 @@ function ClubbedConfigPicker({
 					disabled={disabled}
 					aria-label="Model and reasoning effort for the next turn"
 					title="Model and reasoning effort for the next turn"
+					highlight
+					hideCaret
 					className={TRIGGER_CLASS}
 				>
 					<span className="min-w-0 max-w-[22ch] truncate">{groupLabel}</span>
@@ -582,6 +586,8 @@ function ExecutionModePicker({
 				disabled={disabled}
 				aria-label="Model mode for the next turn"
 				title="Model mode for the next turn"
+				highlight
+				hideCaret
 				className={TRIGGER_CLASS}
 			>
 				<span className="min-w-0 max-w-[16ch] truncate">{executionModeLabel(option)}</span>
@@ -742,7 +748,7 @@ function ConfigOptionChoices({
 				return (
 					<Fragment key={choice.value}>
 						{choice.group && choice.group !== previousGroup ? (
-							<OptionMenuLabel className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+							<OptionMenuLabel className="px-3 pb-1 pt-2 text-micro uppercase tracking-wide text-muted-foreground">
 								{choice.groupName || choice.group}
 							</OptionMenuLabel>
 						) : null}
@@ -797,7 +803,8 @@ function Picker({
 	return (
 		<OptionMenu>
 			
-				<OptionMenuTrigger aria-label={title} title={title} disabled={disabled} className={TRIGGER_CLASS}>
+				<OptionMenuTrigger aria-label={title} title={title} disabled={disabled} highlight hideCaret
+				className={TRIGGER_CLASS}>
 					<span className="min-w-0 max-w-[16ch] truncate">{label}</span>
 					{badge}
 				</OptionMenuTrigger>

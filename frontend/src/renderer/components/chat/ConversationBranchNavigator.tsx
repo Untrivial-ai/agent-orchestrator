@@ -17,7 +17,7 @@ export function ConversationBranchNavigator({
 	const { t } = useTranslation();
 	if (point.total <= 1) return null;
 	return (
-		<div className="flex min-w-0 items-center gap-0.5 text-[10.5px] text-muted-foreground">
+		<div className="flex min-w-0 items-center gap-0.5 text-2xs text-muted-foreground">
 		{point.previousBranchId ? (
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -29,9 +29,9 @@ export function ConversationBranchNavigator({
 								void Promise.resolve(onActivate(point.previousBranchId as string)).catch(() => {});
 							}}
 							aria-label={t("chat.branch.previous")}
-							className="flex size-7 items-center justify-center rounded-md transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-logo-accent/40 disabled:opacity-45"
+							className="flex size-7 items-center justify-center rounded-md transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:opacity-45"
 						>
-							<ChevronLeft aria-hidden="true" className="size-3.5" />
+							<ChevronLeft aria-hidden="true" className="size-icon-md" />
 						</button>
 					</span>
 				</TooltipTrigger>
@@ -55,9 +55,9 @@ export function ConversationBranchNavigator({
 								void Promise.resolve(onActivate(point.nextBranchId as string)).catch(() => {});
 							}}
 							aria-label={t("chat.branch.next")}
-							className="flex size-7 items-center justify-center rounded-md transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-logo-accent/40 disabled:opacity-45"
+							className="flex size-7 items-center justify-center rounded-md transition-[background-color,color,transform] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:opacity-45"
 						>
-							<ChevronRight aria-hidden="true" className="size-3.5" />
+							<ChevronRight aria-hidden="true" className="size-icon-md" />
 						</button>
 					</span>
 				</TooltipTrigger>

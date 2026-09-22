@@ -14,7 +14,7 @@ export const onboardingPanelTitleClass = "settings-dialog-title px-4 pt-3";
 export const onboardingPanelDescriptionClass =
 	"px-4 pb-3 pt-1 text-[13px] leading-5 text-muted-foreground";
 export const onboardingPanelBodyClass = "flex min-h-0 flex-col gap-5 overflow-y-auto px-4 pb-4";
-export const onboardingFormLabelClass = "text-[13px] font-semibold text-[var(--color-text-import-title)]";
+export const onboardingFormLabelClass = "text-[13px] font-semibold text-foreground";
 export const onboardingFieldHintClass = "text-pretty text-[12px] leading-5 text-muted-foreground";
 export const onboardingFieldErrorClass = "text-pretty text-[12px] leading-5 text-destructive";
 export const onboardingAlertErrorClass =

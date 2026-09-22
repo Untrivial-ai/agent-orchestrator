@@ -164,10 +164,10 @@ export function ShellTopbar({
 						{isOrchestrator ? (
 							<span className={cn(topbarProjectLabelClass, "inline-flex min-w-0 items-center gap-1.5")}>
 								<Folder aria-hidden="true" className="size-icon-md shrink-0 text-muted-foreground" />
-								<span className="max-w-content-max truncate">{projectLabel}</span>
+								<span className="max-w-content-max truncate" title={projectLabel}>{projectLabel}</span>
 							</span>
 						) : (
-							<span className={cn(topbarProjectLabelClass, "max-w-content-max truncate")}>{session.title}</span>
+							<span className={cn(topbarProjectLabelClass, "max-w-content-max truncate")} title={session.title}>{session.title}</span>
 						)}
 						<span aria-hidden="true" className="workspace-topbar__identity-separator" />
 						<SessionStatusPill session={session} />

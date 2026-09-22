@@ -498,7 +498,7 @@ describe("ActivityRow command labels", () => {
 		const row = screen.getByRole("button");
 		expect(row).toHaveClass("py-0.5", "gap-1.5", "select-none");
 		expect(screen.getByText("Checked repository")).toHaveClass(
-			"text-[11.5px]",
+			"text-sm-md",
 			"font-normal",
 			"text-muted-foreground",
 		);

@@ -49,15 +49,14 @@ export function SessionTerminationPopover({
 						onClick={() => onOpenChange(false)}
 						type="button"
 					>
-						{t("common.no")}
+						{t("confirm.cancel")}
 					</button>
 					<button
-						aria-label={t("termination.confirmAria")}
-						className="h-control-md rounded-md bg-danger-strong px-2.5 text-xs font-semibold text-white transition-[filter] hover:brightness-110"
+						className="h-control-md rounded-md bg-destructive-strong px-2.5 text-xs font-semibold text-white transition-[filter] hover:brightness-110"
 						onClick={onConfirm}
 						type="button"
 					>
-						{t("common.yes")}
+						{t("shell.terminateSession")}
 					</button>
 				</div>
 			</PopoverContent>

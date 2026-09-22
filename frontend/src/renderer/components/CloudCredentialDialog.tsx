@@ -164,7 +164,7 @@ export function CloudCredentialDialog() {
 					</button>
 				</DialogClose>
 
-				<DialogTitle className="px-4 pr-12 pt-3 text-balance text-[18px] font-semibold text-[var(--color-text-import-title)]">{t("cloudCredential.title")}</DialogTitle>
+				<DialogTitle className="px-4 pr-12 pt-3 text-balance text-[18px] font-semibold text-foreground">{t("cloudCredential.title")}</DialogTitle>
 				<DialogDescription className="px-4 pr-12 pt-1 text-pretty text-[13px] leading-5 text-muted-foreground">
 					{t("cloudCredential.description")}
 				</DialogDescription>

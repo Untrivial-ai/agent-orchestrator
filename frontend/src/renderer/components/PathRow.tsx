@@ -12,7 +12,7 @@ export function PathRow({ action, ariaDescribedBy, ariaInvalid, ariaLabel, child
 	onClick: () => void;
 }) {
 	return (
-		<button aria-describedby={ariaDescribedBy} aria-invalid={ariaInvalid} aria-label={ariaLabel} id={id} type="button" className="flex h-control-form w-full items-center overflow-hidden rounded-md border border-transparent bg-[var(--color-bg-import-card)] text-left text-[13px] text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50" disabled={disabled} onClick={onClick}>
+		<button aria-describedby={ariaDescribedBy} aria-invalid={ariaInvalid} aria-label={ariaLabel} id={id} type="button" className="flex h-control-form w-full items-center overflow-hidden rounded-md border border-transparent bg-[var(--color-bg-import-card)] text-left text-[13px] text-foreground focus-visible:border-ring focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring/50 disabled:pointer-events-none disabled:opacity-50" disabled={disabled} onClick={onClick}>
 			<span className="flex min-w-0 flex-1 items-center gap-3 px-3">
 				{icon}
 				<span className="truncate">{children}</span>

@@ -1538,8 +1538,8 @@ function ChatWorkspaceContent({
  */
 function RolledBackNotice({ count }: { count: number }) {
 	return (
-		<p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-			<Undo2 aria-hidden="true" className="size-3 shrink-0" />
+		<p className="flex items-center gap-1.5 text-caption text-muted-foreground">
+			<Undo2 aria-hidden="true" className="size-icon-2xs shrink-0" />
 			{count === 1
 				? "1 turn was rolled back. The agent no longer remembers it."
 				: `${count} turns were rolled back. The agent no longer remembers them.`}
@@ -1887,23 +1887,23 @@ function ControllerBanner({
 			{controller.state === "connecting" ? (
 				<Loader2
 					aria-hidden="true"
-					className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
+					className="mt-0.5 size-icon-md shrink-0 animate-spin text-muted-foreground"
 				/>
 			) : (
-				<TriangleAlert aria-hidden="true" className={cn("mt-0.5 size-3.5 shrink-0", shown.tone)} />
+				<TriangleAlert aria-hidden="true" className={cn("mt-0.5 size-icon-md shrink-0", shown.tone)} />
 			)}
 			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<strong className={cn("text-xs font-medium", shown.tone)}>{shown.title}</strong>
 				{controller.error ? (
-					<span className="text-[11px] leading-snug text-muted-foreground">{controller.error}</span>
+					<span className="text-caption leading-snug text-muted-foreground">{controller.error}</span>
 				) : null}
 				{controller.state === "stopped" ? (
 					<>
-						<span className="text-[11px] leading-snug text-muted-foreground">
+						<span className="text-caption leading-snug text-muted-foreground">
 							History is kept. Resume the agent or open a shell in the same worktree.
 						</span>
 						{resumeError || shellError ? (
-							<span className="text-[11px] leading-snug text-destructive">
+							<span className="text-caption leading-snug text-destructive">
 								{resumeError ?? shellError}
 							</span>
 						) : null}
@@ -2855,7 +2855,7 @@ function Timeline({
 								className="gap-1.5 text-muted-foreground"
 							>
 								{loadingOlder ? (
-									<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+									<Loader2 aria-hidden="true" className="size-icon-md animate-spin" />
 								) : null}
 								Load earlier messages
 							</Button>
@@ -2997,7 +2997,7 @@ function Timeline({
 				onBlur={() => setHoveredMarker(null)}
 				onPointerLeave={() => setHoveredMarker(null)}
 					className={cn(
-						"group/scroll absolute inset-y-3 right-1 z-10 w-6 touch-none rounded-full outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-logo-accent/60",
+						"group/scroll absolute inset-y-3 right-1 z-10 w-6 touch-none rounded-full transition-opacity focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
 						minimapEnabled && !inspectorOpenRef.current
 							? "cursor-pointer opacity-100"
 							: "pointer-events-none opacity-0",
@@ -3253,7 +3253,7 @@ const TurnGroup = memo(function TurnGroup({
 							title="Roll back to here"
 							className="flex items-center rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground"
 						>
-							<Undo2 aria-hidden="true" className="size-3" />
+							<Undo2 aria-hidden="true" className="size-icon-2xs" />
 						</button>
 					) : null}
 					{group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0 ? (
@@ -3306,14 +3306,14 @@ function TurnLiveStatus({
 			>
 				<TriangleAlert
 					aria-hidden="true"
-					className="mt-0.5 size-3.5 shrink-0 text-warning"
+					className="mt-0.5 size-icon-md shrink-0 text-warning"
 				/>
 				<span className="flex min-w-0 flex-col gap-0.5">
 					<strong className="text-xs font-medium text-warning">
 						{providerFailure.summary}
 					</strong>
 					{providerFailure.detail?.text ? (
-						<span className="text-[11px] leading-snug text-muted-foreground">
+						<span className="text-caption leading-snug text-muted-foreground">
 							{providerFailure.detail.text}
 						</span>
 					) : null}
@@ -3326,7 +3326,7 @@ function TurnLiveStatus({
 		<div className="flex min-h-6 items-center gap-2 px-1 py-0.5" data-testid="live-turn-status">
 			<Loader2
 				aria-hidden="true"
-				className="size-3 shrink-0 animate-spin text-status-working opacity-100"
+				className="size-icon-2xs shrink-0 animate-spin text-status-working opacity-100"
 			/>
 			<span role="status" aria-live="polite" className="text-xs font-medium text-muted-foreground">
 				Working for {elapsed}

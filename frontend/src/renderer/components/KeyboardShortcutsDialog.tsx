@@ -10,7 +10,15 @@ import { shortcutCategoryLabelKeys, shortcutLabelKeys } from "../i18n/key-maps";
 import type { AppShortcutId, ShortcutCategory } from "../../shared/shortcuts";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { useKeybindingsStore } from "../stores/keybindings-store";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+	settingsDialogContentClass,
+	settingsDialogHeaderClass,
+} from "./ui/dialog";
 import { Button } from "./ui/button";
 
 function shortcutLabel(id: AppShortcutId, t: TFunction): string {
@@ -51,10 +59,10 @@ export function KeyboardShortcutsDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-h-[min(680px,calc(100svh-32px))] max-w-xl gap-0 overflow-hidden border-[var(--color-border-settings-dialog)] bg-popover p-0 text-popover-foreground shadow-[var(--shadow-settings-dialog)] sm:rounded-(--radius-settings-dialog-lg)">
-				<DialogHeader className="border-b border-[var(--color-border-settings-dialog-header)] p-(--size-modal-padding)">
+			<DialogContent className={settingsDialogContentClass}>
+				<DialogHeader className={settingsDialogHeaderClass}>
 					<DialogTitle className="settings-dialog-title">{t("shortcut.dialogTitle")}</DialogTitle>
-					<DialogDescription className="text-xs text-settings-muted">
+					<DialogDescription className="text-xs text-muted-foreground">
 						{t("shortcut.dialogDescription")}
 					</DialogDescription>
 				</DialogHeader>

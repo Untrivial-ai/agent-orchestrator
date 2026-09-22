@@ -159,7 +159,7 @@ class ComposerTokenNode extends DecoratorNode<JSX.Element> {
 						: "text-foreground",
 				)}
 			>
-				<Icon aria-hidden="true" className="size-3 shrink-0" />
+				<Icon aria-hidden="true" className="size-icon-2xs shrink-0" />
 				{this.__display}
 			</span>
 		);

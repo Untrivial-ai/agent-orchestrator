@@ -264,7 +264,7 @@ export function DiffSelectionMenu({
 					</div>
 				)}
 				{statusLabel ? (
-					<div className={cn("px-2 py-1.5 text-caption", status === "error" ? "text-error" : "text-passive")}>
+					<div className={cn("px-2 py-1.5 text-caption", status === "error" ? "text-destructive" : "text-passive")}>
 						{statusLabel}
 					</div>
 				) : null}

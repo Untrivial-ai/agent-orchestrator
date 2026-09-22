@@ -101,7 +101,7 @@ export function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
 				type="button"
 				onClick={() => setOpen(true)}
 				aria-label={label ? t("chat.image.open", { name: label }) : t("chat.image.openUnnamed")}
-				className="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-md border border-border bg-background align-top transition-opacity duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+				className="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-md border border-border bg-background align-top transition-opacity duration-normal hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring motion-reduce:transition-none"
 			>
 				<img
 					src={url}

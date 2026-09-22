@@ -112,21 +112,21 @@ export function MobileDevicesSection() {
 
 	return (
 		<section className="mt-6">
-			<h3 className="text-sm font-medium text-settings-label">{t("mobile.devices.title")}</h3>
+			<h3 className="text-sm font-medium text-foreground">{t("mobile.devices.title")}</h3>
 
 			{query.isLoading ? (
-				<div className="mt-3 flex items-center gap-2 text-caption text-settings-muted">
+				<div className="mt-3 flex items-center gap-2 text-caption text-muted-foreground">
 					<Loader2 className="size-3 animate-spin" /> {t("mobile.devices.loading")}
 				</div>
 			) : registryUnavailable ? (
-				<p className="mt-3 text-caption text-error">{t("mobile.devices.registryUnavailable")}</p>
+				<p className="mt-3 text-caption text-destructive">{t("mobile.devices.registryUnavailable")}</p>
 			) : queryError && !hasData ? (
-				<p className="mt-3 text-caption text-error">{queryError.message}</p>
+				<p className="mt-3 text-caption text-destructive">{queryError.message}</p>
 			) : devices.length === 0 ? (
-				<p className="mt-3 text-caption text-settings-muted">{t("mobile.devices.empty")}</p>
+				<p className="mt-3 text-caption text-muted-foreground">{t("mobile.devices.empty")}</p>
 			) : (
 				<>
-					{queryError && <p className="mt-3 text-caption text-error">{queryError.message}</p>}
+					{queryError && <p className="mt-3 text-caption text-destructive">{queryError.message}</p>}
 					<ul className="mt-2 divide-y divide-[var(--color-border-settings-input)]">
 						{sortedDevices.map((device) => {
 							const name = device.deviceName || t("mobile.devices.unnamed");
@@ -135,13 +135,13 @@ export function MobileDevicesSection() {
 									key={device.installId}
 									className="flex min-h-12 items-center gap-3 py-2.5"
 								>
-									<Smartphone className="size-4 shrink-0 text-settings-muted" aria-hidden="true" />
+									<Smartphone className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 									<div className="min-w-0 flex-1">
 										<div className="truncate text-sm">{name}</div>
 									</div>
 
 									<div className="flex items-center gap-2" title={t("mobile.devices.notificationsFor", { name })}>
-										<Bell className="size-4 text-settings-muted" aria-hidden="true" data-testid="bell" />
+										<Bell className="size-4 text-muted-foreground" aria-hidden="true" data-testid="bell" />
 										<Switch
 											checked={device.notificationsEnabled && !device.muted}
 											disabled={mute.isPending || !device.notificationsEnabled}
@@ -155,7 +155,7 @@ export function MobileDevicesSection() {
 									{confirmingRemoval === device.installId ? (
 										<button
 											type="button"
-											className="min-h-10 px-1 text-caption text-error"
+											className="min-h-10 px-1 text-caption text-destructive"
 											disabled={remove.isPending}
 											onClick={() => remove.mutate(device.installId)}
 										>
@@ -165,7 +165,7 @@ export function MobileDevicesSection() {
 										<button
 											type="button"
 											aria-label={t("mobile.devices.removeAria", { name })}
-											className="grid size-10 place-items-center rounded-md text-settings-muted transition-colors hover:bg-interactive-hover hover:text-settings-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="grid size-10 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 											onClick={() => setConfirmingRemoval(device.installId)}
 										>
 											<Trash2 className="size-4" />
@@ -178,7 +178,7 @@ export function MobileDevicesSection() {
 				</>
 			)}
 
-			{mutationError && <p className="mt-2 text-caption text-error">{mutationError}</p>}
+			{mutationError && <p className="mt-2 text-caption text-destructive">{mutationError}</p>}
 		</section>
 	);
 }

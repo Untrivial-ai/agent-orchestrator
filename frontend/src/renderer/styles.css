@@ -139,12 +139,11 @@
 	--color-settings-menu: var(--color-bg-settings-menu);
 	--color-settings-menu-selected: var(--color-bg-settings-menu-selected);
 	--color-settings-title: var(--color-text-settings-title);
-	--color-settings-muted: var(--color-text-settings-muted);
 	--color-settings-label: var(--color-text-settings-row);
 	--color-bg-settings-row-hover: color-mix(in oklch, var(--color-bg-settings-row) 94%, var(--color-text-settings-title));
 	--color-bg-settings-trigger: color-mix(in oklch, var(--color-bg-settings-row) 97%, var(--color-text-settings-title));
 	--color-bg-settings-trigger-hover: color-mix(in oklch, var(--color-bg-settings-row) 91%, var(--color-text-settings-title));
-	--color-text-settings-trigger: color-mix(in oklch, var(--color-text-settings-title) 80%, var(--color-text-settings-muted));
+	--color-text-settings-trigger: color-mix(in oklch, var(--color-text-settings-title) 80%, var(--muted-foreground));
 	--radius-settings-row: var(--radius-settings-row);
 	--radius-settings-panel: var(--radius-settings-panel);
 
@@ -280,7 +279,6 @@
 	--color-success: var(--bridge-success);
 	--color-success-bright: var(--color-success-bright);
 	--color-warning: var(--bridge-warning);
-	--color-error: var(--bridge-danger);
 	--color-status-working: var(--bridge-status-working);
 	--color-status-needs-you: var(--bridge-status-needs-you);
 	--color-status-validating: var(--bridge-status-validating);
@@ -292,7 +290,7 @@
 	--color-status-terminated: var(--bridge-status-terminated);
 	--color-status-terminated-foreground: var(--bridge-status-terminated-foreground);
 	--color-status-unknown: var(--bridge-status-unknown);
-	--color-destructive: var(--bridge-danger);
+	--color-destructive: var(--destructive);
 	--color-destructive-foreground: var(--color-accent-foreground);
 
 	--color-interactive-hover: var(--bridge-interactive-hover);
@@ -436,12 +434,12 @@
 	background-color: var(--color-bg-settings-dialog);
 }
 
-@utility bg-settings-accent {
-	background-color: var(--color-settings-accent);
+@utility bg-accent {
+	background-color: var(--color-accent);
 }
 
-@utility text-settings-accent {
-	color: var(--color-settings-accent);
+@utility text-accent {
+	color: var(--color-accent);
 }
 
 @utility bg-settings-switch-on {
@@ -492,12 +490,11 @@
 	flex: 1 1 0%;
 	flex-direction: column;
 	overflow: hidden;
+	/* Deliberately no outline: the pane reads as a surface by its tonal shift
+	 * against the shell background, not by a hairline. */
 	border-radius: var(--radius-center-panel);
-	border: 1px solid var(--color-border-strong);
 	background-color: var(--color-bg-primary);
-	transition:
-		border-color 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
-		border-radius 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+	transition: border-radius 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
 /* A fully hidden sidebar no longer contributes a left layout gutter. Restore
@@ -523,27 +520,38 @@
  * or Linux drag target without introducing a seam inside session content. */
 .center-panel-shell--draggable-session-frame {
 	flex-direction: column;
+	/* Containing block for the absolutely positioned drag strip below. */
+	position: relative;
 }
 
+/* The strip is a window-drag target, never layout: it overlays the shell's own
+ * top inset instead of adding height. The gap above the card is therefore the
+ * shell's inset on every route — identical across page transitions, and outside
+ * the shell's 280ms padding transition, so navigating cannot slide the card.
+ * Where the shell has no top inset (sidebar hidden, Linux) it sits over the
+ * card's top edge, which is the only drag target left in that flush layout. */
 .center-panel-session-drag-strip {
-	flex: 0 0 var(--space-2);
+	position: absolute;
+	inset-block-start: 0;
+	inset-inline: 0;
+	height: var(--size-center-panel-inset-mac);
 	-webkit-app-region: drag;
+	z-index: 1;
 }
 
 /* Sidebar closed on mac: content panel expands to fill the full window.
- * Remove all padding and strip the surface border + radius so it's flush. */
+ * Remove all padding and strip the surface radius so it's flush. */
 .sidebar-hidden .center-panel-shell.center-panel-shell--mac {
 	padding: 0;
 }
 
 .sidebar-hidden .center-panel-shell--mac .center-panel-surface {
-	border-color: transparent;
 	border-radius: 0;
 }
 
 /* Session topbar now lives inside .center-panel-surface. When it's rendered
- * there, drop the outer border and radius (the surface provides both) and keep
- * only a bottom divider separating the tabs from the terminal below.
+ * there, drop the outer border and radius (the surface provides the radius) and
+ * keep only a bottom divider separating the tabs from the terminal below.
  * When it's rendered in-place (native fullscreen), keep the legacy surface
  * treatment so the topbar still looks like a standalone panel header. */
 .session-topbar-surface {
@@ -780,11 +788,18 @@ button.settings-row-bar {
 	padding-inline: var(--space-2);
 	padding-block: var(--space-1);
 	font-size: var(--font-size-base);
-	color: var(--color-text-settings-muted);
+	color: var(--muted-foreground);
 	outline: none;
 	box-shadow: none;
 	transition-property: color, background-color;
 	transition-duration: var(--duration-fast);
+
+	/* The trigger is a real button in the settings rows, so it needs a visible
+	 * focus ring; the outline above only clears the UA default. */
+	&:focus-visible {
+		outline: 2px solid var(--ring);
+		outline-offset: 1px;
+	}
 }
 
 .review-run-controls-container {
@@ -840,28 +855,6 @@ button.settings-row-bar {
 	color: var(--color-text-settings-row);
 }
 
-@utility settings-field-control {
-	width: 100%;
-	border-radius: var(--radius-settings-action);
-	border: 1px solid var(--color-border-settings-input);
-	background-color: var(--color-bg-settings-input);
-	padding-inline: calc(var(--spacing) * 3.5);
-	font-size: var(--font-size-md);
-	line-height: 1.25rem;
-	color: var(--color-text-settings-input);
-	outline: none;
-	transition-property: border-color, box-shadow;
-	transition-duration: var(--duration-normal);
-
-	&::placeholder {
-		color: var(--color-text-settings-placeholder);
-	}
-
-	&:focus-visible {
-		border-color: var(--color-border-settings-input);
-		box-shadow: none;
-	}
-}
 
 @utility settings-inline-edit-trigger {
 	display: inline-flex;
@@ -874,7 +867,7 @@ button.settings-row-bar {
 	border: 0;
 	background: transparent;
 	padding: 0;
-	color: var(--color-text-settings-muted);
+	color: var(--muted-foreground);
 	outline: none;
 	cursor: pointer;
 	transition-property: color;
@@ -930,47 +923,13 @@ button.settings-row-bar {
 	}
 
 	&:focus-visible {
-		border-color: var(--color-border-settings-input);
-		box-shadow: none;
 		color: var(--color-text-settings-row);
-		outline: none;
+		/* Replaces the outline the base rule removes, so keyboard focus stays visible. */
+		outline: 2px solid var(--ring);
+		outline-offset: 1px;
 	}
 }
 
-@utility settings-inline-input {
-	width: auto;
-	max-width: min(var(--size-settings-inline-input-max), var(--size-settings-inline-input-max-percent));
-	min-width: var(--size-settings-inline-input-min);
-	flex: 0 1 auto;
-	height: var(--size-settings-inline-input-height);
-	border: 1px solid var(--color-border-settings-input);
-	border-radius: var(--radius-lg);
-	background-color: var(--color-bg-settings-input);
-	padding-inline: calc(var(--spacing) * 2.5);
-	font-size: var(--font-size-base);
-	line-height: 1.25rem;
-	color: var(--color-text-settings-input);
-	text-align: right;
-	outline: none;
-	box-shadow: none;
-	transition-property: border-color, box-shadow, color;
-	transition-duration: var(--duration-normal);
-
-	&::placeholder {
-		color: var(--color-text-settings-placeholder);
-	}
-
-	&:hover {
-		color: var(--color-text-settings-row);
-	}
-
-	&:focus-visible {
-		border-color: var(--color-border-settings-input);
-		box-shadow: none;
-		color: var(--color-text-settings-row);
-		outline: none;
-	}
-}
 
 @utility settings-model-control {
 	width: var(--size-settings-inline-input-max);
@@ -1122,45 +1081,19 @@ button.settings-row-bar {
 /* Search field inside a dropdown menu. settings-inline-input cannot be reused
    here: it is a settings-ROW control, so it caps at 42% width and right-aligns
    its text, which reads as a stray half-width box once it sits in a menu. */
-@utility menu-search-input {
-	width: 100%;
-	height: var(--size-settings-action-height);
-	border: 1px solid var(--color-border-settings-input);
-	border-radius: var(--radius-md);
-	background-color: var(--color-bg-settings-input);
-	padding-inline: var(--space-2_5);
-	font-size: var(--font-size-md);
-	line-height: 1.25rem;
-	color: var(--color-text-settings-input);
-	text-align: left;
-	outline: none;
-	box-shadow: none;
-	transition-property: border-color, box-shadow, color;
-	transition-duration: var(--duration-normal);
-
-	&::placeholder {
-		color: var(--color-text-settings-placeholder);
-	}
-
-	&:focus-visible {
-		border-color: var(--color-border-settings-input);
-		box-shadow: none;
-		color: var(--color-text-settings-row);
-		outline: none;
-	}
-
-	/* The clear affordance is secondary to the query itself, so it recedes
-	   until pointed at. */
-	&::-webkit-search-cancel-button {
-		opacity: 0.4;
-		cursor: pointer;
-		transition: opacity var(--duration-fast) ease-out;
-	}
-
-	&::-webkit-search-cancel-button:hover {
-		opacity: 1;
-	}
+/* The clear affordance is secondary to the query, so it recedes until pointed
+ * at. One rule for every search input, rather than one utility every search
+ * input has to remember to wear. */
+input[type="search"]::-webkit-search-cancel-button {
+	opacity: 0.4;
+	cursor: pointer;
+	transition: opacity var(--duration-fast) ease-out;
 }
+
+input[type="search"]::-webkit-search-cancel-button:hover {
+	opacity: 1;
+}
+
 
 @utility settings-row-value {
 	min-width: 0;
@@ -1173,7 +1106,7 @@ button.settings-row-bar {
 	/* Match settings-option-trigger (Refresh / agent selects) size. */
 	font-size: var(--font-size-base);
 	line-height: 1.25rem;
-	color: var(--color-text-settings-muted);
+	color: var(--muted-foreground);
 }
 
 @utility settings-footer-button {
@@ -1206,7 +1139,7 @@ button.settings-row-bar {
 
 @utility settings-footer-button-primary {
 	border-color: transparent;
-	background-color: var(--color-settings-accent);
+	background-color: var(--color-accent);
 	padding-inline: var(--size-settings-footer-button-padding-x);
 	color: var(--color-settings-footer-button-primary-fg);
 	transition-property: opacity;
@@ -1242,7 +1175,7 @@ button.settings-row-bar {
 	padding-inline: var(--space-3);
 	font-size: var(--font-size-base);
 	line-height: 1;
-	color: var(--color-text-settings-muted);
+	color: var(--muted-foreground);
 	outline: none;
 	transition-property: color, background-color;
 	transition-duration: var(--duration-normal);
@@ -1266,7 +1199,7 @@ button.settings-row-bar {
 	padding-left: var(--space-4);
 	font-size: var(--font-size-caption);
 	line-height: var(--leading-settings-mobile-hint);
-	color: var(--color-text-settings-muted);
+	color: var(--muted-foreground);
 
 	& > li + li {
 		margin-top: calc(var(--spacing) * 1.5);
@@ -1286,7 +1219,7 @@ button.settings-row-bar {
 	height: calc(var(--spacing) * 8);
 	place-items: center;
 	border-radius: var(--radius-md);
-	color: var(--color-text-settings-muted);
+	color: var(--muted-foreground);
 	transition-property: color, background-color;
 	transition-duration: var(--duration-normal);
 
@@ -1313,7 +1246,7 @@ button.settings-row-bar {
 	font-size: 20px;
 	font-weight: 700;
 	line-height: 1.75rem;
-	color: var(--color-text-import-title);
+	color: var(--foreground);
 }
 
 @utility import-description {
@@ -1339,7 +1272,7 @@ button.settings-row-bar {
 
 	&:hover {
 		background-color: var(--color-interactive-hover);
-		color: var(--color-text-import-title);
+		color: var(--foreground);
 	}
 
 	&:disabled {
@@ -1490,7 +1423,7 @@ textarea,
 	right: 1px;
 	left: 1px;
 	min-height: 24px;
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background-color: color-mix(in srgb, var(--color-text-terminal) 30%, transparent);
 	will-change: height, transform;
 }
@@ -1529,7 +1462,7 @@ textarea,
 
 .board-scrollbar::-webkit-scrollbar-thumb {
 	min-height: 8px;
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background-color: color-mix(in srgb, var(--color-scrollbar) 24%, transparent);
 }
 
@@ -1561,7 +1494,7 @@ textarea,
 }
 
 .settings-thin-scrollbar::-webkit-scrollbar-thumb {
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background-color: color-mix(in srgb, var(--color-scrollbar) 16%, transparent);
 }
 
@@ -1589,7 +1522,7 @@ textarea,
 
 .platform-linux .board-horizontal-scrollbar::-webkit-scrollbar-thumb {
 	min-width: 24px;
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background-color: color-mix(in srgb, var(--color-scrollbar) 42%, transparent);
 }
 
@@ -1614,7 +1547,7 @@ textarea,
 
 .project-sidebar-scrollbar::-webkit-scrollbar-thumb {
 	min-height: 24px;
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent);
 }
 
@@ -1639,7 +1572,7 @@ textarea,
 
 .platform-linux .project-sidebar-scrollbar::-webkit-scrollbar-thumb {
 	min-height: 24px;
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background-color: color-mix(in srgb, var(--color-scrollbar) 42%, transparent);
 }
 
@@ -2064,8 +1997,10 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	box-shadow: none !important;
 }
 
-/* Icon-only trailing controls (project kebab/orchestrator, session pin/kill,
-   Projects "+") tint the glyph only — never pick up the focus fill above. */
+/* Controls that draw their own focus treatment opt out of the wash above so the
+   app's standard focus ring shows instead: the icon-only trailing controls
+   (project kebab/orchestrator, session pin/kill, Projects "+") and the footer
+   rail buttons, which are Buttons now. Nothing here paints a fill. */
 .sidebar-focusless .sidebar-icon-action:focus-visible {
 	background-color: transparent !important;
 }
@@ -2388,15 +2323,11 @@ html.sidebar-reordering * {
 	--composer-bg: var(--color-bg-secondary);
 	--composer-bg-active: var(--color-bg-secondary);
 	--composer-border: color-mix(in oklch, var(--color-border-strong) 36%, transparent);
-	--composer-border-hover: color-mix(in oklch, var(--color-border-strong) 100%, var(--color-text-muted) 15%);
-	--composer-border-focus: color-mix(in oklch, var(--color-border-strong) 100%, var(--color-text-muted) 15%);
 
 	border-radius: var(--radius-chat-composer);
 	border-color: var(--composer-border);
 	background: var(--composer-bg);
 	box-shadow: none;
-	/* Border only — background must snap with the view-transition theme cut. */
-	transition: border-color 150ms ease-out;
 }
 
 .cursor-chat-composer[data-attached-top] {
@@ -2566,7 +2497,7 @@ html.sidebar-reordering * {
 }
 
 .queue-dock-scroll::-webkit-scrollbar-thumb {
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background: var(--color-scrollbar-board);
 }
 
@@ -2591,19 +2522,20 @@ html.sidebar-reordering * {
 }
 
 .cursor-chat-composer:hover:not(:focus-within) {
-	border-color: var(--composer-border-hover);
 	background: var(--composer-bg-active);
 }
 
-.cursor-chat-composer:focus-within,
+.cursor-chat-composer:focus-within {
+	background: var(--composer-bg-active);
+	box-shadow: none;
+}
+
 .cursor-chat-composer:has([data-state="open"]) {
-	border-color: var(--composer-border-focus);
 	background: var(--composer-bg-active);
 	box-shadow: none;
 }
 
 .cursor-chat-composer[data-dragging] {
-	border-color: var(--color-logo-accent);
 	background: var(--composer-bg-active);
 }
 
@@ -2729,8 +2661,6 @@ html.sidebar-reordering * {
 	--composer-bg: var(--color-bg-secondary);
 	--composer-bg-active: var(--color-bg-secondary);
 	--composer-border: color-mix(in oklch, var(--color-text-primary) 10%, transparent);
-	--composer-border-hover: color-mix(in oklch, var(--color-text-primary) 20%, transparent);
-	--composer-border-focus: color-mix(in oklch, var(--color-text-primary) 32%, transparent);
 
 	box-shadow: none;
 }
@@ -2802,7 +2732,7 @@ html.sidebar-reordering * {
 	width: 7px;
 	height: 2px;
 	transform: translateY(-50%);
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background: color-mix(in srgb, var(--color-text-muted) 54%, transparent);
 	opacity: 0.76;
 	transition:
@@ -3151,7 +3081,7 @@ html.sidebar-reordering * {
 	width: 34px;
 	height: 34px;
 	place-items: center;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	color: var(--fg-muted);
 	transition:
 		background 0.12s ease,
@@ -3168,7 +3098,7 @@ html.sidebar-reordering * {
 	height: 30px;
 	align-items: center;
 	gap: 5px;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	border: 1px solid color-mix(in srgb, var(--red) 58%, transparent);
 	background: color-mix(in srgb, var(--red) 5%, transparent);
 	padding: 0 10px;
@@ -3197,7 +3127,7 @@ html.sidebar-reordering * {
 	height: 34px;
 	align-items: center;
 	gap: 6px;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
 	padding: 0 12px;
 	font-size: 13px;
@@ -3220,7 +3150,7 @@ html.sidebar-reordering * {
 	display: inline-flex;
 	height: 34px;
 	align-items: center;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	padding: 0 10px;
 	font-size: 13px;
 	font-weight: 600;
@@ -3243,7 +3173,7 @@ html.sidebar-reordering * {
 	height: 34px;
 	align-items: center;
 	gap: 6px;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	padding: 0 15px;
 	font-size: 13px;
 	font-weight: 600;
@@ -3263,7 +3193,7 @@ html.sidebar-reordering * {
 
 .dashboard-app-header__primary-btn--compact {
 	height: 32px;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	padding: 0 14px;
 	font-size: 13px;
 }
@@ -3273,7 +3203,7 @@ html.sidebar-reordering * {
 	height: 34px;
 	align-items: center;
 	gap: 6px;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	border: 1px solid var(--border);
 	padding: 0 15px;
 	font-size: 13px;
@@ -3318,7 +3248,7 @@ html.sidebar-reordering * {
 	place-items: center;
 	width: 28px;
 	height: 28px;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	color: var(--fg-muted);
 	-webkit-app-region: no-drag;
 	transition:
@@ -3356,7 +3286,7 @@ html.sidebar-reordering * {
 .window-titlebar__menu-btn {
 	height: 24px;
 	padding: 0 8px;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	font-size: 12.5px;
 	line-height: 1;
 	color: var(--fg-muted);
@@ -3448,7 +3378,7 @@ html.sidebar-reordering * {
 	align-items: center;
 	gap: 4px;
 	border: 1px solid var(--border);
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	padding: 0 8px;
 	font-size: 10px;
 	font-weight: 600;
@@ -3508,7 +3438,7 @@ html.sidebar-reordering * {
 	gap: 6px;
 	min-width: 0;
 	padding: 7px 6px;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	font-size: 11.5px;
 	font-weight: 600;
 	color: var(--fg-passive);
@@ -3615,7 +3545,7 @@ html.sidebar-reordering * {
 	flex-shrink: 0;
 	align-items: center;
 	gap: 5px;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	border: 1px solid var(--border);
 	background: var(--bg-1);
 	padding: 0 8px;
@@ -3644,7 +3574,7 @@ html.sidebar-reordering * {
 	flex-shrink: 0;
 	align-items: center;
 	gap: 6px;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	border: 1px solid color-mix(in srgb, var(--green) 34%, transparent);
 	background: color-mix(in srgb, var(--green) 9%, transparent);
 	padding: 0 9px;
@@ -3861,7 +3791,7 @@ html.sidebar-reordering * {
 
 .reviewer-error {
 	margin: 0;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	border: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
 	background: color-mix(in srgb, var(--red) 8%, transparent);
 	padding: 8px 10px;
@@ -3872,7 +3802,7 @@ html.sidebar-reordering * {
 
 .reviewer-notice {
 	margin: 0;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	border: 1px solid color-mix(in srgb, var(--green) 28%, transparent);
 	background: color-mix(in srgb, var(--green) 8%, transparent);
 	padding: 8px 10px;
@@ -3885,7 +3815,7 @@ html.sidebar-reordering * {
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
-	border-radius: 8px;
+	border-radius: var(--radius-md);
 	border: 1px solid var(--border);
 	background: var(--bg-1);
 	padding: 12px;
@@ -3957,7 +3887,7 @@ html.sidebar-reordering * {
 	align-items: center;
 	gap: 5px;
 	overflow: hidden;
-	border-radius: 6px;
+	border-radius: var(--radius-sm);
 	padding: 0 8px;
 	font-size: 10.5px;
 	font-weight: 650;
@@ -4011,7 +3941,7 @@ html.sidebar-reordering * {
 	justify-content: center;
 	gap: 7px;
 	overflow: hidden;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	border: 1px solid var(--border);
 	background: var(--bg-2);
 	padding: 0 10px;
@@ -4063,7 +3993,7 @@ html.sidebar-reordering * {
 	flex-direction: column;
 	gap: 0;
 	overflow: hidden;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	border: 1px solid var(--border);
 	background: color-mix(in srgb, var(--bg-0) 35%, transparent);
 }
@@ -4104,7 +4034,7 @@ html.sidebar-reordering * {
 	width: 7px;
 	height: 7px;
 	flex-shrink: 0;
-	border-radius: 999px;
+	border-radius: var(--radius-full);
 	background: var(--fg-passive);
 }
 
@@ -4933,7 +4863,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	flex: none;
 	margin-right: 3px;
 	border: 0;
-	border-radius: 5px;
+	border-radius: var(--radius-sm);
 	color: var(--fg-muted);
 	background: transparent;
 	transition:
@@ -5158,7 +5088,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	margin: 0;
 	padding: 8px 10px;
 	border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	background: color-mix(in srgb, var(--red) 8%, var(--bg));
 	color: var(--red);
 	font-size: 12px;

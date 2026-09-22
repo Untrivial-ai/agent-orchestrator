@@ -230,7 +230,7 @@ export default function CloneRepositoryDialog({
 							<ChevronLeft className="size-4" aria-hidden="true" />
 						</Button>
 						<div className="min-w-0 flex-1 pr-8">
-							<Dialog.Title className="text-balance text-[18px] font-semibold text-[var(--color-text-import-title)]">
+							<Dialog.Title className="text-balance text-[18px] font-semibold text-foreground">
 								{t("createProject.cloneTitle")}
 							</Dialog.Title>
 							<Dialog.Description className="sr-only">
@@ -258,7 +258,7 @@ export default function CloneRepositoryDialog({
 
 							<div className="space-y-2">
 								<div className="relative">
-									<Label htmlFor="cloneRepositoryUrl" className="text-[13px] font-semibold text-[var(--color-text-import-title)]">
+									<Label htmlFor="cloneRepositoryUrl" className="text-[13px] font-semibold text-foreground">
 										{t("createProject.cloneRepositoryUrl")}
 									</Label>
 									<AnimatePresence initial={false}>
@@ -305,7 +305,7 @@ export default function CloneRepositoryDialog({
 							</div>
 
 							<div className="space-y-2">
-								<Label htmlFor="cloneDestination" className="text-[13px] font-semibold text-[var(--color-text-import-title)]">
+								<Label htmlFor="cloneDestination" className="text-[13px] font-semibold text-foreground">
 									{t("createProject.cloneDestination")}
 								</Label>
 								<div className="flex h-control-form items-center overflow-hidden rounded-md border border-transparent bg-[var(--color-bg-import-card)] text-[13px] text-foreground">

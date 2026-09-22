@@ -88,7 +88,7 @@ export function MigrationPopup() {
 					</button>
 					<div className={settingsDialogHeaderClass}>
 						<Dialog.Title className="settings-dialog-title">{t("migration.title")}</Dialog.Title>
-						<Dialog.Description className="text-control leading-body text-settings-muted">
+						<Dialog.Description className="text-control leading-body text-muted-foreground">
 							{t("migration.bodyLead")}{" "}
 							<span className="font-mono text-caption text-foreground">{legacyRoot}</span>
 							. {t("migration.bodyTrail")}
@@ -96,7 +96,7 @@ export function MigrationPopup() {
 					</div>
 					<div className={settingsDialogBodyClass}>
 						{error ? <p className="text-xs text-destructive">{t("migration.failed", { error })}</p> : null}
-						<p className="text-caption text-settings-muted">{t("migration.againLater")}</p>
+						<p className="text-caption text-muted-foreground">{t("migration.againLater")}</p>
 					</div>
 					<div className={`${settingsDialogFooterClass} justify-between`}>
 						<Button type="button" variant="footer" className="text-destructive" onClick={dontMigrate} disabled={busy}>

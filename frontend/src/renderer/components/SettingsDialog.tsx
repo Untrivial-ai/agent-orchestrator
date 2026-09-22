@@ -169,8 +169,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 				>
 					<div className="flex h-full min-h-0">
 						<aside className="flex w-48 shrink-0 flex-col border-r border-(--color-border-settings-dialog-header) bg-card">
-						<p className="px-3 pb-1 pt-3 text-2xs font-semibold tracking-wider text-muted-foreground/60">{t("settings.title")}</p>
-						<nav aria-label={t("settings.navSectionsAria")} className="flex flex-col gap-0.5 p-2 pt-0">
+						<nav aria-label={t("settings.navSectionsAria")} className="flex flex-col gap-0.5 p-2">
 							{isProjectSettings
 								? projectSections.map(({ id, label, icon }) => (
 										<SettingsNavItem
@@ -203,7 +202,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 									className={cn(
 										"w-full rounded-md",
 										projectSaveState.phase === "failed" &&
-											"border-error bg-error/15 text-error hover:bg-error/20",
+											"border-destructive bg-destructive/10 text-destructive hover:bg-destructive/18",
 									)}
 									disabled={projectSaveState.phase === "pending" || projectSaveState.phase === "saving"}
 									aria-live="polite"
@@ -301,20 +300,22 @@ function SettingsNavItem({
 	onClick: () => void;
 }) {
 	return (
-		<button
+		<Button
 			aria-current={active ? "page" : undefined}
 			className={cn(
-				"flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-sm font-medium transition-[background-color,color,transform] duration-fast ease-out active:scale-press focus:outline-none focus-visible:outline-none focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground",
-				active
-					? "bg-interactive-active text-foreground"
-					: "text-muted-foreground hover:bg-interactive-hover hover:text-foreground",
+				// No press: the nav row is a position, not a button that fires — the
+				// scale reads as a tap on content that only swaps the panel beside it.
+				"h-9 w-full justify-start gap-2 rounded-md px-2.5 text-left font-medium active:not-aria-[haspopup]:scale-100 active:not-aria-[haspopup]:translate-y-0",
+				active && "bg-interactive-active text-foreground",
 			)}
 			disabled={disabled}
 			onClick={onClick}
+			size="none"
 			type="button"
+			variant="quiet"
 		>
-			<Icon aria-hidden="true" className="size-4 shrink-0" />
+			<Icon aria-hidden="true" className="size-icon-base shrink-0" />
 			{label}
-		</button>
+		</Button>
 	);
 }

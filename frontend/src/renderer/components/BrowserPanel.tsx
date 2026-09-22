@@ -904,14 +904,14 @@ export function BrowserPanelView({
 										<Copy
 											aria-hidden="true"
 											className={cn(
-												"absolute inset-0 size-icon-base transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												"absolute inset-0 size-icon-base transition-[opacity,transform] duration-normal motion-reduce:transition-none",
 												urlCopied ? "scale-75 opacity-0" : "scale-100 opacity-100",
 											)}
 										/>
 										<Check
 											aria-hidden="true"
 											className={cn(
-												"absolute inset-0 size-icon-base text-success transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												"absolute inset-0 size-icon-base text-success transition-[opacity,transform] duration-normal motion-reduce:transition-none",
 												urlCopied ? "scale-100 opacity-100" : "scale-75 opacity-0",
 											)}
 										/>
@@ -974,7 +974,7 @@ export function BrowserPanelView({
 								{suggestion.title ? (
 									<span className="block truncate text-control text-settings-title">{suggestion.title}</span>
 								) : null}
-								<span className="block truncate text-caption text-settings-muted">{suggestion.url}</span>
+								<span className="block truncate text-caption text-muted-foreground">{suggestion.url}</span>
 							</span>
 						</button>
 					))}
@@ -1557,7 +1557,7 @@ export function BrowserPanelView({
 					{navState.error ? (
 						<p
 							className={cn(
-								"absolute inset-x-2.5 bottom-2.5 m-0 border border-error/35 bg-error/8 px-2.5 py-2",
+								"absolute inset-x-2.5 bottom-2.5 m-0 border border-destructive/35 bg-destructive/10 px-2.5 py-2",
 								"rounded-md text-xs text-destructive",
 							)}
 							data-testid="browser-preview-error"
@@ -1782,7 +1782,7 @@ function BrowserSuggestionIcon({ cachedFavicon, url, viewId }: { cachedFavicon?:
 		};
 	}, [cachedFavicon, directFavicon, nativeCompositionEnabled, url, viewId]);
 	if (!favicon) {
-		return <Globe2 aria-hidden="true" className="size-icon-base shrink-0 text-settings-muted" />;
+		return <Globe2 aria-hidden="true" className="size-icon-base shrink-0 text-muted-foreground" />;
 	}
 	return (
 		<img
@@ -1812,7 +1812,7 @@ function StaticPreview({ url }: { url: string }) {
 								The worker exposed a local Vite app with <span className="font-mono">ao preview</span>.
 							</p>
 						</div>
-						<span className="rounded-md bg-success/15 px-2.5 py-1 text-caption font-semibold text-success">
+						<span className="rounded-md bg-success/10 px-2.5 py-1 text-caption font-semibold text-success">
 							Loaded
 						</span>
 					</div>

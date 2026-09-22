@@ -1,9 +1,10 @@
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentModelCatalog } from "../../hooks/useAgentModelsQuery";
 import { useSuppressStrayFocusRing } from "../../hooks/useSuppressStrayFocusRing";
 import { cn } from "../../lib/utils";
+import { SearchField } from "../ui/search-field";
 import { useModelTuning, type ModelTuningControlsProps } from "./ModelTuningControls";
 import { OptionMenuItem, OptionMenuSub, OptionMenuSubContent, OptionMenuSubTrigger } from "../ui/option-menu";
 import {
@@ -202,7 +203,7 @@ export function AgentModelCombobox({
 				<button
 					type="button"
 					className={cn(
-						"group/agent-model-trigger settings-option-trigger max-w-full min-w-0 hover:text-settings-label focus:outline-none focus-visible:outline-none focus-visible:ring-0 data-[state=open]:outline-none data-[state=open]:ring-0",
+						"group/agent-model-trigger settings-option-trigger max-w-full min-w-0 hover:text-foreground data-[state=open]:outline-none data-[state=open]:ring-0",
 						disabled && "cursor-not-allowed opacity-50",
 						triggerClassName,
 					)}
@@ -214,7 +215,7 @@ export function AgentModelCombobox({
 					) : (
 						<span className="min-w-0 truncate">{currentLabel}</span>
 					)}
-					{showEffort && <span className="shrink-0 text-settings-muted"> · {currentEffortLabel}</span>}
+					{showEffort && <span className="shrink-0 text-muted-foreground"> · {currentEffortLabel}</span>}
 					<ChevronDown
 						className="size-icon-sm shrink-0 opacity-70 transition-transform duration-300 ease-out group-data-[state=open]/agent-model-trigger:rotate-180"
 						aria-hidden="true"
@@ -227,22 +228,17 @@ export function AgentModelCombobox({
 				className="settings-menu-surface max-h-select-menu-max! w-[min(22rem,calc(100vw-2rem))] overflow-hidden! rounded-(--radius-settings-panel) border-settings-menu bg-settings-menu"
 			>
 				{showSearch && (
-					<div className="relative shrink-0 p-1" onKeyDown={(event) => event.stopPropagation()}>
-						<Search
-							className="pointer-events-none absolute left-3.5 top-1/2 size-icon-sm -translate-y-1/2 text-settings-muted"
-							aria-hidden="true"
-						/>
-						<input
-							type="search"
-							aria-label={t("settings.models.searchAria", { label: ariaLabel.toLocaleLowerCase() })}
-							value={search}
-							onChange={(event) => setSearch(event.target.value)}
+					<div className="shrink-0 p-1" onKeyDown={(event) => event.stopPropagation()}>
+						<SearchField
+							label={t("settings.models.searchAria", { label: ariaLabel.toLocaleLowerCase() })}
+							onChange={setSearch}
 							placeholder={t(
 								hasMultipleProviders
 									? "settings.models.searchModelsOrProvidersPlaceholder"
 									: "settings.models.searchPlaceholder",
 							)}
-							className="menu-search-input pl-8!"
+							value={search}
+							variant="menu"
 						/>
 					</div>
 				)}
@@ -272,7 +268,7 @@ export function AgentModelCombobox({
 											className={modelItemClass(item.id === value)}
 											aria-current={tuning && item.id === value ? true : undefined}
 										>
-											<span className="truncate text-settings-label">{item.label}</span>
+											<span className="truncate text-foreground">{item.label}</span>
 											{tuning && item.id === value && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
 										</DropdownMenuItem>
 									) : (
@@ -284,19 +280,19 @@ export function AgentModelCombobox({
 											<div className="flex min-w-0 flex-1 items-center gap-3">
 												<div className="min-w-0 flex-1">
 													<div className="flex items-center gap-2">
-														<span className="truncate text-settings-label">{item.label}</span>
+														<span className="truncate text-foreground">{item.label}</span>
 														{item.model.isDefault && (
-															<span className="rounded-full bg-settings-menu-selected px-1.5 py-0.5 text-micro text-settings-muted">
+															<span className="rounded-full bg-settings-menu-selected px-1.5 py-0.5 text-micro text-muted-foreground">
 																{t("settings.models.default")}
 															</span>
 														)}
 													</div>
 													{shouldShowModelID(item, visibleModels, normalizedSearch) && (
-														<p className="truncate text-xs text-settings-muted">{item.id}</p>
+														<p className="truncate text-xs text-muted-foreground">{item.id}</p>
 													)}
 												</div>
 												{group.kind !== "provider" && item.provider !== "Other" && (
-													<span className="shrink-0 text-xs text-settings-muted">{item.provider}</span>
+													<span className="shrink-0 text-xs text-muted-foreground">{item.provider}</span>
 												)}
 											</div>
 										</DropdownMenuItem>
@@ -311,13 +307,13 @@ export function AgentModelCombobox({
 							</DropdownMenuItem>
 						)}
 						{normalizedSearch !== "" && rankedModels.length === 0 && !allowDirectCustom && (
-							<p className="px-2 py-1.5 text-xs text-settings-muted">{t("settings.models.noMatches")}</p>
+							<p className="px-2 py-1.5 text-xs text-muted-foreground">{t("settings.models.noMatches")}</p>
 						)}
 						{normalizedSearch === "" && entryMode !== "direct" && (
 							<>
 								<DropdownMenuSeparator />
-								<div className="space-y-1 px-2 py-1.5 text-xs text-settings-muted">
-									<p className="text-settings-label">{t("settings.models.cantFind")}</p>
+								<div className="space-y-1 px-2 py-1.5 text-xs text-muted-foreground">
+									<p className="text-foreground">{t("settings.models.cantFind")}</p>
 									<p>
 										{entryMode === "configured"
 											? t("settings.models.configureThenRefresh", {
@@ -328,7 +324,7 @@ export function AgentModelCombobox({
 									{onRefresh && (
 										<button
 											type="button"
-											className="text-settings-label underline underline-offset-2"
+											className="text-foreground underline underline-offset-2"
 											onClick={(event) => {
 												event.stopPropagation();
 												setRefreshFailed(false);
@@ -343,7 +339,7 @@ export function AgentModelCombobox({
 							</>
 						)}
 						{showSearch && (
-							<p className="px-2 py-1.5 text-xs text-settings-muted" aria-live="polite">
+							<p className="px-2 py-1.5 text-xs text-muted-foreground" aria-live="polite">
 								{t("settings.models.matchingCount", {
 									visible: visibleModels.length.toLocaleString(),
 									total: rankedModels.length.toLocaleString(),

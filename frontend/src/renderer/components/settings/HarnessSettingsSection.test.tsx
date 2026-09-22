@@ -280,7 +280,7 @@ describe("HarnessSettingsSection", () => {
 			rejectPoll(new Error("Readiness refresh failed."));
 		});
 
-		expect(await screen.findByText("Readiness refresh failed.", {}, { timeout: 3_000 })).toHaveClass("text-error");
+		expect(await screen.findByText("Readiness refresh failed.", {}, { timeout: 3_000 })).toHaveClass("text-destructive");
 		expect(within(row).getByText("Configured")).toBeInTheDocument();
 	});
 
@@ -309,7 +309,7 @@ describe("HarnessSettingsSection", () => {
 		const row = (await screen.findByText("Claude Code")).closest('[data-agent="claude-code"]') as HTMLElement;
 		expect(await within(row).findByRole("button", { name: "Login" })).toBeEnabled();
 		expect(within(row).queryByText("Configured")).not.toBeInTheDocument();
-		expect(within(row).getByText("Authentication check failed.")).toHaveClass("text-error");
+		expect(within(row).getByText("Authentication check failed.")).toHaveClass("text-destructive");
 	});
 
 	it("keeps configured visible for a stale authorized observation", async () => {
@@ -529,7 +529,7 @@ describe("HarnessSettingsSection", () => {
 
 		const configured = await within(row).findByText("Configured");
 		expect(configured).toHaveClass("bg-success/10", "text-success");
-		expect(within(row).getByText("Installed")).toHaveClass("text-settings-muted");
+		expect(within(row).getByText("Installed")).toHaveClass("text-muted-foreground");
 		expect(within(row).queryByText("Set up")).not.toBeInTheDocument();
 	});
 

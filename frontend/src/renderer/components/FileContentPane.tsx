@@ -313,7 +313,7 @@ export function FileContentPane({
 					fileView
 				)}
 				</EditProvider>
-				{saveError ? <p className="border-t border-error/40 bg-error/10 px-3 py-2 text-xs text-error" role="alert">{saveError}</p> : null}
+				{saveError ? <p className="border-t border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{saveError}</p> : null}
 			</div>
 		);
 	}
@@ -325,7 +325,7 @@ export function FileContentPane({
 				<MarkdownFileView content={detail.content} filePath={path} sessionId={sessionId} truncated={detail.contentTruncated} version={query.dataUpdatedAt} />
 			) : fileView}
 			</EditProvider>
-			{saveError ? <p className="border-t border-error/40 bg-error/10 px-3 py-2 text-xs text-error" role="alert">{saveError}</p> : null}
+			{saveError ? <p className="border-t border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{saveError}</p> : null}
 		</div>
 	);
 }

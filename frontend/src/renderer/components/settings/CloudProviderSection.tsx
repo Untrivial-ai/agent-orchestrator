@@ -61,7 +61,7 @@ function CloudProviderSectionInner({ titleHidden }: { titleHidden?: boolean }) {
 		return (
 			<SettingsSection title={t("settings.cloudProvider")} sectionId="cloud-provider" titleHidden={titleHidden}>
 				<SettingsRow icon={Server} label={t("settings.cloudProvider.label")}>
-					<span className="text-sm leading-5 text-settings-muted">
+					<span className="text-sm leading-5 text-muted-foreground">
 						{only ? providerLabel(only) : t("settings.cloudProvider.none")}
 					</span>
 				</SettingsRow>

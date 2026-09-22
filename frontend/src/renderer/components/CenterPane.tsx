@@ -817,7 +817,7 @@ function AgentSwitchTerminalOverlay({
 					success
 						? "border-success/40"
 						: presentation.tone === "danger"
-							? "border-danger/40"
+							? "border-destructive/40"
 							: "border-warning/40",
 				)}>
 					{success ? (
@@ -827,7 +827,7 @@ function AgentSwitchTerminalOverlay({
 							aria-hidden="true"
 							className={cn(
 								"mt-0.5 size-5 shrink-0",
-								presentation.tone === "danger" ? "text-danger" : "text-warning",
+								presentation.tone === "danger" ? "text-destructive" : "text-warning",
 							)}
 						/>
 					)}
@@ -838,7 +838,7 @@ function AgentSwitchTerminalOverlay({
 					{onDismiss ? (
 						<button
 							aria-label={t("common.close")}
-							className="absolute right-2 top-2 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
+							className="absolute right-2 top-2 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
 							onClick={onDismiss}
 							type="button"
 						>
