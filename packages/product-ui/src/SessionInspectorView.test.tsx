@@ -11,6 +11,7 @@ import {
   InspectorPullRequestCardView,
   InspectorReviewsView,
   SessionInspectorShellView,
+  SessionInspectorSummaryView,
   type InspectorReviewLabels,
 } from "./SessionInspectorView";
 import type { ExternalLinkProps } from "./external-link";
@@ -167,6 +168,22 @@ describe("SessionInspectorShellView", () => {
 });
 
 describe("portable inspector presentations", () => {
+  it("places execution context before pull request details", () => {
+    render(
+      <SessionInspectorSummaryView
+        activity={<div>activity</div>}
+        activityTitle="Activity"
+        context={<div data-testid="execution-context">context</div>}
+        pullRequestCards={<div>pull request</div>}
+        pullRequestTitle="Pull request"
+      />,
+    );
+
+    const context = screen.getByTestId("execution-context");
+    const pullRequest = screen.getByText("pull request");
+    expect(Boolean(context.compareDocumentPosition(pullRequest) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
   it("renders PR facts and host-owned actions from a neutral view model", () => {
     render(
       <InspectorPullRequestCardView

@@ -40,7 +40,7 @@ export function ConversationRenameSheet({
 	return <View style={styles.screen}>
 		<SheetHeader title="Rename conversation" subtitle="Use a short name that makes this worker easy to find." />
 		<View style={styles.field}>
-			<ElicitationTextField value={title} label="Conversation title" autoFocus maxLength={120} onChange={(value) => setTitle(String(value))} />
+			<ElicitationTextField value={title} label="Conversation title" autoFocus maxLength={100} onChange={(value) => setTitle(String(value))} />
 		</View>
 		{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 		<View style={styles.actions}>

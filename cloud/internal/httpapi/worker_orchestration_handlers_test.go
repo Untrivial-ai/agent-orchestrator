@@ -33,13 +33,21 @@ const (
 // test honest about what the handler touches.
 type stubChildStore struct {
 	Store
-	credentialAvailable bool
-	credentialErr       error
-	parentProvider      string
-	parentProviderErr   error
-	created             bool
-	captured            domain.CreateSession
-	createErr           error
+	credentialAvailable  bool
+	credentialErr        error
+	parentProvider       string
+	parentProviderErr    error
+	parentWorkerAgent    string
+	parentWorkerAgentErr error
+	created              bool
+	captured             domain.CreateSession
+	createErr            error
+}
+
+func (s *stubChildStore) OrchestratorProjectWorkerAgent(
+	_ context.Context, _, _ string,
+) (string, error) {
+	return s.parentWorkerAgent, s.parentWorkerAgentErr
 }
 
 func (s *stubChildStore) AgentCredentialAvailable(
@@ -108,12 +116,77 @@ func newChildServer(store Store, provisioning sandbox.ProvisioningDefaults, defa
 
 func childRequest(t *testing.T, scopes []string) *http.Request {
 	t.Helper()
-	body := `{"harness":"claude-code","displayName":"add-logger","prompt":"do the work","mode":"trusted"}`
+	return childRequestBody(t, scopes, `{"harness":"claude-code","displayName":"add-logger","prompt":"do the work","mode":"trusted"}`)
+}
+
+func childRequestBody(t *testing.T, scopes []string, body string) *http.Request {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/cloud/v1/worker/children", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "11111111-1111-1111-1111-111111111111")
 	claims := worker.Claims{OrgID: childOrgID, SessionID: parentSessionID, Scopes: scopes}
 	return req.WithContext(context.WithValue(req.Context(), workerContextKey{}, claims))
+}
+
+// An orchestrator that spawns a worker without naming an agent must get the
+// worker agent the project was configured with (config.worker.agent), not a
+// hardcoded default. This is the "worker came up claude though the project said
+// codex" regression.
+func TestCreateWorkerChildInheritsProjectWorkerAgentWhenUnspecified(t *testing.T) {
+	t.Parallel()
+	store := &stubChildStore{credentialAvailable: true, parentProvider: sandbox.ProviderNodeOps, parentWorkerAgent: "codex"}
+	srv := newChildServer(store, bothProviderProvisioning(sandbox.ProviderNodeOps), sandbox.ProviderNodeOps)
+
+	rec := httptest.NewRecorder()
+	body := `{"displayName":"add-logger","prompt":"do the work","mode":"trusted"}`
+	srv.createWorkerChild(rec, childRequestBody(t, []string{"worker:orchestrate"}, body))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	if store.captured.Harness != "codex" {
+		t.Fatalf("child harness = %q, want codex", store.captured.Harness)
+	}
+}
+
+// When the project configured no worker agent, an unspecified harness falls back
+// to claude-code (the prior default) rather than erroring.
+func TestCreateWorkerChildFallsBackToClaudeWhenNoWorkerAgent(t *testing.T) {
+	t.Parallel()
+	store := &stubChildStore{credentialAvailable: true, parentProvider: sandbox.ProviderNodeOps, parentWorkerAgent: ""}
+	srv := newChildServer(store, bothProviderProvisioning(sandbox.ProviderNodeOps), sandbox.ProviderNodeOps)
+
+	rec := httptest.NewRecorder()
+	body := `{"displayName":"add-logger","prompt":"do the work","mode":"trusted"}`
+	srv.createWorkerChild(rec, childRequestBody(t, []string{"worker:orchestrate"}, body))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	if store.captured.Harness != "claude-code" {
+		t.Fatalf("child harness = %q, want claude-code", store.captured.Harness)
+	}
+}
+
+// The project's configured worker agent is authoritative: it overrides an
+// explicit harness the orchestrator names (e.g. a Codex orchestrator that spawns
+// codex children), so the worker matches what was set at project creation.
+func TestCreateWorkerChildForcesProjectWorkerAgentOverExplicit(t *testing.T) {
+	t.Parallel()
+	store := &stubChildStore{credentialAvailable: true, parentProvider: sandbox.ProviderNodeOps, parentWorkerAgent: "claude-code"}
+	srv := newChildServer(store, bothProviderProvisioning(sandbox.ProviderNodeOps), sandbox.ProviderNodeOps)
+
+	rec := httptest.NewRecorder()
+	// Orchestrator explicitly asks for codex, but the project configured claude-code.
+	body := `{"harness":"codex","displayName":"add-logger","prompt":"do the work","mode":"trusted"}`
+	srv.createWorkerChild(rec, childRequestBody(t, []string{"worker:orchestrate"}, body))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	if store.captured.Harness != "claude-code" {
+		t.Fatalf("child harness = %q, want claude-code (project config must win)", store.captured.Harness)
+	}
 }
 
 func resourceProfileProvider(t *testing.T, raw json.RawMessage) string {

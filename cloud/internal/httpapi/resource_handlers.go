@@ -441,6 +441,17 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+	// The active organization must be entitled to the (final, post-override)
+	// provider: coder is gated on a WorkOS org capability. Enforced here so the
+	// gate holds even when a client bypasses the org-filtered list returned by
+	// /me and posts a gated provider directly.
+	if request.Provider != "" && !s.orgAllowsProvider(principalFrom(r), request.Provider) {
+		writeError(
+			w, r, http.StatusForbidden, "provider_forbidden",
+			"Your organization is not enabled for the selected sandbox provider.",
+		)
+		return
+	}
 	// The plan is resolved once, here, and stamped onto the sandbox row. The
 	// reconciler reads it back from the row rather than from configuration, so
 	// a later config change cannot disturb a session already in flight.

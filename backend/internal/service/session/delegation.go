@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	delegatedTaskTitleLimit             = 20
+	delegatedTaskTitleLimit             = maxDisplayNameLen
 	delegatedTaskUntitledName           = "Untitled task"
 	delegatedTaskTitleRefinementTimeout = time.Minute
 )
@@ -190,7 +190,7 @@ func taskTitleDelegationMessage(workerID domain.SessionID, in DelegateTaskInput)
 	b.WriteString("Choose a concise task title from the brief and run:\n\n")
 	b.WriteString("ao session rename ")
 	b.WriteString(string(workerID))
-	b.WriteString(" \"<title, max 20 chars>\"\n\n")
+	b.WriteString(" \"<title, max 100 chars>\"\n\n")
 	b.WriteString("Worker session id: ")
 	b.WriteString(string(workerID))
 	b.WriteString("\nTask brief:\n")

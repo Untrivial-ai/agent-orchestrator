@@ -54,4 +54,32 @@ describe("AppLink", () => {
 		expect(handled).toHaveBeenCalledOnce();
 		expect(open).not.toHaveBeenCalled();
 	});
+
+	it("offers Files for verified workspace paths without offering the system browser", async () => {
+		const user = userEvent.setup();
+		const open = vi.fn();
+		const openFile = vi.fn();
+		const path = "reports/final.html";
+		render(
+			<AppLink
+				href="C:\\worktree\\reports\\final.html"
+				onBrowserOpen={open}
+				inAppLink={() => true}
+				filePath={path}
+				onFileOpen={openFile}
+			>
+				Report
+			</AppLink>,
+		);
+
+		fireEvent.contextMenu(screen.getByRole("link", { name: "Report" }));
+		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+			"Open in ao browser",
+			"Open in Files",
+			"Copy link",
+		]);
+		await user.click(screen.getByRole("menuitem", { name: "Open in Files" }));
+		expect(openFile).toHaveBeenCalledExactlyOnceWith(path);
+		expect(open).not.toHaveBeenCalled();
+	});
 });

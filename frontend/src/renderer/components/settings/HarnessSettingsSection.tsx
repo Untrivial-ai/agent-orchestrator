@@ -9,6 +9,7 @@ import {
 	ensureAgentReadiness,
 	useAgentReadinessQuery,
 	useEnsureAgentReadiness,
+	useSettingsAgentReadinessPolling,
 } from "../../hooks/useAgentReadinessQuery";
 import { agentAuthPlansQueryKey, probeAgentAuth, useAgentAuthPlans, useStartAgentAuth } from "../../hooks/useAgentAuth";
 import { agentModelsQueryPrefix } from "../../hooks/useAgentModelsQuery";
@@ -22,6 +23,7 @@ import { useShellMaybe } from "../../lib/shell-context";
 import { useResolvedTheme } from "../../stores/ui-store";
 import { AgentAvatar } from "../AgentAvatar";
 import { TerminalPane } from "../TerminalPane";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
 import { SettingsSection } from "./SettingsSection";
@@ -29,16 +31,21 @@ import { SettingsOptionMenu } from "./SettingsOptionMenu";
 
 type AgentInstallPlan = components["schemas"]["AgentInstallPlan"];
 type InstallJob = components["schemas"]["InstallJob"];
-type AgentInstallOperation = "install" | "reinstall";
-
 const installerQueryKey = ["agent-installers"] as const;
 const installJobsQueryKey = ["agent-install-jobs"] as const;
 const POLL_INTERVAL_MS = 1_000;
 const AUTH_TERMINAL_LIFETIME_MS = 15 * 60_000;
+const FOCUS_HIGHLIGHT_MS = 2_000;
 
 type AgentAuthState = { pending: boolean; checking: boolean; error: string | null };
 type AgentAuthStates = Partial<Record<AgentId, AgentAuthState>>;
 type AgentAuthProbeResult = Awaited<ReturnType<typeof probeAgentAuth>>;
+const AUTH_STATE_RANK = {
+	authorized: 0,
+	not_applicable: 0,
+	unauthorized: 1,
+	unknown: 2,
+} as const;
 type AuthTerminalWorkflow = {
 	agentId: AgentId;
 	action: string;
@@ -97,11 +104,17 @@ function installMethodLabel(method: { id: string; label: string } | undefined, f
 	return method.label;
 }
 
-export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: boolean }) {
+export function HarnessSettingsSection({
+	focusAgentId,
+	titleHidden = false,
+}: {
+	focusAgentId?: string;
+	titleHidden?: boolean;
+}) {
 	const { i18n, t } = useTranslation();
 	const queryClient = useQueryClient();
 	const agents = useAgentReadinessQuery();
-	useEnsureAgentReadiness();
+	useEnsureAgentReadiness({ purpose: "settings" });
 	const installers = useQuery({ queryKey: installerQueryKey, queryFn: fetchInstallers, staleTime: 60_000 });
 	const jobs = useQuery({ queryKey: installJobsQueryKey, queryFn: fetchInstallJobs, retry: false });
 	const authPlans = useAgentAuthPlans();
@@ -121,6 +134,10 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 	const pendingActions = useRef(new Set<AgentId>());
 	const authChecksInFlight = useRef(new Map<AgentId, Promise<AgentAuthProbeResult | undefined>>());
 	const [pendingAgentIds, setPendingAgentIds] = useState<Set<AgentId>>(new Set());
+	const rowsRef = useRef<HTMLDivElement>(null);
+	const focusHandledRef = useRef(false);
+	const highlightTimerRef = useRef<number | null>(null);
+	const [highlightedAgentId, setHighlightedAgentId] = useState<AgentId | null>(null);
 
 	const plans = useMemo(() => new Map(installers.data?.map((plan) => [plan.agentId, plan]) ?? []), [installers.data]);
 	const jobMap = useMemo(() => new Map(jobs.data?.map((job) => [job.target, job]) ?? []), [jobs.data]);
@@ -130,8 +147,21 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		() => new Set<AgentId>(agents.data?.agents.filter((agent) => agent.installation.state === "installed").map((agent) => agent.id as AgentId) ?? []),
 		[agents.data],
 	);
+	const readinessPoll = useSettingsAgentReadinessPolling({ agentIds: [...installed] });
+	const readinessPollError = readinessPoll.error instanceof Error
+		? readinessPoll.error.message
+		: readinessPoll.error
+			? t("settings.harness.authFailed")
+			: null;
 	const normalizedSearch = search.trim().toLowerCase();
-	const rows = AGENT_OPTIONS.filter((agentId) => agentId === authWorkflow?.agentId || agentLabel(agentId).toLowerCase().includes(normalizedSearch));
+	const targetAgentId = AGENT_OPTIONS.find((agentId) => agentId === focusAgentId) ?? null;
+	const rows = AGENT_OPTIONS
+		.filter((agentId) => agentId === targetAgentId || agentId === authWorkflow?.agentId || agentLabel(agentId).toLowerCase().includes(normalizedSearch))
+		.sort((left, right) => {
+			const leftState = readinessAgents.get(left)?.authentication.state ?? "unknown";
+			const rightState = readinessAgents.get(right)?.authentication.state ?? "unknown";
+			return AUTH_STATE_RANK[leftState] - AUTH_STATE_RANK[rightState];
+		});
 	const updateAuthState = useCallback((agentId: AgentId, patch: Partial<AgentAuthState>) => {
 		setAuthStates((current) => ({
 			...current,
@@ -142,6 +172,44 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		() => (jobs.data ?? []).filter((job) => isActive(job)).map((job) => job.target).sort().join(","),
 		[jobs.data],
 	);
+	const refreshInstalledAgent = useCallback((agentId: AgentId) => {
+		setActionErrors((current) => ({ ...current, [agentId]: undefined }));
+		void apiClient.POST("/api/v1/agents/{agent}/probe", {
+			params: { path: { agent: agentId } },
+		}).finally(async () => {
+			try {
+				const readiness = await ensureAgentReadiness([agentId], "settings");
+				cacheAgentReadiness(queryClient, readiness);
+			} catch {
+				await queryClient.invalidateQueries({ queryKey: agentReadinessQueryKey });
+			} finally {
+				await Promise.all([
+					queryClient.invalidateQueries({ queryKey: installerQueryKey }),
+					queryClient.invalidateQueries({ queryKey: agentAuthPlansQueryKey }),
+					queryClient.invalidateQueries({ queryKey: agentModelsQueryPrefix(agentId) }),
+				]);
+			}
+		});
+	}, [queryClient]);
+	useEffect(() => {
+		if (focusHandledRef.current || !targetAgentId) return;
+		if (agents.isPending || installers.isPending || jobs.isPending || authPlans.isPending) return;
+		const row = Array.from(rowsRef.current?.querySelectorAll<HTMLElement>("[data-agent]") ?? [])
+			.find((candidate) => candidate.dataset.agent === targetAgentId);
+		if (!row) return;
+
+		focusHandledRef.current = true;
+		row.scrollIntoView({ behavior: "smooth", block: "center" });
+		const primaryAction = row.querySelector<HTMLElement>("[data-harness-primary-action]:not(:disabled)");
+		(primaryAction ?? row).focus({ preventScroll: true });
+		setHighlightedAgentId(targetAgentId);
+		highlightTimerRef.current = window.setTimeout(() => setHighlightedAgentId(null), FOCUS_HIGHLIGHT_MS);
+	}, [agents.isPending, authPlans.isPending, installers.isPending, jobs.isPending, targetAgentId]);
+
+	useEffect(() => () => {
+		if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+	}, []);
+
 	useEffect(() => {
 		if (!activeKey) return;
 		const timer = window.setInterval(() => void jobs.refetch(), POLL_INTERVAL_MS);
@@ -157,25 +225,9 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 			}
 			const completedWhileMounted = activeInstallJobs.current.delete(agentId);
 			if (job.status !== "succeeded" || !completedWhileMounted) continue;
-			setActionErrors((current) => ({ ...current, [agentId]: undefined }));
-			void apiClient.POST("/api/v1/agents/{agent}/probe", {
-				params: { path: { agent: agentId } },
-			}).finally(async () => {
-				try {
-					const readiness = await ensureAgentReadiness([agentId], "display");
-					cacheAgentReadiness(queryClient, readiness);
-				} catch {
-					await queryClient.invalidateQueries({ queryKey: agentReadinessQueryKey });
-				} finally {
-					await Promise.all([
-						queryClient.invalidateQueries({ queryKey: installerQueryKey }),
-						queryClient.invalidateQueries({ queryKey: agentAuthPlansQueryKey }),
-						queryClient.invalidateQueries({ queryKey: agentModelsQueryPrefix(agentId) }),
-					]);
-				}
-			});
+			refreshInstalledAgent(agentId);
 		}
-	}, [jobs.data, queryClient]);
+	}, [jobs.data, refreshInstalledAgent]);
 
 	useEffect(() => {
 		setExpandedDiagnostics((current) => {
@@ -208,19 +260,20 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 		setPendingAgentIds(new Set(pendingActions.current));
 	};
 
-	const startInstall = async (agentId: AgentId, method: string, operation: AgentInstallOperation = "install") => {
+	const startInstall = async (agentId: AgentId, method: string) => {
 		if (!beginAction(agentId)) return;
 		setActionErrors((current) => ({ ...current, [agentId]: undefined }));
 		try {
 			const { data, error } = await apiClient.POST("/api/v1/agents/{agent}/install", {
 				params: { path: { agent: agentId } },
-				body: { method, operation },
+				body: { method, operation: "install" },
 			});
 			if (error || !data) {
 				setActionErrors((current) => ({ ...current, [agentId]: apiErrorMessage(error, t("settings.harness.startFailed")) }));
 				return;
 			}
 			updateJob(data);
+			if (data.status === "succeeded") refreshInstalledAgent(agentId);
 		} finally {
 			endAction(agentId);
 		}
@@ -291,7 +344,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 			updateAuthState(agentId, { checking: true, error: null });
 			try {
 				const result = await probeAgentAuth(agentId);
-				const readiness = await ensureAgentReadiness([agentId], "display");
+				const readiness = await ensureAgentReadiness([agentId], "settings");
 				cacheAgentReadiness(queryClient, readiness);
 				return result;
 			} catch (error) {
@@ -406,14 +459,14 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 				</Button>
 			</div>
 
-			{installers.error || authPlans.error || agents.error || jobs.error || refreshError ? (
+			{installers.error || authPlans.error || agents.error || jobs.error || readinessPoll.error || refreshError ? (
 				<div className="flex items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
 					<TriangleAlert className="size-4" aria-hidden="true" />
-					{refreshError ?? (jobs.error instanceof Error ? jobs.error.message : t("settings.harness.loadFailed"))}
+					{refreshError ?? readinessPollError ?? (jobs.error instanceof Error ? jobs.error.message : t("settings.harness.loadFailed"))}
 				</div>
 			) : null}
 
-			<div className="settings-grouped-rows flex w-full flex-col">
+			<div className="settings-grouped-rows flex w-full flex-col" ref={rowsRef}>
 			{rows.map((agentId) => {
 					const plan = plans.get(agentId);
 					const job = jobMap.get(agentId);
@@ -423,36 +476,6 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 					const selectedMethodId = selectedMethods[agentId] ?? (availableMethods.some((method) => method.id === job?.method) ? job?.method : recommendedMethod?.id) ?? "";
 					const selectedMethod = availableMethods.find((method) => method.id === selectedMethodId);
 					const pending = pendingAgentIds.has(agentId);
-					const reinstallableMethods = availableMethods.filter((method) => method.reinstallAvailable);
-					const reinstallMethodId = reinstallableMethods.some((method) => method.id === selectedMethodId)
-						? selectedMethodId
-						: reinstallableMethods[0]?.id ?? "";
-					const reinstallMethodSelect = reinstallableMethods.length > 1 ? (
-						<SettingsOptionMenu
-							aria-label={t("settings.harness.installMethod")}
-							value={reinstallMethodId}
-							options={reinstallableMethods.map((method) => ({ value: method.id, label: installMethodLabel(method) ?? method.label }))}
-							triggerClassName="h-8! min-h-8! w-8! min-w-8! justify-center! rounded-none! border-l border-settings-menu bg-transparent px-0! text-xs leading-4 hover:bg-[var(--color-bg-settings-trigger-hover)]!"
-							renderTrigger={(selected) => <span className="sr-only">{selected?.label}</span>}
-							onChange={(value) => setSelectedMethods((current) => ({ ...current, [agentId]: value }))}
-						/>
-					) : null;
-					const reinstallControls = reinstallMethodId ? (
-						<div className="flex items-stretch overflow-hidden rounded-md bg-[var(--color-bg-settings-trigger)]">
-							<Button
-								type="button"
-								size="none"
-								variant="ghost"
-								className={cn(MENU_TRIGGER_CHROME, "h-8! min-h-8! rounded-none! border-0! bg-transparent px-3! text-xs leading-4 hover:bg-[var(--color-bg-settings-trigger-hover)]!")}
-								aria-label={t("settings.harness.reinstall")}
-								disabled={pending}
-								onClick={() => void startInstall(agentId, reinstallMethodId, "reinstall")}
-							>
-								<RefreshCw aria-hidden="true" />{t("settings.harness.reinstall")}
-							</Button>
-							{reinstallMethodSelect}
-						</div>
-					) : null;
 					const actionError = actionErrors[agentId];
 					const failed = job?.status === "failed" || job?.status === "unsupported" || job?.status === "interrupted" || Boolean(actionError);
 					const active = isActive(job);
@@ -461,10 +484,14 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 						const isSetupAction = authPlan?.action === "setup";
 						const authState = authStates[agentId];
 						const authStatus = readinessAgent?.authentication.state;
-						const installationStatusLabel = authStatus === "authorized"
-							? t("settings.harness.authorized")
-							: t("settings.harness.installed");
-						const rowHasError = failed || Boolean(authState?.error);
+						const readinessChecking = authState?.checking || readinessAgent?.authentication.freshness === "checking";
+						const readinessAuthFailed = ["auth_check_failed", "auth_check_timeout", "auth_check_inconclusive"]
+							.includes(readinessAgent?.authentication.reasonCode ?? "");
+						const isReady = readinessAgent?.effectiveReadiness === "ready"
+							&& (authStatus === "authorized" || authStatus === "not_applicable")
+							&& !readinessAuthFailed
+							&& !authState?.error;
+						const rowHasError = failed || Boolean(authState?.error) || readinessAuthFailed;
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
 							job &&
@@ -472,12 +499,18 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 							(job.error || job.output || job.method || job.expectedDestination),
 						);
 
-						const authSummary = authState?.checking
+						const authSummary = readinessChecking
 							? t("settings.harness.checkingLogin")
+							: isReady
+								? null
 							: authState?.error
 								? authState.error
+							: readinessPollError
+								? readinessPollError
+							: readinessAuthFailed
+								? (readinessAgent?.authentication.reason ?? t("settings.harness.authFailed"))
 							: authStatus === "authorized"
-								? (isSetupAction ? t("settings.harness.configured") : t("settings.harness.loggedIn"))
+								? null
 								: authPlan && !authPlan.available
 									? (authPlan.reason ?? t("settings.harness.authFailed"))
 									: authStatus === "unauthorized"
@@ -497,43 +530,42 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 							onChange={(value) => setSelectedMethods((current) => ({ ...current, [agentId]: value }))}
 						/>
 						) : null;
-						const authControls = !authPlan && authPlans.isPending ? (
+						const authControls = readinessChecking ? (
+							<Button type="button" size="sm" variant="ghost" disabled><LoaderCircle className="animate-spin" aria-hidden="true" />{t("settings.harness.checkingLogin")}</Button>
+						) : isReady ? (
+							<Badge className="h-8 rounded-md bg-success/10 px-2.5" role="status" variant="success"><Check aria-hidden="true" />{t("settings.harness.configured")}</Badge>
+						) : !authPlan && authPlans.isPending ? (
 							<LoaderCircle className="size-4 animate-spin text-settings-muted" aria-hidden="true" />
 						) : authPlan && authPlan.action !== "instructions" ? (
-							<>
-								{authStatus !== "authorized" ? (
-									<Button disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
-										{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
-										{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
-									</Button>
-								) : null}
-							</>
+							<Button data-harness-primary-action="" data-terminal-focus-handoff="true" disabled={!authPlan.available || authState?.pending || Boolean(authWorkflow)} size="sm" onClick={() => void startAuth(agentId)}>
+								{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
+								{authState?.pending ? t("settings.harness.loggingIn") : isSetupAction ? t("settings.harness.setup") : t("settings.harness.login")}
+							</Button>
 						) : null;
 					return (
-						<div className="settings-row-bar min-h-14 flex-wrap gap-3" data-agent={agentId} key={agentId}>
+						<div
+							aria-labelledby={`harness-agent-${agentId}`}
+							className={cn(
+								"settings-row-bar min-h-14 flex-wrap gap-3 transition-[background-color,box-shadow] duration-200",
+								highlightedAgentId === agentId && "bg-accent-weak ring-2 ring-inset ring-accent",
+							)}
+							data-agent={agentId}
+							data-focus-highlighted={highlightedAgentId === agentId ? "" : undefined}
+							key={agentId}
+							tabIndex={-1}
+						>
 							<AgentAvatar className="size-7 shrink-0" decorative provider={agentId} />
 							<div className="min-w-0 flex-1">
 								<p className="truncate text-sm font-medium text-settings-label" id={`harness-agent-${agentId}`}>{agentLabel(agentId)}</p>
-								<p className={cn("truncate text-xs text-settings-muted", rowHasError && "text-error")} title={authState?.error ?? actionError ?? job?.error ?? authPlan?.reason ?? plan?.reason}>
-										{isInstalled ? authSummary : actionError ?? (job?.status === "interrupted" ? t("settings.harness.interrupted") : failed ? (job?.error ?? t("settings.harness.installFailed")) : plan?.available ? t("settings.harness.availableWith", { method: availableMethodsLabel }) : (plan?.reason ?? t("settings.harness.manualRequired")))}
-								</p>
+								{!isInstalled || authSummary || isReady ? <p className={cn("truncate text-xs text-settings-muted", rowHasError && "text-error")} title={authState?.error ?? (readinessAuthFailed ? readinessAgent?.authentication.reason : null) ?? actionError ?? job?.error ?? authPlan?.reason ?? plan?.reason}>
+										{isInstalled ? (authSummary ?? t("settings.harness.installed")) : actionError ?? (job?.status === "interrupted" ? t("settings.harness.interrupted") : failed ? (job?.error ?? t("settings.harness.installFailed")) : plan?.available ? t("settings.harness.availableWith", { method: availableMethodsLabel }) : (plan?.reason ?? t("settings.harness.manualRequired")))}
+								</p> : null}
 							</div>
 
 			{active ? (
 				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "installing" ? t("settings.harness.installing") : t("settings.harness.verifying")}</span>
 							) : isInstalled ? (
-								<div className="flex shrink-0 items-center gap-2">
-								<Button
-					type="button"
-					size="none"
-					variant="ghost"
-					className={cn(MENU_TRIGGER_CHROME, "h-8! min-h-8! shrink-0 rounded-md! border-0! bg-[var(--color-bg-settings-trigger)] px-3! text-xs leading-4")}
-					aria-label={installationStatusLabel}
-					disabled
-								>
-									{installationStatusLabel}
-								</Button>
-								{reinstallControls}
+							<div className="flex shrink-0 items-center">
 								{authControls}
 								</div>
 							) : failed ? (
@@ -547,6 +579,7 @@ export function HarnessSettingsSection({ titleHidden = false }: { titleHidden?: 
 							) : availableMethods.length > 0 ? (
 				<div className="flex items-stretch overflow-hidden rounded-md bg-[var(--color-bg-settings-trigger)]">
 									<Button
+										data-harness-primary-action=""
 										className={cn(
 											MENU_TRIGGER_CHROME,
 											"h-8! min-h-8! rounded-none! border-0! bg-transparent px-3! text-xs leading-4 hover:bg-[var(--color-bg-settings-trigger-hover)]! dark:hover:bg-[var(--color-bg-settings-trigger-hover)]!",
@@ -659,7 +692,7 @@ function HarnessAuthTerminalPanel({ workflow, onClose, onRetry, onTerminalState 
 					<button type="button" aria-label={t("settings.close")} className="grid size-7 place-items-center rounded text-settings-muted hover:bg-interactive-hover" disabled={workflow.phase === "closing" || workflow.phase === "verifying"} onClick={onClose}><X className="size-4" aria-hidden="true" /></button>
 				</div>
 			</div>
-			<div className="h-[300px] min-h-0"><TerminalPane daemonReady={shell ? shell.daemonStatus.state === "ready" : true} fontSize={12} inputRequest={inputRequest} onInputRequestResult={handleInputRequestResult} onTerminalStateChange={handleTerminalState} terminalTarget={{ kind: "shell", handleId: workflow.terminal.handleId, generation: workflow.terminal.createdAt, title: workflow.terminal.title }} theme={theme} /></div>
+			<div className="h-[300px] min-h-0"><TerminalPane daemonReady={shell ? shell.daemonStatus.state === "ready" : true} focusRequested={workflow.phase === "running" && terminalState === "attached"} fontSize={12} inputRequest={inputRequest} onInputRequestResult={handleInputRequestResult} onTerminalStateChange={handleTerminalState} terminalTarget={{ kind: "shell", handleId: workflow.terminal.handleId, generation: workflow.terminal.createdAt, title: workflow.terminal.title }} theme={theme} /></div>
 			{retryable ? <div className="flex items-center justify-end border-t border-(--color-border-settings-input) bg-surface/90 px-3 py-2"><Button type="button" size="sm" variant="outline" onClick={workflow.phase === "cleanup_failed" ? onClose : onRetry}>{workflow.phase === "cleanup_failed" ? t("settings.harness.retry") : workflow.action === "setup" ? t("settings.harness.setup") : t("settings.harness.login")}</Button></div> : null}
 		</div>
 	);
