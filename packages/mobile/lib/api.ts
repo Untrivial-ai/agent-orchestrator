@@ -725,6 +725,66 @@ export async function getSessionPR(cfg: ServerConfig, sessionId: string): Promis
 	return Array.isArray(data?.prs) ? data.prs : [];
 }
 
+// ---- AO review detail ------------------------------------------------------
+
+export type ReviewRun = {
+	id: string;
+	reviewId: string;
+	sessionId: string;
+	batchId: string;
+	harness: string;
+	triggerSource: "manual" | "auto";
+	prUrl: string;
+	targetSha: string;
+	status: "running" | "complete" | "delivered" | "failed" | "cancelled";
+	verdict: "" | "approved" | "changes_requested";
+	body: string;
+	githubReviewId: string;
+	createdAt: string;
+	deliveredAt?: string | null;
+	autoInjectReview: boolean;
+};
+
+export type PRReviewState = {
+	prUrl: string;
+	prNumber: number;
+	title: string;
+	targetSha: string;
+	status: "needs_review" | "running" | "up_to_date" | "changes_requested" | "ineligible";
+	latestRun?: ReviewRun;
+	previousRun?: ReviewRun;
+};
+
+export type ReviewerSurface = {
+	mode: "chat" | "tui";
+	reviewId: string;
+	harness: string;
+	handleId?: string;
+	controllerError?: string;
+};
+
+export type SessionReviews = {
+	reviewerHandleId: string;
+	reviewerHarness?: string;
+	reviewerActivityState?: "active" | "idle" | "waiting_input" | "blocked" | "exited";
+	reviewerSurface?: ReviewerSurface;
+	reviews: PRReviewState[];
+	runs: ReviewRun[];
+};
+
+export async function getSessionReviews(cfg: ServerConfig, sessionId: string): Promise<SessionReviews> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews`);
+	const data = await res.json();
+	return {
+		reviewerHandleId: typeof data?.reviewerHandleId === "string" ? data.reviewerHandleId : "",
+		reviewerHarness: typeof data?.reviewerHarness === "string" ? data.reviewerHarness : undefined,
+		reviewerActivityState: data?.reviewerActivityState,
+		reviewerSurface: data?.reviewerSurface,
+		reviews: Array.isArray(data?.reviews) ? data.reviews : [],
+		runs: Array.isArray(data?.runs) ? data.runs : [],
+	};
+}
+
 // ---- Writes / actions -------------------------------------------------------
 
 export async function killSession(cfg: ServerConfig, id: string): Promise<void> {
