@@ -785,6 +785,18 @@ export async function getSessionReviews(cfg: ServerConfig, sessionId: string): P
 	};
 }
 
+export async function triggerSessionReview(cfg: ServerConfig, sessionId: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/trigger`, { method: "POST" });
+}
+
+export async function cancelSessionReview(cfg: ServerConfig, sessionId: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/cancel`, { method: "POST" });
+}
+
+export async function restoreSessionReviewer(cfg: ServerConfig, sessionId: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/restore`, { method: "POST" });
+}
+
 // ---- Writes / actions -------------------------------------------------------
 
 export async function killSession(cfg: ServerConfig, id: string): Promise<void> {

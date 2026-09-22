@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PRReviewState, ReviewRun } from "./api";
-import { reviewForPullRequest, reviewStatusLabel, reviewVerdictLabel, shortCommit } from "./reviewView";
+import { reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewStatusLabel, reviewVerdictLabel, shortCommit } from "./reviewView";
 
 const run = (over: Partial<ReviewRun> = {}): ReviewRun => ({
 	id: "run-1", reviewId: "review-1", sessionId: "worker-1", batchId: "", harness: "codex",
@@ -31,5 +31,13 @@ describe("mobile review presentation", () => {
 		expect(reviewVerdictLabel(run({ verdict: "changes_requested" }))).toBe("Changes requested");
 		expect(reviewVerdictLabel(run({ status: "cancelled", verdict: "" }))).toBe("Review cancelled");
 		expect(shortCommit("abcdef123456")).toBe("abcdef12");
+	});
+
+	it("only offers actions supported by the current review state", () => {
+		expect(reviewPrimaryAction(state({ status: "needs_review" }))).toBe("start");
+		expect(reviewPrimaryAction(state({ status: "running" }))).toBe("cancel");
+		expect(reviewPrimaryAction(state({ status: "up_to_date" }))).toBe("review_again");
+		expect(reviewPrimaryAction(state({ status: "ineligible" }))).toBe("none");
+		expect(reviewPrimaryActionLabel("review_again")).toBe("Review again");
 	});
 });

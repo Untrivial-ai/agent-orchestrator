@@ -2,9 +2,9 @@ import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useNavigation } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
-import { getSessionReviews, type ReviewRun, type SessionReviews } from "../../lib/api";
+import { cancelSessionReview, getSessionReviews, triggerSessionReview, type ReviewRun, type SessionReviews } from "../../lib/api";
 import { haptics } from "../../lib/haptics";
-import { reviewForPullRequest, reviewStatusLabel, reviewVerdictLabel, shortCommit } from "../../lib/reviewView";
+import { reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewStatusLabel, reviewVerdictLabel, shortCommit } from "../../lib/reviewView";
 import { useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
@@ -21,6 +21,7 @@ export default function ReviewDetailScreen() {
 	const [data, setData] = useState<SessionReviews>();
 	const [error, setError] = useState("");
 	const [refreshing, setRefreshing] = useState(false);
+	const [acting, setActing] = useState(false);
 
 	const load = useCallback(async () => {
 		if (!config || !sessionId) return;
@@ -45,6 +46,22 @@ export default function ReviewDetailScreen() {
 
 	if (!data && !error) return <View style={styles.center}><ActivityIndicator color={t.blue} /></View>;
 	if (!data || !review) return <EmptyState icon={error ? "alert-triangle" : "git-pull-request"} title={error ? "Could not load review" : "No review found"} message={error || "AO has no review state for this pull request yet."} action={<Button title="Try again" icon="refresh-cw" variant="ghost" onPress={() => void load()} />} />;
+	const primaryAction = reviewPrimaryAction(review);
+	const runPrimaryAction = async () => {
+		if (!config || primaryAction === "none") return;
+		haptics.tap();
+		setActing(true);
+		setError("");
+		try {
+			if (primaryAction === "cancel") await cancelSessionReview(config, sessionId);
+			else await triggerSessionReview(config, sessionId);
+			await load();
+		} catch (value) {
+			setError(value instanceof Error ? value.message : "The review action failed.");
+		} finally {
+			setActing(false);
+		}
+	};
 
 	return (
 		<ScrollView style={styles.screen} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={t.blue} />}>
@@ -63,6 +80,8 @@ export default function ReviewDetailScreen() {
 				<Meta label="Commit" value={shortCommit(review.targetSha)} mono />
 				{data.reviewerActivityState ? <Meta label="Activity" value={data.reviewerActivityState.replaceAll("_", " ")} /> : null}
 			</Card>
+			{primaryAction !== "none" ? <Button title={reviewPrimaryActionLabel(primaryAction)} icon={primaryAction === "cancel" ? "x" : "play"} variant={primaryAction === "cancel" ? "danger" : "primary"} loading={acting} disabled={acting} onPress={() => void runPrimaryAction()} /> : null}
+			{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 
 			<Text style={styles.sectionLabel}>LATEST RESULT</Text>
 			{review.latestRun ? <RunCard run={review.latestRun} /> : <Card><Text style={styles.emptyTitle}>No result for this commit</Text><Text style={styles.body}>This commit still needs a review. An earlier verdict is shown below only as context.</Text></Card>}
@@ -110,5 +129,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	body: { color: t.textSecondary, fontSize: 14, lineHeight: 21, marginTop: 12 },
 	bodyMuted: { color: t.textTertiary, fontSize: 14, marginTop: 12, fontStyle: "italic" },
 	emptyTitle: { color: t.textPrimary, fontSize: 15, fontWeight: "700" },
+	error: { color: t.red, fontSize: 13, lineHeight: 18 },
 	previousCard: { opacity: 0.78 },
 });

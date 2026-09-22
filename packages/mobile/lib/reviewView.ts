@@ -34,3 +34,21 @@ export function reviewVerdictLabel(run: ReviewRun): string {
 export function shortCommit(sha: string): string {
 	return sha.slice(0, 8);
 }
+
+export type ReviewPrimaryAction = "start" | "cancel" | "review_again" | "none";
+
+export function reviewPrimaryAction(review: PRReviewState): ReviewPrimaryAction {
+	if (review.status === "running") return "cancel";
+	if (review.status === "ineligible") return "none";
+	if (review.status === "needs_review") return "start";
+	return "review_again";
+}
+
+export function reviewPrimaryActionLabel(action: ReviewPrimaryAction): string {
+	switch (action) {
+		case "start": return "Start review";
+		case "cancel": return "Cancel review";
+		case "review_again": return "Review again";
+		default: return "";
+	}
+}
