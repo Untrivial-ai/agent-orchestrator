@@ -973,6 +973,27 @@ describe("SessionView", () => {
 		);
 	});
 
+	it("does not re-raise the full-screen loader when a connected cloud session's runtime relay drops mid-turn", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "running",
+		};
+		const view = render(<SessionView sessionId="sess-2" />);
+		// Connected: no lifecycle loader over the terminal.
+		expect(screen.queryByTestId("cloud-session-loader-screen")).not.toBeInTheDocument();
+
+		// The worker relay row lapses mid-turn: runtimeConnected flips false while the
+		// sandbox stays running (stage -> "restoring_agent"). The connect latch must
+		// keep the terminal visible instead of re-raising the full-screen loader.
+		session.runtimeConnected = false;
+		view.rerender(<SessionView sessionId="sess-2" />);
+		expect(screen.queryByTestId("cloud-session-loader-screen")).not.toBeInTheDocument();
+	});
+
 	it("activates a new terminal opened while a file tab is selected", async () => {
 		const shell = {
 			handleId: "sh-after-file",

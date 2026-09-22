@@ -715,6 +715,27 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const session = workspaceQuery.data;
 	const cloudStage = cloudLifecycleStage(session);
 	const cloudReconnecting = useTerminalResetStore((state) => Boolean(state.reconnecting[sessionId]));
+	// Latch the session that has reached "connected" at least once (keyed on
+	// sessionId so it resets cleanly when the view switches sessions). After the
+	// first successful connect, a transient runtime-connection drop while the
+	// sandbox is still running (stage flips to "restoring_agent", e.g. the worker
+	// relay row cycles mid-turn) or a terminal reconnect must NOT re-raise the
+	// full-screen lifecycle loader over the terminal for the rest of the turn.
+	// Only a genuine workspace (re)start — VM stopped/resuming/provisioning/
+	// bootstrapping — should block after the session has connected once.
+	const connectedSessionRef = useRef("");
+	if (cloudStage === "connected") connectedSessionRef.current = sessionId;
+	const hasConnectedOnce = connectedSessionRef.current === sessionId;
+	const workspaceRestarting = cloudStage === "resuming_workspace"
+		|| cloudStage === "waiting_for_coder_agent"
+		|| cloudStage === "starting_ao_worker";
+	// After the first connect, the ONLY case we stop blocking on is
+	// "restoring_agent" while the sandbox is still running (a transient runtime
+	// relay drop mid-turn). A terminal re-mint (cloudReconnecting, covers a blank
+	// flash) and a genuine workspace restart still raise the loader.
+	const showLifecycleLoader = hasConnectedOnce
+		? (cloudReconnecting || workspaceRestarting)
+		: (cloudReconnecting || (cloudStage != null && cloudStage !== "paused_by_coder" && cloudStage !== "connected"));
 	const cloudResumeRef = useRef("");
 	const requestCloudResume = useCallback(async () => {
 		if (!session?.cloud) return;
@@ -2162,7 +2183,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<NotificationCenter style={noDragStyle} />
 				</div>
 			) : null}
-			{cloudReconnecting || (cloudStage && cloudStage !== "paused_by_coder" && cloudStage !== "connected")
+			{showLifecycleLoader
 				? <CloudSessionLifecycleLoader />
 				: null}
 			<SessionInterfaceSwitchDialog
