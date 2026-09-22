@@ -54,6 +54,7 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
 	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
@@ -794,6 +795,7 @@ func Run() error {
 		Directories:        fsbrowsersvc.New(),
 		ShellTerminals:     shellTermSvc,
 		AgentAuth:          agentAuthSvc,
+		GitHub:             githubpat.New(cfg.DataDir),
 		Conversations:      chatSvc,
 		Settings:           settingsSvc,
 		CDC:                store,
