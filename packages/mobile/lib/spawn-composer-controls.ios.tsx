@@ -1,10 +1,12 @@
 import { Host } from "@expo/ui";
 import { Asset } from "expo-asset";
-import { Button, HStack, Image, Menu, Spacer, Text, VStack } from "@expo/ui/swift-ui";
+import { Button, Group, HStack, Image, Menu, Spacer, Text, VStack } from "@expo/ui/swift-ui";
 import {
 	accessibilityIdentifier,
 	aspectRatio,
+	backgroundOverlay,
 	buttonStyle,
+	clipShape,
 	containerRelativeFrame,
 	font,
 	frame,
@@ -16,6 +18,7 @@ import {
 } from "@expo/ui/swift-ui/modifiers";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text as RNText, View } from "react-native";
+import { chipColorFor } from "./harnessLogo";
 import { logoFor } from "./harnessLogoAssets";
 import { glassPanel } from "./glass";
 import { haptics } from "./haptics";
@@ -94,7 +97,7 @@ export function SpawnComposerControls({
 					<Menu
 						label={
 							<HStack spacing={6}>
-								<HarnessImage uri={logoUris[harness]} />
+								<HarnessImage uri={logoUris[harness]} harness={harness} />
 								<Text modifiers={[font({ size: 14, weight: "medium" })]}>{harnessLabel}</Text>
 								<Image systemName="chevron.down" size={iconSize.xs} />
 							</HStack>
@@ -104,7 +107,7 @@ export function SpawnComposerControls({
 						{agents.map((agent) => (
 							<Button key={agent.id} onPress={() => { haptics.select(); onSelectHarness(agent.id); }}>
 								<HStack spacing={9}>
-									<HarnessImage uri={logoUris[agent.id]} />
+									<HarnessImage uri={logoUris[agent.id]} harness={agent.id} />
 									<Text>{agent.label}</Text>
 									<Spacer />
 									{agent.id === harness ? <Image systemName="checkmark" size={iconSize.xs} /> : null}
@@ -183,10 +186,27 @@ const styles = StyleSheet.create({
 	spawnLabel: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
 });
 
-function HarnessImage({ uri }: { uri?: string }) {
-	return uri
-		? <Image uiImage={uri} modifiers={[resizable(), aspectRatio({ contentMode: "fit" }), frame({ width: 20, height: 20 })]} />
-		: <Image systemName="terminal" size={iconSize.sm} />;
+// The mark's box, and the chip it sits on when it needs one to stay visible.
+// Same arithmetic as `AgentLogo`: a 16% inset and a 28% corner radius, so a
+// chipped mark here and a chipped mark in a row are the same size and shape.
+const MARK_SIZE = 20;
+const CHIP_INSET = Math.round(MARK_SIZE * 0.16);
+const CHIP_RADIUS = Math.round(MARK_SIZE * 0.28);
+
+function HarnessImage({ uri, harness }: { uri?: string; harness: string }) {
+	if (!uri) return <Image systemName="terminal" size={iconSize.sm} />;
+	const mark = [resizable(), aspectRatio({ contentMode: "fit" }), frame({ width: MARK_SIZE - CHIP_INSET * 2, height: MARK_SIZE - CHIP_INSET * 2 })];
+	const chip = chipColorFor(harness);
+	// opencode's mark is pure white and cursor's likewise, so on the light theme
+	// they disappeared entirely — this menu drew the raw asset, where the rest of
+	// the app asks `chipColorFor` first. Most marks are colourful and render bare.
+	return chip
+		? (
+			<Group modifiers={[frame({ width: MARK_SIZE, height: MARK_SIZE }), backgroundOverlay({ color: chip }), clipShape("roundedRectangle", CHIP_RADIUS)]}>
+				<Image uiImage={uri} modifiers={mark} />
+			</Group>
+		)
+		: <Image uiImage={uri} modifiers={[resizable(), aspectRatio({ contentMode: "fit" }), frame({ width: MARK_SIZE, height: MARK_SIZE })]} />;
 }
 
 function useHarnessLogoUris(agents: readonly SpawnComposerOption[]) {
