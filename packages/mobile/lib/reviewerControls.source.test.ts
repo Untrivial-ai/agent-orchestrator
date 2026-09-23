@@ -16,6 +16,10 @@ describe("reviewer control integration", () => {
 		expect(actions).toContain("request === modelRequest.current");
 	});
 
+	it("confirms model and mode changes while a review is running", () => {
+		expect(actions).toContain("confirmReviewerChange(reviewerOverride, { ...reviewerConfig, [key]: value })");
+	});
+
 	it("renders every reviewer through the shared harness logo registry", () => {
 		expect(actions).toContain('import { AgentLogo } from "../../lib/AgentLogo"');
 		expect(actions).toContain("harness={agent.id}");

@@ -23,9 +23,9 @@ export function reviewerSwitchSelection(
 	};
 }
 
-/** Switching an active reviewer is supported, but replaces its pane and cancels its running pass. */
+/** Changing an active reviewer's harness or config replaces its pane and cancels its running pass. */
 export function reviewerSwitchWarning(hasRunningReview: boolean): string | undefined {
 	return hasRunningReview
-		? "Switching now stops the active reviewer and cancels its running review before starting the selected reviewer."
+		? "Changing reviewer settings now stops the active reviewer and cancels its running review before applying the selection."
 		: undefined;
 }

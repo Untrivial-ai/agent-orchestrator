@@ -29,5 +29,6 @@ describe("mobile reviewer controls", () => {
 	it("only warns when switching an active review", () => {
 		expect(reviewerSwitchWarning(false)).toBeUndefined();
 		expect(reviewerSwitchWarning(true)).toContain("cancels its running review");
+		expect(reviewerSwitchWarning(true)).toContain("reviewer settings");
 	});
 });

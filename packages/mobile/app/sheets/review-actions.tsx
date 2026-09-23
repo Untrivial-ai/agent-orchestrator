@@ -113,19 +113,23 @@ export default function ReviewActionsSheet() {
 		}
 	}
 
-	function chooseReviewer(id: string) {
-		const nextConfig = id && id === reviewerOverride ? reviewerConfig : {};
+	function confirmReviewerChange(id: string, nextConfig: ReviewerAgentConfig) {
 		const warning = reviewerSwitchWarning(running === "true");
 		if (!warning) { void saveReviewer(id, nextConfig); return; }
-		Alert.alert("Switch active reviewer?", warning, [
+		Alert.alert("Change active reviewer?", warning, [
 			{ text: "Keep current", style: "cancel" },
-			{ text: "Switch reviewer", style: "destructive", onPress: () => void saveReviewer(id, nextConfig) },
+			{ text: "Change reviewer", style: "destructive", onPress: () => void saveReviewer(id, nextConfig) },
 		]);
+	}
+
+	function chooseReviewer(id: string) {
+		const nextConfig = id && id === reviewerOverride ? reviewerConfig : {};
+		confirmReviewerChange(id, nextConfig);
 	}
 
 	function chooseModel(value: string) {
 		const key = models?.selectionMode === "mode" ? "mode" : "model";
-		void saveReviewer(reviewerOverride, { ...reviewerConfig, [key]: value });
+		confirmReviewerChange(reviewerOverride, { ...reviewerConfig, [key]: value });
 	}
 
 	async function updatePolicy(key: PolicyKey, value: boolean) {
