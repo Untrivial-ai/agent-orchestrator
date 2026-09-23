@@ -38,23 +38,18 @@ type Attachment =
 
 const MAX_EMBEDDED_FILE_BYTES = 500_000;
 
-/**
- * The composer's one and only size.
- *
- * Constants, not measurements. Three versions of this tried to let the pill grow
- * with a long message, and each one broke the same way: the native material
- * behind the pill ended up a different size from the pill itself — 36pt tall
- * behind a 56pt pill, contents hanging outside their own background — because
- * every one of those sizes came from something read at runtime (a layout
- * measurement, the space SwiftUI was proposed mid-animation, a content-height
- * count) and that reading is taken while the keyboard is still moving.
- *
- * A chat field that is one line tall and scrolls is the boring version, and
- * boring is what this needs: the material has one size to know, so it cannot be
- * left behind by an animation again.
- */
+/** The pill's resting height; it grows with the field up to COMPOSER_MAX_HEIGHT. */
 export const COMPOSER_HEIGHT = 56;
 export const COMPOSER_FIELD_HEIGHT = 44;
+/**
+ * Where the pill stops growing and the field starts scrolling instead.
+ *
+ * Main's numbers, kept because they were tuned against the same transcript: about
+ * six lines of a reply's worth of prompt, so the composer can never swallow the
+ * conversation it is writing into.
+ */
+const COMPOSER_MAX_HEIGHT = 150;
+const COMPOSER_FIELD_MAX_HEIGHT = 138;
 const COMPOSER_LINE_HEIGHT = type.subheadline.lineHeight;
 /** The pill's corner, and so also the radius of the glass drawn behind it. */
 const COMPOSER_RADIUS = 28;
@@ -145,6 +140,7 @@ export function ChatComposer({
 	}));
 	const [text, setText] = useState("");
 	const [cursor, setCursor] = useState(0);
+	const [fieldHeight, setFieldHeight] = useState(COMPOSER_FIELD_HEIGHT);
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
 	const [localError, setLocalError] = useState<string>();
 	const [submitting, setSubmitting] = useState(false);
@@ -392,7 +388,7 @@ export function ChatComposer({
 			{requestCard ?? <View
 				style={[styles.composer, stopped && { opacity: 0.55 }]}
 			>
-				<ComposerGlass height={COMPOSER_HEIGHT} radius={COMPOSER_RADIUS} />
+				<ComposerGlass radius={COMPOSER_RADIUS} />
 				<ChatAttachmentMenu disabled={stopped} canAttachFile={Boolean(canEmbedFiles)} onChoosePhoto={() => void addImage()} onChooseFile={() => void addFile()} />
 				<TextInput
 					accessibilityLabel="Message the agent"
@@ -400,9 +396,16 @@ export function ChatComposer({
 					value={text}
 					onChangeText={setText}
 					onSelectionChange={(event) => setCursor(event.nativeEvent.selection.start)}
+					onContentSizeChange={(event) => {
+						// Native contentSize already includes the TextInput's vertical
+						// padding. Treat it as the field's full height; converting it to
+						// lines counted the padding as an extra line on the first render.
+						const contentHeight = Math.ceil(event.nativeEvent.contentSize.height);
+						setFieldHeight(Math.max(COMPOSER_FIELD_HEIGHT, Math.min(COMPOSER_FIELD_MAX_HEIGHT, contentHeight)));
+					}}
 					placeholder={stopped ? "Agent is stopped" : deliveryPresentation.placeholder}
 					placeholderTextColor={t.textFaint}
-					style={styles.input}
+					style={[styles.input, { height: fieldHeight }]}
 					multiline
 					maxLength={40_000}
 				/>
@@ -431,14 +434,13 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	// The fill goes transparent where the glass layer is drawing behind it: an
 	// opaque pill under a material is the one arrangement that turns glass grey.
 	//
-	// Centred, not bottom-aligned: the field re-measures when it loses focus as the
-	// keyboard closes, and with `flex-end` that measurement moved the controls
-	// relative to the pill instead of the pill growing around them.
-	composer: { height: COMPOSER_HEIGHT, flexDirection: "row", alignItems: "center", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
-	// 44pt of box around a 20pt line, so one line sits centred in the pill rather
-	// than riding its bottom edge — and a long message scrolls in place instead of
-	// growing the pill and moving the material under it.
-	input: { fontFamily: "Geist_400Regular", flex: 1, height: COMPOSER_FIELD_HEIGHT, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: COMPOSER_LINE_HEIGHT, paddingVertical: space.md, textAlignVertical: "top" },
+	// Bottom-align the controls so attach, mic and send stay anchored while the
+	// text field grows above them. The pill grows around the row; the glass fills
+	// that pill rather than receiving a separately measured height.
+	composer: { minHeight: COMPOSER_HEIGHT, maxHeight: COMPOSER_MAX_HEIGHT, flexDirection: "row", alignItems: "flex-end", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
+	// The native content-size event grows this from its one-line resting height;
+	// at the cap, the multiline field scrolls while the controls remain in place.
+	input: { fontFamily: "Geist_400Regular", flex: 1, minHeight: COMPOSER_FIELD_HEIGHT, maxHeight: COMPOSER_FIELD_MAX_HEIGHT, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: COMPOSER_LINE_HEIGHT, paddingVertical: space.md, textAlignVertical: "top" },
 	send: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.accent },
 	stop: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.bgSubtle, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
 	attachments: { gap: space.xs, paddingBottom: space.xs },

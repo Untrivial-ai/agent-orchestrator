@@ -14,16 +14,16 @@ import { useTheme, useThemeState } from "../ThemeProvider";
  * layered behind instead, and the pill drops its own fill so the glass has no
  * opaque surface under it to turn grey.
  *
- * The material is drawn at the pill's resting size, passed in as a constant.
- * Nothing about it is measured or animated: a native material sized from a
- * number that moves (a measured height, or the space SwiftUI happens to propose
- * mid-animation) has twice been left behind by the keyboard's own animation and
- * drawn smaller than the pill it sits behind. The pill is one line tall by
- * design, so the material has one size to know.
+ * It fills the space it is given rather than being handed a height. Sizing it from
+ * a number that moves — a measured height, or the space SwiftUI happens to propose
+ * mid-animation — has twice left it drawn smaller than the pill behind it, which
+ * is why it was pinned to a constant for a while. Filling needs no number at all:
+ * the pill owns its height, the host fills the pill, and the material fills the
+ * host, so the field can grow under a long message and the material grows with it.
  */
 export const composerGlassSupported = parseInt(String(Platform.Version), 10) >= 26;
 
-export function ComposerGlass({ height, radius }: { height: number; radius: number }) {
+export function ComposerGlass({ radius }: { radius: number }) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	if (!composerGlassSupported) return null;
@@ -32,8 +32,9 @@ export function ComposerGlass({ height, radius }: { height: number; radius: numb
 			<Host style={StyleSheet.absoluteFill} colorScheme={scheme} seedColor={t.accent}>
 				{/* The frame comes first — the material is drawn in the space the frame
 				    claims — and the spacer is what gives that frame something to lay
-				    out: SwiftUI will not size an empty group. */}
-				<Group modifiers={[frame({ height, maxWidth: 2000 }), glassPanel(radius, undefined, false)]}>
+				    out: SwiftUI will not size an empty group. No height: the host already
+				    fills the pill, so an unbounded frame resolves to exactly that. */}
+				<Group modifiers={[frame({ maxWidth: 2000, maxHeight: 2000 }), glassPanel(radius, undefined, false)]}>
 					<Spacer />
 				</Group>
 			</Host>

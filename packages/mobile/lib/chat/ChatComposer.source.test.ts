@@ -31,21 +31,32 @@ describe("chat composer pill", () => {
 	});
 
 	it("lays the glass behind the row, sized by the pill itself", () => {
-		// One constant, handed to both. Three attempts at a growing pill ended with
-		// the material a different size from the pill behind it, because every one of
-		// them sized the material from something read at runtime — a layout
-		// measurement, the space SwiftUI was proposed mid-animation, a content-height
-		// count — and all three are read while the keyboard is still moving.
-		expect(composer).toContain("<ComposerGlass height={COMPOSER_HEIGHT} radius={COMPOSER_RADIUS} />");
-		expect(styleRule("composer")).toContain("height: COMPOSER_HEIGHT");
-		expect(styleRule("input")).toContain("height: COMPOSER_FIELD_HEIGHT");
+		// The material is handed a radius and nothing else: the pill owns its height,
+		// the host fills the pill and the material fills the host. Three attempts at
+		// sizing it from something read at runtime — a layout measurement, the space
+		// SwiftUI was proposed mid-animation, a content-height count — each ended with
+		// the material a different size from the pill behind it, and all three are read
+		// while the keyboard is still moving. Filling reads nothing.
+		expect(composer).toContain("<ComposerGlass radius={COMPOSER_RADIUS} />");
+		expect(composer).not.toContain("<ComposerGlass height=");
 		expect(composer).not.toContain("onLayout");
-		expect(composer).not.toContain("onContentSizeChange");
+		// The field grows from the native content size while glass fills the pill,
+		// avoiding a separately measured glass height that could lag behind it.
+		expect(composer).toContain("onContentSizeChange={(event) => {");
+		expect(composer).toContain("style={[styles.input, { height: fieldHeight }]}");
+		expect(styleRule("composer")).toContain("minHeight: COMPOSER_HEIGHT");
+		expect(styleRule("composer")).toContain("maxHeight: COMPOSER_MAX_HEIGHT");
+		expect(styleRule("composer")).toContain('alignItems: "flex-end"');
+		expect(styleRule("input")).toContain("minHeight: COMPOSER_FIELD_HEIGHT");
+		expect(styleRule("input")).toContain("maxHeight: COMPOSER_FIELD_MAX_HEIGHT");
+		expect(composer).toContain("const [fieldHeight, setFieldHeight] = useState(COMPOSER_FIELD_HEIGHT)");
+		expect(composer).toContain("const contentHeight = Math.ceil(event.nativeEvent.contentSize.height)");
+		expect(composer).toContain("setFieldHeight(Math.max(COMPOSER_FIELD_HEIGHT, Math.min(COMPOSER_FIELD_MAX_HEIGHT, contentHeight)))");
 		// `false`: the material must not take the touch. The field is inside this
 		// pill, and an interactive material only passes taps that land on its own
 		// content — typing would stop working.
 		expect(source("./composer-glass.ios.tsx")).toContain("glassPanel(radius, undefined, false)");
-		expect(source("./composer-glass.ios.tsx")).toContain("frame({ height, maxWidth: 2000 })");
+		expect(source("./composer-glass.ios.tsx")).toContain("frame({ maxWidth: 2000, maxHeight: 2000 })");
 	});
 
 	// Two discs side by side have no hierarchy; the send button is the only shape
