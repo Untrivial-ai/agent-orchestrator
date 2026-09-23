@@ -345,6 +345,9 @@ func migrate(db *sql.DB) error {
 	if err := prepareSessionReviewerAgentConfigMigration(db); err != nil {
 		return fmt.Errorf("prepare session reviewer agent-config migration: %w", err)
 	}
+	if err := repairRenumberedCueMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered cue migration history: %w", err)
+	}
 	// Builds can advance a database past a migration that is added or
 	// renumbered later (notably across fast-moving Nightly releases). Apply
 	// those embedded migrations instead of permanently wedging daemon startup
@@ -353,6 +356,51 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)
+}
+
+// repairRenumberedCueMigrationHistory preserves preview databases where Cues
+// used version 0149 before main assigned it to reviewer Chat. Move only that
+// identifiable schema to 0155 so Goose can apply the real 0149 migration.
+func repairRenumberedCueMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`).Scan(&gooseTable); err != nil || gooseTable == 0 {
+		return err
+	}
+	var cueColumns, reviewerColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('cues') WHERE name IN ('id', 'project_id', 'name', 'description', 'type', 'command', 'prompt', 'created_at', 'updated_at')`).Scan(&cueColumns); err != nil {
+		return err
+	}
+	if cueColumns != 9 {
+		return nil
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'interface_mode'`).Scan(&reviewerColumns); err != nil {
+		return err
+	}
+	if reviewerColumns != 0 {
+		return nil
+	}
+	var oldApplied, canonicalApplied int
+	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 149 ORDER BY id DESC LIMIT 1), 0)`).Scan(&oldApplied); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 155 ORDER BY id DESC LIMIT 1), 0)`).Scan(&canonicalApplied); err != nil {
+		return err
+	}
+	if oldApplied == 0 || canonicalApplied != 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (155, 1)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 149`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // repairRenumberedAgentInstallJobsMigrationHistory preserves development
