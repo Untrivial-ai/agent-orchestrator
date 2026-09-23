@@ -1734,6 +1734,7 @@
 	"displayStatus.needsReview": "리뷰 필요",
 	"displayStatus.reviewScheduled": "리뷰 예정",
 	"displayStatus.reviewing": "리뷰 중",
+	"displayStatus.reviewFailed": "리뷰 실패",
 	"displayStatus.reviewPending": "리뷰 보류 중",
 	"displayStatus.draft": "초안",
 	"displayStatus.ciFailing": "검사 실패",

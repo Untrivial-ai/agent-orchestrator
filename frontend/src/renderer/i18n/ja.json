@@ -1734,6 +1734,7 @@
 	"displayStatus.needsReview": "レビューが必要",
 	"displayStatus.reviewScheduled": "レビュー予定",
 	"displayStatus.reviewing": "レビュー中",
+	"displayStatus.reviewFailed": "レビュー失敗",
 	"displayStatus.reviewPending": "レビュー保留中",
 	"displayStatus.draft": "ドラフト",
 	"displayStatus.ciFailing": "チェック失敗",

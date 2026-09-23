@@ -1762,6 +1762,7 @@
 	"displayStatus.needsReview": "Precisa de revisão",
 	"displayStatus.reviewScheduled": "Revisão agendada",
 	"displayStatus.reviewing": "Em revisão",
+	"displayStatus.reviewFailed": "Falha na revisão",
 	"displayStatus.reviewPending": "Revisão pendente",
 	"displayStatus.draft": "Rascunho",
 	"displayStatus.ciFailing": "Verificações falhando",

@@ -1762,6 +1762,7 @@
 	"displayStatus.needsReview": "Revue nécessaire",
 	"displayStatus.reviewScheduled": "Revue planifiée",
 	"displayStatus.reviewing": "Revue en cours",
+	"displayStatus.reviewFailed": "Échec de la revue",
 	"displayStatus.reviewPending": "Revue en attente",
 	"displayStatus.draft": "Brouillon",
 	"displayStatus.ciFailing": "Vérifications en échec",

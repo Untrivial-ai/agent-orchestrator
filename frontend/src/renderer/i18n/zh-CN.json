@@ -1746,6 +1746,7 @@
 	"displayStatus.needsReview": "需要审查",
 	"displayStatus.reviewScheduled": "已安排审查",
 	"displayStatus.reviewing": "审查中",
+	"displayStatus.reviewFailed": "审查失败",
 	"displayStatus.reviewPending": "审查待定",
 	"displayStatus.draft": "草稿",
 	"displayStatus.ciFailing": "检查失败",

@@ -1734,6 +1734,7 @@
 	"displayStatus.needsReview": "Review erforderlich",
 	"displayStatus.reviewScheduled": "Review geplant",
 	"displayStatus.reviewing": "Wird überprüft",
+	"displayStatus.reviewFailed": "Review fehlgeschlagen",
 	"displayStatus.reviewPending": "Review ausstehend",
 	"displayStatus.draft": "Entwurf",
 	"displayStatus.ciFailing": "Prüfungen fehlgeschlagen",
