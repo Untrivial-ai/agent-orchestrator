@@ -2162,6 +2162,7 @@ func TestAuthenticationRequestCancellationDoesNotCancelSharedRead(t *testing.T) 
 	manager.mu.Unlock()
 	if shared == nil {
 		t.Fatal("shared authentication read was not in flight")
+		return
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
