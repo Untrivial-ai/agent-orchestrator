@@ -490,14 +490,14 @@ func TestDeriveKanbanPresentationSinglePR(t *testing.T) {
 			want:       contract.DisplayReviewing,
 		},
 		{
-			name:    "a failed pass needs a review nobody produced",
+			name:    "a failed pass remains validating and exposes the failure",
 			session: contract.KanbanSessionFacts{AutoReview: true},
 			pr: contract.KanbanPRFacts{
 				URL:       "pr/1",
 				ReviewRun: contract.KanbanReviewRunFacts{Present: true, Failed: true},
 			},
 			wantColumn: contract.KanbanValidating,
-			want:       contract.DisplayNeedsReview,
+			want:       contract.DisplayReviewFailed,
 		},
 		{
 			name:    "a cancelled pass leaves the review pending",

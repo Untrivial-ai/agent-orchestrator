@@ -200,6 +200,7 @@ const (
 	DisplayNeedsReview        DisplayStatus = "Needs review"
 	DisplayReviewScheduled    DisplayStatus = "Review scheduled"
 	DisplayReviewing          DisplayStatus = "Reviewing"
+	DisplayReviewFailed       DisplayStatus = "Review failed"
 	DisplayReviewPending      DisplayStatus = "Review pending"
 	DisplayDraft              DisplayStatus = "Draft"
 	// In review.
@@ -330,7 +331,7 @@ func validatingDisplayStatus(session KanbanSessionFacts, pr KanbanPRFacts, now t
 	case pr.ReviewRun.Running:
 		return DisplayReviewing
 	case pr.ReviewRun.Failed:
-		return DisplayNeedsReview
+		return DisplayReviewFailed
 	case pr.ReviewRun.Cancelled:
 		return DisplayReviewPending
 	case pr.Draft:
