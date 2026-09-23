@@ -15,7 +15,7 @@ import { workerContextActions, type WorkerActionId } from "./worker-action-model
 import { WorkerRowActions } from "./worker-row-actions";
 import { WorkerRowInteraction } from "./worker-row-interaction";
 import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
-import { Breathing } from "./ui";
+import { Spinning } from "./ui";
 import { normalizeConversationTitle } from "./chat/conversationMenuModel";
 import { iconSize, press, space, type } from "./tokens";
 
@@ -281,13 +281,13 @@ function WorkerRowContents({
 				{/* Paired with the tinted label so status reads by shape as well as
 				    colour. Only shown alongside a real status — when the row is
 				    showing an elapsed time instead, there is no state to depict.
-				    A working row breathes: the shape says "running" only if it moves,
-				    and a still circle reads as stuck. Same loop the project cards and
-				    status dots use, so Reduce Motion stops this one with them. */}
+				    A working row turns: the shape for "working" is a circle, and a
+				    circle only says so while it is moving — a pulse says "waiting",
+				    which is what the row above it says for a different state. */}
 				{glyph && row.trailingKind === "status" ? (
-					<Breathing enabled={Boolean(visual.breathing)}>
+					<Spinning enabled={Boolean(visual.breathing)}>
 						<Feather name={glyph} size={12} color={visual.color} />
-					</Breathing>
+					</Spinning>
 				) : null}
 				<Text
 					style={[styles.trailing, { color: row.trailingKind === "status" ? visual.color : t.textTertiary }]}

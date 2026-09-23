@@ -3,6 +3,7 @@ import { Children, memo, useEffect, useRef, type ReactNode } from "react";
 import {
 	ActivityIndicator,
 	Animated,
+	Easing,
 	Image,
 	Pressable,
 	StyleSheet,
@@ -14,7 +15,7 @@ import {
 	type ViewStyle,
 } from "react-native";
 import { haptics } from "./haptics";
-import { BREATHE_MS, shouldBreathe } from "./motion";
+import { BREATHE_MS, shouldBreathe, shouldSpin, SPIN_MS } from "./motion";
 import { useEnterTransition, usePressScale } from "./motionHooks";
 import { NativeHeaderButton, type NativeHeaderButtonIcon } from "./native-header-button";
 import { useOptionalSidebarNavigation } from "./sidebar-navigation-context";
@@ -98,17 +99,44 @@ export const Dot = memo(function Dot({
 });
 
 /**
- * The same loop around something that is not a dot.
+ * A continuous turn, for a glyph that means "in progress".
  *
- * A shape carries a status as well as a colour (see `workerStatusGlyph`), and the
- * shape for "working" is a circle — which, drawn still, reads as a stuck or
- * decided state rather than a live one. Returning a fragment when the loop is off
- * keeps the rest state free of an extra view.
+ * A circle drawn still reads as stopped, which is the one thing a progress
+ * indicator must not say — and a pulse is a different signal: it reads as waiting
+ * or attention, not as work happening. Linear and endless, so nothing about it
+ * suggests it is about to finish. Returning a fragment when the loop is off keeps
+ * the resting state free of an extra view.
  */
-export function Breathing({ enabled, children }: { enabled: boolean; children: ReactNode }) {
-	const pulse = useBreathing(enabled);
-	if (!pulse) return <>{children}</>;
-	return <Animated.View style={{ opacity: pulse }}>{children}</Animated.View>;
+export function Spinning({ enabled, children }: { enabled: boolean; children: ReactNode }) {
+	const spin = useRef(new Animated.Value(0)).current;
+	const reduceMotion = useReducedMotion();
+	const animate = shouldSpin(reduceMotion, enabled);
+	useEffect(() => {
+		if (!animate) return;
+		const loop = Animated.loop(
+			Animated.timing(spin, {
+				toValue: 1,
+				duration: SPIN_MS,
+				easing: Easing.linear,
+				useNativeDriver: true,
+			}),
+		);
+		loop.start();
+		return () => {
+			loop.stop();
+			// Back to the starting angle: a stopped loop otherwise leaves the glyph
+			// frozen mid-turn, which reads as the progress it is depicting.
+			spin.setValue(0);
+		};
+	}, [animate, spin]);
+	if (!animate) return <>{children}</>;
+	return (
+		<Animated.View
+			style={{ transform: [{ rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }) }] }}
+		>
+			{children}
+		</Animated.View>
+	);
 }
 
 // A selectable pill - used by the project switcher, PR filters, and spawn picker

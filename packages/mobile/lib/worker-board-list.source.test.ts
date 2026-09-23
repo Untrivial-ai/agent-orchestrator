@@ -49,21 +49,24 @@ describe("worker row working indicator", () => {
 	const ui = source("./ui.tsx");
 
 	// The shape for "working" is a circle, and a still circle reads as stuck or
-	// decided rather than live. It was drawn as a bare glyph, so the one status
-	// that means "still going" was the one status that never moved — and the same
-	// word breathed on the project cards, which use `<Dot breathing>`.
-	it("breathes the status glyph a working row is showing", () => {
-		expect(row).toContain("<Breathing enabled={Boolean(visual.breathing)}>");
-		expect(row).not.toContain("<Feather name={glyph} size={12} color={visual.color} />\n\t\t\t\t) : null}");
+	// decided rather than live. It shipped as a bare glyph — the one status that
+	// means "still going" was the one that never moved — and then as a pulse, which
+	// is a waiting signal, not a working one.
+	it("turns the status glyph a working row is showing", () => {
+		expect(row).toContain("<Spinning enabled={Boolean(visual.breathing)}>");
+		expect(row).not.toContain("<Breathing");
 	});
 
-	// One loop, one decision: the setting is read inside the primitive, so a new
-	// consumer cannot forget it.
-	it("drives both the dot and the glyph from the shared loop", () => {
+	// One decision each, read inside the primitive, so a new consumer cannot
+	// forget Reduce Motion.
+	it("drives the turn and the dot's pulse off the motion rules", () => {
+		expect(ui).toContain("export function Spinning(");
+		expect(ui).toContain("shouldSpin(reduceMotion, enabled)");
+		// Linear, or every lap appears to hitch.
+		expect(ui).toContain("Easing.linear");
 		expect(ui).toContain("export function useBreathing(");
 		expect(ui).toContain("shouldBreathe(reduceMotion, enabled)");
 		expect(ui).toContain("const pulse = useBreathing(breathing);");
-		expect(ui.match(/useBreathing\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
 	});
 });
 

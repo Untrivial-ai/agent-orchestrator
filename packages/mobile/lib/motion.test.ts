@@ -6,6 +6,7 @@ import {
 	motionDurations,
 	shouldAnimateLayout,
 	shouldBreathe,
+	shouldSpin,
 } from "./motion";
 
 describe("motionDurations", () => {
@@ -47,6 +48,16 @@ describe("reduce-motion decisions", () => {
 		expect(shouldBreathe(true, true)).toBe(false);
 		expect(shouldBreathe(false, false)).toBe(false);
 		expect(shouldBreathe(true, false)).toBe(false);
+	});
+
+	// The same rule for the working row's turn. A rotation is the loop a user is
+	// most likely to be trying to stop when they turn Reduce Motion on, so it must
+	// not start at all rather than start and be cancelled.
+	it("never starts a spinner under reduced motion", () => {
+		expect(shouldSpin(false, true)).toBe(true);
+		expect(shouldSpin(true, true)).toBe(false);
+		expect(shouldSpin(false, false)).toBe(false);
+		expect(shouldSpin(true, false)).toBe(false);
 	});
 });
 

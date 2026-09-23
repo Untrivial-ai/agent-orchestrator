@@ -31,6 +31,15 @@ import { duration, press, spring } from "./tokens";
 export const BREATHE_MS = 1200;
 
 /**
+ * One full turn of a progress spinner.
+ *
+ * Slow enough to read as motion rather than a flicker, fast enough that a lap
+ * never looks like a stall. Linear, because an eased turn appears to hitch at
+ * every pass.
+ */
+export const SPIN_MS = 900;
+
+/**
  * The sidebar drawer's spring.
  *
  * Note for a future Reanimated port: these are `Animated.spring` parameters. The
@@ -110,6 +119,17 @@ export function shouldAnimateLayout(reduced: boolean): boolean {
 /** Whether the breathing status dot should loop. */
 export function shouldBreathe(reduced: boolean, breathing: boolean): boolean {
 	return breathing && !reduced;
+}
+
+/**
+ * Whether a spinner should turn.
+ *
+ * The same rule as the breathing dot, and for the same reason: Reduce Motion
+ * means the loop never starts, rather than starting and being cancelled. A
+ * continuous rotation is the thing that setting is most often asking us to stop.
+ */
+export function shouldSpin(reduced: boolean, spinning: boolean): boolean {
+	return spinning && !reduced;
 }
 
 export { duration, press, spring };
