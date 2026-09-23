@@ -1845,6 +1845,9 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	}
 	record.CatalogJSON = string(data)
 	cache.records["opencode\x00"] = record
+	discoverer.mu.Lock()
+	discoverer.catalog.Models = []ports.AgentModelInfo{{ID: "model-two"}}
+	discoverer.mu.Unlock()
 
 	// A CLI-backed catalog can drift with no change to the binary or its config,
 	// so an aged cache hit is what replaces the manual "Refresh models" button.
@@ -1855,8 +1858,8 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	if !stale.RefreshRecommended {
 		t.Fatalf("catalog validated %s ago did not ask for revalidation", time.Since(aged.ValidatedAt))
 	}
-	if discoverer.discoverCalls.Load() != 1 {
-		t.Fatalf("discovery calls = %d, want the cached catalog served immediately", discoverer.discoverCalls.Load())
+	if len(stale.Models) != 1 || stale.Models[0].ID != "model-one" {
+		t.Fatalf("models = %#v, want the cached catalog served immediately", stale.Models)
 	}
 }
 
