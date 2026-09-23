@@ -89,8 +89,6 @@ function inbound(source: LaunchSourceName, medium: string): string {
 /**
  * One row per channel. `link` is the tagged URL you paste on that channel;
  * `profileUrl` is where it goes. Product Hunt is the launch's primary source.
- * Instagram has no account yet, so it is a clearly-marked placeholder to fill
- * in once the handle exists (kept in the registry so the structure is ready).
  */
 export const LAUNCH_CHANNELS: LaunchChannel[] = [
 	{
@@ -136,15 +134,11 @@ export const LAUNCH_CHANNELS: LaunchChannel[] = [
 		link: inbound("github", "referral"),
 	},
 	{
-		// TODO: no Instagram account exists yet. Replace the placeholder profile
-		// URL with the real handle when it is live; the tagged link is already
-		// correct and needs no change.
 		source: "instagram",
 		label: "Instagram",
 		medium: "social",
-		profileUrl: "https://instagram.com/TODO",
+		profileUrl: COMPANY.INSTAGRAM_URL,
 		link: inbound("instagram", "social"),
-		todo: true,
 	},
 ];
 

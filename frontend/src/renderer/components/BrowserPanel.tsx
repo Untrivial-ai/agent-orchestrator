@@ -13,6 +13,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
 	DndContext,
 	DragOverlay,
@@ -38,7 +39,9 @@ import {
 	Camera,
 	Check,
 	ChevronRight,
+	Copy,
 	Download,
+	Eye,
 	ExternalLink,
 	Globe2,
 	Maximize2,
@@ -52,6 +55,7 @@ import {
 	Settings2,
 	Smartphone,
 	Tablet,
+	Trash2,
 	UserRound,
 	X,
 } from "lucide-react";
@@ -81,6 +85,7 @@ import { handleTabListKeyDown } from "../lib/terminal-tabs";
 import { useBrowserDownloads } from "../hooks/useBrowserDownloads";
 import { BrowserDownloadsList } from "./BrowserDownloadsList";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { aoBridge } from "../lib/bridge";
 
 // One-click viewport width presets for responsive testing — height is shown
 // for reference but not enforced (only width drives CSS breakpoints, and
@@ -180,6 +185,7 @@ export function useBrowserAnnotationQueue({
 		queuedCount: 0,
 	});
 	const annotationQueueRef = useRef<BrowserAnnotationSubmitPayload[]>([]);
+	const stagedScreenshotPathsRef = useRef(new Map<BrowserAnnotationSubmitPayload, string[]>());
 	const annotationSendingRef = useRef(false);
 	const sessionIdRef = useRef(sessionId ?? "");
 	const generationRef = useRef(0);
@@ -190,6 +196,7 @@ export function useBrowserAnnotationQueue({
 		if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
 		sentTimerRef.current = null;
 		annotationQueueRef.current = [];
+		stagedScreenshotPathsRef.current.clear();
 		annotationSendingRef.current = false;
 		setState({ status: "idle", error: "", queuedCount: 0 });
 	}, []);
@@ -212,16 +219,45 @@ export function useBrowserAnnotationQueue({
 			let sent = false;
 			let failureMessage = appI18n.t("browser.unableSendAnnotation");
 			try {
-				const message = formatBrowserAnnotationMessage(payload);
+				let screenshotPaths = stagedScreenshotPathsRef.current.get(payload);
+				if (!screenshotPaths) {
+					const attachments = [
+						...payload.session.screenshots.map(({ mimeType, data }) => ({ mimeType, data })),
+						...(payload.snapshot ? [payload.snapshot] : []),
+					];
+					if (attachments.length > 0) {
+						const staged = await apiClient.POST("/api/v1/sessions/{sessionId}/attachments", {
+							params: { path: { sessionId: sendSessionId } },
+							body: { attachments },
+						});
+						if (staged.error || !staged.data) {
+							failureMessage = apiErrorMessage(staged.error, appI18n.t("browser.unableSendAnnotation"));
+							return;
+						}
+						screenshotPaths = staged.data.paths;
+						stagedScreenshotPathsRef.current.set(payload, screenshotPaths);
+					} else {
+						screenshotPaths = [];
+					}
+				}
+				const message = formatBrowserAnnotationMessage(payload, { screenshotPaths });
 				const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 					params: { path: { sessionId: sendSessionId } },
-					body: { message, attachment: payload.snapshot },
+					body: { message },
 				});
 				if (error) {
 					failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
 					return;
 				}
 				sent = true;
+				stagedScreenshotPathsRef.current.delete(payload);
+				await window.ao?.browser.completeAnnotation?.({
+					viewId: payload.viewId,
+					tabId: payload.tabId,
+					pageKey: payload.pageKey,
+					sessionToken: payload.sessionToken,
+					success: true,
+				});
 			} catch (error) {
 				failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
 			} finally {
@@ -354,6 +390,7 @@ export function BrowserPanelView({
 	topbarHost,
 }: BrowserPanelProps & { annotationQueue: BrowserAnnotationQueueModel; browserView: BrowserViewModel }) {
 	const { t } = useTranslation();
+	const prefersReducedMotion = useReducedMotion();
 	const {
 		viewId,
 		navState,
@@ -379,9 +416,12 @@ export function BrowserPanelView({
 		openDevTools = async () => undefined,
 		closeDevTools = async () => undefined,
 		annotationMode,
+		annotationState = { count: 0, screenshotCount: 0, hasDraft: false },
 		setAnnotationMode,
+		annotationAction = async () => undefined,
 	} = browserView;
 	const [urlInput, setUrlInput] = useState(navState.url);
+	const [urlCopied, setUrlCopied] = useState(false);
 	const [historySuggestions, setHistorySuggestions] = useState<Array<{ url: string; title?: string }>>([]);
 	const historyMenuId = useId();
 	const [activeHistorySuggestion, setActiveHistorySuggestion] = useState(-1);
@@ -406,6 +446,7 @@ export function BrowserPanelView({
 	const urlInputRef = useRef<HTMLInputElement>(null);
 	const historyMenuRef = useRef<HTMLDivElement>(null);
 	const historyRequestGenerationRef = useRef(0);
+	const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
 	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
 	const {
@@ -506,6 +547,15 @@ export function BrowserPanelView({
 		() =>
 			window.ao?.browser.onFocusLocation((targetViewId) => {
 				if (targetViewId !== viewId) return;
+				// ⌘T/Ctrl+T focuses the omnibox after opening a tab. When the bar is
+				// portaled into the inspector header it sits outside the panel focus
+				// boundary, so restore the browser shortcut target before the input
+				// takes focus — otherwise the next ⌘T/⌘W falls through to terminal
+				// shortcuts and yank focus to the main pane.
+				window.ao?.browser.notifyPanelUsed(viewId);
+				if (document.activeElement === urlInputRef.current) {
+					return;
+				}
 				urlInputRef.current?.focus();
 				urlInputRef.current?.select();
 			}),
@@ -567,6 +617,8 @@ export function BrowserPanelView({
 
 	useEffect(() => {
 		setUrlInput(navState.url);
+		setUrlCopied(false);
+		clearTimeout(copyFeedbackTimeoutRef.current);
 		setHistorySuggestions([]);
 		setActiveHistorySuggestion(-1);
 		// A prior submit (typed, or pasted, then Enter) leaves the caret at the
@@ -578,7 +630,10 @@ export function BrowserPanelView({
 		const frame = window.requestAnimationFrame(() => {
 			if (urlInputRef.current) urlInputRef.current.scrollLeft = 0;
 		});
-		return () => window.cancelAnimationFrame(frame);
+		return () => {
+			window.cancelAnimationFrame(frame);
+			clearTimeout(copyFeedbackTimeoutRef.current);
+		};
 	}, [navState.url]);
 
 	useEffect(() => {
@@ -715,6 +770,18 @@ export function BrowserPanelView({
 		void openLinkInSystemBrowser(navState.url);
 	};
 
+	const copyCurrentURL = async () => {
+		if (!navState.url) return;
+		try {
+			await aoBridge.clipboard.writeText(navState.url);
+			setUrlCopied(true);
+			clearTimeout(copyFeedbackTimeoutRef.current);
+			copyFeedbackTimeoutRef.current = setTimeout(() => setUrlCopied(false), 1_200);
+		} catch {
+			showGlobalToast(t("browser.urlCopyFailed"), undefined, "top-center");
+		}
+	};
+
 	const toggleAnnotationMode = async () => {
 		if (!canAnnotate || status === "sending") return;
 		if (canRetryAnnotation) {
@@ -775,6 +842,8 @@ export function BrowserPanelView({
 							: "";
 	const agentStatusLabel = agentActivityLabel(agentBrowserActivity, agentBrowserActive);
 	const suggestionsOpen = urlEditing && historySuggestions.length > 0;
+	const currentURLIsWeb = isWebLink(navState.url);
+	const copyURLLabel = t(urlCopied ? "browser.urlCopied" : "browser.copyUrl");
 	const browserAddressBar = (
 		<form
 			className={cn(
@@ -782,6 +851,12 @@ export function BrowserPanelView({
 				urlEditing && "browser-panel__address-bar--editing",
 			)}
 			data-testid="browser-address-bar"
+			onFocusCapture={() => {
+				// When docked, this form is portaled into the inspector header and is
+				// therefore outside the browser-panel focus boundary below. Restore the
+				// browser shortcut target when its address input receives focus.
+				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
+			}}
 			onSubmit={submit}
 		>
 			<Popover
@@ -812,7 +887,39 @@ export function BrowserPanelView({
 							ref={urlInputRef}
 							value={urlEditing || poppedOut ? urlInput : getDisplayUrl(navState.url)}
 						/>
-						{isWebLink(navState.url) ? (
+						{navState.url ? (
+							<BrowserControlTooltip label={copyURLLabel}>
+								<Button
+									aria-label={copyURLLabel}
+									className={cn(
+										"browser-panel__url-copy",
+										!currentURLIsWeb && "browser-panel__url-copy--only",
+									)}
+									onClick={() => void copyCurrentURL()}
+									size="icon-sm"
+									type="button"
+									variant="ghost"
+								>
+									<span className="relative size-icon-base">
+										<Copy
+											aria-hidden="true"
+											className={cn(
+												"absolute inset-0 size-icon-base transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												urlCopied ? "scale-75 opacity-0" : "scale-100 opacity-100",
+											)}
+										/>
+										<Check
+											aria-hidden="true"
+											className={cn(
+												"absolute inset-0 size-icon-base text-success transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+												urlCopied ? "scale-100 opacity-100" : "scale-75 opacity-0",
+											)}
+										/>
+									</span>
+								</Button>
+							</BrowserControlTooltip>
+						) : null}
+						{currentURLIsWeb ? (
 							<BrowserControlTooltip label={t("inspector.openInSystemBrowser")}>
 									<Button
 										aria-label={t("inspector.openInSystemBrowser")}
@@ -927,6 +1034,91 @@ export function BrowserPanelView({
 				</BrowserControlTooltip>
 		</div>
 	);
+	const annotationToolbar = (
+		<div className="browser-panel__toolbar browser-panel__toolbar--annotation">
+			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--leading">
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={t("browser.annotationDiscardAllComments")}
+							className="browser-panel__annotation-discard"
+							onClick={() => void annotationAction("discard-all")}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<Trash2 aria-hidden="true" className="size-icon-base" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{t("browser.annotationDiscardAll")}
+					</TooltipContent>
+				</Tooltip>
+			</div>
+			<div className="browser-panel__annotation-context">
+				<span aria-hidden="true" className="browser-panel__annotation-status-dot" />
+				<span className="browser-panel__annotation-count">
+					{t("browser.annotationCount", { count: annotationState.count })}
+				</span>
+			</div>
+			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--trailing">
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={t("browser.takeScreenshot")}
+							onClick={() => void annotationAction("capture")}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<Camera aria-hidden="true" className="size-icon-base" />
+							{annotationState.screenshotCount > 0 ? (
+								<span className="browser-panel__annotation-icon-count">{annotationState.screenshotCount}</span>
+							) : null}
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{t("browser.takeScreenshot")}
+					</TooltipContent>
+				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={t("browser.annotationOriginalPage")}
+							onBlur={() => void annotationAction("restore-preview")}
+							onPointerCancel={() => void annotationAction("restore-preview")}
+							onPointerDown={() => void annotationAction("preview-original")}
+							onPointerLeave={() => void annotationAction("restore-preview")}
+							onPointerUp={() => void annotationAction("restore-preview")}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<Eye aria-hidden="true" className="size-icon-base" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent data-browser-native-overlay="true" side="bottom">
+						{t("browser.annotationOriginal")}
+					</TooltipContent>
+				</Tooltip>
+				<span aria-hidden="true" className="browser-panel__annotation-separator" />
+				<Button
+					aria-label={t("browser.annotationSendAll")}
+					className="browser-panel__annotation-send"
+					disabled={annotationState.count === 0 && !annotationState.hasDraft}
+					onClick={() => void annotationAction("submit")}
+					size="sm"
+					type="button"
+					variant="primary"
+				>
+					{t("browser.annotationSend")}
+					{annotationState.count > 0 ? (
+						<span className="browser-panel__annotation-send-count">{annotationState.count}</span>
+					) : null}
+				</Button>
+			</div>
+		</div>
+	);
 	return (
 		<div
 			className={cn(
@@ -938,9 +1130,24 @@ export function BrowserPanelView({
 			data-browser-native-page={navState.url ? "live" : "empty"}
 			data-testid="browser-panel"
 			onBlurCapture={(event: FocusEvent<HTMLDivElement>) => {
-				if (viewId && !event.currentTarget.contains(event.relatedTarget)) {
-					window.ao?.browser.notifyPanelBlur(viewId);
+				if (!viewId || event.currentTarget.contains(event.relatedTarget)) return;
+				// Focus moving into the portaled omnibox is still browser chrome — do
+				// not drop the shortcut target or ⌘T/⌘W will create/close terminals.
+				if (topbarHost && event.relatedTarget instanceof Node && topbarHost.contains(event.relatedTarget)) {
+					return;
 				}
+				// relatedTarget is null or body/documentElement when focus leaves the
+				// document entirely (e.g. into the native page after a shortcut-driven
+				// tab close) or when an unmounting element drops focus to document.body.
+				// That is still browser context, so keep the shortcut target.
+				if (
+					!event.relatedTarget ||
+					event.relatedTarget === document.body ||
+					event.relatedTarget === document.documentElement
+				) {
+					return;
+				}
+				window.ao?.browser.notifyPanelBlur(viewId);
 			}}
 			onFocusCapture={() => {
 				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
@@ -951,14 +1158,14 @@ export function BrowserPanelView({
 			role="tabpanel"
 		>
 			{topbarHost ? createPortal(browserAddressBar, topbarHost) : browserAddressBar}
-			<div className="browser-panel__tab-row" data-testid="browser-tab-row">
+			<div
+				className="browser-panel__tab-row"
+				data-testid="browser-tab-row"
+			>
 				{browserTabBar}
-				<div
-					className="browser-panel__toolbar"
-					data-testid="browser-toolbar"
-				>
-				<BrowserControlTooltip label={t("browser.back")}>
-					<span className="browser-panel__navigation-control inline-flex">
+				<div className="browser-panel__toolbar" data-testid="browser-toolbar">
+							<BrowserControlTooltip label={t("browser.back")}>
+								<span className="browser-panel__navigation-control inline-flex">
 							<Button
 								aria-label={t("browser.back")}
 								className="browser-panel__navigation-btn"
@@ -1291,6 +1498,25 @@ export function BrowserPanelView({
 				</DropdownMenu>
 				</div>
 			</div>
+			<AnimatePresence initial={false}>
+				{annotationMode ? (
+					<motion.div
+						key="annotation-toolbar"
+						className="browser-panel__annotation-row"
+						data-testid="browser-annotation-toolbar"
+						initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
+						animate={{ height: "auto", opacity: 1 }}
+						exit={prefersReducedMotion ? undefined : { height: 0, opacity: 0 }}
+						transition={
+							prefersReducedMotion
+								? { duration: 0 }
+								: { duration: 0.18, ease: [0.22, 1, 0.36, 1] }
+						}
+					>
+						{annotationToolbar}
+					</motion.div>
+				) : null}
+			</AnimatePresence>
 			<div className="browser-panel__body flex min-h-0 flex-1 overflow-hidden">
 				<div
 					className="browser-panel__viewport relative min-h-0 flex-1 overflow-hidden"

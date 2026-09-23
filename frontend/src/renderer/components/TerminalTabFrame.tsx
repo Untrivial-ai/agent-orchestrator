@@ -62,7 +62,7 @@ export function TerminalTabFrame({
 				restButtonProps.onClick?.(event as unknown as ReactMouseEvent<HTMLButtonElement>);
 			}}
 		>
-			<span className="relative inline-flex h-[calc(100%-2px)] min-w-0 self-stretch">
+			<span className="relative inline-flex h-[calc(100%-2px)] w-full min-w-0 flex-1 self-stretch">
 				{actionPosition === "leading" ? inlineAction : null}
 				{editingContent ?? (
 					<button

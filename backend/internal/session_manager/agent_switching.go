@@ -241,9 +241,6 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 	if !ok {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrNotFound)
 	}
-	if (rec.Harness == domain.HarnessCodex || cfg.TargetHarness == domain.HarnessCodex) && m.codexAccountSwitchIsActive() {
-		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrCodexAccountSwitchInProgress)
-	}
 	if rec.IsTerminated {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrTerminated)
 	}
@@ -1354,11 +1351,7 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("system prompt file: %w", err)
 	}
-	config := effectiveAgentConfig(rec.Kind, project.Config)
-	if roleOverride(rec.Kind, project.Config).Harness != harness {
-		config.Model = ""
-		config.Mode = ""
-	}
+	config := effectiveAgentConfig(harness, rec.Kind, project.Config)
 	if model := strings.TrimSpace(modelOverride); model != "" {
 		config.Model = model
 	}

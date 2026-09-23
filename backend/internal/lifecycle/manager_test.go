@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1215,6 +1217,28 @@ func TestActivity_StaleUserPromptDoesNotResumeExitedWorkload(t *testing.T) {
 	}
 	if got := st.sessions["mer-1"]; got != rec {
 		t.Fatalf("stale prompt resumed exited workload: %+v", got)
+	}
+}
+
+func TestActivity_CurrentChatControllerResumesExitedWorkload(t *testing.T) {
+	signals := []ports.ActivitySignal{
+		{Valid: true, State: domain.ActivityActive, Event: "chat.turn.started", ControllerGeneration: "gen-current"},
+		{Valid: true, State: domain.ActivityIdle, Event: "chat.turn.completed", ControllerGeneration: "gen-current"},
+		{Valid: true, State: domain.ActivityWaitingInput, Event: "chat.input.requested", ControllerGeneration: "gen-current"},
+	}
+	for _, signal := range signals {
+		m, st, _ := newManager()
+		st.sessions["mer-1"] = domain.SessionRecord{
+			ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+			Metadata: domain.SessionMetadata{ControllerGeneration: "gen-current"},
+			Activity: domain.Activity{State: domain.ActivityExited},
+		}
+		if err := m.ApplyActivitySignal(ctx, "mer-1", signal); err != nil {
+			t.Fatalf("event %q: %v", signal.Event, err)
+		}
+		if got := st.sessions["mer-1"].Activity.State; got != signal.State {
+			t.Fatalf("event %q left state %q, want %q", signal.Event, got, signal.State)
+		}
 	}
 }
 
@@ -2667,6 +2691,47 @@ func TestPRObservation_ReviewCommentsNudgeAgent(t *testing.T) {
 	}
 	if strings.Contains(msg.msgs[0], "already handled") {
 		t.Fatalf("review nudge included resolved comment:\n%s", msg.msgs[0])
+	}
+}
+
+func TestPRObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{
+		{ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true, File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true},
+		{ID: "bot-2", ThreadID: "thread-2", Author: "react-doctor[bot]", IsBot: true, Body: "summary chatter", AutoInjectReview: true},
+	}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("want one actionable bot nudge, got %v", msg.msgs)
+	}
+	if !strings.Contains(msg.msgs[0], "src/App.tsx:42 (@react-doctor[bot]):") || !strings.Contains(msg.msgs[0], "avoid this pattern") {
+		t.Fatalf("anchored bot feedback missing from nudge: %q", msg.msgs[0])
+	}
+	if strings.Contains(msg.msgs[0], "summary chatter") {
+		t.Fatalf("unanchored bot chatter was injected: %q", msg.msgs[0])
+	}
+}
+
+func TestPRObservation_HumanReplyInBotThreadStillNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{
+		{ID: "bot-1", ThreadID: "thread-1", Author: "review-bot[bot]", IsBot: true, Body: "automated summary", AutoInjectReview: true},
+		{ID: "human-1", ThreadID: "thread-1", Author: "alice", Body: "i agree, please fix this", AutoInjectReview: true},
+	}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "i agree, please fix this") {
+		t.Fatalf("human reply was not delivered: %v", msg.msgs)
+	}
+	if strings.Contains(msg.msgs[0], "automated summary") {
+		t.Fatalf("unanchored bot comment was injected with human reply: %q", msg.msgs[0])
 	}
 }
 
@@ -4497,6 +4562,135 @@ func TestSCMObservation_Notifications(t *testing.T) {
 	}
 }
 
+func TestSCMObservation_AnchoredBotReviewSuppressesReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1},
+		CI:      ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review: ports.SCMReviewObservation{
+			Decision: string(domain.ReviewNone),
+			Threads: []ports.SCMReviewThreadObservation{{
+				ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+				Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+			}},
+		},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("ready notification raced actionable bot feedback: %+v", sink.intents)
+	}
+}
+
+func TestSCMObservation_PersistedAnchoredBotReviewSuppressesReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	prURL := "https://github.com/o/r/pull/1"
+	st.comments[prURL] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	obs := ports.SCMObservation{
+		Fetched:      true,
+		PR:           ports.SCMPRObservation{URL: prURL, Number: 1},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewApproved)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("ready notification ignored persisted actionable bot feedback: %+v", sink.intents)
+	}
+	if len(sink.resolutions) != 1 || sink.resolutions[0].Type != domain.NotificationReadyToMerge {
+		t.Fatalf("ready notification was not resolved from persisted actionable bot feedback: %+v", sink.resolutions)
+	}
+}
+
+func TestSCMObservation_AnchoredBotReviewResolvesExistingReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	prURL := "https://github.com/o/r/pull/1"
+	ready := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: prURL, Number: 1},
+		CI:      ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review:  ports.SCMReviewObservation{Decision: string(domain.ReviewApproved)},
+		Mergeability: ports.SCMMergeabilityObservation{
+			State: string(domain.MergeMergeable),
+		},
+	}
+	if err := m.ApplySCMObservation(ctx, "mer-1", ready); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationReadyToMerge {
+		t.Fatalf("initial intents = %+v, want one ready-to-merge notification", sink.intents)
+	}
+
+	st.comments[prURL] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	blocked := ready
+	blocked.Review = ports.SCMReviewObservation{
+		Decision: string(domain.ReviewApproved),
+		Threads: []ports.SCMReviewThreadObservation{{
+			ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+			Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+		}},
+	}
+	if err := m.ApplySCMObservation(ctx, "mer-1", blocked); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("bot feedback emitted a competing intent: %+v", sink.intents)
+	}
+	if len(sink.resolutions) != 1 {
+		t.Fatalf("resolutions = %+v, want existing ready notification resolved", sink.resolutions)
+	}
+	got := sink.resolutions[0]
+	if got.Type != domain.NotificationReadyToMerge || got.SessionID != "mer-1" || got.PRURL != prURL {
+		t.Fatalf("resolution = %+v", got)
+	}
+}
+
+func TestSCMObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: "pr1"},
+		Review: ports.SCMReviewObservation{Threads: []ports.SCMReviewThreadObservation{{
+			ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+			Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+		}}},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "src/App.tsx:42") || !strings.Contains(msg.msgs[0], "avoid this pattern") {
+		t.Fatalf("anchored bot feedback was not delivered through scm lifecycle: %v", msg.msgs)
+	}
+}
+
 // Merging the PR is what resolves a ready-to-merge ping. So is the PR ceasing
 // to be mergeable — either way there is nothing left for the user to merge.
 func TestSCMObservation_ResolvesReadyToMergeWhenNoLongerReady(t *testing.T) {
@@ -4925,9 +5119,11 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 	m := New(st, nil)
 
 	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{
-		WorkspacePath:          "/ws",
-		ProviderConversationID: "thread-abc",
-		ControllerGeneration:   "gen-1",
+		WorkspacePath:            "/ws",
+		ProviderConversationID:   "thread-abc",
+		ControllerGeneration:     "gen-1",
+		LatestAssistantUpdateAt:  time.Unix(100, 0),
+		NativeIdentityObservedAt: time.Unix(101, 0),
 	}); err != nil {
 		t.Fatalf("MarkSpawned: %v", err)
 	}
@@ -4942,6 +5138,9 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 	}
 	if got.Metadata.ControllerGeneration != "gen-1" {
 		t.Fatalf("controller generation = %q", got.Metadata.ControllerGeneration)
+	}
+	if !got.Metadata.LatestAssistantUpdateAt.Equal(time.Unix(100, 0)) || !got.Metadata.NativeIdentityObservedAt.Equal(time.Unix(101, 0)) {
+		t.Fatalf("spawn dropped native history provenance: %+v", got.Metadata)
 	}
 	if got.Metadata.RuntimeHandleID != "" || got.Metadata.RuntimeLaunchID != "" {
 		t.Fatalf("Chat spawn retained terminal ownership metadata: %+v", got.Metadata)
@@ -5223,5 +5422,49 @@ func TestEmitTelemetryStampsRequestID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Each unresolved comment gets its own dedup slot. Sharing one key per PR made
+// every poll re-send whichever comments were not the most recent signature
+// written, and made them share the reviewMaxNudge budget so a PR with more
+// comments than that could never deliver the last of them.
+func TestPRObservation_ReviewCommentNudgesDedupPerComment(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	comments := make([]domain.PullRequestComment, 0, reviewMaxNudge+2)
+	for i := range reviewMaxNudge + 2 {
+		id := fmt.Sprintf("%d", i+1)
+		// Every comment shares one thread: the observer expands a thread into
+		// one row per comment, so this is the routine shape whenever a worker
+		// replies to a review comment without resolving it. Keying on the
+		// thread would collapse them all back into one dedup slot.
+		comments = append(comments, domain.PullRequestComment{
+			ID: id, ThreadID: "T1", Author: "alice", File: "foo.go", Line: i + 1,
+			Body: "finding " + id, AutoInjectReview: true,
+		})
+	}
+	st.comments["pr1"] = comments
+	o := ports.PRObservation{Fetched: true, URL: "pr1", Review: domain.ReviewChangesRequest}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != len(comments) {
+		t.Fatalf("first poll sent %d nudges, want one per comment (%d)", len(msg.msgs), len(comments))
+	}
+	for _, c := range comments {
+		if !slices.ContainsFunc(msg.msgs, func(m string) bool { return strings.Contains(m, "finding "+c.ID) }) {
+			t.Fatalf("comment %s never nudged; the attempt budget is shared", c.ID)
+		}
+	}
+
+	sent := len(msg.msgs)
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != sent {
+		t.Fatalf("second poll re-sent %d nudges for unchanged comments:\n%v",
+			len(msg.msgs)-sent, msg.msgs[sent:])
 	}
 }

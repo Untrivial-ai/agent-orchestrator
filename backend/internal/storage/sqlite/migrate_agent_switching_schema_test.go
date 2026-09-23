@@ -1,22 +1,14 @@
 package sqlite
 
 import (
-	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestMigration0085AgentSwitchIntegrityAndCDC(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 85)
+	db := openMigratedDatabaseCopy(t, 85)
 	now := time.Date(2026, time.August, 5, 12, 0, 0, 0, time.UTC)
 	if _, err := db.Exec(`
 INSERT INTO projects (id, path, registered_at)
@@ -201,12 +193,7 @@ WHERE session_id = 'switch-session' AND event_type = 'session_updated';
 }
 
 func TestMigration0125AgentSwitchFailureConstraintCDCAndIndexes(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 118)
+	db := openMigratedDatabaseCopy(t, 118)
 
 	now := time.Date(2026, time.August, 28, 9, 0, 0, 0, time.UTC)
 	if _, err := db.Exec(`

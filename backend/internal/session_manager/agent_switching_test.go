@@ -1158,6 +1158,88 @@ func TestAgentSwitchChatControllerReadyUsesSourceGenerationCAS(t *testing.T) {
 	}
 }
 
+func TestSwitchAgentChatForwardsResolvedCodexEffort(t *testing.T) {
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	rec := store.sessions["proj-1"]
+	rec.Mode = domain.SessionModeChat
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now().UTC()}
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.ProviderConversationID = "source-chat-native"
+	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	store.sessions[rec.ID] = rec
+	project := store.projects[string(rec.ProjectID)]
+	project.Config.Worker = domain.RoleOverride{
+		Harness: domain.HarnessCodex,
+		AgentConfig: domain.AgentConfig{
+			Model: "gpt-5.6-sol", Effort: "high",
+		},
+	}
+	store.projects[string(rec.ProjectID)] = project
+	manager.modelCatalog = tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{
+		ID: "gpt-5.6-sol", Efforts: []string{"low", "high"},
+	}}}}
+	launcher := &switchAgentChatLauncher{
+		recordingLauncher: &recordingLauncher{},
+		store:             store,
+		live:              true,
+	}
+	manager.chat = launcher
+
+	if _, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "chat-codex-effort",
+	}); err != nil {
+		t.Fatalf("SwitchAgent: %v", err)
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("Chat starts = %d, want 1", len(launcher.started))
+	}
+	if got := launcher.started[0]; got.Model != "gpt-5.6-sol" || got.Effort != "high" {
+		t.Fatalf("Codex Chat tuning = model %q effort %q, want gpt-5.6-sol/high", got.Model, got.Effort)
+	}
+}
+
+func TestSwitchAgentChatRejectsUnsupportedCodexEffortBeforeStoppingSource(t *testing.T) {
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	rec := store.sessions["proj-1"]
+	rec.Mode = domain.SessionModeChat
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now().UTC()}
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.ProviderConversationID = "source-chat-native"
+	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	store.sessions[rec.ID] = rec
+	project := store.projects[string(rec.ProjectID)]
+	project.Config.Worker = domain.RoleOverride{
+		Harness: domain.HarnessCodex,
+		AgentConfig: domain.AgentConfig{
+			Model: "gpt-5.6-sol", Effort: "xhigh",
+		},
+	}
+	store.projects[string(rec.ProjectID)] = project
+	manager.modelCatalog = tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{
+		ID: "gpt-5.6-sol", Efforts: []string{"low", "high"},
+	}}}}
+	launcher := &switchAgentChatLauncher{
+		recordingLauncher: &recordingLauncher{},
+		store:             store,
+		live:              true,
+	}
+	manager.chat = launcher
+
+	_, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "chat-invalid-codex-effort",
+	})
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("SwitchAgent error = %v, want ErrUnsupportedEffort", err)
+	}
+	if len(launcher.stopped) != 0 || !launcher.live {
+		t.Fatalf("source controller stopped before target validation: stopped=%v live=%v", launcher.stopped, launcher.live)
+	}
+}
+
 func TestResolveChatTargetActivationOutcomeRejectsIncompleteOwnershipTuples(t *testing.T) {
 	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
 	activation := domain.AgentSwitchChatTargetActivation{
@@ -1280,7 +1362,7 @@ func TestSwitchAgentChatSwitchBackResumesVerifiedNativeConversation(t *testing.T
 		t.Fatalf("resumed Chat target scope = %q, want reserved boundary %q",
 			launcher.started[0].ProviderScopeID, chatSwitchProviderBoundaryID(sw.ID))
 	}
-	if !launcher.started[0].SkipNativeHistoryImport {
+	if launcher.started[0].HistoryMode != ports.ChatHistoryDeferred {
 		t.Fatal("switch-back projected target-native history into the source provider branch before activation")
 	}
 	if got := store.native[prior.ID]; got.LastGenerationID != sw.TargetGenerationID {

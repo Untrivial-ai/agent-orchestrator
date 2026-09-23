@@ -24,7 +24,9 @@ Use these files to inspect the approved references. They show current behavior a
 | Surface | Primary reference files |
 | --- | --- |
 | App shell, page layout, topbar | [center-panel shell](frontend/src/renderer/components/CenterPanelShell.tsx), [topbar](frontend/src/renderer/components/ShellTopbar.tsx), [shell styles](frontend/src/renderer/styles.css) |
-| Sidebar, sidebar buttons, project rows | [Sidebar](frontend/src/renderer/components/Sidebar.tsx), [sidebar primitive](frontend/src/renderer/components/ui/sidebar.tsx), [topbar button](frontend/src/renderer/components/TopbarButton.tsx) |
+| Home landing | [HomePage](frontend/src/renderer/components/HomePage.tsx), [NavRowHighlight](frontend/src/renderer/components/NavRowHighlight.tsx) |
+| Sidebar, sidebar buttons, project rows | [Sidebar](frontend/src/renderer/components/Sidebar.tsx), [sidebar primitive](frontend/src/renderer/components/ui/sidebar.tsx), [topbar button](frontend/src/renderer/components/TopbarButton.tsx), [NavRowHighlight](frontend/src/renderer/components/NavRowHighlight.tsx) |
+| Shell resize grips | [ResizeHandle](frontend/src/renderer/components/ResizeHandle.tsx), [useResizable](frontend/src/renderer/hooks/useResizable.ts) |
 | Tokens, themes, typography | [tokens](frontend/src/styles/tokens.css), [renderer semantic styles](frontend/src/renderer/styles.css), [site-theme tokens](frontend/src/site-theme/tokens.css) |
 | Tooltips, icons, buttons | [Tooltip](frontend/src/renderer/components/ui/tooltip.tsx), [Button](frontend/src/renderer/components/ui/button.tsx), [icon usage](frontend/src/renderer/components/icons.tsx) |
 | Shared dialog and field primitives | [Dialog](frontend/src/renderer/components/ui/dialog.tsx), [Input](frontend/src/renderer/components/ui/input.tsx), [Label](frontend/src/renderer/components/ui/label.tsx) |
@@ -91,10 +93,27 @@ The layout is desktop-first. On constrained widths, preserve task content first,
 ### Route rules
 
 - **Home:** intentionally minimal. It introduces the next meaningful action, not a fake dashboard.
+  - One centered column (`max-w-[640px]`); no decorative upward translate.
+  - "Star us" is a quiet text link with dashed underline on hover — never a TopbarButton, accent pill, or bordered card.
+  - Primary actions are a 2×2 grid; standalone agent is a grid cell, not a full-width hero CTA above. Connect Mobile stays in settings — not on home.
+  - Recent project rows use shared `NavRowHighlight` (same growing pill as sidebar), not a flat `hover:bg-interactive-hover` wash.
 - **Board:** the operational overview. Each lane has a semantic reason to exist and derived status determines placement.
 - **Session:** the working room. The conversation or terminal is primary; tabs, files, PRs, and inspector are supporting context.
 - **Terminals:** a dedicated surface for standalone shells; do not accidentally route users here from unrelated project-board shortcuts.
 - **Settings:** a deliberate configuration surface with grouped sections, explicit save feedback, and no dashboard chrome masquerading as preferences.
+
+### Shell resize grips
+
+Sidebar and inspector share `ResizeHandle`. Do not regress:
+
+- Grip is a fixed, hover/active-only pill on the **center-pane border** (sidebar: `.center-panel-surface` left; inspector: panel `border-l`) — not inset into the panel, not a CSS `::after` on the hit strip, not always-visible.
+- Height is **80vh**, vertically centered — not full inset-y / not titlebar-tall.
+- While dragging, the grip moves 1:1 with width delta and **must stop at the same min/max as the panel**. Never follow raw `clientX` past limits. Inspector also clamps against computed CSS `max-width` (`--session-inspector-max-width`); prop/`rangeRef` max alone is insufficient.
+- Call sites must pass the same `minWidth`/`maxWidth` as `useResizable`. No unclamped grip fallback.
+
+### Brand → home
+
+The sidebar brand mark/name is the home control. Click navigates home. Do **not** add hover or focus fill behind the brand (`[data-sidebar-brand]` opts out of `.sidebar-focusless` wash in `styles.css`).
 
 ## 4. Navigation and project rows
 
@@ -108,6 +127,8 @@ The sidebar is a compact directory, not a second dashboard.
 - The active project/session uses restrained surface contrast plus a clear selection cue; blue is acceptable for focus/active edge, not as a broad row fill.
 - Row actions appear on hover or focus without moving the label. Actions must not change the row's measured width or trigger navigation.
 - The collapsed rail is icon-first and keeps tooltips, keyboard focus, and fixed titlebar controls usable.
+- Interactive nav rows share `NavRowHighlight`: host backgrounds stay transparent on hover/active/focus; the growing pill owns the fill. Keyboard focus uses `:focus-visible` (not `:focus-within`) so mouse click focus does not stick the pill on.
+- Sidebar chrome uses `top`/`bottom` (not `inset-y` + `h-svh`) so `top-(--sidebar-chrome-offset)` can clear the titlebar without fighting a second height constraint.
 
 ## 5. Operational state and color
 
@@ -400,3 +421,6 @@ Approve only when the answer to every applicable check is yes. Otherwise classif
 | 2026-09-04 | Settings language follows the user's task, not internal architecture | “Agents” describes installation/setup and “Accounts” describes sign-in/account management more clearly than “Harness” or “Subscriptions”. |
 | 2026-09-04 | Installed agent rows use a terminal, compact state | A disabled Installed button is clearer than a detached check icon; stale details must not make a completed installation look actionable. |
 | 2026-09-04 | Only trustworthy user-facing data belongs below an agent name | The model catalog's `binaryVersion` is an internal cache fingerprint, so it must not be presented as a CLI version. |
+| 2026-09-16 | Home: quiet Star-us link; 2×2 action grid with standalone in-grid; recent rows use NavRowHighlight | Rejected accent CTAs, Connect Mobile on home, and flat hover washes — keep home minimal and aligned with sidebar row chrome. |
+| 2026-09-16 | Brand mark clicks to home with no hover/focus fill | Separate home affordance and sidebar focus wash on the brand were rejected. |
+| 2026-09-16 | Resize grips: fixed 80vh hover pill on center-pane border; clamp to panel min/max ∩ CSS max-width | Rejected always-on/`::after`/inset grips and unclamped pointer-following (inspector flew past both limits). |

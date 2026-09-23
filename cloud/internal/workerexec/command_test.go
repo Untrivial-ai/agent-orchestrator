@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+	"runtime"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ func TestBuildInteractiveRestoresClaudeConversationFromDurableConfig(t *testing.
 		t.Fatal(err)
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-	command, err := (HarnessBuilder{}).BuildInteractive(worker.LaunchContext{
+	command, err := (HarnessBuilder{DataDir: t.TempDir()}).BuildInteractive(worker.LaunchContext{
 		SessionID: "session-1", Harness: "claude-code", AgentSessionID: identity,
 		Mode: "standard",
 	}, worker.CredentialResponse{
@@ -45,10 +46,13 @@ func TestBuildInteractiveUsesConfiguredDurableCodexHomeOnRestore(t *testing.T) {
 	codexHome := filepath.Join(t.TempDir(), "codex")
 	t.Setenv("CODEX_HOME", codexHome)
 	loginHome := ""
-	builder := HarnessBuilder{CodexLogin: func(_, home, _, _ string) error {
-		loginHome = home
-		return nil
-	}}
+	builder := HarnessBuilder{
+		DataDir: t.TempDir(),
+		CodexLogin: func(_, home, _, _ string) error {
+			loginHome = home
+			return nil
+		},
+	}
 	command, err := builder.BuildInteractive(worker.LaunchContext{
 		SessionID: "session-1", Harness: "codex", AgentSessionID: "thread-1",
 		Mode: "standard",
@@ -63,6 +67,46 @@ func TestBuildInteractiveUsesConfiguredDurableCodexHomeOnRestore(t *testing.T) {
 	}
 	if !slices.Contains(command.Args, "thread-1") || len(command.Args) == 0 || command.Args[0] != "resume" {
 		t.Fatalf("unexpected Codex restore args: %#v", command.Args)
+	}
+}
+
+func TestBuildInteractiveWritesOpaqueCodexAuthJSONWithoutRelogin(t *testing.T) {
+	codexHome := filepath.Join(t.TempDir(), "codex")
+	t.Setenv("CODEX_HOME", codexHome)
+	loginCalled := false
+	credential := `{"tokens":{"access_token":"opaque"}}`
+	command, err := (HarnessBuilder{
+		DataDir: t.TempDir(),
+		CodexLogin: func(_, _, _, _ string) error {
+			loginCalled = true
+			return nil
+		},
+	}).BuildInteractive(worker.LaunchContext{
+		SessionID: "session-1", Harness: "codex", Mode: "standard",
+	}, worker.CredentialResponse{Provider: "codex", CredentialType: "auth_json", Secret: credential}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loginCalled {
+		t.Fatal("auth JSON must be handed to Codex as its native file, not passed through login")
+	}
+	got, err := os.ReadFile(filepath.Join(codexHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != credential || command.Env["CODEX_HOME"] != codexHome {
+		t.Fatalf("Codex auth handoff = %q, home = %q", got, command.Env["CODEX_HOME"])
+	}
+	info, err := os.Stat(filepath.Join(codexHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedPerm := os.FileMode(0o600)
+	if runtime.GOOS == "windows" {
+		expectedPerm = 0o666
+	}
+	if info.Mode().Perm() != expectedPerm {
+		t.Errorf("auth.json permissions = %#o, want %#o", info.Mode().Perm(), expectedPerm)
 	}
 }
 
@@ -95,13 +139,17 @@ func buildInteractive(t *testing.T, launch worker.LaunchContext) Command {
 	return command
 }
 
-// systemPromptArg extracts the value following --append-system-prompt, "" when
-// the flag is absent.
+// systemPromptArg extracts either an inline Claude prompt or the contents of
+// the generated prompt file. It returns "" when neither is present.
 func systemPromptArg(command Command) string {
 	args := append([]string{command.Path}, command.Args...)
 	for i, arg := range args {
 		if arg == "--append-system-prompt" && i+1 < len(args) {
 			return args[i+1]
+		}
+		if arg == "--append-system-prompt-file" && i+1 < len(args) {
+			contents, _ := os.ReadFile(args[i+1])
+			return string(contents)
 		}
 	}
 	return ""
@@ -122,8 +170,9 @@ func TestBuildInteractiveOrchestratorPrompt(t *testing.T) {
 		"ao spawn --name",
 		"ao list",
 		"ao kill",
-		"skills/using-ao/SKILL.md",
+		"using-ao/SKILL.md",
 		"coordination-only",
+		"Never guess file names",
 	} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("orchestrator prompt missing %q", needle)
@@ -149,10 +198,11 @@ func TestBuildInteractiveWorkerPromptWithParent(t *testing.T) {
 	for _, needle := range []string{
 		"AO Worker Role",
 		"ao report",
+		"never paste diffs",
 		"$AO_PULL_REQUEST_HELP",
 		"$AO_SESSION_BRANCH",
 		"ao claim-pr",
-		"skills/using-ao/SKILL.md",
+		"using-ao/SKILL.md",
 	} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("worker prompt missing %q", needle)
@@ -175,9 +225,8 @@ func TestBuildInteractiveWorkerPromptWithoutParent(t *testing.T) {
 }
 
 func TestBuildInteractiveCursorBuildsWithoutPrompt(t *testing.T) {
-	// The cursor launch builder discards SystemPrompt (known limitation); the
-	// build must still succeed so the session gets its terminal and on-disk
-	// skill.
+	// Cursor receives standing instructions through its generated plugin rather
+	// than a prompt flag, so the launch command itself must remain prompt-free.
 	command := buildInteractive(t, worker.LaunchContext{
 		SessionID: "11111111-1111-4111-8111-111111111111",
 		Kind:      "worker", Harness: "cursor", Mode: "trusted",

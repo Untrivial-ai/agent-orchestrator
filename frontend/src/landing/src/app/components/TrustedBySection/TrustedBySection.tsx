@@ -41,6 +41,8 @@ function AgentMark({ agent }: { agent: Agent }) {
       title={agent.name}
       className="h-8 w-8 shrink-0 object-contain"
       draggable="false"
+      loading="lazy"
+      decoding="async"
     />
   );
 }

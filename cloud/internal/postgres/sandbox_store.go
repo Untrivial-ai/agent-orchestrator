@@ -828,7 +828,8 @@ func (s *Store) WorkerLaunchSpec(
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		err := tx.QueryRow(
 			ctx,
-			`SELECT session.id, session.project_id, session.kind, session.harness,
+			`SELECT session.id, session.project_id, project.display_name, project.config,
+				session.kind, session.harness,
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.denied_commands,
 				COALESCE(session.parent_session_id::text, ''),
@@ -841,6 +842,8 @@ func (s *Store) WorkerLaunchSpec(
 		).Scan(
 			&launch.SessionID,
 			&launch.ProjectID,
+			&launch.ProjectName,
+			&launch.ProjectConfig,
 			&launch.Kind,
 			&launch.Harness,
 			&launch.DisplayName,
@@ -1109,6 +1112,27 @@ func upsertWorkerConnection(
 		epoch,
 	); err != nil {
 		return fmt.Errorf("fail worker requests from superseded epochs: %w", err)
+	}
+	// Close terminals bound to the retired epochs. The terminal-output stream
+	// (writeTerminalOutput) already re-reads terminal state every tick and
+	// returns as soon as it sees 'closed', so making the row truthful HERE, at
+	// the instant a replacement worker supersedes the old epoch, is what lets a
+	// silently-dead terminal close and the client re-attach against the live
+	// epoch. Without this the row stayed 'open' for the full session TTL (~30m)
+	// even though nothing was behind it, and only a keystroke or a slow
+	// keepalive timeout ever noticed. Detection stays driven off the existing
+	// output loop's state read instead of a separate liveness poll.
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE ao_terminal_sessions
+		SET state = 'closed', closed_at = now(), updated_at = now()
+		WHERE org_id = $1 AND session_id = $2 AND worker_epoch < $3
+		  AND state IN ('opening', 'open')`,
+		orgID,
+		sessionID,
+		epoch,
+	); err != nil {
+		return fmt.Errorf("close terminals from superseded epochs: %w", err)
 	}
 	tag, err := tx.Exec(
 		ctx,

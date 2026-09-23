@@ -34,6 +34,15 @@ interface UseResizableOptions {
  * Persists the width to localStorage and applies it via a CSS custom property
  * to the nearest consuming layout elements. Keeping a high-frequency custom
  * property off :root avoids invalidating unrelated renderer subtrees.
+ *
+ * Single owner of clamped width (do not regress):
+ * - `apply` is write-only: clamp with `min`/`max` only. Callers (esp. inspector)
+ *   must pass a live `max` callback — never cache a loose placeholder like
+ *   `defaultWidth * 2` as the drag ceiling.
+ * - On pointerdown, seed from the painted box when it disagrees with the var
+ *   (CSS max-width can hold paint below the custom property).
+ * - Drag applies synchronously so ResizeHandle can follow the painted border 1:1.
+ * - Dragging never auto-collapses: clamp at `min`; collapse stays on explicit UI.
  */
 export function useResizable({
 	cssVar,
@@ -66,7 +75,8 @@ export function useResizable({
 		(next: number) => {
 			const clamped = Math.min(maxValue(), Math.max(minValue(), next));
 			widthRef.current = clamped;
-			for (const target of cssTargets()) {
+			const targets = cssTargets();
+			for (const target of targets) {
 				target.style.setProperty(cssVar, `${clamped}px`);
 				appliedTargetsRef.current.add(target);
 			}
@@ -120,6 +130,13 @@ export function useResizable({
 			const captureTarget = event.currentTarget;
 			captureTarget.setPointerCapture?.(pointerId);
 			const startX = event.clientX;
+			// Seed from the painted box when CSS max-width holds width below the var.
+			const visualWidth = cssTargets()
+				.map((target) => target.getBoundingClientRect().width)
+				.find((width) => width > 0);
+			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
+				apply(visualWidth);
+			}
 			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
 			const sign = edge === "right" ? 1 : -1;
 			document.body.classList.add("is-resizing-x");
@@ -138,10 +155,10 @@ export function useResizable({
 			const onEnd = (e: PointerEvent) => {
 				if (e.pointerId === pointerId) finish();
 			};
-			// Dragging never collapses the panel: `apply` clamps at `min`, so the
-			// drag simply stops at the floor. Collapse stays on explicit controls.
+			// Sync apply during drag so the grip (following the painted border) stays 1:1.
+			// Collapse stays on explicit controls — `apply` clamps at `min`.
 			const onMove = (e: PointerEvent) => {
-				applyOnFrame(startWidth + sign * (e.clientX - startX));
+				apply(startWidth + sign * (e.clientX - startX));
 			};
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onEnd);
@@ -149,7 +166,7 @@ export function useResizable({
 			window.addEventListener("blur", finish);
 			activeDragCleanupRef.current = finish;
 		},
-		[applyOnFrame, edge, flushPending, maxValue, minValue, storageKey],
+		[apply, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
 	);
 
 	const onCollapsedPointerDown = useCallback(

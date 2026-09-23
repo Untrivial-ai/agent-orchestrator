@@ -37,6 +37,9 @@ type fakeStore struct {
 	// insertErr instead of recording the caller's run.
 	insertErr              error
 	insertErrWinnerAtFront bool
+	recoverableReviews     []domain.Review
+	recoverableReviewsErr  error
+	recoveryErrors         map[string]string
 }
 
 func (f *fakeStore) UpsertReview(_ context.Context, r domain.Review) error {
@@ -65,6 +68,35 @@ func (f *fakeStore) UpsertReview(_ context.Context, r domain.Review) error {
 	}
 	f.reviews[r.Harness] = cp
 	return nil
+}
+func (f *fakeStore) SetReviewInterfaceMode(_ context.Context, id string, mode domain.ReviewerInterfaceMode, _ time.Time) (bool, error) {
+	updated := false
+	for harness, review := range f.reviews {
+		if review.ID != id {
+			continue
+		}
+		review.InterfaceMode = mode
+		if mode == domain.ReviewerInterfaceChat {
+			review.ReviewerHandleID = ""
+		} else {
+			review.ProviderConversationID = ""
+			review.ControllerGeneration = ""
+		}
+		f.reviews[harness] = review
+		f.review = &review
+		updated = true
+	}
+	if !updated && f.review != nil && f.review.ID == id {
+		f.review.InterfaceMode = mode
+		if mode == domain.ReviewerInterfaceChat {
+			f.review.ReviewerHandleID = ""
+		} else {
+			f.review.ProviderConversationID = ""
+			f.review.ControllerGeneration = ""
+		}
+		updated = true
+	}
+	return updated, nil
 }
 func (f *fakeStore) mutateReview(harness domain.ReviewerHarness, fn func(*domain.Review)) {
 	if review, ok := f.reviews[harness]; ok {
@@ -268,6 +300,18 @@ func (f *fakeStore) ListRunningReviewRunsBySession(_ context.Context, sessionID 
 	return out, nil
 }
 
+func (f *fakeStore) ListRecoverableChatReviews(context.Context) ([]domain.Review, error) {
+	return f.recoverableReviews, f.recoverableReviewsErr
+}
+
+func (f *fakeStore) RecordReviewChatControllerError(_ context.Context, id, message string, _ time.Time) (bool, error) {
+	if f.recoveryErrors == nil {
+		f.recoveryErrors = make(map[string]string)
+	}
+	f.recoveryErrors[id] = message
+	return true, nil
+}
+
 type fakeSessions struct {
 	rec domain.SessionRecord
 	ok  bool
@@ -289,7 +333,42 @@ func (f fakeProjects) GetProject(_ context.Context, id string) (domain.ProjectRe
 	return domain.ProjectRecord{ID: id, Config: f.cfg}, true, nil
 }
 
+type chatReviewAdapter struct{}
+
+func (chatReviewAdapter) ReviewCommand(context.Context, ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
+	return ports.ReviewCommandSpec{}, nil
+}
+func (chatReviewAdapter) ReviewMessage(_ context.Context, inv ports.ReviewInvocation) (string, error) {
+	return inv.Prompt, nil
+}
+func (chatReviewAdapter) ReviewChatHarness() domain.AgentHarness { return domain.HarnessCodex }
+
+type singleReviewerResolver struct{ reviewer ports.Reviewer }
+
+func (r singleReviewerResolver) Reviewer(domain.ReviewerHarness) (ports.Reviewer, bool) {
+	return r.reviewer, true
+}
+
+type sqliteReviewChatController struct{ store *sqlite.Store }
+
+func (c sqliteReviewChatController) SupportsReviewChat(domain.AgentHarness) bool { return true }
+func (c sqliteReviewChatController) PreflightReviewChat(context.Context, domain.AgentHarness) error {
+	return nil
+}
+func (c sqliteReviewChatController) StartReviewChat(ctx context.Context, cfg ReviewerChatStart) (string, error) {
+	_, err := c.store.CreateReviewConversation(ctx, "review-conversation", cfg.ReviewID, cfg.ProjectID, cfg.WorkerID, time.Now().UTC())
+	return "provider-conversation", err
+}
+func (c sqliteReviewChatController) RestoreReviewChat(ctx context.Context, cfg ReviewerChatStart) (string, error) {
+	return c.StartReviewChat(ctx, cfg)
+}
+func (sqliteReviewChatController) SendReviewChat(context.Context, string, string) error { return nil }
+func (sqliteReviewChatController) ReviewChatAlive(string) bool                          { return true }
+func (sqliteReviewChatController) InterruptReviewChat(context.Context, string) error    { return nil }
+func (sqliteReviewChatController) StopReviewChat(context.Context, string) error         { return nil }
+
 type fakeLauncher struct {
+	interfaceMode    domain.ReviewerInterfaceMode
 	handle           string
 	agentSessionID   string
 	launchID         string
@@ -326,6 +405,13 @@ type fakeLauncher struct {
 	onSpawn          func(LaunchSpec)
 	onRestore        func(LaunchSpec)
 	onNotify         func(string, LaunchSpec)
+}
+
+func (f *fakeLauncher) InterfaceMode(domain.ReviewerHarness) domain.ReviewerInterfaceMode {
+	if f.interfaceMode == "" {
+		return domain.ReviewerInterfaceTUI
+	}
+	return f.interfaceMode
 }
 
 func (f *fakeLauncher) Spawn(_ context.Context, spec LaunchSpec) (LaunchResult, error) {
@@ -460,6 +546,16 @@ func seedReviewWorker(t *testing.T, st *sqlite.Store, worker domain.SessionRecor
 
 // --- tests ---
 
+func TestRecoverChatReviewersRequiresStoreRecoveryQuery(t *testing.T) {
+	want := errors.New("recovery query unavailable")
+	store := &fakeStore{recoverableReviewsErr: want}
+	eng := newEngineForTest(store, fakeSessions{}, fakePRs{}, fakeProjects{}, &fakeLauncher{})
+
+	if err := eng.RecoverChatReviewers(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("RecoverChatReviewers() error = %v, want %v", err, want)
+	}
+}
+
 func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	store := &fakeStore{}
 	launcher := &fakeLauncher{handle: "review-mer-1"}
@@ -483,6 +579,30 @@ func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	}
 	if len(store.runs) != 1 || store.review == nil || store.review.ReviewerHandleID != "review-mer-1" {
 		t.Fatalf("persisted review=%+v runs=%+v", store.review, store.runs)
+	}
+}
+
+func TestTriggerPersistsChatModeBeforeCreatingReviewerConversation(t *testing.T) {
+	ctx := context.Background()
+	store := newSQLiteReviewStore(t)
+	worker := liveWorker()
+	seedReviewWorker(t, store, worker)
+	chat := sqliteReviewChatController{store: store}
+	launcher := NewLauncher(singleReviewerResolver{reviewer: chatReviewAdapter{}}, &fakeRuntime{}, t.TempDir(), WithReviewerChat(chat))
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	if _, err := eng.Trigger(ctx, worker.ID, domain.ReviewerCodex, domain.AgentConfig{}); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	review, ok, err := store.GetReviewBySessionAndHarness(ctx, worker.ID, domain.ReviewerCodex)
+	if err != nil || !ok {
+		t.Fatalf("GetReviewBySessionAndHarness: ok=%v err=%v", ok, err)
+	}
+	if review.InterfaceMode != domain.ReviewerInterfaceChat {
+		t.Fatalf("interface mode = %q, want chat", review.InterfaceMode)
+	}
+	if _, err := store.ConversationForReview(ctx, review.ID); err != nil {
+		t.Fatalf("ConversationForReview: %v", err)
 	}
 }
 
@@ -617,47 +737,6 @@ func TestRestoreReviewerRestoresDeadReviewerFromHistory(t *testing.T) {
 	}
 	if store.review.ReviewerHandleID != "review-mer-1" {
 		t.Fatalf("stored reviewer handle = %q", store.review.ReviewerHandleID)
-	}
-}
-
-func TestRestoreCodexReviewerDoesNotApplyAnotherHarnessProjectConfig(t *testing.T) {
-	store := &fakeStore{
-		reviews: map[domain.ReviewerHarness]domain.Review{
-			domain.ReviewerCodex: {
-				ID:               "rev-codex",
-				SessionID:        "mer-1",
-				ProjectID:        "mer",
-				Harness:          domain.ReviewerCodex,
-				ReviewerHandleID: "codex-pane",
-				AgentSessionID:   "codex-native",
-			},
-		},
-	}
-	projects := fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{
-		Harness:     domain.ReviewerOpenCode,
-		AgentConfig: domain.AgentConfig{Model: "opencode-model"},
-	}}}}
-	launcher := &fakeLauncher{alive: true, handle: "codex-restored"}
-	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), projects, launcher)
-
-	stopped, err := eng.SuspendCodexReviewer(context.Background(), "mer-1")
-	if err != nil {
-		t.Fatalf("SuspendCodexReviewer: %v", err)
-	}
-	if !stopped {
-		t.Fatal("SuspendCodexReviewer stopped = false, want true for stale live Codex pane")
-	}
-	if err := eng.RestoreCodexReviewer(context.Background(), "mer-1"); err != nil {
-		t.Fatalf("RestoreCodexReviewer: %v", err)
-	}
-	if !launcher.restored || launcher.gotSpec.Harness != domain.ReviewerCodex {
-		t.Fatalf("restore spec = %+v, want retained Codex reviewer restored", launcher.gotSpec)
-	}
-	if !launcher.gotSpec.AgentConfig.IsZero() {
-		t.Fatalf("restored Codex config = %+v, want no OpenCode project config", launcher.gotSpec.AgentConfig)
-	}
-	if launcher.gotSpec.AgentSessionID != "codex-native" || !launcher.gotSpec.RequireNativeHistory {
-		t.Fatalf("restore spec = %+v, want exact retained Codex native history", launcher.gotSpec)
 	}
 }
 
@@ -1592,7 +1671,7 @@ func TestTriggerSameHarnessOverrideMergesResolvedConfig(t *testing.T) {
 
 func TestReviewerSelectionMergesSessionConfigWithProjectReviewerConfig(t *testing.T) {
 	worker := liveWorker()
-	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
+	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5", Effort: "high"}
 	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{
 		Harness:     domain.ReviewerClaudeCode,
 		AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeBypassPermissions},
@@ -1605,7 +1684,7 @@ func TestReviewerSelectionMergesSessionConfigWithProjectReviewerConfig(t *testin
 	if harness != domain.ReviewerClaudeCode {
 		t.Fatalf("harness = %q, want claude-code", harness)
 	}
-	if config.Model != "gpt-5" || config.Permissions != domain.PermissionModeBypassPermissions {
+	if config.Model != "gpt-5" || config.Effort != "high" || config.Permissions != domain.PermissionModeBypassPermissions {
 		t.Fatalf("config = %+v, want merged session override + project permissions", config)
 	}
 }

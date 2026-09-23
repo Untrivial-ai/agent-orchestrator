@@ -280,25 +280,31 @@ func workspaceDiffGroup(ctx context.Context, targetGroup *workspaceDiffTargetGro
 	if targetGroup.targets[0].scratch || scope == WorkspaceDiffUntracked {
 		var patch strings.Builder
 		for _, target := range targetGroup.targets {
-			file, info, err := confinedWorkspaceFile(target.root, target.rel)
-			if err != nil {
+			if err := appendSyntheticAddedPatch(&group, &patch, target); err != nil {
 				return WorkspaceDiffGroup{}, err
 			}
-			if info.Size() > maxWorkspaceRevisionBytes {
-				group.Deferred = append(group.Deferred, WorkspaceDiffDeferred{Path: joinWorkspaceRelative(target.prefix, target.rel), Reason: "oversized"})
-				continue
-			}
-			content, binary, _, err := readWorkspaceTextFile(file, maxWorkspaceRevisionBytes)
-			if err != nil {
-				return WorkspaceDiffGroup{}, err
-			}
-			if binary {
-				group.Deferred = append(group.Deferred, WorkspaceDiffDeferred{Path: joinWorkspaceRelative(target.prefix, target.rel), Reason: "binary"})
-				continue
-			}
-			patch.WriteString(syntheticAddedFileDiff(target.rel, content))
 		}
 		group.Patch, group.Truncated = truncateUTF8(patch.String(), maxWorkspaceDiffGroupBytes)
+		return group, nil
+	}
+
+	// git diff never reports an untracked file, so the combined (base..worktree)
+	// scope has to synthesize its added-file patch the same way GetWorkspaceFile
+	// already does. Without this the path returns a successful but patchless
+	// group and the review pane has no diff to render for it.
+	var untrackedPatch strings.Builder
+	tracked := make([]workspaceFileTarget, 0, len(targetGroup.targets))
+	for _, target := range targetGroup.targets {
+		if !untrackedCombinedTarget(target, scope) {
+			tracked = append(tracked, target)
+			continue
+		}
+		if err := appendSyntheticAddedPatch(&group, &untrackedPatch, target); err != nil {
+			return WorkspaceDiffGroup{}, err
+		}
+	}
+	if len(tracked) == 0 {
+		group.Patch, group.Truncated = truncateUTF8(untrackedPatch.String(), maxWorkspaceDiffGroupBytes)
 		return group, nil
 	}
 
@@ -321,7 +327,7 @@ func workspaceDiffGroup(ctx context.Context, targetGroup *workspaceDiffTargetGro
 	}
 	args = append(args, "--")
 	paths := map[string]struct{}{}
-	for _, target := range targetGroup.targets {
+	for _, target := range tracked {
 		paths[target.rel] = struct{}{}
 		if previous := target.changes.previous[target.rel]; previous != "" {
 			paths[previous] = struct{}{}
@@ -337,9 +343,47 @@ func workspaceDiffGroup(ctx context.Context, targetGroup *workspaceDiffTargetGro
 	if err != nil {
 		return WorkspaceDiffGroup{}, err
 	}
-	group.Patch, group.Truncated = truncateUTF8(out, maxWorkspaceDiffGroupBytes)
+	// git's own output stays first so the group cap still drops synthesized
+	// untracked content before anything git already reported.
+	group.Patch, group.Truncated = truncateUTF8(out+untrackedPatch.String(), maxWorkspaceDiffGroupBytes)
 	group.Truncated = group.Truncated || truncated
 	return group, nil
+}
+
+// untrackedCombinedTarget reports whether target is a working-tree file git's
+// diff machinery cannot see for this scope. Only the combined scope compares
+// base..worktree, where an untracked file is a genuine addition; the staged,
+// unstaged, and committed scopes have no untracked side by definition.
+func untrackedCombinedTarget(target workspaceFileTarget, scope WorkspaceDiffScope) bool {
+	if scope != WorkspaceDiffCombined {
+		return false
+	}
+	_, ok := target.changes.untracked[target.rel]
+	return ok
+}
+
+// appendSyntheticAddedPatch writes target's working-tree content to patch as an
+// added-file diff, or records on group why it was left out instead.
+func appendSyntheticAddedPatch(group *WorkspaceDiffGroup, patch *strings.Builder, target workspaceFileTarget) error {
+	file, info, err := confinedWorkspaceFile(target.root, target.rel)
+	if err != nil {
+		return err
+	}
+	displayPath := joinWorkspaceRelative(target.prefix, target.rel)
+	if info.Size() > maxWorkspaceRevisionBytes {
+		group.Deferred = append(group.Deferred, WorkspaceDiffDeferred{Path: displayPath, Reason: "oversized"})
+		return nil
+	}
+	content, binary, _, err := readWorkspaceTextFile(file, maxWorkspaceRevisionBytes)
+	if err != nil {
+		return err
+	}
+	if binary {
+		group.Deferred = append(group.Deferred, WorkspaceDiffDeferred{Path: displayPath, Reason: "binary"})
+		return nil
+	}
+	patch.WriteString(syntheticAddedFileDiff(target.rel, content))
+	return nil
 }
 
 // GetWorkspaceFileRevision returns a comparison side for diff expansion and

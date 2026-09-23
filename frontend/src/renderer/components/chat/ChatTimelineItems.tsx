@@ -9,6 +9,11 @@ import { AppLink } from "../AppLink";
  */
 
 import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import {
+	ACCENT_ACTION_SEGMENT,
+	ACCENT_ACTION_SHELL,
+	QUIET_ACTION_PILL,
+} from "./action-pill";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -26,6 +31,7 @@ import {
 	Keyboard,
 	ListChecks,
 	Loader2,
+	MousePointer2,
 	Pencil,
 	Plug,
 	Shuffle,
@@ -90,6 +96,10 @@ import {
 	type TurnDiff,
 } from "../../types/conversation";
 import { resolveTurnFilePath, turnFileOpenPath, turnPathHints } from "../../lib/turn-file-open-path";
+import {
+	parseBrowserAnnotationMessage,
+	type ParsedBrowserAnnotationMessage,
+} from "../../../shared/browser-annotations";
 
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
 	hour: "2-digit",
@@ -288,7 +298,10 @@ function TwoRowTimelineMarker({
 			<div className={cn("flex min-w-0 items-baseline gap-2 text-[11px]", tone)}>
 				<span className="shrink-0">{message}</span>
 				{detail ? (
-					<span className={cn("min-w-0 truncate", detailTone)} title={detail}>
+					<span
+						className={cn("min-w-0 truncate", detailTone)}
+						title={detail}
+					>
 						{detail}
 					</span>
 				) : null}
@@ -342,36 +355,38 @@ export function TurnOutcome({
 		failed: { label: "The agent ran into a problem", tone: "text-destructive" },
 	}[state];
 
-	return (
-		<TwoRowTimelineMarker
-			message={copy.label}
-			detail={error}
-			tone={copy.tone}
-			detailTone={state === "failed" ? "text-destructive" : undefined}
-			action={
-				retry ? (
-					<>
-						{retry.error ? (
-							<span role="alert" className="max-w-[50%] text-pretty text-right text-[10px] leading-tight text-destructive">
-								{retry.error}
-							</span>
-						) : null}
-						<button
-							type="button"
-							onClick={retry.onRetry}
-							disabled={retry.pending || retry.disabled}
-							aria-label="Retry this turn"
-							title={retry.error ?? (retry.disabled ? "Wait for the current turn to finish" : "Send this prompt again as a new turn")}
-							data-testid="retry-turn"
-							className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
-						>
-							{retry.pending ? "Retrying…" : "Retry"}
-						</button>
-					</>
-				) : undefined
-			}
-		/>
-	);
+	const action = retry ? (
+		<>
+			{retry.error ? (
+				<span role="alert" className="max-w-[50%] text-pretty text-right text-[10px] leading-tight text-destructive">
+					{retry.error}
+				</span>
+			) : null}
+			<button
+				type="button"
+				onClick={retry.onRetry}
+				disabled={retry.pending || retry.disabled}
+				aria-label="Retry this turn"
+				title={retry.error ?? (retry.disabled ? "Wait for the current turn to finish" : "Send this prompt again as a new turn")}
+				data-testid="retry-turn"
+				className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
+			>
+				{retry.pending ? "Retrying…" : "Retry"}
+			</button>
+		</>
+	) : undefined;
+	if (state === "failed") {
+		return (
+			<div className="flex min-w-0 flex-col gap-2 py-3">
+				<div className="flex items-baseline justify-between gap-3 text-sm font-medium text-destructive">
+					<span>{copy.label}</span>
+					{action}
+				</div>
+				{error ? <div className="whitespace-pre-wrap wrap-anywhere text-sm leading-relaxed text-foreground">{linkifiedProviderErrorText(error)}</div> : null}
+			</div>
+		);
+	}
+	return <TwoRowTimelineMarker message={copy.label} detail={error} tone={copy.tone} action={action} />;
 }
 
 function formatTokens(tokens: number): string {
@@ -537,6 +552,9 @@ export function HumanMessage({
 				/>
 			) : (
 				<div
+					/* Themes draw sent and queued differently; light theme needs to tell them
+					   apart in CSS because it paints an enclosure only around a sent one. */
+					data-queued={queued ? "" : undefined}
 					className={cn(
 						"cursor-chat-human-message w-fit max-w-[min(78%,560px)] rounded-[10px] px-3 py-2.5 text-sm leading-[1.55]",
 						animateIn && "chat-human-message-enter",
@@ -613,8 +631,13 @@ export function HumanMessage({
  * durable origin field, never from a prefix parsed out of the text.
  */
 export function OriginMessage({ message }: { message: ConversationMessage }) {
-	const longReport = message.text.length > ORIGIN_REPORT_COLLAPSE_AT;
 	const [expanded, setExpanded] = useState(false);
+	const browserAnnotations = parseBrowserAnnotationMessage(message.text);
+	if (browserAnnotations) {
+		return <BrowserAnnotationOrigin message={message} annotations={browserAnnotations} />;
+	}
+
+	const longReport = message.text.length > ORIGIN_REPORT_COLLAPSE_AT;
 	const preview = longReport
 		? `${message.text.slice(0, ORIGIN_REPORT_PREVIEW_LENGTH).trimEnd()}…`
 		: message.text;
@@ -648,6 +671,51 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 					/>
 					{expanded ? "Hide report" : "Show full report"}
 				</button>
+			) : null}
+		</div>
+	);
+}
+
+function BrowserAnnotationOrigin({
+	message,
+	annotations,
+}: {
+	message: ConversationMessage;
+	annotations: ParsedBrowserAnnotationMessage;
+}) {
+	const count = annotations.items.length;
+	return (
+		<div className="cursor-chat-origin-message rounded-md border border-border border-l-2 border-l-logo-accent/60 px-3.5 py-2.5">
+			<div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+				<MousePointer2 aria-hidden="true" className="size-3.5 shrink-0 text-logo-accent" />
+				<span>Browser feedback</span>
+				<span className="ml-auto shrink-0 font-normal tabular-nums">{formatTime(message.createdAt)}</span>
+			</div>
+			<p className="text-sm text-foreground">
+				{count} annotation{count === 1 ? "" : "s"} on {annotations.pageTitle}
+			</p>
+			<div className="mt-2 space-y-1.5">
+				{annotations.items.map((item) => (
+					<div key={item.number} className="flex min-w-0 items-start gap-2 text-xs text-muted-foreground">
+						<span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-logo-accent text-[10px] font-semibold text-white">
+							{item.number}
+						</span>
+						<div className="min-w-0">
+							<p className="truncate text-foreground">
+								{item.comment ||
+									(item.kind === "adjustment"
+										? `${item.changes.length} visual change${item.changes.length === 1 ? "" : "s"}`
+										: "Comment")}
+							</p>
+							{item.target ? <p className="truncate">{item.target}</p> : null}
+						</div>
+					</div>
+				))}
+			</div>
+			{annotations.screenshotCount > 0 ? (
+				<p className="mt-2 text-[11px] text-muted-foreground">
+					{annotations.screenshotCount} reference screenshot{annotations.screenshotCount === 1 ? "" : "s"}
+				</p>
 			) : null}
 		</div>
 	);
@@ -1898,14 +1966,12 @@ function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
 	const standaloneActionUrl = actionUrl && !detail?.includes(actionUrl) ? actionUrl : undefined;
 	return (
 		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
-			<span className="wrap-anywhere min-w-0">
-				<span>{headline}</span>
+			<span className="wrap-anywhere min-w-0 whitespace-pre-wrap">
+				<span>{linkifiedProviderErrorText(headline)}</span>
 				{detail ? (
 					<>
 						{" — "}
-						<span className="text-muted-foreground/80">
-							{linkifiedProviderErrorText(detail)}
-						</span>
+						<span className="text-muted-foreground/80">{linkifiedProviderErrorText(detail)}</span>
 					</>
 				) : null}
 				{standaloneActionUrl ? (
@@ -2223,7 +2289,7 @@ export function ApprovalCard({
 					{denyDecision ? (
 						<button
 							type="button"
-							className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border-strong bg-background/20 px-2.5 text-[12.5px] text-foreground/90 transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50"
+							className={QUIET_ACTION_PILL}
 							disabled={busy}
 							onClick={() => onDecide?.(requestId, denyDecision.id)}
 						>
@@ -2237,10 +2303,10 @@ export function ApprovalCard({
 					) : null}
 
 					{allowOnceDecision ? (
-						<div className="flex h-7 overflow-hidden rounded-full bg-logo-accent text-logo-accent-foreground shadow-sm">
+						<div className={ACCENT_ACTION_SHELL}>
 							<button
 								type="button"
-								className="inline-flex items-center gap-1.5 px-2.5 text-[12.5px] transition-colors hover:bg-logo-accent-bright focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+								className={ACCENT_ACTION_SEGMENT}
 								disabled={busy}
 								onClick={() => onDecide?.(requestId, allowOnceDecision.id)}
 							>
@@ -2286,7 +2352,7 @@ export function ApprovalCard({
 						<button
 							key={decision.id}
 							type="button"
-							className="inline-flex h-7 items-center rounded-full border border-border-strong bg-background/20 px-2.5 text-[12.5px] text-foreground/90 transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50"
+							className={QUIET_ACTION_PILL}
 							disabled={busy}
 							onClick={() => onDecide?.(requestId, decision.id)}
 						>

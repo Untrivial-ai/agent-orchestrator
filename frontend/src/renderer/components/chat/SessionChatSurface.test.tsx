@@ -11,6 +11,7 @@ import { workspaceQueryKey } from "../../hooks/useWorkspaceQuery";
 import { useConversationConfigOptions, useConversationModels, useConversationSkills } from "../../hooks/useConversation";
 
 const LINK = "http://localhost:5173";
+const REPORT_LINK = "reports/new-report.html";
 
 function snapshotFor(sessionId: string): ConversationSnapshot & { capabilities: string[] } {
 	return {
@@ -52,6 +53,7 @@ const {
 	agentSwitchState: { data: [] as AgentSwitchSummary[] },
 	conversationCommandState: {
 		busy: false,
+		chooseSettings: vi.fn(),
 		pendingAcceptedTurnId: undefined as string | undefined,
 		acknowledgeAcceptedTurn: vi.fn(),
 	},
@@ -119,6 +121,7 @@ vi.mock("./ChatWorkspace", async () => {
 			newWorkDisabled,
 			onLinkOpen,
 			onRememberPermissions,
+			onChooseSettings,
 			snapshot,
 			shellTarget,
 		}: {
@@ -128,6 +131,7 @@ vi.mock("./ChatWorkspace", async () => {
 			newWorkDisabled?: boolean;
 			onLinkOpen?: (url: string) => void;
 			onRememberPermissions?: unknown;
+			onChooseSettings?: unknown;
 			snapshot: { sessionId?: string };
 			shellTarget?: { handleId: string };
 		}) => {
@@ -145,10 +149,14 @@ vi.mock("./ChatWorkspace", async () => {
 					{snapshot.sessionId ? <div>Mounted {mountedSessionId}</div> : null}
 					{snapshot.sessionId ? <div>Rendered {snapshot.sessionId}</div> : null}
 					<div data-testid="remember-available">{String(Boolean(onRememberPermissions))}</div>
+					<div data-testid="turn-settings-available">{String(Boolean(onChooseSettings))}</div>
 					{headerActions}
 					{sessionTabAction}
 					<button type="button" onClick={() => onLinkOpen?.(LINK)}>
 						Open chat link
+					</button>
+					<button type="button" onClick={() => onLinkOpen?.(REPORT_LINK)}>
+						Open report link
 					</button>
 					{shellTarget ? <div data-testid="shell-target">{shellTarget.handleId}</div> : null}
 				</div>
@@ -211,6 +219,23 @@ afterEach(() => {
 });
 
 describe("SessionChatSurface link routing", () => {
+	it("keeps OpenCode approvals writable when its provider supplies Build/Plan mode", () => {
+		conversationState.snapshot = { capabilities: ["config_options"], harness: "opencode" };
+		configState.options = [{
+			id: "mode",
+			name: "Mode",
+			category: "mode",
+			type: "select",
+			currentValue: "build",
+			choices: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan" }],
+		}];
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+		render(<Wrapper client={queryClient}><SessionChatSurface session={{ ...session, provider: "opencode" }} /></Wrapper>);
+
+		expect(screen.getByTestId("turn-settings-available")).toHaveTextContent("true");
+	});
+
 	it("does not report idle work before the conversation snapshot loads", () => {
 		conversationState.snapshot = undefined;
 		conversationState.isLoading = true;
@@ -414,6 +439,54 @@ describe("SessionChatSurface link routing", () => {
 			body: { url: LINK },
 		});
 		await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: workspaceQueryKey }));
+	});
+
+	it("asks the confined preview resolver to open a report that Files has not indexed yet", async () => {
+		const user = userEvent.setup();
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+
+		render(
+			<Wrapper client={queryClient}>
+				<SessionChatSurface session={session} onOpenLinkInBrowser={vi.fn()} />
+			</Wrapper>,
+		);
+		await user.click(screen.getByRole("button", { name: "Open report link" }));
+
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
+			params: { path: { sessionId: session.id } },
+			body: { url: REPORT_LINK, requireWorkspaceFile: true },
+		});
+	});
+
+	it("opens a plain Chat link from an active orchestrator in its Browser panel", async () => {
+		const user = userEvent.setup();
+		const openInNewTab = vi.fn().mockResolvedValue(undefined);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const orchestratorSession = {
+			...session,
+			id: "proj-1-orchestrator",
+			title: "orchestrator",
+			kind: "orchestrator",
+		} satisfies WorkspaceSession;
+
+		try {
+			render(
+				<Wrapper client={queryClient}>
+					<SessionChatSurface session={orchestratorSession} onOpenLinkInBrowser={openInNewTab} />
+				</Wrapper>,
+			);
+			await user.click(screen.getByRole("button", { name: "Open chat link" }));
+
+			expect(useUiStore.getState().inspectorSessions[orchestratorSession.id]).toMatchObject({ isOpen: true, view: "browser" });
+			expect(openInNewTab).toHaveBeenCalledWith(LINK);
+			expect(postMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", expect.anything());
+		} finally {
+			queryClient.clear();
+		}
 	});
 
 	it("automatically opens the first link in a newly completed agent response once", async () => {

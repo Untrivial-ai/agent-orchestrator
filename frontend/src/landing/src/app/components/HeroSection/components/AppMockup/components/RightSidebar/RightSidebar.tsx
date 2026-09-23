@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { LuArrowRight, LuGitPullRequest } from "react-icons/lu";
 import { FILE_CHANGES } from "../../constants";
 import type { ActiveDemo } from "../../types";

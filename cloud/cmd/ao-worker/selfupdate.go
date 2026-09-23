@@ -114,18 +114,61 @@ func healHelper(
 	binaryBase, expectedHex, binDir string,
 ) error {
 	override := filepath.Join(binDir, "ao")
+	// The healed helper MUST always exist at this exact path, because the
+	// harness hooks invoke it directly (workerexec.hookHelperPath) rather than
+	// resolving `ao` on PATH — a hook that runs a hardcoded /usr/local/bin/ao
+	// would otherwise run the stale baked copy and silently no-op (the recurring
+	// capture-breakage). So keep `override` current even when the baked copy is
+	// already correct: copy it in rather than only shadowing on PATH.
 	if stale, err := fileHashDiffers(override, expectedHex); err == nil && !stale {
-		return nil // already healed on a prior boot
+		return nil // already current from a prior boot
 	}
 	baked := strings.TrimSpace(os.Getenv("AO_WORKER_HELPER_PATH"))
 	if baked == "" {
 		baked = defaultHelperPath
 	}
 	if stale, err := fileHashDiffers(baked, expectedHex); err == nil && !stale {
-		return nil // the baked helper is already correct; nothing to shadow
+		// The baked helper is correct; stage a copy at the healed path (no
+		// network) so hooks that invoke that path find the current helper.
+		if err := copyExecutable(baked, override); err != nil {
+			return fmt.Errorf("stage current helper from baked copy: %w", err)
+		}
+		return nil
 	}
 	logger.Info("healing ao helper from the control plane", "override", override, "expected_sha256", expectedHex)
 	return downloadVerifyReplace(ctx, httpClient, binaryBase+expectedHex, expectedHex, override)
+}
+
+// copyExecutable atomically stages src at dest (0755). Used to place the current
+// baked helper at the worker-owned healed path without a control-plane round
+// trip. Mirrors downloadVerifyReplace's temp-write-then-rename so a concurrent
+// reader never sees a partial file.
+func copyExecutable(src, dest string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", src, err)
+	}
+	dir := filepath.Dir(dest)
+	tmp, err := os.CreateTemp(dir, ".ao-helper-*")
+	if err != nil {
+		return fmt.Errorf("stage helper in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write staged helper: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close staged helper: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o755); err != nil {
+		return fmt.Errorf("chmod staged helper: %w", err)
+	}
+	if err := os.Rename(tmpName, dest); err != nil {
+		return fmt.Errorf("replace helper at %s: %w", dest, err)
+	}
+	return nil
 }
 
 // downloadVerifyReplace fetches a content-addressed binary, verifies its hash,

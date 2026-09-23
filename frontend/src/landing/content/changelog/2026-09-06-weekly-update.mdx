@@ -1,0 +1,88 @@
+---
+title: "Account switching, browser profiles, and permission defaults"
+description: "Agent accounts can be switched centrally, browser profiles persist, and project permissions can be remembered."
+date: "2026-09-06"
+rangeStart: "2026-08-31"
+rangeEnd: "2026-09-06"
+historical: true
+---
+
+
+## Switch Codex accounts without leaving AO <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4722" />
+
+Codex accounts can be added and switched globally while sessions keep their account context.
+
+## Persistent browser profiles and imports <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4135" />
+
+In-app browser profiles can persist cookies and history, with an explicit import flow for an existing local profile.
+
+## Project-level permission defaults <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4956" />
+
+Each project can remember its permission defaults so repeated sessions start with the intended policy.
+
+## Improvements
+
+### Agents
+
+- **Add failure-only observability for agent switching** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4598" />
+- **Add harness installer settings** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4221" />
+- **Add harness login actions in settings** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4523" />
+- **Add reviewer harness model picker** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4568" />
+- **Discover provider model catalogs** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4610" />
+
+### Mobile
+
+- **Connect from any network by racing every advertised endpoint** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4615" />
+- **Update copy now AO Mobile is live on both stores** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4761" />
+
+### Chat
+
+- **Keep Codex provider alive across daemon restart** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4529" />
+- **Render Mermaid code blocks as diagrams in light and dark themes** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4892" />
+
+### Pull requests
+
+- **Add project import onboarding flow** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4872" />
+
+### Terminal
+
+- **Real-time terminal — duplex stream + predictive local echo** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4768" />
+
+
+---
+
+## Bug fixes
+
+### Pull requests
+
+- **Align workspace onboarding with project flow** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4887" />
+- **Preserve Coder workspace state across resume** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4735" />
+
+### Chat
+
+- **Persist chat settings and provider options** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4483" />
+- **Preserve image attachments when steering** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4092" />
+
+### Agents
+
+- **Keep session teardown off the request path** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4829" />
+- **Make merge-conflict nudges reach needs-input sessions and re-fire after a conflict returns** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/3766" />
+
+### Product
+
+- **Stop counting already-gone workspaces as reclaimed** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4933" />
+
+### Browser
+
+- **Stabilize browser navigation and sidebar layout** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4823" />
+- **Refine embedded browser controls** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4958" />
+
+### Cloud
+
+- **Make Settings auth agree with launch readiness** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4974" />
+
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

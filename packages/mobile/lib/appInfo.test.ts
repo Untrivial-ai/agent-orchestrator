@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bugReportBody, formatUpdate, formatVersion, formatVersionLine } from "./appInfo";
+import { formatUpdate, formatVersion, formatVersionLine } from "./appInfo";
 
 describe("formatVersion", () => {
 	it("combines version and build", () => {
@@ -45,27 +45,5 @@ describe("formatVersionLine", () => {
 		expect(formatVersionLine(base)).toBe("1.2.0 (42)");
 		expect(formatVersionLine({ ...base, embedded: true, updateId: "a1b2c3d4-0000" })).toBe("1.2.0 (42)");
 		expect(formatVersionLine({ ...base, embedded: false, updateId: "a1b2c3d4-0000" })).toBe("1.2.0 (42) · a1b2c3d4");
-	});
-});
-
-describe("bugReportBody", () => {
-	it("names the build and platform so a report is actionable", () => {
-		const body = bugReportBody({ version: "1.2.0", build: "42" }, "ios", "18.2");
-		expect(body).toContain("AO mobile: 1.2.0 (42)");
-		expect(body).toContain("Platform: ios 18.2");
-		expect(body).not.toContain("Update:");
-	});
-
-	it("includes the OTA update and runtime", () => {
-		const body = bugReportBody(
-			{ version: "1.2.0", build: "42", updateId: "a1b2c3d4-0000", channel: "preview", runtimeVersion: "d7e82fd0d167", embedded: false },
-			"android",
-			34,
-		);
-		expect(body).toContain("Update: a1b2c3d4 on preview (runtime d7e82fd0)");
-	});
-
-	it("leaves room above the metadata for the user to type", () => {
-		expect(bugReportBody({ version: "1.0.0" }, "android", 34).startsWith("\n\n")).toBe(true);
 	});
 });
