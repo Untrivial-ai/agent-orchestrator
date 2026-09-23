@@ -47,6 +47,12 @@ type countingResolverAgent struct {
 	calls atomic.Int32
 }
 
+type cacheRefreshResolverAgent struct {
+	fakeAgent
+	calls          atomic.Int32
+	refreshRelease chan struct{}
+}
+
 type startupPresenceAgent struct {
 	fakeAgent
 	normalResolveCalls *atomic.Int32
@@ -674,6 +680,17 @@ func (f *concurrentResolverAgent) ResolveBinary(ctx context.Context) (string, er
 
 func (f *countingResolverAgent) ResolveBinary(ctx context.Context) (string, error) {
 	f.calls.Add(1)
+	return f.fakeAgent.ResolveBinary(ctx)
+}
+
+func (f *cacheRefreshResolverAgent) ResolveBinary(ctx context.Context) (string, error) {
+	if f.calls.Add(1) > 1 {
+		select {
+		case <-f.refreshRelease:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	return f.fakeAgent.ResolveBinary(ctx)
 }
 
@@ -1334,7 +1351,9 @@ func TestModelsCachesDiscoveredCatalogGlobally(t *testing.T) {
 
 func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 	cache := &fakeModelCache{}
-	agent := &countingResolverAgent{}
+	agent := &cacheRefreshResolverAgent{
+		refreshRelease: make(chan struct{}),
+	}
 	discoverer := &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
 		SelectionMode: ports.ModelSelectionCatalog,
 		Models:        []ports.AgentModelInfo{{ID: "model-one"}},
@@ -1364,14 +1383,31 @@ func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 	record.CatalogJSON = string(data)
 	cache.records["codex\x00"] = record
 
-	resolveCalls := agent.calls.Load()
-	cached, err := svc.Models(context.Background(), "codex", "proj-1", false)
-	if err != nil {
-		t.Fatal(err)
+	resultCh := make(chan struct {
+		catalog ports.AgentModelCatalog
+		err     error
+	}, 1)
+	go func() {
+		catalog, err := svc.Models(context.Background(), "codex", "proj-1", false)
+		resultCh <- struct {
+			catalog ports.AgentModelCatalog
+			err     error
+		}{catalog: catalog, err: err}
+	}()
+	var cached ports.AgentModelCatalog
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		cached = result.catalog
+	case <-time.After(time.Second):
+		close(agent.refreshRelease)
+		t.Fatal("cache hit synchronously resolved the binary")
 	}
-	if agent.calls.Load() != resolveCalls {
-		t.Fatalf("cache hit synchronously resolved the binary: calls=%d want=%d", agent.calls.Load(), resolveCalls)
-	}
+	// The cache hit may start input revalidation after returning. Release that
+	// resolver only after proving the caller was not blocked by it.
+	close(agent.refreshRelease)
 	if discoverer.discoverCalls.Load() != 1 {
 		t.Fatalf("discovery calls=%d, want cached result", discoverer.discoverCalls.Load())
 	}
