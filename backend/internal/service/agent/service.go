@@ -348,8 +348,12 @@ func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh
 			cached.Catalog.RefreshRecommended = !retriesExhausted && (due || needsRecovery || cached.RefreshState == "error" || cached.RefreshState == "queued")
 			if !retriesExhausted && (due || needsRecovery) && (cached.RetryAt.IsZero() || !s.now().Before(cached.RetryAt)) {
 				go func() { _, _ = s.RevalidateModels(s.ctx, agentID, projectID) }()
-			} else if !due || retriesExhausted {
+			} else if retriesExhausted {
 				go s.revalidateChangedInputs(agentID, projectID, cached.BinaryVersion)
+			} else if !due {
+				time.AfterFunc(10*time.Millisecond, func() {
+					s.revalidateChangedInputs(agentID, projectID, cached.BinaryVersion)
+				})
 			}
 			return cached.Catalog, nil
 		}
