@@ -2195,7 +2195,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Start a worker task and ask the orchestrator to title it
+      summary: Start a worker task and refine its title in the background
       tags:
       - sessions
   /api/v1/projects:
@@ -11501,8 +11501,14 @@ components:
       type: object
     PutGitHubPATRequest:
       properties:
+        expiresIn:
+          type: integer
         pat:
           type: string
+        refreshToken:
+          type: string
+        refreshTokenExpiresIn:
+          type: integer
       required:
       - pat
       type: object

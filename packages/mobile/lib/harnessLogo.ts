@@ -60,6 +60,29 @@ export function backdropFor(harness?: string | null): BackdropPolarity {
 }
 
 /**
+ * The chip colours. Deliberately not palette tokens: opencode's mark is pure
+ * #ffffff, so it needs the same dark chip on the light theme as on the dark one,
+ * and a token that followed the palette would put it on a light surface and make
+ * it vanish again.
+ */
+export const HARNESS_CHIP = { dark: "#24272e", light: "#ffffff" } as const;
+
+/**
+ * The colour to draw behind a mark, or `undefined` when it can stand alone.
+ *
+ * Every surface that renders a brand mark has to ask this. Anything white (or
+ * anything black) needs its own backdrop, and a path that draws the raw asset
+ * loses the mark entirely on the theme it does not contrast with — the desktop
+ * does exactly that, which is where opencode swallowed the logo whole.
+ */
+export function chipColorFor(harness?: string | null): string | undefined {
+	const polarity = backdropFor(harness);
+	if (polarity === "needs-dark") return HARNESS_CHIP.dark;
+	if (polarity === "needs-light") return HARNESS_CHIP.light;
+	return undefined;
+}
+
+/**
  * Fallback for a harness with no mark.
  *
  * Desktop's `toAgentProvider()` funnels every unrecognised harness into

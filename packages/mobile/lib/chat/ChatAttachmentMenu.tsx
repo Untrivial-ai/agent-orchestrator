@@ -1,9 +1,10 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { MenuView, type MenuAction, type NativeActionEvent } from "@expo/ui/community/menu";
 import { StyleSheet, View } from "react-native";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
+import { iconSize, type } from "../tokens";
 
 export function ChatAttachmentMenu({
 	disabled,
@@ -30,7 +31,9 @@ export function ChatAttachmentMenu({
 			accessibilityState={{ disabled }}
 			style={[styles.trigger, disabled && styles.disabled]}
 		>
-			<Feather name="paperclip" size={21} color={disabled ? t.textFaint : t.textSecondary} />
+			{/* A plus, not a paperclip: the composer is one row of three controls, and
+			    the clip read as an attachment badge on the field rather than a way in. */}
+			<Feather name="plus" size={iconSize.xl} color={disabled ? t.textFaint : t.textSecondary} />
 		</View>
 	);
 
@@ -50,6 +53,6 @@ export function ChatAttachmentMenu({
 }
 
 const makeStyles = (_t: Theme) => StyleSheet.create({
-	trigger: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center" },
+	trigger: { width: 44, height: 44, borderRadius: 22, borderCurve: "continuous", alignItems: "center", justifyContent: "center" },
 	disabled: { opacity: 0.55 },
 });

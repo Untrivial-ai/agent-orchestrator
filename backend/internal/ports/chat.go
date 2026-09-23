@@ -310,6 +310,8 @@ type ChatStartConfig struct {
 	// ProviderIDsScoped matches the branch's persisted ID format. False preserves
 	// legacy projections written before scoped IDs were supported.
 	ProviderIDsScoped bool
+	// Ephemeral asks supporting providers not to persist this conversation.
+	Ephemeral bool
 	// AdditionalDirectories are extra absolute workspace roots the provider may
 	// access alongside WorkspacePath. Workspace projects use this for child repo
 	// worktrees; it is not a replacement for AO's worktree ownership.

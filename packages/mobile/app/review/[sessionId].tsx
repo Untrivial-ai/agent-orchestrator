@@ -75,7 +75,7 @@ export default function ReviewDetailScreen() {
 		setRefreshing(false);
 	};
 
-	if (!data && !error) return <View style={styles.center}><ActivityIndicator color={t.blue} /></View>;
+	if (!data && !error) return <View style={styles.center}><ActivityIndicator color={t.accent} /></View>;
 	if (!data || !review) return <EmptyState icon={error ? "alert-triangle" : "git-pull-request"} title={error ? "Could not load review" : "No review found"} message={error || "AO has no review state for this pull request yet."} action={<Button title="Try again" icon="refresh-cw" variant="ghost" onPress={() => void load()} />} />;
 	const primaryAction = reviewBatchAction(review, data.reviews);
 	const runs = reviewRunsForPullRequest([...(data.runs ?? []), ...(review.latestRun ? [review.latestRun] : []), ...(review.previousRun ? [review.previousRun] : [])], review.prUrl);
@@ -146,7 +146,7 @@ export default function ReviewDetailScreen() {
 	};
 
 	return (
-		<ScrollView style={styles.screen} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={t.blue} />}>
+		<ScrollView style={styles.screen} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={t.accent} />}>
 			<View style={styles.heading}>
 				<View style={[styles.statusIcon, { backgroundColor: statusColor(t, reviewStatusVisual(review.status).tone, true) }]}>
 					<Feather name={reviewStatusVisual(review.status).icon} size={20} color={statusColor(t, reviewStatusVisual(review.status).tone)} />
@@ -199,14 +199,14 @@ function RunCard({ run, previous = false, sending, disabled, onSend }: { run: Re
 		<Text style={styles.runBy}>{run.harness} · {run.triggerSource} · {run.status}{run.deliveredAt ? " · delivered" : ""}</Text>
 		{run.autoInjectReview === false ? <View style={styles.notInjected}><Feather name="info" size={13} color={t.amber} /><Text style={styles.notInjectedText}>Not automatically sent to the worker</Text></View> : null}
 		{run.body ? <View style={styles.markdown}><ChatMarkdown text={run.body} /></View> : <Text style={styles.bodyMuted}>No written findings.</Text>}
-		<View style={styles.runActions}>{url ? <Pressable accessibilityRole="link" onPress={() => void openGitHub(url)} style={styles.smallAction}><Feather name="external-link" size={14} color={t.blue} /><Text style={styles.smallActionText}>Open on GitHub</Text></Pressable> : null}<Pressable accessibilityRole="button" disabled={disabled} onPress={onSend} style={[styles.smallAction, disabled && styles.actionDisabled]}>{sending ? <ActivityIndicator size="small" color={t.blue} /> : <Feather name="send" size={14} color={t.blue} />}<Text style={styles.smallActionText}>Send to worker</Text></Pressable></View>
+		<View style={styles.runActions}>{url ? <Pressable accessibilityRole="link" onPress={() => void openGitHub(url)} style={styles.smallAction}><Feather name="external-link" size={14} color={t.accent} /><Text style={styles.smallActionText}>Open on GitHub</Text></Pressable> : null}<Pressable accessibilityRole="button" disabled={disabled} onPress={onSend} style={[styles.smallAction, disabled && styles.actionDisabled]}>{sending ? <ActivityIndicator size="small" color={t.accent} /> : <Feather name="send" size={14} color={t.accent} />}<Text style={styles.smallActionText}>Send to worker</Text></Pressable></View>
 	</Card>;
 }
 
 function statusColor(t: Theme, tone: ReturnType<typeof reviewStatusVisual>["tone"], tint = false): string {
 	if (tone === "amber") return tint ? t.tintAmber : t.amber;
 	if (tone === "green") return tint ? t.tintGreen : t.green;
-	if (tone === "blue") return tint ? t.tintBlue : t.blue;
+	if (tone === "blue") return tint ? t.accentTint : t.accent;
 	return tint ? t.bgSubtle : t.textTertiary;
 }
 
@@ -246,7 +246,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	notInjectedText: { color: t.amber, fontSize: 12 },
 	runActions: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 14 },
 	smallAction: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 34, paddingHorizontal: 4 },
-	smallActionText: { color: t.blue, fontSize: 13, fontWeight: "600" },
+	smallActionText: { color: t.accent, fontSize: 13, fontWeight: "600" },
 	actionDisabled: { opacity: 0.45 },
 	headerActions: { flexDirection: "row", alignItems: "center", gap: 2 },
 	headerAction: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },

@@ -276,7 +276,7 @@ function PolicyRow({ title, description, value, loading, disabled, onChange }: {
 	const styles = useThemedStyles(makeStyles);
 	return <View style={[styles.policyRow, disabled && styles.disabled]}>
 		<View style={styles.rowCopy}><Text style={styles.rowTitle}>{title}</Text><Text style={styles.rowSubtitle}>{description}</Text></View>
-		{loading ? <ActivityIndicator size="small" color={t.blue} /> : <Switch accessibilityLabel={title} disabled={disabled} value={value} onValueChange={onChange} trackColor={{ true: t.blue }} />}
+		{loading ? <ActivityIndicator size="small" color={t.accent} /> : <Switch accessibilityLabel={title} disabled={disabled} value={value} onValueChange={onChange} trackColor={{ true: t.accent }} />}
 	</View>;
 }
 
@@ -312,7 +312,7 @@ function FeedbackCard({ item, resolved = false, aoOwned, busy, disabled, onOpen,
 
 function MiniAction({ icon, title, loading, disabled = false, onPress }: { icon: keyof typeof Feather.glyphMap; title: string; loading?: boolean; disabled?: boolean; onPress: () => void }) {
 	const t = useTheme(); const styles = useThemedStyles(makeStyles);
-	return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={[styles.miniAction, disabled && styles.disabled]}>{loading ? <ActivityIndicator size="small" color={t.blue} /> : <Feather name={icon} size={14} color={t.blue} />}<Text style={styles.miniActionText}>{title}</Text></Pressable>;
+	return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={[styles.miniAction, disabled && styles.disabled]}>{loading ? <ActivityIndicator size="small" color={t.accent} /> : <Feather name={icon} size={14} color={t.accent} />}<Text style={styles.miniActionText}>{title}</Text></Pressable>;
 }
 
 function Section({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
@@ -324,9 +324,9 @@ function ActionRow({ icon, harness, title, subtitle, selected, loading, disabled
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	return <Pressable accessibilityRole="button" accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.row, pressed && styles.pressed, disabled && styles.disabled]}>
-		{harness ? <AgentLogo harness={harness} size={22} /> : <Feather name={icon} size={17} color={selected ? t.blue : t.textTertiary} />}
-		<View style={styles.rowCopy}><Text style={[styles.rowTitle, selected && { color: t.blue }]}>{title}</Text>{subtitle ? <Text numberOfLines={2} style={styles.rowSubtitle}>{subtitle}</Text> : null}</View>
-		{loading ? <ActivityIndicator size="small" color={t.blue} /> : selected ? <Feather name="check" size={17} color={t.blue} /> : <Feather name="chevron-right" size={16} color={t.textFaint} />}
+		{harness ? <AgentLogo harness={harness} size={22} /> : <Feather name={icon} size={17} color={selected ? t.accent : t.textTertiary} />}
+		<View style={styles.rowCopy}><Text style={[styles.rowTitle, selected && { color: t.accent }]}>{title}</Text>{subtitle ? <Text numberOfLines={2} style={styles.rowSubtitle}>{subtitle}</Text> : null}</View>
+		{loading ? <ActivityIndicator size="small" color={t.accent} /> : selected ? <Feather name="check" size={17} color={t.accent} /> : <Feather name="chevron-right" size={16} color={t.textFaint} />}
 	</Pressable>;
 }
 
@@ -352,7 +352,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	notInjected: { color: t.amber, fontSize: 11 },
 	feedbackActions: { flexDirection: "row", flexWrap: "wrap", gap: 14, marginTop: 2 },
 	miniAction: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 32 },
-	miniActionText: { color: t.blue, fontSize: 12, fontWeight: "600" },
+	miniActionText: { color: t.accent, fontSize: 12, fontWeight: "600" },
 	pressed: { opacity: 0.6 },
 	disabled: { opacity: 0.5 },
 	empty: { color: t.textTertiary, fontSize: 13, lineHeight: 18, paddingVertical: 12 },

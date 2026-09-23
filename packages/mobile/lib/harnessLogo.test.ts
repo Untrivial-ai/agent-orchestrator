@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { backdropFor, harnessInitial, hasLogo, LOGO_KEYS } from "./harnessLogo";
+import { backdropFor, chipColorFor, HARNESS_CHIP, harnessInitial, hasLogo, LOGO_KEYS } from "./harnessLogo";
 
 // The 24 harnesses the daemon accepts — backend/internal/domain/harness.go.
 const ALL_HARNESSES = [
@@ -87,6 +87,31 @@ describe("backdropFor", () => {
 	it("treats an unknown or missing harness as neutral", () => {
 		expect(backdropFor("some-new-agent")).toBe("neutral");
 		expect(backdropFor(null)).toBe("neutral");
+	});
+});
+
+describe("chipColorFor", () => {
+	// Every surface that draws a mark has to route through this. The spawn
+	// composer's SwiftUI menu drew the raw asset instead, so opencode's pure-white
+	// mark rendered on the light theme's own surface and disappeared.
+	it("returns the fixed chip for each polarity", () => {
+		expect(chipColorFor("opencode")).toBe(HARNESS_CHIP.dark);
+		expect(chipColorFor("cursor")).toBe(HARNESS_CHIP.dark);
+		expect(chipColorFor("goose")).toBe(HARNESS_CHIP.light);
+		expect(chipColorFor("kilocode")).toBe(HARNESS_CHIP.light);
+	});
+
+	it("returns nothing for a mark that needs no backdrop", () => {
+		expect(chipColorFor("codex")).toBeUndefined();
+		expect(chipColorFor("claude-code")).toBeUndefined();
+		expect(chipColorFor(null)).toBeUndefined();
+	});
+
+	// A palette token would follow the theme and put the white mark back on a
+	// light surface, which is the bug this exists to prevent.
+	it("keeps both chips theme-independent", () => {
+		expect(HARNESS_CHIP.dark).toBe("#24272e");
+		expect(HARNESS_CHIP.light).toBe("#ffffff");
 	});
 });
 

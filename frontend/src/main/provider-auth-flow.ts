@@ -182,6 +182,12 @@ export interface ProviderAuthCredential {
 	provider: string;
 	credentialType: string;
 	secret: string;
+	// Populated for expiring GitHub App OAuth tokens: the refresh token and
+	// lifetimes (seconds) GitHub returns alongside the access token, so the
+	// daemon can renew the token without a manual reconnect.
+	refreshToken?: string;
+	expiresIn?: number;
+	refreshTokenExpiresIn?: number;
 }
 
 export interface ProviderAuthFlow {
@@ -510,6 +516,12 @@ const githubAuthFlow: ProviderAuthFlow = {
 						if (typeof accessToken !== "string" || !accessToken) {
 							throw new Error("GitHub did not return an access token.");
 						}
+						// GitHub App user tokens expire (8h default) and arrive with a
+						// refresh token; keep it so the daemon can renew silently.
+						const refreshToken = typeof tokenBody.refresh_token === "string" ? tokenBody.refresh_token : undefined;
+						const expiresIn = typeof tokenBody.expires_in === "number" ? tokenBody.expires_in : undefined;
+						const refreshTokenExpiresIn =
+							typeof tokenBody.refresh_token_expires_in === "number" ? tokenBody.refresh_token_expires_in : undefined;
 
 						const userRes = await fetch("https://api.github.com/user", {
 							headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Agent-Orchestrator" },
@@ -525,7 +537,7 @@ const githubAuthFlow: ProviderAuthFlow = {
 							"Signed in to Agent Orchestrator",
 							`Authenticated as <strong>${login}</strong>. You can close this tab and return to Agent Orchestrator.`,
 						));
-						resolve({ provider: "github", credentialType: "access_token", secret: accessToken });
+						resolve({ provider: "github", credentialType: "access_token", secret: accessToken, refreshToken, expiresIn, refreshTokenExpiresIn });
 					} catch (err) {
 						cleanup();
 						server?.close();

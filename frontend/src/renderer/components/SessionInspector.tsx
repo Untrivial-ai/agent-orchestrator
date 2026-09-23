@@ -60,6 +60,7 @@ import { prBrowserUrl, prCanMerge, prCardPresentation, prNounKeys, sessionPRDisp
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import {
+	openPRs,
 	resolveNextNavigationAfterSessionKill,
 	sortedPRs,
 	STANDALONE_WORKSPACE_ID,
@@ -1445,6 +1446,7 @@ function TimelinePill({ label, tone }: { label: string; tone: string; breathe: b
 function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 	const states: ScmTimelineState[] = [];
 	const seen = new Set<ScmTimelineState>();
+	const open = new Set(openPRs(session));
 	const add = (state: ScmTimelineState) => {
 		if (seen.has(state)) return;
 		seen.add(state);
@@ -1454,7 +1456,7 @@ function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 	if (session.status === "ci_failed") add("ci_failed");
 	if (session.status === "changes_requested") add("changes_requested");
 	for (const pr of session.prs) {
-		if (pr.ci === "failing") add("ci_failed");
+		if (open.has(pr) && pr.ci === "failing") add("ci_failed");
 		if (pr.review === "changes_requested") add("changes_requested");
 		if (pr.mergeability === "conflicting") add("conflict");
 	}

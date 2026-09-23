@@ -281,6 +281,9 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
+	if err := w.enableWorktreeConfig(ctx, repo); err != nil {
+		return ports.WorkspaceInfo{}, err
+	}
 	if err := w.validateBranch(ctx, repo, cfg.Branch); err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
@@ -318,6 +321,9 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 	if err != nil {
 		return ports.WorkspaceProjectInfo{}, fmt.Errorf("gitworktree: root repo path: %w", err)
 	}
+	if err := w.enableWorktreeConfig(ctx, rootRepo); err != nil {
+		return ports.WorkspaceProjectInfo{}, err
+	}
 	rootPath, err := w.managedPath(ports.WorkspaceConfig{
 		ProjectID:     cfg.ProjectID,
 		SessionID:     cfg.SessionID,
@@ -339,6 +345,9 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 		repoPath, err := physicalAbs(child.RepoPath)
 		if err != nil {
 			return ports.WorkspaceProjectInfo{}, fmt.Errorf("gitworktree: child repo %q path: %w", child.Name, err)
+		}
+		if err := w.enableWorktreeConfig(ctx, repoPath); err != nil {
+			return ports.WorkspaceProjectInfo{}, fmt.Errorf("gitworktree: child repo %q: %w", child.Name, err)
 		}
 		rel, err := cleanRelativePath(child.RelativePath)
 		if err != nil {
@@ -1147,6 +1156,9 @@ func (w *Workspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (por
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
+	if err := w.enableWorktreeConfig(ctx, repo); err != nil {
+		return ports.WorkspaceInfo{}, err
+	}
 	path, err := w.restorePath(cfg)
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
@@ -1786,6 +1798,34 @@ func (w *Workspace) repoPathForConfig(cfg ports.WorkspaceConfig) (string, error)
 		return repo, nil
 	}
 	return w.repoPath(cfg.ProjectID)
+}
+
+// enableWorktreeConfig opts linked worktrees into Git's per-worktree config
+// file. Without this extension, every worktree uses the shared .git/config,
+// so a worker's `git config` write can alter the human checkout as well. The
+// worker prompt separately prohibits remote mutations and directs agents to
+// use `git config --worktree`: Git's remote commands (and explicit
+// `git config --local`) remain repository-scoped even when this extension is
+// enabled.
+//
+// Repositories registered with AO are standalone checkouts. The .git check
+// avoids turning unit-test fakes and non-git paths into a new error before the
+// normal worktree commands report their more useful failure.
+func (w *Workspace) enableWorktreeConfig(ctx context.Context, repo string) error {
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("gitworktree: inspect repository metadata: %w", err)
+	}
+	args := []string{"-C", repo, "config", "extensions.worktreeConfig", "true"}
+	cmd := aoprocess.CommandContext(ctx, w.binary, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gitworktree: enable per-worktree config: %w", commandError{
+			args: append([]string{w.binary}, args...), output: string(out), err: err,
+		})
+	}
+	return nil
 }
 
 func physicalAbs(path string) (string, error) {

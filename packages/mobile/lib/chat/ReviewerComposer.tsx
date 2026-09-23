@@ -88,7 +88,7 @@ export function ReviewerComposer({ busy, stopped, onSend, onInterrupt }: {
 	};
 
 	return <View style={styles.dock}>
-		{attachments.length ? <ScrollView horizontal contentContainerStyle={styles.attachments}>{attachments.map((item) => <View key={item.id} style={styles.attachment}>{item.kind === "image" ? <Image source={{ uri: `data:${item.image.mimeType};base64,${item.image.data}` }} style={styles.image} /> : <Feather name="file-text" size={13} color={t.blue} />}<Text numberOfLines={1} style={styles.name}>{item.name}</Text><Pressable accessibilityLabel={`Remove ${item.name}`} onPress={() => setAttachments((current) => current.filter((candidate) => candidate.id !== item.id))}><Feather name="x" size={13} color={t.textTertiary} /></Pressable></View>)}</ScrollView> : null}
+		{attachments.length ? <ScrollView horizontal contentContainerStyle={styles.attachments}>{attachments.map((item) => <View key={item.id} style={styles.attachment}>{item.kind === "image" ? <Image source={{ uri: `data:${item.image.mimeType};base64,${item.image.data}` }} style={styles.image} /> : <Feather name="file-text" size={13} color={t.accent} />}<Text numberOfLines={1} style={styles.name}>{item.name}</Text><Pressable accessibilityLabel={`Remove ${item.name}`} onPress={() => setAttachments((current) => current.filter((candidate) => candidate.id !== item.id))}><Feather name="x" size={13} color={t.textTertiary} /></Pressable></View>)}</ScrollView> : null}
 		{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 		<View style={styles.row}>
 			<ChatAttachmentMenu disabled={stopped || submitting} canAttachFile onChoosePhoto={() => void addPhoto()} onChooseFile={() => void addFile()} />
@@ -103,5 +103,5 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	row: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
 	input: { flex: 1, minHeight: 42, maxHeight: 120, color: t.textPrimary, backgroundColor: t.bgElevated, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15 },
 	attachments: { gap: 7 }, attachment: { flexDirection: "row", alignItems: "center", gap: 6, maxWidth: 190, backgroundColor: t.bgElevated, borderRadius: 9, padding: 6 }, image: { width: 25, height: 25, borderRadius: 5 }, name: { maxWidth: 120, color: t.textSecondary, fontSize: 12 },
-	error: { color: t.red, fontSize: 12 }, stop: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.tintRed }, send: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.blue }, disabled: { opacity: 0.4 },
+	error: { color: t.red, fontSize: 12 }, stop: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.tintRed }, send: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: t.accent }, disabled: { opacity: 0.4 },
 });
