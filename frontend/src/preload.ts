@@ -326,7 +326,13 @@ const api = {
 			ipcRenderer.invoke("theme:persist-terminal", scheme) as Promise<void>,
 	},
 	menu: {
-		action: (action: string) => ipcRenderer.invoke("menu:action", action) as Promise<void>,
+		action: (action: string) => {
+			if (action === "app.reloadWindow") {
+				ipcRenderer.send("app:reloadWindow");
+				return Promise.resolve();
+			}
+			return ipcRenderer.invoke("menu:action", action) as Promise<void>;
+		},
 		notifyShellFocus: () => ipcRenderer.send("shell:focus"),
 	},
 	clipboard: {

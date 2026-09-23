@@ -960,6 +960,7 @@
 	"settings.githubPat.remove": "Remove",
 	"settings.connectMobile": "Connect mobile",
 	"settings.developerMode": "Developer mode",
+	"settings.reloadWindow": "Reload window",
 	"settings.general": "General",
 	"settings.appearance": "Appearance",
 	"settings.privacy": "Privacy",

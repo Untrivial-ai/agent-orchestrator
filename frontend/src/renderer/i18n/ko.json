@@ -963,6 +963,7 @@
 	"settings.close": "설정 닫기",
 	"settings.connectMobile": "모바일 연결",
 	"settings.developerMode": "개발자 모드",
+	"settings.reloadWindow": "창 새로고침",
 	"settings.general": "일반",
 	"settings.appearance": "모양",
 	"settings.privacy": "개인정보",

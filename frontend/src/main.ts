@@ -1992,6 +1992,11 @@ ipcMain.handle("editorHandoff:open", (event, input) => {
 	return editorHandoff.open(input && typeof input === "object" ? input : { sessionId: "" });
 });
 ipcMain.handle("app:getVersion", () => app.getVersion());
+ipcMain.on("app:reloadWindow", (event) => {
+	const shell = getShellWebContents();
+	if (!shell || event.sender !== shell) return;
+	shell.reload();
+});
 ipcMain.handle("app:openExternal", async (_event, url: string) => {
 	await openAllowedAppExternalURL(url, shell);
 });

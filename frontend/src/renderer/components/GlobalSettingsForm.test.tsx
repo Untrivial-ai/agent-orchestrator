@@ -239,6 +239,21 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.getByLabelText("Title")).toBeInTheDocument();
 	});
 
+	it("reloads the window from Advanced settings without developer mode", async () => {
+		const action = vi.spyOn(window.ao!.menu, "action").mockResolvedValue(undefined);
+		try {
+			renderForm("general");
+			const button = screen.getByRole("button", { name: "Reload window" });
+			expect(button).toBeEnabled();
+
+			await userEvent.setup().click(button);
+			expect(action).toHaveBeenCalledOnce();
+			expect(action).toHaveBeenCalledWith("app.reloadWindow");
+		} finally {
+			action.mockRestore();
+		}
+	});
+
 	it("persists developer mode and reveals feature builds", async () => {
 		const user = userEvent.setup();
 		renderForm();

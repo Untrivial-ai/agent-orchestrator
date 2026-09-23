@@ -7,6 +7,7 @@ import { useSoundNotificationsStore } from "../../stores/sound-notifications-sto
 import { useUiStore } from "../../stores/ui-store";
 import { useTelemetryPolicyStore } from "../../stores/telemetry-policy-store";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { Button } from "../ui/button";
 import { useTerminalShellStore } from "../../stores/terminal-shell-store";
 import { SettingsOptionMenu, type SettingsOption } from "./SettingsOptionMenu";
 import { SettingsInputRow, SettingsRow } from "./SettingsRow";
@@ -236,6 +237,17 @@ export function GeneralSettingsSection({
 
 			{/* Advanced */}
 			<SettingsSection title={t("settings.advanced")} grouped>
+				<SettingsRow label={t("titlebar.window")}>
+					<Button
+						disabled={!window.ao?.menu}
+						onClick={() => void window.ao?.menu.action("app.reloadWindow")}
+						size="sm"
+						type="button"
+						variant="outline"
+					>
+						{t("settings.reloadWindow")}
+					</Button>
+				</SettingsRow>
 				<SettingsRow label={t("settings.developerMode")}>
 					<Switch
 						aria-label={t("settings.developerMode")}
