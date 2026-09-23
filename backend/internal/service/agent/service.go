@@ -209,17 +209,15 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 	for _, item := range readiness.Agents {
 		if item.Authentication.State == domain.AgentAuthenticationAuthorized || item.Authentication.State == domain.AgentAuthenticationNotApplicable {
 			priority[item.ID] = 0
-		} else if item.Installation.State == domain.AgentInstallationInstalled {
-			priority[item.ID] = 1
 		}
 	}
 	// Preserve and validate previously cached static catalogs even if their
 	// executable is temporarily unavailable.
 	priority["claude-code"] = 0
 	priority["muse"] = 0
-	// Include every active project scope for adapters AO can currently use. This
-	// makes startup prefetch useful on a fresh database instead of limiting it to
-	// scopes that were opened before the daemon restarted.
+	// Include every active project scope for authenticated adapters. This makes
+	// the first startup after the cache migration populate model choices without
+	// waiting for the user to open each agent's model picker.
 	if projects, listable := s.projects.(projectListLookup); listable {
 		projectRows, listErr := projects.ListProjects(ctx)
 		if listErr == nil {

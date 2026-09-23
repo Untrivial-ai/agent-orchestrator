@@ -195,23 +195,32 @@ func TestCatalogFreshnessUsesMachineLocalDateAndTimezone(t *testing.T) {
 	}
 }
 
-func TestStartupPrefetchCreatesEveryUsableAgentProjectScope(t *testing.T) {
+func TestStartupPrefetchCreatesEveryAuthorizedAgentProjectScope(t *testing.T) {
 	discoverer := successfulModelDiscoverer()
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"one": {ID: "one", Path: t.TempDir()},
 		"two": {ID: "two", Path: t.TempDir()},
 	}}
+	cache := &fakeModelCache{}
 	svc := newService([]agentregistry.HarnessAgent{
-		harnessAgent("codex", "Codex", nil),
-		harnessAgent("gemini", "Gemini", nil),
-	}, &fakeModelCache{}, projects, discoverer)
+		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusAuthorized, nil),
+		harnessAuthAgent("gemini", "Gemini", ports.AgentAuthStatusUnauthorized, nil),
+	}, cache, projects, discoverer)
 	svc.prefetchModelCatalogs(context.Background(), false)
 	deadline := time.Now().Add(time.Second)
-	for (discoverer.discoverCalls.Load() < 4 || discoverer.active.Load() != 0) && time.Now().Before(deadline) {
+	for (discoverer.discoverCalls.Load() < 2 || discoverer.active.Load() != 0) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := discoverer.discoverCalls.Load(); got != 4 {
-		t.Fatalf("discoveries = %d, want two agents across two active projects", got)
+	if got := discoverer.discoverCalls.Load(); got != 2 {
+		t.Fatalf("discoveries = %d, want authorized agent across two active projects", got)
+	}
+	for _, projectID := range []string{"one", "two"} {
+		if _, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", projectID); err != nil || !ok {
+			t.Fatalf("cached codex scope %q = (%v, %v), want persisted", projectID, ok, err)
+		}
+		if _, ok, err := cache.GetAgentModelCatalog(context.Background(), "gemini", projectID); err != nil || ok {
+			t.Fatalf("cached unauthorized gemini scope %q = (%v, %v), want absent", projectID, ok, err)
+		}
 	}
 }
 
@@ -226,7 +235,8 @@ func TestStartupPrefetchDoesNotConsumeDiscoveryTimeoutWhileQueued(t *testing.T) 
 		"three": {ID: "three", Path: t.TempDir()}, "four": {ID: "four", Path: t.TempDir()},
 	}}
 	svc := newService([]agentregistry.HarnessAgent{
-		harnessAgent("codex", "Codex", nil), harnessAgent("gemini", "Gemini", nil),
+		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusAuthorized, nil),
+		harnessAuthAgent("gemini", "Gemini", ports.AgentAuthStatusAuthorized, nil),
 	}, &fakeModelCache{}, projects, discoverer)
 
 	svc.prefetchModelCatalogs(context.Background(), false)
