@@ -1078,7 +1078,7 @@ UPDATE sessions SET
     conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
     conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?, native_checkpoint_evidence = ?,
     native_transcript_path = ?,
-    preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
+    preview_url = ?, preview_revision = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
     provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
     is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
@@ -1121,7 +1121,6 @@ type UpdateSessionParams struct {
 	NativeTranscriptPath             string
 	PreviewURL                       string
 	PreviewRevision                  int64
-	TerminateOnPRMerge               bool
 	CleanupGeneration                int64
 	BrowserCapabilityVerifier        string
 	ProviderConversationID           string
@@ -1135,6 +1134,9 @@ type UpdateSessionParams struct {
 	ID                               domain.SessionID
 }
 
+// terminate_on_pr_merge is intentionally owned by the narrow
+// SetSessionTerminateOnPRMerge query. A lifecycle full-row update may carry a
+// stale snapshot and must not revert a user policy change.
 func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) error {
 	_, err := q.db.ExecContext(ctx, updateSession,
 		arg.IssueID,
@@ -1172,7 +1174,6 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 		arg.NativeTranscriptPath,
 		arg.PreviewURL,
 		arg.PreviewRevision,
-		arg.TerminateOnPRMerge,
 		arg.CleanupGeneration,
 		arg.BrowserCapabilityVerifier,
 		arg.ProviderConversationID,

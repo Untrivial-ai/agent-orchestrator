@@ -137,6 +137,10 @@ type sessionTerminator interface {
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 }
 
+type crashedSessionFinalizer interface {
+	FinalizeCrashedSession(ctx context.Context, id domain.SessionID) error
+}
+
 type sessionUsageFinalizer interface {
 	FinalizeSession(
 		ctx context.Context,
@@ -229,6 +233,10 @@ type Manager struct {
 	// completionTerminator is late-bound because Session Manager itself depends
 	// on this lifecycle reducer. It is required before the SCM observer starts.
 	completionTerminator sessionTerminator
+	// crashFinalizer releases external resources only after the terminal fact is
+	// durable. The implementation must not create an automatic boot-restore
+	// marker for a crashed session.
+	crashFinalizer crashedSessionFinalizer
 	// usageFinalizer is late-bound because the usage pipeline is optional. It
 	// receives terminal intent before is_terminated makes the session ineligible
 	// for normal source discovery.
@@ -303,6 +311,14 @@ func (m *Manager) SetCompletionTerminator(terminator sessionTerminator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completionTerminator = terminator
+}
+
+// SetCrashFinalizer wires confirmed runtime death to guarded, non-forcing
+// external-resource cleanup.
+func (m *Manager) SetCrashFinalizer(finalizer crashedSessionFinalizer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.crashFinalizer = finalizer
 }
 
 // SetUsageFinalizer wires termination and relaunches to usage collection.
@@ -505,6 +521,14 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		// runtime reaper must not leave the session's Docker containers behind
 		// just because it never called MarkTerminated directly.
 		m.reapSessionContainers(ctx, id)
+		m.mu.Lock()
+		finalizer := m.crashFinalizer
+		m.mu.Unlock()
+		if finalizer != nil {
+			if err := finalizer.FinalizeCrashedSession(ctx, id); err != nil {
+				slog.Default().Warn("lifecycle: crashed-session resource finalization failed; terminal-resource GC will retry", "session", id, "err", err)
+			}
+		}
 	}
 	return nil
 }
@@ -1516,6 +1540,13 @@ func (m *Manager) markSpawned(
 			return nil, fmt.Errorf("lifecycle: MarkSpawned for unknown session %q", id)
 		}
 		now := m.clock()
+		if rec.IsTerminated {
+			// Un-terminating (restore/relaunch) starts a new cleanup generation:
+			// teardown facts recorded for the previous terminal phase no longer
+			// describe this session's resources, so the terminal-resource
+			// reconciler must treat them as stale (see session_cleanup_facts).
+			rec.CleanupGeneration++
+		}
 		rec.IsTerminated = false
 		rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
 		// Each spawn/restore must re-prove its hook pipeline: clear the receipt so

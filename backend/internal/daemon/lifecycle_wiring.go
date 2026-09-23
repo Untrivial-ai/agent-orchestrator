@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitydispatch"
@@ -174,6 +175,8 @@ type sessionLifecycle interface {
 	RestoreAll(ctx context.Context) error
 	WaitAgentSwitchWorkers(ctx context.Context) error
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
+	FinalizeCrashedSession(ctx context.Context, id domain.SessionID) error
+	RunTerminalResourceGC(ctx context.Context) (sessionmanager.CleanupResult, error)
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
 	// SetShellTerminalCloser late-binds Kill/Cleanup to close a session's
 	// scoped shell terminals before its worktree is torn down. shellterm.Service
@@ -198,6 +201,29 @@ type sessionLifecycle interface {
 	// session's durable metadata before the next prompt routes. A later TUI
 	// rebuild reads it back so ChatUI model changes survive the handoff.
 	PersistChatModel(ctx context.Context, id domain.SessionID, model string) error
+}
+
+const (
+	terminalResourceGCInitialDelay = 2 * time.Minute
+	terminalResourceGCInterval     = time.Hour
+)
+
+func startTerminalResourceGC(ctx context.Context, sessions sessionLifecycle, log *slog.Logger) {
+	go func() {
+		timer := time.NewTimer(terminalResourceGCInitialDelay)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+			if _, err := sessions.RunTerminalResourceGC(ctx); err != nil && ctx.Err() == nil {
+				log.Warn("terminal-resource gc pass failed", "err", err)
+			}
+			timer.Reset(terminalResourceGCInterval)
+		}
+	}()
 }
 
 // sessionLifecycleMessenger adapts sessionLifecycle to ports.AgentMessenger so
@@ -260,25 +286,26 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Projects: store,
 	})
 	mgr := sessionmanager.New(sessionmanager.Deps{
-		Runtime:             runtime,
-		Agents:              agents,
-		Workspace:           ws,
-		Store:               store,
-		ReportingPolicy:     reportingPolicy,
-		DaemonRunID:         cfg.AppRunID,
-		Messenger:           messenger,
-		Chat:                chat,
-		Defaults:            defaults,
-		Lifecycle:           lcm,
-		Preview:             previewLifecycle,
-		Browser:             browserLifecycle,
-		BrowserCapabilities: browserCapabilities,
-		DataDir:             cfg.DataDir,
-		RunFilePath:         cfg.RunFilePath,
-		BackgroundContext:   ctx,
-		Logger:              log,
-		ReconcileWorkers:    startupReconcileWorkers,
-		CodexOperationGate:  codexOperationGate,
+		Runtime:               runtime,
+		Agents:                agents,
+		Workspace:             ws,
+		Store:                 store,
+		ReportingPolicy:       reportingPolicy,
+		DaemonRunID:           cfg.AppRunID,
+		Messenger:             messenger,
+		Chat:                  chat,
+		Defaults:              defaults,
+		Lifecycle:             lcm,
+		Preview:               previewLifecycle,
+		Browser:               browserLifecycle,
+		BrowserCapabilities:   browserCapabilities,
+		DataDir:               cfg.DataDir,
+		RunFilePath:           cfg.RunFilePath,
+		BackgroundContext:     ctx,
+		MaxConcurrentSessions: cfg.MaxConcurrentSessions,
+		Logger:                log,
+		ReconcileWorkers:      startupReconcileWorkers,
+		CodexOperationGate:    codexOperationGate,
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)

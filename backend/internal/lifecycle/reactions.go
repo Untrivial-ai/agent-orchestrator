@@ -351,6 +351,13 @@ func (m *Manager) terminateCompletedSession(ctx context.Context, id domain.Sessi
 	if m.sessionMutationInProgress(id) {
 		return nil
 	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return fmt.Errorf("terminate completed session %s: load session: %w", id, err)
+	}
+	if !ok || rec.IsTerminated {
+		return nil
+	}
 	m.mu.Lock()
 	terminator := m.completionTerminator
 	m.mu.Unlock()
@@ -678,9 +685,9 @@ func prCommentObservations(comments []domain.PullRequestComment) []ports.PRComme
 // the read-side persistence path).
 //
 // Reactions today:
-//   - Issue terminal (state == done or cancelled) → MarkTerminated. The
-//     reducer is idempotent — repeat observations on an already-terminated
-//     session are no-ops because MarkTerminated skips when IsTerminated.
+//   - Issue terminal (state == done or cancelled) → full session teardown when
+//     the daemon has wired a terminator, otherwise MarkTerminated. Repeat
+//     observations on an already-terminated session are no-ops.
 //   - Assignee changed → log only. No session-state reaction yet; the policy
 //     for "assignee changed away from AO" is reserved for the write-side work
 //     tracked by #40.
@@ -696,7 +703,16 @@ func (m *Manager) ApplyTrackerFacts(ctx context.Context, id domain.SessionID, o 
 		if m.sessionMutationInProgress(id) {
 			return nil
 		}
-		return m.MarkTerminated(ctx, id)
+		// The daemon wires Kill as the completion terminator. Use it here so a
+		// Done/Cancelled issue releases runtime and workspace resources rather
+		// than only flipping the terminal flag.
+		m.mu.Lock()
+		terminator := m.completionTerminator
+		m.mu.Unlock()
+		if terminator == nil {
+			return m.MarkTerminated(ctx, id)
+		}
+		return m.terminateCompletedSession(ctx, id)
 	}
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil || !ok {

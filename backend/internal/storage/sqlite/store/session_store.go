@@ -642,15 +642,17 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		NativeTranscriptPath:             rec.Metadata.NativeTranscriptPath,
 		PreviewURL:                       rec.Metadata.PreviewURL,
 		PreviewRevision:                  rec.Metadata.PreviewRevision,
-		TerminateOnPRMerge:               rec.TerminateOnPRMerge,
-		AutoInjectReview:                 rec.AutoInjectReview,
-		AutoInjectCI:                     rec.AutoInjectCI,
-		CleanupGeneration:                rec.CleanupGeneration,
-		BrowserCapabilityVerifier:        rec.Metadata.BrowserCapabilityVerifier,
-		ProviderConversationID:           rec.Metadata.ProviderConversationID,
-		ControllerGeneration:             rec.Metadata.ControllerGeneration,
-		Model:                            rec.Metadata.Model,
-		UpdatedAt:                        rec.UpdatedAt,
+		// TerminateOnPRMerge is owned by its narrow setter. Keeping it out of
+		// this full-row update prevents stale lifecycle snapshots from
+		// overwriting an interleaved user policy change.
+		AutoInjectReview:          rec.AutoInjectReview,
+		AutoInjectCI:              rec.AutoInjectCI,
+		CleanupGeneration:         rec.CleanupGeneration,
+		BrowserCapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier,
+		ProviderConversationID:    rec.Metadata.ProviderConversationID,
+		ControllerGeneration:      rec.Metadata.ControllerGeneration,
+		Model:                     rec.Metadata.Model,
+		UpdatedAt:                 rec.UpdatedAt,
 	}
 }
 

@@ -432,12 +432,16 @@ type fakeMessenger struct {
 }
 
 type fakeCompletionTerminator struct {
-	calls int
-	err   error
+	calls  int
+	err    error
+	onKill func(domain.SessionID)
 }
 
-func (f *fakeCompletionTerminator) Kill(_ context.Context, _ domain.SessionID) (bool, error) {
+func (f *fakeCompletionTerminator) Kill(_ context.Context, id domain.SessionID) (bool, error) {
 	f.calls++
+	if f.onKill != nil {
+		f.onKill(id)
+	}
 	return true, f.err
 }
 
@@ -3894,6 +3898,96 @@ func TestApplyTrackerFacts_TerminalStateMarksTerminated(t *testing.T) {
 				t.Fatalf("terminal state should not nudge, got %v", msg.msgs)
 			}
 		})
+	}
+}
+
+func TestApplyTrackerFacts_TerminalStateUsesConfiguredTerminator(t *testing.T) {
+	m, st, _ := newManager()
+	terminator := &fakeCompletionTerminator{}
+	m.SetCompletionTerminator(terminator)
+	st.sessions["mer-1"] = working("mer-1")
+	o := ports.TrackerObservation{
+		Fetched: true,
+		Issue:   ports.TrackerIssueObservation{URL: "https://github.com/o/r/issues/1", State: domain.IssueDone},
+	}
+	if err := m.ApplyTrackerFacts(ctx, "mer-1", o); err != nil {
+		t.Fatalf("ApplyTrackerFacts: %v", err)
+	}
+	if terminator.calls != 1 {
+		t.Fatalf("terminator calls = %d, want 1", terminator.calls)
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatal("flag-only termination ran alongside the terminator")
+	}
+}
+
+func TestApplyTrackerFacts_RepeatedTerminalStateDoesNotRepeatTeardown(t *testing.T) {
+	m, st, _ := newManager()
+	terminator := &fakeCompletionTerminator{onKill: func(id domain.SessionID) {
+		rec := st.sessions[id]
+		rec.IsTerminated = true
+		st.sessions[id] = rec
+	}}
+	m.SetCompletionTerminator(terminator)
+	st.sessions["mer-1"] = working("mer-1")
+	o := ports.TrackerObservation{
+		Fetched: true,
+		Issue:   ports.TrackerIssueObservation{URL: "https://github.com/o/r/issues/1", State: domain.IssueDone},
+	}
+	if err := m.ApplyTrackerFacts(ctx, "mer-1", o); err != nil {
+		t.Fatalf("first ApplyTrackerFacts: %v", err)
+	}
+	if err := m.ApplyTrackerFacts(ctx, "mer-1", o); err != nil {
+		t.Fatalf("second ApplyTrackerFacts: %v", err)
+	}
+	if terminator.calls != 1 {
+		t.Fatalf("terminator calls = %d, want 1", terminator.calls)
+	}
+}
+
+func TestApplyTrackerFacts_TerminalStateNoopsForMissingOrTerminatedSession(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rec  *domain.SessionRecord
+	}{
+		{name: "missing"},
+		{name: "terminated", rec: func() *domain.SessionRecord {
+			rec := working("mer-1")
+			rec.IsTerminated = true
+			return &rec
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _ := newManager()
+			terminator := &fakeCompletionTerminator{}
+			m.SetCompletionTerminator(terminator)
+			if tc.rec != nil {
+				st.sessions[tc.rec.ID] = *tc.rec
+			}
+			o := ports.TrackerObservation{Fetched: true, Issue: ports.TrackerIssueObservation{State: domain.IssueCancelled}}
+			if err := m.ApplyTrackerFacts(ctx, "mer-1", o); err != nil {
+				t.Fatalf("ApplyTrackerFacts: %v", err)
+			}
+			if terminator.calls != 0 {
+				t.Fatalf("terminator calls = %d, want 0", terminator.calls)
+			}
+		})
+	}
+}
+
+func TestApplyTrackerFacts_TerminalTeardownFailureRemainsRetryable(t *testing.T) {
+	m, st, _ := newManager()
+	terminator := &fakeCompletionTerminator{err: errors.New("runtime unavailable")}
+	m.SetCompletionTerminator(terminator)
+	st.sessions["mer-1"] = working("mer-1")
+	o := ports.TrackerObservation{Fetched: true, Issue: ports.TrackerIssueObservation{State: domain.IssueDone}}
+	for range 2 {
+		if err := m.ApplyTrackerFacts(ctx, "mer-1", o); err == nil || !strings.Contains(err.Error(), "runtime unavailable") {
+			t.Fatalf("ApplyTrackerFacts error = %v, want runtime unavailable", err)
+		}
+	}
+	if terminator.calls != 2 {
+		t.Fatalf("terminator calls = %d, want 2 retry attempts", terminator.calls)
 	}
 }
 
