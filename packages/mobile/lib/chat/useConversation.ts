@@ -30,7 +30,7 @@ import {
 } from "./api";
 import type { ChatConfigOption, ChatImage, ChatModel, ChatResource, ChatSkill, ConversationSnapshot, TurnSettings } from "./types";
 import { cachedConversationState, createMobileConversationPageCache, discardHistoricalPages } from "./snapshot";
-import { conversationActionError, conversationErrorCode } from "./conversationErrors";
+import { conversationActionError, conversationErrorCode, conversationErrorIsPermanent } from "./conversationErrors";
 import { subscribeConversationEvents } from "./conversationEvents";
 import { conversationPollIntervalFor } from "./conversationPoll";
 import { createAsyncValueCache } from "./asyncValueCache";
@@ -152,7 +152,7 @@ export function useMobileConversation(
 			setError(undefined);
 		} catch (cause) {
 			if (!mounted.current || !refreshGate.isCurrent(request)) return;
-			const classified = classifyConversationError(cause);
+			const classified = classifyConversationError(cause, Boolean(options?.reviewId));
 			if (classified.permanent) setUnavailable({ code: classified.code, message: classified.message });
 			else setError(classified.message);
 		} finally {
@@ -445,20 +445,10 @@ function upsertPending(items: PendingSend[], next: PendingSend): PendingSend[] {
 	return items.map((item, at) => (at === index ? next : item));
 }
 
-function classifyConversationError(error: unknown): { permanent: boolean; code?: string; message: string } {
+function classifyConversationError(error: unknown, reviewer = false): { permanent: boolean; code?: string; message: string } {
 	const code = typeof error === "object" && error !== null && "code" in error ? String(error.code ?? "") : undefined;
-	const permanentCodes = new Set([
-		"SESSION_MODE_MISMATCH",
-		"SESSION_NOT_FOUND",
-		"SESSION_MODE_UNSUPPORTED",
-		"CHAT_DRIVER_UNAVAILABLE",
-		"CHAT_DRIVER_INCOMPATIBLE",
-		"CHAT_AUTH_REQUIRED",
-		"CHAT_RESUME_FAILED",
-		"CHAT_CONTROLLER_NOT_READY",
-	]);
 	return {
-		permanent: Boolean(code && permanentCodes.has(code)),
+		permanent: conversationErrorIsPermanent(code, reviewer),
 		code,
 		message: conversationActionError(error),
 	};

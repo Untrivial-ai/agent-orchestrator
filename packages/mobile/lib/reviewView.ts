@@ -1,4 +1,4 @@
-import type { PRReviewState, ReviewRun } from "./api";
+import type { PRReviewState, ReviewRun, SessionReviews } from "./api";
 
 export function reviewForPullRequest(
 	reviews: PRReviewState[],
@@ -19,6 +19,19 @@ export function reviewStatusLabel(status: PRReviewState["status"]): string {
 		case "changes_requested": return "Changes requested";
 		case "ineligible": return "Review unavailable";
 		default: return "Needs review";
+	}
+}
+
+export function reviewStatusVisual(status: PRReviewState["status"]): {
+	icon: "alert-circle" | "check-circle" | "clock" | "loader";
+	tone: "amber" | "blue" | "green" | "muted";
+} {
+	switch (status) {
+		case "running": return { icon: "loader", tone: "blue" };
+		case "up_to_date": return { icon: "check-circle", tone: "green" };
+		case "changes_requested": return { icon: "alert-circle", tone: "amber" };
+		case "ineligible": return { icon: "alert-circle", tone: "muted" };
+		default: return { icon: "clock", tone: "muted" };
 	}
 }
 
@@ -44,11 +57,27 @@ export function reviewPrimaryAction(review: PRReviewState): ReviewPrimaryAction 
 	return "review_again";
 }
 
-export function reviewPrimaryActionLabel(action: ReviewPrimaryAction): string {
+export function reviewBatchAction(review: PRReviewState, reviews: PRReviewState[]): ReviewPrimaryAction {
+	if (reviews.some((candidate) => candidate.status === "running")) return "cancel";
+	return reviewPrimaryAction(review);
+}
+
+export function reviewerDestination(data: SessionReviews, review: PRReviewState, sessionId: string) {
+	const surface = data.reviewerSurface;
+	if (!surface) return undefined;
+	if (surface.mode === "chat") {
+		return { pathname: "/reviewer/[reviewId]" as const, params: { reviewId: surface.reviewId, sessionId, title: review.title } };
+	}
+	const handleId = surface.handleId || data.reviewerHandleId;
+	if (!handleId) return undefined;
+	return { pathname: "/shell/[handleId]" as const, params: { handleId, sessionId, title: `Review · PR #${review.prNumber}` } };
+}
+
+export function reviewPrimaryActionLabel(action: ReviewPrimaryAction, multiple = false): string {
 	switch (action) {
-		case "start": return "Start review";
-		case "cancel": return "Cancel review";
-		case "review_again": return "Review again";
+		case "start": return multiple ? "Start all reviews" : "Start review";
+		case "cancel": return multiple ? "Cancel running reviews" : "Cancel review";
+		case "review_again": return multiple ? "Review all again" : "Review again";
 		default: return "";
 	}
 }

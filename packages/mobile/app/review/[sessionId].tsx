@@ -1,10 +1,12 @@
 import { Feather } from "@expo/vector-icons";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { cancelSessionReview, getSessionReviews, restoreSessionReviewer, triggerSessionReview, type ReviewRun, type SessionReviews } from "../../lib/api";
+import { ChatMarkdown } from "../../lib/chat/ChatMarkdown";
 import { haptics } from "../../lib/haptics";
-import { reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewStatusLabel, reviewVerdictLabel, shortCommit } from "../../lib/reviewView";
+import { openGitHub } from "../../lib/openGitHub";
+import { reviewBatchAction, reviewerDestination, reviewForPullRequest, reviewPrimaryActionLabel, reviewStatusLabel, reviewStatusVisual, reviewVerdictLabel, shortCommit } from "../../lib/reviewView";
 import { useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
@@ -22,22 +24,35 @@ export default function ReviewDetailScreen() {
 	const [data, setData] = useState<SessionReviews>();
 	const [error, setError] = useState("");
 	const [refreshing, setRefreshing] = useState(false);
-	const [acting, setActing] = useState(false);
-	const [restoring, setRestoring] = useState(false);
+	const [mutation, setMutation] = useState<"review" | "restore">();
+	const latestLoad = useRef(0);
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (quiet = false) => {
 		if (!config || !sessionId) return;
-		setError("");
+		const request = ++latestLoad.current;
+		if (!quiet) setError("");
 		try {
-			setData(await getSessionReviews(config, sessionId));
+			const next = await getSessionReviews(config, sessionId);
+			if (request === latestLoad.current) {
+				setData(next);
+				setError("");
+			}
 		} catch (value) {
-			setError(value instanceof Error ? value.message : "Could not load this review.");
+			if (!quiet && request === latestLoad.current) setError(value instanceof Error ? value.message : "Could not load this review.");
 		}
 	}, [config, sessionId]);
 
-	useEffect(() => { void load(); }, [load]);
+	useFocusEffect(useCallback(() => { void load(); }, [load]));
 	const review = reviewForPullRequest(data?.reviews ?? [], prUrl, Number(prNumber) || undefined);
 	useLayoutEffect(() => navigation.setOptions({ title: review?.title || "Review" }), [navigation, review?.title]);
+	useLayoutEffect(() => navigation.setOptions({
+		headerRight: review?.prUrl ? () => <Pressable accessibilityRole="link" accessibilityLabel={`Open pull request ${review.prNumber} in GitHub`} hitSlop={10} onPress={() => { haptics.tap(); void openGitHub(review.prUrl); }}><Feather name="external-link" size={19} color={t.textSecondary} /></Pressable> : undefined,
+	}), [navigation, review?.prNumber, review?.prUrl, t.textSecondary]);
+	useEffect(() => {
+		if (review?.status !== "running") return;
+		const timer = setInterval(() => void load(true), 2_000);
+		return () => clearInterval(timer);
+	}, [load, review?.status]);
 
 	const refresh = async () => {
 		haptics.tap();
@@ -48,22 +63,18 @@ export default function ReviewDetailScreen() {
 
 	if (!data && !error) return <View style={styles.center}><ActivityIndicator color={t.blue} /></View>;
 	if (!data || !review) return <EmptyState icon={error ? "alert-triangle" : "git-pull-request"} title={error ? "Could not load review" : "No review found"} message={error || "AO has no review state for this pull request yet."} action={<Button title="Try again" icon="refresh-cw" variant="ghost" onPress={() => void load()} />} />;
-	const primaryAction = reviewPrimaryAction(review);
+	const primaryAction = reviewBatchAction(review, data.reviews);
+	const multiplePullRequests = data.reviews.length > 1;
 	const openReviewer = () => {
-		const surface = data.reviewerSurface;
-		if (!surface) return;
+		const destination = reviewerDestination(data, review, sessionId);
+		if (!destination) return;
 		haptics.tap();
-		if (surface.mode === "chat") {
-			router.push({ pathname: "/reviewer/[reviewId]", params: { reviewId: surface.reviewId, sessionId, title: review.title } });
-			return;
-		}
-		const handleId = surface.handleId || data.reviewerHandleId;
-		if (handleId) router.push({ pathname: "/shell/[handleId]", params: { handleId, sessionId, title: `Review · PR #${review.prNumber}` } });
+		router.push(destination);
 	};
 	const restoreReviewer = async () => {
-		if (!config) return;
+		if (!config || mutation) return;
 		haptics.tap();
-		setRestoring(true);
+		setMutation("restore");
 		setError("");
 		try {
 			await restoreSessionReviewer(config, sessionId);
@@ -71,13 +82,13 @@ export default function ReviewDetailScreen() {
 		} catch (value) {
 			setError(value instanceof Error ? value.message : "Could not restore the reviewer.");
 		} finally {
-			setRestoring(false);
+			setMutation(undefined);
 		}
 	};
 	const runPrimaryAction = async () => {
-		if (!config || primaryAction === "none") return;
+		if (!config || primaryAction === "none" || mutation) return;
 		haptics.tap();
-		setActing(true);
+		setMutation("review");
 		setError("");
 		try {
 			if (primaryAction === "cancel") await cancelSessionReview(config, sessionId);
@@ -86,15 +97,15 @@ export default function ReviewDetailScreen() {
 		} catch (value) {
 			setError(value instanceof Error ? value.message : "The review action failed.");
 		} finally {
-			setActing(false);
+			setMutation(undefined);
 		}
 	};
 
 	return (
 		<ScrollView style={styles.screen} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={t.blue} />}>
 			<View style={styles.heading}>
-				<View style={[styles.statusIcon, { backgroundColor: review.status === "changes_requested" ? t.tintAmber : t.tintBlue }]}>
-					<Feather name={review.status === "changes_requested" ? "alert-circle" : review.status === "running" ? "loader" : "check-circle"} size={20} color={review.status === "changes_requested" ? t.amber : t.blue} />
+				<View style={[styles.statusIcon, { backgroundColor: statusColor(t, reviewStatusVisual(review.status).tone, true) }]}>
+					<Feather name={reviewStatusVisual(review.status).icon} size={20} color={statusColor(t, reviewStatusVisual(review.status).tone)} />
 				</View>
 				<View style={styles.headingCopy}>
 					<Text style={styles.title}>{review.title}</Text>
@@ -108,10 +119,11 @@ export default function ReviewDetailScreen() {
 				{data.reviewerActivityState ? <Meta label="Activity" value={data.reviewerActivityState.replaceAll("_", " ")} /> : null}
 			</Card>
 			{data.reviewerActivityState === "exited" || data.reviewerSurface?.controllerError
-				? <Button title="Restore reviewer" icon="refresh-cw" variant="ghost" loading={restoring} disabled={restoring} onPress={() => void restoreReviewer()} />
-				: data.reviewerSurface ? <Button title={data.reviewerSurface.mode === "chat" ? "Open reviewer chat" : "Open reviewer terminal"} icon={data.reviewerSurface.mode === "chat" ? "message-circle" : "terminal"} variant="ghost" onPress={openReviewer} /> : null}
+				? <Button title="Restore reviewer" icon="refresh-cw" variant="ghost" loading={mutation === "restore"} disabled={Boolean(mutation)} onPress={() => void restoreReviewer()} />
+				: data.reviewerSurface ? <Button title={data.reviewerSurface.mode === "chat" ? "Open reviewer chat" : "Open reviewer terminal"} icon={data.reviewerSurface.mode === "chat" ? "message-circle" : "terminal"} variant="ghost" disabled={Boolean(mutation)} onPress={openReviewer} /> : null}
 			{data.reviewerSurface?.controllerError ? <Text accessibilityRole="alert" style={styles.error}>{data.reviewerSurface.controllerError}</Text> : null}
-			{primaryAction !== "none" ? <Button title={reviewPrimaryActionLabel(primaryAction)} icon={primaryAction === "cancel" ? "x" : "play"} variant={primaryAction === "cancel" ? "danger" : "primary"} loading={acting} disabled={acting} onPress={() => void runPrimaryAction()} /> : null}
+			{primaryAction !== "none" ? <Button title={reviewPrimaryActionLabel(primaryAction, multiplePullRequests)} icon={primaryAction === "cancel" ? "x" : "play"} variant={primaryAction === "cancel" ? "danger" : "primary"} loading={mutation === "review"} disabled={Boolean(mutation)} onPress={() => void runPrimaryAction()} /> : null}
+			{primaryAction !== "none" && multiplePullRequests ? <Text style={styles.scopeNote}>This action applies to every eligible pull request in this session.</Text> : null}
 			{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 
 			<Text style={styles.sectionLabel}>LATEST RESULT</Text>
@@ -134,8 +146,15 @@ function RunCard({ run, previous = false }: { run: ReviewRun; previous?: boolean
 	return <Card style={previous ? styles.previousCard : undefined}>
 		<View style={styles.runHeader}><Feather name={requested ? "alert-circle" : run.verdict === "approved" ? "check-circle" : "clock"} size={17} color={requested ? t.amber : run.verdict === "approved" ? t.green : t.textSecondary} /><Text style={styles.runTitle}>{reviewVerdictLabel(run)}</Text><Text style={styles.sha}>{shortCommit(run.targetSha)}</Text></View>
 		<Text style={styles.runBy}>{run.harness} · {run.triggerSource}</Text>
-		{run.body ? <Text style={styles.body}>{run.body}</Text> : <Text style={styles.bodyMuted}>No written findings.</Text>}
+		{run.body ? <View style={styles.markdown}><ChatMarkdown text={run.body} /></View> : <Text style={styles.bodyMuted}>No written findings.</Text>}
 	</Card>;
+}
+
+function statusColor(t: Theme, tone: ReturnType<typeof reviewStatusVisual>["tone"], tint = false): string {
+	if (tone === "amber") return tint ? t.tintAmber : t.amber;
+	if (tone === "green") return tint ? t.tintGreen : t.green;
+	if (tone === "blue") return tint ? t.tintBlue : t.blue;
+	return tint ? t.bgSubtle : t.textTertiary;
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
@@ -158,8 +177,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	sha: { color: t.textTertiary, fontSize: 11, fontFamily: t.fontMono },
 	runBy: { color: t.textTertiary, fontSize: 12, marginTop: 6, textTransform: "capitalize" },
 	body: { color: t.textSecondary, fontSize: 14, lineHeight: 21, marginTop: 12 },
+	markdown: { marginTop: 12 },
 	bodyMuted: { color: t.textTertiary, fontSize: 14, marginTop: 12, fontStyle: "italic" },
 	emptyTitle: { color: t.textPrimary, fontSize: 15, fontWeight: "700" },
 	error: { color: t.red, fontSize: 13, lineHeight: 18 },
+	scopeNote: { color: t.textTertiary, fontSize: 12, lineHeight: 17, textAlign: "center", paddingHorizontal: 12 },
 	previousCard: { opacity: 0.78 },
 });
