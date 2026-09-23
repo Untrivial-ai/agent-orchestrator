@@ -1,0 +1,70 @@
+---
+title: "The first AO dashboard, CLI, and agent runtime"
+description: "AO's first week established the dashboard, command-line workflow, agent integrations, and managed session foundation."
+date: "2026-02-15"
+rangeStart: "2026-02-13"
+rangeEnd: "2026-02-15"
+historical: true
+---
+
+
+## A dashboard organized around what needs attention <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1" />
+
+The dashboard organizes sessions by what needs attention, keeps pull-request and CI context close, and exposes the core session actions from one place.
+
+## Complete session control from the command line <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/6" />
+
+The ao CLI covers setup, status, session creation, messaging, review checks, and opening the dashboard from a terminal.
+
+## One managed runtime for multiple coding agents <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5" />
+
+Claude Code, Codex, and OpenCode sessions can run through one managed agent interface with shared lifecycle behavior.
+
+## Improvements
+
+### Pull requests
+
+- **Implement SCM and tracker plugins (github, linear)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4" />
+- **Implement runtime and workspace plugins (tmux, process, worktree, clone)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/2" />
+
+### Agents
+
+- **Implement core services (metadata, event-bus, tmux, session-manager, lifecycle-manager)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/3" />
+- **Layered prompt system for agent sessions** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/27" />
+- **Auto-update session metadata via Claude Code hooks** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/34" />
+
+### Terminal
+
+- **Implement DirectTerminal with XDA clipboard support** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/55" />
+
+### Product
+
+- **Wire web dashboard API routes to real core services** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/26" />
+- **Implement ao start command for unified orchestrator startup** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/42" />
+
+
+---
+
+## Bug fixes
+
+### Pull requests
+
+- **Resolve dashboard GitHub API rate limiting and PR enrichment** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/37" />
+
+### Agents
+
+- **Wire dashboard to real session data with PR enrichment** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/28" />
+- **Detect agent exit for all agent types** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/22" />
+- **Remove redundant attention level badge from session detail** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/41" />
+- **Prevent "Leave Site?" dialog on session pages** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/47" />
+- **Remove sessions/ subdirectory from metadata paths** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/24" />
+
+### Terminal
+
+- **Recognize terminated/done session states and hide terminal for dead sessions** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/40" />
+
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

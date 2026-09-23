@@ -27,11 +27,45 @@ describe("TelemetryPolicyAuthority", () => {
 		expect(snapshot.acknowledged).toBe(true);
 		expect(mode).toBe(0o600);
 		expect(JSON.parse(await readFile(policyPath, "utf8"))).toEqual({
-			schema_version: 1,
+			schema_version: 2,
 			events_enabled: true,
 			consent_generation: snapshot.consentGeneration,
+			consent_production_enabled: false,
 			updated_at: snapshot.updatedAt,
 		});
+	});
+
+	it("records whether the release gate was open when a choice is written", async () => {
+		const dataDir = await makeDir();
+		const policyPath = path.join(dataDir, "telemetry_policy.json");
+		const gated = new TelemetryPolicyAuthority({ dataDir, packagedDefault: false, platform: "linux", productionEnabled: false });
+		await gated.load();
+		await gated.setEventsEnabled(true);
+		expect(JSON.parse(await readFile(policyPath, "utf8"))).toMatchObject({ events_enabled: true, consent_production_enabled: false });
+
+		const open = new TelemetryPolicyAuthority({ dataDir, packagedDefault: false, platform: "linux", productionEnabled: true });
+		await open.load();
+		await open.setEventsEnabled(true);
+		expect(JSON.parse(await readFile(policyPath, "utf8"))).toMatchObject({ events_enabled: true, consent_production_enabled: true });
+	});
+
+	it("does not resume a version 1 opt-in once the release gate opens, and leaves the file alone", async () => {
+		const dataDir = await makeDir();
+		const policyPath = path.join(dataDir, "telemetry_policy.json");
+		const raw = JSON.stringify({
+			schema_version: 1,
+			events_enabled: true,
+			consent_generation: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca",
+			updated_at: "2026-08-28T10:15:30.000Z",
+		});
+		await writeFile(policyPath, raw, { mode: 0o600 });
+
+		const closed = await new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux", productionEnabled: false }).load();
+		expect(closed).toMatchObject({ eventsEnabled: true, acknowledged: true });
+
+		const opened = await new TelemetryPolicyAuthority({ dataDir, packagedDefault: true, platform: "linux", productionEnabled: true }).load();
+		expect(opened).toMatchObject({ eventsEnabled: false, acknowledged: true, consentGeneration: "7f80c8a9-ec67-4a16-a067-a444ffcc5cca" });
+		expect(await readFile(policyPath, "utf8")).toBe(raw);
 	});
 
 	it.each(["symlink", "group-readable", "malformed"])("fails closed without replacing an unsafe %s authority", async (kind) => {

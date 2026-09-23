@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -229,7 +230,7 @@ func TestRuntimeIntegrationAdoptsLegacyDefaultWhenNamedSocketDoesNotExist(t *tes
 	if missingErr == nil {
 		t.Fatal("test setup unexpectedly found a named AO server")
 	}
-	if !migrationSocketAbsentOutput(string(missingOut)) {
+	if !serverSocketAbsentOutput(string(missingOut)) {
 		t.Fatalf("named AO probe = %q, want missing-socket diagnostic", missingOut)
 	}
 
@@ -254,6 +255,247 @@ func TestRuntimeIntegrationAdoptsLegacyDefaultWhenNamedSocketDoesNotExist(t *tes
 	}
 	if out, probeErr := exec.Command(systemTmux, "-L", "ao", "list-sessions").CombinedOutput(); probeErr == nil {
 		t.Fatalf("legacy discovery unexpectedly created named AO server: %s", out)
+	}
+}
+
+// TestRuntimeIntegrationLegacyDefaultSocketDestroyEnforcesDetachOnDestroy is
+// the regression for the gap in #4223's first fix: Create sets
+// detach-on-destroy per session (see setDetachOnDestroyOnArgs), but a handle
+// adopted from tmux's legacy default socket (a session that predates AO's
+// private socket, see socketForSession) never went through this daemon's
+// Create. Destroy must still re-assert the option immediately before
+// kill-session so closing such a session cannot hand its attach client to one
+// of the user's own sessions when the user's tmux.conf sets `detach-on-destroy
+// off` globally.
+func TestRuntimeIntegrationLegacyDefaultSocketDestroyEnforcesDetachOnDestroy(t *testing.T) {
+	systemTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	// See TestAttachmentReattachAdoptsNewSize (terminal package): tmux needs a
+	// usable TERM to attach.
+	t.Setenv("TERM", "xterm-256color")
+
+	tmuxTmpDir, err := os.MkdirTemp("/tmp", "ao-tmux-legacy-dod-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxTmpDir) })
+	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
+
+	legacyID := strings.ReplaceAll(t.Name(), "/", "_") + "_legacy"
+	decoyID := strings.ReplaceAll(t.Name(), "/", "_") + "_decoy"
+	for _, socketName := range []string{"default", "ao"} {
+		t.Cleanup(func() {
+			_ = exec.Command(systemTmux, "-L", socketName, "kill-server").Run()
+		})
+	}
+
+	// Simulate the pre-cutover install this bug report came from: the global
+	// tmux.conf (here, the server-wide default option) disables
+	// detach-on-destroy, and the AO session was created directly on the legacy
+	// default socket, bypassing Create entirely. The decoy stands in for one of
+	// the user's own unrelated tmux sessions; it also starts the default-socket
+	// server so the set-option below has a server to talk to.
+	if out, startErr := exec.Command(systemTmux, "-L", "default", "new-session", "-d", "-s", decoyID, "sh", "-c", "sleep 300").CombinedOutput(); startErr != nil {
+		t.Fatalf("create decoy session: %v: %s", startErr, out)
+	}
+	if out, startErr := exec.Command(systemTmux, "-L", "default", "set-option", "-g", "detach-on-destroy", "off").CombinedOutput(); startErr != nil {
+		t.Fatalf("set global detach-on-destroy off: %v: %s", startErr, out)
+	}
+	if out, startErr := exec.Command(
+		systemTmux, "-L", "default",
+		"new-session", "-d", "-s", legacyID,
+		"sh", "-lc", "printf AO_READY\\n; exec sh -i",
+	).CombinedOutput(); startErr != nil {
+		t.Fatalf("create legacy session: %v: %s", startErr, out)
+	}
+
+	r := New(Options{
+		Binary:       systemTmux,
+		LegacyBinary: systemTmux,
+		SocketName:   "ao",
+		Timeout:      5 * time.Second,
+	})
+	r.enterDelay = 0
+	handle := ports.RuntimeHandle{ID: legacyID}
+
+	alive, err := r.IsAlive(context.Background(), handle)
+	if err != nil || !alive {
+		t.Fatalf("legacy session = (%v, %v), want (true, nil)", alive, err)
+	}
+
+	stream, err := r.Attach(context.Background(), handle, 24, 80)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	defer stream.Close()
+
+	var mu sync.Mutex
+	var got strings.Builder
+	readErrCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stream.Read(buf)
+			if n > 0 {
+				mu.Lock()
+				got.Write(buf[:n])
+				mu.Unlock()
+			}
+			if readErr != nil {
+				readErrCh <- readErr
+				return
+			}
+		}
+	}()
+	snapshot := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return got.String()
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(snapshot(), "AO_READY") {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(snapshot(), "AO_READY") {
+		t.Fatalf("attach stream never showed AO_READY, got %q", snapshot())
+	}
+
+	if err := r.Destroy(context.Background(), handle); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	// A fixed daemon ends the attach client, so the stream's read loop observes
+	// an error (EOF or a closed-pty error) instead of continuing to receive
+	// the decoy session's output.
+	select {
+	case <-readErrCh:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("attach stream still open after Destroy, want it closed; got %q (want it to not contain the decoy's shell)", snapshot())
+	}
+}
+
+// TestRuntimeIntegrationLegacyDefaultSocketExternalKillEnforcesDetachOnDestroy
+// is the regression for the gap the second fix left open: Destroy's pre-kill
+// reassertion only protects a session that dies through Runtime.Destroy. A
+// legacy-socket session can also die from something Destroy never sees — the
+// user typing `exit` in the retained shell, or (as reproduced here) something
+// external running `kill-session` directly against the default socket. This
+// test never calls Runtime.Destroy at all: it only Attaches, which must
+// itself set and confirm detach-on-destroy the moment the daemon adopts the
+// session (see enforceDetachOnDestroy in socketForSession), before the
+// external kill below can reach it.
+func TestRuntimeIntegrationLegacyDefaultSocketExternalKillEnforcesDetachOnDestroy(t *testing.T) {
+	systemTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	t.Setenv("TERM", "xterm-256color")
+
+	tmuxTmpDir, err := os.MkdirTemp("/tmp", "ao-tmux-legacy-extkill-dod-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxTmpDir) })
+	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
+
+	legacyID := strings.ReplaceAll(t.Name(), "/", "_") + "_legacy"
+	decoyID := strings.ReplaceAll(t.Name(), "/", "_") + "_decoy"
+	for _, socketName := range []string{"default", "ao"} {
+		t.Cleanup(func() {
+			_ = exec.Command(systemTmux, "-L", socketName, "kill-server").Run()
+		})
+	}
+
+	// Same pre-cutover setup as the Destroy-path regression: decoy first (also
+	// starts the default-socket server), then the global option, then the
+	// legacy session, all bypassing Create.
+	if out, startErr := exec.Command(systemTmux, "-L", "default", "new-session", "-d", "-s", decoyID, "sh", "-c", "sleep 300").CombinedOutput(); startErr != nil {
+		t.Fatalf("create decoy session: %v: %s", startErr, out)
+	}
+	if out, startErr := exec.Command(systemTmux, "-L", "default", "set-option", "-g", "detach-on-destroy", "off").CombinedOutput(); startErr != nil {
+		t.Fatalf("set global detach-on-destroy off: %v: %s", startErr, out)
+	}
+	if out, startErr := exec.Command(
+		systemTmux, "-L", "default",
+		"new-session", "-d", "-s", legacyID,
+		"sh", "-lc", "printf AO_READY\\n; exec sh -i",
+	).CombinedOutput(); startErr != nil {
+		t.Fatalf("create legacy session: %v: %s", startErr, out)
+	}
+
+	r := New(Options{
+		Binary:       systemTmux,
+		LegacyBinary: systemTmux,
+		SocketName:   "ao",
+		Timeout:      5 * time.Second,
+	})
+	r.enterDelay = 0
+	handle := ports.RuntimeHandle{ID: legacyID}
+
+	// Attach alone must trigger adoption and its enforcement; Destroy is
+	// deliberately never called in this test.
+	stream, err := r.Attach(context.Background(), handle, 24, 80)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	defer stream.Close()
+
+	// The enforcement is confirmable independent of the attach stream: read it
+	// straight back from tmux to prove Attach actually set it, not merely that
+	// the client happens to behave correctly below.
+	verifyOut, verifyErr := exec.Command(systemTmux, "-L", "default", "show-options", "-t", "="+legacyID+":", "-v", "detach-on-destroy").CombinedOutput()
+	if verifyErr != nil {
+		t.Fatalf("show-options detach-on-destroy after Attach: %v: %s", verifyErr, verifyOut)
+	}
+	if got := strings.TrimSpace(string(verifyOut)); got != "on" {
+		t.Fatalf("detach-on-destroy after Attach = %q, want \"on\" (Attach must enforce it at adoption time)", got)
+	}
+
+	var mu sync.Mutex
+	var got strings.Builder
+	readErrCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stream.Read(buf)
+			if n > 0 {
+				mu.Lock()
+				got.Write(buf[:n])
+				mu.Unlock()
+			}
+			if readErr != nil {
+				readErrCh <- readErr
+				return
+			}
+		}
+	}()
+	snapshot := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return got.String()
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(snapshot(), "AO_READY") {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(snapshot(), "AO_READY") {
+		t.Fatalf("attach stream never showed AO_READY, got %q", snapshot())
+	}
+
+	// Kill the session directly against the default socket, entirely outside
+	// Runtime.Destroy — the scenario Destroy's own pre-kill guard cannot see.
+	if out, killErr := exec.Command(systemTmux, "-L", "default", "kill-session", "-t", "="+legacyID).CombinedOutput(); killErr != nil {
+		t.Fatalf("external kill-session: %v: %s", killErr, out)
+	}
+
+	select {
+	case <-readErrCh:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("attach stream still open after an external kill-session, want it closed; got %q (want it to not contain the decoy's shell)", snapshot())
 	}
 }
 

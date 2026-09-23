@@ -18,6 +18,9 @@ const scratchRepositoryHost = "scratch.ao.local"
 const (
 	cloudGitAuthorName  = "AO Cloud Agent"
 	cloudGitAuthorEmail = "noreply@aoagents.com"
+	// WorkspaceReviewBaseRef is an immutable, AO-owned baseline stored with the
+	// checkout so committed changes survive worker restarts and restores.
+	WorkspaceReviewBaseRef = "refs/ao/diff-base"
 )
 
 type GitRunner interface {
@@ -27,9 +30,25 @@ type GitRunner interface {
 type ExecGitRunner struct{}
 
 func (ExecGitRunner) Run(ctx context.Context, dir string, env map[string]string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", args...)
+	// Pin git wire protocol v0. git 2.39 defaults to protocol v2 over HTTP/2,
+	// which is mangled through some sandbox egress paths: the ref-listing
+	// handshake fails with "expected flush after ref listing" plus a spurious
+	// "could not read Username" prompt, crash-looping checkout for public repos.
+	// v0 is universally compatible; the only cost is slightly larger fetches.
+	command := exec.CommandContext(ctx, "git", append([]string{"-c", "protocol.version=0"}, args...)...)
 	command.Dir = dir
 	command.Env = replaceEnvironment(os.Environ(), env)
+	// Abort a stalled HTTP transfer instead of hanging until the whole sandbox is
+	// torn down. If throughput stays under 1 KB/s for 60s, git fails the
+	// clone/fetch/push. A stalled clone otherwise blocks worker startup - and thus
+	// the agent terminal, which is only created after checkout - indefinitely,
+	// which is exactly the multi-minute "terminal never connects" stall we saw.
+	// This targets stalls, not slow-but-progressing transfers, so a large repo
+	// still clones; and it is a no-op for local git ops, which do no HTTP.
+	command.Env = append(command.Env,
+		"GIT_HTTP_LOW_SPEED_LIMIT=1000",
+		"GIT_HTTP_LOW_SPEED_TIME=60",
+	)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Run(); err != nil {
@@ -75,13 +94,22 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 		}
 		if len(entries) == 0 {
 			statErr = os.ErrNotExist
-		} else if err := validateOrigin(ctx, runner, workspace, expected); err != nil {
-			return err
-		} else {
+		} else if _, gitErr := os.Stat(filepath.Join(workspace, ".git")); gitErr == nil {
+			if err := validateOrigin(ctx, runner, workspace, expected); err != nil {
+				return err
+			}
 			return withGitCredential(grant.Token, func(env map[string]string) error {
 				_, err := runner.Run(ctx, workspace, env, "fetch", "--prune", "--", "origin")
 				return err
 			})
+		} else {
+			// The workspace is non-empty but not a Git checkout. This happens
+			// when the coding agent starts first and writes files (for example
+			// .claude) into the workspace before the checkout runs. Clone into a
+			// staging directory and merge the result in, so a bare git clone into
+			// a non-empty directory does not fail and checkout no longer depends
+			// on agent-vs-checkout startup ordering.
+			return cloneIntoNonEmptyWorkspace(ctx, runner, workspace, grant, expected)
 		}
 	}
 	if !errors.Is(statErr, os.ErrNotExist) {
@@ -98,6 +126,125 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 		return err
 	}
 	return validateOrigin(ctx, runner, workspace, expected)
+}
+
+// EnsureWorkspaceReviewBase records the checkout's comparison baseline once.
+// Existing refs are deliberately left untouched even when a later fetch moves
+// origin/<defaultBranch>.
+func EnsureWorkspaceReviewBase(ctx context.Context, runner GitRunner, workspace, defaultBranch string) error {
+	if runner == nil {
+		return errors.New("git runner is required")
+	}
+	// A scratch / freshly-initialized workspace has an unborn HEAD (git init with
+	// no commit), so there is no history to anchor a review base to. Treat it as a
+	// no-op instead of failing worker startup on the later rev-list HEAD, which
+	// aborts every no-repo session across all providers.
+	if _, err := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", "HEAD"); err != nil {
+		return nil
+	}
+	existingOutput, existingErr := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", WorkspaceReviewBaseRef)
+	configuredCandidate := ""
+	if branch := strings.TrimSpace(defaultBranch); branch != "" {
+		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "origin/"+branch, "HEAD"); err == nil {
+			configuredCandidate = strings.TrimSpace(output)
+		}
+	}
+	remoteHeadCandidate := ""
+	if configuredCandidate == "" {
+		if output, err := runner.Run(ctx, workspace, nil, "merge-base", "refs/remotes/origin/HEAD", "HEAD"); err == nil {
+			remoteHeadCandidate = strings.TrimSpace(output)
+		}
+	}
+	if existingErr == nil {
+		// Older workers fell straight back to the repository root when a project
+		// called its default branch "main" but the remote used "master" (or vice
+		// versa). Repair only that recognizable legacy fallback; every non-root
+		// baseline remains immutable across fetches and restores.
+		if configuredCandidate != "" || remoteHeadCandidate == "" {
+			return nil
+		}
+		rootOutput, err := runner.Run(ctx, workspace, nil, "rev-list", "--max-parents=0", "--reverse", "HEAD")
+		if err != nil {
+			return nil
+		}
+		root := strings.TrimSpace(strings.SplitN(rootOutput, "\n", 2)[0])
+		if strings.TrimSpace(existingOutput) != root || remoteHeadCandidate == root {
+			return nil
+		}
+		if _, err := runner.Run(ctx, workspace, nil, "update-ref", WorkspaceReviewBaseRef, remoteHeadCandidate); err != nil {
+			return fmt.Errorf("repair workspace review base: %w", err)
+		}
+		return nil
+	}
+
+	candidate := configuredCandidate
+	if candidate == "" {
+		candidate = remoteHeadCandidate
+	}
+	if candidate == "" {
+		output, err := runner.Run(ctx, workspace, nil, "rev-list", "--max-parents=0", "--reverse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("resolve workspace review base: %w", err)
+		}
+		candidate = strings.TrimSpace(strings.SplitN(output, "\n", 2)[0])
+	}
+	if candidate == "" {
+		return errors.New("resolve workspace review base: repository has no commits")
+	}
+	if _, err := runner.Run(ctx, workspace, nil, "update-ref", WorkspaceReviewBaseRef, candidate); err != nil {
+		return fmt.Errorf("record workspace review base: %w", err)
+	}
+	return nil
+}
+
+// cloneIntoNonEmptyWorkspace clones the authorized repository into a staging
+// directory and merges the result into a workspace that already contains files
+// the coding agent wrote (for example .claude) before the checkout ran. Files
+// the clone did not produce are preserved; the clone's .git directory and
+// tracked files are moved in. This removes the ordering dependency between
+// agent startup and repository checkout.
+func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace string, grant CheckoutGrantResponse, expected string) error {
+	// Stage inside the workspace itself, not its parent. The parent is the
+	// provider's durable root (e.g. Coder's /home/coder), which is owned by the
+	// provider's own user and is not writable by the AO worker user, so a
+	// staging dir there fails with "permission denied". The workspace, by
+	// contrast, is always writable by the worker (the agent just wrote into it,
+	// which is why this non-empty path runs) and is on the same filesystem, so
+	// the entry moves below stay a same-filesystem rename. The hidden staging
+	// dir is removed before the checkout returns.
+	staging, err := os.MkdirTemp(workspace, ".ao-checkout-")
+	if err != nil {
+		return fmt.Errorf("create checkout staging directory: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	clone := filepath.Join(staging, "repository")
+	if err := withGitCredential(grant.Token, func(env map[string]string) error {
+		_, err := runner.Run(ctx, staging, env,
+			"clone", "--origin", "origin", "--no-tags", "--", grant.CloneURL, clone)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := validateOrigin(ctx, runner, clone, expected); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(clone)
+	if err != nil {
+		return fmt.Errorf("read cloned repository: %w", err)
+	}
+	for _, entry := range entries {
+		destination := filepath.Join(workspace, entry.Name())
+		if _, statErr := os.Stat(destination); statErr == nil {
+			// A pre-existing file the agent wrote (for example .claude) stays.
+			continue
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect workspace entry %s: %w", entry.Name(), statErr)
+		}
+		if err := os.Rename(filepath.Join(clone, entry.Name()), destination); err != nil {
+			return fmt.Errorf("move %s into workspace: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 // ConfigureWorkerGit prepares the assigned branch and a repo-local credential
@@ -126,12 +273,12 @@ func ConfigureWorkerGit(
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		return fmt.Errorf("create worker tooling directory: %w", err)
 	}
-	helperPath := filepath.Join(dataDir, "git-credential-ao")
+	helperPath := GitCredentialHelperPath(dataDir)
 	helper := fmt.Sprintf(`#!/bin/sh
 set -eu
 [ "${1:-}" = "get" ] || exit 0
 worker_token="$(tr -d '\r\n' < %s)"
-response="$(curl -fsS -X POST \
+response="$(curl -fsS --connect-timeout 10 --max-time 30 -X POST \
   -H "Authorization: Worker ${worker_token}" \
   -H "X-AO-Session-ID: %s" \
   %s)"
@@ -163,7 +310,7 @@ elif [ -n "${GITHUB_TOKEN:-}" ]; then
   github_token="$GITHUB_TOKEN"
 else
   worker_token="$(tr -d '\r\n' < %s)"
-  response="$(curl -fsS -X POST \
+  response="$(curl -fsS --connect-timeout 10 --max-time 30 -X POST \
     -H "Authorization: Worker ${worker_token}" \
     -H "X-AO-Session-ID: %s" \
     %s)"
@@ -209,6 +356,61 @@ GH_TOKEN="$github_token" exec "$real_gh" "$@"
 
 func ToolingBinDir(dataDir string) string {
 	return filepath.Join(dataDir, "bin")
+}
+
+// GitCredentialHelperPath is where ConfigureWorkerGit writes the repo-local
+// credential helper that brokers fresh scoped GitHub tokens. Exported so extra
+// dev-kit repositories can reuse the same session helper.
+func GitCredentialHelperPath(dataDir string) string {
+	return filepath.Join(dataDir, "git-credential-ao")
+}
+
+// CloneExtraRepo clones an additional dev-kit repository beside the primary
+// checkout using the SAME askpass mechanism as the primary (the token lives only
+// in the clone command's environment - never in the URL, the process argv, or
+// the repository's .git/config, so the coding agent cannot read it back). It
+// then points the repo at the session credential helper (already written by
+// ConfigureWorkerGit for the primary checkout) so the agent's own git
+// fetch/push in the extra repo keeps working after the short-lived clone token
+// expires. cloneURL must be an uncredentialed GitHub URL.
+func CloneExtraRepo(
+	ctx context.Context,
+	runner GitRunner,
+	parentDir, dest, cloneURL, branch, token, dataDir string,
+) error {
+	if runner == nil {
+		return errors.New("git runner is required")
+	}
+	args := []string{"clone", "--origin", "origin", "--no-tags"}
+	if strings.TrimSpace(branch) != "" {
+		args = append(args, "--branch", branch)
+	}
+	args = append(args, "--", cloneURL, dest)
+	if err := withGitCredential(token, func(env map[string]string) error {
+		_, err := runner.Run(ctx, parentDir, env, args...)
+		return err
+	}); err != nil {
+		return err
+	}
+	helperPath := GitCredentialHelperPath(dataDir)
+	if _, statErr := os.Stat(helperPath); statErr != nil {
+		// No session helper (e.g. scratch/no-primary paths). The clone succeeded
+		// with an uncredentialed origin; agent network ops will simply prompt-fail
+		// rather than leak a token. Leave the repo as-is.
+		return nil
+	}
+	for _, command := range [][]string{
+		{"config", "--local", "--replace-all", "credential.helper", ""},
+		{"config", "--local", "--add", "credential.helper", helperPath},
+		{"config", "--local", "--replace-all", "credential.useHttpPath", "true"},
+		{"config", "--local", "--replace-all", "user.name", cloudGitAuthorName},
+		{"config", "--local", "--replace-all", "user.email", cloudGitAuthorEmail},
+	} {
+		if _, err := runner.Run(ctx, dest, nil, command...); err != nil {
+			return fmt.Errorf("configure extra repo git: %w", err)
+		}
+	}
+	return nil
 }
 
 func shellQuote(value string) string {

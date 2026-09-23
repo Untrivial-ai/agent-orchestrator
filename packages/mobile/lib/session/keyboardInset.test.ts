@@ -1,22 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { dockInset, MIN_DOCK_INSET, rootKeyboardPad, screenKeyboardAvoidance } from "./keyboardInset";
+import { dockInset, dockRestingInset, KEYBOARD_DOCK_GAP, keyboardVerticalOffset, MIN_DOCK_INSET, rootKeyboardPad, screenKeyboardAvoidance } from "./keyboardInset";
 import { CONTROL_KEYS } from "./keys";
 
 describe("dockInset", () => {
 	// The regression this exists for: the dock used to keep its own padding while
 	// the root view was already padded by the keyboard height, so opening the
 	// keyboard moved the bar twice in opposite directions.
-	it("owes nothing while the keyboard is up", () => {
-		expect(dockInset(336, 34)).toBe(0);
-		expect(dockInset(1, 34)).toBe(0);
+	it("does not add a second dock gap while the root already clears the keyboard", () => {
+		// The gap is a constant, not the inset: the root already clears the whole
+		// keyboard, and adding the home-indicator inset again is what made the bar
+		// kick twice.
+		expect(dockInset(336, 34, true)).toBe(KEYBOARD_DOCK_GAP);
+		expect(dockInset(1, 34, true)).toBe(KEYBOARD_DOCK_GAP);
+		expect(dockInset(0, 34, true)).toBe(KEYBOARD_DOCK_GAP);
 	});
 
 	it("carries the home-indicator inset while the keyboard is down", () => {
-		expect(dockInset(0, 34)).toBe(34);
+		expect(dockInset(0, 34, false)).toBe(34);
 	});
 
 	it("falls back to a minimum on a device with no home indicator", () => {
-		expect(dockInset(0, 0)).toBe(MIN_DOCK_INSET);
+		expect(dockInset(0, 0, false)).toBe(MIN_DOCK_INSET);
+	});
+});
+
+// The chat dock holds this value at all times and rides the keyboard's progress
+// to close the difference. Switching it on a visibility flag is what made the
+// composer overshoot: the flag turns over when the keyboard has *finished*
+// hiding, so the dock spent the whole close one inset too low and then jumped.
+describe("dockRestingInset", () => {
+	it("is the home-indicator inset with the keyboard down", () => {
+		expect(dockRestingInset(34)).toBe(34);
+	});
+
+	it("falls back to the minimum without a home indicator", () => {
+		expect(dockRestingInset(0)).toBe(MIN_DOCK_INSET);
+	});
+
+	it("never returns the keyboard gap, which the dock owes only mid-animation", () => {
+		expect(dockRestingInset(34)).not.toBe(KEYBOARD_DOCK_GAP);
 	});
 });
 
@@ -61,13 +83,20 @@ describe("screenKeyboardAvoidance", () => {
 	});
 });
 
-// The dock sits inside the root view, so the root's padding is the only place
-// the keyboard is accounted for. Together they must clear the keyboard exactly.
+describe("keyboardVerticalOffset", () => {
+	it("uses the measured native stack header instead of a device-specific constant", () => {
+		expect(keyboardVerticalOffset(101)).toBe(101);
+		expect(keyboardVerticalOffset(-1)).toBe(0);
+	});
+});
+
+// The dock sits inside the root view, so the root's padding is what clears the
+// keyboard. The dock only adds its own gap on top of that.
 describe("root padding and dock inset together", () => {
 	it("clear the full Android keyboard occupancy without double-counting", () => {
 		const kb = 336; // as reported by RN: ime inset minus nav bar
 		const nav = 48;
-		expect(rootKeyboardPad("android", kb, nav) + dockInset(kb, nav)).toBe(kb + nav);
+		expect(rootKeyboardPad("android", kb, nav) + dockInset(kb, nav)).toBe(kb + nav + KEYBOARD_DOCK_GAP);
 	});
 
 	it("fall back to the safe-area inset with the keyboard down", () => {

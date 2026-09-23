@@ -26,6 +26,16 @@ session (it execs `tmux`, which runs `claude`/`codex`, etc.), and the agent's
 (`runtimeEnv` -> `HookPATH(m.executable, os.Getenv, ...)` in
 `backend/internal/session_manager/manager.go`).
 
+AO keeps an AO-only directory first after adding agent and Node runtime
+directories, including Codex Chat provider launches, and applies the same pin
+to reviewer and shell-terminal launches.
+Interactive login shells can still reorder `PATH` through user startup files,
+so this is a launch invariant and a best-effort convenience inside a shell.
+When the install directory contains other executable tools, AO creates an
+`ao` shim under its resolved absolute data directory instead of promoting those
+sibling tools. Windows provides both command-shell and Git Bash compatible
+entries in that isolated directory.
+
 So whatever environment the daemon receives propagates to the entire stack:
 
 ```

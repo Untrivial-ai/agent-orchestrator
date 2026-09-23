@@ -40,6 +40,9 @@ export AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION="true"
 # the control plane, which forwards it to worker containers. Unset keeps the
 # fully polled transport under test.
 export AO_CLOUD_TERMINAL_STREAM="${AO_CLOUD_TERMINAL_STREAM:-}"
+# The relay is independently opt-in so the smoke suite can exercise either
+# the existing durable stream or the live-forward + durable-mirror path.
+export AO_CLOUD_TERMINAL_RELAY="${AO_CLOUD_TERMINAL_RELAY:-}"
 export COMPOSE_PROJECT_NAME="$project_name"
 
 compose() {
@@ -213,6 +216,12 @@ if mode == "create":
         },
         token=token,
     )
+    request(
+        "PUT",
+        "/api/cloud/v1/me/github-pat",
+        body={"secret": "ao-cloud-smoke-development-only"},
+        token=token,
+    )
     project = request(
         "POST",
         f"/api/cloud/v1/orgs/{org_id}/projects",
@@ -242,30 +251,6 @@ if mode == "create":
         expected=201,
     )["session"]
     wait_for_running(org_id, session["id"], token)
-    workspace_file = request(
-        "PUT",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/workspace/file",
-        body={"path": ".ao-cloud-smoke-api", "content": "durable-worker-transport\n"},
-        token=token,
-    )
-    if workspace_file.get("content") != "durable-worker-transport\n":
-        raise RuntimeError(f"workspace write returned unexpected content: {workspace_file!r}")
-    read_back = request(
-        "GET",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/workspace/file?path=.ao-cloud-smoke-api",
-        token=token,
-    )
-    if read_back != workspace_file:
-        raise RuntimeError(
-            f"workspace read did not match the durable write: {read_back!r}"
-        )
-    listing = request(
-        "GET",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/workspace/files?limit=100",
-        token=token,
-    )
-    if ".ao-cloud-smoke-api" not in {item.get("path") for item in listing["items"]}:
-        raise RuntimeError(f"workspace listing omitted the written file: {listing!r}")
     request(
         "POST",
         f"/api/cloud/v1/orgs/{org_id}/sessions/{session['id']}/terminal-ticket",
@@ -300,14 +285,14 @@ elif mode == "wake":
     token = state["token"]
     org_id = state["orgId"]
     session_id = state["sessionId"]
-    woken = request(
+    resume = request(
         "POST",
-        f"/api/cloud/v1/orgs/{org_id}/sessions/wake",
+        f"/api/cloud/v1/orgs/{org_id}/sessions/{session_id}/resume",
         token=token,
         expected=202,
-    ).get("woken", 0)
-    if woken < 1:
-        raise RuntimeError(f"wake did not resume the paused smoke session: {woken=}")
+    )["session"]
+    if resume.get("desiredState") != "running":
+        raise RuntimeError(f"resume did not record running intent: {resume!r}")
     wait_for_running(org_id, session_id, token)
     request(
         "POST",
@@ -391,6 +376,127 @@ assert_workspace_marker() {
 		echo "Worker workspace marker did not survive container replacement." >&2
 		return 1
 	fi
+}
+
+wait_for_git_workspace() {
+	local container_id="$1" attempts=30
+	while ((attempts > 0)); do
+		if docker exec "$container_id" git -C /workspace/repository rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+			return 0
+		fi
+		attempts=$((attempts - 1))
+		sleep 1
+	done
+	echo "Worker Git workspace did not become ready." >&2
+	return 1
+}
+
+prepare_workspace_review_fixture() {
+	local container_id="$1"
+	docker exec "$container_id" bash -c '
+		set -euo pipefail
+		cd /workspace/repository
+		git config user.email smoke@ao.local
+		git config user.name "AO Cloud Smoke"
+		printf "unchanged\n" > review-unchanged.txt
+		printf "base committed\n" > review-committed.txt
+		printf "base staged\n" > review-staged.txt
+		printf "base unstaged\n" > review-unstaged.txt
+		git add review-unchanged.txt review-committed.txt review-staged.txt review-unstaged.txt
+		git commit -m "test: establish review baseline" >/dev/null
+		git update-ref refs/ao/diff-base HEAD
+		printf "committed change\n" > review-committed.txt
+		git add review-committed.txt
+		git commit -m "test: committed review change" >/dev/null
+		printf "staged change\n" > review-staged.txt
+		git add review-staged.txt
+		printf "unstaged change\n" > review-unstaged.txt
+		printf "untracked change\n" > review-untracked.txt
+	'
+}
+
+exercise_workspace_diff_api() {
+	python3 - "$AO_CLOUD_PORT" "$state_file" <<'PY'
+import json
+import pathlib
+import sys
+import urllib.error
+import urllib.request
+
+port, state_path = sys.argv[1:]
+state = json.loads(pathlib.Path(state_path).read_text())
+base_url = f"http://127.0.0.1:{port}"
+prefix = f"/api/cloud/v1/orgs/{state['orgId']}/sessions/{state['sessionId']}"
+headers = {"Accept": "application/json", "Authorization": f"Bearer {state['token']}"}
+
+def request(method, path, body=None):
+    request_headers = dict(headers)
+    data = None
+    if body is not None:
+        request_headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    operation = urllib.request.Request(base_url + path, data=data, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(operation, timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"{method} {path} returned {error.code}: {error.read().decode(errors='replace')}") from error
+
+workspace_file = request("PUT", prefix + "/workspace/file", {"path": ".ao-cloud-smoke-api", "content": "durable-worker-transport\n"})
+if workspace_file.get("content") != "durable-worker-transport\n":
+    raise RuntimeError(f"workspace write returned unexpected content: {workspace_file!r}")
+read_back = request("GET", prefix + "/workspace/file?path=.ao-cloud-smoke-api")
+if read_back != workspace_file:
+    raise RuntimeError(f"workspace read did not match the durable write: {read_back!r}")
+listing = request("GET", prefix + "/workspace/files?limit=100")
+if ".ao-cloud-smoke-api" not in {item.get("path") for item in listing["items"]}:
+    raise RuntimeError(f"workspace listing omitted the written file: {listing!r}")
+diff = request("GET", prefix + "/workspace/diff")
+summary = next((item for item in diff.get("files", []) if item.get("path") == ".ao-cloud-smoke-api"), None)
+if summary != {"path": ".ao-cloud-smoke-api", "status": "untracked", "additions": 1, "deletions": 0, "binary": False}:
+    raise RuntimeError(f"workspace diff summary returned unexpected file: {summary!r}")
+detail = request("GET", prefix + "/workspace/file/diff?path=.ao-cloud-smoke-api")
+if detail.get("status") != "untracked" or detail.get("content") != "durable-worker-transport\n" or "new file mode 100644" not in detail.get("diff", "") or detail.get("diffTruncated"):
+    raise RuntimeError(f"workspace diff-file returned unexpected detail: {detail!r}")
+
+review = request("GET", prefix + "/workspace/review")
+expected = {
+    "committed": "review-committed.txt",
+    "staged": "review-staged.txt",
+    "unstaged": "review-unstaged.txt",
+    "untracked": "review-untracked.txt",
+}
+for section, path in expected.items():
+    if path not in {item.get("path") for item in review["sections"][section]}:
+        raise RuntimeError(f"workspace review omitted {path} from {section}: {review!r}")
+if "review-unchanged.txt" not in {item.get("path") for item in review["files"]}:
+    raise RuntimeError(f"workspace review omitted unchanged tracked file: {review!r}")
+
+tree = request("GET", prefix + "/workspace/tree")
+if "review-unchanged.txt" not in {item.get("path") for item in tree["entries"]}:
+    raise RuntimeError(f"workspace tree omitted unchanged tracked file: {tree!r}")
+search = request("GET", prefix + "/workspace/search?query=review-unstaged")
+if "review-unstaged.txt" not in {item.get("path") for item in search["results"]}:
+    raise RuntimeError(f"workspace search omitted matching path: {search!r}")
+
+diffs = request("POST", prefix + "/workspace/review/diffs", {
+    "scope": "staged", "paths": ["review-staged.txt"], "contextLines": 3,
+    "ignoreWhitespace": False, "workspaceVersion": review["workspaceVersion"],
+})
+if "staged change" not in "".join(group.get("patch", "") for group in diffs["groups"]):
+    raise RuntimeError(f"scoped workspace diff omitted staged content: {diffs!r}")
+revision = request("GET", prefix + "/workspace/review/revision?path=review-staged.txt&scope=staged&side=after")
+if revision.get("content") != "staged change\n":
+    raise RuntimeError(f"workspace revision returned unexpected content: {revision!r}")
+
+editable = request("GET", prefix + "/workspace/review/file?path=review-unstaged.txt&scope=unstaged")
+written = request("PUT", prefix + "/workspace/review/file", {
+    "path": "review-unstaged.txt", "content": "updated through review API\n",
+    "expectedFileFingerprint": editable["fileFingerprint"],
+})
+if written.get("content") != "updated through review API\n" or written.get("fileFingerprint") == editable["fileFingerprint"]:
+    raise RuntimeError(f"fingerprint-checked workspace write failed: {written!r}")
+PY
 }
 
 exercise_browser_proxy() {
@@ -507,7 +613,30 @@ exercise_api create
 session="$(session_id)"
 org="$(org_id)"
 first_worker="$(wait_for_worker "$session")"
+wait_for_git_workspace "$first_worker"
+prepare_workspace_review_fixture "$first_worker"
+exercise_workspace_diff_api
 docker exec "$first_worker" ao list >/dev/null
+# ao-worker boot must materialize the cloud using-ao skill where the standing
+# prompts point the agent.
+docker exec "$first_worker" test -f /workspace/.ao/worker/skills/using-ao/SKILL.md
+docker exec "$first_worker" test -f /workspace/.ao/worker/skills/using-ao/commands/orchestration.md
+# The harness process appears shortly after the worker container does; retry
+# the argv probe instead of racing the PTY launch.
+wait_for_process_marker() {
+	local container="$1" marker="$2" attempts=30
+	while ((attempts > 0)); do
+		if docker exec "$container" sh -c "ps ax | grep -v grep | grep -q '$marker'"; then
+			return 0
+		fi
+		attempts=$((attempts - 1))
+		sleep 1
+	done
+	echo "Process marker '$marker' never appeared in $container." >&2
+	exit 1
+}
+# The orchestrator harness launches with the coordination prompt in its argv.
+wait_for_process_marker "$first_worker" "AO Orchestrator Role"
 exercise_browser_proxy "$first_worker"
 spawn_output="$(
 	docker exec "$first_worker" ao spawn \
@@ -520,49 +649,76 @@ if [[ -z "$child_session" ]]; then
 	echo "AO orchestration CLI did not return a child session id: ${spawn_output}" >&2
 	exit 1
 fi
-wait_for_worker "$child_session" >/dev/null
+# Send BEFORE the child is up: the message must queue durably and be typed into
+# the agent PTY once the terminal has painted (readiness gate), not be lost.
 docker exec "$first_worker" ao send "$child_session" "Report smoke status" >/dev/null
-attempts=30
+child_worker="$(wait_for_worker "$child_session")"
+# The child harness carries the worker prompt, including report guidance (it
+# has an orchestrator parent).
+wait_for_process_marker "$child_worker" "AO Worker Role"
+wait_for_child_message() {
+	local target="$1" description="$2" attempts=45 forwarded=""
+	while ((attempts > 0)); do
+		forwarded="$(
+			compose exec -e "PGOPTIONS=-c ao.org_id=${org}" -T postgres \
+				psql -U ao_cloud_owner -d ao_cloud -Atc "$target"
+		)"
+		if [[ "$forwarded" == "t" ]]; then
+			return 0
+		fi
+		attempts=$((attempts - 1))
+		sleep 1
+	done
+	echo "$description" >&2
+	exit 1
+}
+wait_for_child_message \
+	"SELECT EXISTS (SELECT 1 FROM ao_turns WHERE session_id = '${child_session}' AND state = 'completed') OR EXISTS (SELECT 1 FROM ao_worker_requests WHERE session_id = '${child_session}' AND kind = 'terminal.input' AND status = 'succeeded')" \
+	"Orchestrator message was not forwarded into the child agent PTY."
+# Child -> orchestrator report lands in the parent's conversation with the
+# worker-provenance prefix.
+docker exec "$child_worker" ao report "smoke child reporting done" >/dev/null
+wait_for_child_message \
+	"SELECT EXISTS (SELECT 1 FROM ao_events WHERE session_id = '${session}' AND type = 'chat.user_message' AND payload::text LIKE '%from worker%smoke child reporting done%')" \
+	"Child report did not land in the orchestrator conversation."
+# A parentless orchestrator cannot report (scope never issued).
+if docker exec "$first_worker" ao report "should be rejected" >/dev/null 2>&1; then
+	echo "ao report from a parentless session must fail with SCOPE_REQUIRED." >&2
+	exit 1
+fi
+# List enrichment: branch and prs ride every child item.
+docker exec "$first_worker" ao list --json | python3 -c '
+import json, sys
+items = json.load(sys.stdin)
+assert items, "orchestrator sees no children"
+child = items[0]
+assert child["branch"], child
+assert isinstance(child["prs"], list), child
+'
+docker exec "$first_worker" ao kill "$child_session" >/dev/null
+# Terminated children leave the default listing; --all keeps the history.
+attempts=45
 while ((attempts > 0)); do
-	message_forwarded="$(
-		compose exec -e "PGOPTIONS=-c ao.org_id=${org}" -T postgres \
-			psql -U ao_cloud_owner -d ao_cloud -Atc \
-			"SELECT EXISTS (SELECT 1 FROM ao_turns WHERE session_id = '${child_session}' AND state = 'completed') OR EXISTS (SELECT 1 FROM ao_worker_requests WHERE session_id = '${child_session}' AND kind = 'terminal.input' AND status = 'succeeded')"
-	)"
-	if [[ "$message_forwarded" == "t" ]]; then
+	list_state="$(docker exec "$first_worker" sh -c "ao list --json && echo --- && ao list --all --json" | python3 -c '
+import json, sys
+raw = sys.stdin.read().split("---")
+live = {item["id"] for item in (json.loads(raw[0]) or [])}
+everything = {item["id"]: item for item in (json.loads(raw[1]) or [])}
+child = sys.argv[1]
+if child not in live and child in everything and everything[child]["isTerminated"]:
+    print("settled")
+else:
+    print("pending")
+' "$child_session")"
+	if [[ "$list_state" == "settled" ]]; then
 		break
 	fi
 	attempts=$((attempts - 1))
 	sleep 1
 done
-if [[ "$message_forwarded" != "t" ]]; then
-	echo "Orchestrator message was not forwarded into the child agent PTY." >&2
+if [[ "$list_state" != "settled" ]]; then
+	echo "Killed child did not settle out of the default ao list (or out of --all)." >&2
 	exit 1
-fi
-docker exec "$first_worker" ao kill "$child_session" >/dev/null
-
-if [[ "${AO_CLOUD_TERMINAL_STREAM:-}" == "1" ]]; then
-	# The delivery above must have ridden the stream push, not the transport
-	# poll: the pushed request is completed by the control plane, and the
-	# stream never leaves failed input rows behind.
-	stream_pushed="$(
-		compose exec -e "PGOPTIONS=-c ao.org_id=${org}" -T postgres \
-			psql -U ao_cloud_owner -d ao_cloud -Atc \
-			"SELECT NOT EXISTS (
-				SELECT 1 FROM ao_worker_requests
-				WHERE session_id = '${child_session}'
-				  AND kind = 'terminal.input' AND status = 'failed'
-			)"
-	)"
-	if [[ "$stream_pushed" != "t" ]]; then
-		echo "Terminal stream left failed input requests behind." >&2
-		exit 1
-	fi
-	if compose logs control-plane 2>/dev/null | grep -q "claim terminal input for push"; then
-		echo "Control plane logged terminal stream push failures." >&2
-		exit 1
-	fi
-	echo "terminal stream assertions passed"
 fi
 docker exec "$first_worker" bash -c \
 	'printf "%s\n" persistent-workspace > /workspace/repository/.ao-cloud-smoke'

@@ -7,11 +7,14 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
 
 const getAgentModelCatalog = `-- name: GetAgentModelCatalog :one
-SELECT agent_id, project_id, binary_version, catalog_json, source, fetched_at
+SELECT agent_id, project_id, binary_version, catalog_json, source, fetched_at,
+       metadata_json, input_fingerprint, last_success_at, refresh_state,
+       refresh_error, retry_count, retry_at, generation
 FROM agent_model_catalog
 WHERE agent_id = ? AND project_id = ?
 `
@@ -31,12 +34,68 @@ func (q *Queries) GetAgentModelCatalog(ctx context.Context, arg GetAgentModelCat
 		&i.CatalogJson,
 		&i.Source,
 		&i.FetchedAt,
+		&i.MetadataJson,
+		&i.InputFingerprint,
+		&i.LastSuccessAt,
+		&i.RefreshState,
+		&i.RefreshError,
+		&i.RetryCount,
+		&i.RetryAt,
+		&i.Generation,
 	)
 	return i, err
 }
 
+const listAgentModelCatalogs = `-- name: ListAgentModelCatalogs :many
+SELECT agent_id, project_id, binary_version, catalog_json, source, fetched_at,
+       metadata_json, input_fingerprint, last_success_at, refresh_state,
+       refresh_error, retry_count, retry_at, generation
+FROM agent_model_catalog
+ORDER BY project_id, agent_id
+`
+
+func (q *Queries) ListAgentModelCatalogs(ctx context.Context) ([]AgentModelCatalog, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentModelCatalogs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentModelCatalog{}
+	for rows.Next() {
+		var i AgentModelCatalog
+		if err := rows.Scan(
+			&i.AgentID,
+			&i.ProjectID,
+			&i.BinaryVersion,
+			&i.CatalogJson,
+			&i.Source,
+			&i.FetchedAt,
+			&i.MetadataJson,
+			&i.InputFingerprint,
+			&i.LastSuccessAt,
+			&i.RefreshState,
+			&i.RefreshError,
+			&i.RetryCount,
+			&i.RetryAt,
+			&i.Generation,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAgentModelCatalogsByAgent = `-- name: ListAgentModelCatalogsByAgent :many
-SELECT agent_id, project_id, binary_version, catalog_json, source, fetched_at
+SELECT agent_id, project_id, binary_version, catalog_json, source, fetched_at,
+       metadata_json, input_fingerprint, last_success_at, refresh_state,
+       refresh_error, retry_count, retry_at, generation
 FROM agent_model_catalog
 WHERE agent_id = ?
 ORDER BY project_id
@@ -58,6 +117,14 @@ func (q *Queries) ListAgentModelCatalogsByAgent(ctx context.Context, agentID str
 			&i.CatalogJson,
 			&i.Source,
 			&i.FetchedAt,
+			&i.MetadataJson,
+			&i.InputFingerprint,
+			&i.LastSuccessAt,
+			&i.RefreshState,
+			&i.RefreshError,
+			&i.RetryCount,
+			&i.RetryAt,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}
@@ -74,22 +141,41 @@ func (q *Queries) ListAgentModelCatalogsByAgent(ctx context.Context, agentID str
 
 const upsertAgentModelCatalog = `-- name: UpsertAgentModelCatalog :exec
 INSERT INTO agent_model_catalog (
-    agent_id, project_id, binary_version, catalog_json, source, fetched_at
-) VALUES (?, ?, ?, ?, ?, ?)
+    agent_id, project_id, binary_version, catalog_json, source, fetched_at,
+    metadata_json, input_fingerprint, last_success_at, refresh_state,
+    refresh_error, retry_count, retry_at, generation
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(agent_id, project_id) DO UPDATE SET
     binary_version = excluded.binary_version,
     catalog_json = excluded.catalog_json,
     source = excluded.source,
-    fetched_at = excluded.fetched_at
+    fetched_at = excluded.fetched_at,
+    metadata_json = excluded.metadata_json,
+    input_fingerprint = excluded.input_fingerprint,
+    last_success_at = excluded.last_success_at,
+    refresh_state = excluded.refresh_state,
+    refresh_error = excluded.refresh_error,
+    retry_count = excluded.retry_count,
+    retry_at = excluded.retry_at,
+    generation = excluded.generation
+WHERE excluded.generation >= agent_model_catalog.generation
 `
 
 type UpsertAgentModelCatalogParams struct {
-	AgentID       string
-	ProjectID     string
-	BinaryVersion string
-	CatalogJson   string
-	Source        string
-	FetchedAt     time.Time
+	AgentID          string
+	ProjectID        string
+	BinaryVersion    string
+	CatalogJson      string
+	Source           string
+	FetchedAt        time.Time
+	MetadataJson     string
+	InputFingerprint string
+	LastSuccessAt    sql.NullTime
+	RefreshState     string
+	RefreshError     string
+	RetryCount       int64
+	RetryAt          sql.NullTime
+	Generation       int64
 }
 
 func (q *Queries) UpsertAgentModelCatalog(ctx context.Context, arg UpsertAgentModelCatalogParams) error {
@@ -100,6 +186,14 @@ func (q *Queries) UpsertAgentModelCatalog(ctx context.Context, arg UpsertAgentMo
 		arg.CatalogJson,
 		arg.Source,
 		arg.FetchedAt,
+		arg.MetadataJson,
+		arg.InputFingerprint,
+		arg.LastSuccessAt,
+		arg.RefreshState,
+		arg.RefreshError,
+		arg.RetryCount,
+		arg.RetryAt,
+		arg.Generation,
 	)
 	return err
 }

@@ -77,7 +77,7 @@ func (f *AccountFactory) Open(ctx context.Context, account ports.CodexAccountCon
 	}
 	if account.Managed {
 		info, err := os.Lstat(account.Home)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !managedHomePrivate(account.Home, info) {
 			return nil, errors.New("managed Codex account home is unavailable")
 		}
 	}
@@ -145,13 +145,13 @@ func (f *AccountFactory) Capabilities(ctx context.Context) domain.CodexAccountCa
 	result := f.probeSchema(probeCtx, bin)
 	f.mu.Lock()
 	call.result = result
-	if cacheable && result.AccountRead.State != domain.CodexCapabilityUnknown && result.AccountManagement.State != domain.CodexCapabilityUnknown && result.CapacityRead.State != domain.CodexCapabilityUnknown {
+	if cacheable && result.AccountRead.State != domain.CodexCapabilityUnknown && result.NativeLogin.State != domain.CodexCapabilityUnknown && result.CapacityRead.State != domain.CodexCapabilityUnknown {
 		f.capability[key] = result
 	}
 	delete(f.capabilityCalls, key)
 	close(call.done)
 	f.mu.Unlock()
-	f.log.Info("Codex capability check completed", "operation", "capability_check", "cache", "new", "duration_ms", time.Since(started).Milliseconds(), "account_read", result.AccountRead.State, "account_management", result.AccountManagement.State, "capacity_read", result.CapacityRead.State)
+	f.log.Info("Codex capability check completed", "operation", "capability_check", "cache", "new", "duration_ms", time.Since(started).Milliseconds(), "account_read", result.AccountRead.State, "native_login", result.NativeLogin.State, "capacity_read", result.CapacityRead.State)
 	return result
 }
 
@@ -169,23 +169,6 @@ func (f *AccountFactory) detectCapabilities(ctx context.Context, bin string) dom
 	}
 	capabilities := inspectCodexSchemaDirectory(dir)
 	capabilities.NativeLogin = probeCodexCLISurface(probeCtx, bin, []string{"login", "--help"}, "Native Codex login is available.")
-	cliResume := probeCodexCLISurface(probeCtx, bin, []string{"resume", "--help"}, "Exact Codex terminal resume is available.")
-	capabilities.ThreadResume = combineCodexCapabilities(
-		capabilities.ThreadResume,
-		cliResume,
-		"Exact Codex thread resume is available.",
-		"Exact Codex thread resume is not supported by this Codex version.",
-	)
-	capabilities.AccountManagement = combineCodexCapabilities(
-		capabilities.AccountRead,
-		capabilities.NativeLogin,
-		"Codex account management is available.",
-		"Codex account management is not supported by this Codex version.",
-	)
-	capabilities.GlobalSwitch = capabilities.AccountRead
-	if capabilities.GlobalSwitch.State == domain.CodexCapabilitySupported {
-		capabilities.GlobalSwitch.Reason = "Codex global account switching can be evaluated for the current device credential store."
-	}
 	return capabilities
 }
 
@@ -206,16 +189,6 @@ func probeCodexCLISurface(ctx context.Context, bin string, args []string, suppor
 	}
 }
 
-func combineCodexCapabilities(left, right domain.CodexCapabilityObservation, supportedReason, unsupportedReason string) domain.CodexCapabilityObservation {
-	if left.State == domain.CodexCapabilityUnsupported || right.State == domain.CodexCapabilityUnsupported {
-		return domain.CodexCapabilityObservation{State: domain.CodexCapabilityUnsupported, ReasonCode: domain.CodexCapabilityReasonUnsupported, Reason: unsupportedReason}
-	}
-	if left.State == domain.CodexCapabilitySupported && right.State == domain.CodexCapabilitySupported {
-		return domain.CodexCapabilityObservation{State: domain.CodexCapabilitySupported, ReasonCode: domain.CodexCapabilityReasonSupported, Reason: supportedReason}
-	}
-	return domain.CodexCapabilityObservation{State: domain.CodexCapabilityUnknown, ReasonCode: domain.CodexCapabilityReasonUnknown, Reason: "Codex capability detection is inconclusive."}
-}
-
 func inspectCodexSchemaDirectory(dir string) domain.CodexAccountCapabilities {
 	declared := make(map[string]bool)
 	methods := []string{
@@ -223,7 +196,6 @@ func inspectCodexSchemaDirectory(dir string) domain.CodexAccountCapabilities {
 		codexproto.MethodAccountRateLimitsRead,
 		codexproto.MethodAccountUsageRead,
 		codexproto.MethodAccountRateLimitResetCreditConsume,
-		codexproto.MethodThreadResume,
 		codexproto.MethodAccountUpdated,
 	}
 	var total int64
@@ -264,7 +236,6 @@ func inspectCodexSchemaDirectory(dir string) domain.CodexAccountCapabilities {
 		return unknownCodexCapabilities("Codex capability detection did not complete.")
 	}
 	accountRead := declared[codexproto.MethodAccountRead]
-	threadResume := declared[codexproto.MethodThreadResume]
 	unknown := domain.CodexCapabilityObservation{State: domain.CodexCapabilityUnknown, ReasonCode: domain.CodexCapabilityReasonUnknown, Reason: "This capability requires a bounded Codex CLI probe."}
 	return domain.CodexAccountCapabilities{
 		AccountRead:        codexCapability(accountRead, "Structured Codex account discovery is available.", "Structured Codex account discovery is not supported by this Codex version."),
@@ -272,8 +243,6 @@ func inspectCodexSchemaDirectory(dir string) domain.CodexAccountCapabilities {
 		CapacityRead:       codexCapability(declared[codexproto.MethodAccountRateLimitsRead], "Codex subscription capacity is available.", "Codex subscription capacity is not supported by this Codex version."),
 		UsageRead:          codexCapability(declared[codexproto.MethodAccountUsageRead], "Codex account usage is available.", "Codex account usage is not supported by this Codex version."),
 		ResetCreditConsume: codexCapability(declared[codexproto.MethodAccountRateLimitResetCreditConsume], "Codex usage-limit reset credits can be redeemed.", "Codex usage-limit reset credits are not supported by this Codex version."),
-		ThreadResume:       codexCapability(threadResume, "Exact Codex thread resume is available.", "Exact Codex thread resume is not supported by this Codex version."),
-		AccountManagement:  unknown,
 		GlobalSwitch:       unknown,
 	}
 }
@@ -287,7 +256,7 @@ func codexCapability(supported bool, yes, no string) domain.CodexCapabilityObser
 
 func unknownCodexCapabilities(reason string) domain.CodexAccountCapabilities {
 	unknown := domain.CodexCapabilityObservation{State: domain.CodexCapabilityUnknown, ReasonCode: domain.CodexCapabilityReasonUnknown, Reason: reason}
-	return domain.CodexAccountCapabilities{AccountRead: unknown, NativeLogin: unknown, CapacityRead: unknown, UsageRead: unknown, ResetCreditConsume: unknown, ThreadResume: unknown, AccountManagement: unknown, GlobalSwitch: unknown}
+	return domain.CodexAccountCapabilities{AccountRead: unknown, NativeLogin: unknown, CapacityRead: unknown, UsageRead: unknown, ResetCreditConsume: unknown, GlobalSwitch: unknown}
 }
 
 type accountClient struct {
@@ -306,6 +275,9 @@ func (c *accountClient) Read(ctx context.Context, refreshToken bool) (ports.Code
 	params := codexproto.GetAccountParams{RefreshToken: &refresh}
 	var response codexproto.GetAccountResponse
 	if err := c.conn.request(ctx, codexproto.MethodAccountRead, params, &response); err != nil {
+		if isRevokedOAuthTokenError(err) {
+			return ports.CodexAccountObservation{}, ports.ErrCodexOAuthTokenRevoked
+		}
 		return ports.CodexAccountObservation{}, err
 	}
 	if response.Account == nil {
@@ -323,6 +295,20 @@ func (c *accountClient) Read(ctx context.Context, refreshToken bool) (ports.Code
 		method = domain.CodexAuthMethodAPIKey
 	}
 	return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: method, Email: safeCodexAccountEmail(response.Account.Email)}, nil
+}
+
+// Logout asks Codex to own the complete sign-out operation, including OAuth
+// revocation and credential-store cleanup. AO deliberately does not reproduce
+// that protocol by deleting auth.json itself.
+func (c *accountClient) Logout(ctx context.Context) error {
+	if err := c.conn.request(ctx, codexproto.MethodAccountLogout, nil, nil); err != nil {
+		var rpcErr *rpcError
+		if errors.As(err, &rpcErr) && rpcErr.Code == -32601 {
+			return ports.ErrCodexAccountLogoutUnsupported
+		}
+		return err
+	}
+	return nil
 }
 
 func safeCodexAccountEmail(value *string) *string {

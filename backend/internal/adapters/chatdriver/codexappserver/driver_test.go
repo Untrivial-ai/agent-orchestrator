@@ -228,8 +228,11 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	conv, err := d.Start(context.Background(), ports.ChatStartConfig{
 		SessionID:     "ao-1",
 		WorkspacePath: "/tmp/ws",
+		Model:         "gpt-test",
+		Effort:        "high",
 		Permissions:   ports.PermissionModeDefault,
 		SystemPrompt:  "standing rules",
+		Ephemeral:     true,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -245,10 +248,13 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 
 	start := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/start" })
 	var params struct {
-		Cwd                   string `json:"cwd"`
-		ApprovalPolicy        string `json:"approvalPolicy"`
-		Sandbox               string `json:"sandbox"`
-		DeveloperInstructions string `json:"developerInstructions"`
+		Cwd                   string            `json:"cwd"`
+		ApprovalPolicy        string            `json:"approvalPolicy"`
+		Sandbox               string            `json:"sandbox"`
+		DeveloperInstructions string            `json:"developerInstructions"`
+		Model                 string            `json:"model"`
+		Config                map[string]string `json:"config"`
+		Ephemeral             bool              `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(start.Params, &params); err != nil {
 		t.Fatalf("thread/start params: %v", err)
@@ -259,6 +265,19 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	if params.DeveloperInstructions != "standing rules" {
 		t.Errorf("developerInstructions = %q", params.DeveloperInstructions)
 	}
+	if params.Model != "gpt-test" || params.Config["model_reasoning_effort"] != "high" {
+		t.Errorf("model tuning = %#v", params)
+	}
+	if !params.Ephemeral {
+		t.Error("thread/start did not mark the background conversation ephemeral")
+	}
+	var rawParams map[string]json.RawMessage
+	if err := json.Unmarshal(start.Params, &rawParams); err != nil {
+		t.Fatalf("thread/start raw params: %v", err)
+	}
+	if _, ok := rawParams["reasoningEffort"]; ok {
+		t.Fatal("thread/start sent unsupported top-level reasoningEffort")
+	}
 	// Default permissions must match what AO already gives a Codex TUI session.
 	if params.ApprovalPolicy != "never" || params.Sandbox != "danger-full-access" {
 		t.Errorf("default posture = %q/%q, want never/danger-full-access", params.ApprovalPolicy, params.Sandbox)
@@ -267,6 +286,7 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 
 func TestResumeReconnectsInitializedHostWithoutNativeResume(t *testing.T) {
 	d, srv := newTestDriver(t)
+	prepareCalls := 0
 	proc, err := d.spawn(context.Background(), "codex", "/tmp/ws", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -281,6 +301,10 @@ func TestResumeReconnectsInitializedHostWithoutNativeResume(t *testing.T) {
 	conv, err := d.Resume(context.Background(), ports.ChatResumeConfig{
 		SessionID: "ao-reconnect", ProviderConversationID: "thread-survived",
 		DataDir: t.TempDir(), WorkspacePath: "/tmp/ws",
+		PrepareEnv: func(context.Context) (map[string]string, error) {
+			prepareCalls++
+			return map[string]string{"AO_BROWSER_CAPABILITY": "rotated"}, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -288,6 +312,9 @@ func TestResumeReconnectsInitializedHostWithoutNativeResume(t *testing.T) {
 	defer func() { _ = conv.Close() }()
 	if got := conv.ProviderConversationID(); got != "thread-survived" {
 		t.Fatalf("provider conversation id = %q", got)
+	}
+	if prepareCalls != 0 {
+		t.Fatalf("live Codex reconnect prepared launch-only environment %d times", prepareCalls)
 	}
 	if srv.sentMethod("initialize") || srv.sentMethod("thread/resume") {
 		t.Fatalf("reconnect repeated handshake: initialize=%v resume=%v",
@@ -301,26 +328,6 @@ func TestResumeReconnectsInitializedHostWithoutNativeResume(t *testing.T) {
 	request := srv.awaitFrame(func(f frame) bool { return f.Method == "model/list" })
 	if request.ID == nil || string(*request.ID) != "42" {
 		t.Fatalf("first request id after reconnect = %v, want 42", request.ID)
-	}
-}
-
-func TestResumeStagesDirectProcessWhenBranchSourceOwnsHost(t *testing.T) {
-	d, srv := newTestDriver(t)
-	d.persistent = true
-	d.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
-		return nil, persistenthost.ErrAttached
-	}
-	conv, err := d.Resume(context.Background(), ports.ChatResumeConfig{
-		SessionID: "ao-branch", ProviderConversationID: "thread-branch",
-		DataDir: t.TempDir(), WorkspacePath: "/tmp/ws", AllowConcurrentHostReplacement: true,
-	})
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-	defer func() { _ = conv.Close() }()
-	if !srv.sentMethod("initialize") || !srv.sentMethod("thread/resume") {
-		t.Fatalf("branch staging handshake: initialize=%v resume=%v",
-			srv.sentMethod("initialize"), srv.sentMethod("thread/resume"))
 	}
 }
 
@@ -720,6 +727,13 @@ func TestResumeReappliesWorkspaceAndStandingInstructions(t *testing.T) {
 	if params.Config["model_reasoning_effort"] != "high" {
 		t.Fatalf("thread resume effort config = %q, want high", params.Config["model_reasoning_effort"])
 	}
+	var rawParams map[string]json.RawMessage
+	if err := json.Unmarshal(resume.Params, &rawParams); err != nil {
+		t.Fatalf("thread/resume raw params: %v", err)
+	}
+	if _, ok := rawParams["reasoningEffort"]; ok {
+		t.Fatal("thread/resume sent unsupported top-level reasoningEffort")
+	}
 	if params.DeveloperInstructions != "current AO standing instructions" {
 		t.Fatalf("developerInstructions = %q", params.DeveloperInstructions)
 	}
@@ -815,6 +829,46 @@ func TestInstalledCodexVersionAugmentsNodePATHForNPMLauncher(t *testing.T) {
 	d.versionProbe = installedCodexVersion
 	if _, err := d.Probe(context.Background()); err != nil {
 		t.Fatalf("Probe with augmented npm launcher: %v", err)
+	}
+}
+
+// Run under the production executable name so os.Executable identifies the AO pin.
+func TestCodexProcessEnvPreservesDaemonPATH(t *testing.T) {
+	if os.Getenv("AO_TEST_CODEX_PATH_PIN") == "1" {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Dir(exe)
+		launcher := filepath.Join(t.TempDir(), "codex")
+		env := codexProcessEnv(context.Background(), launcher, map[string]string{
+			"PATH": dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		})
+		if got := strings.Split(envValue(env, "PATH"), string(os.PathListSeparator))[0]; got != dir {
+			t.Fatalf("first PATH directory = %q, want daemon directory %q", got, dir)
+		}
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "ao"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	copyPath := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(copyPath, binary, 0o700); err != nil { //nolint:gosec // executable test fixture
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(context.Background(), copyPath, "-test.run=^TestCodexProcessEnvPreservesDaemonPATH$")
+	cmd.Env = append(os.Environ(), "AO_TEST_CODEX_PATH_PIN=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("AO-named test process: %v\n%s", err, output)
 	}
 }
 
@@ -943,20 +997,30 @@ func TestProbeReportsMissingBinary(t *testing.T) {
 // Chat must not be quietly stricter than the terminal path for the same setting.
 func TestApprovalSettingsMirrorTUIPosture(t *testing.T) {
 	for _, tc := range []struct {
+		readOnly                  bool
 		mode                      ports.PermissionMode
 		policy, sandbox, reviewer string
 	}{
-		{ports.PermissionModeDefault, "never", "danger-full-access", "user"},
-		{ports.PermissionModeBypassPermissions, "never", "danger-full-access", "user"},
-		{ports.PermissionModeAcceptEdits, "on-request", "workspace-write", "user"},
-		{ports.PermissionModeAuto, "on-request", "workspace-write", "auto_review"},
-		{ports.PermissionMode("nonsense"), "never", "danger-full-access", "user"},
+		{false, ports.PermissionModeDefault, "never", "danger-full-access", "user"},
+		{false, ports.PermissionModeBypassPermissions, "never", "danger-full-access", "user"},
+		{false, ports.PermissionModeAcceptEdits, "on-request", "workspace-write", "user"},
+		{false, ports.PermissionModeAuto, "on-request", "workspace-write", "auto_review"},
+		{false, ports.PermissionMode("nonsense"), "never", "danger-full-access", "user"},
+		{true, ports.PermissionModeAuto, "never", "read-only", "user"},
 	} {
-		policy, sandbox := approvalSettings(tc.mode)
-		reviewer := approvalReviewer(tc.mode)
+		policy, sandbox, reviewer := launchApprovalSettings(tc.mode, tc.readOnly)
 		if policy != tc.policy || sandbox != tc.sandbox || reviewer != tc.reviewer {
-			t.Errorf("approval settings(%q) = %q/%q/%q, want %q/%q/%q", tc.mode, policy, sandbox, reviewer, tc.policy, tc.sandbox, tc.reviewer)
+			t.Errorf("approval settings(%q, readOnly=%t) = %q/%q/%q, want %q/%q/%q", tc.mode, tc.readOnly, policy, sandbox, reviewer, tc.policy, tc.sandbox, tc.reviewer)
 		}
+	}
+}
+
+func TestReadOnlyTurnCannotOverrideSandbox(t *testing.T) {
+	params := map[string]any{}
+	applyTurnSettings(params, ports.ChatTurnSettings{Approval: ports.PermissionModeAuto}, true)
+	if params["approvalPolicy"] != "never" || params["approvalsReviewer"] != "user" ||
+		!reflect.DeepEqual(params["sandboxPolicy"], map[string]any{"type": "readOnly"}) {
+		t.Fatalf("read-only turn settings = %#v", params)
 	}
 }
 
@@ -1017,9 +1081,7 @@ func TestTurnSettingsUseTheTurnLevelWireShapes(t *testing.T) {
 	if _, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
 		Text: "go",
 		Settings: ports.ChatTurnSettings{
-			Model:    "gpt-5.6-terra",
-			Effort:   "high",
-			Approval: ports.PermissionModeAcceptEdits,
+			Model: "gpt-5.6-terra", Effort: "high", Approval: ports.PermissionModeAcceptEdits,
 		},
 	}); err != nil {
 		t.Fatalf("SendTurn: %v", err)

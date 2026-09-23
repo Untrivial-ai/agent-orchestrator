@@ -5,16 +5,21 @@ import type { CodexAccount } from "../../hooks/useCodexAccountsQuery";
 import { codexAccountReasonKey } from "../../hooks/codex-accounts-state";
 import { Button } from "../ui/button";
 
-export function CodexAccountDetails({ account, resetCreditSupported, mutationDisabled, resetBusy, onUseReset }: { account: CodexAccount; resetCreditSupported: boolean; mutationDisabled: boolean; resetBusy: boolean; onUseReset: () => void }) {
+export function CodexAccountDetails({ account, resetCreditSupported, mutationDisabled, resetBusy, retryBusy, onUseReset, onRetry }: { account: CodexAccount; resetCreditSupported: boolean; mutationDisabled: boolean; resetBusy: boolean; retryBusy: boolean; onUseReset: () => void; onRetry: () => void }) {
 	const { t, i18n } = useTranslation();
+	if (account.status === "signed_out") return null;
+	if (account.authentication.state === "unauthorized") {
+		return <div className="ml-9 mt-4 space-y-5 pb-1 text-xs"><CapacityNotice reason={t(codexAccountReasonKey(account.authentication.reasonCode))} tone="warning" /></div>;
+	}
 	const plan = formatPlanLabel(account.capacity.plan, t);
 	const hasOverall = Boolean(account.capacity.overall?.primary || account.capacity.overall?.secondary);
 	const additionalBuckets = account.capacity.additionalBuckets.filter((bucket) => bucket.primary || bucket.secondary);
 	const usage = account.usageSummary;
 	const hasUsage = Boolean(usage && (usage.lifetimeTokens != null || usage.peakDailyTokens != null || usage.longestRunningTurnSeconds != null || usage.currentStreakDays != null || usage.longestStreakDays != null));
 	const resetCredits = account.capacity.resetCredits;
-	const hasDetails = Boolean(plan || hasOverall || additionalBuckets.length > 0 || hasUsage || resetCredits);
+	const hasCapacityDetails = Boolean(plan || hasOverall || additionalBuckets.length > 0 || resetCredits);
 	const capacityNotice = capacityNoticeFor(account, t, i18n.language);
+	const usageUnavailable = !hasCapacityDetails && account.capacity.freshness !== "checking";
 	return (
 		<div className="ml-9 mt-4 space-y-5 pb-1 text-xs">
 			{capacityNotice ? <CapacityNotice {...capacityNotice} /> : null}
@@ -24,7 +29,7 @@ export function CodexAccountDetails({ account, resetCreditSupported, mutationDis
 			{additionalBuckets.map((bucket, index) => (
 				<CapacityBucketGroup key={`${bucket.displayName ?? "additional"}-${index}`} bucket={bucket} title={bucket.displayName ? t("settings.codexAccounts.namedUsageLimits", { name: bucket.displayName }) : t("settings.codexAccounts.additionalUsageLimits")} locale={i18n.language} />
 			))}
-			{!hasDetails && !capacityNotice ? <p className="text-muted-foreground">{t("settings.codexAccounts.usageDetailsUnavailable")}</p> : null}
+			{usageUnavailable ? <div className="flex items-center gap-2"><p className="text-muted-foreground">{t("settings.codexAccounts.usageDetailsUnavailable")}</p><Button type="button" size="sm" variant="outline" disabled={mutationDisabled || retryBusy} onClick={onRetry}>{retryBusy ? <LoaderCircle className="animate-spin" aria-label={t("settings.codexAccounts.checking")} /> : null}{t("settings.codexAccounts.tryAgain")}</Button></div> : null}
 		</div>
 	);
 }
@@ -78,13 +83,19 @@ function CapacityNotice({ reason, tone, checking }: { reason: string; tone: "war
 
 function capacityNoticeFor(account: CodexAccount, t: TFunction, locale: string): { reason: string; tone: "warning" | "error" | "muted"; checking?: boolean } | null {
 	if (account.status === "broken") return { reason: t(codexAccountReasonKey(account.reasonCode)), tone: "error" };
-	if (account.authentication.state === "unauthorized") return { reason: t(codexAccountReasonKey(account.authentication.reasonCode)), tone: "warning" };
 	if (account.capacity.freshness === "checking") return { reason: t(codexAccountReasonKey(account.capacity.reasonCode)), tone: "muted", checking: true };
+	// Credential changes intentionally invalidate the old capacity snapshot. It
+	// is an internal transition, not a user-actionable failure; the section
+	// refreshes it quietly after login/switch completion.
+	if (account.capacity.reasonCode === "capacity_invalidated") return null;
 	if (account.capacity.freshness === "stale") {
 		const checked = account.capacity.checkedAt ? formatObservedTime(account.capacity.checkedAt, locale) : null;
-		return { reason: checked ? t("settings.codexAccounts.capacityStaleChecked", { value: checked }) : t("settings.codexAccounts.capacityStale"), tone: "warning" };
+		if (checked && (account.capacity.plan || account.capacity.overall || account.capacity.additionalBuckets.length > 0)) {
+			return { reason: t("settings.codexAccounts.capacityStaleReasonChecked", { value: checked }), tone: "muted" };
+		}
+		return null;
 	}
-	if (account.capacity.state === "unknown" || account.capacity.state === "unsupported") return { reason: t(codexAccountReasonKey(account.capacity.reasonCode)), tone: "muted" };
+	if (account.capacity.state === "unknown" || account.capacity.state === "unsupported") return null;
 	return null;
 }
 

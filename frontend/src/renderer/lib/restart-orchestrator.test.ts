@@ -13,6 +13,7 @@ vi.mock("./spawn-orchestrator", () => ({
 			readonly code?: string,
 			readonly requestId?: string,
 			readonly status?: number,
+			readonly details?: Record<string, unknown>,
 		) {
 			super(message);
 		}
@@ -47,16 +48,65 @@ describe("restartProjectOrchestrator", () => {
 			onError,
 		});
 
-		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, undefined);
+		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, undefined, undefined);
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
-		expect(setOrchestratorReplacementError).toHaveBeenNthCalledWith(1, "proj-1", null);
-		expect(setOrchestratorReplacementError).toHaveBeenNthCalledWith(2, "proj-1", {
+		expect(setOrchestratorReplacementError).toHaveBeenNthCalledWith(1, "proj-1", {
 			message: "missing goose binary",
 		});
 		expect(setProjectRestarting).toHaveBeenNthCalledWith(1, "proj-1", true);
 		expect(setProjectRestarting).toHaveBeenLastCalledWith("proj-1", false);
 		expect(onError).toHaveBeenCalledWith(failure);
 		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("blurs the restart control so the replacement terminal can reclaim focus", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue();
+		const restartButton = document.createElement("button");
+		document.body.appendChild(restartButton);
+		restartButton.focus();
+		spawnMock.mockResolvedValue("session-2");
+
+		await restartProjectOrchestrator({
+			projectId: "proj-1",
+			queryClient,
+			navigate: vi.fn(),
+			setProjectRestarting: vi.fn(),
+			setOrchestratorReplacementError: vi.fn(),
+		});
+
+		expect(restartButton).not.toHaveFocus();
+		restartButton.remove();
+	});
+
+	it("keeps the initiating control focused until replacement and refresh finish", async () => {
+		let completeSpawn!: (id: string) => void;
+		let completeRefresh!: () => void;
+		spawnMock.mockImplementation(() => new Promise<string>((resolve) => { completeSpawn = resolve; }));
+		const queryClient = new QueryClient();
+		vi.spyOn(queryClient, "invalidateQueries").mockImplementation(() => new Promise<void>((resolve) => { completeRefresh = resolve; }));
+		const button = document.createElement("button");
+		document.body.appendChild(button);
+		button.focus();
+		const navigate = vi.fn();
+		const setError = vi.fn();
+		try {
+			const restart = restartProjectOrchestrator({ projectId: "proj-1", queryClient, navigate,
+				setProjectRestarting: vi.fn(), setOrchestratorReplacementError: setError });
+			expect(button).toHaveFocus();
+			expect(setError).not.toHaveBeenCalled();
+			completeSpawn("replacement");
+			await Promise.resolve();
+			expect(button).toHaveFocus();
+			expect(navigate).not.toHaveBeenCalled();
+			completeRefresh();
+			await restart;
+			expect(button).not.toHaveFocus();
+			expect(setError).toHaveBeenCalledWith("proj-1", null);
+			expect(navigate).toHaveBeenCalledOnce();
+		} finally {
+			button.remove();
+		}
 	});
 
 	it("still records the replacement error when workspace invalidation fails", async () => {
@@ -108,11 +158,44 @@ describe("restartProjectOrchestrator", () => {
 			mode: "tui",
 		});
 
-		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, "tui");
+		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, "tui", undefined);
 		expect(setOrchestratorReplacementError).toHaveBeenLastCalledWith("proj-1", {
 			message: "Claude Code is unavailable",
 			code: "CHAT_DRIVER_UNAVAILABLE",
 			requestId: "request-42",
+		});
+	});
+
+	it("forwards an approval override and preserves daemon error details", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue();
+		const setOrchestratorReplacementError = vi.fn();
+		const details = { missingCapabilities: ["approvals"], allowedApprovalModes: ["bypass-permissions"] };
+		spawnMock.mockRejectedValue(
+			new OrchestratorSpawnError(
+				"chat needs approvals",
+				"SESSION_MODE_UNSUPPORTED",
+				"request-7",
+				400,
+				details,
+			),
+		);
+
+		await restartProjectOrchestrator({
+			projectId: "proj-1",
+			queryClient,
+			navigate: vi.fn(),
+			setProjectRestarting: vi.fn(),
+			setOrchestratorReplacementError,
+			approvalMode: "bypass-permissions",
+		});
+
+		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, undefined, "bypass-permissions");
+		expect(setOrchestratorReplacementError).toHaveBeenLastCalledWith("proj-1", {
+			message: "chat needs approvals",
+			code: "SESSION_MODE_UNSUPPORTED",
+			requestId: "request-7",
+			details,
 		});
 	});
 });

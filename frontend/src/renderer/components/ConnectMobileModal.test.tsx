@@ -129,6 +129,48 @@ test("can turn off the generated mobile connection", async () => {
 	expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/mobile/disable");
 });
 
+test.each([
+	{ outcome: "success", serverEnabled: false, failed: false },
+	{ outcome: "error after shutdown", serverEnabled: false, failed: true },
+	{ outcome: "error while still running", serverEnabled: true, failed: true },
+])("refreshes mobile status after disable $outcome", async ({ serverEnabled, failed }) => {
+	let statusReads = 0;
+	const get = vi.spyOn(apiClient, "GET").mockImplementation(async (path) => {
+		if (path === "/api/v1/mobile/devices") {
+			return { data: { devices: [] }, error: undefined };
+		}
+		statusReads++;
+		// Each response is a snapshot. Updating the fake server must not mutate
+		// the cached response and conceal a missing status refetch.
+		return { data: { ...mobileStatus }, error: undefined };
+	});
+	vi.mocked(apiClient.POST).mockImplementationOnce(async () => {
+		mobileStatus.enabled = serverEnabled;
+		return failed
+			? { data: undefined, error: { message: "shutdown failed" } }
+			: { data: {}, error: undefined };
+	});
+
+	try {
+		renderMobileSettings();
+		await userEvent.click(await screen.findByRole("button", { name: "Turn off mobile connection" }));
+		await waitFor(() => expect(statusReads).toBeGreaterThan(1));
+		await waitFor(() => {
+			const disableButton = screen.queryByRole("button", { name: "Turn off mobile connection" });
+			if (serverEnabled) {
+				expect(disableButton).toBeVisible();
+				expect(qrPayload()).not.toBeNull();
+			} else {
+				expect(disableButton).not.toBeInTheDocument();
+				expect(screen.getByRole("button", { name: "Generate" })).toBeVisible();
+			}
+		});
+		if (failed) expect(screen.getByText("failed")).toBeVisible();
+	} finally {
+		get.mockRestore();
+	}
+});
+
 // SKIPPED: drives the connection picker, which is commented out in
 // ConnectMobileContent. Un-skip with it — the behaviour is unchanged, only
 // the way in is gone. TLS coverage does NOT live here any more: it keys off

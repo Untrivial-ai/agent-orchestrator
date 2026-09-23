@@ -22,19 +22,22 @@ type editQueuedStub struct {
 	session domain.SessionID
 	turnID  string
 	text    string
+	edit    chatsvc.QueuedMessageEdit
 	err     error
 }
 
 func (s *editQueuedStub) EditQueuedTurn(
 	_ context.Context,
 	session domain.SessionID,
-	turnID, text string,
+	turnID string,
+	edit chatsvc.QueuedMessageEdit,
 ) error {
-	s.session, s.turnID, s.text = session, turnID, text
+	s.session, s.turnID, s.text = session, turnID, edit.Text
+	s.edit = edit
 	return s.err
 }
 
-func postEditQueuedTurn(t *testing.T, svc *editQueuedStub, turnID, text string) int {
+func postEditQueuedTurn(t *testing.T, svc *editQueuedStub, turnID string, request map[string]any) int {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
@@ -43,7 +46,7 @@ func postEditQueuedTurn(t *testing.T, svc *editQueuedStub, turnID, text string) 
 	}, httpd.ControlDeps{}))
 	t.Cleanup(srv.Close)
 
-	body, err := json.Marshal(map[string]string{"text": text})
+	body, err := json.Marshal(request)
 	if err != nil {
 		t.Fatalf("encode request: %v", err)
 	}
@@ -61,11 +64,63 @@ func postEditQueuedTurn(t *testing.T, svc *editQueuedStub, turnID, text string) 
 
 func TestEditQueuedTurnRoute(t *testing.T) {
 	svc := &editQueuedStub{fakeConversationService: &fakeConversationService{}}
-	if status := postEditQueuedTurn(t, svc, "turn-queued", "updated text"); status != http.StatusNoContent {
+	if status := postEditQueuedTurn(t, svc, "turn-queued", map[string]any{"text": "updated text"}); status != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", status, http.StatusNoContent)
 	}
 	if svc.session != "p1-1" || svc.turnID != "turn-queued" || svc.text != "updated text" {
 		t.Fatalf("svc saw session=%q turn=%q text=%q", svc.session, svc.turnID, svc.text)
+	}
+}
+
+func TestEditQueuedTurnRouteForwardsImageChanges(t *testing.T) {
+	svc := &editQueuedStub{fakeConversationService: &fakeConversationService{}}
+	status := postEditQueuedTurn(t, svc, "turn-queued", map[string]any{
+		"text": "", "retainedContent": []int{}, "expectedRevision": 3,
+		"attachments": []map[string]string{{"mimeType": "image/png", "data": "aGVsbG8="}},
+	})
+	if status != http.StatusNoContent {
+		t.Fatalf("status = %d", status)
+	}
+	if svc.edit.RetainedContent == nil || len(*svc.edit.RetainedContent) != 0 ||
+		svc.edit.ExpectedRevision == nil || *svc.edit.ExpectedRevision != 3 ||
+		len(svc.edit.Content) != 1 || svc.edit.Content[0].Data != "aGVsbG8=" {
+		t.Fatalf("edit = %+v", svc.edit)
+	}
+}
+
+func TestEditQueuedTurnRouteRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"empty", chatsvc.ErrQueuedTurnTextRequired, http.StatusBadRequest, "CHAT_QUEUED_TEXT_REQUIRED"},
+		{"invalid content", chatsvc.ErrQueuedContentInvalid, http.StatusBadRequest, "CHAT_QUEUED_CONTENT_INVALID"},
+		{"stale revision", chatsvc.ErrQueuedEditConflict, http.StatusConflict, "CHAT_QUEUED_EDIT_CONFLICT"},
+		{"reused recovery key", store.ErrQueuedEditDeliveryConflict, http.StatusConflict, "CHAT_QUEUED_EDIT_IDEMPOTENCY_CONFLICT"},
+		{"already dispatched", store.ErrQueuedTurnNotAvailable, http.StatusConflict, "CHAT_TURN_NOT_QUEUED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &editQueuedStub{fakeConversationService: &fakeConversationService{}, err: tc.err}
+			router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{
+				Sessions: newFakeSessionService(), Conversations: svc,
+			}, httpd.ControlDeps{})
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/p1-1/conversation/turns/turn-queued/queue/edit", bytes.NewBufferString(`{"text":"update"}`))
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			assertErrorCode(t, response.Body.Bytes(), response.Code, tc.status, tc.code)
+		})
+	}
+}
+
+func TestEditQueuedTurnRouteRejectsMalformedImageBeforeService(t *testing.T) {
+	svc := &editQueuedStub{fakeConversationService: &fakeConversationService{}}
+	status := postEditQueuedTurn(t, svc, "turn-queued", map[string]any{
+		"text": "update", "attachments": []map[string]string{{"mimeType": "image/png", "data": "not base64"}},
+	})
+	if status != http.StatusBadRequest || svc.turnID != "" {
+		t.Fatalf("status=%d, called turn=%q", status, svc.turnID)
 	}
 }
 

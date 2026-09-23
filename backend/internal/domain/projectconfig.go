@@ -205,7 +205,7 @@ func (c ProjectConfig) Validate() error {
 			return fmt.Errorf("reviewers[%d].harness: unknown harness %q", i, rv.Harness)
 		}
 		if err := rv.AgentConfig.Validate(); err != nil {
-			return fmt.Errorf("reviewers[%d].%w", i, err)
+			return fmt.Errorf("reviewers[%d].agentConfig: %w", i, err)
 		}
 	}
 	if err := c.TrackerIntake.Validate(); err != nil {

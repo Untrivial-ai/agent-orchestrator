@@ -15,8 +15,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getApiBaseUrl } from "../lib/api-client";
+import { consumeFreshTerminalHandle } from "../lib/fresh-terminal-handles";
 import { captureRendererEvent } from "../lib/telemetry";
-import { LOCAL_ECHO_ENABLED, withPredictiveLocalEcho } from "../lib/terminal-local-echo";
+import { LOCAL_ECHO_ENABLED, withLineBufferedLocalInput } from "../lib/terminal-local-echo";
 import { createTerminalMux, muxUrlFromApiBase, type TerminalMux } from "../lib/terminal-mux";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
@@ -26,6 +27,7 @@ import { workspaceQueryKey } from "./useWorkspaceQuery";
  * drive the hook with a tiny fake instead of a real xterm + DOM.
  */
 export type TerminalUserInputSource = "keyboard" | "paste" | "composition" | "shortcut" | "wheel" | "protocol";
+export type TerminalWriteSource = "live" | "replay";
 
 export type AttachableTerminal = {
 	cols: number;
@@ -35,7 +37,7 @@ export type AttachableTerminal = {
 	 * own write callback). The attachment uses it to reveal the pane at the
 	 * replay's final scroll position instead of guessing with a timer.
 	 */
-	write: (data: Uint8Array, done?: () => void) => void;
+	write: (data: Uint8Array, done?: () => void, source?: TerminalWriteSource) => void;
 	writeln: (line: string) => void;
 	/** Move xterm's logical viewport and DOM scrollbar to the latest output. */
 	showLatestOutput: () => void;
@@ -48,12 +50,6 @@ export type AttachableTerminal = {
 	prepareForActivation: () => Promise<void>;
 	/** Tell Cursor Agent the live light/dark scheme (private 997 notification). */
 	notifyCursorColorScheme: () => void;
-	/**
-	 * Which xterm buffer is active. Predictive local echo (cloud panes only)
-	 * predicts on the normal buffer and self-disables on the alternate one;
-	 * fakes may omit it, which reads as "alternate" — never predict.
-	 */
-	bufferType?: () => "normal" | "alternate";
 	/** Send an explicit UI action through the same guarded path as user input. */
 	sendUserInput: (data: string, source?: TerminalUserInputSource) => boolean;
 	onUserInput: (listener: (data: string, source: TerminalUserInputSource) => boolean | void) => { dispose: () => void };
@@ -75,6 +71,8 @@ export type UseTerminalSessionOptions = {
 	inputDisabled?: boolean;
 	/** Coalesce and cover the initial replay. Disable for non-retained reviewer panes. */
 	coverInitialReplay?: boolean;
+	/** Keep the initial cover up until the terminal emits its first bytes. */
+	waitForInitialOutput?: boolean;
 	/**
 	 * False while a retained terminal is parked off screen. Output and transport
 	 * recovery continue, but hidden panes cannot send user input or PTY resizes.
@@ -103,6 +101,19 @@ const RETRY_MAX_MS = 8_000;
 // Exponential backoff here only adds dead seconds between "worker ready" and
 // "terminal attached" (a worker ready at 17s would wait for the 23s attempt).
 const CLOUD_CONNECT_RETRY_MS = 1_000;
+// Stop retrying and surface a real error after this many consecutive genuine
+// socket failures for a cloud session that has never successfully attached.
+// Only post-mint socket failures count; "worker still provisioning" (mint 409,
+// reported by the mux as "waiting") never trips this, so a slow cold start does
+// not false-fire a "check your firewall" error. ~8 socket failures ≈ 8s.
+const CLOUD_CONNECT_MAX_FAILURES = 8;
+// Local daemon panes only: the daemon runs a liveness probe and spawns the
+// runtime client between mux.open() and the pane opening, so a stalled spawn
+// must recover. A CLOUD pane gets NO client open timeout — readiness is
+// server-driven: the CP holds the socket in "starting" until the terminal opens
+// or its own 20s ready deadline closes the socket, which the client already
+// handles as onConnectionChange("closed") -> scheduleReattach. A client-side
+// cloud open timeout only manufactured reconnect storms (the 3s/30s band-aids).
 const OPEN_TIMEOUT_MS = 3_000;
 // Trailing debounce on grid changes: a pane drag emits a burst of intermediate
 // sizes; the attached program should get one SIGWINCH when the drag settles,
@@ -203,6 +214,10 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// attachment's first successful open, which switches the cloud pane's
 		// flat readiness polling over to exponential reconnect backoff.
 		hasAttachedOnce: false,
+		// Consecutive genuine socket failures before the first successful attach.
+		// Reset on a real open and on a fresh attach; provisioning waits do not
+		// touch it. Trips the connect-failure circuit breaker at the cap.
+		cloudConnectFailures: 0,
 		detached: true,
 		// True only after this attachment opens parked at 0×0. The next visible
 		// activation must promote it back to a positive primary grid.
@@ -317,7 +332,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		r.openTimer = null;
 	}, []);
 
-	const scheduleReattach = useCallback(() => {
+	const scheduleReattach = useCallback((countAsCloudFailure = false) => {
 		const r = runtime.current;
 		if (r.detached || !r.terminal || !r.handle) {
 			return;
@@ -335,6 +350,23 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		}
 		if (r.retryTimer) {
 			return;
+		}
+		// Count only genuine post-mint socket failures for a cloud pane that has
+		// never attached. A "worker still provisioning" wait (mint 409) reaches
+		// here with countAsCloudFailure=false and must not accrue, so a slow cold
+		// start never false-fires the breaker. After CLOUD_CONNECT_MAX_FAILURES
+		// real socket failures we know it is a proxy/firewall/CSP block, not a
+		// transient, so we stop the loop and surface a real error.
+		if (countAsCloudFailure && !r.hasAttachedOnce && sessionRef.current?.cloud) {
+			r.cloudConnectFailures += 1;
+			if (r.cloudConnectFailures >= CLOUD_CONNECT_MAX_FAILURES) {
+				setError(
+					"Terminal ticket issued but the WebSocket cannot connect. " +
+						"Check proxy, firewall, or CSP settings.",
+				);
+				transition("error");
+				return;
+			}
 		}
 		// First connect of a cloud pane = polling for sandbox readiness; keep it
 		// flat (see CLOUD_CONNECT_RETRY_MS). After a real attachment, drops back
@@ -366,16 +398,15 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 
 		const baseMux = (optionsRef.current.createMux ?? defaultCreateMux)();
 		// Cloud panes ride a real network round trip per keystroke, so wrap their
-		// mux with predictive local echo (see lib/terminal-local-echo.ts): typed
-		// characters render immediately and reconcile against the server echo.
+		// mux with line-buffered local input (see lib/terminal-local-echo.ts): typed
+		// characters render in xterm immediately, then the complete line is sent
+		// once on Enter and reconciled against the server echo.
 		// Local panes are loopback PTYs with ~0 latency and stay byte-exact
 		// untouched. Shell panes carry no session, so they are never wrapped —
 		// today the renderer only dials cloud sockets for agent panes anyway.
 		const mux =
 			LOCAL_ECHO_ENABLED && sessionRef.current?.cloud
-				? withPredictiveLocalEcho(baseMux, {
-						bufferType: () => terminal.bufferType?.() ?? "alternate",
-					})
+				? withLineBufferedLocalInput(baseMux, {})
 				: baseMux;
 		r.mux = mux;
 
@@ -388,6 +419,9 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		let replayBatchTimer: ReturnType<typeof setTimeout> | null = null;
 		let replayBatchDone: (() => void) | null = null;
 		let replayWritesPreserved = false;
+		// Only a newly created handle can have live initial output. Component
+		// mounts, including the first mount after app startup, can replay history.
+		const initialWriteSource: TerminalWriteSource = consumeFreshTerminalHandle(handle) ? "live" : "replay";
 
 		// Reveal only after xterm has parsed the coalesced replay and any late tail
 		// frames have gone quiet. The tail itself streams straight into xterm behind
@@ -427,6 +461,8 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				r.replayTailCapTimer = setTimeout(revealReplayTail, REPLAY_TAIL_CAP_MS);
 			}
 		};
+		// The mux does not distinguish historical bytes from fresh PTY output, so
+		// the handle's creation state classifies the entire covered burst.
 		const writeReplayBatches = (bytes: Uint8Array, done: () => void) => {
 			replayBatchBytes = bytes;
 			replayBatchOffset = 0;
@@ -452,7 +488,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 						return;
 					}
 					replayBatchTimer = setTimeout(writeNext, 0);
-				});
+				}, initialWriteSource);
 			};
 			writeNext();
 		};
@@ -466,12 +502,12 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			if (replayBatchBytes && replayBatchOffset < replayBatchBytes.length) {
 				// The current batch is already in xterm's queue. Queue the remainder in
 				// one call before dispose so it cannot be overtaken or discarded.
-				terminal.write(replayBatchBytes.subarray(replayBatchOffset));
+				terminal.write(replayBatchBytes.subarray(replayBatchOffset), undefined, initialWriteSource);
 			}
 			replayBatchBytes = null;
 			replayBatchOffset = 0;
 			replayBatchDone = null;
-			for (const bytes of postReplayWriteQueue) terminal.write(bytes);
+			for (const bytes of postReplayWriteQueue) terminal.write(bytes, undefined, initialWriteSource);
 			postReplayWriteQueue.length = 0;
 			postReplayWriteActive = false;
 			pendingReplayWrites = 0;
@@ -504,7 +540,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				postReplayWriteActive = false;
 				pendingReplayWrites = Math.max(0, pendingReplayWrites - 1);
 				drainPostReplayWrites();
-			});
+			}, initialWriteSource);
 		};
 
 		// End the buffered part of the initial replay: concatenate what arrived so
@@ -550,7 +586,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				offset += chunk.length;
 			}
 			if (preserveBeforeTeardown) {
-				terminal.write(replay);
+				terminal.write(replay, undefined, initialWriteSource);
 				preservePendingReplayWrites();
 				return;
 			}
@@ -601,6 +637,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				clearOpenTimer(generation);
 				r.inputReady = true;
 				r.attempts = 0;
+				r.cloudConnectFailures = 0;
 				r.hasAttachedOnce = true;
 				setError(undefined);
 				setHasAttached(true);
@@ -610,13 +647,15 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 				// Bound the gate from here: the daemon fires onOpen from setPTY and
 				// starts copyOut immediately after, so the replay is imminent and
 				// the cap now measures the burst rather than the connect handshake.
-				if (r.replayBuffering && !r.replayCapTimer) {
+				if (r.replayBuffering && !optionsRef.current.waitForInitialOutput && !r.replayCapTimer) {
 					r.replayCapTimer = setTimeout(() => flushReplay(true), REPLAY_CAP_MS);
 				}
-				// Same anchor, different job: uncover a pane that turns out to have
-				// nothing to replay (see REPLAY_FIRST_BYTE_MS). Deliberately not a
-				// flush — the gate stays armed so a late burst is still coalesced.
-				if (r.replayBuffering && !r.replayFirstByteTimer) {
+				// Same anchor, different job: local panes may uncover when there is
+				// nothing to replay (see REPLAY_FIRST_BYTE_MS). Cloud agent panes
+				// deliberately wait for their first real TUI bytes: showing xterm
+				// after the worker attaches but before Codex draws created a second
+				// blank screen between “Connecting…” and the agent UI.
+				if (r.replayBuffering && !optionsRef.current.waitForInitialOutput && !r.replayFirstByteTimer) {
 					r.replayFirstByteTimer = setTimeout(() => {
 						r.replayFirstByteTimer = null;
 						if (!isCurrentAttachment(generation, handle, mux)) return;
@@ -658,7 +697,11 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			}),
 			mux.onConnectionChange((connectionState) => {
 				if (!isCurrentAttachment(generation, handle, mux)) return;
-				if (connectionState === "closed") {
+				// "closed" = a genuine socket failure (ticket minted but the
+				// WebSocket dropped or never opened); "waiting" = the worker is
+				// still provisioning (mint 409), which reconnects the same way but
+				// must not count against the connect-failure breaker.
+				if (connectionState === "closed" || connectionState === "waiting") {
 					// End the gate: no replay is coming over a dead socket. This is
 					// the ONLY settle path when the socket dies before `opened` —
 					// clearOpenTimer below drops the open timeout, and
@@ -669,7 +712,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 					flushReplay(false, true);
 					clearOpenTimer(generation);
 					r.inputReady = false;
-					scheduleReattach();
+					scheduleReattach(connectionState === "closed");
 				}
 			}),
 		);
@@ -751,8 +794,10 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// would then land frame-by-frame with the bug fully intact, behind a
 		// pointless blank cover. `opened` fires from setPTY immediately before
 		// copyOut, so anchoring there means the cap only ever measures the burst.
-		// If `opened` never arrives, openTimer tears down and teardownMux lifts
-		// the cover.
+		// If `opened` never arrives, the cover is lifted by the recovery path for
+		// that transport: a LOCAL pane's openTimer tears down (teardownMux lifts
+		// it); a CLOUD pane's socket closing or mint-409 reaches
+		// onConnectionChange, whose flushReplay lifts it.
 
 		// A retained pane may reconnect while parked. It still needs the output
 		// stream, but its stale off-screen grid must not resize the shared PTY.
@@ -765,18 +810,30 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		mux.open(handle, openCols, openRows);
 		r.lastPublishedGrid =
 			openCols > 0 && openRows > 0 ? { cols: openCols, rows: openRows } : null;
-		r.openTimer = setTimeout(() => {
-			if (!isCurrentAttachment(generation, handle, mux)) return;
-			r.openTimer = null;
-			// Only the first timeout of a reattach sequence is reported; the
-			// backoff loop retrying against a restarting daemon is not news.
-			if (r.attempts === 0) {
-				void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
-			}
-			transition("reattaching");
-			teardownMux();
-			scheduleReattach();
-		}, OPEN_TIMEOUT_MS);
+		// Client open timeout for LOCAL panes only. It budgets the time between
+		// mux.open() and the pane opening — the daemon's liveness probe + runtime
+		// spawn — so a stalled spawn recovers. A CLOUD pane gets NO client open
+		// timeout: readiness is server-driven (the mux opens its socket directly,
+		// the CP holds it in "starting" until the terminal opens or its own ~20s
+		// deadline closes it, and a closed socket already reaches
+		// onConnectionChange("closed") -> scheduleReattach). A client timeout here
+		// only ever tore a healthy slow open down mid-attach and rebuilt the mux —
+		// the reconnect storm the 3s/30s band-aids chased. The mint-409 "waiting"
+		// poll and the CP-close bound already cover every cloud stall.
+		if (!sessionRef.current?.cloud) {
+			r.openTimer = setTimeout(() => {
+				if (!isCurrentAttachment(generation, handle, mux)) return;
+				r.openTimer = null;
+				// Only the first timeout of a reattach sequence is reported; the
+				// backoff loop retrying against a restarting daemon is not news.
+				if (r.attempts === 0) {
+					void captureRendererEvent("ao.renderer.terminal_attach_failed", { reason: "open_timeout" });
+				}
+				transition("reattaching");
+				teardownMux();
+				scheduleReattach();
+			}, OPEN_TIMEOUT_MS);
+		}
 	}, [
 		clearOpenTimer,
 		clearReplayTimers,
@@ -800,6 +857,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			r.handle = handle;
 			r.detached = false;
 			r.attempts = 0;
+			r.cloudConnectFailures = 0;
 			r.hasAttachedOnce = false;
 			setError(undefined);
 			setHasAttached(false);

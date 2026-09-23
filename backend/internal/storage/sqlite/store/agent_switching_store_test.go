@@ -81,6 +81,11 @@ func TestActivateChatAgentSwitchTargetMovesSourceGenerationToTarget(t *testing.T
 	rec.Metadata.RuntimeLaunchID = ""
 	rec.Metadata.ProviderConversationID = "source-chat-native"
 	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	rec.Metadata.LatestUserPrompt = "source Chat user checkpoint"
+	rec.Metadata.LatestUserPromptAt = now
+	rec.Metadata.LatestAssistantUpdate = "source Chat assistant checkpoint"
+	rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointLegacy
+	rec.Metadata.ConversationCheckpointUnsettled = true
 	session, err := s.CreateSession(ctx, rec)
 	if err != nil {
 		t.Fatalf("create Chat session: %v", err)
@@ -197,6 +202,16 @@ func TestActivateChatAgentSwitchTargetMovesSourceGenerationToTarget(t *testing.T
 		got.Metadata.ControllerGeneration != "target-chat-generation" ||
 		got.Metadata.BrowserCapabilityVerifier != "target-chat-verifier" {
 		t.Fatalf("activated Chat session = %+v", got)
+	}
+	if got.Metadata.LatestUserPrompt != "" || got.Metadata.LatestAssistantUpdate != "" ||
+		got.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty ||
+		got.Metadata.ConversationCheckpointGeneration != "" ||
+		got.Metadata.ConversationCheckpointNativeID != "" ||
+		got.Metadata.ConversationCheckpointUnsettled {
+		t.Fatalf("Chat target activation retained source replay checkpoint: %+v", got.Metadata)
+	}
+	if want := now.Add(600 * time.Millisecond); !got.Metadata.LatestUserPromptAt.Equal(want) {
+		t.Fatalf("Chat target activation last human message at = %s, want %s", got.Metadata.LatestUserPromptAt, want)
 	}
 	conversation, err = s.ConversationForSession(ctx, session.ID)
 	if err != nil {
@@ -357,6 +372,102 @@ func TestActivateChatAgentSwitchTargetMovesSourceGenerationToTarget(t *testing.T
 		returnBranch.ProviderConversationID != "source-chat-edited-native" ||
 		returnBranch.ParentBranchID != targetBranch.ID || returnBranch.ReplacedTurnID != "" {
 		t.Fatalf("return provider ownership boundary = %+v, prior target = %+v", returnBranch, targetBranch)
+	}
+}
+
+func TestActivateChatAgentSwitchTargetRejectsMismatchedSourceControllerGeneration(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "chat-switch-source-fence")
+	rec := sampleRecord("chat-switch-source-fence")
+	now := rec.CreatedAt
+	rec.Mode = domain.SessionModeChat
+	rec.Harness = domain.HarnessClaudeCode
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.ProviderConversationID = "source-chat-native"
+	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	session, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create Chat session: %v", err)
+	}
+	conversation, err := s.CreateConversation(ctx, "chat-switch-source-fence-conversation",
+		domain.ConversationScopeSession, "chat-switch-source-fence", session.ID, now)
+	if err != nil {
+		t.Fatalf("create Chat conversation: %v", err)
+	}
+	sw, created, err := s.CreateAgentSwitch(ctx, domain.AgentSwitch{
+		ID: "switch-chat-source-fence", SessionID: session.ID, IdempotencyKey: "switch-chat-source-fence",
+		RequestFingerprint: domain.ComputeAgentSwitchRequestFingerprint(session.ID, domain.HarnessCodex, ""),
+		FromHarness:        domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchPreparingHandoff, TargetStartMode: domain.AgentSwitchTargetStartPending,
+		AgentHandoffStatus: domain.AgentHandoffNotAttempted,
+		SourceGenerationID: "source-chat-generation", RequestedAt: now, UpdatedAt: now,
+	})
+	if err != nil || !created {
+		t.Fatalf("create Chat switch: created=%v err=%v", created, err)
+	}
+	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &sw, domain.AgentSwitchStoppingSource, now.Add(time.Second), func(next *domain.AgentSwitch) {
+		next.TargetStartMode = domain.AgentSwitchTargetStartFresh
+		next.TargetGenerationID = "target-chat-generation"
+	})
+	if ok, err := s.ConfirmAgentSwitchSourceStopped(ctx, domain.AgentSwitchSourceStopConfirmation{
+		SwitchID: sw.ID, SessionID: session.ID, SourceMode: domain.SessionModeChat,
+		SourceHarness: domain.HarnessClaudeCode, SourceGenerationID: "source-chat-generation",
+		ExpectedSourceControllerGeneration: "source-chat-generation",
+		TargetGenerationID:                 "target-chat-generation", StoppedAt: now.Add(2 * time.Second),
+	}); err != nil || !ok {
+		t.Fatalf("confirm Chat source stopped: ok=%v err=%v", ok, err)
+	}
+	target := domain.AgentNativeSession{
+		ID: "target-chat-source-fence-native-ref", AOSessionID: session.ID, Harness: domain.HarnessCodex,
+		NativeSessionID: "target-chat-native", LastGenerationID: "target-chat-generation",
+		CreatedAt: now.Add(3 * time.Second), LastUsedAt: now.Add(3 * time.Second),
+	}
+	if _, created, err := s.CreateAgentNativeSession(ctx, target); err != nil || !created {
+		t.Fatalf("create target Chat native session: created=%v err=%v", created, err)
+	}
+	sw, _, _ = s.GetAgentSwitch(ctx, sw.ID)
+	advanceAgentSwitchFixtureWithMutation(ctx, t, s, &sw, domain.AgentSwitchStartingTarget, now.Add(3*time.Second), func(next *domain.AgentSwitch) {
+		next.TargetNativeSessionRef = &target.ID
+	})
+	if err := s.ClaimChatControllerGeneration(ctx, session.ID, "unexpected-chat-generation"); err != nil {
+		t.Fatalf("replace source Chat generation: %v", err)
+	}
+
+	activated, err := s.ActivateChatAgentSwitchTarget(ctx, domain.AgentSwitchChatTargetActivation{
+		SwitchID: sw.ID, SessionID: session.ID,
+		SourceHarness: domain.HarnessClaudeCode, SourceGenerationID: "source-chat-generation",
+		ExpectedSourceControllerGeneration: "source-chat-generation",
+		TargetHarness:                      domain.HarnessCodex, TargetNativeSessionRef: target.ID,
+		TargetGenerationID:     "target-chat-generation",
+		ProviderConversationID: "target-chat-native", ControllerGeneration: "target-chat-generation",
+		ActivatedAt: now.Add(5 * time.Second),
+	})
+	if err != nil || activated {
+		t.Fatalf("activate Chat target with mismatched source generation: activated=%v err=%v", activated, err)
+	}
+	gotSession, ok, err := s.GetSession(ctx, session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get rejected Chat session: ok=%v err=%v", ok, err)
+	}
+	if gotSession.Harness != domain.HarnessClaudeCode || gotSession.Activity.State != domain.ActivityExited ||
+		gotSession.Metadata.ProviderConversationID != "source-chat-native" ||
+		gotSession.Metadata.ControllerGeneration != "unexpected-chat-generation" {
+		t.Fatalf("rejected activation changed source session: %+v", gotSession)
+	}
+	gotSwitch, ok, err := s.GetAgentSwitch(ctx, sw.ID)
+	if err != nil || !ok || gotSwitch.State != domain.AgentSwitchStartingTarget {
+		t.Fatalf("rejected activation changed switch: switch=%+v ok=%v err=%v", gotSwitch, ok, err)
+	}
+	gotConversation, err := s.ConversationForSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get rejected Chat conversation: %v", err)
+	}
+	if gotConversation.ActiveBranchID != conversation.ActiveBranchID {
+		t.Fatalf("rejected activation moved conversation branch from %q to %q",
+			conversation.ActiveBranchID, gotConversation.ActiveBranchID)
 	}
 }
 
@@ -1303,7 +1414,9 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	rec.Metadata.NativeTranscriptPath = "/claude/source.jsonl"
 	rec.Metadata.Prompt = "original task"
 	rec.Metadata.LatestUserPrompt = "latest user direction"
+	rec.Metadata.LatestUserPromptAt = now
 	rec.Metadata.LatestAssistantUpdate = "latest assistant update"
+	rec.Metadata.ConversationCheckpointUnsettled = true
 	rec.Metadata.PreviewURL = "http://localhost:3000"
 	session, err := s.CreateSession(ctx, rec)
 	if err != nil {
@@ -1379,7 +1492,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	lateSource.Metadata.AgentSessionID = "late-source-native"
 	lateSource.Metadata.LatestAssistantUpdate = "late source callback"
 	lateSource.UpdatedAt = now.Add(2500 * time.Millisecond)
-	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource); err != nil || applied {
+	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource, exited.Revision); err != nil || applied {
 		t.Fatalf("late source activity after stop confirmation: applied=%v err=%v", applied, err)
 	}
 	stillExited, ok, err := s.GetSession(ctx, session.ID)
@@ -1464,6 +1577,20 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	if !activated.FirstSignalAt.IsZero() {
 		t.Fatalf("target activation retained old hook receipt: %v", activated.FirstSignalAt)
 	}
+	// The checkpoint belongs to the source provider. If Claude's text survives
+	// the ownership transfer, an immediate Codex TUI -> Chat transition compares
+	// that text against Codex history and fails as an untrusted mismatch before
+	// the target has emitted a new main-turn hook.
+	if activated.Metadata.LatestUserPrompt != "" || activated.Metadata.LatestAssistantUpdate != "" ||
+		activated.Metadata.ConversationCheckpointState != domain.ConversationCheckpointEmpty ||
+		activated.Metadata.ConversationCheckpointGeneration != "" ||
+		activated.Metadata.ConversationCheckpointNativeID != "" ||
+		activated.Metadata.ConversationCheckpointUnsettled {
+		t.Fatalf("target activation retained source replay checkpoint: %+v", activated.Metadata)
+	}
+	if !activated.Metadata.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) {
+		t.Fatalf("target activation last human message at = %s, want %s", activated.Metadata.LatestUserPromptAt, rec.Metadata.LatestUserPromptAt)
+	}
 	activatedConversation, err := s.ConversationForSession(ctx, session.ID)
 	if err != nil {
 		t.Fatalf("get activated conversation: %v", err)
@@ -1474,13 +1601,12 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	if activated.IsTerminated || activated.DisplayName != rec.DisplayName ||
 		activated.TerminateOnPRMerge != rec.TerminateOnPRMerge || activated.CleanupGeneration != rec.CleanupGeneration ||
 		activated.Metadata.Branch != rec.Metadata.Branch || activated.Metadata.WorkspacePath != rec.Metadata.WorkspacePath ||
-		activated.Metadata.Prompt != rec.Metadata.Prompt || activated.Metadata.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
-		activated.Metadata.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate || activated.Metadata.PreviewURL != rec.Metadata.PreviewURL {
+		activated.Metadata.Prompt != rec.Metadata.Prompt || activated.Metadata.PreviewURL != rec.Metadata.PreviewURL {
 		t.Fatalf("target activation changed unrelated session facts: %+v", activated)
 	}
 	lateSource.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(5 * time.Second)}
 	lateSource.UpdatedAt = now.Add(5 * time.Second)
-	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource); err != nil || applied {
+	if applied, err := s.UpdateSessionFromActivitySignal(ctx, lateSource, exited.Revision); err != nil || applied {
 		t.Fatalf("late source activity after target activation: applied=%v err=%v", applied, err)
 	}
 	stillActivated, ok, err := s.GetSession(ctx, session.ID)
@@ -1503,7 +1629,7 @@ func TestAgentSwitchSourceStopAndTargetActivationAreAtomicAndNarrow(t *testing.T
 	targetSignal.Activity = domain.Activity{State: domain.ActivityActive, LastActivityAt: now.Add(7 * time.Second)}
 	targetSignal.FirstSignalAt = now.Add(7 * time.Second)
 	targetSignal.UpdatedAt = now.Add(7 * time.Second)
-	if applied, err := s.UpdateSessionFromActivitySignal(ctx, targetSignal); err != nil || !applied {
+	if applied, err := s.UpdateSessionFromActivitySignal(ctx, targetSignal, activated.Revision); err != nil || !applied {
 		t.Fatalf("target activity during delivery: applied=%v err=%v", applied, err)
 	}
 	acknowledgedAt := now.Add(8 * time.Second)

@@ -1,4 +1,4 @@
-import Image from "next/image";
+import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
 import {
 	type ChangelogEntry,
@@ -13,34 +13,30 @@ export function ChangelogCard({ entry }: ChangelogCardProps) {
 	const formattedDate = formatChangelogDate(entry.date);
 
 	return (
-		<Link href={entry.url} className="block group">
-			<article className="border border-border bg-background transition-all hover:bg-muted/50 hover:border-foreground/20">
-				{entry.image && (
-					<div className="relative aspect-video border-b border-border overflow-hidden">
-						<Image
-							src={entry.image}
-							alt={entry.title}
-							fill
-							className="object-cover transition-transform group-hover:scale-[1.02]"
-						/>
-					</div>
-				)}
-				<div className="p-6">
+		<Link
+			href={entry.url}
+			className="group block border-b border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-500/70"
+		>
+			<article className="grid gap-4 py-7 transition-colors duration-200 group-hover:bg-muted/20 sm:grid-cols-[8rem_1fr_auto] sm:gap-8 sm:px-3">
+				<div>
 					<time
 						dateTime={entry.date}
-						className="text-sm font-mono text-muted-foreground"
+						className="text-sm font-mono text-muted-foreground tabular-nums"
 					>
 						{formattedDate}
 					</time>
-					<h2 className="text-xl font-medium text-foreground mt-2 mb-2 group-hover:text-foreground/90">
+				</div>
+				<div className="min-w-0">
+					<h3 className="text-xl md:text-2xl font-medium tracking-[-0.02em] text-foreground group-hover:text-orange-300 transition-colors duration-200 text-balance">
 						{entry.title}
-					</h2>
+					</h3>
 					{entry.description && (
-						<p className="text-muted-foreground text-sm leading-relaxed">
+						<p className="mt-2 max-w-2xl text-sm md:text-base text-muted-foreground leading-relaxed text-pretty">
 							{entry.description}
 						</p>
 					)}
 				</div>
+				<ArrowUpRight className="hidden size-5 text-muted-foreground transition-[color,transform] duration-200 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-foreground sm:block" />
 			</article>
 		</Link>
 	);

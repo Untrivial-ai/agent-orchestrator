@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,12 +37,27 @@ type client struct {
 }
 
 type session struct {
-	ID               string `json:"id"`
-	Kind             string `json:"kind"`
-	Harness          string `json:"harness"`
-	DisplayName      string `json:"displayName"`
-	Status           string `json:"status"`
-	RuntimeConnected bool   `json:"runtimeConnected"`
+	ID               string        `json:"id"`
+	Kind             string        `json:"kind"`
+	Harness          string        `json:"harness"`
+	DisplayName      string        `json:"displayName"`
+	Branch           string        `json:"branch"`
+	Status           string        `json:"status"`
+	ActivityState    string        `json:"activityState"`
+	RuntimeConnected bool          `json:"runtimeConnected"`
+	IsTerminated     bool          `json:"isTerminated"`
+	PRs              []pullRequest `json:"prs"`
+}
+
+type pullRequest struct {
+	URL          string `json:"url"`
+	Number       int    `json:"number"`
+	State        string `json:"state"`
+	CI           string `json:"ci"`
+	Review       string `json:"review"`
+	Mergeability string `json:"mergeability"`
+	SourceBranch string `json:"sourceBranch,omitempty"`
+	TargetBranch string `json:"targetBranch,omitempty"`
 }
 
 func main() {
@@ -93,6 +109,8 @@ func run(args []string) error {
 		return runList(ctx, c, args[1:])
 	case "send":
 		return runSend(ctx, c, args[1:])
+	case "report":
+		return runReport(ctx, c, args[1:])
 	case "kill", "delete", "rm":
 		return runDelete(ctx, c, args[1:])
 	case "claim-pr":
@@ -105,6 +123,13 @@ func run(args []string) error {
 func runHook(ctx context.Context, c *client, args []string, input io.Reader) error {
 	if len(args) != 2 {
 		return nil
+	}
+	// A completed turn (Stop) is the event that drives durable-restore
+	// checkpointing: poke the worker's checkpoint bridge so it captures the
+	// transcript and any uncommitted work. Event-driven, best-effort, and
+	// fire-and-forget so a completed turn never waits on git or the network.
+	if args[1] == "stop" {
+		pokeCheckpoint(ctx)
 	}
 	payload, err := io.ReadAll(io.LimitReader(input, maxHookPayload+1))
 	if err != nil || len(payload) > maxHookPayload {
@@ -131,12 +156,42 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 	return nil
 }
 
+// pokeCheckpoint signals the worker's checkpoint bridge (a unix socket at
+// AO_CHECKPOINT_SOCKET) that a turn completed, so it captures a durable-restore
+// checkpoint. It is fire-and-forget: any failure (no socket, worker down) is
+// ignored so a completed turn is never delayed or broken by capture.
+func pokeCheckpoint(ctx context.Context) {
+	socket := os.Getenv("AO_CHECKPOINT_SOCKET")
+	if socket == "" {
+		return
+	}
+	httpClient := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(dialCtx, "unix", socket)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/checkpoint", nil)
+	if err != nil {
+		return
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
+}
+
 func runSpawn(ctx context.Context, c *client, args []string) error {
 	flags := flag.NewFlagSet("spawn", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	var harness, name, prompt, mode, providerConnection string
-	flags.StringVar(&harness, "harness", "claude-code", "agent harness")
-	flags.StringVar(&harness, "agent", "claude-code", "alias for --harness")
+	// Empty by default so the control plane can fill in the project's configured
+	// worker agent (config.worker.agent); an explicit value here still wins.
+	flags.StringVar(&harness, "harness", "", "agent harness (default: the project's configured worker agent)")
+	flags.StringVar(&harness, "agent", "", "alias for --harness")
 	flags.StringVar(&name, "name", "", "child display name")
 	flags.StringVar(&prompt, "prompt", "", "initial child prompt")
 	flags.StringVar(&mode, "mode", "trusted", "standard or trusted")
@@ -178,17 +233,20 @@ func runList(ctx context.Context, c *client, args []string) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	asJSON := flags.Bool("json", false, "print JSON")
+	all := flags.Bool("all", false, "include terminated workers")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	var response struct {
-		Items []session `json:"items"`
-	}
-	if err := c.request(ctx, http.MethodGet, "/worker/children?limit=100", nil, false, &response); err != nil {
+	items, err := listChildren(ctx, c, *all)
+	if err != nil {
 		return err
 	}
+	if items == nil {
+		// A childless listing must print [], not null: agents parse this.
+		items = []session{}
+	}
 	if *asJSON {
-		encoded, err := json.MarshalIndent(response.Items, "", "  ")
+		encoded, err := json.MarshalIndent(items, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -196,15 +254,66 @@ func runList(ctx context.Context, c *client, args []string) error {
 		return nil
 	}
 	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(out, "ID\tNAME\tHARNESS\tSTATUS\tCONNECTED")
-	for _, child := range response.Items {
+	fmt.Fprintln(out, "ID\tNAME\tHARNESS\tBRANCH\tSTATUS\tCONNECTED\tPR")
+	for _, child := range items {
 		fmt.Fprintf(
-			out, "%s\t%s\t%s\t%s\t%t\n",
-			child.ID, child.DisplayName, child.Harness, child.Status,
-			child.RuntimeConnected,
+			out, "%s\t%s\t%s\t%s\t%s\t%t\t%s\n",
+			child.ID, child.DisplayName, child.Harness, child.Branch, child.Status,
+			child.RuntimeConnected, pullRequestSummary(child.PRs),
 		)
 	}
 	return out.Flush()
+}
+
+// listChildren follows the listing's cursor so an orchestrator with more than
+// one page of workers still sees all of them; the page bound is a runaway
+// backstop, not an expected limit.
+func listChildren(ctx context.Context, c *client, includeTerminated bool) ([]session, error) {
+	const maxPages = 5
+	var items []session
+	cursor := ""
+	for page := 0; page < maxPages; page++ {
+		path := "/worker/children?limit=100"
+		if includeTerminated {
+			path += "&includeTerminated=true"
+		}
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var response struct {
+			Items []session `json:"items"`
+			Page  struct {
+				HasMore    bool   `json:"hasMore"`
+				NextCursor string `json:"nextCursor"`
+			} `json:"page"`
+		}
+		if err := c.request(ctx, http.MethodGet, path, nil, false, &response); err != nil {
+			return nil, err
+		}
+		items = append(items, response.Items...)
+		if !response.Page.HasMore || response.Page.NextCursor == "" {
+			return items, nil
+		}
+		cursor = response.Page.NextCursor
+	}
+	fmt.Fprintln(os.Stderr, "ao: worker list truncated after 500 entries")
+	return items, nil
+}
+
+// pullRequestSummary renders the row's PR column, e.g. "#12 ci:failing".
+func pullRequestSummary(prs []pullRequest) string {
+	if len(prs) == 0 {
+		return "-"
+	}
+	pr := prs[0]
+	summary := fmt.Sprintf("#%d %s", pr.Number, pr.State)
+	if pr.CI != "" && pr.CI != "unknown" {
+		summary += " ci:" + pr.CI
+	}
+	if len(prs) > 1 {
+		summary += fmt.Sprintf(" (+%d)", len(prs)-1)
+	}
+	return summary
 }
 
 func runSend(ctx context.Context, c *client, args []string) error {
@@ -231,7 +340,22 @@ func runSend(ctx context.Context, c *client, args []string) error {
 	); err != nil {
 		return err
 	}
-	fmt.Println("message queued")
+	fmt.Println("message queued (delivered when the child agent is ready)")
+	return nil
+}
+
+func runReport(ctx context.Context, c *client, args []string) error {
+	message := strings.TrimSpace(strings.Join(args, " "))
+	if message == "" {
+		return errors.New("report requires a message")
+	}
+	if err := c.request(
+		ctx, http.MethodPost, "/worker/parent/messages",
+		map[string]string{"text": message}, true, nil,
+	); err != nil {
+		return err
+	}
+	fmt.Println("reported to orchestrator")
 	return nil
 }
 
@@ -346,12 +470,15 @@ func newIdempotencyKey() string {
 
 func printUsage(out io.Writer) {
 	fmt.Fprintln(out, `AO Cloud orchestration commands:
-  ao spawn --name NAME [--agent claude-code] [--prompt TEXT] [--mode standard|trusted]
-  ao list [--json]
+  ao spawn --name NAME --prompt TEXT [--agent AGENT] [--mode standard|trusted]
+    (--agent defaults to the project's configured worker agent)
+  ao list [--json] [--all]
   ao send SESSION_ID MESSAGE
+  ao report MESSAGE
   ao kill SESSION_ID
-	  ao claim-pr NUMBER_OR_URL
+  ao claim-pr NUMBER_OR_URL
 
-All commands are authenticated through the control plane. Child workers never
-connect directly to one another.`)
+All commands are authenticated through the control plane. spawn/list/send/kill
+require an orchestrator session; report requires an orchestrator parent. Child
+workers never connect directly to one another.`)
 }

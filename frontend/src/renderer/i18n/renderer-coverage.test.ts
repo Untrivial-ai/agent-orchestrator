@@ -20,7 +20,10 @@ const approvedLiterals: Record<string, readonly string[]> = {
 		"Local: http://localhost:5173/",
 	],
 	"components/CenterPane.tsx": ["px"],
-	"components/CreateProjectFlow.tsx": ["my-workspace/", "web-app", "main"],
+	"components/CreateProjectFlow.tsx": [
+		"my-workspace/", "my-project", "web-app", "main", "github_pat_…", "ghp_...",
+		"https://github.com/owner/repo", "GitHub PAT",
+	],
 	"components/DaemonStartupLoader.tsx": ["Agent Orchestrator"],
 	"components/ProjectSettingsForm.tsx": [
 		"main", "ao",
@@ -41,6 +44,7 @@ const approvedLiterals: Record<string, readonly string[]> = {
 		"Ctrl+Shift+I",
 		"Ctrl+/",
 	],
+	"components/settings/CloudCredentialsSection.tsx": ["github_pat_…"],
 	"components/settings/ConnectMobileSetup.tsx": ["tailscale ip -4"],
 	"components/settings/UpdatesSection.tsx": ["PR #"],
 };
@@ -59,7 +63,7 @@ const deferredLocalizationFiles = new Set([
 	"components/chat/ComposerSuggestMenu.tsx",
 	"components/chat/ContextMeter.tsx",
 	"components/chat/CopyButton.tsx",
-	"components/chat/ElicitationCard.tsx",
+	"components/chat/ElicitationDock.tsx",
 	"components/chat/MermaidBlock.tsx",
 	"components/chat/SessionChatSurface.tsx",
 	"components/chat/TurnPlan.tsx",

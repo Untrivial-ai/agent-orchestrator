@@ -70,22 +70,37 @@ func TestPushInputFailsAfterStreamRetired(t *testing.T) {
 	}
 }
 
-func TestTerminalRoutingKeyStableAndBounded(t *testing.T) {
-	a := terminalRoutingKey("session-abc")
-	b := terminalRoutingKey("session-abc")
-	if a != b {
-		t.Fatalf("routing key not stable: %d vs %d", a, b)
+func TestRelayOutputDeliversLiveFrame(t *testing.T) {
+	registry := newTerminalStreams()
+	output, unsubscribe := registry.subscribeRelayOutput("term")
+	defer unsubscribe()
+
+	if dropped := registry.relayOutput("term", terminalRelayOutput{
+		sequence: 7,
+		data:     []byte("hello"),
+	}); dropped != 0 {
+		t.Fatalf("dropped=%d, want 0", dropped)
 	}
-	if a < 0 || a >= replicaShardSpace {
-		t.Fatalf("routing key %d out of range [0,%d)", a, replicaShardSpace)
+	select {
+	case got := <-output:
+		if got.sequence != 7 || string(got.data) != "hello" {
+			t.Fatalf("got sequence=%d data=%q", got.sequence, got.data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay output was not delivered")
 	}
-	// The client socket and worker stream both hash the same session id, so
-	// they must land on the same shard — that co-location is the whole point.
-	if terminalRoutingKey("session-abc") != terminalRoutingKey("session-abc") {
-		t.Fatal("same session must map to the same shard")
+}
+
+func TestRelayOutputReportsSaturatedClient(t *testing.T) {
+	registry := newTerminalStreams()
+	output, unsubscribe := registry.subscribeRelayOutput("term")
+	defer unsubscribe()
+	for range cap(output) {
+		if dropped := registry.relayOutput("term", terminalRelayOutput{sequence: 1, data: []byte("x")}); dropped != 0 {
+			t.Fatalf("unexpected drop while filling buffer: %d", dropped)
+		}
 	}
-	if terminalRoutingKey("session-1") == terminalRoutingKey("session-1-extra") &&
-		terminalRoutingKey("session-2") == terminalRoutingKey("session-2-extra") {
-		t.Fatal("routing key appears to ignore its input")
+	if dropped := registry.relayOutput("term", terminalRelayOutput{sequence: 2, data: []byte("x")}); dropped != 1 {
+		t.Fatalf("dropped=%d, want 1", dropped)
 	}
 }

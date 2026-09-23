@@ -9,19 +9,18 @@ import (
 	"time"
 )
 
-// shrinkRemoveAllRetry makes the retry budget test-fast and forces the retry on
-// regardless of platform, restoring the production values afterwards. Without
-// the enable override every assertion below would silently pass by falling
-// through to a single os.RemoveAll on the non-Windows machines CI runs.
+// shrinkRemoveAllRetry makes the retry budget test-fast and treats every stubbed
+// error as retryable, restoring the production values afterwards. Without the
+// predicate override the retry assertions would not run on non-Windows CI.
 func shrinkRemoveAllRetry(t *testing.T, attempts int) {
 	t.Helper()
 	origAttempts, origBackoff, origCap := removeAllAttempts, removeAllBackoff, removeAllBackoffCap
-	origEnabled := removeAllRetryEnabled
+	origRetryable := removeAllRetryable
 	removeAllAttempts, removeAllBackoff, removeAllBackoffCap = attempts, time.Millisecond, time.Millisecond
-	removeAllRetryEnabled = true
+	removeAllRetryable = func(error) bool { return true }
 	t.Cleanup(func() {
 		removeAllAttempts, removeAllBackoff, removeAllBackoffCap = origAttempts, origBackoff, origCap
-		removeAllRetryEnabled = origEnabled
+		removeAllRetryable = origRetryable
 	})
 }
 
@@ -101,6 +100,9 @@ func TestRemoveAllWithRetryGivesUpAndReturnsError(t *testing.T) {
 	if !errors.Is(err, wedged) {
 		t.Fatalf("error = %v, want the underlying removal error", err)
 	}
+	if !errors.Is(err, errRemoveRetryExhausted) {
+		t.Fatalf("error = %v, want errRemoveRetryExhausted", err)
+	}
 	if calls != 4 {
 		t.Errorf("removeAll calls = %d, want the full budget of 4", calls)
 	}
@@ -124,26 +126,54 @@ func TestRemoveAllWithRetryDoesNotRetryMissingPath(t *testing.T) {
 	}
 }
 
-// TestRemoveAllWithRetrySkipsRetryOffWindows: the sharing violation is a
-// Windows handle-release artifact, so elsewhere a removal failure is real and
-// immediate. Sleeping out the budget there would only make every genuine
-// failure ~7s slower before returning the identical error.
-func TestRemoveAllWithRetrySkipsRetryOffWindows(t *testing.T) {
+// A non-retryable failure is permanent as far as the remover is concerned. It
+// must surface immediately instead of being mislabeled as a deferred handle
+// release after sleeping through the full retry budget.
+func TestRemoveAllWithRetryReturnsPermanentFailureImmediately(t *testing.T) {
 	shrinkRemoveAllRetry(t, 5)
-	removeAllRetryEnabled = false // stand in for a non-Windows GOOS
-	wedged := errors.New("EACCES")
+	removeAllRetryable = func(error) bool { return false }
+	permanent := errors.New("permission denied")
 	var calls int
 	stubRemoveAll(t, func(string) error {
 		calls++
-		return wedged
+		return permanent
 	})
 
 	err := removeAllWithRetry(context.Background(), "/managed/worktrees/demo/demo-1")
-	if !errors.Is(err, wedged) {
+	if !errors.Is(err, permanent) {
 		t.Fatalf("error = %v, want the underlying removal error", err)
 	}
+	if errors.Is(err, errRemoveRetryExhausted) {
+		t.Fatalf("error = %v, must not be marked retry-exhausted", err)
+	}
 	if calls != 1 {
-		t.Errorf("removeAll calls = %d, want 1 — no retry off Windows", calls)
+		t.Errorf("removeAll calls = %d, want 1", calls)
+	}
+}
+
+func TestRemoveAllWithRetryStopsWhenFailureBecomesPermanent(t *testing.T) {
+	shrinkRemoveAllRetry(t, 5)
+	transient := errors.New("sharing violation")
+	permanent := errors.New("permission denied")
+	removeAllRetryable = func(err error) bool { return errors.Is(err, transient) }
+	var calls int
+	stubRemoveAll(t, func(string) error {
+		calls++
+		if calls == 1 {
+			return transient
+		}
+		return permanent
+	})
+
+	err := removeAllWithRetry(context.Background(), "/managed/worktrees/demo/demo-1")
+	if !errors.Is(err, permanent) {
+		t.Fatalf("error = %v, want permanent failure", err)
+	}
+	if errors.Is(err, errRemoveRetryExhausted) {
+		t.Fatalf("error = %v, must not be marked retry-exhausted", err)
+	}
+	if calls != 2 {
+		t.Errorf("removeAll calls = %d, want 2", calls)
 	}
 }
 
@@ -169,6 +199,9 @@ func TestRemoveAllWithRetryStopsOnContextCancellation(t *testing.T) {
 	err := removeAllWithRetry(ctx, "/managed/worktrees/demo/demo-1")
 	if !errors.Is(err, wedged) {
 		t.Fatalf("error = %v, want the underlying removal error, not the ctx error", err)
+	}
+	if errors.Is(err, errRemoveRetryExhausted) {
+		t.Fatalf("error = %v, cancellation must not be marked retry-exhausted", err)
 	}
 	if calls > 3 {
 		t.Errorf("removeAll calls = %d, want the loop to stop right after cancellation, not run all 50", calls)

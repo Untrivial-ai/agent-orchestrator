@@ -58,3 +58,53 @@ it("still seeds from the snapshot when no push has arrived", async () => {
 	render(<Probe />);
 	expect(await screen.findByText("downloaded:42")).toBeVisible();
 });
+
+it("reconciles missed progress without checking a remote feed and ignores late poll results", async () => {
+	vi.useFakeTimers();
+	let emit!: (s: UpdateStatus) => void;
+	onStatus.mockImplementation((cb) => { emit = cb; return vi.fn(); });
+	getStatus.mockResolvedValue({ state: "downloading", percent: 10 });
+	const view = render(<Probe />);
+	try {
+		await act(async () => {});
+		getStatus.mockResolvedValue({ state: "preparing", checkedAt: 100 });
+		await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+		expect(screen.getByTestId("state")).toHaveTextContent("preparing:100");
+		let resolve!: (s: UpdateStatus) => void;
+		getStatus.mockReturnValue(new Promise<UpdateStatus>((done) => { resolve = done; }));
+		await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+		act(() => emit({ state: "downloaded", checkedAt: 200 }));
+		await act(async () => { resolve({ state: "downloading", checkedAt: 100 }); });
+		expect(screen.getByTestId("state")).toHaveTextContent("downloaded:200");
+		view.unmount();
+		const calls = getStatus.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(3_000);
+		expect(getStatus).toHaveBeenCalledTimes(calls);
+	} finally {
+		view.unmount();
+		vi.useRealTimers();
+	}
+});
+
+it("uses one status subscription and reconciles every mounted surface", async () => {
+	vi.useFakeTimers();
+	onStatus.mockReturnValue(vi.fn());
+	getStatus.mockResolvedValue({ state: "idle" });
+	function SettingsProbe() {
+		const status = useUpdateStatus(undefined, true);
+		return <span data-testid="settings-state">{status.state}</span>;
+	}
+	const view = render(<><Probe /><SettingsProbe /></>);
+	try {
+		await act(async () => {});
+		expect(onStatus).toHaveBeenCalledTimes(1);
+		expect(getStatus).toHaveBeenCalledTimes(1);
+		getStatus.mockResolvedValue({ state: "preparing" });
+		await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+		expect(screen.getByTestId("settings-state")).toHaveTextContent("preparing");
+		expect(screen.getByTestId("state")).toHaveTextContent("preparing");
+	} finally {
+		view.unmount();
+		vi.useRealTimers();
+	}
+});

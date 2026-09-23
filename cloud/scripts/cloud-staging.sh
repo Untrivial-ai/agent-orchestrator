@@ -56,6 +56,10 @@ fi
 export AO_CLOUD_API_BASE_URL="$staging_url"
 export VITE_AO_CLOUD_API_BASE_URL="$staging_url"
 export AO_DATA_DIR="${AO_CLOUD_STAGING_DATA_DIR:-$HOME/.ao/staging-desktop}"
+export AO_RUN_FILE="${AO_RUN_FILE:-$AO_DATA_DIR/dev/running.json}"
+export AO_CLIENT="eleven_x"
+export AO_CLOUD_OFFERING="true"
+export AO_CLOUD_CONTROL_PLANE_URL="$staging_url"
 
 printf 'Launching AO desktop against staging API %s\n' "$staging_url"
 printf 'Isolated desktop state: %s\n' "$AO_DATA_DIR"
