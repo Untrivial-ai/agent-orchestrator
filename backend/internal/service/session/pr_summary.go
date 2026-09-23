@@ -59,6 +59,7 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 		var threads []domain.PullRequestReviewThread
 		var reviews []domain.PullRequestReview
 		var comments []domain.PullRequestComment
+		threadsExact := true
 		for _, pr := range group.aliases {
 			prChecks, err := s.store.ListChecks(ctx, pr.URL)
 			if err != nil {
@@ -80,14 +81,21 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 				return nil, err
 			}
 			comments = append(comments, prComments...)
+			// The thread count is only exact when the stored rows are a complete
+			// observation: never-fetched reviews leave no rows at all, and a
+			// partial fetch (provider thread-window cap) both misses rows outside
+			// the window and preserves stale unresolved rows via the merge write.
+			if pr.ReviewPartial || pr.ReviewObservedAt.IsZero() {
+				threadsExact = false
+			}
 		}
-		out = append(out, summarizePR(group.primary, checks, reviews, threads, comments))
+		out = append(out, summarizePR(group.primary, checks, reviews, threads, comments, threadsExact))
 	}
 	sortPRSummaries(out)
 	return out, nil
 }
 
-func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment) PRSummary {
+func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, threadsExact bool) PRSummary {
 	return PRSummary{
 		URL:              pr.URL,
 		HTMLURL:          firstNonEmpty(pr.HTMLURL, pr.URL),
@@ -105,7 +113,7 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		Deletions:        pr.Deletions,
 		ChangedFiles:     pr.ChangedFiles,
 		CI:               summarizeCI(pr, checks),
-		Review:           summarizeReview(pr, comments, reviews),
+		Review:           summarizeReview(pr, comments, reviews, threads, threadsExact),
 		Mergeability:     summarizeMergeability(pr, threads),
 		StateChangedAt:   summarizePRStateChangedAt(pr),
 		CreatedAt:        pr.CreatedAtProvider,
@@ -155,8 +163,16 @@ func summarizeCI(pr domain.PullRequest, checks []domain.PullRequestCheck) PRCISu
 	return out
 }
 
-func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment, reviews []domain.PullRequestReview) PRReviewSummary {
-	out := PRReviewSummary{Decision: reviewOrNone(pr.Review)}
+func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, threadsExact bool) PRReviewSummary {
+	// A nil count means "unknown", not zero: it must stay absent on the wire
+	// rather than present-as-zero. It is only published when the stored thread
+	// rows are a complete observation.
+	var unresolvedThreadCount *int
+	if threadsExact {
+		count := unresolvedHumanThreadCount(dedupeReviewThreads(threads))
+		unresolvedThreadCount = &count
+	}
+	out := PRReviewSummary{Decision: reviewOrNone(pr.Review), UnresolvedThreadCount: unresolvedThreadCount}
 	if pr.Merged || pr.Closed {
 		return out
 	}
@@ -272,6 +288,62 @@ func latestReviewSummaries(reviews []domain.PullRequestReview) map[string]domain
 		}
 	}
 	return latestByReviewer
+}
+
+func unresolvedHumanThreadCount(threads []domain.PullRequestReviewThread) int {
+	count := 0
+	for _, thread := range threads {
+		if !thread.Resolved && !thread.IsBot {
+			count++
+		}
+	}
+	return count
+}
+
+// dedupeReviewThreads collapses provider thread rows that describe the same
+// thread under different PR URL aliases of one canonical PR. Thread identity is
+// the provider thread id; a row without one keeps its own identity. When alias
+// records disagree, the most recently updated row wins, and an unresolved row
+// wins a tie so a stale alias cannot silently hide active feedback.
+func dedupeReviewThreads(threads []domain.PullRequestReviewThread) []domain.PullRequestReviewThread {
+	type identity struct {
+		threadID string
+		fallback int
+	}
+	winner := map[identity]domain.PullRequestReviewThread{}
+	order := []identity{}
+	for i, thread := range threads {
+		var id identity
+		if thread.ThreadID == "" {
+			// No provider identity: count the row as its own thread.
+			id = identity{fallback: i}
+			winner[id] = thread
+			order = append(order, id)
+			continue
+		}
+		id = identity{threadID: thread.ThreadID}
+		current, ok := winner[id]
+		if !ok {
+			order = append(order, id)
+		}
+		if !ok || threadAfter(thread, current) {
+			winner[id] = thread
+		}
+	}
+	out := make([]domain.PullRequestReviewThread, 0, len(order))
+	for _, id := range order {
+		out = append(out, winner[id])
+	}
+	return out
+}
+
+// threadAfter reports whether a is the fresher of two records of the same
+// provider thread; an unresolved record wins an exact tie.
+func threadAfter(a, b domain.PullRequestReviewThread) bool {
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	return !a.Resolved && b.Resolved
 }
 
 // latestDecisiveReviews returns each reviewer's most recent decisive review —

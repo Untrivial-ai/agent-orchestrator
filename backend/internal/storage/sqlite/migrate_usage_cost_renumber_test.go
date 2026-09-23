@@ -3,7 +3,6 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -23,13 +22,7 @@ func TestMigrateRepairsRenumberedUsageCostHistory(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-			if err != nil {
-				t.Fatalf("open sqlite: %v", err)
-			}
-			db.SetMaxOpenConns(1)
-			t.Cleanup(func() { _ = db.Close() })
-			upTo(t, db, tt.firstVersion-1)
+			db := openMigratedDatabaseCopy(t, tt.firstVersion-1)
 			applyLegacyUsageCostMigrations(t, db, tt.firstVersion, tt.legacyApplied)
 
 			if err := migrate(db); err != nil {

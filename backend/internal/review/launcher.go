@@ -34,6 +34,8 @@ const EnvAOCommandWarning = "AO_REVIEW_AO_COMMAND_WARNING"
 // It is the side of the engine that talks to the reviewer registry and runtime;
 // the engine owns the orchestration and persistence.
 type Launcher interface {
+	// InterfaceMode reports the durable surface Spawn and RestoreTerminal will use.
+	InterfaceMode(harness domain.ReviewerHarness) domain.ReviewerInterfaceMode
 	// Preflight checks whether the reviewer for the given harness is available
 	// to run (binary on PATH, etc.) without starting a runtime pane. It runs
 	// only when a reviewer launch is actually required, after ReviewRun rows
@@ -62,28 +64,65 @@ type Launcher interface {
 
 // LaunchSpec is the engine's request to (re)launch a reviewer for one pass.
 type LaunchSpec struct {
-	RunID                string
-	BatchID              string
-	ReviewSessionID      string
-	WorkerID             domain.SessionID
-	ProjectID            domain.ProjectID
-	Harness              domain.ReviewerHarness
-	AgentConfig          domain.AgentConfig
-	WorkspacePath        string
-	AgentSessionID       string
-	RequireNativeHistory bool
-	PreviousRuns         []domain.ReviewRun
-	PRURL                string
-	TargetSHA            string
-	ReviewQueue          []ports.ReviewTask
-	ReviewIndex          int
+	RunID           string
+	BatchID         string
+	ReviewSessionID string
+	LaunchID        string
+	WorkerID        domain.SessionID
+	ProjectID       domain.ProjectID
+	Harness         domain.ReviewerHarness
+	AgentConfig     domain.AgentConfig
+	WorkspacePath   string
+	AgentSessionID  string
+	// ProviderConversationID is the typed Chat driver's stable conversation id.
+	// Terminal reviewers continue to use AgentSessionID.
+	ProviderConversationID string
+	RequireNativeHistory   bool
+	PreviousRuns           []domain.ReviewRun
+	PRURL                  string
+	TargetSHA              string
+	ReviewQueue            []ports.ReviewTask
+	ReviewIndex            int
 }
 
 // LaunchResult is the terminal/runtime state created by a reviewer launch.
 type LaunchResult struct {
 	HandleID       string
+	LaunchID       string
 	AgentSessionID string
+	// NativeResumed reports whether the launch resumed the provider-native
+	// conversation instead of falling back to a fresh reviewer process.
+	NativeResumed bool
 }
+
+// ReviewerChatStart is the transport-neutral typed reviewer launch request.
+type ReviewerChatStart struct {
+	ReviewID               string
+	WorkerID               domain.SessionID
+	ProjectID              domain.ProjectID
+	Harness                domain.AgentHarness
+	DataDir                string
+	WorkspacePath          string
+	Env                    map[string]string
+	Prompt                 string
+	SystemPrompt           string
+	ProviderConversationID string
+}
+
+// ReviewerChatController is the narrow bridge from the review engine to the
+// typed Chat service. It deliberately excludes HTTP and renderer concerns.
+type ReviewerChatController interface {
+	SupportsReviewChat(domain.AgentHarness) bool
+	PreflightReviewChat(context.Context, domain.AgentHarness) error
+	StartReviewChat(context.Context, ReviewerChatStart) (string, error)
+	RestoreReviewChat(context.Context, ReviewerChatStart) (string, error)
+	SendReviewChat(context.Context, string, string) error
+	ReviewChatAlive(string) bool
+	InterruptReviewChat(context.Context, string) error
+	StopReviewChat(context.Context, string) error
+}
+
+const reviewerChatHandlePrefix = "review-chat:"
 
 // reviewerRuntime is the runtime surface the launcher needs: create a pane,
 // inject a message into a running pane, and probe liveness. The tmux runtime
@@ -108,6 +147,7 @@ type agentLauncher struct {
 	runFile    string
 	auth       agentAuthResolver
 	executable func() (string, error)
+	chat       ReviewerChatController
 }
 
 type preLaunchReviewer interface {
@@ -124,6 +164,12 @@ type agentAuthResolver interface {
 
 // LauncherOption configures reviewer launcher behavior.
 type LauncherOption func(*agentLauncher)
+
+// WithReviewerChat enables typed reviewer conversations for supporting
+// adapters. A nil controller intentionally keeps every reviewer on TUI.
+func WithReviewerChat(chat ReviewerChatController) LauncherOption {
+	return func(l *agentLauncher) { l.chat = chat }
+}
 
 // WithAgentAuth lets reviewer preflight reuse the agent auth catalog for the
 // same harness. Reviewer-specific auth probes must not be stricter than the
@@ -171,6 +217,9 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 	if !ok {
 		return fmt.Errorf("no reviewer adapter for harness %q", harness)
 	}
+	if profile, ok := reviewer.(ports.ReviewerChatProfile); ok && l.reviewChatSupported(profile) {
+		return l.chat.PreflightReviewChat(ctx, profile.ReviewChatHarness())
+	}
 	cmd, err := reviewer.ReviewCommand(ctx, ports.ReviewInvocation{WorkspacePath: workspacePath})
 	if err != nil {
 		return fmt.Errorf("reviewer command: %w", err)
@@ -209,6 +258,23 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 		}
 	}
 	return nil
+}
+
+func (l *agentLauncher) reviewChatSupported(profile ports.ReviewerChatProfile) bool {
+	return l.chat != nil && l.chat.SupportsReviewChat(profile.ReviewChatHarness())
+}
+
+// InterfaceMode returns the reviewer's native interaction surface.
+func (l *agentLauncher) InterfaceMode(harness domain.ReviewerHarness) domain.ReviewerInterfaceMode {
+	reviewer, ok := l.reviewers.Reviewer(harness)
+	if !ok {
+		return domain.ReviewerInterfaceTUI
+	}
+	profile, ok := reviewer.(ports.ReviewerChatProfile)
+	if ok && l.reviewChatSupported(profile) {
+		return domain.ReviewerInterfaceChat
+	}
+	return domain.ReviewerInterfaceTUI
 }
 
 func (l *agentLauncher) agentAuthStatus(ctx context.Context, harness domain.ReviewerHarness) (ports.AgentAuthStatus, bool, error) {
@@ -380,7 +446,16 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (LaunchResul
 	if err != nil {
 		return LaunchResult{}, err
 	}
-	return l.launchReviewerTerminal(ctx, spec, inv)
+	if reviewer, ok := l.reviewers.Reviewer(spec.Harness); ok {
+		if profile, ok := reviewer.(ports.ReviewerChatProfile); ok && l.reviewChatSupported(profile) {
+			return l.startReviewerChat(ctx, spec, inv, profile, false)
+		}
+	}
+	// A retained native id means this stable reviewer has provider-owned
+	// history even though its terminal process is gone. Recreate the pane by
+	// resuming that conversation; a first launch has no id and still pins the
+	// adapter's deterministic fresh identity through ReviewCommand.
+	return l.launchReviewerTerminalWithMode(ctx, spec, inv, strings.TrimSpace(spec.AgentSessionID) != "")
 }
 
 func (l *agentLauncher) RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error) {
@@ -388,11 +463,33 @@ func (l *agentLauncher) RestoreTerminal(ctx context.Context, spec LaunchSpec) (L
 	if err != nil {
 		return LaunchResult{}, err
 	}
+	if reviewer, ok := l.reviewers.Reviewer(spec.Harness); ok {
+		if profile, ok := reviewer.(ports.ReviewerChatProfile); ok && l.reviewChatSupported(profile) {
+			return l.startReviewerChat(ctx, spec, inv, profile, true)
+		}
+	}
 	return l.launchReviewerTerminalWithMode(ctx, spec, inv, true)
 }
 
-func (l *agentLauncher) launchReviewerTerminal(ctx context.Context, spec LaunchSpec, inv ports.ReviewInvocation) (LaunchResult, error) {
-	return l.launchReviewerTerminalWithMode(ctx, spec, inv, false)
+func (l *agentLauncher) startReviewerChat(ctx context.Context, spec LaunchSpec, inv ports.ReviewInvocation, profile ports.ReviewerChatProfile, restore bool) (LaunchResult, error) {
+	systemPrompt, err := os.ReadFile(inv.SystemPromptFile)
+	if err != nil {
+		return LaunchResult{}, fmt.Errorf("read reviewer system prompt: %w", err)
+	}
+	providerID := strings.TrimSpace(spec.ProviderConversationID)
+	if providerID == "" {
+		providerID = strings.TrimSpace(spec.AgentSessionID)
+	}
+	start := ReviewerChatStart{ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: l.runtimeEnv(ctx, spec, nil, nil), Prompt: inv.Prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
+	if restore {
+		providerID, err = l.chat.RestoreReviewChat(ctx, start)
+	} else {
+		providerID, err = l.chat.StartReviewChat(ctx, start)
+	}
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	return LaunchResult{HandleID: reviewerChatHandlePrefix + spec.ReviewSessionID, LaunchID: strings.TrimSpace(spec.LaunchID), AgentSessionID: providerID}, nil
 }
 
 func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec LaunchSpec, inv ports.ReviewInvocation, restoring bool) (LaunchResult, error) {
@@ -406,6 +503,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 		}
 	}
 	var cmd ports.ReviewCommandSpec
+	nativeResumed := false
 	if restoring {
 		if restorer, ok := reviewer.(ports.ReviewerRestorer); ok {
 			restoreCmd, restoreOK, err := restorer.ReviewRestoreCommand(ctx, inv)
@@ -414,6 +512,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 			}
 			if restoreOK {
 				cmd = restoreCmd
+				nativeResumed = restoreCmd.NativeResumed
 			}
 		}
 	}
@@ -462,7 +561,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	if agentSessionID == "" {
 		agentSessionID = strings.TrimSpace(spec.AgentSessionID)
 	}
-	return LaunchResult{HandleID: handle.ID, AgentSessionID: agentSessionID}, nil
+	return LaunchResult{HandleID: handle.ID, LaunchID: strings.TrimSpace(spec.LaunchID), AgentSessionID: agentSessionID, NativeResumed: nativeResumed}, nil
 }
 
 func (l *agentLauncher) waitForPromptReadiness(ctx context.Context, reviewer ports.Reviewer, handle ports.RuntimeHandle) error {
@@ -534,6 +633,9 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 	env["AO_REVIEW_SESSION_ID"] = spec.ReviewSessionID
 	env["AO_REVIEW_WORKER_SESSION_ID"] = string(spec.WorkerID)
 	env["AO_REVIEW_HARNESS"] = string(spec.Harness)
+	if strings.TrimSpace(spec.LaunchID) != "" {
+		env[sessionmanager.EnvRuntimeLaunchID] = spec.LaunchID
+	}
 	env[sessionmanager.EnvProjectID] = string(spec.ProjectID)
 	env[sessionmanager.EnvDataDir] = l.dataDir
 	if strings.TrimSpace(l.runFile) != "" {
@@ -619,6 +721,9 @@ func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec Launch
 	if err != nil {
 		return fmt.Errorf("reviewer message: %w", err)
 	}
+	if reviewID, ok := reviewerChatID(handleID); ok && l.chat != nil {
+		return l.chat.SendReviewChat(ctx, reviewID, msg)
+	}
 	if err := l.runtime.SendMessage(ctx, ports.RuntimeHandle{ID: handleID}, msg); err != nil {
 		return fmt.Errorf("notify reviewer: %w", err)
 	}
@@ -628,6 +733,9 @@ func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec Launch
 func (l *agentLauncher) Alive(ctx context.Context, handleID string) (bool, error) {
 	if handleID == "" {
 		return false, nil
+	}
+	if reviewID, ok := reviewerChatID(handleID); ok && l.chat != nil {
+		return l.chat.ReviewChatAlive(reviewID), nil
 	}
 	return l.runtime.IsAlive(ctx, ports.RuntimeHandle{ID: handleID})
 }
@@ -644,6 +752,9 @@ func (l *agentLauncher) Reusable(harness domain.ReviewerHarness) bool {
 func (l *agentLauncher) Cancel(ctx context.Context, handleID string, harness domain.ReviewerHarness) error {
 	if handleID == "" {
 		return nil
+	}
+	if reviewID, ok := reviewerChatID(handleID); ok && l.chat != nil {
+		return l.chat.InterruptReviewChat(ctx, reviewID)
 	}
 	reviewer, ok := l.reviewers.Reviewer(harness)
 	if !ok {
@@ -719,5 +830,13 @@ func (l *agentLauncher) Destroy(ctx context.Context, handleID string) error {
 	if handleID == "" {
 		return nil
 	}
+	if reviewID, ok := reviewerChatID(handleID); ok && l.chat != nil {
+		return l.chat.StopReviewChat(ctx, reviewID)
+	}
 	return l.runtime.Destroy(ctx, ports.RuntimeHandle{ID: handleID})
+}
+
+func reviewerChatID(handleID string) (string, bool) {
+	id, ok := strings.CutPrefix(handleID, reviewerChatHandlePrefix)
+	return id, ok && strings.TrimSpace(id) != ""
 }

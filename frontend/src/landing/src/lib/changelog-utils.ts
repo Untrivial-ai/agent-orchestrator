@@ -13,6 +13,7 @@ export interface ChangelogEntry {
 	date: string;
 	image?: string;
 	content: string;
+	releaseUrl?: string;
 	/**
 	 * Where the body came from. "mdx" (curated content/docs) is compiled as MDX;
 	 * "release" (a GitHub release body) is plain Markdown and rendered through a

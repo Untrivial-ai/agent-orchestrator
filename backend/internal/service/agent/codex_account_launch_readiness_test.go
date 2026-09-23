@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -13,19 +12,20 @@ import (
 
 const otherCodexAccountID = "bb1e9a5d-37ad-43f8-83bd-13de8168f8af"
 
-// codexLaunchReadinessFixture reproduces the divergence between the two Codex
-// account/read modes: the non-refresh read answers from locally present account
-// material while the refresh-capable read the launch path uses reports
-// requiresOpenaiAuth.
+// codexLaunchReadinessFixture reproduces the important protocol distinction:
+// account/read discovers local metadata while ReadCapacity is a protected call
+// that confirms whether the provider accepts the account.
 type codexLaunchReadinessFixture struct {
-	t             *testing.T
-	manager       *codexAccountManager
-	service       *Service
-	active        codexAccountRecord
-	other         codexAccountRecord
-	mu            sync.Mutex
-	refreshSignsI bool
-	reads         []codexReadCall
+	t                        *testing.T
+	manager                  *codexAccountManager
+	service                  *Service
+	active                   codexAccountRecord
+	other                    codexAccountRecord
+	mu                       sync.Mutex
+	activeCapacityErrors     []error
+	refreshReturnsAuthorized bool
+	reads                    []codexReadCall
+	activeCapacityReads      int
 }
 
 type codexReadCall struct {
@@ -40,10 +40,10 @@ func newCodexLaunchReadinessFixture(t *testing.T) *codexLaunchReadinessFixture {
 	if err := ensurePrivateDirectory(globalHome); err != nil {
 		t.Fatal(err)
 	}
-	state := &fakeCodexAccountStateStore{active: domain.CodexActiveAccount{AccountID: testAccountID, Revision: 1}, found: true}
+	state := &testCodexDeviceSeed{active: testCodexDeviceAccount{AccountID: testAccountID, Revision: 1}}
 	manager := newCodexAccountManager(context.Background(),
 		filepath.Join(root, "accounts"), filepath.Join(root, "pending"),
-		filepath.Join(root, "staging"), globalHome, nil, state, nil)
+		filepath.Join(root, "staging"), globalHome, nil, nil)
 	ids := []string{testAccountID, otherCodexAccountID, "6f8dfc76-8db4-4621-8974-c480093e0d55"}
 	manager.catalog.newID = func() string { id := ids[0]; ids = ids[1:]; return id }
 	manager.newID = func() string { return "b9a4e5c6-4f31-4b1a-9d2a-7b4a4c0f9a11" }
@@ -62,24 +62,37 @@ func newCodexLaunchReadinessFixture(t *testing.T) *codexLaunchReadinessFixture {
 	if err := writeGlobalCredentialAtomic(manager.globalCredentialPath(), activeCredential); err != nil {
 		t.Fatal(err)
 	}
-	manager.active = state.active
-	manager.bootstrapped = true
+	setTestDeviceAccount(manager, state.active)
+	manager.accountStoreReady = true
+	manager.reconciliation = domain.CodexDeviceReconciliation{Status: domain.CodexDeviceReconciliationVerified, ActiveAccountVerified: true, ReasonCode: "verified"}
+	manager.deviceAccountID = active.Snapshot.ID
+	manager.deviceCredentialPresent = true
 	fixture := &codexLaunchReadinessFixture{t: t, manager: manager, active: active, other: other}
 	manager.factory = &fakeCodexAccountFactory{capabilities: supportedCodexAccountCapabilities(), open: func(account ports.CodexAccountContext) (ports.CodexAccountClient, error) {
-		global := !account.Managed
 		return &fakeCodexAccountClient{readFn: func(_ context.Context, refresh bool) (ports.CodexAccountObservation, error) {
 			fixture.mu.Lock()
 			fixture.reads = append(fixture.reads, codexReadCall{managed: account.Managed, refresh: refresh})
-			signedIn := fixture.refreshSignsI
+			refreshAuthorized := fixture.refreshReturnsAuthorized
 			fixture.mu.Unlock()
 			if account.Home == other.Home {
 				return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &otherEmail}, nil
 			}
-			if global && refresh && !signedIn {
-				// Codex answers the refresh-capable read with requiresOpenaiAuth.
+			if refresh && !refreshAuthorized {
 				return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized, Method: domain.CodexAuthMethodUnknown}, nil
 			}
 			return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &activeEmail}, nil
+		}, capacityFn: func(context.Context) (ports.CodexCapacityObservation, error) {
+			if account.Home == other.Home {
+				return ports.CodexCapacityObservation{}, nil
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			index := fixture.activeCapacityReads
+			fixture.activeCapacityReads++
+			if index < len(fixture.activeCapacityErrors) {
+				return ports.CodexCapacityObservation{}, fixture.activeCapacityErrors[index]
+			}
+			return ports.CodexCapacityObservation{}, nil
 		}}, nil
 	}}
 	fixture.service = &Service{codexAccounts: manager, readiness: newReadinessCoordinator(readinessCoordinatorConfig{})}
@@ -88,7 +101,14 @@ func newCodexLaunchReadinessFixture(t *testing.T) *codexLaunchReadinessFixture {
 
 func (f *codexLaunchReadinessFixture) signIn() {
 	f.mu.Lock()
-	f.refreshSignsI = true
+	f.refreshReturnsAuthorized = true
+	f.mu.Unlock()
+}
+
+func (f *codexLaunchReadinessFixture) rejectActiveCapacity(errors ...error) {
+	f.mu.Lock()
+	f.activeCapacityErrors = append([]error(nil), errors...)
+	f.activeCapacityReads = 0
 	f.mu.Unlock()
 }
 
@@ -104,9 +124,24 @@ func (f *codexLaunchReadinessFixture) refreshCapableReads() int {
 	return count
 }
 
+func (f *codexLaunchReadinessFixture) protectedReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.activeCapacityReads
+}
+
 func (f *codexLaunchReadinessFixture) ensureSettings() CodexAccounts {
 	f.t.Helper()
-	result, err := f.manager.ensure(context.Background(), nil, false, domain.AgentInstallationInstalled)
+	result, err := f.manager.ensure(context.Background(), nil, false, false, domain.AgentInstallationInstalled)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return result
+}
+
+func (f *codexLaunchReadinessFixture) forceAuthenticationCheck() CodexAccounts {
+	f.t.Helper()
+	result, err := f.manager.ensure(context.Background(), []string{f.active.Snapshot.ID}, false, true, domain.AgentInstallationInstalled)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -124,45 +159,56 @@ func (f *codexLaunchReadinessFixture) account(view CodexAccounts, id string) dom
 	return domain.CodexAccountSnapshot{}
 }
 
-func TestSettingsEnsureDoesNotPresentTheActiveAccountAsLaunchReady(t *testing.T) {
+func TestSettingsUsesProtectedCallInsteadOfRefreshAccountRead(t *testing.T) {
 	fixture := newCodexLaunchReadinessFixture(t)
 
 	view := fixture.ensureSettings()
 
 	active := fixture.account(view, fixture.active.Snapshot.ID)
-	if active.Authentication.State != domain.AgentAuthenticationUnauthorized || active.Authentication.Freshness != domain.AgentReadinessFresh {
-		t.Fatalf("Settings reported the active account as launch-ready = %#v", active.Authentication)
+	if active.Authentication.State != domain.AgentAuthenticationAuthorized || active.Authentication.Freshness != domain.AgentReadinessFresh {
+		t.Fatalf("Settings did not retain the protected-call confirmation = %#v", active.Authentication)
 	}
-	if fixture.refreshCapableReads() == 0 {
-		t.Fatal("Settings classified the active account without a refresh-capable read")
+	if fixture.protectedReads() == 0 {
+		t.Fatal("Settings classified the active account without a protected read")
 	}
-	// The launch path agrees without another native read, so a spawn admitted now
-	// rejects for the same reason Settings shows.
-	before := fixture.refreshCapableReads()
-	launch, ok := fixture.service.structuredCodexAuthentication(context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeLaunch)
-	if !ok || launch.State != domain.AgentAuthenticationUnauthorized || launch.Freshness != domain.AgentReadinessFresh {
-		t.Fatalf("launch readiness = %#v (structured=%t)", launch, ok)
-	}
-	if fixture.refreshCapableReads() != before {
-		t.Fatalf("launch repeated the refresh-capable read: %d then %d", before, fixture.refreshCapableReads())
+	if fixture.refreshCapableReads() != 0 {
+		t.Fatalf("Settings used account/read refresh as authentication evidence: %#v", fixture.reads)
 	}
 }
 
-func TestSettingsEnsureCannotOverwriteAFreshLaunchAuthenticationFailure(t *testing.T) {
+func TestLaunchFallsBackToNativeReadinessWhileDeviceReconciliationIsUnavailable(t *testing.T) {
 	fixture := newCodexLaunchReadinessFixture(t)
-	if _, ok := fixture.service.structuredCodexAuthentication(context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeLaunch); !ok {
-		t.Fatal("launch readiness was not structured")
+	fixture.manager.mu.Lock()
+	fixture.manager.reconciliation = domain.CodexDeviceReconciliation{
+		Status:     domain.CodexDeviceReconciliationTemporarilyUnavailable,
+		ReasonCode: "account_read_inconclusive", Retryable: true,
 	}
+	fixture.manager.mu.Unlock()
 
-	// Focusing Settings after the failed spawn re-runs the ensure path once its
-	// display window has expired. It must not restore the reassuring result.
-	base := time.Now().UTC()
-	fixture.manager.now = func() time.Time { return base.Add(codexAccountDisplayTTL + time.Minute) }
-	view := fixture.ensureSettings()
+	authentication, handled := fixture.service.structuredCodexAuthentication(
+		context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeLaunch,
+	)
+	if handled {
+		t.Fatalf("unverified device authentication was handled = %#v", authentication)
+	}
+	if fixture.refreshCapableReads() != 0 {
+		t.Fatalf("structured account path performed a native read: %#v", fixture.reads)
+	}
+}
 
-	active := fixture.account(view, fixture.active.Snapshot.ID)
-	if active.Authentication.State != domain.AgentAuthenticationUnauthorized {
-		t.Fatalf("Settings ensure overwrote the launch failure = %#v", active.Authentication)
+func TestLaunchFallsBackToNativeReadinessOnTransientProtectedFailure(t *testing.T) {
+	fixture := newCodexLaunchReadinessFixture(t)
+	fixture.rejectActiveCapacity(ports.ErrCodexCapacityProviderUnavailable)
+	authentication, handled := fixture.service.structuredCodexAuthentication(context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeLaunch)
+	if handled {
+		t.Fatalf("transient provider failure became an auth decision = %#v", authentication)
+	}
+	latest, _ := fixture.manager.catalog.record(fixture.active.Snapshot.ID)
+	if latest.Snapshot.Authentication.State == domain.AgentAuthenticationUnauthorized {
+		t.Fatalf("transient provider failure signed the account out = %#v", latest.Snapshot.Authentication)
+	}
+	if latest.Snapshot.Authentication.State != domain.AgentAuthenticationAuthorized || latest.Snapshot.Authentication.Freshness != domain.AgentReadinessFresh {
+		t.Fatalf("transient capacity failure changed authentication = %#v", latest.Snapshot.Authentication)
 	}
 }
 
@@ -197,6 +243,7 @@ func TestDisplayReadInFlightCannotClearARequiredReauthentication(t *testing.T) {
 
 func TestAuthorizedInactiveAccountDoesNotMaskTheActiveAccount(t *testing.T) {
 	fixture := newCodexLaunchReadinessFixture(t)
+	fixture.rejectActiveCapacity(ports.ErrCodexOAuthTokenRevoked, ports.ErrCodexOAuthTokenRevoked)
 
 	view := fixture.ensureSettings()
 
@@ -207,7 +254,8 @@ func TestAuthorizedInactiveAccountDoesNotMaskTheActiveAccount(t *testing.T) {
 	if !ok || authentication.State != domain.AgentAuthenticationUnauthorized {
 		t.Fatalf("Codex readiness masked by the inactive account = %#v (structured=%t)", authentication, ok)
 	}
-	// Inactive accounts are still not refreshed merely to render the list.
+	// Only the rejected active account is refreshed; inactive accounts are not
+	// refreshed merely to render the list.
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	for _, read := range fixture.reads {
@@ -217,7 +265,7 @@ func TestAuthorizedInactiveAccountDoesNotMaskTheActiveAccount(t *testing.T) {
 	}
 }
 
-func TestSuccessfulReauthenticationRestoresLaunchReadiness(t *testing.T) {
+func TestSuccessfulReauthenticationKeepsCapacitySeparateFromLaunchReadiness(t *testing.T) {
 	fixture := newCodexLaunchReadinessFixture(t)
 	fixture.ensureSettings()
 
@@ -230,39 +278,40 @@ func TestSuccessfulReauthenticationRestoresLaunchReadiness(t *testing.T) {
 		t.Fatalf("Settings did not recover after reauthentication = %#v", active.Authentication)
 	}
 	launch, ok := fixture.service.structuredCodexAuthentication(context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeLaunch)
-	if !ok || launch.State != domain.AgentAuthenticationAuthorized {
-		t.Fatalf("launch readiness after reauthentication = %#v (structured=%t)", launch, ok)
+	if ok {
+		t.Fatalf("capacity success became a structured authentication decision = %#v", launch)
 	}
 }
 
-func TestRepeatedSettingsEnsuresReuseTheLaunchVerifiedObservation(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		signedIn bool
-	}{{"unauthorized", false}, {"authorized", true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			fixture := newCodexLaunchReadinessFixture(t)
-			if tc.signedIn {
-				fixture.signIn()
-			}
+func TestRepeatedSettingsEnsuresReuseProtectedConfirmation(t *testing.T) {
+	fixture := newCodexLaunchReadinessFixture(t)
+	first := fixture.ensureSettings()
+	reads := fixture.protectedReads()
+	checkedAt := fixture.account(first, fixture.active.Snapshot.ID).Authentication.CheckedAt
 
-			first := fixture.ensureSettings()
-			reads := fixture.refreshCapableReads()
-			checkedAt := fixture.account(first, fixture.active.Snapshot.ID).Authentication.CheckedAt
+	second := fixture.ensureSettings()
 
-			// Focusing Settings again inside the display window must reuse the
-			// launch-verified observation instead of paying for another
-			// refresh-capable read and the account-mutation lock it takes.
-			second := fixture.ensureSettings()
+	if got := fixture.protectedReads(); got != reads {
+		t.Fatalf("protected reads grew from %d to %d across two ensures inside the display window", reads, got)
+	}
+	active := fixture.account(second, fixture.active.Snapshot.ID)
+	if checkedAt == nil || active.Authentication.CheckedAt == nil || !active.Authentication.CheckedAt.Equal(*checkedAt) {
+		t.Fatalf("observation timestamp moved: %v then %v", checkedAt, active.Authentication.CheckedAt)
+	}
+}
 
-			if got := fixture.refreshCapableReads(); got != reads {
-				t.Fatalf("refresh-capable reads grew from %d to %d across two ensures inside the display window", reads, got)
-			}
-			active := fixture.account(second, fixture.active.Snapshot.ID)
-			if checkedAt == nil || active.Authentication.CheckedAt == nil || !active.Authentication.CheckedAt.Equal(*checkedAt) {
-				t.Fatalf("observation timestamp moved: %v then %v", checkedAt, active.Authentication.CheckedAt)
-			}
-		})
+func TestUserAuthenticationRetryBypassesFreshCachesAndBackoff(t *testing.T) {
+	fixture := newCodexLaunchReadinessFixture(t)
+	fixture.ensureSettings()
+	reads := fixture.protectedReads()
+
+	view := fixture.forceAuthenticationCheck()
+
+	if got := fixture.protectedReads(); got <= reads {
+		t.Fatalf("forced authentication retry reused cached protected result: reads %d then %d", reads, got)
+	}
+	if active := fixture.account(view, fixture.active.Snapshot.ID); active.Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("forced authentication result = %#v", active.Authentication)
 	}
 }
 
@@ -270,7 +319,7 @@ func TestRotatedCredentialsDoNotReVerifyAnAuthorizedAccount(t *testing.T) {
 	fixture := newCodexLaunchReadinessFixture(t)
 	fixture.signIn()
 	fixture.ensureSettings()
-	reads := fixture.refreshCapableReads()
+	reads := fixture.protectedReads()
 
 	// A refresh-capable read can rotate Codex's device-global refresh token, so
 	// the saved copy stops matching. That is expected token maintenance for an
@@ -281,7 +330,7 @@ func TestRotatedCredentialsDoNotReVerifyAnAuthorizedAccount(t *testing.T) {
 
 	view := fixture.ensureSettings()
 
-	if got := fixture.refreshCapableReads(); got != reads {
+	if got := fixture.protectedReads(); got != reads {
 		t.Fatalf("rotated credentials re-verified an authorized account: reads %d then %d", reads, got)
 	}
 	if active := fixture.account(view, fixture.active.Snapshot.ID); active.Authentication.State != domain.AgentAuthenticationAuthorized {
@@ -289,28 +338,34 @@ func TestRotatedCredentialsDoNotReVerifyAnAuthorizedAccount(t *testing.T) {
 	}
 }
 
-func TestReplacedCredentialsReVerifyALaunchFailure(t *testing.T) {
+func TestExternallyReplacedCredentialsDoNotGetAttributedToOldActiveSlot(t *testing.T) {
 	fixture := newCodexLaunchReadinessFixture(t)
+	fixture.rejectActiveCapacity(ports.ErrCodexOAuthTokenRevoked, ports.ErrCodexOAuthTokenRevoked)
 	view := fixture.ensureSettings()
 	if active := fixture.account(view, fixture.active.Snapshot.ID); active.Authentication.State != domain.AgentAuthenticationUnauthorized {
 		t.Fatalf("active account authentication = %#v", active.Authentication)
 	}
-	reads := fixture.refreshCapableReads()
+	original, err := readOpaqueCredential(filepath.Join(fixture.active.Home, codexCredentialFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// The user signs in again outside AO. The device-global account material is
 	// replaced, so the recorded failure no longer describes this account and must
 	// not survive the rest of the display window.
-	fixture.signIn()
-	if err := writeGlobalCredentialAtomic(fixture.manager.globalCredentialPath(), []byte("replacement-opaque-credential")); err != nil {
+	if err := writeGlobalCredentialAtomic(fixture.manager.globalCredentialPath(), testOAuthCredential("external-account", "replacement-access")); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.manager.reconcileGlobal(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	view = fixture.ensureSettings()
-
-	if got := fixture.refreshCapableReads(); got <= reads {
-		t.Fatalf("replaced credentials did not re-verify the launch failure: reads %d then %d", reads, got)
+	view = fixture.manager.cached()
+	if view.ActiveAccountID == fixture.active.Snapshot.ID || len(view.Accounts) != 3 {
+		t.Fatalf("external account was not imported separately = %#v", view)
 	}
-	if active := fixture.account(view, fixture.active.Snapshot.ID); active.Authentication.State != domain.AgentAuthenticationAuthorized {
-		t.Fatalf("Settings did not recover after an out-of-band sign-in = %#v", active.Authentication)
+	saved, err := readOpaqueCredential(filepath.Join(fixture.active.Home, codexCredentialFilename))
+	if err != nil || string(saved) != string(original) {
+		t.Fatalf("external credential was attributed to old account: %v", err)
 	}
 }

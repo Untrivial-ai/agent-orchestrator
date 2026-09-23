@@ -81,6 +81,15 @@ describe("SessionsBoardView", () => {
 		lastArchiveMotionTransition.current = undefined;
 	});
 
+	it.each(["checking", "unavailable"] as const)("withholds provisional activity while %s", (statusReadiness) => {
+		render(<SessionCardView externalLink={ExternalLink}
+			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}
+			renderAvatar={() => null}
+			session={{ ...baseSession, status: "working", displayStatus: "Working", statusReadiness }} />);
+		expect(screen.queryByText("Working")).not.toBeInTheDocument();
+		expect(screen.getByText(statusReadiness === "checking" ? "Checking…" : "Unable to verify")).toBeInTheDocument();
+	});
+
 	it("renders one lane per Kanban column, newest first, with one scroller each", () => {
 		const sessions: BoardSessionPresentation[] = [
 			baseSession,
@@ -396,6 +405,52 @@ describe("SessionsBoardView", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "portable task" }));
 		expect(onOpen).toHaveBeenCalledOnce();
+	});
+
+	it("keeps a crowded PR row wrapping instead of crushing entries past the card edge", () => {
+		const { container } = render(
+			<SessionCardView
+				externalLink={ExternalLink}
+				labels={{
+					formatTime: () => "10h ago",
+					intakeIssue: (id) => `Issue ${id}`,
+					pr: {
+						short: "PR",
+						states: { closed: "closed", draft: "draft", merged: "merged", open: "open" },
+					},
+					updatedAt: (timestamp) => `Updated ${timestamp}`,
+				}}
+				prs={[5146, 5147, 5148, 5149, 5217, 5218, 5219, 5221, 5223, 5290].map((number) => ({
+					number,
+					state: "open" as const,
+					url: `https://example.com/pull/${number}`,
+				}))}
+				renderAvatar={(provider) => <span role="img" aria-label={provider}>C</span>}
+				session={baseSession}
+			/>,
+		);
+
+		// Ten open PRs share one state, so they share one row. The row has to wrap
+		// them; the alternative it must never fall back to is squeezing them into
+		// a single line, where the numbers paint over each other and past the card.
+		const row = screen.getByRole("link", { name: "PR #5146 open" }).parentElement;
+		expect(row).toHaveClass("flex", "flex-wrap");
+
+		const links = screen.getAllByRole("link", { name: /^PR #\d+ open$/ });
+		expect(links).toHaveLength(10);
+		for (const link of links) {
+			// Unshrinkable, so a full row wraps rather than compressing entries.
+			expect(link).toHaveClass("shrink-0");
+			// Capped at the row for the one case wrapping cannot fix — a single
+			// entry wider than the row — which truncates inside the card instead.
+			expect(link).toHaveClass("max-w-full");
+		}
+
+		// The number carries no box of its own to be clipped by, so it needs to
+		// truncate; otherwise it is the glyphs that escape the card.
+		const number = screen.getByText("#5146");
+		expect(number).toHaveClass("truncate");
+		expect(container.querySelector(".pr-link")).toBe(links[0]);
 	});
 
 	it("uses the shared loading and error fallback for reviewer avatars", () => {

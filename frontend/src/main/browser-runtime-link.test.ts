@@ -136,7 +136,7 @@ describe("browser runtime link", () => {
 		serverSocket!.destroy();
 	});
 
-	it("queues per session and cancels work from a closed connection", async () => {
+	it("queues per session, cancels on server close, and reconnects", async () => {
 		let serverSocket: net.Socket | null = null;
 		const messages: Array<Record<string, unknown>> = [];
 		const executed: string[] = [];
@@ -182,10 +182,132 @@ describe("browser runtime link", () => {
 		await vi.waitFor(() => expect(executed).toContain("independent"));
 		expect(executed).not.toContain("queued");
 
-		serverSocket!.destroy();
+		serverSocket!.end();
+		for (const requestId of ["blocked", "queued"] as const) {
+			await vi.waitFor(() =>
+				expect(messages).toContainEqual({
+					type: "result",
+					requestId,
+					ok: false,
+					error: { code: "BROWSER_COMMAND_CANCELED", message: "Browser runtime link closed" },
+				}),
+			);
+		}
+		expect(
+			messages.filter(
+				(message) =>
+					message.type === "result" &&
+					message.requestId === "blocked" &&
+					message.ok === false &&
+					(message.error as { code?: string })?.code === "BROWSER_COMMAND_CANCELED",
+			),
+		).toHaveLength(1);
 		await vi.waitFor(() => expect(handle.connected).toBe(false));
 		await vi.waitFor(() => expect(handle.connected).toBe(true));
 		expect(executed).not.toContain("queued");
-		expect(messages.some((message) => message.requestId === "blocked" && message.type === "result")).toBe(false);
+	});
+
+	it("returns structured cancellation errors before disposing the link", async () => {
+		let serverSocket: net.Socket | null = null;
+		const messages: Array<Record<string, unknown>> = [];
+		const executed: string[] = [];
+		const server = net.createServer((socket) => {
+			serverSocket = socket;
+			let inbound = "";
+			socket.on("data", (chunk) => {
+				inbound += chunk.toString("utf8");
+				const lines = inbound.split("\n");
+				inbound = lines.pop() ?? "";
+				for (const line of lines) if (line) messages.push(JSON.parse(line));
+			});
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address() as net.AddressInfo;
+		const handle = connectBrowserRuntime(
+			{ host: address.address, port: address.port },
+			{
+				execute: async (command, signal) => {
+					executed.push(command.requestId);
+					if (command.requestId === "blocked") {
+						await new Promise<void>((_, reject) => {
+							signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+						});
+					}
+					return { requestId: command.requestId };
+				},
+			},
+		);
+		handles.push(handle);
+		await vi.waitFor(() => expect(handle.connected).toBe(true));
+
+		serverSocket!.write(
+			[
+				{ type: "command", requestId: "blocked", sessionId: "s1", action: "wait" },
+				{ type: "command", requestId: "queued", sessionId: "s1", action: "click" },
+			]
+				.map((message) => JSON.stringify(message))
+				.join("\n") + "\n",
+		);
+		await vi.waitFor(() => expect(executed).toContain("blocked"));
+
+		handle.dispose();
+		for (const requestId of ["blocked", "queued"] as const) {
+			await vi.waitFor(() =>
+				expect(messages).toContainEqual({
+					type: "result",
+					requestId,
+					ok: false,
+					error: { code: "BROWSER_COMMAND_CANCELED", message: "Browser runtime link closed" },
+				}),
+			);
+		}
+		expect(
+			messages.filter(
+				(message) =>
+					message.type === "result" &&
+					message.requestId === "blocked" &&
+					message.ok === false &&
+					(message.error as { code?: string })?.code === "BROWSER_COMMAND_CANCELED",
+			),
+		).toHaveLength(1);
+	});
+
+	it("returns structured cancellation errors for daemon-initiated cancel frames", async () => {
+		let serverSocket: net.Socket | null = null;
+		let inbound = "";
+		const messages: unknown[] = [];
+		const execute = vi.fn(async (_command, signal) => {
+			await new Promise<void>((_, reject) => {
+				signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		});
+		const server = net.createServer((socket) => {
+			serverSocket = socket;
+			socket.on("data", (chunk) => {
+				inbound += chunk.toString("utf8");
+				const lines = inbound.split("\n");
+				inbound = lines.pop() ?? "";
+				for (const line of lines) if (line) messages.push(JSON.parse(line));
+			});
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address() as net.AddressInfo;
+		const handle = connectBrowserRuntime({ host: address.address, port: address.port }, { execute });
+		handles.push(handle);
+		await vi.waitFor(() => expect(handle.connected).toBe(true));
+
+		serverSocket!.write(`${JSON.stringify({ type: "command", requestId: "r3", sessionId: "s1", action: "wait" })}\n`);
+		await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+		serverSocket!.write(`${JSON.stringify({ type: "cancel", requestId: "r3" })}\n`);
+		await vi.waitFor(() =>
+			expect(messages).toContainEqual({
+				type: "result",
+				requestId: "r3",
+				ok: false,
+				error: { code: "BROWSER_COMMAND_CANCELED", message: "Browser runtime link closed" },
+			}),
+		);
 	});
 });

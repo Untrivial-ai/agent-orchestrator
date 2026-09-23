@@ -479,6 +479,24 @@ export async function sanitizeRendererProperties(
 			if (projectIDHash) safe.project_id_hash = projectIDHash;
 			break;
 		}
+		case "ao.renderer.cloud_orchestrator_spawn_succeeded":
+		case "ao.renderer.cloud_orchestrator_spawn_failed": {
+			// Cloud orchestrator spawns are the adoption signal for the hosted
+			// offering's core loop; only a hashed project id rides along.
+			const cloudProjectIDHash = await hashedTelemetryID(properties?.project_id);
+			if (cloudProjectIDHash) safe.project_id_hash = cloudProjectIDHash;
+			break;
+		}
+		case "ao.renderer.cloud_workers_viewed":
+			// How many workers an orchestrator is coordinating when the human
+			// looks: the count alone answers "do people use one worker or many".
+			if (typeof properties?.worker_count === "number") safe.worker_count = properties.worker_count;
+			break;
+		case "ao.renderer.cloud_worker_opened":
+			// Whether the click-through happens before or after a PR exists
+			// separates "checking on a worker" from "reviewing its output".
+			if (typeof properties?.has_pr === "boolean") safe.has_pr = properties.has_pr;
+			break;
 		case "ao.renderer.orchestrator_spawn_requested":
 		case "ao.renderer.orchestrator_spawn_succeeded":
 		case "ao.renderer.orchestrator_spawn_failed": {
@@ -565,6 +583,16 @@ export async function sanitizeRendererProperties(
 			if (typeof properties?.error_category === "string") safe.error_category = properties.error_category;
 			if (properties?.phase === "check" || properties?.phase === "download") safe.phase = properties.phase;
 			if (properties?.trigger === "automatic" || properties?.trigger === "manual") safe.trigger = properties.trigger;
+			for (const key of ["differential_eligible", "fallback"] as const) {
+				if (typeof properties?.[key] === "boolean") safe[key] = properties[key];
+			}
+			if (properties?.transfer_mode === "differential" || properties?.transfer_mode === "full") {
+				safe.transfer_mode = properties.transfer_mode;
+			}
+			for (const key of ["transferred_bytes", "target_bytes"] as const) {
+				const value = properties?.[key];
+				if (typeof value === "number" && Number.isFinite(value) && value >= 0) safe[key] = value;
+			}
 			break;
 		case "ao.renderer.mobile_connect_opened":
 			// Whether the bridge was already on when the modal opened separates

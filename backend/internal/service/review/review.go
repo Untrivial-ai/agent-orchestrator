@@ -20,6 +20,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
+// errRunSuperseded marks a run that became terminal before its result arrived.
+// SubmitMany treats it as stale input so it cannot strand valid sibling results
+// in the same reviewer submission.
+var errRunSuperseded = errors.New("review: run is no longer running")
+
 // ErrInvalid and ErrNotFound re-export the engine sentinels so the HTTP
 // controller maps service failures to 422/404 without importing the core.
 var (
@@ -52,6 +57,7 @@ func reviewErrorKind(err error) string {
 
 // Manager is the reviews surface the HTTP controller depends on.
 type Manager interface {
+	RecoverChatReviewers(ctx context.Context) error
 	Trigger(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.TriggerResult, error)
 	RequestRereview(ctx context.Context, workerID domain.SessionID, prURL, reviewer string) error
 	ResolveReviewComment(ctx context.Context, workerID domain.SessionID, prURL, commentURL string) error
@@ -85,10 +91,17 @@ type Service struct {
 
 var _ Manager = (*Service)(nil)
 
+// RecoverChatReviewers restores durable reviewer-owned Chat controllers after
+// daemon startup. It is intentionally part of the required manager contract so
+// startup wiring cannot silently omit it.
+func (s *Service) RecoverChatReviewers(ctx context.Context) error {
+	return s.engine.RecoverChatReviewers(ctx)
+}
+
 // Store is the review_run persistence surface owned by the service submit path.
 type Store interface {
 	GetReviewByID(ctx context.Context, id string) (domain.Review, bool, error)
-	UpdateReviewAgentSessionID(ctx context.Context, id, agentSessionID string) (bool, error)
+	UpdateReviewActivity(ctx context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error)
 	GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, bool, error)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error)
@@ -436,7 +449,7 @@ func (s *Service) triggerWithSource(
 	var release func()
 	if usesCodex && s.codexOperationGate != nil {
 		var err error
-		release, err = s.codexOperationGate.AcquireShared(ctx)
+		release, err = s.codexOperationGate.AcquireSharedWait(ctx)
 		if err != nil {
 			return reviewcore.TriggerResult{}, err
 		}
@@ -501,46 +514,6 @@ func (s *Service) RestoreReviewer(ctx context.Context, workerID domain.SessionID
 	return err
 }
 
-// CodexReviewerRunning reports whether the worker has a live Codex reviewer.
-func (s *Service) CodexReviewerRunning(ctx context.Context, workerID domain.SessionID) (bool, error) {
-	return s.engine.CodexReviewerRunning(ctx, workerID)
-}
-
-// CodexReviewerBusy reports whether the worker's Codex reviewer is active.
-func (s *Service) CodexReviewerBusy(ctx context.Context, workerID domain.SessionID) (bool, error) {
-	return s.engine.CodexReviewerBusy(ctx, workerID)
-}
-
-// CodexReviewerNativeSession returns the reviewer's exact native history identity.
-func (s *Service) CodexReviewerNativeSession(ctx context.Context, workerID domain.SessionID) (string, bool, error) {
-	return s.engine.CodexReviewerNativeSession(ctx, workerID)
-}
-
-// SnapshotCodexReviewer captures the live reviewer identity for an account switch.
-func (s *Service) SnapshotCodexReviewer(ctx context.Context, workerID domain.SessionID) (ports.CodexReviewerControllerSnapshot, error) {
-	return s.engine.SnapshotCodexReviewer(ctx, workerID)
-}
-
-// SuspendCodexReviewer stops the exact reviewer generation for account switching.
-func (s *Service) SuspendCodexReviewer(ctx context.Context, workerID domain.SessionID) (bool, error) {
-	return s.engine.SuspendCodexReviewer(ctx, workerID)
-}
-
-// SuspendCodexReviewerExact stops only the recorded reviewer identity.
-func (s *Service) SuspendCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedHandleID, expectedNativeSessionID string) (bool, error) {
-	return s.engine.SuspendCodexReviewerExact(ctx, workerID, expectedHandleID, expectedNativeSessionID)
-}
-
-// RestoreCodexReviewer resumes the recorded reviewer native history.
-func (s *Service) RestoreCodexReviewer(ctx context.Context, workerID domain.SessionID) error {
-	return s.engine.RestoreCodexReviewer(ctx, workerID)
-}
-
-// RestoreCodexReviewerExact resumes only the recorded reviewer native history.
-func (s *Service) RestoreCodexReviewerExact(ctx context.Context, workerID domain.SessionID, expectedNativeSessionID string) error {
-	return s.engine.RestoreCodexReviewerExact(ctx, workerID, expectedNativeSessionID)
-}
-
 // SwitchReviewer atomically persists a worker's reviewer preference and returns
 // the authoritative post-switch review state.
 func (s *Service) SwitchReviewer(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.SessionReviews, error) {
@@ -567,15 +540,15 @@ func (s *Service) acquireReviewerCodexAdmission(ctx context.Context, workerID do
 	if s.codexOperationGate == nil || !s.codexReviewUsesCodex(ctx, workerID, harness) {
 		return func() {}, nil
 	}
-	return s.codexOperationGate.AcquireShared(ctx)
+	return s.codexOperationGate.AcquireSharedWait(ctx)
 }
 
-// ActivitySignal is reviewer-owned hook metadata. It deliberately does not
-// model activity state for session/Kanban display; for now hooks only keep the
-// reviewer native conversation id up to date for restore.
+// ActivitySignal is reviewer-owned hook metadata.
 type ActivitySignal struct {
 	Event          string
+	State          domain.ActivityState
 	AgentSessionID string
+	LaunchID       string
 }
 
 // ApplyReviewActivitySignal records reviewer-owned hook facts without touching
@@ -584,19 +557,26 @@ func (s *Service) ApplyReviewActivitySignal(ctx context.Context, reviewSessionID
 	if reviewSessionID == "" {
 		return fmt.Errorf("%w: review session id is required", ErrInvalid)
 	}
-	if _, ok, err := s.store.GetReviewByID(ctx, reviewSessionID); err != nil {
+	review, ok, err := s.store.GetReviewByID(ctx, reviewSessionID)
+	if err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("%w: review session %q", ErrNotFound, reviewSessionID)
 	}
-	if signal.AgentSessionID == "" {
+	if signal.AgentSessionID == "" && signal.State == "" {
 		return nil
 	}
-	updated, err := s.store.UpdateReviewAgentSessionID(ctx, reviewSessionID, signal.AgentSessionID)
+	updated, err := s.store.UpdateReviewActivity(ctx, reviewSessionID, signal.State, signal.AgentSessionID, signal.LaunchID)
 	if err != nil {
 		return err
 	}
 	if !updated {
+		// A live reviewer row is reused across launches. Once it carries a launch
+		// generation, a delayed hook from an older reviewer must not clobber the
+		// replacement's activity state. Treat that as a successful no-op.
+		if review.ReviewerLaunchID != "" && signal.LaunchID != review.ReviewerLaunchID {
+			return nil
+		}
 		return fmt.Errorf("%w: review session %q", ErrNotFound, reviewSessionID)
 	}
 	return nil
@@ -641,12 +621,26 @@ func (s *Service) SubmitMany(ctx context.Context, workerID domain.SessionID, rev
 		return nil, fmt.Errorf("review service store is not configured")
 	}
 	runs := make([]domain.ReviewRun, 0, len(reviews))
+	var supersededRunIDs []string
 	for _, review := range reviews {
 		run, err := s.submitOne(ctx, workerID, review)
 		if err != nil {
+			// A newer trigger or lifecycle cancellation may have made one queued
+			// run terminal while the reviewer was working. That run is no longer
+			// submittable, but it must not prevent valid siblings from delivery.
+			if errors.Is(err, errRunSuperseded) {
+				supersededRunIDs = append(supersededRunIDs, review.RunID)
+				continue
+			}
 			return nil, err
 		}
 		runs = append(runs, run)
+	}
+	if len(runs) == 0 {
+		if len(supersededRunIDs) > 0 {
+			return nil, fmt.Errorf("%w: no submittable review runs in submission (superseded: %s)", ErrInvalid, strings.Join(supersededRunIDs, ", "))
+		}
+		return nil, fmt.Errorf("%w: no submittable review runs in submission", ErrInvalid)
 	}
 	if s.lifecycle == nil {
 		return runs, nil
@@ -706,7 +700,7 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 			return domain.ReviewRun{}, err
 		}
 		if !updated {
-			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", ErrInvalid, runID)
+			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", errRunSuperseded, runID)
 		}
 		run.Status = domain.ReviewRunComplete
 		run.Verdict = verdict
@@ -746,7 +740,7 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 	case domain.ReviewRunDelivered:
 		return run, nil
 	default:
-		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", ErrInvalid, runID)
+		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", errRunSuperseded, runID)
 	}
 	return run, nil
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 type fixedBrowserCapability string
@@ -108,6 +109,58 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	}
 }
 
+func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) {
+	daemonRunFile := filepath.Join(t.TempDir(), "daemon-running.json")
+	previous := envKeysCaseInsensitive
+	envKeysCaseInsensitive = true
+	t.Cleanup(func() { envKeysCaseInsensitive = previous })
+
+	manager := &Manager{
+		dataDir:     `C:\ao`,
+		runFilePath: daemonRunFile,
+		executable:  func() (string, error) { return filepath.Join(t.TempDir(), "ao"), nil },
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "issue-9", map[string]string{
+		"Path":                           `C:\project\bin`,
+		"ao_session_id":                  "hacked",
+		"Ao_Project_Id":                  "hacked",
+		"aO_Issue_ID":                    "hacked",
+		"Ao_Data_Dir":                    "hacked",
+		"ao_run_file":                    "hacked",
+		"ao_browser_runtime_token":       "runtime-secret",
+		"ao_browser_runtime_token_stdin": "1",
+		"buildMode":                      "production",
+	})
+
+	for _, key := range []string{
+		"Path",
+		"ao_session_id",
+		"Ao_Project_Id",
+		"aO_Issue_ID",
+		"Ao_Data_Dir",
+		"ao_run_file",
+		"ao_browser_runtime_token",
+		"ao_browser_runtime_token_stdin",
+	} {
+		if _, ok := env[key]; ok {
+			t.Fatalf("case variant %s survived in runtime env: %v", key, env)
+		}
+	}
+	if env["PATH"] == "" {
+		t.Fatalf("PATH was not pinned: %v", env)
+	}
+	if env[EnvSessionID] != "mer-1" || env[EnvProjectID] != "mer" || env[EnvIssueID] != "issue-9" || env[EnvDataDir] != `C:\ao` {
+		t.Fatalf("protected AO env = %v", env)
+	}
+	if env[EnvRunFile] != daemonRunFile || env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
+		t.Fatalf("runtime protected env = %v", env)
+	}
+	if env["buildMode"] != "production" {
+		t.Fatalf("project env spelling was not preserved: %v", env)
+	}
+}
+
 func TestRuntimeEnvPinsHooksToDaemonRunFile(t *testing.T) {
 	daemonRunFile := filepath.Join(t.TempDir(), "daemon-running.json")
 	t.Setenv("AO_RUN_FILE", filepath.Join(t.TempDir(), "inherited-wrong-daemon.json"))
@@ -199,8 +252,8 @@ func TestHookPATH(t *testing.T) {
 
 func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	cfg := domain.ProjectConfig{
-		AgentConfig:  domain.AgentConfig{Model: "base", Mode: "low", Permissions: domain.PermissionModeAuto},
-		Worker:       domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "worker", Mode: "high"}},
+		AgentConfig:  domain.AgentConfig{Model: "base", Effort: "medium", Mode: "low", Permissions: domain.PermissionModeAuto},
+		Worker:       domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Model: "worker", Effort: "high", Mode: "high"}},
 		Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode},
 	}
 
@@ -217,13 +270,124 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 	}
 
 	// Role override merges over the base agent config (set fields win; unset keep base).
-	got := effectiveAgentConfig(domain.KindWorker, cfg)
-	if got.Model != "worker" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
+	got := effectiveAgentConfig(domain.HarnessCodex, domain.KindWorker, cfg)
+	if got.Model != "worker" || got.Effort != "high" || got.Mode != "high" || got.Permissions != domain.PermissionModeAuto {
 		t.Fatalf("merged worker config = %#v, want model=worker mode=high permissions=auto", got)
 	}
 	// Orchestrator has no agent-config override, so the base config is used as-is.
-	if got := effectiveAgentConfig(domain.KindOrchestrator, cfg); got.Model != "base" {
+	if got := effectiveAgentConfig(domain.HarnessClaudeCode, domain.KindOrchestrator, cfg); got.Model != "base" {
 		t.Fatalf("orchestrator config = %#v, want base", got)
+	}
+	// A launch harness that differs from the role's configured harness drops the
+	// role's model/mode — they were tuned for the other agent — but keeps the
+	// harness-neutral permissions.
+	if got := effectiveAgentConfig(domain.HarnessAider, domain.KindWorker, cfg); got.Model != "base" || got.Mode != "low" || got.Permissions != domain.PermissionModeAuto {
+		t.Fatalf("mismatched-harness worker config = %#v, want model=base mode=low permissions=auto", got)
+	}
+	// A role override with no harness pinned is deliberately treated as
+	// "applies to any harness", so its model/mode are inherited whichever
+	// harness the session launches with. This is a behavior decision, not a
+	// side effect: assert it across two unrelated harnesses so it cannot
+	// silently flip back to the old drop-on-every-switch behavior.
+	unpinned := domain.ProjectConfig{
+		AgentConfig: domain.AgentConfig{Model: "base", Mode: "low"},
+		Worker:      domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "worker", Mode: "high"}},
+	}
+	for _, harness := range []domain.AgentHarness{domain.HarnessAider, domain.HarnessCodex} {
+		got := effectiveAgentConfig(harness, domain.KindWorker, unpinned)
+		if got.Model != "worker" || got.Mode != "high" {
+			t.Fatalf("unpinned worker config for %q = %#v, want model=worker mode=high", harness, got)
+		}
+	}
+}
+
+type tuningCatalog struct {
+	catalog ports.AgentModelCatalog
+	err     error
+	calls   *int
+}
+
+func (c tuningCatalog) Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error) {
+	if c.calls != nil {
+		*c.calls++
+	}
+	return c.catalog, c.err
+}
+
+func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
+	m := &Manager{modelCatalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "old", Efforts: []string{"high"}},
+		{ID: "new", Efforts: []string{"low"}},
+	}}}}
+	project := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "old", Effort: "high"}}}
+	resolved, err := m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new"},
+	}, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != "new" || resolved.Effort != "" {
+		t.Fatalf("resolved = %#v, want new model with provider defaults", resolved)
+	}
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "old"}, EffortOverride: true,
+	}, project)
+	if err != nil || resolved.Effort != "" {
+		t.Fatalf("explicit provider defaults did not clear role tuning: %#v, %v", resolved, err)
+	}
+
+	_, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new", Effort: "high"},
+	}, project)
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("error = %v, want ErrUnsupportedEffort", err)
+	}
+
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "custom"},
+	}, project)
+	if err != nil || resolved.Model != "custom" || resolved.Effort != "" {
+		t.Fatalf("custom model with provider defaults = %#v, %v", resolved, err)
+	}
+
+	m.modelCatalog = tuningCatalog{err: errors.New("discovery failed")}
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new"},
+	}, domain.ProjectConfig{})
+	if err != nil || resolved.Model != "new" {
+		t.Fatalf("provider defaults should survive discovery failure: %#v, %v", resolved, err)
+	}
+	_, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "new", Effort: "high"},
+	}, domain.ProjectConfig{})
+	if !errors.Is(err, ports.ErrModelCapabilitiesUnavailable) {
+		t.Fatalf("error = %v, want ErrModelCapabilitiesUnavailable", err)
+	}
+}
+
+func TestResolveChatAgentConfigDropsEffortForNonCodexHarnesses(t *testing.T) {
+	catalogCalls := 0
+	m := &Manager{modelCatalog: tuningCatalog{calls: &catalogCalls, catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "sonnet", IsDefault: true},
+	}}}}
+	resolved, err := m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		AgentConfig: ports.AgentConfig{Model: "sonnet", Effort: "high"}, EffortOverride: true,
+	}, domain.ProjectConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Effort != "" {
+		t.Fatalf("Claude Code effort = %q, want provider default", resolved.Effort)
+	}
+	if catalogCalls != 0 {
+		t.Fatalf("Claude Code model catalog calls = %d, want 0", catalogCalls)
 	}
 }
 
@@ -290,14 +454,14 @@ func TestSpawnPermissionPrecedence(t *testing.T) {
 		} {
 			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
 				cfg := domain.ProjectConfig{AgentConfig: domain.AgentConfig{Permissions: tc.base}, Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: tc.role}}, Orchestrator: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: tc.role}}}
-				got := applySpawnAgentConfig(effectiveAgentConfig(kind, cfg), domain.AgentConfig{Permissions: tc.spawn})
+				got := applySpawnAgentConfig(effectiveAgentConfig(domain.HarnessCodex, kind, cfg), domain.AgentConfig{Permissions: tc.spawn})
 				if got.Permissions != tc.want {
 					t.Fatalf("got %q want %q", got.Permissions, tc.want)
 				}
 			})
 		}
 	}
-	if got := effectiveAgentConfig(domain.KindWorker, domain.ProjectConfig{}); got.Permissions != "" {
+	if got := effectiveAgentConfig(domain.HarnessCodex, domain.KindWorker, domain.ProjectConfig{}); got.Permissions != "" {
 		t.Fatalf("non-spawn resolution changed: %q", got.Permissions)
 	}
 }

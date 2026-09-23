@@ -45,14 +45,8 @@ func downTo(t *testing.T, db *sql.DB, version int64) {
 // foreign_keys pragma so review_run rows can be seeded without the full
 // project/session/review parent chain — the dedup is pure data movement.
 func TestMigration0013DedupesExistingDuplicates(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
 	// Stop just before 0013: review tables exist, the unique index does not.
-	upTo(t, db, 12)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 12)
 
 	// One duplicate group on shaA (a stale run, a completed pass carrying the
 	// verdict, and a newer still-running pass), plus a distinct sha and two
@@ -116,13 +110,7 @@ func TestMigration0013DedupesExistingDuplicates(t *testing.T) {
 }
 
 func TestMigration0044BackfillsBatchlessReviewRuns(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 43)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 43)
 	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
@@ -144,13 +132,7 @@ func TestMigration0044BackfillsBatchlessReviewRuns(t *testing.T) {
 }
 
 func TestMigration0080MovesReviewerSessionsIntoPerHarnessReviewRows(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 48)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 48)
 	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
 		t.Fatalf("disable foreign keys for review-only fixture: %v", err)
 	}
@@ -233,13 +215,7 @@ ON CONFLICT (session_id, harness) DO UPDATE SET
 }
 
 func TestMigration0103RoundTripsWithoutChangeLogCompatViews(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 103)
+	db := openMigratedDatabaseCopy(t, 103)
 
 	var leakedCompatRefs int
 	if err := db.QueryRow(`

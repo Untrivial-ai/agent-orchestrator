@@ -1,5 +1,6 @@
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
+import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
 	app,
 	BaseWindow,
@@ -30,6 +31,7 @@ import {
 	setUpdateRestartFailureHandler,
 	getUpdateStatus,
 	setUpdateSettings,
+	setMacDifferentialUpdates,
 	returnToHome,
 	type UpdateCheckOptions,
 } from "./main/auto-updater";
@@ -71,6 +73,7 @@ import {
 	refreshSlowDaemonStartupDetails,
 	slowDaemonStartupStatus,
 } from "./shared/daemon-startup-status";
+import { toggleAppDevTools } from "./main/app-devtools";
 import { attachAppShortcuts } from "./main/app-shortcuts";
 import {
 	KEYBOARD_SHORTCUTS_HELP_CHANNEL,
@@ -84,6 +87,17 @@ import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
 } from "./shared/tray";
+import {
+	parseChatDraftBoundaryKinds,
+	parseChatDraftDialogCopy,
+	type ChatDraftDialogCopy,
+	SET_CHAT_DRAFT_RISK_CHANNEL,
+	type ChatDraftBoundaryKind,
+} from "./shared/chat-draft-risk";
+import {
+	confirmUnsafeChatDraftLeave,
+	shouldPreventUnsafeChatDraftClose,
+} from "./main/chat-draft-unload";
 import {
 	type DaemonProbe,
 	expectedDaemonPort,
@@ -117,6 +131,7 @@ import {
 	TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL,
 	TELEMETRY_POLICY_CHANGED_CHANNEL,
 	TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL,
+	telemetryPolicyRetryable,
 	type RendererTelemetryCapture,
 	type TelemetryPolicyView,
 } from "./shared/telemetry-policy";
@@ -143,10 +158,17 @@ import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/bro
 import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
-import { dockBounceType, shouldReplaceBounce, shouldSignalAttention, shouldToast } from "./main/notification-signals";
-import { buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
+import {
+	dockBounceType,
+	shouldReplaceBounce,
+	shouldSignalAttention,
+	shouldToast,
+	toastSilent,
+} from "./main/notification-signals";
+import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
+import { registerRemotesIpc, remotesFilePath } from "./main/remotes-main";
 import { AGENT_SWITCH_VISIBILITY_IPC_CHANNEL } from "./shared/agent-switch-observability";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
@@ -168,7 +190,9 @@ process.stdout.on("error", ignoreStdStreamError);
 process.stderr.on("error", ignoreStdStreamError);
 
 // Must run before app ready so the About panel and default-menu role labels use it.
-app.setName("Agent Orchestrator");
+// Unpackaged runs get a distinct name so the dev window, dock menu, and About
+// panel never impersonate the installed app (#3642).
+app.setName(app.isPackaged ? "Agent Orchestrator" : "Agent Orchestrator (dev)");
 
 // Windows shows native toasts only when the app declares an AppUserModelID that
 // matches its installer shortcut (the NSIS maker's appId). Without it,
@@ -293,6 +317,10 @@ let keybindingOverrides: KeybindingOverrides = {};
 let keybindingRecordingActive = false;
 let closeShellTerminalShortcutEnabled = false;
 let terminalFocused = false;
+let chatDraftRisks: ChatDraftBoundaryKind[] = [];
+let chatDraftDialog: ChatDraftDialogCopy | undefined;
+let chatDraftQuitConfirmed = false;
+let chatDraftWindowCloseConfirmed = false;
 // Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
 let supervisorLink: SupervisorLinkHandle | null = null;
 // Guard: prevents stacking multiple flashFrame(true) calls when notifications arrive rapidly.
@@ -305,6 +333,20 @@ let pendingBounce: { id: number; critical: boolean } | null = null;
 // Live mirror of the persisted `soundNotificationsEnabled` UI setting, kept in sync by the
 // uiSettings:set handler so a toggle flip takes effect without an app restart.
 let soundNotificationsEnabled = DEFAULT_UI_SETTINGS.soundNotificationsEnabled;
+
+// Plays the bundled notification sound through the renderer (main has no
+// audio output). `shell.beep()` is only the fallback for when no shell is
+// alive to play it: on Linux it is a silent no-op for desktop-launched apps
+// (Electron writes `\a` to /dev/console or /dev/tty, neither of which such an
+// app can open), which is why the renderer owns playback (#5514).
+function playNotificationSound(): void {
+	const shellContents = getShellWebContents();
+	if (shellContents && !shellContents.isDestroyed()) {
+		shellContents.send("notifications:playSound");
+		return;
+	}
+	shell.beep();
+}
 
 const isDev = !app.isPackaged;
 
@@ -323,7 +365,7 @@ const MAC_WINDOW_BUTTON_Y = 12;
 const RENDERER_SCHEME = "app";
 const RENDERER_HOST = "renderer";
 const RENDERER_ORIGIN = `${RENDERER_SCHEME}://${RENDERER_HOST}`;
-const NATIVE_WINDOW_BACKGROUND_DARK = "#0f1014";
+const NATIVE_WINDOW_BACKGROUND_DARK = "#0c0c0e";
 const NATIVE_WINDOW_BACKGROUND_LIGHT = "#fbfbfb";
 
 function getShellWebContents(): WebContents | null {
@@ -424,21 +466,23 @@ function annotatePreloadPath(): string {
 
 // Runtime window/taskbar icon for Linux and Windows. macOS ignores this and
 // uses the .app bundle's .icns instead. Packaged: shipped via extraResource to
-// resources/icon.png; dev: the source asset under frontend/assets.
+// resources/icon.png.
+// Unpackaged runs return undefined so the dev window keeps Electron's default
+// icon and never impersonates the installed app's taskbar/dock icon (#3642).
 function windowIconPath(): string | undefined {
+	if (!app.isPackaged) return undefined;
 	const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
-	const candidate = app.isPackaged
-		? path.join(process.resourcesPath, iconFile)
-		: path.join(__dirname, `../../assets/${iconFile}`);
+	const candidate = path.join(process.resourcesPath, iconFile);
 	if (existsSync(candidate)) return candidate;
-	const fallback = app.isPackaged
-		? path.join(process.resourcesPath, "icon.png")
-		: path.join(__dirname, "../../assets/icon.png");
+	const fallback = path.join(process.resourcesPath, "icon.png");
 	return existsSync(fallback) ? fallback : undefined;
 }
 
 function applyRuntimeAppIcon(): void {
 	if (process.platform !== "darwin") return;
+	// Unpackaged runs keep Electron's default dock icon so the dev window is
+	// visually distinct from the installed app (#3642).
+	if (!app.isPackaged) return;
 	const iconPath = windowIconPath();
 	if (!iconPath) return;
 	const icon = nativeImage.createFromPath(iconPath);
@@ -485,6 +529,17 @@ function buildWindowsAppMenu(): Menu {
 			void browserViewHost?.toggleDevToolsForLastFocused().then((state) => {
 				if (!state) fallback();
 			}).catch(fallback);
+		}),
+	);
+}
+
+// Menu installed on Linux where the native menu bar is hidden by default.
+// The role-based menu preserves standard accelerators (Reload, DevTools, zoom,
+// full screen, edit commands) while routing DevTools through AO's guarded handler.
+function buildLinuxAppMenu(): Menu {
+	return Menu.buildFromTemplate(
+		buildLinuxAppMenuTemplate(() => {
+			void toggleAppDevTools(browserViewHost, getShellWebContents);
 		}),
 	);
 }
@@ -562,12 +617,12 @@ async function createWindowInternal(): Promise<void> {
 		height: 860,
 		minWidth: 960,
 		minHeight: 640,
-		title: "Agent Orchestrator",
+		title: app.isPackaged ? "Agent Orchestrator" : "Agent Orchestrator (dev)",
 		icon: windowIconPath(),
 		backgroundColor: NATIVE_WINDOW_BACKGROUND_DARK,
 		// Windows goes frameless and the renderer paints the whole titlebar,
-		// including custom min/max/close controls. macOS/Linux keep the inset
-		// traffic-light chrome.
+		// including custom min/max/close controls. macOS keeps the inset
+		// traffic-light chrome, and Linux uses standard frame decorations.
 		...(process.platform === "win32"
 			? {
 					titleBarStyle: "hidden" as const,
@@ -575,11 +630,17 @@ async function createWindowInternal(): Promise<void> {
 					// accelerators) below; the visible menu is painted by WindowTitlebar.
 					autoHideMenuBar: true,
 				}
-			: {
-					titleBarStyle: "hiddenInset" as const,
-					// Fixed natural titlebar position — never moved on sidebar toggle.
-					trafficLightPosition: { x: MAC_WINDOW_BUTTON_X, y: MAC_WINDOW_BUTTON_Y },
-				}),
+			: process.platform === "linux"
+				? {
+						// Auto-hide the native menu bar strip. Accelerators stay active
+						// via the application menu; pressing Alt reveals the menu bar.
+						autoHideMenuBar: true,
+					}
+				: {
+						titleBarStyle: "hiddenInset" as const,
+						// Fixed natural titlebar position — never moved on sidebar toggle.
+						trafficLightPosition: { x: MAC_WINDOW_BUTTON_X, y: MAC_WINDOW_BUTTON_Y },
+					}),
 	};
 	mainWindow = new BaseWindow(windowOptions);
 	const composition = createWindowComposition({
@@ -604,7 +665,8 @@ async function createWindowInternal(): Promise<void> {
 	// installed so its accelerators keep working and act on the focused pane;
 	// setMenuBarVisibility(false) keeps the strip itself out of view. macOS gets
 	// an explicit menu so DevTools avoids Electron's unsafe built-in role; Linux
-	// keeps its native menu.
+	// installs the role-based menu so accelerators and guarded DevTools work,
+	// while autoHideMenuBar and setMenuBarVisibility(false) hide the menu strip.
 	if (process.platform === "win32") {
 		Menu.setApplicationMenu(buildWindowsAppMenu());
 		mainWindow.setMenuBarVisibility(false);
@@ -624,6 +686,9 @@ async function createWindowInternal(): Promise<void> {
 				}),
 			),
 		);
+	} else if (process.platform === "linux") {
+		Menu.setApplicationMenu(buildLinuxAppMenu());
+		mainWindow.setMenuBarVisibility(false);
 	}
 
 	// Harden navigation: never let renderer/terminal content open in-app windows or
@@ -642,6 +707,33 @@ async function createWindowInternal(): Promise<void> {
 		}
 	});
 
+	shellWebContents.on("will-prevent-unload", (event) => {
+		if (chatDraftRisks.length === 0) return;
+		if (
+			chatDraftQuitConfirmed ||
+			chatDraftWindowCloseConfirmed ||
+			confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog)
+		) {
+			// Electron uses preventDefault here to ignore beforeunload and continue
+			// leaving. Doing nothing honors the renderer's request to stay.
+			event.preventDefault();
+		}
+	});
+
+	mainWindow.on("close", (event) => {
+		const preventClose = shouldPreventUnsafeChatDraftClose(
+			chatDraftRisks,
+			chatDraftQuitConfirmed || chatDraftWindowCloseConfirmed,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		);
+		if (preventClose) {
+			event.preventDefault();
+			return;
+		}
+		if (chatDraftRisks.length > 0) chatDraftWindowCloseConfirmed = true;
+	});
+
 	// Application shortcuts are handled here so they fire no matter which web
 	// contents holds focus — the shell renderer, xterm's helper textarea, or a
 	// browser-preview view (wired per-view in the browser host).
@@ -658,7 +750,7 @@ async function createWindowInternal(): Promise<void> {
 			shouldHandleAppShortcutInBrowserContext(id, chord, isMac),
 		(id) => {
 			if (id !== "toggle-browser-devtools") return;
-			void browserViewHost?.toggleDevToolsForLastFocused().catch(() => undefined);
+			void toggleAppDevTools(browserViewHost, getShellWebContents);
 		},
 		() => terminalFocused,
 	);
@@ -751,6 +843,10 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
 
 	mainWindow.on("closed", () => {
+		chatDraftRisks = [];
+		chatDraftDialog = undefined;
+		chatDraftQuitConfirmed = false;
+		chatDraftWindowCloseConfirmed = false;
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
 		if (windowComposition === composition) windowComposition = null;
@@ -877,6 +973,7 @@ let cachedShellEnv: Record<string, string> | null = null;
 // Memoize the in-flight resolution so concurrent/repeat awaits are cheap.
 let shellEnvPromise: Promise<void> | null = null;
 let terminalShellPreference: TerminalShellPreference = { ...DEFAULT_TERMINAL_SHELL };
+const configuredLoginShell = process.platform === "darwin" ? (os.userInfo().shell ?? undefined) : undefined;
 
 // Telemetry defaults stamped on the daemon env on every platform; explicit env
 // always wins.
@@ -983,7 +1080,7 @@ function ensureShellEnv(): Promise<void> {
 			});
 			return shellEnvPromise;
 		}
-		shellEnvPromise = resolveShellEnv(process.env, runLoginShell).then((resolved) => {
+		shellEnvPromise = resolveShellEnv(process.env, runLoginShell, configuredLoginShell).then((resolved) => {
 			cachedShellEnv = resolved;
 			if (!resolved) {
 				console.error("AO: could not read the login-shell environment; falling back to a static PATH floor.");
@@ -1037,11 +1134,8 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	// re-linked, survives app quit); a normal app-owned daemon is "app";
 	// headless `ao start` sets none (stays unlinked, persistent by default).
 	//
-	// AO_APP_RUN_ID identifies THIS app launch. It is constant for the process
-	// lifetime, so a daemon the supervisor restarts inherits the same id and its
-	// standalone shell terminals survive; a later app launch gets a new id, which
-	// is how the daemon recognises the previous run's shells as orphans and
-	// destroys them (see internal/service/shellterm).
+	// AO_APP_RUN_ID scopes temporary command/auth terminals to this app launch.
+	// User-opened shells remain attachable across launches while their PTYs live.
 	const AO_OWNER = forceKeep ? "persistent" : "app";
 	const bundledTmuxBinary = stagedBundledTmuxBinary;
 	const ownerTag = {
@@ -1085,7 +1179,12 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	if (process.platform === "win32") {
 		return { ...process.env, ...(cachedShellEnv ?? {}), ...devExtras, ...telemetryOverrides(), ...ownerTag };
 	}
-	return buildDaemonEnv(process.env, cachedShellEnv, { ...devExtras, ...telemetryOverrides(), ...ownerTag });
+	return buildDaemonEnv(
+		process.env,
+		cachedShellEnv,
+		{ ...devExtras, ...telemetryOverrides(), ...ownerTag },
+		configuredLoginShell,
+	);
 }
 
 function pathKey(value: string): string {
@@ -1943,6 +2042,22 @@ ipcMain.on(SET_TERMINAL_FOCUSED_CHANNEL, (event, focused: unknown) => {
 	terminalFocused = focused;
 });
 
+ipcMain.on(SET_CHAT_DRAFT_RISK_CHANNEL, (event, risks: unknown, dialogCopy: unknown) => {
+	if (event.sender !== getShellWebContents()) return;
+	const parsed = parseChatDraftBoundaryKinds(risks);
+	const parsedCopy = parseChatDraftDialogCopy(dialogCopy);
+	if (!parsed || (parsed.length > 0 && !parsedCopy)) return;
+	if (
+		chatDraftRisks.length === parsed.length &&
+		chatDraftRisks.every((risk, index) => risk === parsed[index]) &&
+		JSON.stringify(chatDraftDialog) === JSON.stringify(parsedCopy)
+	) return;
+	chatDraftRisks = [...parsed];
+	chatDraftDialog = parsedCopy;
+	chatDraftQuitConfirmed = false;
+	chatDraftWindowCloseConfirmed = false;
+});
+
 // Backs the custom title-bar menu (WindowTitlebar). Each item maps to the same
 // action the native default menu would have performed.
 ipcMain.handle("menu:action", (_event, action: string) => {
@@ -2037,7 +2152,7 @@ ipcMain.on(AGENT_SWITCH_VISIBILITY_IPC_CHANNEL, (event, request: unknown) => {
 });
 
 function failClosedTelemetryPolicyView(): TelemetryPolicyView {
-	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
+	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
 }
 async function chooseDirectory(title: string, defaultPath?: string): Promise<string | null> {
 	if (defaultPath) await mkdir(defaultPath, { recursive: true });
@@ -2055,6 +2170,13 @@ async function chooseDirectory(title: string, defaultPath?: string): Promise<str
 	if (result.canceled) return null;
 	return result.filePaths[0] ?? null;
 }
+
+registerRemotesIpc(ipcMain, {
+	file: remotesFilePath(),
+	// No host is ever connected yet; the proxy registry that owns live
+	// connections lands in the next change and replaces this.
+	disconnect: async () => undefined,
+});
 
 ipcMain.handle("app:chooseDirectory", async (_event, input?: string | { title?: string; defaultPath?: string }) => {
 	const title = typeof input === "string"
@@ -2208,13 +2330,19 @@ ipcMain.handle("appState:setMigration", async (_event, migration: MigrationState
 
 ipcMain.handle("updateSettings:get", async (): Promise<UpdateSettings> => {
 	const runFile = runFilePath();
-	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null };
+	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false };
 	return readUpdateSettings(path.dirname(runFile));
 });
 ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) => {
 	const runFile = runFilePath();
 	if (!runFile) return;
 	await setUpdateSettings(path.dirname(runFile), settings);
+});
+ipcMain.handle("updateSettings:setMacDifferentialUpdates", async (_event, enabled: unknown) => {
+	if (typeof enabled !== "boolean") return;
+	const runFile = runFilePath();
+	if (!runFile) return;
+	await setMacDifferentialUpdates(path.dirname(runFile), enabled);
 });
 
 ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
@@ -2263,6 +2391,32 @@ ipcMain.handle("updates:download", async (_event, requestId?: string) => {
 	await downloadUpdateNow(requestId);
 });
 ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAndInstallUpdate(confirmedVersion));
+// Retry after a failed macOS preparation: Squirrel can't reset a stalled staging
+// in-process, so restart AO like a manual quit-and-reopen. install-on-quit is
+// already off on the failed path, so quitting can't apply a half-prepared build.
+ipcMain.handle("updates:relaunch", () => {
+	app.relaunch();
+	app.quit();
+});
+
+// Whether THIS boot is a post-update relaunch, so the startup loader can show
+// "Updating / Restarting" copy instead of the normal "Connecting" phrases. The
+// marker is written on the quitAndInstall path (auto-updater.ts) on every OS and
+// consumed exactly once here; a corrupt/stale/mismatched marker reads as false
+// (see consumeUpdateRelaunchFlag). Cached so every renderer that asks during the
+// same boot gets the same answer and the marker is deleted only once.
+let postUpdateRelaunchPromise: Promise<boolean> | undefined;
+function detectPostUpdateRelaunch(): Promise<boolean> {
+	if (!postUpdateRelaunchPromise) {
+		const runFile = runFilePath();
+		postUpdateRelaunchPromise =
+			app.isPackaged && runFile
+				? consumeUpdateRelaunchFlag({ stateDir: path.dirname(runFile), version: app.getVersion() }).catch(() => false)
+				: Promise.resolve(false);
+	}
+	return postUpdateRelaunchPromise;
+}
+ipcMain.handle("updates:isPostUpdateRelaunch", () => detectPostUpdateRelaunch());
 
 function cancelDockBounce(): void {
 	if (pendingBounce === null) return;
@@ -2273,10 +2427,21 @@ function cancelDockBounce(): void {
 
 ipcMain.handle(
 	"notifications:show",
-	(_event, notification: { id: string; title: string; body?: string; type?: string }) => {
+	(_event, notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) => {
 		if (!notification.id || !mainWindow) return;
-		// Only signal when the window isn't already focused (the user is looking).
-		if (mainWindow.isFocused()) return;
+		// "Already looking" = the window has focus, or the renderer reports the
+		// prompt itself is on screen (`watched`). Visual signals are skipped then.
+		const looking = mainWindow.isFocused() || notification.watched === true;
+		// On Linux the sound ignores that guess: Wayland gives apps no reliable
+		// visibility, so a window parked on another workspace still reports
+		// focused/visible and would otherwise stay silent. macOS and Windows
+		// report focus accurately and keep the quieter behaviour.
+		const playsSound =
+			shouldSignalAttention(notification.type) &&
+			soundNotificationsEnabled &&
+			(process.platform === "linux" || !looking);
+		if (playsSound) playNotificationSound();
+		if (looking) return;
 		// OS toast: a native banner the user can click to jump straight back to the
 		// session. Fires for every backend notification type (see shouldToast), so a
 		// new type in notification.go never silently loses its toast.
@@ -2284,6 +2449,10 @@ ipcMain.handle(
 			const toast = new ElectronNotification({
 				title: notification.title,
 				body: notification.body,
+				// Mute the OS chime when our sound replaces it or the user turned
+				// sound notifications off. Honoured on macOS/Windows only; Linux
+				// notification daemons ignore it (see toastSilent).
+				silent: toastSilent(process.platform, soundNotificationsEnabled, playsSound),
 				// AO logo as the notification icon on Windows/Linux. Omitted on macOS,
 				// where a custom icon renders only as a redundant right-side content image —
 				// macOS uses the app-bundle icon (the AO logo in a packaged build) as the
@@ -2331,11 +2500,15 @@ ipcMain.handle(
 				});
 			}
 		}
-		if (shouldSignalAttention(notification.type) && soundNotificationsEnabled) {
-			shell.beep();
-		}
 	},
 );
+
+// The renderer could not decode or start the bundled sound. Beep so the
+// notification still makes a sound where the OS beep works at all.
+ipcMain.on("notifications:soundFailed", (event) => {
+	if (event.sender !== getShellWebContents()) return;
+	shell.beep();
+});
 
 // Dev-only: force attention signal regardless of window focus (for testing)
 if (!app.isPackaged) {
@@ -2353,7 +2526,7 @@ if (!app.isPackaged) {
 			}, 2000);
 		}
 		if (soundNotificationsEnabled) {
-			shell.beep();
+			playNotificationSound();
 		}
 	});
 }
@@ -2562,6 +2735,12 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	if (app.isPackaged) {
+		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
+		await checkDesktopVersionFloor().catch((err) =>
+			console.warn("desktop version floor check failed:", err),
+		);
+	}
 	void refreshGitHubOwners();
 	const visibilityKillSwitched = (process.env.AO_TELEMETRY_DISABLED_EVENTS ?? "").split(",").some((name) => name.trim() === "ao.agent_switch.visibility_failure");
 	// The approved release gate is intentionally closed. Tests inject the
@@ -2585,7 +2764,7 @@ app.whenReady().then(async () => {
 	telemetryPolicyController = policyController;
 	try { await policyController.initialize(); }
 	catch (error) { console.error("telemetry policy bootstrap failed; reporting remains disabled:", error); }
-	setInterval(() => { if (policyController.snapshot().state !== "applied") void policyController.retryPendingCleanup(); }, 1_000).unref();
+	setInterval(() => { if (telemetryPolicyRetryable(policyController.snapshot())) void policyController.retryPendingCleanup(); }, 1_000).unref();
 	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
 	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
 	// code past a successful move never runs in this instance, so a post-move-only
@@ -2638,6 +2817,46 @@ app.whenReady().then(async () => {
 		await writeAppStateOnLaunch();
 	} catch (err) {
 		console.error("failed to write app-state marker:", err);
+	}
+
+	// A pre-fix bundle cannot be patched retroactively. After the maintained
+	// /Applications build runs, offer to retire older AO copies that can still
+	// overwrite it if Finder, Spotlight, or an old Dock tile launches them.
+	try {
+		const { formatStaleAppCopies, retireStaleMacAppCopies } = await import("./main/stale-app-copies");
+		await retireStaleMacAppCopies({
+			platform: process.platform,
+			isPackaged: app.isPackaged,
+			runningPath: resolveBundlePath(),
+			runningVersion: app.getVersion(),
+			confirm: async (copies) => {
+				const result = await dialog.showMessageBox({
+					type: "warning",
+					buttons: ["Move old copies to Trash", "Not now"],
+					defaultId: 0,
+					cancelId: 1,
+					title: "Remove old AO copies",
+					message: "Old copies of Agent Orchestrator can replace your updated app.",
+					detail: `${formatStaleAppCopies(copies)}\n\nMove these copies to Trash to prevent another downgrade. Your AO projects and sessions will not be removed.`,
+					noLink: true,
+				});
+				return result.response === 0;
+			},
+			trashItem: (candidate) => shell.trashItem(candidate),
+			reportFailures: async (paths) => {
+				await dialog.showMessageBox({
+					type: "warning",
+					buttons: ["OK"],
+					defaultId: 0,
+					title: "Some old copies could not be removed",
+					message: "Move these copies to Trash manually before launching AO again.",
+					detail: paths.join("\n"),
+					noLink: true,
+				});
+			},
+		});
+	} catch (err) {
+		console.warn("stale AO copy cleanup failed:", err);
 	}
 
 	const keybindingRunFile = runFilePath();
@@ -2695,6 +2914,18 @@ setUpdateRestartFailureHandler(() => {
 
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
+	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
+		event.preventDefault();
+		if (confirmUnsafeChatDraftLeave(
+			chatDraftRisks,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		)) {
+			chatDraftQuitConfirmed = true;
+			app.quit();
+		}
+		return;
+	}
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	trayLifecycle.dispose();

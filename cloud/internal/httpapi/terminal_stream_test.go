@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+	"github.com/coder/websocket"
 )
 
 func TestTerminalStreamsRegisterReplacesPrevious(t *testing.T) {
@@ -60,6 +63,17 @@ type pushStubStore struct {
 	pending   []domain.WorkerRequest
 	completed []string
 	failed    []string
+}
+
+type relayOutputStore struct{ Store }
+
+func (relayOutputStore) ListTerminalOutput(
+	context.Context,
+	domain.TerminalSession,
+	int64,
+	int,
+) ([]domain.TerminalOutput, string, error) {
+	return nil, "open", nil
 }
 
 func (s *pushStubStore) ClaimTerminalInput(
@@ -155,5 +169,75 @@ func TestPushPendingTerminalInputFailsInvalidPayload(t *testing.T) {
 	}
 	if len(stream.send) != 0 {
 		t.Fatal("invalid payload must not be pushed")
+	}
+}
+
+func TestTerminalRelayWritesLiveOutputBeforeDurableWake(t *testing.T) {
+	registry := newTerminalStreams()
+	server := &Server{
+		store:                relayOutputStore{},
+		logger:               slog.Default(),
+		terminalRelayEnabled: true,
+		terminalStreams:      registry,
+	}
+	relayCtx, cancelRelay := context.WithCancel(context.Background())
+	defer cancelRelay()
+	result := make(chan error, 1)
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			result <- err
+			return
+		}
+		defer connection.CloseNow()
+		var writeMu sync.Mutex
+		result <- server.writeTerminalOutput(relayCtx, connection, domain.TerminalSession{
+			ID: "term", OrgID: "org", SessionID: "session", WorkerEpoch: 1,
+		}, 0, true, &writeMu)
+	}))
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + listener.URL[len("http"):]
+	connection, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial relay: %v", err)
+	}
+	defer connection.CloseNow()
+
+	// Drain ready and replay_complete. The durable store intentionally contains
+	// no output: the next message must come from the live relay subscription.
+	for received := 0; received < 2; {
+		_, payload, err := connection.Read(ctx)
+		if err != nil {
+			t.Fatalf("read setup message: %v", err)
+		}
+		var message terminalServerMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode setup message: %v", err)
+		}
+		if message.Type == "ready" || message.Type == "replay_complete" {
+			received++
+		}
+	}
+	registry.relayOutput("term", terminalRelayOutput{sequence: 1, data: []byte("fast")})
+	_, payload, err := connection.Read(ctx)
+	if err != nil {
+		t.Fatalf("read live relay output: %v", err)
+	}
+	var message terminalServerMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatalf("decode live relay output: %v", err)
+	}
+	if message.Type != "output" || message.Sequence != 1 {
+		t.Fatalf("got %+v, want live output sequence 1", message)
+	}
+	cancelRelay()
+	_ = connection.CloseNow()
+	select {
+	case <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay writer did not exit after browser close")
 	}
 }

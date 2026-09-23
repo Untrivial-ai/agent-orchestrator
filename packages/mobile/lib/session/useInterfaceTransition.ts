@@ -15,11 +15,14 @@ import {
 	interfaceTransitionNextPoll,
 	mobileInterfaceTransitionIsActive,
 } from "./interfaceTransition";
+import { trackFeature } from "../telemetry/runtime";
 
 export {
 	interfaceSwitchAlert,
 	mobileInterfaceTransitionIsActive,
+	mobileInterfaceTransitionIsBusy,
 	mobileInterfaceTransitionIsCancellable,
+	mobileInterfaceTransitionRecoveryMessage,
 } from "./interfaceTransition";
 export type { InterfaceSwitchRecheck } from "./interfaceTransition";
 
@@ -226,6 +229,8 @@ export function useInterfaceTransition(
 		pollable,
 		refresh,
 		sessionId,
+		status?.transition?.id,
+		status?.transition?.errorCode,
 		status?.transition?.phase,
 		status?.reasonCode,
 	]);
@@ -236,7 +241,13 @@ export function useInterfaceTransition(
 			setStarting(true);
 			setError(undefined);
 			try {
-				const transition = await startSessionInterfaceTransition(cfg, sessionId, targetMode, policy);
+				// A live chat<->tui handoff. `mode` is the target the user switched to;
+				// in a two-mode world it also names the direction (to tui = from chat).
+				const transition = await trackFeature(
+					"handoff",
+					() => startSessionInterfaceTransition(cfg, sessionId, targetMode, policy),
+					{ mode: targetMode },
+				);
 				noteRequestLanded();
 				setStatus((current) => ({
 					supported: current?.supported ?? true,

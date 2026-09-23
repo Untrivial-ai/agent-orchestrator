@@ -1,27 +1,35 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
-const { getMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = vi.hoisted(() => ({
+const { getMock, patchMock, postMock, apiErrorCodeMock, apiErrorMessageMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
+	patchMock: vi.fn(),
 	postMock: vi.fn(),
 	apiErrorCodeMock: vi.fn(),
 	apiErrorMessageMock: vi.fn(),
 }));
 
-vi.mock("../lib/api-client", () => ({
-	apiClient: { GET: getMock, POST: postMock, PATCH: vi.fn() },
+vi.mock("../lib/api-client", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/api-client")>(),
+	apiClient: { GET: getMock, POST: postMock, PATCH: patchMock },
 	apiErrorCode: apiErrorCodeMock,
 	apiErrorMessage: apiErrorMessageMock,
 }));
 
 import {
+	clearConversationProviderCatalogs,
+	conversationConfigOptionsQueryKey,
 	useConversation,
 	useConversationCommands,
+	useConversationConfigOptions,
+	useConversationSkills,
 } from "./useConversation";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { TooltipProvider } from "../components/ui/tooltip";
 
 function wrapper({ children }: { children: ReactNode }) {
 	const queryClient = new QueryClient({
@@ -37,6 +45,13 @@ function deferred<T>() {
 	});
 	return { promise, resolve };
 }
+
+it("preserves queued-edit API error codes for delivery recovery", async () => {
+	const refusal = { code: "CHAT_QUEUED_EDIT_CONFLICT", message: "Queued message changed" };
+	postMock.mockResolvedValue({ data: undefined, error: refusal });
+	const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+	await expect(result.current.editQueuedTurn("queued-1", "edited")).rejects.toBe(refusal);
+});
 
 /** The provider state the daemon now serves, in wire shape. */
 const WIRE = {
@@ -85,12 +100,75 @@ const WIRE = {
 
 beforeEach(() => {
 	getMock.mockReset();
+	patchMock.mockReset();
 	postMock.mockReset();
 	apiErrorCodeMock.mockReset().mockReturnValue(undefined);
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
 });
 
+it("renders a retained-history boundary between exchanges from the daemon snapshot", async () => {
+	getMock.mockResolvedValue({ data: {
+		...WIRE, controller: "ready", turns: [], modelReroute: undefined, account: undefined,
+		latestSequence: 3,
+		messages: [
+			{ id: "old", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Earlier context answer", streaming: false, createdAt: "2026-09-13T00:00:00Z" },
+			{ id: "new", sequence: 3, revision: 1, role: "assistant", origin: "provider", text: "Independent context answer", streaming: false, createdAt: "2026-09-13T00:02:00Z" },
+		],
+		activities: [{ id: "boundary", sequence: 2, revision: 1, kind: "system", status: "completed",
+			summary: "Native conversation changed. Earlier messages are retained; continuity with this agent's context is not verified.",
+			detail: { event: "context.boundary", reason: "native_terminal_handoff" }, createdAt: "2026-09-13T00:01:00Z" }],
+	}, error: undefined });
+	function LiveConversation() {
+		const { snapshot } = useConversation("ao-1");
+		return snapshot ? <TooltipProvider><ChatWorkspace snapshot={snapshot} /></TooltipProvider> : null;
+	}
+	render(<LiveConversation />, { wrapper });
+	const boundary = await screen.findByText(/continuity with this agent's context is not verified/);
+	const old = screen.getByText("Earlier context answer");
+	const current = screen.getByText("Independent context answer");
+	expect(old.compareDocumentPosition(boundary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+	expect(boundary.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+	expect(screen.getAllByText(/Native conversation changed/)).toHaveLength(1);
+});
+
 describe("accepted conversation sends", () => {
+	it("keeps a local echo through acceptance until its durable turn is observed", async () => {
+		const response = deferred<{ data: { turnId: string }; error: undefined }>();
+		postMock.mockReturnValue(response.promise);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-local-echo"), {
+			wrapper: HookWrapper,
+		});
+
+		let sending!: Promise<unknown>;
+		act(() => {
+			sending = result.current.send("show my message first");
+		});
+		await waitFor(() => {
+			expect(result.current.localEchos).toHaveLength(1);
+		});
+		expect(result.current.localEchos[0]).toMatchObject({ text: "show my message first" });
+		expect(result.current.localEchos[0]?.turnId).toBeUndefined();
+
+		response.resolve({ data: { turnId: "turn-local-echo" }, error: undefined });
+		await act(async () => {
+			await sending;
+		});
+		await waitFor(() =>
+			expect(result.current.localEchos).toMatchObject([
+				{ text: "show my message first", turnId: "turn-local-echo" },
+			]),
+		);
+
+		act(() => result.current.acknowledgeLocalEcho("turn-local-echo"));
+		await waitFor(() => expect(result.current.localEchos).toEqual([]));
+	});
+
 	it("keeps each accepted turn attached to the session that initiated it", async () => {
 		const firstResponse = deferred<{
 			data: { turnId: string };
@@ -567,6 +645,47 @@ describe("session-scoped conversation commands", () => {
 	);
 });
 
+describe("provider catalog controller epochs", () => {
+	it("discards a config mutation response from before switch admission", async () => {
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const queryKey = conversationConfigOptionsQueryKey("ao-1");
+		queryClient.setQueryData(queryKey, [{ id: "model", currentValue: "source" }]);
+		let resolvePatch!: (value: {
+			data: { options: Array<{ id: string; currentValue: string }> };
+			error: undefined;
+		}) => void;
+		patchMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolvePatch = resolve;
+			}),
+		);
+		const Wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationConfigOptions("ao-1", false), {
+			wrapper: Wrapper,
+		});
+
+		let mutation!: Promise<unknown>;
+		act(() => {
+			mutation = result.current.setOption("model", { value: "source-next" });
+		});
+		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+		act(() => clearConversationProviderCatalogs(queryClient, "ao-1"));
+		expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+
+		resolvePatch({
+			data: { options: [{ id: "model", currentValue: "source-next" }] },
+			error: undefined,
+		});
+		await act(async () => mutation);
+
+		expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+	});
+});
+
 describe("useConversation snapshot mapping", () => {
 	it("maps branch metadata and lightweight prompt content", async () => {
 		getMock.mockResolvedValue({
@@ -701,6 +820,30 @@ describe("useConversation snapshot mapping", () => {
 });
 
 describe("conversation branching commands", () => {
+	it("threads caller-owned idempotency ids through send, steer, and inline edit", async () => {
+		postMock.mockResolvedValue({ data: {}, error: undefined });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await act(async () => {
+			await result.current.send({ text: "send once", clientMessageId: "send-stable-1" });
+			await result.current.steer("steer once", undefined, "steer-stable-1");
+			await result.current.editMessage("turn-2", "edit once", "edit-stable-1");
+		});
+
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/messages",
+			expect.objectContaining({ body: expect.objectContaining({ clientMessageId: "send-stable-1" }) }),
+		);
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/steer",
+			expect.objectContaining({ body: { text: "steer once", clientMessageId: "steer-stable-1" } }),
+		);
+		expect(postMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/edit",
+			expect.objectContaining({ body: { text: "edit once", clientMessageId: "edit-stable-1" } }),
+		);
+	});
+
 	it("edits through the dedicated endpoint without rolling back", async () => {
 		postMock.mockResolvedValue({ data: {}, error: undefined });
 		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
@@ -719,6 +862,42 @@ describe("conversation branching commands", () => {
 		expect(
 			postMock.mock.calls.some(([path]) => String(path).endsWith("/rollback")),
 		).toBe(false);
+	});
+
+	it("returns a typed non-acceptance for a durably rejected inline edit", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_EDIT_REJECTED");
+		apiErrorMessageMock.mockReturnValue("provider rejected edited prompt");
+		postMock.mockResolvedValue({ data: undefined, error: { code: "CHAT_EDIT_REJECTED" } });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			result.current.editMessage("turn-2", "keep this edit", "edit-rejected-1"),
+		).resolves.toEqual({
+			status: "not-accepted",
+			reason: "provider rejected edited prompt",
+		});
+	});
+
+	it("keeps an uncertain inline edit rejected for same-id recovery", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_EDIT_UNCERTAIN");
+		const failure = { code: "CHAT_EDIT_UNCERTAIN" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			result.current.editMessage("turn-2", "do not redispatch", "edit-uncertain-1"),
+		).rejects.toBe(failure);
+	});
+
+	it("keeps an idempotency-conflicted inline edit locked for same-id recovery", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_EDIT_IDEMPOTENCY_CONFLICT");
+		const failure = { code: "CHAT_EDIT_IDEMPOTENCY_CONFLICT" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			result.current.editMessage("turn-2", "do not unlock this edit", "edit-conflict-1"),
+		).rejects.toBe(failure);
 	});
 
 	it("activates an existing branch", async () => {
@@ -831,6 +1010,51 @@ describe("steering refusals", () => {
 		);
 	});
 
+	it("returns a typed non-acceptance for a steer the daemon definitively refused", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_NO_ACTIVE_TURN");
+		apiErrorMessageMock.mockReturnValue("there is no turn in flight");
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "CHAT_NO_ACTIVE_TURN" },
+		});
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+		let outcome: Awaited<ReturnType<typeof result.current.steer>> | undefined;
+
+		await act(async () => {
+			outcome = await result.current.steer("send this normally", undefined, "steer-refused-1");
+		});
+
+		expect(outcome).toEqual({
+			status: "not-accepted",
+			reason: "The turn finished before this landed. Send it as a message instead.",
+		});
+	});
+
+	it("treats a durable interface-transition refusal as definitive non-acceptance", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_INTERFACE_TRANSITION");
+		apiErrorMessageMock.mockReturnValue("the session is switching interfaces");
+		const failure = { code: "CHAT_INTERFACE_TRANSITION" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(result.current.steer("wait for the switch", undefined, "transition-steer-1")).resolves.toEqual({
+			status: "not-accepted",
+			reason: "The session is switching interfaces. This guidance was not delivered; send it after the switch finishes.",
+		});
+	});
+
+	it("keeps an uncertain steer rejected so the composer remains fail-closed", async () => {
+		apiErrorCodeMock.mockReturnValue("CHAT_STEER_UNCERTAIN");
+		apiErrorMessageMock.mockReturnValue("the provider may have received this guidance");
+		const failure = { code: "CHAT_STEER_UNCERTAIN" };
+		postMock.mockResolvedValue({ data: undefined, error: failure });
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(
+			act(async () => result.current.steer("do not redispatch", undefined, "steer-unknown-1")),
+		).rejects.toBe(failure);
+	});
+
 	// The daemon's own message names which kind of turn refused, which is the part the
 	// user needs; "cannot be steered" alone leaves them nothing to do.
 	it("keeps the daemon's wording for a turn that cannot absorb guidance", async () => {
@@ -924,5 +1148,73 @@ describe("controller recovery", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["conversation", "ao-1"] });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
 		invalidateSpy.mockRestore();
+	});
+});
+
+describe("useConversationSkills polling", () => {
+	function skillsWrapper(queryClient: QueryClient) {
+		return function Wrapper({ children }: { children: ReactNode }) {
+			return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+		};
+	}
+
+	it("stops polling while the controller is not ready", async () => {
+		vi.useFakeTimers();
+		try {
+			// The daemon answers 409 CHAT_CONTROLLER_NOT_READY while no live controller
+			// owns the session. A fixed-interval poll would re-request the catalog every
+			// minute for as long as the surface stayed mounted, turning one readiness
+			// conflict into a steady stream of 409s.
+			apiErrorCodeMock.mockReturnValue("CHAT_CONTROLLER_NOT_READY");
+			getMock.mockResolvedValue({ error: { code: "CHAT_CONTROLLER_NOT_READY" } });
+			const queryClient = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+
+			renderHook(() => useConversationSkills("ao-skills", true), {
+				wrapper: skillsWrapper(queryClient),
+			});
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(getMock).toHaveBeenCalledTimes(1);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5 * 60_000);
+			});
+			// No further requests: the readiness conflict backs the poll off entirely.
+			expect(getMock).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps polling once the catalog loads", async () => {
+		vi.useFakeTimers();
+		try {
+			// An empty catalog is a real answer, not a failure: polling continues so a
+			// skill published later becomes visible without a second event channel.
+			getMock.mockResolvedValue({ data: { skills: [] } });
+			const queryClient = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+
+			renderHook(() => useConversationSkills("ao-skills-ok", true), {
+				wrapper: skillsWrapper(queryClient),
+			});
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(getMock).toHaveBeenCalledTimes(1);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(60_000);
+			});
+			expect(getMock).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

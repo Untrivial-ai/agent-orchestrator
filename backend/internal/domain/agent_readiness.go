@@ -74,6 +74,7 @@ const (
 	AgentReadinessReasonChecking                = "checking"
 	AgentReadinessReasonInstalled               = "installed"
 	AgentReadinessReasonNotInstalled            = "not_installed"
+	AgentReadinessReasonInstallIdentityPending  = "install_identity_pending"
 	AgentReadinessReasonInstallCheckUnsupported = "install_check_unsupported"
 	AgentReadinessReasonInstallCheckTimeout     = "install_check_timeout"
 	AgentReadinessReasonInstallCheckFailed      = "install_check_failed"

@@ -73,6 +73,18 @@ enum UpdateStage: Equatable {
     case complete
     case reopened
     case legacyComplete
+
+    // Whether this stage should bring the helper window on screen. The normal
+    // close-and-reopen path (.closing/.installing) stays silent; only the
+    // stall/failure paths that need the user's attention surface a window.
+    var presentsWindow: Bool {
+        switch self {
+        case .closing, .installing, .complete, .legacyComplete:
+            return false
+        case .recovery, .reopened:
+            return true
+        }
+    }
 }
 
 struct UpdateProgressState {
@@ -93,13 +105,17 @@ struct UpdateProgressState {
             return legacy.visibleWindow ? .legacyComplete : .reopened
         }
         if let failure, !failure.isEmpty { return .recovery(failure) }
-        if parentAlive {
-            return now - waitingSince >= 30_000
-                ? .recovery("AO is taking longer than expected to close. The update will continue when AO has closed.")
-                : .closing
+        // A normal update just closes AO and reopens it, and even a slow-but-
+        // healthy machine can take a while at each step. Stay hidden (accessory,
+        // no window) for the whole budget so nothing pops in front of a working
+        // update; the app's own loader is what the user should see on reopen.
+        // Only a genuinely stuck update, no close or no reopen after three
+        // minutes, is worth surfacing a window with recovery options for.
+        if now - waitingSince < 180_000 {
+            return parentAlive ? .closing : .installing
         }
-        return now - waitingSince >= 180_000
-            ? .recovery("AO has not reopened yet. The installer may still be working. You can keep waiting or download the latest app.")
-            : .installing
+        return .recovery(parentAlive
+            ? "AO is taking longer than expected to close. The update will continue when AO has closed."
+            : "AO has not reopened yet. The installer may still be working. You can keep waiting or download the latest app.")
     }
 }

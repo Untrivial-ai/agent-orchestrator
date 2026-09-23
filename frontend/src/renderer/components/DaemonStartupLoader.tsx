@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import aoLogo from "../../../assets/ao-logo.svg";
+import { aoBridge } from "../lib/bridge";
 import { useSystemRequirementsGate } from "../hooks/useSystemRequirementsGate";
 import { InstallDependencyDialog } from "./InstallDependencyDialog";
 
@@ -11,11 +12,22 @@ const STARTUP_PHRASE_KEYS = [
 	"startup.preparingBoard",
 ] as const;
 
+// Shown instead of the normal phrases when the current boot is a post-update
+// relaunch, so the swap reads as "the app is updating" rather than "the app is
+// slow to connect".
+const UPDATE_PHRASE_KEYS = [
+	"startup.updatingApp",
+	"startup.restartingApp",
+	"startup.startingServices",
+	"startup.preparingBoard",
+] as const;
+
 const PHRASE_INTERVAL_MS = 2_200;
 
 export function DaemonStartupLoader() {
 	const { t } = useTranslation();
 	const [phraseIndex, setPhraseIndex] = useState(0);
+	const [postUpdate, setPostUpdate] = useState(false);
 	const {
 		query: requirementsQuery,
 		requirements,
@@ -23,13 +35,35 @@ export function DaemonStartupLoader() {
 	} = useSystemRequirementsGate();
 
 	useEffect(() => {
-		const timer = window.setInterval(() => {
-			setPhraseIndex((current) => (current + 1) % STARTUP_PHRASE_KEYS.length);
-		}, PHRASE_INTERVAL_MS);
-		return () => window.clearInterval(timer);
+		let active = true;
+		// Defensive: the loader must render even when the updates bridge is absent
+		// (web fallback, or a test/preload stub without this namespace). A missing
+		// signal simply means "not a post-update relaunch".
+		const isPostUpdateRelaunch = aoBridge.updates?.isPostUpdateRelaunch;
+		if (typeof isPostUpdateRelaunch !== "function") {
+			return;
+		}
+		void isPostUpdateRelaunch().then(
+			(value) => {
+				if (active) setPostUpdate(value);
+			},
+			() => undefined,
+		);
+		return () => {
+			active = false;
+		};
 	}, []);
 
-	const phrase = t(STARTUP_PHRASE_KEYS[phraseIndex]);
+	const phraseKeys = postUpdate ? UPDATE_PHRASE_KEYS : STARTUP_PHRASE_KEYS;
+
+	useEffect(() => {
+		const timer = window.setInterval(() => {
+			setPhraseIndex((current) => (current + 1) % phraseKeys.length);
+		}, PHRASE_INTERVAL_MS);
+		return () => window.clearInterval(timer);
+	}, [phraseKeys.length]);
+
+	const phrase = t(phraseKeys[phraseIndex % phraseKeys.length]);
 
 	return (
 		<div

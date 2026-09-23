@@ -194,6 +194,101 @@ func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 // touch goose.
 var gooseMu sync.Mutex
 
+// cachedMigrationVersion holds the one-time computed expected migration version.
+// The first call to expectedMigrationVersion populates it; subsequent calls
+// return the cached value without re-scanning embedded files or touching goose
+// globals.
+var cachedMigrationVersion struct {
+	sync.Once
+	version int64
+	err     error
+}
+
+// expectedMigrationVersion returns the highest version number among the
+// embedded migration files. This is the version a fully-migrated database must
+// have recorded as applied in goose_db_version.
+//
+// The result is computed once and cached for the lifetime of the process.
+func expectedMigrationVersion() (int64, error) {
+	cachedMigrationVersion.Do(func() {
+		cachedMigrationVersion.err = computeExpectedMigrationVersion()
+	})
+	return cachedMigrationVersion.version, cachedMigrationVersion.err
+}
+
+func computeExpectedMigrationVersion() error {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("set goose dialect: %w", err)
+	}
+	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	if err != nil {
+		return fmt.Errorf("collect migrations: %w", err)
+	}
+	if len(migrations) == 0 {
+		return fmt.Errorf("no embedded migrations found")
+	}
+	cachedMigrationVersion.version = migrations[len(migrations)-1].Version
+	return nil
+}
+
+// OpenPreMigrated opens an already-fully-migrated SQLite database under
+// dataDir, skipping all migration and repair logic. It is intended for test
+// helpers that clone a known-good template database and need to open the copy
+// without paying the ~55 ms migration overhead on every clone.
+//
+// It verifies that the database's goose_db_version records the expected
+// current migration version; if the database is stale or has never been
+// migrated, it returns an error so the caller can fall back to the production
+// Open path rather than silently using an incompatible schema.
+//
+// Migration tests and any code that needs the production startup path must
+// continue to call Open, not this function.
+func OpenPreMigrated(dataDir string) (*Store, error) {
+	want, err := expectedMigrationVersion()
+	if err != nil {
+		return nil, fmt.Errorf("determine expected migration version: %w", err)
+	}
+
+	dsn := databaseURI(dataDir) + pragmas
+
+	writeDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite writer: %w", err)
+	}
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+
+	var got int64
+	if err := writeDB.QueryRow(
+		`SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied = 1`,
+	).Scan(&got); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("read applied migration version: %w", err)
+	}
+	if got != want {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf(
+			"database schema version mismatch: database has version %d but binary expects %d; "+
+				"the template is stale — rebuild it with a full sqlite.Open call",
+			got, want,
+		)
+	}
+
+	readDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("open sqlite reader: %w", err)
+	}
+	readDB.SetMaxOpenConns(maxReaders)
+	readDB.SetMaxIdleConns(maxReaders)
+
+	return sqlitestore.NewStore(writeDB, readDB), nil
+}
+
 func migrate(db *sql.DB) error {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
@@ -231,6 +326,9 @@ func migrate(db *sql.DB) error {
 	}
 	if err := repairRenumberedAgentSwitchMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered agent-switch migration history: %w", err)
+	}
+	if err := repairRenumberedPRReviewPartialMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered PR review-partial migration history: %w", err)
 	}
 	if err := prepareBurnedSchemaRepairs(db); err != nil {
 		return fmt.Errorf("prepare burned schema repairs: %w", err)
@@ -1345,6 +1443,94 @@ SELECT COALESCE((
 	return tx.Commit()
 }
 
+// repairRenumberedPRReviewPartialMigrationHistory preserves databases opened by
+// earlier revisions of this branch: the review_partial column first shipped as
+// 0123, a number main later claimed for agent_install_jobs. On those databases
+// goose would skip main's 0123 (its effects missing) and fail 0130 on the
+// duplicate column. Remap the recorded history — review_partial physically
+// present while agent_install_jobs is not identifies the branch build — and
+// re-initialize certainty conservatively, matching the migration default: rows
+// written before the completeness semantics landed carry no reliable signal, so
+// they stay uncertain until the next successful full review fetch.
+func repairRenumberedPRReviewPartialMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var reviewPartialColumn int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pr') WHERE name = 'review_partial'`,
+	).Scan(&reviewPartialColumn); err != nil {
+		return err
+	}
+	if reviewPartialColumn == 0 {
+		return nil
+	}
+
+	// The branch's 0123 ran only on builds predating main's 0123-0129. If
+	// agent_install_jobs exists, main's 0123 already ran and this database took
+	// the migration through 0130 (or never saw the old numbering) — nothing to
+	// remap.
+	var agentInstallJobsTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_install_jobs'`,
+	).Scan(&agentInstallJobsTable); err != nil {
+		return err
+	}
+	if agentInstallJobsTable != 0 {
+		return nil
+	}
+
+	var applied123 int
+	if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 123 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied123); err != nil {
+		return err
+	}
+	if applied123 == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Release 123 so goose applies main's agent_install_jobs, and record 130 as
+	// applied so goose does not replay the ALTER on the existing column.
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 123`); err != nil {
+		return err
+	}
+	var applied130 int
+	if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = 130 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied130); err != nil {
+		return err
+	}
+	if applied130 == 0 {
+		if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (130, 1)`); err != nil {
+			return err
+		}
+	}
+	// The column predates the conservative default; re-initialize to uncertain
+	// so pre-semantics rows cannot publish exact thread counts.
+	if _, err := tx.Exec(`UPDATE pr SET review_partial = TRUE`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // schemaRepairs lists the column-level effects of migrations that real
 // installs are known to skip. Issue #3475/#3476: profiles exist whose
 // goose_db_version already records versions 40 through 46 (written by a
@@ -1473,6 +1659,11 @@ BEGIN
     ON conversation_turns(conversation_id, retry_of_turn_id)
     WHERE retry_of_turn_id IS NOT NULL`,
 		}},
+	// 0130_pr_review_partial.sql. Generated PR reads select this column, so a
+	// field database that burned version 130 must not lose it. The default
+	// matches the migration: unknown historical certainty stays partial.
+	{version: 130, table: "pr", column: "review_partial",
+		addDDL: `ALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT TRUE`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist
@@ -1506,6 +1697,17 @@ func reconcileSchema(db *sql.DB) error {
 	}
 	if err := reconcileHarnessConstraint(db); err != nil {
 		return err
+	}
+	// A missing column fails reads loudly; a missing revision trigger silently
+	// disables every session CAS. Do not admit that database as healthy.
+	var revisionColumn, revisionTrigger int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'revision'),
+		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'sessions' AND name = 'sessions_revision_update')`).Scan(&revisionColumn, &revisionTrigger); err != nil {
+		return fmt.Errorf("schema verification: inspect session revision fence: %w", err)
+	}
+	if revisionColumn > 0 && revisionTrigger != 1 {
+		return errors.New("schema verification: sessions_revision_update trigger is missing; restore the session revision trigger before starting AO")
 	}
 	return nil
 }

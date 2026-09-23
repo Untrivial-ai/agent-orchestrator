@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -474,31 +475,76 @@ func TestGetLaunchCommandSystemPromptFileConfig(t *testing.T) {
 
 func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 	tests := []struct {
-		name        string
-		permission  ports.PermissionMode
-		wantFlag    bool
-		notExpected string
+		name       string
+		permission ports.PermissionMode
+		want       map[string]string
+		wantFlag   string
 	}{
-		{name: "default", permission: ports.PermissionModeDefault, notExpected: "--dangerously-skip-permissions"},
-		{name: "accept-edits", permission: ports.PermissionModeAcceptEdits, notExpected: "--dangerously-skip-permissions"},
-		{name: "auto", permission: ports.PermissionModeAuto, notExpected: "--dangerously-skip-permissions"},
-		{name: "bypass-permissions", permission: ports.PermissionModeBypassPermissions, wantFlag: true},
-		{name: "empty", permission: "", notExpected: "--dangerously-skip-permissions"},
+		{name: "default", permission: ports.PermissionModeDefault},
+		{name: "empty", permission: ""},
+		{
+			name:       "accept-edits",
+			permission: ports.PermissionModeAcceptEdits,
+			want:       map[string]string{"edit": "allow"},
+		},
+		// Auto is OpenCode's own --auto, so the launch carries the flag and no
+		// rules of AO's: the provider decides what "not explicitly denied" means.
+		{name: "auto", permission: ports.PermissionModeAuto, wantFlag: "--auto"},
+		{name: "bypass-permissions", permission: ports.PermissionModeBypassPermissions, wantFlag: "--dangerously-skip-permissions"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &Plugin{resolvedBinary: "opencode"}
-			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{Permissions: tt.permission})
+			promptFile := filepath.Join(t.TempDir(), "system.md")
+			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+				SessionID: "sess-1", SystemPromptFile: promptFile, Permissions: tt.permission,
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			has := contains(cmd, "--dangerously-skip-permissions")
-			if tt.wantFlag && !has {
-				t.Fatalf("command %#v missing --dangerously-skip-permissions", cmd)
+			for _, flag := range []string{"--auto", "--dangerously-skip-permissions"} {
+				if has := contains(cmd, flag); has != (flag == tt.wantFlag) {
+					t.Fatalf("command %#v has %s=%v, want flag %q", cmd, flag, has, tt.wantFlag)
+				}
 			}
-			if tt.notExpected != "" && has {
-				t.Fatalf("command %#v contains %q", cmd, tt.notExpected)
+			var config opencodeInlineConfig
+			data, err := os.ReadFile(filepath.Join(filepath.Dir(promptFile), "opencode.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(data, &config); err != nil {
+				t.Fatal(err)
+			}
+			if !maps.Equal(config.Permission, tt.want) {
+				t.Fatalf("permission = %#v, want %#v", config.Permission, tt.want)
+			}
+		})
+	}
+}
+
+// OPENCODE_CONFIG_CONTENT is the highest-precedence config source and callers
+// own it: the reviewer harness passes its read-only policy there. A launch
+// prefix setting the same variable would replace that policy at exec time.
+func TestGetLaunchCommandNeverSetsInlineConfigContent(t *testing.T) {
+	for _, mode := range []ports.PermissionMode{
+		ports.PermissionModeDefault, ports.PermissionModeAcceptEdits,
+		ports.PermissionModeAuto, ports.PermissionModeBypassPermissions,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			plugin := &Plugin{resolvedBinary: "opencode"}
+			for _, promptFile := range []string{"", filepath.Join(t.TempDir(), "system.md")} {
+				cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+					SessionID: "sess-1", SystemPromptFile: promptFile, Permissions: mode,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, arg := range cmd {
+					if strings.HasPrefix(arg, "OPENCODE_CONFIG_CONTENT=") {
+						t.Fatalf("command %#v overrides a caller's own OpenCode config", cmd)
+					}
+				}
 			}
 		})
 	}
@@ -904,6 +950,37 @@ func TestGetRestoreCommandReappliesSystemPromptConfig(t *testing.T) {
 	}
 }
 
+// TestGetRestoreCommandAppendsResumeTimePrompt covers resuming a reviewer
+// after it was killed and re-triggered: the new task must be embedded in the
+// resume argv (mirroring GetLaunchCommand's --prompt), or the resumed session
+// would sit idle with no work to act on.
+func TestGetRestoreCommandAppendsResumeTimePrompt(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "opencode"}
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Permissions: ports.PermissionModeBypassPermissions,
+		Prompt:      "review the new commit",
+		Session: ports.SessionRef{
+			Metadata: map[string]string{opencodeAgentSessionIDMetadataKey: "ses_abc123"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []string{
+		"opencode",
+		"--dangerously-skip-permissions",
+		"--session", "ses_abc123",
+		"--prompt", "review the new commit",
+	}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
+	}
+}
+
 func TestGetRestoreCommandFalseWithoutAgentSessionID(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "opencode"}
 
@@ -992,4 +1069,44 @@ func contains(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// Bypass promises full access on both surfaces. A config-level rule would lose
+// to a project policy and the native flag is an alias of --auto, which still
+// enforces explicit denies, so the rule rides the agent, which outranks both.
+func TestGetLaunchCommandBypassesEvenAWorktreePolicy(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "opencode"}
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An explicit deny, which the flag alone would still enforce: OpenCode
+	// treats --dangerously-skip-permissions as an alias of --auto, and a denied
+	// tool never becomes a request to auto-approve.
+	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"),
+		[]byte(`{"permission":{"bash":"deny"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	promptFile := filepath.Join(t.TempDir(), "system.md")
+	if _, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SessionID: "sess-1", WorkspacePath: workspace, SystemPromptFile: promptFile,
+		Permissions: ports.PermissionModeBypassPermissions,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var config opencodeInlineConfig
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(promptFile), "opencode.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	// Agent rules outrank every config layer, so the deny above cannot survive.
+	if got := config.Agent["ao-sess-1"].Permission; got != "allow" {
+		t.Fatalf("agent permission = %#v, want OpenCode's scalar full access", got)
+	}
+	if config.Permission != nil {
+		t.Fatalf("config permission = %#v, want the rule on the agent alone", config.Permission)
+	}
 }

@@ -91,6 +91,8 @@ frontend/agent-browser/
 !.agents/skills/ao-desktop-dev/**
 !.agents/skills/bug-triage/
 !.agents/skills/bug-triage/**
+!.agents/skills/pr-description/
+!.agents/skills/pr-description/**
 skills-lock.json
 
 # e2e pod gate: downloaded pod logs/traces (uploaded as CI artifacts, not committed)
@@ -98,3 +100,6 @@ e2e-artifacts/
 
 # Local pnpm artifacts
 pnpm-lock.yaml
+
+# Serena MCP local project config
+.serena/
