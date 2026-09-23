@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,13 +26,32 @@ import (
 
 var enabled atomic.Bool
 
+var captureGate = struct {
+	sync.Mutex
+	policyEnabled bool
+	active        int
+	waiters       []chan struct{}
+}{}
+
 var (
-	homePath = regexp.MustCompile(`/(?:Users|home)/[^\s"']+`)
-	winPath  = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+|\\\\[^\s"']+`)
+	homePath = regexp.MustCompile(`/(?:Users|home)/[^\r\n"']+`)
+	winPath  = regexp.MustCompile(`[A-Za-z]:\\[^\r\n"']+|\\\\[^\r\n"']+`)
 )
 
 func scrub(s string) string {
-	return winPath.ReplaceAllString(homePath.ReplaceAllString(s, "[redacted-path]"), "[redacted-path]")
+	return winPath.ReplaceAllStringFunc(homePath.ReplaceAllStringFunc(s, scrubPath), scrubPath)
+}
+
+func scrubPath(path string) string {
+	for _, marker := range []string{" failed", " denied", " error", " no such file"} {
+		if i := strings.Index(path, marker); i >= 0 {
+			return "[redacted-path]" + path[i:]
+		}
+	}
+	if i := strings.Index(path, ": "); i >= 0 {
+		return "[redacted-path]" + path[i+1:]
+	}
+	return "[redacted-path]"
 }
 
 // Config configures the daemon Sentry client.
@@ -39,11 +60,13 @@ type Config struct {
 	Release     string
 	Environment string
 	SampleRate  float64 // <=0 or >1 defaults to 1.0
+	Transport   sentry.Transport
 }
 
 // Init initializes the global Sentry client. A blank DSN leaves it a permanent
 // no-op. Safe to call once at daemon startup.
 func Init(cfg Config) error {
+	enabled.Store(false)
 	if cfg.DSN == "" {
 		return nil
 	}
@@ -51,12 +74,20 @@ func Init(cfg Config) error {
 	if rate <= 0 || rate > 1 {
 		rate = 1.0
 	}
+	transport := cfg.Transport
+	if transport == nil {
+		// A synchronous transport leaves no SDK queue that could send after an
+		// opt-out acknowledgement. The policy drain below waits for any send
+		// already in progress.
+		transport = sentry.NewHTTPSyncTransport()
+	}
 	if err := sentry.Init(sentry.ClientOptions{
 		Dsn:           cfg.DSN,
 		Release:       cfg.Release,
 		Environment:   cfg.Environment,
 		EnableTracing: false,
 		SampleRate:    rate,
+		Transport:     transport,
 		// PII is off by default; BeforeSend additionally clears ServerName and
 		// Request and scrubs local paths, so no environment leaks regardless.
 		// Deny-by-default: scrub the event before it leaves the process.
@@ -76,6 +107,58 @@ func Init(cfg Config) error {
 
 // Enabled reports whether Sentry is active (a DSN was configured).
 func Enabled() bool { return enabled.Load() }
+
+// SetPolicyEnabled mirrors the crash-durable telemetry authority. Capture
+// paths consult it synchronously so a watcher-observed opt-out closes intake
+// even when the SDK itself was initialized earlier in the process.
+func SetPolicyEnabled(value bool) {
+	captureGate.Lock()
+	captureGate.policyEnabled = value
+	captureGate.Unlock()
+}
+
+func enterCapture() bool {
+	if !enabled.Load() {
+		return false
+	}
+	captureGate.Lock()
+	defer captureGate.Unlock()
+	if !captureGate.policyEnabled {
+		return false
+	}
+	captureGate.active++
+	return true
+}
+
+func leaveCapture() {
+	captureGate.Lock()
+	captureGate.active--
+	if captureGate.active == 0 {
+		for _, waiter := range captureGate.waiters {
+			close(waiter)
+		}
+		captureGate.waiters = nil
+	}
+	captureGate.Unlock()
+}
+
+// Drain waits for every provider call that entered before intake closed.
+func Drain(ctx context.Context) error {
+	captureGate.Lock()
+	if captureGate.active == 0 {
+		captureGate.Unlock()
+		return nil
+	}
+	done := make(chan struct{})
+	captureGate.waiters = append(captureGate.waiters, done)
+	captureGate.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 func scrubEvent(event *sentry.Event) *sentry.Event {
 	event.Message = scrub(event.Message)
@@ -102,10 +185,11 @@ func ShouldCaptureStatus(status int) bool {
 // CaptureHTTPError captures a server-fault error with the given tags and a
 // fingerprint identical to the PostHog grouping key. No-op when disabled or the
 // error is nil.
-func CaptureHTTPError(_ context.Context, err error, tags map[string]string, fingerprint string) {
-	if !enabled.Load() || err == nil {
+func CaptureHTTPError(ctx context.Context, err error, tags map[string]string, fingerprint string) {
+	if err == nil || ctx.Err() != nil || !enterCapture() {
 		return
 	}
+	defer leaveCapture()
 	sentry.WithScope(func(scope *sentry.Scope) {
 		scope.SetLevel(sentry.LevelError)
 		applyTags(scope, tags)
@@ -118,10 +202,11 @@ func CaptureHTTPError(_ context.Context, err error, tags map[string]string, fing
 
 // CapturePanic captures a recovered panic with its Go stack (as scrubbed extra)
 // at fatal level. No-op when disabled.
-func CapturePanic(_ context.Context, recovered any, stack string, tags map[string]string, fingerprint string) {
-	if !enabled.Load() {
+func CapturePanic(ctx context.Context, recovered any, stack string, tags map[string]string, fingerprint string) {
+	if ctx.Err() != nil || !enterCapture() {
 		return
 	}
+	defer leaveCapture()
 	sentry.WithScope(func(scope *sentry.Scope) {
 		scope.SetLevel(sentry.LevelFatal)
 		applyTags(scope, tags)

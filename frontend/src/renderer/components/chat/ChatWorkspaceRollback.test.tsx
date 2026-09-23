@@ -7,12 +7,18 @@
  * lost, and the turn id that reaches the daemon is the one that was clicked.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render as rtlRender, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { chatFixture } from "../../lib/chat-fixture";
 import type { ConversationSnapshot } from "../../types/conversation";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 
 /** A conversation with nothing in flight, which is when an undo is offered. */
 function idleSnapshot(): ConversationSnapshot {
@@ -127,16 +133,16 @@ describe("ChatWorkspace rollback", () => {
 		expect(screen.getByRole("alert").textContent).toContain("stop the agent");
 	});
 
-	it("shows the agent surface in the header when the thread has a title", () => {
+	it("shows the thread title in the primary agent tab when there is one", () => {
 		render(<ChatWorkspace snapshot={{ ...chatFixture, title: "Fix OAuth Return URL Loss" }} />);
-		expect(screen.getByText("Codex")).toBeInTheDocument();
-		expect(screen.queryByText("Fix OAuth Return URL Loss")).toBeNull();
+		expect(screen.getByRole("tab", { name: "Fix OAuth Return URL Loss · Codex" })).toBeInTheDocument();
+		expect(screen.queryByText("Codex")).toBeNull();
 		expect(screen.queryByText(chatFixture.sessionId)).toBeNull();
 	});
 
-	it("shows the agent surface when the thread has no name", () => {
+	it("falls back to the session id when the thread has no name", () => {
 		render(<ChatWorkspace snapshot={chatFixture} />);
-		expect(screen.getByText("Codex")).toBeInTheDocument();
-		expect(screen.queryByText(chatFixture.sessionId)).toBeNull();
+		expect(screen.getByRole("tab", { name: `${chatFixture.sessionId} · Codex` })).toBeInTheDocument();
+		expect(screen.queryByText("Codex")).toBeNull();
 	});
 });

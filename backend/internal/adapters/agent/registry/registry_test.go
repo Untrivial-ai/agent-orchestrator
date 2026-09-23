@@ -164,7 +164,11 @@ func ensureAgentBinary(t *testing.T, name string) {
 	t.Helper()
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, name)
-	script := "#!/usr/bin/env sh\nif [ \"${1:-}\" = \"--version\" ]; then\n  echo \"" + name + " 0.80.6\"\nfi\nexit 0\n"
+	version := "0.80.6"
+	if name == "omp" {
+		version = "17.1.0"
+	}
+	script := "#!/usr/bin/env sh\nif [ \"${1:-}\" = \"--version\" ]; then\n  echo \"" + name + " " + version + "\"\nfi\nexit 0\n"
 	if err := os.WriteFile(binPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write fake agent binary %q: %v", binPath, err)
 	}

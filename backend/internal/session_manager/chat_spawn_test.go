@@ -2,15 +2,31 @@ package sessionmanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 )
+
+type recordingBrowserAuthority struct {
+	authority *browsersvc.Authority
+	tokens    []string
+}
+
+func (r *recordingBrowserAuthority) Issue(id domain.SessionID) (string, string, error) {
+	token, verifier, err := r.authority.Issue(id)
+	if err == nil {
+		r.tokens = append(r.tokens, token)
+	}
+	return token, verifier, err
+}
 
 // newChatManager mirrors newManager() with a chat launcher injected, so both
 // branches can be exercised against the same fakes.
@@ -50,8 +66,10 @@ type recordingLauncher struct {
 	startErr         error
 	turnErr          error
 	live             bool
+	beforeStart      func(ChatStart)
 	afterReady       func()
 	providerBoundary *domain.ConversationBranch
+	liveReconnect    bool
 
 	preflighted          []domain.AgentHarness
 	preflightPermissions []ports.PermissionMode
@@ -59,12 +77,17 @@ type recordingLauncher struct {
 	turns                []string
 	// relayed is what arrived through Manager.Send rather than as an initial
 	// prompt, kept separate so a test can tell the two apart.
-	relayed  []string
-	relayIDs []string
-	stopped  []domain.SessionID
-	armed    []domain.SessionID
-	prepared []domain.SessionID
-	aborted  []domain.SessionID
+	relayed             []string
+	relayIDs            []string
+	stopped             []domain.SessionID
+	backgroundHarnesses []domain.AgentHarness
+	background          []ports.ChatStartConfig
+	backgroundPrompts   []string
+	armed               []domain.SessionID
+	armPolicy           []domain.SessionInterfaceTransitionPolicy
+	prepared            []domain.SessionID
+	preparePolicy       []domain.SessionInterfaceTransitionPolicy
+	aborted             []domain.SessionID
 }
 
 type historicalChatRestoreStore struct {
@@ -109,12 +132,33 @@ func (l *recordingLauncher) PreflightChat(
 	return l.preflightErr
 }
 
-func (l *recordingLauncher) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
+func prepareTestChatStart(ctx context.Context, cfg ChatStart) (ChatStart, error) {
+	if cfg.PrepareControllerEnv == nil {
+		return cfg, nil
+	}
+	env, err := cfg.PrepareControllerEnv(ctx, cfg.ExpectedControllerOwner)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Env = env
+	return cfg, nil
+}
+
+func (l *recordingLauncher) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	var err error
+	cfg, err = prepareTestChatStart(ctx, cfg)
+	if err != nil {
+		return ChatStarted{}, err
+	}
 	l.started = append(l.started, cfg)
+	if l.beforeStart != nil {
+		l.beforeStart(cfg)
+	}
 	if l.startErr != nil {
 		return ChatStarted{}, l.startErr
 	}
 	started := ChatStarted{
+		LiveReconnect:          l.liveReconnect,
 		ProviderConversationID: "thread-1",
 		ControllerGeneration:   "gen-1",
 		ProviderBoundary:       l.providerBoundary,
@@ -160,18 +204,113 @@ func (l *recordingLauncher) HasLiveChatController(domain.SessionID) bool {
 	return l.live
 }
 
-func (l *recordingLauncher) ArmChatHandoff(_ context.Context, id domain.SessionID, _ domain.SessionInterfaceTransitionPolicy) error {
+func (l *recordingLauncher) RunBackgroundTask(_ context.Context, harness domain.AgentHarness, cfg ports.ChatStartConfig, prompt string) (string, error) {
+	l.backgroundHarnesses = append(l.backgroundHarnesses, harness)
+	l.background = append(l.background, cfg)
+	l.backgroundPrompts = append(l.backgroundPrompts, prompt)
+	return "Generated title", nil
+}
+
+func (l *recordingLauncher) ArmChatHandoff(_ context.Context, id domain.SessionID, policy domain.SessionInterfaceTransitionPolicy) error {
 	l.armed = append(l.armed, id)
+	l.armPolicy = append(l.armPolicy, policy)
 	return nil
 }
 
-func (l *recordingLauncher) PrepareChatHandoff(_ context.Context, id domain.SessionID, _ domain.SessionInterfaceTransitionPolicy) error {
+func (l *recordingLauncher) PrepareChatHandoff(_ context.Context, id domain.SessionID, policy domain.SessionInterfaceTransitionPolicy) error {
 	l.prepared = append(l.prepared, id)
+	l.preparePolicy = append(l.preparePolicy, policy)
 	return nil
 }
 
 func (l *recordingLauncher) AbortChatHandoff(id domain.SessionID) {
 	l.aborted = append(l.aborted, id)
+}
+
+func TestRunBackgroundTaskUsesResolvedWorkerHarnessAndConfig(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.dataDir = t.TempDir()
+	project := st.projects[string(chatTestProject)]
+	project.Config.Env = map[string]string{"PROJECT_TOKEN": "secret"}
+	st.projects[string(chatTestProject)] = project
+	rec := domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: chatTestProject,
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCursor,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1",
+			Model:         "selected-model",
+			Effort:        "low",
+			Permissions:   ports.PermissionModeAcceptEdits,
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	got, err := m.RunBackgroundTask(context.Background(), rec.ID, "title only", "Fix the renderer")
+	if err != nil || got != "Generated title" {
+		t.Fatalf("RunBackgroundTask = %q, %v", got, err)
+	}
+	if len(launcher.background) != 1 {
+		t.Fatalf("background calls = %d, want 1", len(launcher.background))
+	}
+	task := launcher.background[0]
+	if launcher.backgroundHarnesses[0] != rec.Harness || task.WorkspacePath == rec.Metadata.WorkspacePath ||
+		task.Model != rec.Metadata.Model || task.Effort != rec.Metadata.Effort || task.Permissions != ports.PermissionModeAcceptEdits {
+		t.Fatalf("background task = %#v", task)
+	}
+	if _, err := os.Stat(task.WorkspacePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary workspace still exists: %v", err)
+	}
+	if task.SystemPrompt != "title only" || launcher.backgroundPrompts[0] != "Fix the renderer" {
+		t.Fatalf("background prompt/env = %#v", task)
+	}
+	if _, ok := task.Env["PROJECT_TOKEN"]; ok {
+		t.Fatalf("background task inherited project secrets: %#v", task.Env)
+	}
+	if _, ok := task.Env[EnvSessionID]; ok {
+		t.Fatalf("background task inherited %s: %#v", EnvSessionID, task.Env)
+	}
+}
+
+func TestBackgroundTaskPermissionsKeepKimiCompatible(t *testing.T) {
+	if got := backgroundTaskPermissions(domain.HarnessKimi); got != ports.PermissionModeDefault {
+		t.Fatalf("Kimi permissions = %q, want default", got)
+	}
+	if got := backgroundTaskPermissions(domain.HarnessCodex); got != ports.PermissionModeAcceptEdits {
+		t.Fatalf("Codex permissions = %q, want accept-edits", got)
+	}
+}
+
+func TestChatSpawnPersistsResolvedEffortForBackgroundTasks(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		override bool
+		want     string
+	}{
+		{name: "project default", want: "high"},
+		{name: "explicit provider default", override: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			launcher := &recordingLauncher{}
+			m, st, _ := newChatManager(launcher)
+			project := st.projects[string(chatTestProject)]
+			project.Config.AgentConfig.Effort = "high"
+			st.projects[string(chatTestProject)] = project
+
+			rec, _, _, err := m.Spawn(context.Background(), ports.SpawnConfig{
+				ProjectID: chatTestProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+				RequestedMode: domain.SessionModeChat, EffortOverride: tt.override,
+			})
+			if err != nil {
+				t.Fatalf("Spawn: %v", err)
+			}
+			if rec.Metadata.Effort != tt.want || launcher.started[0].Effort != tt.want {
+				t.Fatalf("effort metadata/start = %q/%q, want %q", rec.Metadata.Effort, launcher.started[0].Effort, tt.want)
+			}
+		})
+	}
 }
 
 type generationClaimFailureLauncher struct {
@@ -181,13 +320,43 @@ type generationClaimFailureLauncher struct {
 	err        error
 }
 
-func (l *generationClaimFailureLauncher) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
+func (l *generationClaimFailureLauncher) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	var prepareErr error
+	cfg, prepareErr = prepareTestChatStart(ctx, cfg)
+	if prepareErr != nil {
+		return ChatStarted{}, prepareErr
+	}
 	l.started = append(l.started, cfg)
 	rec := l.store.sessions[cfg.SessionID]
 	rec.Metadata.ControllerGeneration = l.generation
 	rec.UpdatedAt = rec.UpdatedAt.Add(time.Second)
 	l.store.sessions[cfg.SessionID] = rec
 	return ChatStarted{}, l.err
+}
+
+func TestReconcileLive_ChatReconnectPreservesActivity(t *testing.T) {
+	launcher := &recordingLauncher{liveReconnect: true}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	before := time.Unix(100, 0).UTC()
+	m.clock = func() time.Time { return before.Add(time.Minute) }
+	rec := domain.SessionRecord{ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityBlocked, LastActivityAt: before}, UpdatedAt: before,
+		Metadata: domain.SessionMetadata{Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1", ProviderConversationID: "thread-1"}}
+	st.sessions[rec.ID] = rec
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	if st.sessions[rec.ID].Activity != rec.Activity {
+		t.Fatal("live reconnect reset activity")
+	}
+	if !st.sessions[rec.ID].UpdatedAt.Equal(before) {
+		t.Fatalf("live reconnect changed recency from %s to %s", before, st.sessions[rec.ID].UpdatedAt)
+	}
+	if m.lcm.(*fakeLCM).completed != 0 {
+		t.Fatal("live reconnect used the spawn lifecycle")
+	}
 }
 
 func TestReconcileLive_ChatRelaunchesInExistingWorktree(t *testing.T) {
@@ -222,6 +391,76 @@ func TestReconcileLive_ChatRelaunchesInExistingWorktree(t *testing.T) {
 	}
 	if len(ws.restoreConfigs) != 1 || ws.restoreConfigs[0].Path != rec.Metadata.WorkspacePath {
 		t.Fatalf("Restore configs = %+v, want existing Chat worktree", ws.restoreConfigs)
+	}
+}
+
+func TestReconcileLive_StandaloneChatRelaunchesInExistingWorkspace(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, rt := newChatManager(launcher)
+	ws := m.workspace.(*fakeWorkspace)
+	lcm := m.lcm.(*fakeLCM)
+	rec := domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:          "/ws/standalone-1",
+			ProviderConversationID: "thread-existing",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	if err := m.reconcileLive(context.Background(), rec); err != nil {
+		t.Fatalf("reconcileLive: %v", err)
+	}
+	if len(launcher.started) != 1 || launcher.started[0].ProviderConversationID != "thread-existing" {
+		t.Fatalf("chat starts = %+v, want one native resume", launcher.started)
+	}
+	if rt.created != 0 {
+		t.Fatalf("terminal runtime Create calls = %d, want 0 for Chat", rt.created)
+	}
+	if lcm.terminated[rec.ID] != 0 || st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("standalone session was terminated during boot recovery: calls=%d row=%+v", lcm.terminated[rec.ID], st.sessions[rec.ID])
+	}
+	if len(ws.restoreConfigs) != 1 {
+		t.Fatalf("Restore configs = %+v, want one standalone restore", ws.restoreConfigs)
+	}
+	got := ws.restoreConfigs[0]
+	if got.ProjectID != "" || got.Branch != "" || got.Path != rec.Metadata.WorkspacePath {
+		t.Fatalf("standalone restore config = %+v, want projectless branchless existing workspace", got)
+	}
+}
+
+func TestReconcileLive_StandaloneChatFailureRemainsRecoverable(t *testing.T) {
+	launcher := &recordingLauncher{startErr: fmt.Errorf("read Codex version: exit status 127: %w", ports.ErrChatDriverIncompatible)}
+	m, st, rt := newChatManager(launcher)
+	ws := m.workspace.(*fakeWorkspace)
+	lcm := m.lcm.(*fakeLCM)
+	rec := domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:          "/ws/standalone-1",
+			ProviderConversationID: "thread-existing",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	err := m.reconcileLive(context.Background(), rec)
+	if !errors.Is(err, ports.ErrChatDriverIncompatible) {
+		t.Fatalf("reconcileLive error = %v, want ErrChatDriverIncompatible", err)
+	}
+	got := st.sessions[rec.ID]
+	if got.IsTerminated || got.Activity.State != domain.ActivityExited {
+		t.Fatalf("failed standalone recovery = %+v, want live/exited", got)
+	}
+	if got.Metadata.ProviderConversationID != rec.Metadata.ProviderConversationID || got.Metadata.WorkspacePath != rec.Metadata.WorkspacePath {
+		t.Fatalf("failed standalone recovery lost durable identity: %+v", got.Metadata)
+	}
+	if rt.created != 0 || rt.destroyed != 0 || ws.stashCalls != 0 || lcm.terminated[rec.ID] != 0 {
+		t.Fatalf("failed standalone recovery tore down state: runtime=(%d,%d) stash=%d terminated=%d",
+			rt.created, rt.destroyed, ws.stashCalls, lcm.terminated[rec.ID])
 	}
 }
 
@@ -348,7 +587,7 @@ func TestRestoreTerminatedChatOrchestratorAfterCompatibilityRecoveryKeepsIdentit
 	}
 }
 
-func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *testing.T) {
+func TestHistoricalChatHandoffRequiresLatestCompletedMatchingTransition(t *testing.T) {
 	const (
 		sessionID = domain.SessionID("mer-248")
 		provider  = "native-248"
@@ -383,12 +622,12 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 			CreatedAt: now, CompletedAt: now,
 		}
 		m := New(Deps{Store: st})
-		got, err := m.historicalChatProviderScopeID(context.Background(), record)
+		got, err := m.prepareRecoveredChatProviderHandoff(context.Background(), record)
 		if err != nil {
-			t.Fatalf("historicalChatProviderScopeID: %v", err)
+			t.Fatalf("prepareChatProviderHandoff: %v", err)
 		}
-		if got != "handoff-248:provider" {
-			t.Fatalf("provider scope = %q, want deterministic handoff boundary", got)
+		if got == nil || got.BoundaryID != "handoff-248:provider" {
+			t.Fatalf("provider handoff = %+v, want deterministic handoff boundary", got)
 		}
 	})
 
@@ -407,12 +646,12 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 			CreatedAt: now.Add(time.Minute),
 		}
 		m := New(Deps{Store: st})
-		got, err := m.historicalChatProviderScopeID(context.Background(), record)
+		got, err := m.prepareRecoveredChatProviderHandoff(context.Background(), record)
 		if err != nil {
-			t.Fatalf("historicalChatProviderScopeID: %v", err)
+			t.Fatalf("prepareChatProviderHandoff: %v", err)
 		}
-		if got != "" {
-			t.Fatalf("provider scope = %q, want no repair from stale transition proof", got)
+		if got != nil {
+			t.Fatalf("provider handoff = %+v, want no repair from stale transition proof", got)
 		}
 	})
 
@@ -427,12 +666,12 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 		st.activeBranch.SessionID = sessionID
 		st.activeBranch.ProviderConversationID = provider
 		m := New(Deps{Store: st})
-		got, err := m.historicalChatProviderScopeID(context.Background(), record)
+		got, err := m.prepareRecoveredChatProviderHandoff(context.Background(), record)
 		if err != nil {
-			t.Fatalf("historicalChatProviderScopeID: %v", err)
+			t.Fatalf("prepareChatProviderHandoff: %v", err)
 		}
-		if got != "" {
-			t.Fatalf("provider scope = %q, want ordinary idempotent resume", got)
+		if got != nil {
+			t.Fatalf("provider handoff = %+v, want ordinary idempotent resume", got)
 		}
 	})
 
@@ -446,8 +685,8 @@ func TestHistoricalChatProviderScopeRequiresLatestCompletedMatchingHandoff(t *te
 		}
 		st.conversationErr = domain.ErrNoConversation
 		m := New(Deps{Store: st})
-		if _, err := m.historicalChatProviderScopeID(context.Background(), record); !errors.Is(err, domain.ErrNoConversation) {
-			t.Fatalf("historicalChatProviderScopeID error = %v, want current-owner proof failure", err)
+		if _, err := m.prepareRecoveredChatProviderHandoff(context.Background(), record); !errors.Is(err, domain.ErrNoConversation) {
+			t.Fatalf("prepareChatProviderHandoff error = %v, want current-owner proof failure", err)
 		}
 	})
 }
@@ -498,9 +737,9 @@ func TestRestoreTerminatedChatOrchestratorPassesProvenProviderBoundary(t *testin
 		t.Fatalf("Chat starts = %d, want 1", len(launcher.started))
 	}
 	start := launcher.started[0]
-	if start.ProviderConversationID != "native-248" || start.ProviderScopeID != "handoff-248:provider" {
-		t.Fatalf("historical restore start = provider %q scope %q",
-			start.ProviderConversationID, start.ProviderScopeID)
+	if start.ProviderConversationID != "native-248" || start.ProviderHandoff == nil || start.ProviderHandoff.BoundaryID != "handoff-248:provider" {
+		t.Fatalf("historical restore start = provider %q handoff %+v",
+			start.ProviderConversationID, start.ProviderHandoff)
 	}
 	if got := st.sessions[sessionID]; !got.IsTerminated || got.Metadata.ProviderConversationID != "native-248" {
 		t.Fatalf("failed provider resume changed terminated target: %+v", got)
@@ -543,6 +782,48 @@ func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T
 	}
 	if result.Session.Activity.State != domain.ActivityIdle {
 		t.Fatalf("resumed activity = %q, want idle", result.Session.Activity.State)
+	}
+}
+
+func TestResumeChatRotatesBrowserCapabilityBeforeControllerStart(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, _ := newChatManager(launcher)
+	seedChatResumeSession(store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	authority := browsersvc.NewAuthority()
+	oldToken, oldVerifier, err := authority.Issue(rec.ID)
+	if err != nil {
+		t.Fatalf("issue old capability: %v", err)
+	}
+	rec.Metadata.BrowserCapabilityVerifier = oldVerifier
+	store.sessions[rec.ID] = rec
+	issuer := &recordingBrowserAuthority{authority: authority}
+	mgr.browserCapabilities = issuer
+	launcher.beforeStart = func(cfg ChatStart) {
+		stored := store.sessions[cfg.SessionID]
+		if !authority.Valid(cfg.SessionID, cfg.Env[EnvBrowserCapability], stored.Metadata.BrowserCapabilityVerifier) {
+			t.Fatal("fresh capability was not authorized when the resumed controller started")
+		}
+	}
+
+	result, err := mgr.ResumeAgentWithMode(context.Background(), rec.ID)
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	newToken := launcher.started[0].Env[EnvBrowserCapability]
+	newVerifier := result.Session.Metadata.BrowserCapabilityVerifier
+	if authority.Valid(rec.ID, oldToken, newVerifier) {
+		t.Fatal("old browser capability remained authorized after Chat resume")
+	}
+	if !authority.Valid(rec.ID, newToken, newVerifier) {
+		t.Fatal("new browser capability was not authorized after Chat resume")
+	}
+	encoded, err := json.Marshal(result.Session)
+	if err != nil {
+		t.Fatalf("marshal resumed session: %v", err)
+	}
+	if strings.Contains(string(encoded), oldToken) || strings.Contains(string(encoded), newToken) {
+		t.Fatalf("session API JSON leaked a browser bearer: %s", encoded)
 	}
 }
 
@@ -743,6 +1024,34 @@ func TestDefaultChatSpawnFallsBackToTUIWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestDefaultChatSpawnFallbackSkipsChatTuningResolution(t *testing.T) {
+	launcher := &recordingLauncher{preflightErr: ports.ErrChatDriverUnavailable}
+	mgr, store, runtime := newChatManager(launcher)
+	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeChat)
+	mgr.modelCatalog = tuningCatalog{err: errors.New("model discovery unavailable")}
+	project := store.projects[string(chatTestProject)]
+	project.Config.Worker.AgentConfig.Effort = "high"
+	store.projects[string(chatTestProject)] = project
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: chatTestProject,
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if rec.Mode != domain.SessionModeTUI {
+		t.Fatalf("mode = %q, want TUI fallback", rec.Mode)
+	}
+	if runtime.created == 0 {
+		t.Fatal("TUI fallback created no terminal runtime")
+	}
+	if len(launcher.started) != 0 {
+		t.Fatalf("fallback started %d Chat controllers, want 0", len(launcher.started))
+	}
+}
+
 func TestDefaultChatSpawnReturnsUnexpectedPreflightError(t *testing.T) {
 	preflightErr := errors.New("probe state corrupted")
 	launcher := &recordingLauncher{preflightErr: preflightErr}
@@ -893,6 +1202,91 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 
 	if len(launcher.turns) != 1 || launcher.turns[0] == "" {
 		t.Fatalf("initial prompt was not delivered as a turn: %v", launcher.turns)
+	}
+}
+
+func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, runtime := newChatManager(launcher)
+	mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{{
+		token: "chat-token", verifier: "chat-verifier",
+	}}}
+	project := store.projects[string(chatTestProject)]
+	project.Config.Env = map[string]string{
+		EnvBrowserCapability:        "project-token",
+		EnvBrowserRuntimeToken:      "runtime-secret",
+		EnvBrowserRuntimeTokenStdin: "1",
+	}
+	store.projects[string(chatTestProject)] = project
+	launcher.beforeStart = func(cfg ChatStart) {
+		stored := store.sessions[cfg.SessionID]
+		if got := stored.Metadata.BrowserCapabilityVerifier; got != "chat-verifier" {
+			t.Fatalf("verifier at controller start = %q, want chat-verifier", got)
+		}
+	}
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessCodex,
+		RequestedMode: domain.SessionModeChat,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if runtime.created != 0 {
+		t.Fatalf("Chat spawn created %d terminal runtimes", runtime.created)
+	}
+	start := launcher.started[0]
+	if got := start.Env[EnvBrowserCapability]; got != "chat-token" {
+		t.Fatalf("controller capability = %q, want issued token", got)
+	}
+	if start.Env[EnvBrowserRuntimeToken] != "" || start.Env[EnvBrowserRuntimeTokenStdin] != "" {
+		t.Fatalf("browser runtime secrets reached Chat controller: token=%q stdin=%q",
+			start.Env[EnvBrowserRuntimeToken], start.Env[EnvBrowserRuntimeTokenStdin])
+	}
+	if got := rec.Metadata.BrowserCapabilityVerifier; got != "chat-verifier" {
+		t.Fatalf("committed verifier = %q, want chat-verifier", got)
+	}
+}
+
+func TestChatSpawnCapabilityFailurePreventsControllerStart(t *testing.T) {
+	tests := []struct {
+		name       string
+		issue      browserCapabilityIssue
+		persistErr error
+	}{
+		{name: "issuer error", issue: browserCapabilityIssue{err: errors.New("entropy unavailable")}},
+		{name: "empty token", issue: browserCapabilityIssue{verifier: "verifier"}},
+		{name: "empty verifier", issue: browserCapabilityIssue{token: "token"}},
+		{name: "verifier persistence", issue: browserCapabilityIssue{token: "token", verifier: "verifier"}, persistErr: errors.New("database unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			launcher := &recordingLauncher{}
+			mgr, store, runtime := newChatManager(launcher)
+			mgr.browserCapabilities = &scriptedBrowserCapabilities{issues: []browserCapabilityIssue{tt.issue}}
+			store.updateSessionErr = tt.persistErr
+
+			_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+				ProjectID:     chatTestProject,
+				Kind:          domain.KindWorker,
+				Harness:       domain.HarnessCodex,
+				RequestedMode: domain.SessionModeChat,
+			})
+			if !errors.Is(err, ErrSpawnBrowser) {
+				t.Fatalf("Spawn error = %v, want ErrSpawnBrowser", err)
+			}
+			if len(launcher.started) != 0 || runtime.created != 0 {
+				t.Fatalf("failed capability started controller/runtime: chat=%d runtime=%d",
+					len(launcher.started), runtime.created)
+			}
+			for _, session := range store.sessions {
+				if !session.IsTerminated {
+					t.Fatalf("capability failure left session %s live", session.ID)
+				}
+			}
+		})
 	}
 }
 
@@ -1124,5 +1518,56 @@ func TestSendRefusedForTerminatedChatSession(t *testing.T) {
 	}
 	if len(launcher.relayed) != 0 {
 		t.Errorf("a terminated session still received %v", launcher.relayed)
+	}
+}
+
+type deadlineConsumingChatLauncher struct {
+	*recordingLauncher
+	cancel context.CancelFunc
+}
+
+func (l *deadlineConsumingChatLauncher) StartChatTurn(_ context.Context, _ domain.SessionID, text string) (string, error) {
+	l.turns = append(l.turns, text)
+	l.cancel()
+	return "", context.DeadlineExceeded
+}
+
+func (l *deadlineConsumingChatLauncher) StopChat(ctx context.Context, id domain.SessionID) error {
+	l.stopped = append(l.stopped, id)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestChatSpawn_RollbackGivesEachCleanupStepAFreshDeadline(t *testing.T) {
+	previousBudget := spawnRollbackBudget
+	spawnRollbackBudget = 10 * time.Millisecond
+	t.Cleanup(func() { spawnRollbackBudget = previousBudget })
+
+	spawnCtx, cancel := context.WithCancel(context.Background())
+	launcher := &deadlineConsumingChatLauncher{
+		recordingLauncher: &recordingLauncher{},
+		cancel:            cancel,
+	}
+	mgr, st, _ := newChatManager(launcher)
+	ws := mgr.workspace.(*fakeWorkspace)
+
+	_, _, _, err := mgr.Spawn(spawnCtx, ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessCodex,
+		Prompt:        "fix the button",
+		RequestedMode: domain.SessionModeChat,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSpawnDeliverPrompt) {
+		t.Fatalf("Spawn err = %v, want prompt delivery deadline", err)
+	}
+	if ws.destroyed != 1 {
+		t.Fatalf("workspace destroyed = %d, want 1", ws.destroyed)
+	}
+	if ws.destroyCtxErr != nil {
+		t.Fatalf("workspace cleanup inherited exhausted chat shutdown deadline: %v", ws.destroyCtxErr)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session row was not terminated after chat shutdown exhausted its deadline")
 	}
 }

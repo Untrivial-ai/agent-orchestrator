@@ -1,7 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import { TooltipProvider } from "../../components/ui/tooltip";
+
+function render(ui: ReactNode) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 
 // Drives the real useWorkspaceQuery + SessionsBoard end to end for a normal
 // project, mocking only the HTTP client and the router. Proves PR facts carried
@@ -210,34 +215,26 @@ describe("PR hydration for a normal project (#251)", () => {
 	it("renders Board card PR numbers with lifecycle statuses only instead of 'no PR yet'", async () => {
 		renderWithProviders(<SessionsBoard />);
 
-		expect(await screen.findByRole("link", { name: "#278" })).toHaveAttribute(
+		expect(await screen.findByRole("link", { name: "PR #278 open" })).toHaveAttribute(
 			"href",
 			"https://github.com/aoagents/ReverbCode/pull/278",
 		);
-		expect(screen.getByText("open")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "#279" })).toHaveAttribute(
+		expect(screen.getByRole("link", { name: "PR #279 draft" })).toHaveAttribute(
 			"href",
 			"https://github.com/aoagents/ReverbCode/pull/279",
 		);
-		expect(screen.getByRole("link", { name: "#280" })).toHaveAttribute(
+		expect(screen.getByRole("link", { name: "PR #280 open" })).toHaveAttribute(
 			"href",
 			"https://github.com/aoagents/ReverbCode/pull/280",
 		);
-		expect(screen.getByRole("link", { name: "#281" })).toHaveAttribute(
+		expect(screen.getByRole("link", { name: "PR #281 merged" })).toHaveAttribute(
 			"href",
 			"https://github.com/aoagents/ReverbCode/pull/281",
 		);
-		expect(screen.getByRole("link", { name: "#282" })).toHaveAttribute(
+		expect(screen.getByRole("link", { name: "PR #282 closed" })).toHaveAttribute(
 			"href",
 			"https://github.com/aoagents/ReverbCode/pull/282",
 		);
-		expect(screen.getByLabelText("#278, #280 open")).toBeInTheDocument();
-		expect(screen.getByLabelText("#279 draft")).toBeInTheDocument();
-		expect(screen.getByLabelText("#281 merged")).toBeInTheDocument();
-		expect(screen.getByLabelText("#282 closed")).toBeInTheDocument();
-		expect(screen.getByText("draft")).toBeInTheDocument();
-		expect(screen.getByText("merged")).toHaveClass("text-status-merged");
-		expect(screen.getByText("closed")).toHaveClass("text-error");
 		expect(screen.queryByText("review pending")).not.toBeInTheDocument();
 		expect(screen.queryByText("CI")).not.toBeInTheDocument();
 		expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
@@ -248,11 +245,10 @@ describe("PR hydration for a normal project (#251)", () => {
 		respondWithAttentionPR();
 		renderWithProviders(<SessionsBoard />);
 
-		expect(await screen.findByRole("link", { name: "#278" })).toHaveAttribute(
+		expect(await screen.findByRole("link", { name: "PR #278 open" })).toHaveAttribute(
 			"href",
 			"https://github.com/aoagents/ReverbCode/pull/278",
 		);
-		expect(screen.getByText("open")).toBeInTheDocument();
 		expect(screen.queryByText("changes requested")).not.toBeInTheDocument();
 		expect(screen.queryByRole("link", { name: "conflicts" })).not.toBeInTheDocument();
 	});

@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect } from "react";
 import { isConfigured, type ServerConfig } from "../config";
 import { streamGlobalConversationEvents } from "./api";
+import { eventCursorKey, initialCursorFor } from "./eventCursor";
 import {
 	createConversationEventRegistry,
 	createCursorPersister,
@@ -30,7 +31,9 @@ export function useConversationEventTransport(cfg: ServerConfig | null): void {
 			AsyncStorage.setItem(cursorKey, String(cursor)),
 		);
 		const run = async () => {
-			let cursor = Number(await AsyncStorage.getItem(cursorKey)) || 0;
+			// Missing or unusable starts at head, not zero: a fresh client has no
+			// reason to replay the whole change log to reach the live tail.
+			let cursor = initialCursorFor(await AsyncStorage.getItem(cursorKey));
 			let delay = RECONNECT_MIN_MS;
 			while (!stopped) {
 				controller = new AbortController();
@@ -74,10 +77,6 @@ export function useConversationEventTransport(cfg: ServerConfig | null): void {
 			cursorPersister.flush();
 		};
 	}, [cfg]);
-}
-
-function eventCursorKey(cfg: ServerConfig): string {
-	return `ao.chat.events.${cfg.secure ? "https" : "http"}.${cfg.host}.${cfg.httpPort}`;
 }
 
 function wait(ms: number): Promise<void> {

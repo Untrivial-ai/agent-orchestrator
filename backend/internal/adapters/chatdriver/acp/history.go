@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -15,25 +16,139 @@ import (
 
 const aoInternalReplayMetaKey = "ao.internalReplay"
 
+// refreshableConversation is returned only when the agent advertised
+// session/load. Calling session/load again on the already resumed ACP connection
+// asks the provider to replay its durable transcript again; it does not start a
+// new provider conversation or merely reread historyEvents.
+type refreshableConversation struct {
+	*conversation
+	loadMu      sync.Mutex
+	loadRequest acpsdk.LoadSessionRequest
+}
+
+var _ ports.ChatHistoryRefresher = (*refreshableConversation)(nil)
+
+func newRefreshableConversation(
+	conversation *conversation,
+	request acpsdk.LoadSessionRequest,
+) *refreshableConversation {
+	return &refreshableConversation{conversation: conversation, loadRequest: request}
+}
+
+func (c *refreshableConversation) loadHistory(ctx context.Context) (acpsdk.LoadSessionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return acpsdk.LoadSessionResponse{}, err
+	}
+
+	c.beginHistoryReplay(string(c.loadRequest.SessionId))
+	response, err := c.conn.LoadSession(ctx, c.loadRequest)
+	if err != nil {
+		c.abortHistoryReplay()
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	// The SDK waits for all notifications preceding this response to finish
+	// delivery. They are now captured, but not yet normalized.
+	if err := c.drainAndFinishReplay(ctx); err != nil {
+		c.abortHistoryReplay()
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	return response, nil
+}
+
+// captureReplayUpdate also accepts arrivals during normalization. A response
+// watermark is a lower bound on delivery, not an exact replay/live boundary.
+// As before, history capture stays active until finishHistoryReplay.
+func (c *conversation) captureReplayUpdate(params acpsdk.SessionNotification) bool {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	if !c.replaying {
+		return false
+	}
+	c.replayUpdates = append(c.replayUpdates, params)
+	return true
+}
+
+func (c *conversation) drainAndFinishReplay(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.replayMu.Lock()
+		raw := c.replayUpdates
+		c.replayUpdates = nil
+		if len(raw) == 0 {
+			// Serialize final turn settlement and capture closure with delivery.
+			// Only this finalization holds the inbox lock, never a replay batch.
+			c.finishHistoryReplay()
+			c.replaying = false
+			c.replayMu.Unlock()
+			return nil
+		}
+		c.replayMu.Unlock()
+		for i := range raw {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// SDK handler errors are log-only; preserve that behavior.
+			if err := c.processUpdate(raw[i]); err != nil {
+				c.log.Warn("failed to handle replayed notification", "err", err)
+			}
+			raw[i] = acpsdk.SessionNotification{}
+		}
+	}
+}
+
+// RefreshHistory implements ports.ChatHistoryRefresher with a new ACP
+// session/load request. Replaying identical provider data is safe because the
+// capture regenerates the same stable ProviderEventID values, and the Chat
+// projector deduplicates those identities when importing a settled snapshot.
+func (c *refreshableConversation) RefreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
+	if _, err := c.loadHistory(ctx); err != nil {
+		// When AO's own context ended, the SDK reports that as a synthetic
+		// -32603 carrying the context error text. That is AO's deadline, not a
+		// provider verdict, so it must not be classified as a provider failure.
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, fmt.Errorf("refresh ACP session history: %w: %w", contextErr, err)
+		}
+		return nil, normalizeACPLoadError("refresh ACP session history", err)
+	}
+	return c.ReadHistory(ctx)
+}
+
 // historyCapture receives the session/update replay produced by ACP session/load.
 // ACP deliberately replays a flat stream rather than provider turns, so user
 // message ids are the durable boundaries from which AO reconstructs settled turns.
+//
+// Replay notifications are buffered separately from the normalized history to
+// reduce work on the SDK's sequential delivery path. This is an in-memory
+// backlog, not transcript pruning or a guarantee against SDK queue overflow.
 type historyCapture struct {
-	sessionID       string
-	events          []ports.ChatEvent
-	occurrences     map[string]int
-	turnID          string
-	turnUserID      string
-	turnHasProvider bool
-	pendingUserID   string
-	pendingUserText string
-	fallbackID      int
+	sessionID           string
+	events              []ports.ChatEvent
+	occurrences         map[string]int
+	turnID              string
+	turnUserID          string
+	turnHasProvider     bool
+	pendingUserID       string
+	pendingNativeUserID string
+	pendingUserText     string
+	fallbackID          int
 }
 
 // beginHistoryReplay diverts provider events away from the live Events channel.
 // The controller has not started consuming yet, and a long transcript can be much
 // larger than that channel's bounded live-stream buffer.
 func (c *conversation) beginHistoryReplay(sessionID string) {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	c.replaying = true
+	c.replayUpdates = nil
+
 	c.mu.Lock()
 	c.sessionID = sessionID
 	c.activeTurn = ""
@@ -55,6 +170,11 @@ func (c *conversation) beginHistoryReplay(sessionID string) {
 }
 
 func (c *conversation) abortHistoryReplay() {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	c.replaying = false
+	c.replayUpdates = nil
+
 	c.historyMu.Lock()
 	c.history = nil
 	c.historyEvents = nil
@@ -150,6 +270,7 @@ func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMe
 	if chunk.MessageId != nil {
 		messageID = strings.TrimSpace(*chunk.MessageId)
 	}
+	nativeID := messageID
 
 	c.historyMu.Lock()
 	if c.history == nil {
@@ -185,6 +306,7 @@ func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMe
 	c.historyMu.Lock()
 	if c.history != nil {
 		c.history.pendingUserID = messageID
+		c.history.pendingNativeUserID = nativeID
 		c.history.pendingUserText += text
 	}
 	c.historyMu.Unlock()
@@ -242,8 +364,10 @@ func (c *conversation) flushHistoryUserMessage() {
 	}
 	turnID := c.history.turnID
 	messageID := c.history.pendingUserID
+	nativeID := c.history.pendingNativeUserID
 	text := c.history.pendingUserText
 	c.history.pendingUserID = ""
+	c.history.pendingNativeUserID = ""
 	c.history.pendingUserText = ""
 	c.historyMu.Unlock()
 
@@ -251,11 +375,12 @@ func (c *conversation) flushHistoryUserMessage() {
 		return
 	}
 	c.emit(ports.ChatEvent{
-		Kind:            ports.ChatEventUserMessageCompleted,
-		ProviderTurnID:  turnID,
-		ProviderItemID:  c.providerItemID(messageID),
-		ClientMessageID: c.providerItemID(messageID),
-		Text:            text,
+		Kind:                ports.ChatEventUserMessageCompleted,
+		NativeUserMessageID: nativeID,
+		ProviderTurnID:      turnID,
+		ProviderItemID:      c.providerItemID(messageID),
+		ClientMessageID:     c.providerItemID(messageID),
+		Text:                text,
 	})
 }
 

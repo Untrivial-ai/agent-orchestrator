@@ -2,7 +2,7 @@
 	"expo": {
 		"name": "AO",
 		"slug": "ao-mobile",
-		"version": "1.2.1",
+		"version": "1.3.1",
 		"runtimeVersion": {
 			"policy": "fingerprint"
 		},
@@ -53,11 +53,11 @@
 			"package": "aoagents.dev",
 			"googleServicesFile": "./google-services.json",
 			"adaptiveIcon": {
-				"backgroundColor": "#0a0b0d",
+				"backgroundImage": "./assets/android-icon-background.png",
 				"foregroundImage": "./assets/android-icon-foreground.png",
 				"monochromeImage": "./assets/android-icon-monochrome.png"
 			},
-			"predictiveBackGestureEnabled": false,
+			"predictiveBackGestureEnabled": true,
 			"permissions": ["android.permission.CAMERA"],
 			"softwareKeyboardLayoutMode": "resize"
 		},
@@ -67,6 +67,12 @@
 		},
 		"plugins": [
 			"expo-router",
+			[
+				"expo-navigation-bar",
+				{
+					"enforceContrast": false
+				}
+			],
 			[
 				"expo-build-properties",
 				{

@@ -22,6 +22,8 @@ type NotificationService interface {
 	List(ctx context.Context, filter notificationsvc.ListFilter) (notificationsvc.ListPage, error)
 	MarkRead(ctx context.Context, id string) (notificationsvc.Notification, bool, error)
 	MarkAllRead(ctx context.Context, ids []string) (int64, error)
+	Delete(ctx context.Context, id string) (notificationsvc.Notification, error)
+	ClearAll(ctx context.Context) (notificationsvc.ClearResult, error)
 }
 
 // NotificationStream is the live notification stream used by SSE clients.
@@ -40,6 +42,8 @@ func (c *NotificationsController) Register(r chi.Router) {
 	r.Get("/notifications", c.list)
 	r.Post("/notifications/read-all", c.markAllRead)
 	r.Patch("/notifications/{id}", c.markRead)
+	r.Delete("/notifications/{id}", c.delete)
+	r.Delete("/notifications", c.clearAll)
 }
 
 // RegisterStream mounts long-lived notification stream routes on the supplied router.
@@ -116,6 +120,37 @@ func (c *NotificationsController) markAllRead(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (c *NotificationsController) delete(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "DELETE", "/api/v1/notifications/{id}")
+		return
+	}
+	notification, err := c.Svc.Delete(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, NotificationEnvelope{Notification: notificationResponse(notification)})
+}
+
+func (c *NotificationsController) clearAll(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "DELETE", "/api/v1/notifications")
+		return
+	}
+	result, err := c.Svc.ClearAll(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ClearNotificationsResponse{
+		ClearedCount:  result.ClearedCount,
+		ClearID:       result.ClearID,
+		ClearEpoch:    result.ClearEpoch,
+		ClearSequence: result.ClearSequence,
+	})
+}
+
 func (c *NotificationsController) stream(w http.ResponseWriter, r *http.Request) {
 	if c.Stream == nil {
 		apispec.NotImplemented(w, r, "GET", "/api/v1/notifications/stream")
@@ -153,13 +188,24 @@ func (c *NotificationsController) stream(w http.ResponseWriter, r *http.Request)
 }
 
 func writeNotificationSSE(w http.ResponseWriter, flusher http.Flusher, event domain.NotificationEvent) error {
-	data, err := json.Marshal(notificationResponseFromRecord(event.Record))
+	name := "notification_created"
+	var payload any = notificationResponseFromRecord(event.Record)
+	switch event.Kind {
+	case domain.NotificationCleared:
+		name = "notification_cleared"
+		payload = struct {
+			ClearID       string `json:"clearId"`
+			ClearEpoch    string `json:"clearEpoch"`
+			ClearSequence int64  `json:"clearSequence"`
+		}{ClearID: event.ClearID, ClearEpoch: event.ClearEpoch, ClearSequence: event.ClearSequence}
+	case domain.NotificationResolved:
+		name = "notification_resolved"
+	case domain.NotificationDeleted:
+		name = "notification_deleted"
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
-	}
-	name := "notification_created"
-	if event.Kind == domain.NotificationResolved {
-		name = "notification_resolved"
 	}
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data); err != nil {
 		return err

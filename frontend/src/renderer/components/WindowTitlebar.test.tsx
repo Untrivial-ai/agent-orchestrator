@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "./ui/tooltip";
 
 const { navigateMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
@@ -58,7 +59,11 @@ describe("WindowTitlebar", () => {
   it("renders custom Windows controls and dispatches window actions", async () => {
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
 
     await userEvent.click(screen.getByRole("button", { name: "Minimize" }));
     await userEvent.click(
@@ -74,7 +79,11 @@ describe("WindowTitlebar", () => {
   it("shows only View and Help in the top menu", async () => {
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
 
     expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Help" })).toBeInTheDocument();
@@ -92,7 +101,11 @@ describe("WindowTitlebar", () => {
   it("renders the back and forward navigation buttons", async () => {
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
 
     expect(screen.getByRole("button", { name: "Go back" })).toBeInTheDocument();
     expect(
@@ -109,7 +122,11 @@ describe("WindowTitlebar", () => {
     };
     const { WindowTitlebar } = await loadWindowTitlebar();
 
-    render(<WindowTitlebar />);
+    render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
     const maximizeButton = screen.getByRole("button", {
       name: "Maximize / Restore",
     });
@@ -128,12 +145,51 @@ describe("WindowTitlebar", () => {
     async (platform) => {
       const { WindowTitlebar } = await loadWindowTitlebar(platform);
 
-      const { container } = render(<WindowTitlebar />);
+      const { container } = render(
+        <TooltipProvider>
+          <WindowTitlebar />
+        </TooltipProvider>,
+      );
 
       expect(container).toBeEmptyDOMElement();
       expect(actionMock).not.toHaveBeenCalled();
     },
   );
+
+  it("does not report shell focus from the portaled browser address bar", async () => {
+    const { WindowTitlebar } = await loadWindowTitlebar();
+
+    const notifyShellFocus = vi.fn();
+    window.ao!.menu.notifyShellFocus = notifyShellFocus;
+
+    const { unmount } = render(
+      <TooltipProvider>
+        <WindowTitlebar />
+      </TooltipProvider>,
+    );
+
+    // The docked omnibox is portaled into the inspector header, outside the
+    // browser-panel div — focusing it must not clear the browser shortcut
+    // target or the next ⌘T/⌘W opens/closes a terminal instead of a tab.
+    const addressBar = document.createElement("div");
+    addressBar.setAttribute("data-testid", "browser-address-bar");
+    const input = document.createElement("input");
+    addressBar.appendChild(input);
+    document.body.appendChild(addressBar);
+
+    input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    addressBar.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    expect(notifyShellFocus).not.toHaveBeenCalled();
+
+    const shellSurface = document.createElement("div");
+    document.body.appendChild(shellSurface);
+    shellSurface.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(notifyShellFocus).toHaveBeenCalledTimes(1);
+
+    addressBar.remove();
+    shellSurface.remove();
+    unmount();
+  });
 
   it("keeps Windows spacing and overlays scoped to Windows", () => {
     const css = readFileSync("src/renderer/styles.css", "utf8");

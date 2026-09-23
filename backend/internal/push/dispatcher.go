@@ -55,6 +55,9 @@ type sentTicket struct {
 	id     string
 	token  string
 	sentAt time.Time
+	// pruneAmbiguous prevents pruning from an ID shared by different tokens.
+	// The conflict is remembered only while a marked record remains in pending.
+	pruneAmbiguous bool
 }
 
 // Dispatcher subscribes to the notification hub and, per new notification, sends
@@ -139,10 +142,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, rec domain.NotificationRecord
 	tickets, err := d.sender.Send(ctx, messages)
 	if err != nil {
 		d.log.Warn("push send failed", "err", err, "notification", rec.ID, "devices", len(messages))
-		return
 	}
-	// Tickets are 1:1 with messages, in order. Prune tokens Expo already knows are
-	// dead, and remember accepted tickets so the sweep can check their receipts.
+	// Even on error, earlier successful batches return a prefix of tickets in
+	// message order. Prune known dead tokens and track accepted deliveries once.
 	now := d.clock()
 	var accepted []sentTicket
 	for i, t := range tickets {
@@ -179,6 +181,24 @@ func (d *Dispatcher) trackAccepted(tickets []sentTicket) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pending = append(d.pending, tickets...)
+	// Mark conflicting IDs before the cap can discard either record. An ID stays
+	// ambiguous while a marked record remains in pending; after all are removed,
+	// a new ticket reusing the ID is trusted again.
+	tokenOf := make(map[string]string, len(d.pending))
+	for _, t := range d.pending {
+		token, exists := tokenOf[t.id]
+		if !exists {
+			tokenOf[t.id] = t.token
+		}
+		if t.pruneAmbiguous || (exists && token != t.token) {
+			tokenOf[t.id] = ""
+		}
+	}
+	for i := range d.pending {
+		if tokenOf[d.pending[i].id] == "" {
+			d.pending[i].pruneAmbiguous = true
+		}
+	}
 	if over := len(d.pending) - maxPendingReceipts; over > 0 {
 		d.pending = d.pending[over:]
 	}
@@ -190,47 +210,66 @@ func (d *Dispatcher) trackAccepted(tickets []sentTicket) {
 func (d *Dispatcher) sweepReceipts(ctx context.Context) {
 	now := d.clock()
 
-	// Split pending into "due" (old enough to check or expired) and "keep".
+	// Leave due tickets in place while fetching so retries preserve their age
+	// and position under the cap. Only records in this snapshot can be resolved.
 	d.mu.Lock()
-	var due, keep []sentTicket
+	due := make(map[sentTicket]struct{})
+	var ids []string
+	seen := make(map[string]struct{})
 	for _, t := range d.pending {
-		if now.Sub(t.sentAt) >= receiptDelay {
-			due = append(due, t)
-		} else {
-			keep = append(keep, t)
+		age := now.Sub(t.sentAt)
+		if t.id == "" || age < receiptDelay || age >= receiptMaxAge {
+			continue
+		}
+		due[t] = struct{}{}
+		if _, exists := seen[t.id]; !exists {
+			ids = append(ids, t.id)
+			seen[t.id] = struct{}{}
 		}
 	}
-	d.pending = keep
 	d.mu.Unlock()
-	if len(due) == 0 {
-		return
+
+	var receipts map[string]Receipt
+	if len(ids) > 0 {
+		var err error
+		receipts, err = d.sender.GetReceipts(ctx, ids)
+		if err != nil {
+			d.log.Warn("fetch push receipts failed", "err", err, "tickets", len(ids))
+		}
 	}
 
-	// Expired tickets (no receipt after receiptMaxAge) are dropped, not queried.
-	ids := make([]string, 0, len(due))
-	tokenOf := make(map[string]string, len(due))
-	for _, t := range due {
+	// Receipt fetching can cross the expiry boundary. Process partial responses
+	// even on error, keeping omitted or nonterminal results at their original age.
+	now = d.clock()
+	d.mu.Lock()
+	keep := d.pending[:0]
+	var deadTokens []string
+	pruned := make(map[string]struct{})
+	for _, t := range d.pending {
 		if now.Sub(t.sentAt) >= receiptMaxAge {
 			continue
 		}
-		ids = append(ids, t.id)
-		tokenOf[t.id] = t.token
-	}
-	if len(ids) == 0 {
-		return
-	}
-
-	receipts, err := d.sender.GetReceipts(ctx, ids)
-	if err != nil {
-		d.log.Warn("fetch push receipts failed", "err", err, "tickets", len(ids))
-		return
-	}
-	for id, r := range receipts {
+		r, found := receipts[t.id]
+		_, queried := due[t]
+		if !queried || !found || (r.Status != "ok" && r.Status != "error") {
+			keep = append(keep, t)
+			continue
+		}
 		if r.IsDeviceNotRegistered() {
-			d.prune(tokenOf[id])
+			token := t.token
+			if _, seen := pruned[token]; !t.pruneAmbiguous && token != "" && !seen {
+				deadTokens = append(deadTokens, token)
+				pruned[token] = struct{}{}
+			}
 		} else if r.Status == "error" {
 			d.log.Warn("push delivery error", "err", r.Details.Error, "message", r.Message)
 		}
+	}
+	clear(d.pending[len(keep):])
+	d.pending = keep
+	d.mu.Unlock()
+	for _, token := range deadTokens {
+		d.prune(token)
 	}
 }
 

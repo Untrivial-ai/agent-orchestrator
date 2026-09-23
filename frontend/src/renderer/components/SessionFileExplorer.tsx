@@ -1,100 +1,149 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, Columns2, Maximize2, Minimize2, Rows3, Search } from "lucide-react";
-import { cn } from "../lib/utils";
-import { sessionWorkspaceFilesQueryOptions } from "../hooks/useSessionWorkspaceFiles";
+import {
+	Columns2,
+	Maximize2,
+	Minimize2,
+	Rows3,
+	Search,
+} from "lucide-react";
+import {
+	sessionSourceFilesQueryOptions,
+	type FilesSource,
+	useWorkspaceFileConnectionState,
+	workspaceFilesRefetchInterval,
+} from "../hooks/useSessionWorkspaceFiles";
+import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
+import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { buildChangedOnlyTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useUiStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Switch } from "./ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./ui/resizable";
 import { FileTree } from "./FileTree";
-import { FileContentPane } from "./FileContentPane";
+import { FileContentPane, type FileOpenOptions } from "./FileContentPane";
+import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
+import { WorkspaceReviewPane } from "./diffs/WorkspaceReviewPane";
+
+const WORKSPACE_SOURCE: FilesSource = { kind: "workspace" };
 
 type SessionFileExplorerProps = {
 	sessionId: string;
 	isMaximized?: boolean;
-	activePath?: string | null;
-	onOpenFile?: (path: string) => void;
+	onOpenFile?: (path: string, options?: FileOpenOptions) => void;
+	onSplitChange?: (split: boolean) => void;
 	onToggleMaximized?: (next: boolean) => void;
+	revealRequest?: { path: string; key: number } | null;
+	split?: boolean;
 };
 
 export function SessionFileExplorer({
 	sessionId,
 	isMaximized = false,
-	activePath,
 	onOpenFile,
+	onSplitChange,
 	onToggleMaximized,
+	revealRequest,
+	split: controlledSplit,
 }: SessionFileExplorerProps) {
 	const { t } = useTranslation();
 	const [filter, setFilter] = useState("");
-	const [split, setSplit] = useState(false);
+	const [internalSplit, setInternalSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
+	const split = controlledSplit ?? internalSplit;
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
-	const rootRef = useRef<HTMLElement>(null);
-	const annotation = useFileAnnotation(sessionId);
+	const [sourceNotice, setSourceNotice] = useState("");
+	const scmQuery = useSessionScmSummary(sessionId);
+	const queryClient = useQueryClient();
+	const connectionState = useWorkspaceFileConnectionState(sessionId);
 
-	const changedOnly = useUiStore((state) => Boolean(state.inspectorSessions[sessionId]?.filesChangedOnly));
+	const changedOnly = useUiStore((state) => state.inspectorSessions[sessionId]?.filesChangedOnly ?? true);
+	const source = useUiStore((state) => state.inspectorSessions[sessionId]?.filesSource ?? WORKSPACE_SOURCE);
 	const setFilesChangedOnly = useUiStore((state) => state.setFilesChangedOnly);
+	const setFilesSource = useUiStore((state) => state.setFilesSource);
+	const annotation = useFileAnnotation(sessionId, { source: source.kind === "workspace" ? "Workspace" : `${source.label} (${source.url})` });
+	const snapshot = source.kind === "pull_request" ? scmQuery.data?.find((pr) => pr.url === source.url)?.headSha ?? "" : "";
+	const querySource = useMemo<FilesSource>(
+		() => source.kind === "pull_request" ? { ...source, snapshot } : source,
+		[source, snapshot],
+	);
 
 	const filesQuery = useQuery({
-		...sessionWorkspaceFilesQueryOptions(sessionId, t("files.error.loadWorkspace")),
-		enabled: changedOnly,
+		...sessionSourceFilesQueryOptions(sessionId, querySource, t("files.error.loadWorkspace")),
+		refetchInterval: workspaceFilesRefetchInterval(connectionState),
 	});
 	const changedOnlyData = useMemo(
 		() => (filesQuery.data ? buildChangedOnlyTree(filesQuery.data.files) : []),
 		[filesQuery.data],
 	);
+	const hasChanges = filesQuery.data?.files.some((file) => file.status !== "unmodified") ?? false;
+	const showChanges = source.kind === "workspace" && changedOnly && (!filesQuery.data || hasChanges);
+	const sourceUnavailable = source.kind === "pull_request"
+		&& (filesQuery.isError || Boolean(scmQuery.data && !scmQuery.data.some((pr) => pr.url === source.url)));
 
 	useEffect(() => {
 		setSelectedPath(null);
 		setFilter("");
+		setSourceNotice("");
 	}, [sessionId]);
 
-	// Routes vertical wheel scroll landing on the diff's own horizontal
-	// scrollbar back up to the shared scroll root, so scrolling down over a
-	// long unwrapped line still scrolls the file instead of doing nothing.
 	useEffect(() => {
-		const root = rootRef.current;
-		if (!root) return;
-		const routeDiffWheel = (event: WheelEvent) => {
-			if (event.ctrlKey || event.metaKey || event.shiftKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-			const target = event.target;
-			if (!(target instanceof Element) || !target.closest(".session-files-diff-scrollbar")) return;
-			const scrollRoot = root.querySelector<HTMLElement>("[data-files-scroll-root]");
-			if (!scrollRoot) return;
-			const delta =
-				event.deltaMode === WheelEvent.DOM_DELTA_LINE
-					? event.deltaY * 16
-					: event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-						? event.deltaY * scrollRoot.clientHeight
-						: event.deltaY;
-			if (delta === 0) return;
-			event.preventDefault();
-			scrollRoot.scrollTop += delta;
-		};
-		root.addEventListener("wheel", routeDiffWheel, { capture: true, passive: false });
-		return () => root.removeEventListener("wheel", routeDiffWheel, { capture: true });
-	}, []);
+		if (!sourceUnavailable) return;
+		setFilesSource(sessionId, WORKSPACE_SOURCE);
+		setSelectedPath(null);
+		setSourceNotice(t("files.explorer.sourceUnavailable"));
+	}, [sessionId, setFilesSource, sourceUnavailable, t]);
+
+	useEffect(() => subscribeWorkspaceFileChanges(sessionId, queryClient), [queryClient, sessionId]);
+	useEffect(() => {
+		window.localStorage.setItem("ao.files.diffStyle", split ? "split" : "unified");
+	}, [split]);
+	useEffect(() => {
+		if (!revealRequest) return;
+		setFilesChangedOnly(sessionId, false);
+		setSelectedPath(revealRequest.path);
+		if (!isMaximized) onOpenFile?.(revealRequest.path, { mode: "file" });
+	}, [isMaximized, onOpenFile, revealRequest, sessionId, setFilesChangedOnly]);
 
 	const handleSelectPath = (node: TreeNode) => {
-		if (!isMaximized && onOpenFile) {
-			onOpenFile(node.path);
+		setSelectedPath(node.path);
+		if (!isMaximized && source.kind === "workspace") onOpenFile?.(node.path, { mode: "file" });
+	};
+	const handleViewChange = (next: boolean) => {
+		setSelectedPath(null);
+		setFilesChangedOnly(sessionId, next);
+	};
+	const treeSelectedPath = selectedPath;
+	const selectedPreviousPath = filesQuery.data?.files.find((file) => file.path === selectedPath)?.previousPath;
+	const sourceValue = source.kind === "workspace" ? "workspace" : source.url;
+	const selectSource = (value: string) => {
+		setSourceNotice("");
+		setSelectedPath(null);
+		if (value === "workspace") {
+			setFilesSource(sessionId, WORKSPACE_SOURCE);
 			return;
 		}
-		setSelectedPath(node.path);
+		const pr = scmQuery.data?.find((candidate) => candidate.url === value);
+		if (pr) setFilesSource(sessionId, { kind: "pull_request", number: pr.number, url: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` });
 	};
-	const treeSelectedPath = !isMaximized && onOpenFile ? (activePath ?? null) : selectedPath;
 
 	return (
-		<section
-			ref={rootRef}
-			className="flex h-full min-h-0 flex-col bg-background text-foreground"
-			aria-label={t("files.sessionFiles")}
-		>
-			<header className="flex h-10 shrink-0 items-center gap-0.5 border-b border-border bg-surface px-2">
+		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
+			<header className="flex min-h-10 shrink-0 flex-wrap items-center gap-0.5 border-b border-border bg-surface px-2 py-1">
+				<Select onValueChange={selectSource} value={sourceValue}>
+					<SelectTrigger aria-label={t("files.explorer.source")} className="h-8 max-w-56 min-w-32 text-xs">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="workspace">{t("files.explorer.workspaceSource")}</SelectItem>
+						{scmQuery.data?.map((pr) => (
+							<SelectItem key={pr.url} value={pr.url}>{`PR #${pr.number} · ${pr.sourceBranch || pr.title}`}</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
 				<label className="relative mr-1 min-w-0 flex-1">
 					<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
 					<Input
@@ -105,54 +154,113 @@ export function SessionFileExplorer({
 						value={filter}
 					/>
 				</label>
-				<label className="flex shrink-0 items-center gap-1.5 px-1.5 text-2xs text-muted-foreground">
-					<Switch
-						aria-label={t("files.explorer.changedOnly")}
-						checked={changedOnly}
-						onCheckedChange={(next) => setFilesChangedOnly(sessionId, next)}
-						size="sm"
-					/>
-					{t("files.explorer.changedOnly")}
-				</label>
-				<Button
-					aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
-					aria-pressed={split}
-					className="shrink-0"
-					onClick={() => setSplit((current) => !current)}
-					size="icon-sm"
-					type="button"
-					variant="ghost"
-				>
-					{split ? (
-						<Columns2 className="size-icon-sm" aria-hidden="true" />
-					) : (
-						<Rows3 className="size-icon-sm" aria-hidden="true" />
-					)}
-				</Button>
-				{onToggleMaximized ? (
-					<Button
-						aria-label={isMaximized ? t("files.minimize") : t("files.maximize")}
-						className="shrink-0"
-						onClick={() => onToggleMaximized(!isMaximized)}
-						size="icon-sm"
-						type="button"
-						variant="ghost"
+				{hasChanges ? (
+					<div
+						aria-label={t("files.viewMode")}
+						className="flex shrink-0 items-center rounded-md border border-border bg-muted/30 p-0.5"
+						role="tablist"
 					>
-						{isMaximized ? (
-							<Minimize2 className="size-icon-sm" aria-hidden="true" />
-						) : (
-							<Maximize2 className="size-icon-sm" aria-hidden="true" />
-						)}
-					</Button>
+						<Button
+							aria-selected={showChanges}
+							className="h-6 rounded px-2 text-2xs"
+							onClick={() => handleViewChange(true)}
+							role="tab"
+							size="sm"
+							type="button"
+							variant={showChanges ? "secondary" : "ghost"}
+						>
+							{t("files.reviewChanges")}
+						</Button>
+						<Button
+							aria-selected={!showChanges}
+							className="h-6 rounded px-2 text-2xs"
+							onClick={() => handleViewChange(false)}
+							role="tab"
+							size="sm"
+							type="button"
+							variant={!showChanges ? "secondary" : "ghost"}
+						>
+							{t("files.allFiles")}
+						</Button>
+					</div>
+				) : null}
+				{showChanges ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
+								aria-pressed={split}
+								className="shrink-0"
+								onClick={() => {
+									const next = !split;
+									if (controlledSplit === undefined) setInternalSplit(next);
+									onSplitChange?.(next);
+								}}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								{split ? (
+									<Columns2 className="size-icon-sm" aria-hidden="true" />
+								) : (
+									<Rows3 className="size-icon-sm" aria-hidden="true" />
+								)}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
+					</Tooltip>
+				) : null}
+				{onToggleMaximized ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								aria-label={isMaximized ? t("files.minimize") : t("files.maximize")}
+								className="shrink-0"
+								onClick={() => onToggleMaximized(!isMaximized)}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								{isMaximized ? (
+									<Minimize2 className="size-icon-sm" aria-hidden="true" />
+								) : (
+									<Maximize2 className="size-icon-sm" aria-hidden="true" />
+								)}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">{isMaximized ? t("files.minimize") : t("files.maximize")}</TooltipContent>
+					</Tooltip>
 				) : null}
 			</header>
-			{isMaximized ? (
+			<div className="shrink-0 border-b border-border px-3 py-1 text-2xs text-muted-foreground">
+				{source.kind === "workspace" ? t("files.explorer.workspaceSource") : source.label}
+				{sourceNotice ? ` — ${sourceNotice}` : ""}
+			</div>
+			{showChanges ? (
+				filesQuery.isPending ? (
+					<PanelMessage>{t("files.loading")}</PanelMessage>
+				) : filesQuery.isError ? (
+					<PanelMessage action={<RetryButton onClick={() => void filesQuery.refetch()} />}>
+						{filesQuery.error.message || t("files.error.loadWorkspace")}
+					</PanelMessage>
+				) : filesQuery.data ? (
+					<WorkspaceReviewPane
+						annotation={annotation}
+						data={filesQuery.data}
+						filter={filter}
+						onBrowseAll={() => source.kind === "workspace" && handleViewChange(false)}
+						onOpenFile={onOpenFile}
+						sessionId={sessionId}
+						split={split}
+					/>
+				) : null
+			) : isMaximized || source.kind === "pull_request" ? (
 				// Maximized gives the explorer the full window — plenty of room for
 				// the tree and the content side by side, like a real editor.
 				<ResizablePanelGroup className="min-h-0 flex-1">
 					<ResizablePanel defaultSize="26%" minSize="18%" maxSize="50%">
 						<FileTree
-							changedOnly={changedOnly}
+							changedOnly={source.kind === "pull_request"}
 							changedOnlyData={changedOnlyData}
 							filterText={filter}
 							onSelectPath={handleSelectPath}
@@ -163,57 +271,21 @@ export function SessionFileExplorer({
 					<ResizableHandle />
 					<ResizablePanel defaultSize="74%" minSize="40%">
 						<ContentScrollArea>
-							<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} wrap={true} />
+							<FileContentPane annotation={annotation} path={selectedPath} previousPath={selectedPreviousPath} sessionId={sessionId} source={querySource} split={split} />
 						</ContentScrollArea>
 					</ResizablePanel>
 				</ResizablePanelGroup>
-			) : onOpenFile ? (
+			) : (
+				// The right rail remains a persistent navigator. File contents open
+				// in center tabs so expanding folders and scrolling the tree survive.
 				<FileTree
-					changedOnly={changedOnly}
+					changedOnly={false}
 					changedOnlyData={changedOnlyData}
 					filterText={filter}
 					onSelectPath={handleSelectPath}
 					selectedPath={treeSelectedPath}
 					sessionId={sessionId}
 				/>
-			) : (
-				// Docked in the 316px inspector rail there isn't room for the tree
-				// and the content side by side (see git history for the version that
-				// tried — file names truncated to a few characters). Show one at a
-				// time instead, like a narrow-window master/detail view: the tree
-				// stays mounted (not unmounted) so its scroll position and expanded
-				// folders survive going back and forth.
-				<div className="flex min-h-0 flex-1 flex-col">
-					<div className={cn("min-h-0 flex-1", selectedPath && "hidden")}>
-						<FileTree
-							changedOnly={changedOnly}
-							changedOnlyData={changedOnlyData}
-							filterText={filter}
-							onSelectPath={handleSelectPath}
-							selectedPath={treeSelectedPath}
-							sessionId={sessionId}
-						/>
-					</div>
-					{selectedPath ? (
-						<div className="flex min-h-0 flex-1 flex-col">
-							<div className="flex h-8 shrink-0 items-center gap-1 border-b border-border bg-surface px-1">
-								<Button
-									aria-label={t("files.explorer.backToTree")}
-									onClick={() => setSelectedPath(null)}
-									size="icon-sm"
-									type="button"
-									variant="ghost"
-								>
-									<ChevronLeft className="size-icon-sm" aria-hidden="true" />
-								</Button>
-								<span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{selectedPath}</span>
-							</div>
-							<ContentScrollArea>
-								<FileContentPane annotation={annotation} path={selectedPath} sessionId={sessionId} split={split} wrap={true} />
-							</ContentScrollArea>
-						</div>
-					) : null}
-				</div>
 			)}
 		</section>
 	);

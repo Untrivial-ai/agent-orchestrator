@@ -22,7 +22,7 @@ func TestDeriverTokensAreKnownHarnesses(t *testing.T) {
 }
 
 func TestSupportsHarness(t *testing.T) {
-	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessAmp, domain.HarnessPi, domain.HarnessAuggie, domain.HarnessContinue, domain.HarnessAider} {
+	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessAmp, domain.HarnessPi, domain.HarnessAuggie, domain.HarnessContinue, domain.HarnessAider, domain.HarnessOMP} {
 		if !SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = false, want true", h)
 		}
@@ -32,6 +32,13 @@ func TestSupportsHarness(t *testing.T) {
 		if SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = true, want false", h)
 		}
+	}
+}
+
+func TestOMPDispatchesManagedExtensionActivity(t *testing.T) {
+	got, ok := Derive("omp", "permission-request", []byte(`{"tool_name":"bash"}`))
+	if !ok || got != domain.ActivityWaitingInput {
+		t.Fatalf("Derive(omp, permission-request) = (%q, %v), want (%q, true)", got, ok, domain.ActivityWaitingInput)
 	}
 }
 

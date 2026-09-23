@@ -1,6 +1,6 @@
 # Agent Orchestrator Architecture
 
-Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Every session owns an isolated git worktree and one committed interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. A durable handoff may move a compatible native conversation between them, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
+Agent Orchestrator is a long-running Go daemon that supervises multiple parallel AI coding agent sessions. Project sessions own isolated git worktrees; projectless standalone workers own AO-managed plain-directory workspaces. Every session commits to one interface mode at a time. A TUI session runs its agent inside a tmux/conpty runtime; a Chat session runs a native protocol controller without an agent terminal runtime. Codex and all ACP Chat processes live in detached per-session hosts so daemon/desktop replacement reconnects without stopping an in-flight turn. The ACP host additionally preserves connection setup, JSON-RPC correlation, pending interactions, and acknowledged prompt replay while the replacement daemon rebuilds its typed controller. A durable handoff may move a compatible native conversation between TUI and Chat, but both controllers are never live at once. The daemon coordinates both through the same session, lifecycle, workspace, storage, and observation boundaries.
 
 ## Table of Contents
 
@@ -89,7 +89,7 @@ graph TB
         AgentAdapter[Agent Adapters]
         RuntimeAdapter[Runtime tmux/conpty]
         ChatDriver[Native Chat / ACP Drivers]
-        WorkspaceAdapter[Workspace git worktree]
+        WorkspaceAdapter[Git worktree / standalone directory]
         SCMAdapter[SCM GitHub]
     end
 
@@ -196,7 +196,7 @@ backend/internal/
 ├── service/             # Controller-facing services
 │   ├── project/         # Project CRUD
 │   ├── session/         # Session read-model assembly
-│   ├── chat/            # Runtime-less Chat controllers + durable projection
+│   ├── chat/            # Chat controllers, persistent provider hosts + durable projection
 │   ├── pr/              # PR observation service
 │   └── review/          # Code review service
 ├── session_manager/     # Internal session command engine
@@ -213,7 +213,7 @@ backend/internal/
 │   ├── agent/           # 23+ agent harnesses
 │   ├── chatdriver/      # Native provider protocols and reusable ACP transport
 │   ├── runtime/         # tmux/conpty runtimes
-│   ├── workspace/       # git worktree
+│   ├── workspace/       # git worktree and standalone-directory adapters
 │   ├── scm/             # GitHub
 │   └── tracker/         # GitHub tracker
 ├── daemon/              # Production wiring
@@ -255,8 +255,12 @@ sequenceDiagram
     CDC->>UI: SSE session.created
 
     Note over Mgr: 2. Create workspace
-    Mgr->>WS: Create(project, branch)
-    WS->>WS: git worktree add
+    alt project session
+        Mgr->>WS: Create(project, branch)
+        WS->>WS: git worktree add
+    else standalone worker
+        Mgr->>WS: Create AO-managed directory
+    end
 
     alt persisted mode = tui
         Note over Mgr: 3a. Launch terminal controller
@@ -291,14 +295,17 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start([User spawns session]) --> Validate[Validate project config and explicit mode]
+    Start([User spawns session]) --> Scope{Project attached?}
+    Scope -->|yes| Validate[Validate project config and explicit mode]
+    Scope -->|no, worker only| ValidateStandalone[Validate standalone mode]
     Validate --> InitialMode{Resolved initial mode}
+    ValidateStandalone --> InitialMode
     InitialMode -->|chat| Preflight[Probe native Chat driver]
     InitialMode -->|tui| RuntimePreflight[Validate runtime prerequisites]
     Preflight --> CreateRow[Create session row in SQLite]
     RuntimePreflight --> CreateRow
     CreateRow --> Trigger1[CDC: session.created]
-    CreateRow --> CreateWS[Create git worktree]
+    CreateRow --> CreateWS[Create git worktree or standalone directory]
     CreateWS --> LaunchMode{Persisted mode}
     LaunchMode -->|tui| CreateRT[Launch runtime tmux/conpty]
     CreateRT --> GetCmd[Get agent launch command]
@@ -316,15 +323,50 @@ flowchart TD
 ### Session Interface Handoff
 
 An interface switch is a controller replacement inside the existing AO session,
-not a new session. The session id, project, worktree, branch, lifecycle facts,
-PR ownership, and provider-native conversation id stay the same. Only the
-mode-owned controller changes.
+not a new session. The session id, optional project, workspace, lifecycle facts,
+and provider-native conversation id stay the same. For project sessions, branch
+and PR ownership also stay the same. Only the mode-owned controller changes.
 
 The generic coordinator lives in `session_manager`; providers opt in through the
 small `AgentInterfaceHandoff` capability only after their TUI resume id and Chat
 protocol id are proven to name the same native conversation. Claude Code and
 Codex currently satisfy that contract. Merely having a Chat/ACP driver is not
 enough to enable switching for another harness.
+
+The native ID handed over is the current Terminal conversation, which can differ
+from the last Chat provider (for example after replacing an orchestrator). This
+does not prove that the new provider inherited the old context. Session Manager
+reserves a `ChatProviderHandoff` only from a matching durable TUI→Chat transition;
+ordinary resumes retain the exact-handle check. Chat resumes the verified target,
+reconciles only its provider scope, and prepares a visible context boundary.
+Lifecycle and SQLite atomically publish that boundary, native history, controller
+generation, and any project-narrative ownership transfer, checking the observed
+owner, head, sequence, and controller fence again after provider I/O. Prior rows
+remain intact, but are not represented as context inherited by the new provider.
+Ordinary Terminal restore retains its fresh-start fallback when native history is
+unavailable, including rollback and crash recovery. Prior Chat rows remain intact;
+returning with a new native identity publishes a separate context boundary rather
+than claiming continuity. A Terminal→Chat handoff still requires native replay and
+never silently substitutes a fresh Chat provider.
+
+The native-history barrier combines trusted native checkpoints with the
+latest completed AO turn in the active provider scope. A newer completed turn can
+supersede a legacy hook fact tied to an older settled turn; otherwise a Chat answer followed by an
+immediate round trip would keep waiting for the older Terminal answer to be last.
+Hook timestamps must prove the fact predates the superseding turn; repeated text
+alone is not evidence. A hook newer than the durable completion requires settled
+replay after that high-water turn. Unknown hook facts still gate replay. Hook
+observation time also orders native identities within a launch, so delayed hooks
+cannot replace the current identity's facts.
+
+Independent handoff publication settles the retired predecessor's work and fails
+pending requests in the same transaction as history and ownership. Codex scopes
+projection IDs at the adapter boundary and decodes them for native RPCs. A durable
+branch flag preserves legacy unscoped Codex IDs on upgrade; native forks inherit
+that flag, while new provider boundaries use scoped IDs.
+When Codex proves fork ancestry, replay omits copied prefixes only if their stable
+item IDs and complete content match retained ancestor rows. Those rows stay in
+their original scope. Unknown ancestry or changed content is retained in full.
 
 ```mermaid
 sequenceDiagram
@@ -464,8 +506,8 @@ sequenceDiagram
 
 ```mermaid
 erDiagram
-    projects ||--o{ sessions : owns
-    projects ||--o| conversations : owns_orchestrator_narrative
+    projects o|--o{ sessions : optionally_owns
+    projects o|--o| conversations : optionally_owns_orchestrator_narrative
     sessions ||--o| conversations : owns_worker_narrative
     sessions ||--o{ session_interface_transitions : records_controller_handoffs
     session_interface_transitions ||--o{ session_interface_transition_messages : holds_messages_during_gap
@@ -477,8 +519,8 @@ erDiagram
     pull_requests ||--o{ pr_review_threads : has
     pull_requests ||--o{ pr_comments : has
     sessions ||--o{ notifications : has
-    change_log }|--|| projects : tracks
-    change_log }|--|| sessions : tracks
+    change_log }o--o| projects : optionally_tracks
+    change_log }o--o| sessions : optionally_tracks
     change_log }|--|| pull_requests : tracks
 
     projects {
@@ -490,7 +532,7 @@ erDiagram
 
     sessions {
         string id PK
-        string project_id FK
+        string project_id FK "nullable for standalone workers"
         string harness
         string session_mode
         string runtime_handle_id
@@ -504,7 +546,7 @@ erDiagram
     conversations {
         string id PK
         string scope
-        string project_id FK
+        string project_id FK "nullable for standalone conversations"
         string session_id FK
         string current_session_id FK
         integer latest_sequence
@@ -1044,7 +1086,7 @@ Agent Orchestrator's architecture is designed around:
 - **Port-based design** — Core code depends on interfaces, not implementations
 - **Durable minimalism** — Store only facts, compute everything else
 - **Event-driven updates** — CDC broadcasts changes to all subscribers
-- **Isolation** — Each session owns a worktree and exactly one live mode-specific controller, including across handoffs
+- **Isolation** — Each project session owns a git worktree, each standalone worker owns an AO-managed directory, and every session has exactly one live mode-specific controller, including across handoffs
 - **Safety** — Conservative termination, path validation, gitignored hooks
 
 This architecture enables parallel AI agents to work safely while maintaining complete visibility and control.

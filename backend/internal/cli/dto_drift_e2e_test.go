@@ -61,6 +61,23 @@ type fakeAgentCatalog struct{}
 
 var _ controllers.AgentCatalog = (*fakeAgentCatalog)(nil)
 
+func (f *fakeAgentCatalog) CachedReadiness(context.Context) (agentsvc.Readiness, error) {
+	return f.readiness(), nil
+}
+
+func (f *fakeAgentCatalog) EnsureReadiness(context.Context, []string, domain.AgentReadinessPurpose) (agentsvc.Readiness, error) {
+	return f.readiness(), nil
+}
+
+func (f *fakeAgentCatalog) readiness() agentsvc.Readiness {
+	return agentsvc.Readiness{Agents: []domain.AgentReadinessSnapshot{{
+		ID: "codex", Label: "Codex",
+		Installation:       domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled, Freshness: domain.AgentReadinessFresh},
+		Authentication:     domain.AgentAuthenticationObservation{State: domain.AgentAuthenticationAuthorized, Freshness: domain.AgentReadinessFresh},
+		EffectiveReadiness: domain.AgentReadinessReady,
+	}}}
+}
+
 func (f *fakeAgentCatalog) List(context.Context) (agentsvc.Inventory, error) {
 	return authorizedCodexInventory(), nil
 }
@@ -76,11 +93,12 @@ func (f *fakeAgentCatalog) Probe(_ context.Context, agentID string) (agentsvc.Pr
 
 func (f *fakeAgentCatalog) Models(_ context.Context, agentID, _ string, _ bool) (ports.AgentModelCatalog, error) {
 	return ports.AgentModelCatalog{
-		AgentID:       agentID,
-		SelectionMode: ports.ModelSelectionText,
-		Models:        []ports.AgentModelInfo{},
-		AllowCustom:   true,
-		Source:        "test",
+		AgentID:          agentID,
+		SelectionMode:    ports.ModelSelectionText,
+		Models:           []ports.AgentModelInfo{},
+		CustomModelEntry: ports.CustomModelEntryDirect,
+		AllowCustom:      true,
+		Source:           "test",
 	}, nil
 }
 
@@ -126,6 +144,14 @@ func (f *fakeProjectManager) Add(_ context.Context, in projectsvc.AddInput) (pro
 
 func (f *fakeProjectManager) Clone(_ context.Context, in projectsvc.CloneInput) (projectsvc.Project, error) {
 	return projectsvc.Project{ID: "cloned", Repo: in.RemoteURL}, nil
+}
+
+func (f *fakeProjectManager) PrepareClone(_ context.Context, in projectsvc.CloneInput) (projectsvc.ClonePreparationResult, error) {
+	return projectsvc.ClonePreparationResult{Path: "/tmp/" + in.RemoteURL, RemoteURL: in.RemoteURL}, nil
+}
+
+func (f *fakeProjectManager) CleanupPreparedClone(context.Context, projectsvc.ClonePreparationCleanupInput) error {
+	return nil
 }
 
 func (f *fakeProjectManager) InitializeRepository(_ context.Context, in projectsvc.InitializeRepositoryInput) (projectsvc.InitializeRepositoryResult, error) {
@@ -274,4 +300,8 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 			t.Errorf("output missing %q; got: %s", "registered project", out.String())
 		}
 	})
+}
+
+func (f *fakeProjectManager) SetPermissions(_ context.Context, id domain.ProjectID, in projectsvc.SetPermissionsInput) (projectsvc.Project, error) {
+	return projectsvc.Project{ID: id, Config: &domain.ProjectConfig{AgentConfig: domain.AgentConfig{Permissions: in.Permissions}}}, nil
 }

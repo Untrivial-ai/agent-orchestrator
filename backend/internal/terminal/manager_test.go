@@ -3,6 +3,8 @@ package terminal
 import (
 	"context"
 	"encoding/base64"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -662,18 +664,89 @@ func TestManagerCloseKillsLiveAttachments(t *testing.T) {
 	}
 }
 
-func TestEnqueueOverflowCancelsConn(t *testing.T) {
-	cancelled := make(chan struct{})
+// newFloodedConn returns a conn whose queue already holds more PTY output than
+// the watermark allows, so the next data frame must wait.
+func newFloodedConn(ctx context.Context, cancel context.CancelFunc) *connState {
 	c := &connState{
-		out:    make(chan serverMsg, 1),
-		cancel: func() { close(cancelled) },
+		ctx:    ctx,
+		cancel: cancel,
+		out:    newOutQueue(),
 		terms:  map[string]*attachment{},
 	}
-	c.enqueue(serverMsg{Ch: chTerminal, Type: msgData}) // fills buffer
-	c.enqueue(serverMsg{Ch: chTerminal, Type: msgData}) // overflow -> cancel
+	c.enqueue(serverMsg{Ch: chTerminal, ID: "t1", Type: msgData, Data: strings.Repeat("x", dataWatermark)})
+	return c
+}
+
+// A flood must throttle its own PTY read loop, not tear the connection down:
+// cancelling here would kill every other pane on the same connection.
+func TestEnqueueDataBlocksUntilDrained(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newFloodedConn(ctx, func() { t.Error("a flood must not cancel the connection") })
+
+	done := make(chan struct{})
+	go func() {
+		c.enqueue(serverMsg{Ch: chTerminal, ID: "t1", Type: msgData, Data: "more"})
+		close(done)
+	}()
+
 	select {
-	case <-cancelled:
+	case <-done:
+		t.Fatal("data frame must wait while the queue is over the watermark")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	c.out.drain()
+	select {
+	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("overflow must cancel the connection")
+		t.Fatal("draining the queue must release the waiting data frame")
+	}
+}
+
+// The CDC fan-out enqueues session frames on one goroutine shared by every
+// connection, so a flooded connection must never block or drop a control frame.
+func TestEnqueueControlFramesNeverWait(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newFloodedConn(ctx, func() { t.Error("a control frame must not cancel the connection") })
+
+	done := make(chan struct{})
+	go func() {
+		c.enqueue(serverMsg{Ch: chTerminal, ID: "t1", Type: msgExited})
+		c.enqueue(serverMsg{Ch: chSessions, Type: msgSnapshot})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("control frames must not wait behind a flood")
+	}
+
+	var types []string
+	for _, m := range c.out.drain() {
+		types = append(types, m.Type)
+	}
+	want := []string{msgData, msgExited, msgSnapshot}
+	if !slices.Equal(types, want) {
+		t.Fatalf("frames = %v, want %v (order must be preserved)", types, want)
+	}
+}
+
+// A blocked producer must not outlive its connection, or daemon shutdown hangs.
+func TestEnqueueDataUnblocksOnConnClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	c := newFloodedConn(ctx, cancel)
+
+	done := make(chan struct{})
+	go func() {
+		c.enqueue(serverMsg{Ch: chTerminal, ID: "t1", Type: msgData, Data: "more"})
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelling the connection must release a waiting data frame")
 	}
 }

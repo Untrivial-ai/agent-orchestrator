@@ -14,7 +14,7 @@
 export type SessionMode = "chat" | "tui";
 
 /** One request and the agent work that followed it. */
-export type TurnState = "queued" | "running" | "completed" | "recovered" | "interrupted" | "failed";
+export type TurnState = "queued" | "running" | "completed" | "recovered" | "interrupted" | "failed" | "cancelled";
 
 export type MessageRole = "user" | "assistant";
 
@@ -65,6 +65,18 @@ export type ActivityStatus =
  * connection, and silently retrying would run the work twice.
  */
 export type DeliveryState = "queued" | "sending" | "accepted" | "uncertain" | "failed";
+
+/**
+ * Result of attempting to steer a running turn. A typed non-acceptance proves
+ * that the provider did not receive this guidance; transport ambiguity rejects
+ * the promise instead and remains fail-closed in the composer.
+ */
+export type ChatSteerOutcome =
+	| { status: "accepted" }
+	| { status: "not-accepted"; reason: string };
+
+/** Durable inline-edit acceptance; uncertainty remains a rejected promise. */
+export type ChatEditOutcome = ChatSteerOutcome;
 
 /** How far the agent has got with one step of its plan. */
 export type PlanStepStatus = "pending" | "in_progress" | "completed";
@@ -142,6 +154,13 @@ export interface ConversationContentSummary {
 	name?: string;
 }
 
+export interface QueuedMessageEditOptions {
+	clientMessageId?: string;
+	attachments?: { mimeType: string; data: string }[];
+	retainedContent?: number[];
+	expectedRevision?: number;
+}
+
 export interface ConversationMessage {
 	kind: "message";
 	id: string;
@@ -194,6 +213,12 @@ export interface ApprovalDetail {
 	subjectKind?: ActivityKind;
 	/** ACP's tool category, retained for diagnostics and forward compatibility. */
 	toolKind?: string;
+}
+
+/** Provider-supplied recovery information carried by an error activity. */
+export interface ProviderErrorDetail {
+	/** Optional provider destination; the renderer shows web URLs literally. */
+	actionUrl?: string;
 }
 
 export interface CommandDetail {
@@ -292,6 +317,9 @@ export interface FileChangeFile {
 	additions: number;
 	deletions: number;
 	patch?: string;
+	/** Native provider before/after text, used to render a fallback diff. */
+	oldText?: string;
+	newText?: string;
 	/** The patch was cut at the daemon's cap, so it is not the whole change. */
 	patchTruncated?: boolean;
 }
@@ -324,6 +352,8 @@ export interface McpToolDetail {
 	namespace?: string;
 	arguments?: unknown;
 	result?: unknown;
+	/** Structured provider content, including native ACP read output. */
+	content?: unknown;
 	error?: string;
 	success?: boolean;
 	/** Progress notes streamed while a long call runs. */
@@ -369,12 +399,18 @@ export interface SystemEventDetail {
 		| "compaction"
 		| "model.rerouted"
 		| "auth.reauth_required"
+		| "provider.failure"
 		| "steer"
 		| "plan"
-		| "context.reset";
+		| "context.reset"
+		| "context.boundary";
 	/** model.rerouted */
 	fromModel?: string;
 	toModel?: string;
+	/** provider.failure */
+	category?: string;
+	severity?: "warning" | "error" | (string & {});
+	revision?: number;
 	/** steer: the user's own words, delivered into a turn already running. */
 	origin?: string;
 	clientMessageId?: string;
@@ -489,6 +525,7 @@ export interface ConversationActivity {
 	 */
 	detail?: CommandDetail &
 		ApprovalDetail &
+		ProviderErrorDetail &
 		FileChangeDetail &
 		UsageDetail &
 		CompactionDetail &
@@ -558,6 +595,8 @@ export interface ChatConfigOption {
 
 /** One value offered by a select config option. */
 export interface ChatConfigChoice {
+	/** Exact AO permission equivalent supplied by the daemon, when supported. */
+	permissionMode?: ApprovalMode;
 	value: string;
 	name: string;
 	description?: string;
@@ -798,6 +837,20 @@ export function activeTurn(snapshot: ConversationSnapshot): ConversationTurn | u
 	return (
 		snapshot.turns.find((turn) => turn.state === "running") ??
 		snapshot.turns.find((turn) => turn.state === "queued")
+	);
+}
+
+/**
+ * Turn ids whose human prompt must not appear in the timeline.
+ *
+ * Queued turns live in the dock until dispatch. Turns cancelled from the dock
+ * before dispatch must not reappear in the timeline after the snapshot refreshes.
+ */
+export function hiddenTimelineTurnIds(snapshot: ConversationSnapshot): Set<string> {
+	return new Set(
+		snapshot.turns
+			.filter((turn) => turn.state === "queued" || turn.state === "cancelled")
+			.map((turn) => turn.id),
 	);
 }
 

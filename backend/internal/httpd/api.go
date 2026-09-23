@@ -23,6 +23,7 @@ import (
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
 	Agents             controllers.AgentCatalog
+	CodexAccounts      controllers.CodexAccountService
 	Projects           projectsvc.Manager
 	Sessions           controllers.SessionService
 	DesktopWorkspaces  controllers.DesktopWorkspaceService
@@ -35,6 +36,7 @@ type APIDeps struct {
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
+	Directories        controllers.DirectoryBrowserService
 	ShellTerminals     controllers.ShellTerminalService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
@@ -50,7 +52,21 @@ type APIDeps struct {
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
 	SystemChecks        controllers.SystemChecker
-	Installer           controllers.Installer
+	// HostID is this machine's stable, machine-bound identity, served by the
+	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
+	// machine answered before presenting a credential.
+	HostID string
+	// Endpoints reports how this daemon can currently be reached, for the
+	// phone's endpoint-refresh route.
+	Endpoints controllers.EndpointSource
+	Installer controllers.Installer
+	AgentAuth controllers.AgentAuthService
+	// GitHub is the local GitHub PAT + repos surface.
+	GitHub            controllers.GitHubPATService
+	AgentSwitchPolicy AgentSwitchPolicyControl
+	// LinkPreview unfurls external URLs for the renderer's hover cards; nil
+	// leaves the route answering 501.
+	LinkPreview controllers.LinkPreviewService
 
 	// Presence tracks which mobile devices are currently running the app.
 	// Nil disables presence tracking (the roster then reports every device offline).
@@ -94,6 +110,7 @@ type API struct {
 	cfg           config.Config
 	deps          APIDeps
 	agents        *controllers.AgentsController
+	codexAccounts *controllers.CodexAccountsController
 	projects      *controllers.ProjectsController
 	sessions      *controllers.SessionsController
 	desktop       *controllers.DesktopWorkspaceController
@@ -103,13 +120,19 @@ type API struct {
 	notifications *controllers.NotificationsController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
+	fs            *controllers.FSController
 	shellTerms    *controllers.ShellTerminalsController
 	conversations *controllers.ConversationsController
 	settings      *controllers.SettingsController
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
 	system        *controllers.SystemController
+	identity      *controllers.IdentityController
+	endpoints     *controllers.EndpointsController
 	systemInstall *controllers.SystemInstallController
+	agentAuth     *controllers.AgentAuthController
+	linkPreview   *controllers.LinkPreviewController
+	github        *controllers.GitHubController
 	events        *EventsController
 }
 
@@ -123,6 +146,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		agents: &controllers.AgentsController{
 			Catalog: deps.Agents,
 		},
+		codexAccounts: &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -141,13 +165,19 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
+		fs:            &controllers.FSController{Svc: deps.Directories},
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		system:        &controllers.SystemController{Checks: deps.SystemChecks},
+		identity:      &controllers.IdentityController{HostID: deps.HostID},
+		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
 		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
+		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
+		linkPreview:   &controllers.LinkPreviewController{Svc: deps.LinkPreview},
+		github:        &controllers.GitHubController{Svc: deps.GitHub},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -167,6 +197,7 @@ func (a *API) Register(root chi.Router) {
 			r.Use(middleware.Timeout(timeout))
 			r.Use(presenceMiddleware(a.deps.Presence))
 			a.agents.Register(r)
+			a.codexAccounts.Register(r)
 			a.projects.Register(r)
 			a.sessions.Register(r)
 			a.desktop.Register(r)
@@ -176,17 +207,24 @@ func (a *API) Register(root chi.Router) {
 			a.notifications.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
+			a.fs.Register(r)
 			a.shellTerms.Register(r)
 			a.conversations.Register(r)
 			a.settings.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
 			a.system.Register(r)
+			a.identity.Register(r)
+			a.endpoints.Register(r)
 			a.systemInstall.Register(r)
+			a.agentAuth.Register(r)
+			a.linkPreview.Register(r)
+			a.github.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
 		a.notifications.RegisterStream(r)
+		a.codexAccounts.RegisterStreams(r)
 		a.sessions.RegisterStreams(r)
 		a.events.Register(r)
 	})

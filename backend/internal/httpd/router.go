@@ -3,7 +3,9 @@
 package httpd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	agentswitchobs "github.com/aoagents/agent-orchestrator/backend/internal/observe/agentswitch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
@@ -25,7 +28,15 @@ import (
 // ControlDeps carries the daemon-control hooks the router exposes, such as the
 // callback that requests a graceful shutdown.
 type ControlDeps struct {
-	RequestShutdown func()
+	RequestShutdown   func()
+	AgentSwitchPolicy AgentSwitchPolicyControl
+}
+
+// AgentSwitchPolicyControl coordinates the daemon side of desktop telemetry
+// policy changes without exposing the concrete policy coordinator to HTTP.
+type AgentSwitchPolicyControl interface {
+	PrepareDisable(context.Context) (ports.AgentSwitchFailurePolicyAcknowledgement, error)
+	ApplyPolicy(context.Context, string, bool) (ports.AgentSwitchFailurePolicyAcknowledgement, error)
 }
 
 // NewRouterWithControl builds the root router with the standard middleware
@@ -38,6 +49,7 @@ type ControlDeps struct {
 //	RequestID     → attach a request id for correlation
 //	requestLogger → slog-backed access log + 5xx telemetry, carries the request id
 //	recoverer     → turn a handler panic into 500 instead of crashing the daemon
+//	accountOrigin → exact renderer-origin boundary for Codex account management
 //	cors          → CORS allowlist for the Electron renderer / dev origins
 //
 // The per-request timeout is deliberately not global: it wraps only bounded
@@ -51,6 +63,10 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.Use(middleware.RequestID)
 	r.Use(requestLogger(log, deps.Telemetry))
 	r.Use(recoverTelemetry(log, deps.Telemetry))
+	// Account-management routes do not inherit the general localhost preview
+	// exception. This guard must wrap corsMiddleware so hostile preflights are
+	// rejected before the general CORS layer can answer them.
+	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
 	r.Use(previewOriginMiddleware(api.sessions))
 
@@ -63,12 +79,71 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	mountHealth(r, cfg)
 	mountTerminalMux(r, termMgr, log)
 	mountControl(r, control)
+	mountAgentSwitchPolicyControl(r, control.AgentSwitchPolicy)
 	mountTelemetry(r, cfg, deps.Telemetry)
 	mountMobile(r, deps.Mobile)
 	mountMobileDevices(r, &controllers.MobileDevicesController{Registry: deps.DeviceRoster, Presence: deps.DeviceLive})
 	api.Register(r)
 
 	return r
+}
+
+type applyAgentSwitchPolicyRequest struct {
+	ConsentGeneration string `json:"consentGeneration"`
+	EventsEnabled     bool   `json:"eventsEnabled"`
+}
+
+func mountAgentSwitchPolicyControl(r chi.Router, policy AgentSwitchPolicyControl) {
+	if policy == nil {
+		return
+	}
+	writeAck := func(w http.ResponseWriter, acknowledgement ports.AgentSwitchFailurePolicyAcknowledgement) {
+		envelope.WriteJSON(w, http.StatusOK, map[string]any{
+			"status": "applied", "consentGeneration": acknowledgement.Authorization.ConsentGeneration,
+			"eventsEnabled": acknowledgement.Authorization.Enabled, "gateDrained": acknowledgement.GateDrained,
+			"purgeConfirmed": acknowledgement.PurgeConfirmed,
+		})
+	}
+	r.Post("/internal/agent-switch-observability/prepare-disable", func(w http.ResponseWriter, req *http.Request) {
+		if !localControlRequest(req) {
+			envelope.WriteJSON(w, http.StatusForbidden, map[string]any{"status": "forbidden"})
+			return
+		}
+		acknowledgement, err := policy.PrepareDisable(req.Context())
+		if err != nil {
+			envelope.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "failed"})
+			return
+		}
+		writeAck(w, acknowledgement)
+	})
+	r.Post("/internal/agent-switch-observability/apply-policy", func(w http.ResponseWriter, req *http.Request) {
+		if !localControlRequest(req) {
+			envelope.WriteJSON(w, http.StatusForbidden, map[string]any{"status": "forbidden"})
+			return
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4096))
+		decoder.DisallowUnknownFields()
+		var body applyAgentSwitchPolicyRequest
+		if err := decoder.Decode(&body); err != nil || body.ConsentGeneration == "" {
+			envelope.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "invalid_request"})
+			return
+		}
+		acknowledgement, err := policy.ApplyPolicy(req.Context(), body.ConsentGeneration, body.EventsEnabled)
+		if err != nil {
+			status := http.StatusInternalServerError
+			result := "failed"
+			if errors.Is(err, agentswitchobs.ErrPolicyHintMismatch) {
+				status = http.StatusConflict
+				result = "authority_mismatch"
+			} else if errors.Is(err, agentswitchobs.ErrPolicyCleanupPending) {
+				status = http.StatusConflict
+				result = "cleanup_pending"
+			}
+			envelope.WriteJSON(w, status, map[string]any{"status": result})
+			return
+		}
+		writeAck(w, acknowledgement)
+	})
 }
 
 func previewOriginMiddleware(sessions *controllers.SessionsController) func(http.Handler) http.Handler {
@@ -134,6 +209,7 @@ func mountMobile(r chi.Router, c *controllers.MobileController) {
 	}
 	r.Get("/api/v1/mobile/status", c.Status)
 	r.Post("/api/v1/mobile/enable", c.Enable)
+	r.Post("/api/v1/mobile/remote-access", c.StartRemoteAccess)
 	r.Post("/api/v1/mobile/disable", c.Disable)
 	r.Post("/api/v1/mobile/regenerate", c.Regenerate)
 	r.Post("/api/v1/mobile/secure-pairing", c.SecurePairing)

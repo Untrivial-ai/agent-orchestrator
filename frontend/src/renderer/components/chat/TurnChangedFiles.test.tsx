@@ -1,9 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ActivityRow, TurnChangedFiles } from "./ChatTimelineItems";
 import { ActivityRun } from "./ActivityRun";
 import type { ConversationActivity, TurnDiff } from "../../types/conversation";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+}
 
 // These cover the two signal rules this surface exists to keep: a changed-file
 // list never claims to be complete when it was cut, and command output only adds
@@ -344,7 +350,7 @@ describe("ActivityRun with a streaming command", () => {
 	}
 
 	it("opens itself so live output inside it is visible", () => {
-		const { container } = render(
+		render(
 			<ActivityRun
 				activities={[
 					commandActivity(
@@ -355,7 +361,28 @@ describe("ActivityRun with a streaming command", () => {
 				]}
 			/>,
 		);
-		expect(container.querySelector("pre")?.textContent).toBe("compiling…\n");
+		expect(screen.getByText("compiling…")).toBeInTheDocument();
+	});
+
+	it("opens the matching subgroup when a grouped command is streaming", () => {
+		const completedCommand = commandActivity({ command: "pwd" }, "completed");
+		completedCommand.id = "act-2";
+		completedCommand.sequence = 2;
+
+		render(
+			<ActivityRun
+				activities={[
+					commandActivity(
+						{ command: "npm run build", output: "compiling…\n", outputSource: "stream", outputMayBePartial: true },
+						"running",
+					),
+					completedCommand,
+					plan("act-3"),
+				]}
+			/>,
+		);
+
+		expect(screen.getByText("compiling…")).toBeInTheDocument();
 	});
 
 	it("stays collapsed when nothing inside it is printing", () => {
@@ -424,7 +451,7 @@ describe("ActivityRow command labels", () => {
 				)}
 			/>,
 		);
-		expect(screen.getByText("Explored 2 files")).toBeInTheDocument();
+		expect(screen.getByText("Read files")).toBeInTheDocument();
 		expect(screen.queryByText(/sed -n/)).not.toBeInTheDocument();
 	});
 
@@ -469,7 +496,7 @@ describe("ActivityRow command labels", () => {
 			/>,
 		);
 		const row = screen.getByRole("button");
-		expect(row).toHaveClass("py-0.5", "gap-1.5", "rounded-sm");
+		expect(row).toHaveClass("py-0.5", "gap-1.5", "select-none");
 		expect(screen.getByText("Checked repository")).toHaveClass(
 			"text-[11.5px]",
 			"font-normal",

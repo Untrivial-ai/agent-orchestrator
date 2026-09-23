@@ -11,6 +11,7 @@ import {
   InspectorPullRequestCardView,
   InspectorReviewsView,
   SessionInspectorShellView,
+  SessionInspectorSummaryView,
   type InspectorReviewLabels,
 } from "./SessionInspectorView";
 import type { ExternalLinkProps } from "./external-link";
@@ -88,19 +89,23 @@ describe("SessionInspectorShellView", () => {
 
 
 		expect(screen.getByRole("complementary", { name: "Session inspector" })).toBeInTheDocument();
-		expect(screen.getByRole("tablist")).toHaveClass("session-inspector__tablist");
+		expect(screen.getByRole("tablist")).toHaveClass("session-inspector__tablist", "gap-1");
+		expect(screen.getByRole("tablist")).not.toHaveClass("gap-2");
+		expect(screen.getByRole("tablist").parentElement).toHaveClass("pl-1");
+		expect(screen.getByRole("tablist").parentElement).not.toHaveClass("pl-2", "pl-2.5");
 		expect(screen.getByRole("tablist").parentElement?.nextElementSibling).toHaveClass(
 			"board-scrollbar",
 			"overflow-x-hidden",
 		);
 		expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
-		expect(screen.getByRole("tab", { name: "Summary" })).toHaveClass("shrink-0");
+		expect(screen.getByRole("tab", { name: "Summary" })).toHaveClass("shrink-0", "size-control-md", "p-0");
 		expect(screen.getByRole("tab", { name: "Summary" })).not.toHaveClass("flex-1");
 		expect(screen.getByRole("tab", { name: "Summary" })).not.toHaveClass("min-w-0");
 		expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("tabindex", "0");
 		expect(screen.getByRole("tab", { name: "Browser" })).toHaveAttribute("tabindex", "-1");
 		const filesLabel = within(screen.getByRole("tab", { name: "Files" })).getByText("2 Files");
-		expect(filesLabel).toHaveClass("session-inspector__responsive-label");
+		expect(filesLabel).toHaveClass("sr-only");
+		expect(filesLabel).not.toHaveClass("session-inspector__responsive-label");
 		expect(filesLabel).not.toHaveClass("truncate", "min-w-0");
 		expect(filesLabel).not.toHaveClass("@max-[350px]/inspector:hidden");
 		expect(screen.getByTestId("browser-unseen-indicator")).toBeInTheDocument();
@@ -134,6 +139,7 @@ describe("SessionInspectorShellView", () => {
       />,
     );
     const body = screen.getByRole("tablist").parentElement?.nextElementSibling;
+    expect(screen.getByRole("tablist").parentElement).toHaveClass("session-inspector__topbar--browser");
     expect(body).toHaveClass(
       "session-inspector__body--browser",
       "p-0",
@@ -162,6 +168,22 @@ describe("SessionInspectorShellView", () => {
 });
 
 describe("portable inspector presentations", () => {
+  it("places execution context before pull request details", () => {
+    render(
+      <SessionInspectorSummaryView
+        activity={<div>activity</div>}
+        activityTitle="Activity"
+        context={<div data-testid="execution-context">context</div>}
+        pullRequestCards={<div>pull request</div>}
+        pullRequestTitle="Pull request"
+      />,
+    );
+
+    const context = screen.getByTestId("execution-context");
+    const pullRequest = screen.getByText("pull request");
+    expect(Boolean(context.compareDocumentPosition(pullRequest) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
   it("renders PR facts and host-owned actions from a neutral view model", () => {
     render(
       <InspectorPullRequestCardView

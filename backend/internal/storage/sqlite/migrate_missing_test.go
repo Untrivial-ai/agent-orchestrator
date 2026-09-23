@@ -1,8 +1,6 @@
 package sqlite
 
 import (
-	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,13 +11,7 @@ import (
 // prevents the daemon from starting even though the missing migrations can be
 // applied normally.
 func TestMigrateAppliesMissingMigrationsBeforeCurrentVersion(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 27)
+	db := openMigratedDatabaseCopy(t, 27)
 	if _, err := db.Exec(`
 INSERT INTO projects (
 	id, path, repo_origin_url, display_name, registered_at, config, kind
@@ -78,13 +70,7 @@ WHERE is_applied = 1 AND version_id IN (28, 29, 30, 31)
 // A database that already recorded version 41 must still receive the browser
 // capability column from the append-only 0081 migration.
 func TestMigrateAppliesBrowserVerifierAfterUpstreamVersion41(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 40)
+	db := openMigratedDatabaseCopy(t, 40)
 	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (41, 1)`); err != nil {
 		t.Fatalf("seed upstream migration version 41: %v", err)
 	}
@@ -115,13 +101,7 @@ func TestMigrateAppliesBrowserVerifierAfterUpstreamVersion41(t *testing.T) {
 }
 
 func TestMigrateRecognizesBrowserVerifierFromEarlierBranchBuild(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 48)
+	db := openMigratedDatabaseCopy(t, 48)
 	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN browser_capability_verifier TEXT NOT NULL DEFAULT ''`); err != nil {
 		t.Fatalf("seed verifier from earlier branch build: %v", err)
 	}
@@ -147,13 +127,7 @@ func TestMigrateRecognizesBrowserVerifierFromEarlierBranchBuild(t *testing.T) {
 }
 
 func TestMigrateRepairsQueuedTurnPromotionColumnsWhenVersionAlreadyClaimed(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 85)
+	db := openMigratedDatabaseCopy(t, 85)
 	if _, err := db.Exec(`ALTER TABLE conversation_turns ADD COLUMN promotion_started_at TIMESTAMP`); err != nil {
 		t.Fatalf("seed promotion timestamp from earlier branch build: %v", err)
 	}
@@ -200,13 +174,7 @@ func TestMigrateRepairsQueuedTurnPromotionColumnsWhenVersionAlreadyClaimed(t *te
 }
 
 func TestMigrateRepairsQueuedTurnPromotionWhenVersion88WasClaimed(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 87)
+	db := openMigratedDatabaseCopy(t, 87)
 	if _, err := db.Exec(`ALTER TABLE conversation_turns ADD COLUMN promotion_started_at TIMESTAMP`); err != nil {
 		t.Fatalf("seed promotion timestamp from version 88 branch build: %v", err)
 	}
@@ -248,17 +216,38 @@ func TestMigrateRepairsQueuedTurnPromotionWhenVersion88WasClaimed(t *testing.T) 
 	}
 }
 
+func TestMigrateRepairsRetrySourceBeforeCancelledTurnRebuild(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 107)
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (108, 1)`); err != nil {
+		t.Fatalf("seed claimed retry-source migration: %v", err)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate database with missing retry-source schema: %v", err)
+	}
+
+	var columns, indexes int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('conversation_turns') WHERE name = 'retry_of_turn_id'`,
+	).Scan(&columns); err != nil {
+		t.Fatalf("query retry source column: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_conversation_turns_retry_source'`,
+	).Scan(&indexes); err != nil {
+		t.Fatalf("query retry source index: %v", err)
+	}
+	if columns != 1 || indexes != 1 {
+		t.Fatalf("retry source schema = column %d, index %d; want 1, 1", columns, indexes)
+	}
+	assertTableSQLContains(t, db, "conversation_turns", "'cancelled'")
+}
+
 // TestMigrateAppliesAgentModelCatalogAfterUpstreamMigration covers a database
 // that has already applied main's version 41. The catalog must use the next
 // migration version so goose applies it independently.
 func TestMigrateAppliesAgentModelCatalogAfterUpstreamMigration(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 41)
+	db := openMigratedDatabaseCopy(t, 41)
 
 	if err := migrate(db); err != nil {
 		t.Fatalf("migrate database after upstream migration: %v", err)

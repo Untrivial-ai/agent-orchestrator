@@ -1,0 +1,73 @@
+---
+title: "Native Windows support and programmable pipelines"
+description: "AO became a first-class Windows application and added staged, parallel agent pipelines from the CLI."
+date: "2026-05-10"
+rangeStart: "2026-05-04"
+rangeEnd: "2026-05-10"
+historical: true
+---
+
+
+## Native AO workflows on Windows <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1025" />
+
+Windows users can install and run the same AO dashboard, agents, and session workflows natively without WSL.
+
+## Build and control staged agent pipelines <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1645" />
+
+The CLI can define, start, inspect, cancel, and resume staged agent pipelines, including parallel work and saved artifacts.
+
+## Rename worker sessions from the sidebar <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1748" />
+
+Worker sessions can be renamed directly from the dashboard sidebar.
+
+## Improvements
+
+### Product
+
+- **V0.1 — core types, state machine, flat-file store** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1636" />
+- **V1.1 — DAG, parallel scheduling, Stage.routes** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1664" />
+
+### Agents
+
+- **V0.2 — agent executor (fresh session per stage, talk-to-able)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1638" />
+
+### Pull requests
+
+- **Enable worker→orchestrator dialogue via `ao send` with auto-sender prefix** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1787" />
+- **Add per-project env block to ProjectConfig** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1679" />
+
+
+---
+
+## Bug fixes
+
+### Product
+
+- **Restore re-attaches existing branch instead of recreating with -b** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1742" />
+- **Adopt orphaned orchestrator worktrees** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1643" />
+
+### Agents
+
+- **Keep tmux session alive after agent exit** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1758" />
+- **Reset stale worktree session branches** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1652" />
+- **Disable tmux status bar at session creation** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1683" />
+
+### Terminal
+
+- **Disable xterm scrollback to prevent terminal right-side clipping** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1678" />
+- **Render empty-state in sidebar when no projects configured** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1549" />
+
+### Pull requests
+
+- **Reliable post-launch prompt delivery with readiness polling** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1583" />
+- **Reload dashboard config after adding project from already-running menu** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1706" />
+
+### Updates
+
+- **Make update checks install-method aware** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1595" />
+
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

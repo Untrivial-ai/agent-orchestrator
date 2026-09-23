@@ -79,7 +79,29 @@ type Runtime struct {
 }
 
 var _ ports.Runtime = (*Runtime)(nil)
+var _ ports.FencedRuntimeProber = (*Runtime)(nil)
 var _ ports.Attacher = (*Runtime)(nil)
+
+type runtimeEffectFailure struct {
+	err     error
+	handle  ports.RuntimeHandle
+	effect  ports.RuntimeEffectOutcome
+	cleanup ports.RuntimeCleanupOutcome
+}
+
+func (e runtimeEffectFailure) Error() string                               { return e.err.Error() }
+func (e runtimeEffectFailure) Unwrap() error                               { return e.err }
+func (e runtimeEffectFailure) PossibleHandle() ports.RuntimeHandle         { return e.handle }
+func (e runtimeEffectFailure) EffectOutcome() ports.RuntimeEffectOutcome   { return e.effect }
+func (e runtimeEffectFailure) CleanupOutcome() ports.RuntimeCleanupOutcome { return e.cleanup }
+
+func tmuxCreateFailure(err error) error {
+	return runtimeEffectFailure{err: err, effect: ports.RuntimeEffectNone, cleanup: ports.RuntimeCleanupNotAttempted}
+}
+
+func tmuxPossibleCreateFailure(err error, handle ports.RuntimeHandle, cleanup ports.RuntimeCleanupOutcome) error {
+	return runtimeEffectFailure{err: err, handle: handle, effect: ports.RuntimeEffectPossible, cleanup: cleanup}
+}
 
 type runner interface {
 	Run(ctx context.Context, env []string, name string, args ...string) ([]byte, error)
@@ -320,62 +342,74 @@ func New(opts Options) *Runtime {
 func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	id, err := tmuxSessionName(cfg.SessionID)
 	if err != nil {
-		return ports.RuntimeHandle{}, err
+		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
 	}
 	if cfg.WorkspacePath == "" {
-		return ports.RuntimeHandle{}, errors.New("tmux runtime: workspace path is required")
+		return ports.RuntimeHandle{}, tmuxCreateFailure(errors.New("tmux runtime: workspace path is required"))
 	}
 	if len(cfg.Argv) == 0 {
-		return ports.RuntimeHandle{}, errors.New("tmux runtime: launch command is required")
+		return ports.RuntimeHandle{}, tmuxCreateFailure(errors.New("tmux runtime: launch command is required"))
 	}
 	if err := validateEnvKeys(cfg.Env); err != nil {
-		return ports.RuntimeHandle{}, err
+		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
 	}
 
 	launchCmd := buildLaunchCommand(cfg)
 	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
 	if _, err := r.run(ctx, args...); err != nil {
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: create session %s: %w", id, err)
+		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
+			fmt.Errorf("tmux runtime: create session %s: %w", id, err),
+			ports.RuntimeHandle{ID: id},
+			ports.RuntimeCleanupNotAttempted,
+		)
 	}
 	r.rememberSessionSocket(id, r.socketName)
+	handle := ports.RuntimeHandle{ID: id}
 	if err := r.verifyPaneWorkingDirectory(ctx, id, cfg.WorkspacePath); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, err
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, err)
 	}
 
 	// Hide the status bar in the embedded terminal: it clutters the view and
 	// was not designed for the in-browser display context.
 	if _, err := r.run(ctx, setStatusOffArgs(id)...); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set status %s: %w", id, err)
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set status %s: %w", id, err))
 	}
 
 	// Enable mouse mode so the embedded terminal's SGR wheel reports scroll the
 	// pane (see setMouseOnArgs). Without it, wheel scrolling silently no-ops.
 	if _, err := r.run(ctx, setMouseOnArgs(id)...); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set mouse %s: %w", id, err)
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set mouse %s: %w", id, err))
 	}
 
 	// Size the shared window to the largest attached client, not the most recent
 	// one, so a small secondary viewer (e.g. the phone) can't strip down a larger
 	// client's view (see setWindowSizeLargestArgs).
 	if _, err := r.run(ctx, setWindowSizeLargestArgs(id)...); err != nil {
-		_ = r.Destroy(context.Background(), ports.RuntimeHandle{ID: id})
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: set window-size %s: %w", id, err)
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set window-size %s: %w", id, err))
 	}
 
-	handle := ports.RuntimeHandle{ID: id}
+	// Make the attach client exit when this session is destroyed rather than
+	// hop onto one of the user's own sessions under a `detach-on-destroy off`
+	// tmux.conf (see setDetachOnDestroyOnArgs).
+	if _, err := r.run(ctx, setDetachOnDestroyOnArgs(id)...); err != nil {
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: set detach-on-destroy %s: %w", id, err))
+	}
+
 	alive, err := r.IsAlive(ctx, handle)
 	if err != nil {
-		_ = r.Destroy(context.Background(), handle)
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: verify session %s: %w", id, err)
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: verify session %s: %w", id, err))
 	}
 	if !alive {
-		_ = r.Destroy(context.Background(), handle)
-		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: session %s exited before ready", id)
+		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, fmt.Errorf("tmux runtime: session %s exited before ready", id))
 	}
 	return handle, nil
+}
+
+func (r *Runtime) failedCreatedRuntime(handle ports.RuntimeHandle, cause error) error {
+	if cleanupErr := r.Destroy(context.Background(), handle); cleanupErr != nil {
+		return tmuxPossibleCreateFailure(errors.Join(cause, cleanupErr), handle, ports.RuntimeCleanupFailed)
+	}
+	return tmuxPossibleCreateFailure(cause, handle, ports.RuntimeCleanupSucceeded)
 }
 
 // Restart replaces the command in an existing pane while preserving the tmux
@@ -484,6 +518,20 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	// not block the kill-session below.
 	sessionIDs := r.paneSessionIDs(ctx, id)
 
+	// Re-assert detach-on-destroy immediately before kill-session too. This is
+	// belt-and-suspenders alongside enforceDetachOnDestroy (which now covers
+	// the same guard at legacy-socket adoption time, before Attach can ever
+	// reach the session — see socketForSession): Create also sets this for
+	// every session it starts (see setDetachOnDestroyOnArgs), but re-asserting
+	// here costs one extra call and catches the option ever having been
+	// changed back in between. Fail closed on any other error: kill-session
+	// must not run while the guard is unconfirmed, because a session that dies
+	// with detach-on-destroy still off can hand AO's terminal, and its input,
+	// to one of the user's own sessions (issue #4223).
+	if out, setErr := r.runForSession(ctx, id, setDetachOnDestroyOnArgs(id)...); setErr != nil && !confirmedAbsentOutput(setErr, string(out)) {
+		return fmt.Errorf("tmux runtime: set detach-on-destroy %s: %w", id, setErr)
+	}
+
 	out, err := r.runForSession(ctx, id, killSessionArgs(id)...)
 	// Reap regardless of the kill-session result: orphaned children outlive the
 	// session, so they must be cleaned up even when the session was already
@@ -491,8 +539,17 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	r.reapSessions(ctx, sessionIDs, r.reapGrace)
 
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && killSessionMissingOutput(string(out)) {
+		// Only confirmed session/server/socket absence is safe to read as
+		// "already gone" (see confirmedAbsentOutput). A transient failure here
+		// (connection refused, protocol mismatch, unexpected server exit) does
+		// not prove kill-session actually ran: treating it as success used to
+		// forget the socket mapping and return nil, so a caller could mark the
+		// session terminated and delete its worktree while the session, and
+		// its detach-on-destroy guard, might still be alive. Returning the
+		// error instead, and leaving the socket mapping intact, keeps this
+		// retryable: a caller that calls Destroy again finds the same cached
+		// socket rather than re-running discovery from scratch.
+		if confirmedAbsentOutput(err, string(out)) {
 			r.forgetSessionSocket(id)
 			return nil
 		}
@@ -526,10 +583,12 @@ func (r *Runtime) paneSessionIDs(ctx context.Context, id string) []int {
 // IsAlive reports whether the handle's session still exists via `tmux
 // has-session`. Exit 0 means alive. A non-zero exit with output naming this
 // session as missing is a definitive false, nil. A conclusively absent server
-// wraps ports.ErrRuntimeUnavailable so recovery may recreate it. A transient
-// connection or protocol/client failure wraps ErrRuntimeProbeInconclusive so
-// no caller can treat a possibly-live session as absent. Any other non-zero
-// exit is a plain probe error, which is likewise never per-session death.
+// — tmux ≥ 3.4 words it "error connecting … (No such file or directory)"
+// rather than "no server running" — wraps ports.ErrRuntimeUnavailable so
+// recovery may recreate it. A transient connection or protocol/client failure
+// wraps ErrRuntimeProbeInconclusive so no caller can treat a possibly-live
+// session as absent. Any other non-zero exit is a plain probe error, which is
+// likewise never per-session death.
 func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
 	id, err := handleID(handle)
 	if err != nil {
@@ -542,7 +601,7 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 			if sessionMissingOutput(string(out)) {
 				return false, nil
 			}
-			if serverNotRunningOutput(string(out)) {
+			if serverNotRunningOutput(string(out)) || serverSocketAbsentOutput(string(out)) {
 				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
 					id, ports.ErrRuntimeUnavailable, strings.TrimSpace(string(out)))
 			}
@@ -554,6 +613,79 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 		return false, fmt.Errorf("tmux runtime: probe session %s: %w", id, err)
 	}
 	return true, nil
+}
+
+// IsChildAlive also detects exited panes retained by tmux's remain-on-exit.
+func (r *Runtime) IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	alive, err := r.IsAlive(ctx, handle)
+	// Unlike agent-session recovery, shell reconciliation can forget a handle
+	// when its server is conclusively absent (e.g. its last shell exited).
+	// Transport and protocol failures remain inconclusive errors.
+	if errors.Is(err, ports.ErrRuntimeUnavailable) {
+		return false, nil
+	}
+	if err != nil || !alive {
+		return false, err
+	}
+	out, err := r.runForSession(ctx, handle.ID, paneDeadArgs(handle.ID)...)
+	if err != nil {
+		return false, fmt.Errorf("tmux runtime: probe child status for %s: %w", handle.ID, err)
+	}
+	states := strings.Fields(string(out))
+	if len(states) == 0 {
+		return false, fmt.Errorf("tmux runtime: no pane status for %s: %w", handle.ID, ports.ErrRuntimeProbeInconclusive)
+	}
+	childAlive := false
+	for _, state := range states {
+		switch state {
+		case "0":
+			childAlive = true
+		case "1":
+		default:
+			return false, fmt.Errorf("tmux runtime: invalid pane status %q for %s: %w", state, handle.ID, ports.ErrRuntimeProbeInconclusive)
+		}
+	}
+	return childAlive, nil
+}
+
+// ProbeFencedRuntime returns liveness evidence for the exact fenced runtime identity.
+func (r *Runtime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
+	if ref.Handle.ID == "" || ref.SessionID == "" || strings.TrimSpace(ref.Generation) == "" || ref.Handle.ID != string(ref.SessionID) {
+		return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonIdentityMissing}
+	}
+	alive, err := r.IsAlive(ctx, ref.Handle)
+	if err != nil {
+		return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonProbeFailed}
+	}
+	if !alive {
+		return ports.FencedProbeResult{Liveness: ports.FencedDead, Reason: ports.FencedReasonExactAbsent}
+	}
+	entries, panePID, err := r.supervisedProcessTree(ctx, ref.Handle)
+	if err != nil {
+		return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonProbeFailed}
+	}
+	descendants := descendantPIDs(entries, panePID)
+	exactSupervisorFound := false
+	for _, entry := range entries {
+		if entry.pid == panePID || !descendants[entry.pid] || !isAnySupervisorCommand(entry.command) {
+			continue
+		}
+		if isSupervisorCommand(entry.command, string(ref.SessionID), ref.Generation) {
+			exactSupervisorFound = true
+			continue
+		}
+		return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonGenerationMismatch}
+	}
+	if exactSupervisorFound {
+		if containsExactSupervisedWorkload(entries, panePID, string(ref.SessionID), ref.Generation) {
+			return ports.FencedProbeResult{Liveness: ports.FencedAlive, Reason: ports.FencedReasonExactMatch}
+		}
+		return ports.FencedProbeResult{Liveness: ports.FencedDead, Reason: ports.FencedReasonExactAbsent}
+	}
+	// A live pane without the exact AO supervisor may contain a workload that a
+	// user manually relaunched from the preserved shell. That is not proof of
+	// the requested generation, but it is also not proof that the pane is dead.
+	return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonIdentityMissing}
 }
 
 // IsSupervisedProcessAlive reports whether the managed workload for ref is
@@ -787,7 +919,12 @@ func (r *Runtime) attachCommandForSocket(id, socketName string) []string {
 		// socket named by an inherited TMUX from an AO worker or nested shell.
 		argv = append(argv, "-L", "default")
 	}
-	return append(argv, "-u", "-T", "RGB", "attach-session", "-t", id)
+	// Exact-match target: a plain session name falls back to tmux's unique-
+	// prefix matching once this exact session is gone, which can attach the
+	// client onto a different, unrelated session that happens to share the
+	// prefix (see setDetachOnDestroyOnArgs). attach-session accepts the bare
+	// `=<id>` form directly, unlike the pane-targeting set-option calls.
+	return append(argv, "-u", "-T", "RGB", "attach-session", "-t", exactSessionTarget(id))
 }
 
 func attachEnv(base []string) []string {
@@ -869,7 +1006,7 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 	// transient error cannot redirect a live session elsewhere.
 	if !sessionMissingOutput(string(out)) &&
 		!serverNotRunningOutput(string(out)) &&
-		!migrationSocketAbsentOutput(string(out)) {
+		!serverSocketAbsentOutput(string(out)) {
 		return r.socketName, nil
 	}
 	if r.legacyBinary == "" {
@@ -881,15 +1018,34 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 	}
 	legacyOut, legacyErr := r.runOnSocket(ctx, "", hasSessionArgs(id)...)
 	if legacyErr == nil {
+		// This session predates AO's private socket, so it never ran through
+		// Create and never got detach-on-destroy set (see setDetachOnDestroyOnArgs).
+		// Destroy's own pre-kill reassertion is too late on its own: AO can
+		// Attach to this adopted session immediately, and the session can then
+		// be destroyed by something Destroy never sees — the user exiting the
+		// retained shell, or an external `kill-session` run directly against
+		// the default socket. Enforce (and confirm) the guard right here, the
+		// first moment AO's daemon learns this session exists, so it is in
+		// place before any caller (Attach included) can reach the session.
+		// Fail closed and leave the session uncached on either socket so a
+		// transient failure here stays retryable instead of caching an
+		// unconfirmed adoption.
+		if err := r.enforceDetachOnDestroy(ctx, "", id); err != nil {
+			return "", err
+		}
 		r.rememberSessionSocket(id, "")
 		return "", nil
 	}
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	if sessionMissingOutput(string(legacyOut)) || serverNotRunningOutput(string(legacyOut)) {
+	if sessionMissingOutput(string(legacyOut)) ||
+		serverNotRunningOutput(string(legacyOut)) ||
+		serverSocketAbsentOutput(string(legacyOut)) {
 		// Both known sockets definitively lack the session. Return the private
-		// target so IsAlive's ordinary exact-session handling reports false.
+		// target so IsAlive's ordinary exact-session handling resolves it: a
+		// live private server reports the session missing, an absent one
+		// reports ErrRuntimeUnavailable so recovery may recreate it.
 		return r.socketName, nil
 	}
 	return "", fmt.Errorf(
@@ -933,12 +1089,16 @@ type processEntry struct {
 }
 
 func parseProcessTable(out string) ([]processEntry, error) {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		return nil, nil
+	}
+	lines := strings.Split(trimmed, "\n")
 	entries := make([]processEntry, 0, len(lines))
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 3 {
-			continue
+			return nil, fmt.Errorf("incomplete process row %q", line)
 		}
 		pid, err := strconv.Atoi(fields[0])
 		if err != nil {
@@ -1107,23 +1267,19 @@ func sessionMissingOutput(out string) bool {
 		strings.Contains(s, "session not found")
 }
 
-// serverUnreachableOutput reports whether a non-zero tmux exit means the
-// server itself could not be reached, which is inconclusive for any single
-// session's liveness.
-func serverUnreachableOutput(out string) bool {
-	return serverNotRunningOutput(out) || transientServerFailureOutput(out)
-}
-
 func serverNotRunningOutput(out string) bool {
 	s := strings.ToLower(out)
 	return strings.Contains(s, "no server running")
 }
 
-// migrationSocketAbsentOutput identifies a named migration target whose Unix
-// socket does not exist. This is definitive only for choosing whether to
-// inspect the legacy default socket; it must not become per-session evidence
-// of death, because the session may still be alive on that legacy server.
-func migrationSocketAbsentOutput(out string) bool {
+// serverSocketAbsentOutput identifies tmux output meaning the target's Unix
+// socket file does not exist, so no server is listening there. tmux ≥ 3.4
+// reports an absent server this way instead of "no server running". Like
+// "no server running" this is definitive at the server level only; it must
+// not become per-session evidence of death, because liveness callers still
+// distinguish it from a conclusive "can't find session" and recovery paths
+// may recreate the missing server.
+func serverSocketAbsentOutput(out string) bool {
 	s := strings.ToLower(out)
 	return strings.Contains(s, "error connecting") &&
 		strings.Contains(s, "no such file or directory")
@@ -1136,12 +1292,51 @@ func transientServerFailureOutput(out string) bool {
 		strings.Contains(s, "server exited unexpectedly")
 }
 
-// killSessionMissingOutput reports whether a non-zero `tmux kill-session`
-// failed because the session was already gone. Teardown stays generous: a
-// missing server also means there is nothing left to kill, so it shares the
-// server-level patterns that liveness probing must not use.
-func killSessionMissingOutput(out string) bool {
-	return sessionMissingOutput(out) || serverUnreachableOutput(out)
+// confirmedAbsentOutput reports whether a non-zero tmux exit definitively
+// means the session or its server is gone, as opposed to a merely transient
+// failure (transientServerFailureOutput's "connection refused" / protocol-
+// mismatch / unexpected-exit cases) that leaves the session's actual state
+// unknown. Every caller that decides whether it is safe to treat a tmux
+// failure as "already gone" — Destroy's own kill-session result, its pre-kill
+// detach-on-destroy reassertion, and enforceDetachOnDestroy's legacy-adoption
+// enforcement — uses this and nothing broader: a transient failure proves
+// nothing ran, so treating it as success let a caller believe teardown (or
+// the detach-on-destroy guard) succeeded when it might not have, which could
+// mean deleting a still-running session's worktree, or reopening the
+// terminal/input transfer this guard exists to prevent (issue #4223).
+func confirmedAbsentOutput(err error, out string) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) &&
+		(sessionMissingOutput(out) || serverNotRunningOutput(out) || serverSocketAbsentOutput(out))
+}
+
+// enforceDetachOnDestroy sets and reads back the session-scoped
+// detach-on-destroy option for id on socketName, so a session AO did not
+// create (currently only a legacy-socket adoption, see socketForSession) is
+// guarded before anything — Attach included — can reach it. Setting alone is
+// not trusted: it is verified with a second read so a target that silently
+// resolved to the wrong session (see setDetachOnDestroyOnArgs) cannot pass
+// unnoticed. Fails closed on any unconfirmed error; a definitively missing
+// session/server is treated as nothing left to guard, matching Destroy's
+// own handling, and is not cached, so a transient failure stays retryable.
+func (r *Runtime) enforceDetachOnDestroy(ctx context.Context, socketName, id string) error {
+	if out, err := r.runOnSocket(ctx, socketName, setDetachOnDestroyOnArgs(id)...); err != nil {
+		if confirmedAbsentOutput(err, string(out)) {
+			return nil
+		}
+		return fmt.Errorf("tmux runtime: set detach-on-destroy for adopted session %s: %w", id, err)
+	}
+	out, err := r.runOnSocket(ctx, socketName, showDetachOnDestroyArgs(id)...)
+	if err != nil {
+		if confirmedAbsentOutput(err, string(out)) {
+			return nil
+		}
+		return fmt.Errorf("tmux runtime: verify detach-on-destroy for adopted session %s: %w", id, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "on" {
+		return fmt.Errorf("tmux runtime: detach-on-destroy for adopted session %s reports %q, want \"on\"", id, got)
+	}
+	return nil
 }
 
 // -- text helpers --
@@ -1242,7 +1437,8 @@ func shellQuote(s string) string {
 }
 
 // buildLaunchCommand builds the shell command string passed to `sh -c`. It
-// exports env vars, runs argv, then keeps the tmux session alive. Supervised
+// exports env vars and runs argv. Short-lived command terminals exit with the
+// command; ordinary interactive runtimes keep the tmux session alive. Supervised
 // launches park on a non-interpreting stdin sink after exit so bytes racing a
 // process exit can never become shell commands; legacy/unsupervised launches
 // retain the interactive-shell fallback used by manual recovery.
@@ -1291,7 +1487,12 @@ func buildLaunchCommand(cfg ports.RuntimeConfig) string {
 		parts[i] = shellQuote(a)
 	}
 	b.WriteString(strings.Join(parts, " "))
-	if cfg.Env["AO_SUPERVISED_PROCESS"] == "1" {
+	if cfg.ExitOnCommandCompletion {
+		// Let the tmux session disappear as soon as its one backend-owned command
+		// completes. The terminal mux then emits `exited`, which drives exact
+		// post-command work such as Codex account verification.
+		b.WriteString(`; exit $?`)
+	} else if cfg.Env["AO_SUPERVISED_PROCESS"] == "1" {
 		// cat consumes and discards any input that arrived while the supervised
 		// child was exiting. Runtime Restart/Destroy replaces or kills the pane.
 		b.WriteString(`; exec cat >/dev/null`)

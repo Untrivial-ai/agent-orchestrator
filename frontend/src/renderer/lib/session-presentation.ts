@@ -2,9 +2,11 @@ import {
 	attentionZone,
 	attentionZoneOrder,
 	boardAttentionZoneOrder,
+	boardKanbanColumnOrder,
 	getAgentActivityView as getPortableAgentActivityView,
 	getAttentionZoneView as getPortableAttentionZoneView,
 	getAttentionZoneViewForZone as getPortableAttentionZoneViewForZone,
+	getKanbanColumnView as getPortableKanbanColumnView,
 	getSessionStatusView as getPortableSessionStatusView,
 	getSessionTimelinePillView as getPortableSessionTimelinePillView,
 	isAgentActivityWorking,
@@ -12,6 +14,8 @@ import {
 	type AgentActivityView,
 	type AttentionZone,
 	type AttentionZoneView,
+	type KanbanColumn,
+	type KanbanColumnView,
 	type ProductUITranslator,
 	type SessionStatusView,
 	type SessionTimelinePillStatus,
@@ -67,21 +71,37 @@ export type SessionStatusDotView = {
 // Motion stays on raw agent activity. A no-PR idle session is the exception to
 // the preserved section colour: when its agent starts working it blinks blue.
 export function getSessionStatusDotView(
-	session: { activity?: SessionActivity | null; scmStatus?: SessionStatus; status: SessionStatus },
+	session: {
+		activity?: SessionActivity | null;
+		displayStatus?: string;
+		scmStatus?: SessionStatus;
+		status: SessionStatus;
+	},
 	t: TFunction = appI18n.t,
 ): SessionStatusDotView {
 	const working = isAgentActivityWorking(session.activity);
-	const sectionStatus = session.scmStatus ?? session.status;
+	const closedWithoutMerge = session.displayStatus === "Closed without merge";
+	const sectionStatus: SessionStatus =
+		closedWithoutMerge ? "exited" : (session.scmStatus ?? session.status);
 	const toneStatus = sectionStatus === "idle" && working ? "working" : sectionStatus;
 	const className =
-		toneStatus === "idle" || toneStatus === "merged"
-			? getSessionStatusView(toneStatus, t).dotClassName
-			: getAttentionZoneView(toneStatus, t).dotClassName;
+		closedWithoutMerge
+			? getSessionStatusView("exited", t).dotClassName
+			: toneStatus === "idle" || toneStatus === "merged"
+				? getSessionStatusView(toneStatus, t).dotClassName
+				: getAttentionZoneView(toneStatus, t).dotClassName;
 
 	return {
 		className,
 		breathe: working,
 	};
+}
+
+export function getKanbanColumnView(
+	column: KanbanColumn,
+	t: TFunction = appI18n.t,
+): KanbanColumnView {
+	return getPortableKanbanColumnView(column, translator(t));
 }
 
 export function getSessionTimelinePillView(
@@ -114,6 +134,7 @@ export {
 	attentionZone,
 	attentionZoneOrder,
 	boardAttentionZoneOrder,
+	boardKanbanColumnOrder,
 	isAgentActivityWorking,
 	isSessionIdle,
 };
@@ -121,6 +142,7 @@ export type {
 	AgentActivityView,
 	AttentionZone,
 	AttentionZoneView,
+	KanbanColumnView,
 	SessionStatusView,
 	SessionTimelinePillStatus,
 	SessionTimelinePillView,

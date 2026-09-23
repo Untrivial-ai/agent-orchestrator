@@ -2,6 +2,7 @@ package modelcatalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,19 +58,35 @@ func TestOpenCodeDiscoveryUsesPureMode(t *testing.T) {
 	}
 }
 
-func TestAiderAndAutohandUseDocumentedDiscoveryCommands(t *testing.T) {
+func TestAiderUsesDocumentedDiscoveryCommand(t *testing.T) {
+	spec := commandSpecs["aider"]
+	want := []string{"--no-check-update", "--no-git", "--no-gitignore", "--no-analytics", "--list-models", "."}
+	if strings.Join(spec.args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("aider discovery args = %q, want %q", spec.args, want)
+	}
+}
+
+func TestOMPAndHelpBackedAgentsUseDocumentedDiscoveryCommands(t *testing.T) {
 	tests := []struct {
 		agent string
 		want  []string
 	}{
-		{agent: "aider", want: []string{"--no-check-update", "--no-git", "--no-gitignore", "--no-analytics", "--list-models", "."}},
-		{agent: "autohand", want: []string{"models", "list"}},
+		{agent: "omp", want: []string{"models", "--json"}},
+		{agent: "copilot", want: []string{"help", "config"}},
+		{agent: "droid", want: []string{"exec", "--help"}},
+		{agent: "crush", want: []string{"models"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.agent, func(t *testing.T) {
-			spec := commandSpecs[tc.agent]
-			if strings.Join(spec.args, "\x00") != strings.Join(tc.want, "\x00") {
+			spec, ok := commandSpecs[tc.agent]
+			if !ok {
+				t.Fatalf("%s has no discovery command", tc.agent)
+			}
+			if !reflect.DeepEqual(spec.args, tc.want) {
 				t.Fatalf("%s discovery args = %q, want %q", tc.agent, spec.args, tc.want)
+			}
+			if spec.parser == nil {
+				t.Fatalf("%s discovery parser is nil", tc.agent)
 			}
 		})
 	}
@@ -81,23 +98,132 @@ func TestBaseClassifiesStaticTextAndModeAgents(t *testing.T) {
 		mode  ports.ModelSelectionMode
 		count int
 	}{
-		{agent: "claude-code", mode: ports.ModelSelectionCatalog, count: 3},
-		{agent: "codex", mode: ports.ModelSelectionCatalog, count: 7},
+		{agent: "claude-code", mode: ports.ModelSelectionCatalog},
+		{agent: "codex", mode: ports.ModelSelectionCatalog},
 		{agent: "amp", mode: ports.ModelSelectionModeList, count: 4},
 		{agent: "muse", mode: ports.ModelSelectionCatalog, count: 3},
 		{agent: "aider", mode: ports.ModelSelectionCatalog},
 		{agent: "autohand", mode: ports.ModelSelectionCatalog},
 		{agent: "kimchi", mode: ports.ModelSelectionCatalog},
 		{agent: "prime-agent", mode: ports.ModelSelectionCatalog},
-		{agent: "qwen", mode: ports.ModelSelectionText},
-		{agent: "continue", mode: ports.ModelSelectionText},
-		{agent: "crush", mode: ports.ModelSelectionText},
+		{agent: "qwen", mode: ports.ModelSelectionCatalog},
+		{agent: "copilot", mode: ports.ModelSelectionCatalog},
+		{agent: "droid", mode: ports.ModelSelectionCatalog},
+		{agent: "continue", mode: ports.ModelSelectionCatalog},
+		{agent: "crush", mode: ports.ModelSelectionCatalog},
+		{agent: "omp", mode: ports.ModelSelectionCatalog},
 	}
 	for _, tc := range tests {
 		t.Run(tc.agent, func(t *testing.T) {
 			got := Base(tc.agent)
 			if got.SelectionMode != tc.mode || len(got.Models) != tc.count {
 				t.Fatalf("Base(%q) = %#v", tc.agent, got)
+			}
+		})
+	}
+}
+
+func TestMuseReturnsStaticCatalogWithoutStartingAgent(t *testing.T) {
+	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{
+		AgentID: "muse",
+		Binary:  "/missing/muse",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "muse-spark", Label: "Muse Spark", IsDefault: true},
+		{ID: "muse-spark-1.1", Label: "Muse Spark 1.1"},
+		{ID: "muse-spark-1.2", Label: "Muse Spark 1.2"},
+	}
+	if got.Source != "official-catalog" || !reflect.DeepEqual(got.Models, want) {
+		t.Fatalf("catalog = %#v, want models %#v", got, want)
+	}
+}
+
+func TestClaudeReturnsStaticCatalogWithConfiguredFallback(t *testing.T) {
+	t.Setenv("ANTHROPIC_MODEL", "")
+	t.Setenv("HOME", t.TempDir())
+	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{
+		AgentID: "claude-code",
+		Binary:  "/missing/claude",
+		Env:     map[string]string{"ANTHROPIC_MODEL": "claude-opus-4-5-20251101"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLabels := map[string]string{
+		"sonnet": "Sonnet", "fable": "Fable 5.1", "opus": "Opus",
+		"haiku": "Haiku", "opus[1m]": "Opus (1M context)",
+		"claude-opus-4-5-20251101": "claude-opus-4-5-20251101",
+	}
+	if got.Source != "catalog" || len(got.Models) != len(wantLabels) {
+		t.Fatalf("catalog = %#v", got)
+	}
+	for _, item := range got.Models {
+		if wantLabels[item.ID] != item.Label {
+			t.Fatalf("unexpected model %#v", item)
+		}
+		if item.IsDefault != (item.ID == "claude-opus-4-5-20251101") {
+			t.Fatalf("default marker = %#v", item)
+		}
+	}
+}
+
+func TestCustomModelEntryPolicy(t *testing.T) {
+	tests := []struct {
+		agent         string
+		wantEntryMode string
+		wantSelection ports.ModelSelectionMode
+	}{
+		{agent: "claude-code", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "codex", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "opencode", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "grok", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "cursor", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "qwen", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "copilot", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "kimi", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "muse", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "droid", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "amp", wantEntryMode: "none", wantSelection: ports.ModelSelectionModeList},
+		{agent: "agy", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "crush", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "aider", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "goose", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "auggie", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "continue", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "devin", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "omp", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "cline", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "kiro", wantEntryMode: "none", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "kilocode", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "vibe", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "pi", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "kimchi", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "prime-agent", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "autohand", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.agent, func(t *testing.T) {
+			got := Base(tc.agent)
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(encoded, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if wire["customModelEntry"] != tc.wantEntryMode {
+				t.Fatalf("Base(%q) customModelEntry = %#v, want %q", tc.agent, wire["customModelEntry"], tc.wantEntryMode)
+			}
+			if got.AllowCustom != (tc.wantEntryMode == "direct") {
+				t.Fatalf("Base(%q) allowCustom = %v, want %v", tc.agent, got.AllowCustom, tc.wantEntryMode == "direct")
+			}
+			if got.SelectionMode != tc.wantSelection {
+				t.Fatalf("Base(%q) selectionMode = %q, want %q", tc.agent, got.SelectionMode, tc.wantSelection)
 			}
 		})
 	}
@@ -131,19 +257,64 @@ openai     gpt-5.6-sol           400K     128K     yes       yes
 	}
 }
 
-func TestBaseMuseCatalogAllowsCustomModels(t *testing.T) {
-	got := Base("muse")
-	if got.SelectionMode != ports.ModelSelectionCatalog {
-		t.Fatalf("SelectionMode = %q, want catalog", got.SelectionMode)
+func TestBaseDynamicCatalogsContainNoAOOwnedModelIDs(t *testing.T) {
+	for _, agentID := range []string{"claude-code", "codex"} {
+		t.Run(agentID, func(t *testing.T) {
+			got := Base(agentID)
+			if got.SelectionMode != ports.ModelSelectionCatalog || !got.AllowCustom || got.Source != "cli" {
+				t.Fatalf("Base(%q) = %#v", agentID, got)
+			}
+			if len(got.Models) != 0 {
+				t.Fatalf("Base(%q) models = %#v, want no AO-owned model IDs", agentID, got.Models)
+			}
+		})
 	}
-	if !got.AllowCustom {
-		t.Fatal("AllowCustom = false, want true")
+}
+
+func TestCodexDiscoveryUsesStructuredProviderCatalog(t *testing.T) {
+	discoverer := Discoverer{CodexModels: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error) {
+		return []ports.ChatModel{
+			{ID: "gpt-current", DisplayName: "GPT Current", Default: true},
+			{ID: "gpt-other", DisplayName: "GPT Other"},
+		}, nil
+	}}
+	got, err := discoverer.Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "codex", Binary: "/bin/codex"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got.Source != "official-catalog" {
-		t.Fatalf("Source = %q, want official-catalog", got.Source)
+	want := []ports.AgentModelInfo{
+		{ID: "gpt-current", Label: "GPT Current", IsDefault: true},
+		{ID: "gpt-other", Label: "GPT Other"},
 	}
-	if len(got.Models) != 3 || got.Models[0].ID != "muse-spark" || !got.Models[0].IsDefault {
-		t.Fatalf("models = %#v", got.Models)
+	if !reflect.DeepEqual(got.Models, want) || got.Source != "cli" {
+		t.Fatalf("catalog = %#v, want models %#v", got, want)
+	}
+}
+
+func TestClineDiscoveryUsesACPModelOptions(t *testing.T) {
+	discoverer := Discoverer{ClineOptions: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error) {
+		return []ports.ChatConfigOption{
+			{
+				ID: "model", Name: "Model", Category: "model", Type: ports.ChatConfigOptionSelect,
+				Current: ports.ChatConfigOptionValue{Select: "anthropic/claude-sonnet-4-6"},
+				Choices: []ports.ChatConfigOptionChoice{
+					{Value: "anthropic/claude-sonnet-4-6", Name: "Claude Sonnet 4.6", Group: "anthropic", GroupName: "Anthropic"},
+					{Value: "openai/gpt-5.4", Name: "GPT-5.4", Group: "openai", GroupName: "OpenAI"},
+				},
+			},
+			{ID: "mode", Name: "Mode", Category: "mode", Type: ports.ChatConfigOptionSelect},
+		}, nil
+	}}
+	got, err := discoverer.Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "cline", Binary: "/bin/cline"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "anthropic/claude-sonnet-4-6", Label: "Claude Sonnet 4.6", Provider: "anthropic", IsDefault: true},
+		{ID: "openai/gpt-5.4", Label: "GPT-5.4", Provider: "openai"},
+	}
+	if !reflect.DeepEqual(got.Models, want) || got.Source != "acp" {
+		t.Fatalf("catalog = %#v, want models %#v from ACP", got, want)
 	}
 }
 
@@ -154,6 +325,24 @@ func TestParseIDLinesAcceptsOnlyWholeModelIDs(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].ID != "anthropic/claude-sonnet" || got[1].ID != "openai/gpt-5.4" {
 		t.Fatalf("models = %#v", got)
+	}
+}
+
+func TestParseAgyModelsUsesFirstColumnAsModelID(t *testing.T) {
+	got, err := parseAgyModels([]byte(`gemini-3.7-flash-high  Gemini 3.7 Flash (High)
+claude-sonnet-4-6  Claude Sonnet 4.6 (Thinking)
+gpt-oss-120b-medium  GPT-OSS 120B (Medium)
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Thinking)"},
+		{ID: "gemini-3.7-flash-high", Label: "Gemini 3.7 Flash (High)"},
+		{ID: "gpt-oss-120b-medium", Label: "GPT-OSS 120B (Medium)"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
 	}
 }
 
@@ -264,6 +453,43 @@ func TestParseJSONModelsFindsNestedModels(t *testing.T) {
 	}
 }
 
+func TestParseOMPModelsUsesSelectorAsLaunchID(t *testing.T) {
+	got, err := parseJSONModels([]byte(`{"models":[{"provider":"anthropic","id":"claude-opus-5","selector":"anthropic/claude-opus-5","name":"Claude Opus 5"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{{ID: "anthropic/claude-opus-5", Label: "Claude Opus 5", Provider: "anthropic"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseCopilotConfigModels(t *testing.T) {
+	got, err := parseCopilotConfigModels([]byte("`model`: AI model to use.\n  - \"claude-fable-5\"\n  - \"gpt-5.6-sol\"\n`contextTier`: context tier.\n  - ignored\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{{ID: "claude-fable-5", Label: "claude-fable-5"}, {ID: "gpt-5.6-sol", Label: "gpt-5.6-sol"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseDroidHelpModels(t *testing.T) {
+	got, err := parseDroidHelpModels([]byte("Available Models:\n  auto                    Auto Model\n  claude-opus-5           Opus 5 (default)\n  gpt-5.6-sol             GPT-5.6 Sol\n\nTool Controls:\n  --list-tools            List tools\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "claude-opus-5", Label: "Opus 5", IsDefault: true},
+		{ID: "auto", Label: "Auto Model"},
+		{ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseJSONModelsUsesModelMapKeysAsSelectableIDs(t *testing.T) {
 	got, err := parseJSONModels([]byte(`{
 		"models": {
@@ -350,118 +576,6 @@ func writeClaudeSettings(t *testing.T, dir, model string) {
 	}
 	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func claudeDefaultID(catalog ports.AgentModelCatalog) string {
-	for _, item := range catalog.Models {
-		if item.IsDefault {
-			return item.ID
-		}
-	}
-	return ""
-}
-
-func TestClaudeCodeDiscoveryFlagsTheConfiguredAliasAsDefault(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	dir := t.TempDir()
-	writeClaudeSettings(t, dir, "opus")
-
-	got, err := Discover(context.Background(), "claude-code", "", dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id := claudeDefaultID(got); id != "opus" {
-		t.Fatalf("default = %q, want opus (models %#v)", id, got.Models)
-	}
-	if len(got.Models) != 3 {
-		t.Fatalf("models = %#v, want the three published aliases", got.Models)
-	}
-}
-
-func TestClaudeCodeDiscoveryAddsAConfiguredModelOutsideTheAliases(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	dir := t.TempDir()
-	writeClaudeSettings(t, dir, "opus[1m]")
-
-	got, err := Discover(context.Background(), "claude-code", "", dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Without the appended entry the picker would name a default it cannot select.
-	if id := claudeDefaultID(got); id != "opus[1m]" {
-		t.Fatalf("default = %q, want opus[1m] (models %#v)", id, got.Models)
-	}
-	if len(got.Models) != 4 {
-		t.Fatalf("models = %#v, want the aliases plus the configured model", got.Models)
-	}
-}
-
-func TestClaudeCodeDiscoveryPrefersNearerScopesAndProjectEnv(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	dir := t.TempDir()
-	writeClaudeSettings(t, dir, "haiku")
-	local := filepath.Join(dir, ".claude", "settings.local.json")
-	if err := os.WriteFile(local, []byte(`{"model": "sonnet"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := Discover(context.Background(), "claude-code", "", dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id := claudeDefaultID(got); id != "sonnet" {
-		t.Fatalf("default = %q, want the local settings model", id)
-	}
-
-	// The project's own environment outranks every settings file.
-	got, err = Discover(context.Background(), "claude-code", "", dir, map[string]string{"ANTHROPIC_MODEL": "haiku"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id := claudeDefaultID(got); id != "haiku" {
-		t.Fatalf("default = %q, want the project env model", id)
-	}
-}
-
-func TestClaudeCodeDiscoveryKeepsNoDefaultWhenNothingConfigured(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	t.Setenv("HOME", t.TempDir())
-	dir := t.TempDir()
-	writeClaudeSettings(t, dir, "")
-
-	got, err := Discover(context.Background(), "claude-code", "", dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// AO passes no --model, so the CLI decides. Guessing here would assert a
-	// default AO cannot verify.
-	if id := claudeDefaultID(got); id != "" {
-		t.Fatalf("default = %q, want none", id)
-	}
-	if len(got.Models) != 3 {
-		t.Fatalf("models = %#v, want the three published aliases", got.Models)
-	}
-}
-
-func TestClaudeCodeDiscoveryIgnoresMalformedSettings(t *testing.T) {
-	t.Setenv("ANTHROPIC_MODEL", "")
-	t.Setenv("HOME", t.TempDir())
-	dir := t.TempDir()
-	settingsDir := filepath.Join(dir, ".claude")
-	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(`{"model": `), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := Discover(context.Background(), "claude-code", "", dir, nil)
-	if err != nil {
-		t.Fatalf("malformed settings must not fail discovery: %v", err)
-	}
-	if id := claudeDefaultID(got); id != "" {
-		t.Fatalf("default = %q, want none", id)
 	}
 }
 

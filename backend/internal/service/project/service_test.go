@@ -3,19 +3,26 @@ package project_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
@@ -31,6 +38,37 @@ func newManager(t *testing.T) project.Manager {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return project.New(store)
+}
+
+type failingProjectUpsertStore struct {
+	project.Store
+}
+
+func (s failingProjectUpsertStore) UpsertProject(context.Context, domain.ProjectRecord) error {
+	return errors.New("forced project upsert failure")
+}
+
+func prepareClone(t *testing.T, m project.Manager, remoteURL string) project.ClonePreparationResult {
+	t.Helper()
+	prepared, err := m.PrepareClone(context.Background(), project.CloneInput{
+		RemoteURL: remoteURL, DestinationParent: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	return prepared
+}
+
+func cleanupPreparedClone(t *testing.T, m project.Manager, prepared project.ClonePreparationResult) {
+	t.Helper()
+	if err := m.CleanupPreparedClone(context.Background(), project.ClonePreparationCleanupInput{
+		Path: prepared.Path, PreparationID: prepared.PreparationID,
+	}); err != nil {
+		t.Fatalf("CleanupPreparedClone: %v", err)
+	}
+	if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepared checkout still exists after cleanup: %v", err)
+	}
 }
 
 // gitRepo creates a real git repository in a fresh temp dir and returns its
@@ -210,6 +248,176 @@ func TestManager_CloneRegistersRepositoryAndPreservesOrigin(t *testing.T) {
 	}
 }
 
+func TestManager_PrepareClonePreservesEmptyRepositoryForImportSetup(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	emptySource := filepath.Join(t.TempDir(), "empty-repository")
+	if out, err := exec.Command("git", "init", "-b", "main", emptySource).CombinedOutput(); err != nil {
+		t.Fatalf("git init empty source: %v (%s)", err, out)
+	}
+	destinationParent := t.TempDir()
+	emptyURL := (&url.URL{Scheme: "file", Path: emptySource}).String()
+
+	prepared, err := m.PrepareClone(ctx, project.CloneInput{RemoteURL: emptyURL, DestinationParent: destinationParent})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(prepared.Path) })
+	if prepared.RemoteURL != emptyURL {
+		t.Fatalf("PrepareClone remote URL = %q, want %q", prepared.RemoteURL, emptyURL)
+	}
+	if prepared.PreparationID == "" {
+		t.Fatal("PrepareClone preparation ID is empty")
+	}
+	if _, err := os.Stat(filepath.Join(prepared.Path, ".git")); err != nil {
+		t.Fatalf("prepared checkout missing .git: %v", err)
+	}
+	if listed, err := m.List(ctx); err != nil || len(listed) != 0 {
+		t.Fatalf("List after PrepareClone = %#v, %v; preparation must not register", listed, err)
+	}
+	if err := m.CleanupPreparedClone(ctx, project.ClonePreparationCleanupInput{
+		Path: prepared.Path, PreparationID: prepared.PreparationID,
+	}); err != nil {
+		t.Fatalf("CleanupPreparedClone: %v", err)
+	}
+	if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepared checkout still exists after cleanup: %v", err)
+	}
+}
+
+func TestManager_PreparedCloneCanBeCleanedUpAfterAddFailure(t *testing.T) {
+	ctx := context.Background()
+	source := gitRepo(t)
+	remoteURL := (&url.URL{Scheme: "file", Path: source}).String()
+
+	t.Run("input validation", func(t *testing.T) {
+		m := newManager(t)
+		prepared := prepareClone(t, m, remoteURL)
+
+		invalidID := "not a valid project id"
+		_, err := m.Add(ctx, project.AddInput{Path: prepared.Path, ProjectID: &invalidID})
+		wantCode(t, err, "INVALID_PROJECT_ID")
+		cleanupPreparedClone(t, m, prepared)
+	})
+
+	t.Run("store failure", func(t *testing.T) {
+		store, err := sqlitetest.Open(t.TempDir())
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		m := project.New(failingProjectUpsertStore{Store: store})
+		prepared := prepareClone(t, m, remoteURL)
+
+		_, err = m.Add(ctx, project.AddInput{Path: prepared.Path})
+		wantCode(t, err, "PROJECT_ADD_FAILED")
+		cleanupPreparedClone(t, m, prepared)
+	})
+
+	t.Run("clone registration failure", func(t *testing.T) {
+		store, err := sqlitetest.Open(t.TempDir())
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		m := project.New(failingProjectUpsertStore{Store: store})
+		destinationParent := t.TempDir()
+
+		_, err = m.Clone(ctx, project.CloneInput{RemoteURL: remoteURL, DestinationParent: destinationParent})
+		wantCode(t, err, "PROJECT_ADD_FAILED")
+		clonePath := filepath.Join(destinationParent, filepath.Base(source))
+		if _, err := os.Stat(clonePath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("failed clone registration left checkout behind: %v", err)
+		}
+	})
+}
+
+func TestManager_CleanupPreparedCloneRejectsStalePreparationID(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	source := gitRepo(t)
+	prepared := prepareClone(t, m, (&url.URL{Scheme: "file", Path: source}).String())
+
+	err := m.CleanupPreparedClone(ctx, project.ClonePreparationCleanupInput{
+		Path: prepared.Path, PreparationID: "stale-preparation",
+	})
+	wantCode(t, err, "CLONE_PREPARATION_MISMATCH")
+	if _, err := os.Stat(prepared.Path); err != nil {
+		t.Fatalf("stale cleanup removed prepared checkout: %v", err)
+	}
+	cleanupPreparedClone(t, m, prepared)
+}
+
+func TestManager_AddPreparedCloneRejectsStalePreparationID(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	source := gitRepo(t)
+	prepared := prepareClone(t, m, (&url.URL{Scheme: "file", Path: source}).String())
+
+	_, err := m.Add(ctx, project.AddInput{
+		Path: prepared.Path, ClonePreparationID: "stale-preparation",
+	})
+	wantCode(t, err, "CLONE_PREPARATION_MISMATCH")
+	if listed, listErr := m.List(ctx); listErr != nil || len(listed) != 0 {
+		t.Fatalf("List after rejected preparation = %#v, %v; want no registration", listed, listErr)
+	}
+	cleanupPreparedClone(t, m, prepared)
+}
+
+func TestManager_CleanupPreparedClonePreservesRegisteredProject(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	source := gitRepo(t)
+	remoteURL := (&url.URL{Scheme: "file", Path: source}).String()
+	destinationParent := t.TempDir()
+
+	prepared, err := m.PrepareClone(ctx, project.CloneInput{RemoteURL: remoteURL, DestinationParent: destinationParent})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	cloned, err := m.Add(ctx, project.AddInput{Path: prepared.Path, ClonePreparationID: prepared.PreparationID})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	marker := filepath.Join(cloned.Path, ".git", ".ao-clone-prepared")
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful registration retained preparation marker: %v", err)
+	}
+	if err := os.WriteFile(marker, []byte(prepared.PreparationID), 0o600); err != nil {
+		t.Fatalf("write stale marker: %v", err)
+	}
+
+	if err := m.CleanupPreparedClone(ctx, project.ClonePreparationCleanupInput{
+		Path: cloned.Path, PreparationID: prepared.PreparationID,
+	}); err != nil {
+		t.Fatalf("CleanupPreparedClone: %v", err)
+	}
+	if _, err := os.Stat(cloned.Path); err != nil {
+		t.Fatalf("registered project was removed: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale preparation marker still exists: %v", err)
+	}
+}
+
+func TestManager_PrepareCloneCancellationLeavesNoCheckout(t *testing.T) {
+	m := newManager(t)
+	source := gitRepo(t)
+	remoteURL := (&url.URL{Scheme: "file", Path: source}).String()
+	destinationParent := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := m.PrepareClone(ctx, project.CloneInput{RemoteURL: remoteURL, DestinationParent: destinationParent})
+	wantCode(t, err, "GIT_CLONE_CANCELLED")
+	if _, err := os.Stat(filepath.Join(destinationParent, filepath.Base(source))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled clone destination exists: %v", err)
+	}
+	if temporary, err := filepath.Glob(filepath.Join(destinationParent, ".ao-clone-*")); err != nil || len(temporary) != 0 {
+		t.Fatalf("temporary clone directories = %#v, %v", temporary, err)
+	}
+}
+
 func TestManager_CloneRejectsUnsafeURLsAndExistingDestination(t *testing.T) {
 	ctx := context.Background()
 	m := newManager(t)
@@ -277,7 +485,7 @@ func TestManager_CloneCleansUpFailedAndEmptyCheckouts(t *testing.T) {
 }
 
 func TestManager_AddEmitsProjectAndFirstProjectTelemetry(t *testing.T) {
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), middleware.RequestIDKey, "req-1")
 	store, err := sqlitetest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -294,6 +502,14 @@ func TestManager_AddEmitsProjectAndFirstProjectTelemetry(t *testing.T) {
 	}
 	if sink.events[0].Name != "ao.projects.created" || sink.events[1].Name != "ao.onboarding.first_project_added" {
 		t.Fatalf("event names = %#v", []string{sink.events[0].Name, sink.events[1].Name})
+	}
+	// The emit path detaches from the request context on purpose; the request id
+	// must still be carried so the rows join to the HTTP request that added the
+	// project.
+	for _, ev := range sink.events {
+		if ev.RequestID != "req-1" {
+			t.Fatalf("%s RequestID = %q, want req-1", ev.Name, ev.RequestID)
+		}
 	}
 }
 
@@ -324,111 +540,6 @@ func TestManager_AddDoesNotRepeatFirstProjectTelemetry(t *testing.T) {
 	}
 }
 
-func TestManager_EnsureDefaultScratchProjectSeedsFreshRegistry(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	m := project.NewWithDeps(project.Deps{Store: store, DefaultHarness: domain.HarnessCodex})
-	scratchPath := filepath.Join(t.TempDir(), "scratch", "default")
-
-	proj, err := m.EnsureDefaultScratchProject(ctx, scratchPath)
-	if err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
-	}
-	if proj.ID != "scratch" || proj.Name != "Scratch" || proj.Path != scratchPath || proj.Kind != domain.ProjectKindScratch {
-		t.Fatalf("scratch project = %#v", proj)
-	}
-	if proj.Repo != "" || proj.DefaultBranch != "" {
-		t.Fatalf("scratch repo/default branch = %q/%q, want empty", proj.Repo, proj.DefaultBranch)
-	}
-	if proj.Agent != string(domain.HarnessCodex) || proj.Config == nil ||
-		proj.Config.Worker.Harness != domain.HarnessCodex ||
-		proj.Config.Orchestrator.Harness != domain.HarnessCodex {
-		t.Fatalf("scratch agents/config = agent:%q config:%#v, want codex role overrides", proj.Agent, proj.Config)
-	}
-
-	list, err := m.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 1 || list[0].ID != "scratch" || list[0].Kind != domain.ProjectKindScratch {
-		t.Fatalf("List = %#v, want one scratch project", list)
-	}
-	if list[0].OrchestratorAgent != domain.HarnessCodex {
-		t.Fatalf("summary orchestrator agent = %q, want codex", list[0].OrchestratorAgent)
-	}
-}
-
-func TestManager_EnsureDefaultScratchProjectDoesNotReseedWithActiveProject(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.UpsertProject(ctx, domain.ProjectRecord{
-		ID:           "old",
-		DisplayName:  "Old",
-		Path:         "/tmp/old",
-		Kind:         domain.ProjectKindSingleRepo,
-		RegisteredAt: now,
-	}); err != nil {
-		t.Fatalf("seed old project: %v", err)
-	}
-
-	m := project.NewWithDeps(project.Deps{Store: store})
-	proj, err := m.EnsureDefaultScratchProject(ctx, filepath.Join(t.TempDir(), "scratch", "default"))
-	if err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
-	}
-	if proj.ID != "" {
-		t.Fatalf("seeded scratch with active project: %#v", proj)
-	}
-	if list, err := m.List(ctx); err != nil || len(list) != 1 || list[0].ID != "old" {
-		t.Fatalf("active projects = %#v, %v; want old project only", list, err)
-	}
-}
-
-func TestManager_EnsureDefaultScratchProjectReseedsAfterArchivedScratchLeavesNoActiveProjects(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlitetest.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	m := project.NewWithDeps(project.Deps{Store: store})
-	firstPath := filepath.Join(t.TempDir(), "scratch", "default")
-	first, err := m.EnsureDefaultScratchProject(ctx, firstPath)
-	if err != nil {
-		t.Fatalf("first EnsureDefaultScratchProject: %v", err)
-	}
-	if first.ID != "scratch" {
-		t.Fatalf("first scratch project = %#v", first)
-	}
-	if ok, err := store.ArchiveProject(ctx, "scratch", time.Now().UTC().Add(time.Minute)); err != nil || !ok {
-		t.Fatalf("archive scratch project: ok=%v err=%v", ok, err)
-	}
-	scratchPath := filepath.Join(t.TempDir(), "scratch", "replacement")
-	proj, err := m.EnsureDefaultScratchProject(ctx, scratchPath)
-	if err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
-	}
-	if proj.ID != "scratch" || proj.Path != scratchPath || proj.Kind != domain.ProjectKindScratch {
-		t.Fatalf("reseeded scratch project = %#v", proj)
-	}
-	list, err := m.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 1 || list[0].ID != "scratch" {
-		t.Fatalf("active projects = %#v, want reseeded scratch", list)
-	}
-}
-
 func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlitetest.Open(t.TempDir())
@@ -438,8 +549,14 @@ func TestManager_SetConfigRejectsScratchGitOnlyFields(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	m := project.NewWithDeps(project.Deps{Store: store})
 	scratchPath := filepath.Join(t.TempDir(), "scratch", "default")
-	if _, err := m.EnsureDefaultScratchProject(ctx, scratchPath); err != nil {
-		t.Fatalf("EnsureDefaultScratchProject: %v", err)
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{
+		ID:           "scratch",
+		Path:         scratchPath,
+		DisplayName:  "Scratch",
+		RegisteredAt: time.Now().UTC(),
+		Kind:         domain.ProjectKindScratch,
+	}); err != nil {
+		t.Fatalf("seed legacy Scratch project: %v", err)
 	}
 
 	_, err = m.SetConfig(ctx, "scratch", project.SetConfigInput{Config: domain.ProjectConfig{DefaultBranch: "main"}})
@@ -651,7 +768,13 @@ func TestManager_AddPrefersOriginHeadNonMain(t *testing.T) {
 
 func TestManager_UpdateSettings(t *testing.T) {
 	ctx := context.Background()
-	m := newManager(t)
+	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := project.New(store)
 	repo := gitRepo(t)
 
 	if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao")}); err != nil {
@@ -708,13 +831,101 @@ func TestManager_UpdateSettings(t *testing.T) {
 	wantCode(t, err, "DISPLAY_NAME_REQUIRED")
 
 	_, err = m.UpdateSettings(ctx, "ao", project.UpdateSettingsInput{
-		DisplayName: strings.Repeat("x", 21),
+		DisplayName: strings.Repeat("x", 101),
 		Config:      cfg,
 	})
 	wantCode(t, err, "DISPLAY_NAME_TOO_LONG")
 
 	_, err = m.UpdateSettings(ctx, "missing", project.UpdateSettingsInput{DisplayName: "Missing", Config: cfg})
 	wantCode(t, err, "PROJECT_NOT_FOUND")
+
+	// Unchanged legacy display name that exceeds maxDisplayNameLen should not block updating config.
+	legacyName := strings.Repeat("l", 110)
+	if _, err := store.UpdateProjectSettings(ctx, "ao", legacyName, cfg); err != nil {
+		t.Fatalf("UpdateProjectSettings: %v", err)
+	}
+	updatedWithLegacy, err := m.UpdateSettings(ctx, "ao", project.UpdateSettingsInput{
+		DisplayName: legacyName,
+		Config:      domain.ProjectConfig{DefaultBranch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings with unchanged legacy name: %v", err)
+	}
+	if updatedWithLegacy.Name != legacyName || updatedWithLegacy.DefaultBranch != "main" {
+		t.Fatalf("UpdateSettings result = %#v, want unchanged legacy name with new branch", updatedWithLegacy)
+	}
+
+	// A legacy name stored with surrounding whitespace must also hit the
+	// exemption: the renderer seeds the settings field from project.name and
+	// sends .trim(), so compare against the trimmed stored value.
+	paddedLegacy := "  " + strings.Repeat("l", 110) + "  "
+	if _, err := store.UpdateProjectSettings(ctx, "ao", paddedLegacy, cfg); err != nil {
+		t.Fatalf("UpdateProjectSettings with padded legacy name: %v", err)
+	}
+	paddedUpdated, err := m.UpdateSettings(ctx, "ao", project.UpdateSettingsInput{
+		DisplayName: strings.Repeat("l", 110),
+		Config:      domain.ProjectConfig{DefaultBranch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings with trimmed whitespace-padded legacy name: %v", err)
+	}
+	if paddedUpdated.Name != strings.Repeat("l", 110) || paddedUpdated.DefaultBranch != "main" {
+		t.Fatalf("UpdateSettings result = %#v, want trimmed legacy name with new branch", paddedUpdated)
+	}
+}
+
+func TestManager_Add_DisplayNameValidationAndTruncation(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	repo := gitRepo(t)
+
+	tooLong := strings.Repeat("a", 101)
+	_, err := m.Add(ctx, project.AddInput{
+		Path: repo,
+		Name: &tooLong,
+	})
+	wantCode(t, err, "DISPLAY_NAME_TOO_LONG")
+
+	valid24 := "yandex-direct-mcp-plugin"
+	p24, err := m.Add(ctx, project.AddInput{
+		Path: repo,
+		Name: &valid24,
+	})
+	if err != nil {
+		t.Fatalf("Add with 24-char name: %v", err)
+	}
+	if p24.Name != valid24 {
+		t.Fatalf("Add name = %q, want %q", p24.Name, valid24)
+	}
+
+	base := t.TempDir()
+	longName := strings.Repeat("r", 101)
+	longPath := filepath.Join(base, longName)
+	if err := os.Mkdir(longPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "init", "-b", "main", longPath).CombinedOutput(); err != nil {
+		t.Fatalf("git unavailable: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", longPath, "config", "user.email", "test@example.com").CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", longPath, "config", "user.name", "test").CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", longPath, "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v (%s)", err, out)
+	}
+	ptrunc, err := m.Add(ctx, project.AddInput{Path: longPath})
+	if err != nil {
+		t.Fatalf("Add with no explicit name and long basename: %v", err)
+	}
+	if got, want := utf8.RuneCountInString(ptrunc.Name), 100; got != want {
+		t.Fatalf("truncated name runes = %d, want %d (name=%q)", got, want, ptrunc.Name)
+	}
+	if want := string([]rune(longName)[:100]); ptrunc.Name != want {
+		t.Fatalf("truncated name = %q, want %q", ptrunc.Name, want)
+	}
 }
 
 func TestManager_ListIncludesOnlySummarySafeProjectConfig(t *testing.T) {
@@ -1044,6 +1255,175 @@ func TestManager_AddValidationAndConflicts(t *testing.T) {
 	wantCode(t, err, "ID_ALREADY_REGISTERED")
 }
 
+func TestManager_AddRejectsEquivalentRepositoryPaths(t *testing.T) {
+	for _, aliasFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("alias-first=%v", aliasFirst), func(t *testing.T) {
+			m := newManager(t)
+			repo := gitRepo(t)
+			alias := filepath.Join(t.TempDir(), "alias")
+			if err := os.Symlink(repo, alias); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			first, second := repo, alias
+			if aliasFirst {
+				first, second = alias, repo
+			}
+			if _, err := m.Add(context.Background(), project.AddInput{Path: first, ProjectID: ptr("original")}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := m.Add(context.Background(), project.AddInput{Path: second, ProjectID: ptr("duplicate")})
+			wantCode(t, err, "PATH_ALREADY_REGISTERED")
+			var conflict *apierr.Error
+			if !errors.As(err, &conflict) || conflict.Details["existingProjectId"] != "original" {
+				t.Fatalf("conflict = %#v", err)
+			}
+			rows, err := m.List(context.Background())
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("rows=%v err=%v", rows, err)
+			}
+		})
+	}
+}
+
+func TestManager_AddAllocatesUniqueIDForCollidingDerivedIDs(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := project.NewWithDeps(project.Deps{Store: store})
+
+	t.Run("double collision", func(t *testing.T) {
+		dir1 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "work", "app"))
+		dir2 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "clients", "app"))
+
+		p1, err := m.Add(ctx, project.AddInput{Path: dir1})
+		if err != nil {
+			t.Fatalf("first add: %v", err)
+		}
+		if p1.ID != "app" {
+			t.Fatalf("first project id = %q, want %q", p1.ID, "app")
+		}
+
+		p2, err := m.Add(ctx, project.AddInput{Path: dir2})
+		if err != nil {
+			t.Fatalf("second add: %v", err)
+		}
+		if p2.ID != "app1" {
+			t.Fatalf("second project id = %q, want %q", p2.ID, "app1")
+		}
+		if p2.Name != "app" {
+			t.Fatalf("second project name = %q, want %q", p2.Name, "app")
+		}
+	})
+
+	t.Run("triple collision", func(t *testing.T) {
+		dir1 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "work", "svc"))
+		dir2 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "clients", "svc"))
+		dir3 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "extra", "svc"))
+
+		p1, err := m.Add(ctx, project.AddInput{Path: dir1})
+		if err != nil {
+			t.Fatalf("first add: %v", err)
+		}
+		if p1.ID != "svc" {
+			t.Fatalf("first project id = %q, want %q", p1.ID, "svc")
+		}
+
+		p2, err := m.Add(ctx, project.AddInput{Path: dir2})
+		if err != nil {
+			t.Fatalf("second add: %v", err)
+		}
+		if p2.ID != "svc1" {
+			t.Fatalf("second project id = %q, want %q", p2.ID, "svc1")
+		}
+
+		p3, err := m.Add(ctx, project.AddInput{Path: dir3})
+		if err != nil {
+			t.Fatalf("third add: %v", err)
+		}
+		if p3.ID != "svc2" {
+			t.Fatalf("third project id = %q, want %q", p3.ID, "svc2")
+		}
+		if p3.Name != "svc" {
+			t.Fatalf("third project name = %q, want %q", p3.Name, "svc")
+		}
+	})
+
+	t.Run("archived suffix reuse", func(t *testing.T) {
+		dir1 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "work", "tool"))
+		dir2 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "clients", "tool"))
+
+		p1, err := m.Add(ctx, project.AddInput{Path: dir1})
+		if err != nil {
+			t.Fatalf("first add: %v", err)
+		}
+		if p1.ID != "tool" {
+			t.Fatalf("first project id = %q, want %q", p1.ID, "tool")
+		}
+
+		p2, err := m.Add(ctx, project.AddInput{Path: dir2})
+		if err != nil {
+			t.Fatalf("second add: %v", err)
+		}
+		if p2.ID != "tool1" {
+			t.Fatalf("second project id = %q, want %q", p2.ID, "tool1")
+		}
+
+		if ok, err := store.ArchiveProject(ctx, string(p2.ID), time.Now()); err != nil || !ok {
+			t.Fatalf("archive project: ok=%v err=%v", ok, err)
+		}
+
+		dir3 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "extra", "tool"))
+		p3, err := m.Add(ctx, project.AddInput{Path: dir3})
+		if err != nil {
+			t.Fatalf("third add after archive: %v", err)
+		}
+		if p3.ID != "tool2" {
+			t.Fatalf("third project id = %q, want %q (should skip archived tool1)", p3.ID, "tool2")
+		}
+	})
+
+	t.Run("explicit id collision still errors", func(t *testing.T) {
+		dir1 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "work", "foo"))
+		dir2 := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "clients", "foo"))
+
+		if _, err := m.Add(ctx, project.AddInput{Path: dir1, ProjectID: ptr("mine")}); err != nil {
+			t.Fatalf("first add: %v", err)
+		}
+		_, err := m.Add(ctx, project.AddInput{Path: dir2, ProjectID: ptr("mine")})
+		wantCode(t, err, "ID_ALREADY_REGISTERED")
+	})
+}
+
+func TestManager_InvalidatesModelScopeAfterProjectAndConfigWrites(t *testing.T) {
+	configureCommitter(t)
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var changed []string
+	m := project.NewWithDeps(project.Deps{
+		Store: store,
+		OnModelScopeChanged: func(projectID string) {
+			changed = append(changed, projectID)
+		},
+	})
+	created, err := m.Add(context.Background(), project.AddInput{Path: gitRepo(t), ProjectID: ptr("catalog-scope")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetConfig(context.Background(), created.ID, project.SetConfigInput{Config: domain.ProjectConfig{Env: map[string]string{"MODEL_PROFILE": "new"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"catalog-scope", "catalog-scope"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed scopes = %v, want %v", changed, want)
+	}
+}
+
 // gitRepoWithOrigin creates a real git repo with an `origin` remote pointing
 // at `originURL`. Used to assert project.Add captures the origin at add time.
 func gitRepoWithOrigin(t *testing.T, originURL string) string {
@@ -1281,6 +1661,56 @@ func TestManager_AddWorkspaceDoesNotRequireChildDefaultCheckout(t *testing.T) {
 	}
 }
 
+func TestManager_AddWorkspacePreservesAOInitializedChildDefaultBranchWithoutRemoteHead(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := project.New(store)
+
+	parent := t.TempDir()
+	child := filepath.Join(parent, "temp")
+	if out, err := exec.Command("git", "init", "-b", domain.DefaultBranchName, child).CombinedOutput(); err != nil {
+		t.Fatalf("git init child: %v (%s)", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(child, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", child, "add", "-A").CombinedOutput(); err != nil {
+		t.Fatalf("git add child: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", child, "-c", "user.name=Agent Orchestrator", "-c", "user.email=ao@example.com", "commit", "--allow-empty", "-m", "initial commit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit child: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", child, "config", "--local", gitdefault.ManagedDefaultConfigKey, domain.DefaultBranchName).CombinedOutput(); err != nil {
+		t.Fatalf("git config managed default: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", child, "remote", "add", "origin", "https://github.com/example/temp.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote add origin: %v (%s)", err, out)
+	}
+
+	proj, err := m.Add(ctx, project.AddInput{Path: parent, ProjectID: ptr("ws-managed-default"), AsWorkspace: true})
+	if err != nil {
+		t.Fatalf("Add workspace: %v", err)
+	}
+	if len(proj.WorkspaceRepos) != 1 {
+		t.Fatalf("WorkspaceRepos = %#v, want 1 child repo", proj.WorkspaceRepos)
+	}
+	registeredRepos, err := store.ListWorkspaceRepos(ctx, "ws-managed-default")
+	if err != nil {
+		t.Fatalf("list workspace repos: %v", err)
+	}
+	if len(registeredRepos) != 1 {
+		t.Fatalf("registered workspace repos = %#v, want 1", registeredRepos)
+	}
+	if got := registeredRepos[0].DefaultBranch; got != domain.DefaultBranchName {
+		t.Fatalf("registered child default branch = %q, want %q", got, domain.DefaultBranchName)
+	}
+}
+
 func TestManager_AddWorkspaceAcceptsUnbornChildAsNeedsInit(t *testing.T) {
 	configureCommitter(t)
 	ctx := context.Background()
@@ -1416,6 +1846,33 @@ func TestManager_AddWorkspaceAdoptsExistingParent(t *testing.T) {
 	}
 }
 
+func TestManager_AddWorkspaceAdoptsRemotelessUnbornParent(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+
+	parent := t.TempDir()
+	if out, err := exec.Command("git", "init", "-b", "trunk", parent).CombinedOutput(); err != nil {
+		t.Fatalf("git init parent: %v (%s)", err, out)
+	}
+	gitRepoWithCommit(t, filepath.Join(parent, "api"))
+
+	proj, err := m.Add(ctx, project.AddInput{Path: parent, ProjectID: ptr("local-root"), AsWorkspace: true})
+	if err != nil {
+		t.Fatalf("Add workspace with remoteless git-init parent: %v", err)
+	}
+	if proj.Repo != "" {
+		t.Fatalf("root Repo = %q, want no remote", proj.Repo)
+	}
+	resolution, err := gitdefault.New("git", nil).Inspect(ctx, parent)
+	if err != nil {
+		t.Fatalf("resolve adopted root default: %v", err)
+	}
+	if resolution.Branch != "trunk" || resolution.Ref != "refs/heads/trunk" || resolution.Remote != "" {
+		t.Fatalf("root resolution = %#v, want local trunk", resolution)
+	}
+}
+
 // TestManager_AddWorkspaceRejectsWorktreeParent verifies that a linked worktree
 // of another repository is rejected as a workspace parent.
 func TestManager_AddWorkspaceRejectsWorktreeParent(t *testing.T) {
@@ -1543,9 +2000,10 @@ func TestManager_AddWorkspaceRejectsReservedChildName(t *testing.T) {
 }
 
 // TestManager_AddWorkspaceNonGitChildWithNestedRepo verifies that a non-git
-// child folder containing a nested git repo is imported as needs_init (not
-// rejected as a gitlink). The child is gitignored in the parent, so the
-// nested repo is never staged by git add -A and guardNoGitlinks never fires.
+// child folder containing a nested git repo is retained internally as an asset
+// but omitted from the repository list. The child is gitignored in the parent,
+// so the nested repo is never staged by git add -A and guardNoGitlinks never
+// fires.
 func TestManager_AddWorkspaceNonGitChildWithNestedRepo(t *testing.T) {
 	configureCommitter(t)
 	ctx := context.Background()
@@ -1567,20 +2025,15 @@ func TestManager_AddWorkspaceNonGitChildWithNestedRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add workspace with non-git child: %v", err)
 	}
-	if len(proj.WorkspaceRepos) != 2 {
-		t.Fatalf("expected 2 child repos (app + packages), got %d", len(proj.WorkspaceRepos))
+	if len(proj.WorkspaceRepos) != 1 || proj.WorkspaceRepos[0].Name != "app" {
+		t.Fatalf("WorkspaceRepos = %#v, want only the direct git repo", proj.WorkspaceRepos)
 	}
-	var pkgsRepo *project.WorkspaceRepo
-	for i := range proj.WorkspaceRepos {
-		if proj.WorkspaceRepos[i].Name == "packages" {
-			pkgsRepo = &proj.WorkspaceRepos[i]
-		}
+	got, err := m.Get(ctx, "rbt")
+	if err != nil {
+		t.Fatalf("Get workspace: %v", err)
 	}
-	if pkgsRepo == nil {
-		t.Fatalf("packages not in WorkspaceRepos = %#v", proj.WorkspaceRepos)
-	}
-	if pkgsRepo.GitStatus != string(domain.GitStatusNeedsInit) {
-		t.Fatalf("packages GitStatus = %q, want %q", pkgsRepo.GitStatus, domain.GitStatusNeedsInit)
+	if got.Project == nil || len(got.Project.WorkspaceRepos) != 1 || got.Project.WorkspaceRepos[0].Name != "app" {
+		t.Fatalf("Get WorkspaceRepos = %#v, want only the direct git repo", got.Project)
 	}
 
 	// Parent git repo and .gitignore must exist (no rollback).
@@ -1652,4 +2105,179 @@ func TestManager_AddWorkspaceRejectsBareParent(t *testing.T) {
 
 	_, err := m.Add(ctx, project.AddInput{Path: bareParent, ProjectID: ptr("bare"), AsWorkspace: true})
 	wantCode(t, err, "WORKSPACE_PARENT_BARE")
+}
+
+func TestManager_CanonicalRepositoryConfigPersistence(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	repo := gitRepo(t)
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", "https://gitlab.com/alice/repo").CombinedOutput(); err != nil {
+		t.Fatalf("origin: %v %s", err, out)
+	}
+	// An unrelated remote must never enter durable claim trust automatically.
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "upstream", "https://gitlab.com/unrelated/repo").CombinedOutput(); err != nil {
+		t.Fatalf("upstream: %v %s", err, out)
+	}
+	added, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("fork")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added.Config != nil && added.Config.CanonicalRepoURL != "" {
+		t.Fatal("remote inferred as trusted upstream")
+	}
+	cfg := domain.ProjectConfig{CanonicalRepoURL: "https://gitlab.com/group/subgroup/repo", DefaultBranch: "main"}
+	if _, err := m.SetConfig(ctx, "fork", project.SetConfigInput{Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.Get(ctx, "fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Project.Config == nil || got.Project.Config.CanonicalRepoURL != cfg.CanonicalRepoURL {
+		t.Fatalf("stored config = %+v", got.Project.Config)
+	}
+	for _, target := range []string{"https://github.com/group/repo", "https://gitlab.example.com/group/subgroup/repo"} {
+		bad := domain.ProjectConfig{CanonicalRepoURL: target}
+		if _, err := m.SetConfig(ctx, "fork", project.SetConfigInput{Config: bad}); err == nil {
+			t.Fatalf("SetConfig accepted %s", target)
+		}
+		if _, err := m.UpdateSettings(ctx, "fork", project.UpdateSettingsInput{DisplayName: "Fork", Config: bad}); err == nil {
+			t.Fatalf("UpdateSettings accepted %s", target)
+		}
+	}
+	got, err = m.Get(ctx, "fork")
+	if err != nil || got.Project.Config == nil || got.Project.Config.CanonicalRepoURL != cfg.CanonicalRepoURL {
+		t.Fatalf("invalid write changed config: %+v %v", got.Project.Config, err)
+	}
+	if _, err := m.SetConfig(ctx, "fork", project.SetConfigInput{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = m.Get(ctx, "fork")
+	if err != nil || (got.Project.Config != nil && got.Project.Config.CanonicalRepoURL != "") {
+		t.Fatalf("clear: %+v %v", got.Project.Config, err)
+	}
+}
+
+func TestManager_SetPermissionsPreservesConfig(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t)
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := domain.ProjectConfig{DefaultBranch: "develop", Env: map[string]string{"KEEP": "yes"}, AgentRules: "keep rules", AgentConfig: domain.AgentConfig{Model: "base", Permissions: domain.PermissionModeDefault}, Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "worker", Permissions: domain.PermissionModeAcceptEdits}}, Orchestrator: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "orchestrator", Permissions: domain.PermissionModeBypassPermissions}}}
+	if _, err := m.UpdateSettings(ctx, "ao", project.UpdateSettingsInput{DisplayName: "Keep name", Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.SetPermissions(ctx, "ao", project.SetPermissionsInput{Permissions: domain.PermissionModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AgentConfig.Permissions = domain.PermissionModeAuto
+	cfg.Worker.AgentConfig.Permissions = ""
+	cfg.Orchestrator.AgentConfig.Permissions = ""
+	if got.Name != "Keep name" || got.Config == nil || !reflect.DeepEqual(*got.Config, cfg) {
+		t.Fatalf("unexpected result: %#v config %#v", got, got.Config)
+	}
+	for _, tc := range []struct {
+		id   string
+		mode domain.PermissionMode
+	}{{"missing", domain.PermissionModeAuto}, {"../bad", domain.PermissionModeAuto}, {"ao", ""}, {"ao", "invalid"}} {
+		if _, err := m.SetPermissions(ctx, domain.ProjectID(tc.id), project.SetPermissionsInput{Permissions: tc.mode}); err == nil {
+			t.Fatalf("accepted %#v", tc)
+		}
+	}
+}
+
+func TestManager_RememberPortablePermissions(t *testing.T) {
+	m := newManager(t)
+	ctx := context.Background()
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("portable")}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		source domain.AgentHarness
+		want   domain.PermissionMode
+	}{{domain.HarnessCodex, domain.PermissionModeBypassPermissions}, {domain.HarnessClaudeCode, domain.PermissionModeDefault}, {"", domain.PermissionModeDefault}} {
+		got, err := m.SetPermissions(ctx, "portable", project.SetPermissionsInput{SourceHarness: tc.source, Permissions: domain.PermissionModeDefault})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Config.AgentConfig.Permissions != tc.want {
+			t.Fatalf("%s: got %q want %q", tc.source, got.Config.AgentConfig.Permissions, tc.want)
+		}
+	}
+	if _, err := m.SetPermissions(ctx, "portable", project.SetPermissionsInput{SourceHarness: "unknown", Permissions: domain.PermissionModeAuto}); err == nil {
+		t.Fatal("accepted unknown harness")
+	}
+}
+
+func TestPrepareCloneCreatesDestinationParents(t *testing.T) {
+	m := newManager(t)
+	source := gitRepo(t)
+	parent := filepath.Join(t.TempDir(), "Projects", "new folder")
+	prepared, err := m.PrepareClone(context.Background(), project.CloneInput{
+		RemoteURL: (&url.URL{Scheme: "file", Path: source}).String(), DestinationParent: parent,
+	})
+	if err != nil {
+		t.Fatalf("PrepareClone: %v", err)
+	}
+	if prepared.Path != filepath.Join(parent, filepath.Base(source)) {
+		t.Fatalf("unexpected clone path %q", prepared.Path)
+	}
+	if out, err := exec.Command("git", "-C", prepared.Path, "rev-parse", "--verify", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("clone missing commit: %v (%s)", err, out)
+	}
+}
+
+func TestEmptyCloneOnboardingCreatesFirstWorkspace(t *testing.T) {
+	for _, branch := range []string{"main", "trunk"} {
+		t.Run(branch, func(t *testing.T) {
+			ctx := context.Background()
+			m := newManager(t)
+			origin := filepath.Join(t.TempDir(), "empty.git")
+			if out, err := exec.Command("git", "init", "--bare", "-b", branch, origin).CombinedOutput(); err != nil {
+				t.Fatalf("init remote: %v (%s)", err, out)
+			}
+			prepared, err := m.PrepareClone(ctx, project.CloneInput{
+				RemoteURL:         (&url.URL{Scheme: "file", Path: origin}).String(),
+				DestinationParent: filepath.Join(t.TempDir(), "Projects"),
+			})
+			if err != nil {
+				t.Fatalf("prepare clone: %v", err)
+			}
+			// Select the advertised unborn branch explicitly for Git versions that
+			// do not negotiate an empty remote's HEAD during clone.
+			if out, err := exec.Command("git", "-C", prepared.Path, "symbolic-ref", "HEAD", "refs/heads/"+branch).CombinedOutput(); err != nil {
+				t.Fatalf("select initial branch: %v (%s)", err, out)
+			}
+			setup, err := importer.New(importer.Deps{}).PrepareGit(ctx, importer.GitPreparationInput{
+				ImportKind: importer.ImportKindProject, Path: prepared.Path,
+				ApprovedActions:  []string{importer.GitPreparationActionCommit},
+				InitialCommitMsg: "Start project",
+			})
+			if err != nil || setup.Validation.NextStep != importer.ImportNextStepContinue {
+				t.Fatalf("prepare git: %#v, %v", setup, err)
+			}
+			registered, err := m.Add(ctx, project.AddInput{Path: prepared.Path, ClonePreparationID: prepared.PreparationID})
+			if err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			if registered.DefaultBranch != branch {
+				t.Fatalf("registered default = %q, want %q", registered.DefaultBranch, branch)
+			}
+			ws, err := gitworktree.New(gitworktree.Options{
+				ManagedRoot: t.TempDir(), RepoResolver: gitworktree.StaticRepoResolver{registered.ID: registered.Path},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := ws.Create(ctx, ports.WorkspaceConfig{ProjectID: registered.ID, SessionID: "first", Branch: "ao/first"})
+			if err != nil {
+				t.Fatalf("first workspace: %v", err)
+			}
+			if out, err := exec.Command("git", "-C", info.Path, "log", "-1", "--format=%s").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "Start project" {
+				t.Fatalf("first workspace commit: %s, %v", out, err)
+			}
+		})
+	}
 }

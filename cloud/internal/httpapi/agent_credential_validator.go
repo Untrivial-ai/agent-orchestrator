@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ const (
 	defaultAnthropicAPIURL = "https://api.anthropic.com"
 	defaultOpenAIAPIURL    = "https://api.openai.com/v1"
 	defaultCursorAPIURL    = "https://api.cursor.com"
+	defaultGitHubAPIURL    = "https://api.github.com"
 )
 
 type agentCredentialValidator struct {
@@ -22,6 +24,7 @@ type agentCredentialValidator struct {
 	anthropicBaseURL string
 	openAIBaseURL    string
 	cursorBaseURL    string
+	githubBaseURL    string
 }
 
 func newAgentCredentialValidator(client *http.Client) *agentCredentialValidator {
@@ -33,6 +36,7 @@ func newAgentCredentialValidator(client *http.Client) *agentCredentialValidator 
 		anthropicBaseURL: defaultAnthropicAPIURL,
 		openAIBaseURL:    defaultOpenAIAPIURL,
 		cursorBaseURL:    defaultCursorAPIURL,
+		githubBaseURL:    defaultGitHubAPIURL,
 	}
 }
 
@@ -49,6 +53,16 @@ func (v *agentCredentialValidator) Validate(
 	case "claude-code":
 		return v.validateClaude(ctx, credentialType, secret)
 	case "codex":
+		if credentialType == "auth_json" {
+			// Codex owns this refreshable credential document. AO intentionally
+			// does not inspect its fields; a non-empty JSON object is the only
+			// safe local validation before the worker hands it back to Codex.
+			var document map[string]json.RawMessage
+			if json.Unmarshal(secret, &document) != nil || document == nil {
+				return errInvalidAgentCredential
+			}
+			return nil
+		}
 		if credentialType != "api_key" && credentialType != "access_token" {
 			return errInvalidAgentCredential
 		}
@@ -66,6 +80,16 @@ func (v *agentCredentialValidator) Validate(
 			ctx,
 			"Cursor",
 			strings.TrimRight(v.cursorBaseURL, "/")+"/v1/me",
+			secret,
+		)
+	case "github":
+		if credentialType != "personal_access_token" {
+			return errInvalidAgentCredential
+		}
+		return v.validateBearerEndpoint(
+			ctx,
+			"GitHub",
+			strings.TrimRight(v.githubBaseURL, "/")+"/user",
 			secret,
 		)
 	default:

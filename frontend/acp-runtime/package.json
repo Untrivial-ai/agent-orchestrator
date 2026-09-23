@@ -4,6 +4,6 @@
 	"private": true,
 	"description": "Pinned ACP adapters packaged with the AO desktop app (provider CLIs are not included)",
 	"dependencies": {
-		"@agentclientprotocol/claude-agent-acp": "0.64.2"
+		"@agentclientprotocol/claude-agent-acp": "0.70.0"
 	}
 }

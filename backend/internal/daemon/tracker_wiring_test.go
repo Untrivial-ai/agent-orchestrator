@@ -5,12 +5,16 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	trackergitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/gitlab"
 	trackermulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/multi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // TestNewGitLabTracker_PassesAllowedHosts verifies that AllowedHosts from
@@ -241,4 +245,124 @@ func TestNewMultiTracker_WithGitLabConfig(t *testing.T) {
 		t.Fatalf("expected *trackermulti.Tracker, got %T", tracker)
 	}
 	_ = mt // multi-tracker is non-nil and correctly typed
+}
+
+// ---------------------------------------------------------------------------
+// lazyTracker
+// ---------------------------------------------------------------------------
+
+type stubTracker struct{}
+
+func (stubTracker) Get(context.Context, domain.TrackerID) (domain.Issue, error) {
+	return domain.Issue{}, nil
+}
+
+func (stubTracker) List(context.Context, domain.TrackerRepo, domain.ListFilter) ([]domain.Issue, error) {
+	return nil, nil
+}
+
+func (stubTracker) Preflight(context.Context) error { return nil }
+
+var _ ports.Tracker = stubTracker{}
+
+// TestLazyTracker_ConstructionDeferredAndStickyOnlyOnSuccess: build must not
+// run until the first tracker call; failures are not cached (a later
+// `gh auth login` is picked up without a restart); a successful construction
+// is reused.
+func TestLazyTracker_ConstructionDeferredAndStickyOnlyOnSuccess(t *testing.T) {
+	builds := 0
+	succeed := false
+	lt := &lazyTracker{
+		name:   "github",
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		build: func() (ports.Tracker, error) {
+			builds++
+			if !succeed {
+				return nil, errors.New("no token")
+			}
+			return stubTracker{}, nil
+		},
+	}
+
+	if builds != 0 {
+		t.Fatal("build ran before first tracker use")
+	}
+	if err := lt.Preflight(context.Background()); err == nil {
+		t.Fatal("Preflight err = nil, want build failure")
+	}
+	if builds != 1 {
+		t.Fatalf("builds = %d, want 1", builds)
+	}
+	if err := lt.Preflight(context.Background()); err == nil {
+		t.Fatal("Preflight err = nil, want build failure")
+	}
+	if builds != 2 {
+		t.Fatalf("builds = %d, want 2 (failures must not be sticky)", builds)
+	}
+
+	succeed = true
+	if err := lt.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if builds != 3 {
+		t.Fatalf("builds = %d, want 3", builds)
+	}
+	if err := lt.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if builds != 3 {
+		t.Fatalf("builds = %d, want 3 (a successful construction must be reused)", builds)
+	}
+}
+
+// TestWiring_NewMultiTracker_DoesNotProbeGHCLIAtBoot is a regression test for
+// the laziness guarantee: with no env tokens configured, constructing the
+// multi-tracker must not spawn `gh auth token` — the CLI probe runs on first
+// tracker use, not at daemon boot.
+func TestWiring_NewMultiTracker_DoesNotProbeGHCLIAtBoot(t *testing.T) {
+	t.Setenv("AO_GITHUB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("AO_GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_TOKEN", "")
+
+	marker := filepath.Join(t.TempDir(), "gh-called")
+	t.Setenv("GH_MARKER", marker)
+	binDir := t.TempDir()
+	writeRecordingGHExecutable(t, binDir)
+	// PATH contains only binDir: no real gh/glab can leak in. The GitLab leg
+	// fails to resolve `glab` and is omitted; the GitHub leg stays lazy.
+	t.Setenv("PATH", binDir)
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tracker := newMultiTracker(config.GitLabConfig{}, log)
+	if tracker == nil {
+		t.Fatal("newMultiTracker = nil, want non-nil: the GitHub slot is lazily constructed and always present")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("gh CLI invoked during newMultiTracker (marker exists); stat: %v", err)
+	}
+
+	// First use triggers the probe. It fails (fake gh exits 1) — the error is
+	// fine, the marker proves the probe happened now and not at boot.
+	_, _ = tracker.Get(context.Background(), domain.TrackerID{Provider: domain.TrackerProviderGitHub, Native: "acme/demo#1"})
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("gh CLI not invoked on first tracker use; stat marker: %v", err)
+	}
+}
+
+// writeRecordingGHExecutable installs a fake `gh` that records every
+// invocation to $GH_MARKER and exits 1 (no token).
+func writeRecordingGHExecutable(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		content := "@echo off\r\necho called >> %GH_MARKER%\r\nexit /b 1\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "gh.cmd"), []byte(content), 0o755); err != nil {
+			t.Fatalf("write fake gh.cmd: %v", err)
+		}
+		return
+	}
+	content := "#!/bin/sh\necho called >> \"$GH_MARKER\"\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
 }

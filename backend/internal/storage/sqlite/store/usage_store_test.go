@@ -241,7 +241,11 @@ func TestFinalizeUsageBindingsForSessionLaunchIsGenerationAndRevisionFenced(t *t
 		NativeRootID: "root-thread",
 		State:        domain.UsageBindingActive,
 	})
-	expectedRevision := sess.UpdatedAt
+	sess, found, err := s.GetSession(ctx, sess.ID)
+	if err != nil || !found {
+		t.Fatalf("reload session before finalization: %v %v", found, err)
+	}
+	expectedRevision := sess.Revision
 
 	finalized, err := s.FinalizeUsageBindingsForSessionLaunch(
 		ctx,
@@ -262,7 +266,7 @@ func TestFinalizeUsageBindingsForSessionLaunchIsGenerationAndRevisionFenced(t *t
 		ctx,
 		sess.ID,
 		"launch-current",
-		expectedRevision.Add(-time.Second),
+		expectedRevision-1,
 		now.Add(2*time.Second),
 	)
 	if err != nil || len(finalized) != 0 {
@@ -272,6 +276,17 @@ func TestFinalizeUsageBindingsForSessionLaunchIsGenerationAndRevisionFenced(t *t
 	if err != nil || !ok || got.State != domain.UsageBindingActive {
 		t.Fatalf("binding after stale-revision finalization=%+v ok=%v err=%v", got, ok, err)
 	}
+	// A no-op timestamp write still invalidates an observer's session snapshot.
+	mustNoError(t, s.UpdateSession(ctx, sess))
+	finalized, err = s.FinalizeUsageBindingsForSessionLaunch(ctx, sess.ID, "launch-current", expectedRevision, now)
+	if err != nil || len(finalized) != 0 {
+		t.Fatalf("unchanged timestamp admitted stale usage finalization: rows=%+v err=%v", finalized, err)
+	}
+	sess, ok, err = s.GetSession(ctx, sess.ID)
+	if err != nil || !ok {
+		t.Fatalf("reload session: %v %v", ok, err)
+	}
+	expectedRevision = sess.Revision
 
 	finalized, err = s.FinalizeUsageBindingsForSessionLaunch(
 		ctx,

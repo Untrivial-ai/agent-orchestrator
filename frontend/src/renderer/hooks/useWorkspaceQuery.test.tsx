@@ -2,14 +2,18 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import { appI18n } from "../i18n";
+import type { WorkspaceSummary } from "../types/workspace";
 
-const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock } = vi.hoisted(
+const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, setQueryHealthyMock } = vi.hoisted(
 	() => ({
 		captureRendererEventMock: vi.fn().mockResolvedValue(undefined),
 		cloudState: { ready: false, org: undefined as { id: string } | undefined },
 		getMock: vi.fn(),
 		hasTrustedApiBaseUrlMock: vi.fn(() => true),
 		listProjectsMock: vi.fn(),
+		listSessionsMock: vi.fn(),
+		setQueryHealthyMock: vi.fn(),
 	}),
 );
 
@@ -19,10 +23,11 @@ vi.mock("../lib/api-client", () => ({
 }));
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: captureRendererEventMock }));
+vi.mock("../lib/agent-switch-visibility", () => ({ agentSwitchVisibility: { setQueryHealthy: setQueryHealthyMock } }));
 
 vi.mock("./useCloudCp", () => ({
 	useCloudCp: () => ({
-		client: { listProjects: listProjectsMock },
+		client: { listProjects: listProjectsMock, listSessions: listSessionsMock },
 		ready: cloudState.ready,
 		baseUrl: "https://cp.example.com",
 	}),
@@ -32,7 +37,7 @@ vi.mock("./useCloudOrg", () => ({
 	useCloudOrg: () => ({ org: cloudState.org, isLoading: false, error: undefined, ready: cloudState.ready }),
 }));
 
-import { useWorkspaceQuery } from "./useWorkspaceQuery";
+import { useWorkspaceQuery, useWorkspaceScope, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey } from "./useWorkspaceQuery";
 
 function wrapper({ children }: { children: ReactNode }) {
 	// The hook pins its own retry policy; retryDelay 0 keeps the error tests fast.
@@ -58,9 +63,24 @@ beforeEach(() => {
 	cloudState.ready = false;
 	cloudState.org = undefined;
 	listProjectsMock.mockReset();
+	listSessionsMock.mockReset().mockResolvedValue({ items: [] });
+	setQueryHealthyMock.mockReset();
 });
 
 describe("useWorkspaceQuery", () => {
+	it.each(["checking", "unavailable"] as const)("does not expose unverified activity while %s", async (statusReadiness) => {
+		respondWith({
+			projects: { data: { projects: [{ id: "p1", name: "Project", path: "/tmp/project" }] } },
+			sessions: { data: { sessions: [{ id: "s1", projectId: "p1", harness: "codex", status: "working", statusReadiness,
+				activity: { state: "active", lastActivityAt: "2026-01-01T00:00:00Z" }, updatedAt: "2026-01-01T00:00:00Z", prs: [] }] } },
+		});
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		expect(result.current.data?.[0].sessions[0]).toMatchObject({ status: "unknown", statusReadiness });
+		expect(result.current.data?.[0].sessions[0].activity).toBeUndefined();
+		expect(captureRendererEventMock).not.toHaveBeenCalled();
+	});
+
 	it("rejects workspace reads while the daemon base URL is untrusted", async () => {
 		hasTrustedApiBaseUrlMock.mockReturnValue(false);
 
@@ -93,13 +113,16 @@ describe("useWorkspaceQuery", () => {
 							id: "sess-1",
 							projectId: "proj-1",
 							terminalHandleId: "term-1",
+							terminalGeneration: "launch-2",
 							displayName: "fix-bug",
 							issueId: "github:acme/project-one#42",
 							harness: "claude-code",
-							reviewerHarness: "qwen",
+							reviewerHarness: "agy",
 							branch: "qa/modal-worker",
 							status: "mergeable",
 							scmStatus: "review_pending",
+							kanbanColumn: "ready",
+							displayStatus: "Mergeable",
 							isTerminated: false,
 							autoInjectReview: false,
 							autoInjectCI: false,
@@ -155,13 +178,16 @@ describe("useWorkspaceQuery", () => {
 		expect(workspace.sessions[0]).toMatchObject({
 			id: "sess-1",
 			terminalHandleId: "term-1",
+			terminalGeneration: "launch-2",
 			title: "fix-bug",
 			issueId: "github:acme/project-one#42",
 			provider: "claude-code",
-			reviewerHarness: "qwen",
+			reviewerHarness: "agy",
 			branch: "qa/modal-worker",
 			status: "mergeable",
 			scmStatus: "review_pending",
+			kanbanColumn: "ready",
+			displayStatus: "Mergeable",
 			activity: { state: "idle", lastActivityAt: "2026-06-10T15:30:00Z" },
 			lastUserMessageAt: "2026-06-10T16:10:00Z",
 			autoInjectReview: false,
@@ -174,6 +200,7 @@ describe("useWorkspaceQuery", () => {
 			id: "switch-1",
 			state: "delivering_context",
 			targetHarness: "codex",
+			updatedAt: "2026-06-10T15:32:00Z",
 		});
 		expect(workspace.sessions[1]).toMatchObject({
 			id: "sess-2",
@@ -238,6 +265,142 @@ describe("useWorkspaceQuery", () => {
 			id: "scratch-worker-1",
 			branch: undefined,
 		});
+	});
+
+	it("falls back to the direct session read while the workspace list has not caught up", async () => {
+		getMock.mockImplementation(async (url: string, options?: { params?: { path?: { sessionId?: string } } }) => {
+			if (url === "/api/v1/projects") {
+				return {
+					data: {
+						projects: [{ id: "proj-1", name: "workspace3", path: "/tmp/workspace3", orchestratorAgent: "codex" }],
+					},
+					error: undefined,
+				};
+			}
+			if (url === "/api/v1/sessions") {
+				return { data: { sessions: [] }, error: undefined };
+			}
+			if (url === "/api/v1/sessions/{sessionId}") {
+				expect(options?.params?.path?.sessionId).toBe("sess-orch");
+				return {
+					data: {
+						session: {
+							id: "sess-orch",
+							projectId: "proj-1",
+							displayName: "orchestrate",
+							harness: "codex",
+							kind: "orchestrator",
+							mode: "tui",
+							status: "working",
+							kanbanColumn: "building",
+							displayStatus: "Working",
+							autoInjectReview: true,
+							autoInjectCI: true,
+							autoReviewEnabled: false,
+							isPinned: false,
+							isTerminated: false,
+							terminateOnPrMerge: false,
+							prs: [],
+							activity: { state: "idle", lastActivityAt: "2026-09-04T10:00:00Z" },
+							createdAt: "2026-09-04T10:00:00Z",
+							updatedAt: "2026-09-04T10:00:01Z",
+						},
+					},
+					error: undefined,
+				};
+			}
+			throw new Error(`unexpected GET ${url}`);
+		});
+
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+		const localWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+
+		const { result } = renderHook(() => useWorkspaceSession("sess-orch"), { wrapper: localWrapper });
+
+		await waitFor(() => expect(result.current.data?.id).toBe("sess-orch"));
+		expect(result.current.data).toMatchObject({
+			id: "sess-orch",
+			workspaceId: "proj-1",
+			workspaceName: "workspace3",
+			title: "orchestrate",
+			provider: "codex",
+			kind: "orchestrator",
+		});
+		await waitFor(() => {
+			const cached = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey);
+			expect(Array.isArray(cached)).toBe(true);
+			expect(cached?.[0]?.sessions.some((session: { id: string }) => session.id === "sess-orch")).toBe(true);
+		});
+	});
+
+	it("groups projectless sessions in Scratchpad after projects", async () => {
+		respondWith({
+			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							displayName: "Research",
+							harness: "codex",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
+		});
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+		expect(result.current.data?.map((workspace) => workspace.id)).toEqual(["proj-1", "__standalone__"]);
+		expect(result.current.data?.[1]).toMatchObject({
+			id: "__standalone__",
+			name: "Scratchpad",
+			kind: "standalone",
+		});
+		expect(result.current.data?.[1].sessions[0]).toMatchObject({
+			id: "standalone-1",
+			workspaceId: "__standalone__",
+			workspaceName: "Scratchpad",
+			title: "Research",
+			branch: undefined,
+		});
+	});
+
+	it("localizes the standalone workspace name", async () => {
+		await appI18n.changeLanguage("zh-CN");
+		respondWith({
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							harness: "codex",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
+		});
+
+		try {
+			const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+			await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+			expect(result.current.data?.[0]).toMatchObject({ name: "草稿区" });
+			expect(result.current.data?.[0].sessions[0]).toMatchObject({ workspaceName: "草稿区" });
+		} finally {
+			await appI18n.changeLanguage("en");
+		}
 	});
 
 	it("maps each session's prs straight from the session list", async () => {
@@ -358,6 +521,7 @@ describe("useWorkspaceQuery", () => {
 
 		await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 3_000 });
 		expect(result.current.error).toBe(failure);
+		expect(setQueryHealthyMock).toHaveBeenCalledWith("history", false, "workspaces");
 	});
 
 	it("surfaces a sessions fetch error even when projects load", async () => {
@@ -393,10 +557,25 @@ describe("useWorkspaceQuery", () => {
 		});
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{
+							id: "standalone-1",
+							displayName: "Research",
+							harness: "codex",
+							status: "working",
+							isTerminated: false,
+							updatedAt: "2026-06-10T16:15:04Z",
+						},
+					],
+				},
+				error: undefined,
+			},
 		});
 
 		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
-		await waitFor(() => expect(result.current.data).toHaveLength(2));
+		await waitFor(() => expect(result.current.data).toHaveLength(3));
 
 		expect(result.current.data?.[0]).toMatchObject({ id: "proj-1", name: "my-app", path: "/p" });
 		expect(result.current.data?.[1]).toEqual({
@@ -406,6 +585,7 @@ describe("useWorkspaceQuery", () => {
 			path: "",
 			sessions: [],
 		});
+		expect(result.current.data?.[2]).toMatchObject({ id: "__standalone__", name: "Scratchpad" });
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
 	});
 
@@ -435,5 +615,60 @@ describe("useWorkspaceQuery", () => {
 		await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
 		expect(listProjectsMock).not.toHaveBeenCalled();
+	});
+
+	it("selects only attention-worthy worker sessions for the always-mounted tray", async () => {
+		respondWith({
+			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },
+			sessions: {
+				data: {
+					sessions: [
+						{ id: "needs-input", projectId: "proj-1", displayName: "Needs input", harness: "codex", status: "needs_input", updatedAt: "2026-08-01T00:00:00Z" },
+						{ id: "mergeable", projectId: "proj-1", displayName: "Mergeable", harness: "codex", status: "mergeable", updatedAt: "2026-08-01T00:00:00Z" },
+						{ id: "working", projectId: "proj-1", displayName: "Working", harness: "codex", status: "working", updatedAt: "2026-08-01T00:00:00Z" },
+						{ id: "merged", projectId: "proj-1", displayName: "Merged", harness: "codex", status: "merged", updatedAt: "2026-08-01T00:00:00Z" },
+						{ id: "orchestrator", projectId: "proj-1", displayName: "Orchestrator", harness: "codex", kind: "orchestrator", status: "needs_input", updatedAt: "2026-08-01T00:00:00Z" },
+					],
+				},
+				error: undefined,
+			},
+		});
+
+		const { result } = renderHook(() => useWorkspaceTraySessions(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		expect(result.current.data).toEqual([
+			{ projectId: "proj-1", projectName: "my-app", sessionId: "needs-input", title: "Needs input", zone: "action" },
+			{ projectId: "proj-1", projectName: "my-app", sessionId: "mergeable", title: "Mergeable", zone: "merge" },
+		]);
+	});
+});
+
+describe("useWorkspaceScope board presentation", () => {
+	it.each([
+		{ kind: "orchestrator", isTerminated: false, expected: false },
+		{ kind: "orchestrator", isTerminated: true, expected: false },
+		{ kind: "worker", isTerminated: false, expected: true },
+		{ kind: "worker", isTerminated: true, expected: true },
+		{ kind: undefined, isTerminated: false, expected: true },
+	])("projects worker presence for $kind, terminated=$isTerminated", async ({ kind, isTerminated, expected }) => {
+		respondWith({
+			projects: { data: { projects: [{ id: "p", name: "project", path: "/repo" }] } },
+			sessions: { data: { sessions: [{ id: "s", projectId: "p", kind, isTerminated, status: "working" }] } },
+		});
+		const { result } = renderHook(() => useWorkspaceScope("p"), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		expect(result.current.data?.hasWorkerSessions).toBe(expected);
+		expect(result.current.data?.project).not.toHaveProperty("sessions");
+	});
+
+	it("resolves a cloud board after the local query succeeds without a matching project", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		respondWith({});
+		listProjectsMock.mockResolvedValue({ items: [{ id: "cloud-1", displayName: "Cloud project" }] });
+		listSessionsMock.mockResolvedValue({ items: [{ id: "cloud-worker", projectId: "cloud-1", kind: "worker", status: "working" }] });
+		const { result } = renderHook(() => useWorkspaceScope("cloud-1"), { wrapper });
+		await waitFor(() => expect(result.current.data?.hasWorkerSessions).toBe(true));
+		expect(result.current.data?.project).toMatchObject({ id: "cloud-1", kind: "cloud", name: "Cloud project" });
 	});
 });

@@ -1,8 +1,11 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useEffect, useState } from "react";
 import { Linking, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { ApiError, pingServer } from "./api";
 import { DEFAULT_CONFIG, loadConfig, saveConfig, type ServerConfig } from "./config";
+import { saveHost, setActiveHost } from "./hosts";
+import { adoptManualConnection } from "./manualConnect";
+import { probeIdentity } from "./connectRuntime";
 import {
 	classifyConnectionFailure,
 	describeConnectionFailure,
@@ -15,6 +18,7 @@ import { Button, SHEET_SCROLL_CONTENT, SheetHeader, SheetScreen } from "./ui";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
 import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry } from "./telemetry/runtime";
+import { iconSize, space, type } from "./tokens";
 
 // The typing fallback behind the QR scanner: Tailscale users and anyone whose
 // desktop isn't in front of them. Deliberately narrower than the Settings form —
@@ -51,6 +55,20 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 			// with no further input from them.
 			await pingServer(target);
 			await saveConfig(target);
+			// Store it as a machine and select it. Writing only the legacy config
+			// left resolution reconnecting the previously active machine on the
+			// next launch, so a manual connection silently did not stick.
+			await adoptManualConnection(target, {
+				identity: async (c) => {
+					try {
+						return await probeIdentity(c);
+					} catch {
+						return ""; // Older daemon, or an endpoint that cannot say: still worth storing.
+					}
+				},
+				saveHost,
+				setActiveHost,
+			});
 			mobileTelemetry()?.capture(MOBILE_EVENTS.paired, { method: "manual" });
 			haptics.success();
 			onConnected();
@@ -95,24 +113,24 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 				<Switch
 					value={!!cfg.secure}
 					onValueChange={(v) => setCfg((prev) => ({ ...prev, secure: v }))}
-					trackColor={{ true: t.blue, false: t.borderStrong }}
+					trackColor={{ true: t.green, false: t.borderStrong }}
 				/>
 			</View>
 
 			{failure ? (
 				<View style={styles.errorBox}>
-					<Feather name="alert-circle" size={15} color={t.red} />
+					<Feather name="alert-circle" size={iconSize.sm} color={t.red} />
 					<View style={{ flex: 1 }}>
 						<Text style={styles.errorText}>{failure.message}</Text>
 						{failure.showLocalNetworkHint ? (
 							<>
-								<Text style={[styles.errorText, { marginTop: 6 }]}>{LOCAL_NETWORK_HINT}</Text>
+								<Text style={[styles.errorText, { marginTop: space.xs }]}>{LOCAL_NETWORK_HINT}</Text>
 								<Button
 									title="Open settings"
 									variant="ghost"
 									icon="settings"
 									onPress={() => Linking.openSettings()}
-									style={{ marginTop: 10 }}
+									style={{ marginTop: space.sm }}
 								/>
 							</>
 						) : null}
@@ -126,7 +144,7 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 				loading={busy}
 				disabled={!cfg.host.trim()}
 				onPress={connect}
-				style={{ marginTop: 16 }}
+				style={{ marginTop: space.lg }}
 			/>
 		</>
 	);
@@ -165,7 +183,7 @@ function Field({ label, ...input }: { label: string } & React.ComponentProps<typ
 	return (
 		<View style={styles.field}>
 			<Text style={styles.fieldLabel}>{label}</Text>
-			<TextInput {...input} style={styles.input} placeholderTextColor={t.textFaint} selectionColor={t.blue} />
+			<TextInput {...input} style={styles.input} placeholderTextColor={t.textFaint} selectionColor={t.accent} />
 		</View>
 	);
 }
@@ -173,39 +191,39 @@ function Field({ label, ...input }: { label: string } & React.ComponentProps<typ
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgSurface },
-		field: { marginTop: 16 },
-		fieldLabel: {
+		field: { marginTop: space.lg },
+		fieldLabel: { fontFamily: "Geist_600SemiBold",
 			color: t.textTertiary,
-			fontSize: 10,
-			fontWeight: "700",
+			fontSize: type.caption2.fontSize,
+			fontWeight: "600",
 			letterSpacing: 1.1,
-			marginBottom: 7,
+			marginBottom: space.xs,
 		},
-		input: {
+		input: { fontFamily: "Geist_400Regular",
 			backgroundColor: t.bgElevated,
 			borderWidth: 1,
 			borderColor: t.borderDefault,
-			borderRadius: 10,
-			paddingHorizontal: 13,
-			paddingVertical: 12,
+			borderRadius: 8, borderCurve: "continuous",
+			paddingHorizontal: space.md,
+			paddingVertical: space.md,
 			color: t.textPrimary,
-			fontSize: 15,
+			fontSize: type.subheadline.fontSize,
 		},
 		toggleRow: {
 			flexDirection: "row",
 			alignItems: "center",
 			justifyContent: "space-between",
-			marginTop: 18,
+			marginTop: space.lg,
 		},
-		toggleLabel: { color: t.textSecondary, fontSize: 14, flex: 1 },
+		toggleLabel: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.subheadline.fontSize, flex: 1 },
 		errorBox: {
 			flexDirection: "row",
-			gap: 9,
+			gap: space.sm,
 			alignItems: "flex-start",
 			backgroundColor: t.tintRed,
-			borderRadius: 10,
-			padding: 12,
-			marginTop: 16,
+			borderRadius: 8, borderCurve: "continuous",
+			padding: space.md,
+			marginTop: space.lg,
 		},
-		errorText: { color: t.red, fontSize: 13, lineHeight: 19 },
+		errorText: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 	});

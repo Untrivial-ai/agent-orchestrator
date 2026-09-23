@@ -153,8 +153,8 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			ProviderConversationID: p.ThreadID,
 			TurnState:              turnStateFrom(string(p.Turn.Status)),
 		}
-		if p.Turn.Error != nil && p.Turn.Error.Message != "" {
-			ev.Err = fmt.Errorf("%s", p.Turn.Error.Message)
+		if p.Turn.Error != nil {
+			ev.Err = codexProviderFailure(*p.Turn.Error)
 		}
 		return []ports.ChatEvent{ev}
 
@@ -588,11 +588,11 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		}}
 
 	case codexproto.MethodAccountRateLimitsUpdated:
-		var p rateLimitsEnvelope
+		var p capacityReadEnvelope
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return nil
 		}
-		limits := rateLimitsFrom(p, now)
+		limits := chatRateLimitsFromCapacity(capacityObservationFromEnvelope(p, now.UTC(), true), now)
 		return []ports.ChatEvent{{Kind: ports.ChatEventRateLimits, RateLimits: &limits}}
 
 	// The generated constant carries the provider's own deprecation note, and reading
@@ -646,6 +646,28 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 		}}
 
 	case codexproto.MethodError:
+		var p codexproto.ErrorNotification
+		if err := json.Unmarshal(n.Params, &p); err == nil &&
+			(strings.TrimSpace(p.Error.Message) != "" || p.Error.AdditionalDetails != nil) {
+			failure := codexProviderFailure(p.Error)
+			if failure == nil {
+				return nil
+			}
+			if p.WillRetry && p.TurnID != "" {
+				return []ports.ChatEvent{{
+					Kind: ports.ChatEventActivityStarted, ProviderConversationID: p.ThreadID,
+					ProviderTurnID: p.TurnID, ProviderItemID: "codex-retry:" + p.ThreadID + ":" + p.TurnID,
+					ActivityKind: domain.ActivityKindSystem, ActivityStatus: domain.ActivityStatusRunning,
+					Summary: failure.Error(), Detail: json.RawMessage(`{"event":"provider.failure"}`),
+				}}
+			}
+			return []ports.ChatEvent{{
+				Kind:                   ports.ChatEventError,
+				ProviderTurnID:         p.TurnID,
+				ProviderConversationID: p.ThreadID,
+				Err:                    failure,
+			}}
+		}
 		return []ports.ChatEvent{{
 			Kind: ports.ChatEventError,
 			Err:  fmt.Errorf("provider error: %s", truncateForLog(n.Params)),
@@ -672,6 +694,23 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 	}
 }
 
+// codexErrorInfo is metadata, not display copy. Only an explicit unauthorized
+// reason invokes the existing authentication path; other errors remain readable.
+func codexProviderFailure(turnErr codexproto.TurnError) error {
+	detail := ""
+	if turnErr.AdditionalDetails != nil {
+		detail = *turnErr.AdditionalDetails
+	}
+	var cause error
+	if turnErr.CodexErrorInfo != nil && string(*turnErr.CodexErrorInfo) == `"unauthorized"` {
+		cause = ports.ErrChatAuthRequired
+	}
+	if strings.TrimSpace(turnErr.Message) == "" && strings.TrimSpace(detail) == "" && cause == nil {
+		return nil
+	}
+	return ports.NewChatProviderFailure(turnErr.Message, detail, cause)
+}
+
 // turnIDFallback reads a top-level turnId, which some builds send instead of
 // nesting the id under `turn`. Read from the raw params because codexproto's
 // generated notification types declare only the nested form.
@@ -683,72 +722,6 @@ func turnIDFallback(params json.RawMessage) string {
 		return ""
 	}
 	return p.TurnID
-}
-
-// rateLimitWindow is one Codex RateLimitWindow.
-//
-// UsedPercent is a percentage in 0..100, not a token count, and ResetsAt is an
-// absolute unix timestamp in seconds rather than a duration. Both were confirmed
-// against a live account: `{"usedPercent":71,"windowDurationMins":10080,
-// "resetsAt":1786159947}`.
-type rateLimitWindow struct {
-	UsedPercent        *float64 `json:"usedPercent"`
-	WindowDurationMins *int64   `json:"windowDurationMins"`
-	ResetsAt           *int64   `json:"resetsAt"`
-}
-
-// rateLimitsEnvelope is the params shape of account/rateLimits/updated and the
-// result shape of account/rateLimits/read.
-//
-// Local rather than generated because it spans both: the notification and the read
-// result share the `rateLimits` object, and codexproto declares them as two
-// unrelated types.
-type rateLimitsEnvelope struct {
-	RateLimits struct {
-		Primary   *rateLimitWindow `json:"primary"`
-		Secondary *rateLimitWindow `json:"secondary"`
-		PlanType  string           `json:"planType"`
-	} `json:"rateLimits"`
-}
-
-// rateLimitsFrom converts a provider rate-limit snapshot into AO's neutral shape.
-//
-// Two conversions matter. A window the account does not have comes back as null,
-// and is reported as a negative percent because the port's contract is that
-// negative means "not reported" — zero would claim the quota is untouched, which
-// is a different and much more reassuring statement than "no such window".
-// Second, the absolute reset timestamp becomes a remaining duration: a client
-// showing "resets in 4h" does not have to trust that AO's clock and the
-// provider's agree, and a stale snapshot decays into 0 rather than into a time in
-// the past that reads as if it already refilled.
-func rateLimitsFrom(p rateLimitsEnvelope, now time.Time) ports.ChatRateLimits {
-	limits := ports.ChatRateLimits{
-		PrimaryUsedPercent:   -1,
-		SecondaryUsedPercent: -1,
-		PlanLabel:            p.RateLimits.PlanType,
-	}
-	if w := p.RateLimits.Primary; w != nil && w.UsedPercent != nil {
-		limits.PrimaryUsedPercent = *w.UsedPercent
-		limits.PrimaryResetsInSeconds = resetsIn(w.ResetsAt, now)
-	}
-	if w := p.RateLimits.Secondary; w != nil && w.UsedPercent != nil {
-		limits.SecondaryUsedPercent = *w.UsedPercent
-		limits.SecondaryResetsInSeconds = resetsIn(w.ResetsAt, now)
-	}
-	return limits
-}
-
-// resetsIn turns an absolute unix reset instant into seconds from now, floored at
-// zero: a window whose reset has already passed has nothing left to wait for.
-func resetsIn(resetsAt *int64, now time.Time) int64 {
-	if resetsAt == nil || *resetsAt <= 0 {
-		return 0
-	}
-	remaining := *resetsAt - now.Unix()
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
 }
 
 // planFrom converts a provider plan into AO's structured form.

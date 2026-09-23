@@ -413,6 +413,30 @@ func TestGetRestoreCommand(t *testing.T) {
 	}
 }
 
+// TestGetRestoreCommandAppendsResumeTimePrompt covers resuming a reviewer
+// after it was killed and re-triggered: the new task must be embedded in the
+// resume argv (mirroring GetLaunchCommand), or the resumed session would sit
+// idle with no work to act on.
+func TestGetRestoreCommandAppendsResumeTimePrompt(t *testing.T) {
+	p := &Plugin{resolvedBinary: "kimchi"}
+	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Prompt: "review the new commit",
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "019e950e-52e0-7411-961b-d380ca7e610f"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok=false, want true")
+	}
+	want := []string{"kimchi", "--session", "019e950e-52e0-7411-961b-d380ca7e610f", "review the new commit"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v", cmd, want)
+	}
+}
+
 func TestGetRestoreCommandWithPermissions(t *testing.T) {
 	tests := []struct {
 		mode ports.PermissionMode

@@ -75,6 +75,7 @@ func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) er
 // adapter maps auto to --allow-all-tools, which would defeat this policy.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Config:           inv.Config,
 		DataDir:          inv.DataDir,
 		SessionID:        inv.ReviewerID,
 		WorkspacePath:    inv.WorkspacePath,

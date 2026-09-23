@@ -1,12 +1,21 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
-import type { SessionActivityState, WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import {
+	CLOUD_PROJECT_KIND,
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type SessionActivityState,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 import { ShellTopbar, TopbarKillButton } from "./ShellTopbar";
 import { TooltipProvider } from "./ui/tooltip";
+import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
+import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
 
 const { navigateMock, onKilledMock, paramsMock, postMock, spawnMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
 	navigateMock: vi.fn(),
@@ -27,7 +36,22 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 });
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
-	useWorkspaceQuery: () => useWorkspaceQueryMock(),
+	useWorkspaceScope: () => {
+		const query = useWorkspaceQueryMock();
+		const project = query.data?.find((workspace: WorkspaceSummary) => workspace.id === paramsMock.projectId);
+		const session = query.data
+			?.flatMap((workspace: WorkspaceSummary) => workspace.sessions)
+			.find((candidate: WorkspaceSession) => candidate.id === paramsMock.sessionId);
+		return {
+			...query,
+			data: {
+				project,
+				hasWorkerSessions: project?.sessions.some((candidate: WorkspaceSession) => candidate.kind !== "orchestrator") ?? false,
+				session,
+				orchestrator: project?.sessions.find((candidate: WorkspaceSession) => candidate.kind === "orchestrator"),
+			},
+		};
+	},
 	workspaceQueryKey: ["workspaces"],
 }));
 
@@ -35,6 +59,7 @@ vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		POST: postMock,
 	},
+	hasTrustedApiBaseUrl: () => false,
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => {
 		if (error instanceof Error) return error.message;
 		if (typeof error === "object" && error !== null && "message" in error) {
@@ -44,7 +69,10 @@ vi.mock("../lib/api-client", () => ({
 	},
 }));
 
-vi.mock("../lib/spawn-orchestrator", () => ({ spawnOrchestrator: spawnMock }));
+vi.mock("../lib/spawn-orchestrator", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/spawn-orchestrator")>(),
+	spawnOrchestrator: spawnMock,
+}));
 vi.mock("../lib/telemetry", () => ({
 	addRendererExceptionStep: vi.fn(),
 	captureRendererEvent: vi.fn(),
@@ -118,6 +146,7 @@ function renderTopbarSessions(
 	sessionId: string,
 	embedded = false,
 	sessionAction?: ReactNode,
+	projectKind?: WorkspaceSummary["kind"],
 ) {
 	const data: WorkspaceSummary[] = [
 		{
@@ -125,13 +154,15 @@ function renderTopbarSessions(
 			name: sessions[0].workspaceName,
 			path: "/repo/my-app",
 			orchestratorAgent: "claude-code",
+			kind: projectKind,
 			sessions,
 		},
 	];
-	useWorkspaceQueryMock.mockReturnValue({ data, isError: false, isLoading: false });
+	useWorkspaceQueryMock.mockReturnValue({ data, isError: false, isLoading: false, isSuccess: true });
 	paramsMock.projectId = sessions[0].workspaceId;
 	paramsMock.sessionId = sessionId;
 	const queryClient = new QueryClient();
+	queryClient.setQueryData(["workspaces"], data);
 	const topbar = () => (
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
@@ -152,11 +183,13 @@ function renderKill(session: WorkspaceSession = worker, orchestratorId?: string)
 	});
 	const killButton = (currentSession: WorkspaceSession, currentOrchestratorId?: string) => (
 		<QueryClientProvider client={queryClient}>
-			<TopbarKillButton
-				session={currentSession}
-				orchestratorId={currentOrchestratorId}
-				onKilled={onKilledMock}
-			/>
+			<TooltipProvider>
+				<TopbarKillButton
+					session={currentSession}
+					orchestratorId={currentOrchestratorId}
+					onKilled={onKilledMock}
+				/>
+			</TooltipProvider>
 		</QueryClientProvider>
 	);
 	const result = render(killButton(session, orchestratorId));
@@ -181,11 +214,19 @@ beforeEach(() => {
 	postMock.mockReset();
 	postMock.mockResolvedValue({ data: { ok: true, sessionId: "sess-1" }, error: undefined });
 	useWorkspaceQueryMock.mockReset();
-	useWorkspaceQueryMock.mockReturnValue({ data: [], isError: false, isLoading: false });
+	useWorkspaceQueryMock.mockReturnValue({ data: [], isError: false, isLoading: false, isSuccess: true });
 	useUiStore.setState({ inspectorSessions: {}, settingsModal: null });
 });
 
 describe("ShellTopbar status pill", () => {
+	it("matches the session action edge inset to the toolbar spacing", () => {
+		renderTopbar(sessionWith());
+
+		const header = screen.getByTestId("workspace-topbar-actions").closest("header");
+		expect(header).toHaveClass("pr-2");
+		expect(header).not.toHaveClass("pr-4");
+	});
+
 	it("shows the worker session name and activity in the full topbar identity", () => {
 		renderTopbar(sessionWith());
 
@@ -211,6 +252,20 @@ describe("ShellTopbar status pill", () => {
 		expect(identity.querySelector(".lucide-folder")).not.toBeNull();
 	});
 
+	// The branch belongs to detail surfaces, not the top bar: an orchestrator's
+	// identity stays the project crumb plus its activity, with its own controls
+	// intact (#3874, regressed by the badge #4252 added beside these actions).
+	it("keeps the worktree branch out of the orchestrator identity and actions", () => {
+		renderTopbar(sessionWith({ ...orchestrator, branch: "ao/orch-root" }));
+
+		const identity = screen.getByTestId("session-topbar-identity");
+		expect(identity.textContent).toContain("my-app");
+		expect(identity.textContent).toContain("Working");
+		expect(screen.queryByText("ao/orch-root")).toBeNull();
+		expect(screen.getByRole("button", { name: "Open Kanban" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "New task" })).toBeInTheDocument();
+	});
+
 	it("renders only session actions when embedded in the terminal bar", () => {
 		renderTopbar(
 			sessionWith(),
@@ -225,13 +280,25 @@ describe("ShellTopbar status pill", () => {
 		expect(screen.queryByText("ao/sess-1")).toBeNull();
 		expect(screen.queryByText("Working")).toBeNull();
 		const localActions = screen.getByTestId("session-local-actions");
-		expect(localActions.classList.contains("gap-px")).toBe(true);
-		expect(localActions.classList.contains("mr-0.5")).toBe(true);
+		expect(localActions).toHaveClass("gap-1");
+		expect(localActions).not.toHaveClass("gap-px", "mr-0.5");
 		expect(localActions.contains(screen.getByRole("button", { name: "New terminal" }))).toBe(true);
 		expect(localActions.contains(screen.getByRole("button", { name: "Switch agent" }))).toBe(true);
 		expect(localActions.contains(screen.getByRole("button", { name: "Switch to chat UI" }))).toBe(true);
 		expect(localActions.contains(screen.getByRole("button", { name: "Kill session" }))).toBe(true);
 		expect(localActions.contains(screen.getByRole("button", { name: "Open orchestrator" }))).toBe(false);
+	});
+
+	it("marks embedded session actions compact when requested", () => {
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<TooltipProvider>
+					<ShellTopbar compactActions embedded sessionAction={<button type="button">New terminal</button>} />
+				</TooltipProvider>
+			</QueryClientProvider>,
+		);
+
+		expect(screen.getByTestId("workspace-topbar-actions")).toHaveAttribute("data-compact-actions", "true");
 	});
 
 	it.each([
@@ -325,6 +392,21 @@ describe("ShellTopbar orchestrator actions", () => {
 		if (!pulses) expect(indicator).not.toHaveClass("animate-status-pulse");
 	});
 
+	it("shows a rejected orchestrator resume request", async () => {
+		postMock.mockRejectedValueOnce(new Error("resume request failed"));
+		const exitedOrchestrator = {
+			...orchestrator,
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+			status: "exited",
+		} satisfies WorkspaceSession;
+		renderTopbarSessions([worker, exitedOrchestrator], "");
+
+		await userEvent.click(screen.getByRole("button", { name: "Orchestrator, Exited" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent("resume request failed");
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
 	it("shows a clear Kanban button on embedded orchestrator sessions", async () => {
 		renderTopbar(orchestrator, true);
 
@@ -383,6 +465,66 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
+	it("opens an exited orchestrator without resuming while its agent switch is active", async () => {
+		const switchingOrchestrator = {
+			...orchestrator,
+			activeAgentSwitch: activeAgentSwitch(),
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+			status: "exited",
+		} satisfies WorkspaceSession;
+		renderTopbarSessions([worker, switchingOrchestrator], worker.id);
+
+		await userEvent.click(screen.getByRole("button", { name: "Open orchestrator" }));
+
+		expect(postMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "orch-1" },
+		});
+	});
+
+	it("opens an exited orchestrator without resuming during an interface transition", async () => {
+		const exitedOrchestrator = {
+			...orchestrator,
+			activity: { state: "exited", lastActivityAt: "2026-06-10T00:00:00Z" },
+			status: "exited",
+		} satisfies WorkspaceSession;
+		const view = renderTopbarSessions([worker, exitedOrchestrator], worker.id);
+		act(() => {
+			view.queryClient.setQueryData(
+				sessionInterfaceTransitionQueryKey(exitedOrchestrator.id),
+				sessionInterfaceTransitionStatus(exitedOrchestrator.id),
+			);
+		});
+		view.rerenderTopbar();
+
+		await userEvent.click(screen.getByRole("button", { name: "Open orchestrator" }));
+
+		expect(postMock).not.toHaveBeenCalled();
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "orch-1" },
+		});
+	});
+
+	it("hides project-only orchestrator actions for ad hoc sessions", () => {
+		renderTopbarSessions(
+			[
+				sessionWith({
+					workspaceId: STANDALONE_WORKSPACE_ID,
+					workspaceName: "Scratchpad",
+					branch: undefined,
+				}),
+			],
+			"sess-1",
+			false,
+			undefined,
+			STANDALONE_PROJECT_KIND,
+		);
+
+		expect(screen.queryByRole("button", { name: "Open orchestrator" })).not.toBeInTheDocument();
+	});
+
 	it("switches from a worker to its orchestrator as soon as termination is confirmed", async () => {
 		postMock.mockReturnValue(new Promise(() => {}));
 		renderTopbarSessions([worker, orchestrator], worker.id);
@@ -398,6 +540,17 @@ describe("ShellTopbar orchestrator actions", () => {
 });
 
 describe("ShellTopbar inspector state", () => {
+	it("reserves space for orchestrator controls without duplicating notifications", () => {
+		const view = renderTopbarSessions([orchestrator], orchestrator.id);
+		const reserve = screen.getByTestId("session-pinned-actions-reserve");
+		expect(reserve).toHaveAttribute("data-state", "expanded");
+		expect(screen.queryByRole("button", { name: "Notifications" })).not.toBeInTheDocument();
+		useUiStore.setState({ inspectorSessions: { [orchestrator.id]: { isOpen: true, view: "browser" } } });
+		view.rerenderTopbar();
+		expect(reserve).toHaveAttribute("data-state", "collapsed");
+		expect(screen.queryByRole("button", { name: "Notifications" })).not.toBeInTheDocument();
+	});
+
 	it("keeps the expanded worker controls out of the center topbar", () => {
 		renderTopbarSessions([worker], "sess-1");
 
@@ -434,6 +587,28 @@ describe("ShellTopbar inspector state", () => {
 		expect(screen.getByTestId("session-pinned-actions-reserve")).toBe(reserve);
 		expect(reserve).toHaveAttribute("data-state", "collapsed");
 		expect(within(reserve).queryByRole("button")).not.toBeInTheDocument();
+	});
+});
+
+describe("ShellTopbar open-in-editor control", () => {
+	it("shows the open-in-editor control for a local session", async () => {
+		renderTopbarSessions([worker], "sess-1");
+
+		expect(await screen.findByRole("button", { name: "Open in Cursor" })).toBeInTheDocument();
+	});
+
+	it("hides the open-in-editor control for a cloud session instead of asking the local daemon for it", async () => {
+		// Cloud sessions have no local workspace: the local daemon has never
+		// heard of them, so this control's own "workspace" query would 404 with
+		// "Unknown session" and surface that raw local-daemon error in the
+		// topbar (see issue #4570). Hiding the control for kind === CLOUD_PROJECT_KIND
+		// avoids the query entirely.
+		renderTopbarSessions([worker], "sess-1", false, undefined, CLOUD_PROJECT_KIND);
+
+		await waitFor(() => {
+			expect(screen.queryByRole("button", { name: "Open in Cursor" })).not.toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: "Choose editor" })).not.toBeInTheDocument();
+		});
 	});
 });
 

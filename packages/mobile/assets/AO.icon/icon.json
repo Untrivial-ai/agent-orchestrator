@@ -1,20 +1,20 @@
 {
   "fill": {
-    "solid": "extended-srgb:0.03922,0.04314,0.05098,1.00000"
+    "solid": "srgb:0.09320,0.09249,0.09174,1.00000"
   },
   "groups": [
     {
       "layers": [
         {
-          "image-name": "creature.png",
-          "name": "Creature"
+          "image-name": "ruto.png",
+          "name": "Ruto"
         }
       ],
       "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
+        "kind": "none",
+        "opacity": 0.0
       },
-      "specular": true,
+      "specular": false,
       "translucency": {
         "enabled": false,
         "value": 0.5
@@ -23,26 +23,14 @@
     {
       "layers": [
         {
-          "image-name": "wand.png",
-          "name": "Wand"
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.35
-      },
-      "specular": true,
-      "translucency": {
-        "enabled": true,
-        "value": 0.5
-      }
-    },
-    {
-      "blend-mode": "plus-lighter",
-      "layers": [
-        {
-          "image-name": "tip-glow.png",
-          "name": "Wand tip glow"
+          "image-name": "face.png",
+          "name": "Tile face",
+          "hidden-specializations": [
+            {
+              "appearance": "tinted",
+              "value": true
+            }
+          ]
         }
       ],
       "shadow": {

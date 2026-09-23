@@ -96,7 +96,13 @@ func New(sink runtimeObservationSink, sessions sessionSource, runtime runtimePro
 		r.tick = DefaultTickInterval
 	}
 	if r.clock == nil {
-		r.clock = time.Now
+		// UTC, not bare time.Now: the observed timestamp reaches sessions.
+		// activity_last_at, and the SQLite driver stores a time.Time by its
+		// String() form. A local-zone value keeps its monotonic reading and
+		// offset ("… +0700 +07 m=+995.1"), which no longer compares as a
+		// timestamp against the "… +0000 UTC" rows every other writer produces —
+		// and those comparisons gate the agent-switch source-stop predicate.
+		r.clock = func() time.Time { return time.Now().UTC() }
 	}
 	if r.logger == nil {
 		r.logger = slog.Default()

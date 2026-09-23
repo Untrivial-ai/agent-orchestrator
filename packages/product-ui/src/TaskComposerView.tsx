@@ -17,6 +17,7 @@ import {
 	PaperclipIcon as Paperclip,
 	XIcon as X,
 } from "./icons";
+import { useOverlayAutoFocus } from "./overlay-auto-focus";
 
 // One fixed-height, non-wrapping row: 56px attachment tiles plus 6px top and
 // 8px bottom padding. Keeping this numeric avoids Motion's auto-height layout
@@ -24,20 +25,28 @@ import {
 const ATTACHMENT_ROW_HEIGHT = 70;
 
 export type TaskComposerAgentOption = {
-	authStatus?: "authorized" | "unauthorized" | "unknown";
+	authentication: {
+		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		freshness: "fresh" | "stale" | "checking";
+	};
+	effectiveReadiness: "ready" | "not_ready" | "unknown";
 	id: string;
+	installation: {
+		state: "installed" | "not_installed" | "unknown";
+		freshness: "fresh" | "stale" | "checking";
+	};
 	label: string;
+	lastUsedAt?: string | null;
+	usageCount: number;
 };
 
 export type TaskComposerAgentControl = {
-	authorized?: TaskComposerAgentOption[];
+	agents?: TaskComposerAgentOption[];
 	disabled: boolean;
 	id: string;
-	installed?: TaskComposerAgentOption[];
 	label: string;
 	onChange: (value: string) => void;
 	placeholder: string;
-	supported?: TaskComposerAgentOption[];
 	value: string;
 };
 
@@ -46,11 +55,18 @@ export type TaskComposerModelOption = {
 	isDefault?: boolean;
 	label: string;
 	provider?: string;
+	efforts?: string[];
+	defaultEffort?: string;
 };
 
 export type TaskComposerModelCatalog = {
 	allowCustom: boolean;
+	customModelEntry: "none" | "direct" | "configured";
+	lastSuccessAt?: string | null;
 	models: TaskComposerModelOption[];
+	refreshError?: string;
+	refreshState?: "idle" | "queued" | "refreshing" | "error";
+	retryAt?: string | null;
 	selectionMode: "catalog" | "text" | "mode";
 };
 
@@ -66,6 +82,15 @@ export type TaskComposerModelControl = {
 	onModeChange: (value: string) => void;
 	onModelChange: (value: string) => void;
 	projectId: string;
+	value: string;
+};
+
+export type TaskComposerEffortControl = {
+	disabled: boolean;
+	id: string;
+	label: string;
+	onChange: (value: string) => void;
+	options: string[];
 	value: string;
 };
 
@@ -93,6 +118,7 @@ export type TaskComposerSubmission = {
 
 export type TaskComposerLabels = {
 	addFile: string;
+	effort: string;
 	fallbackAction: string;
 	removeFile: (name: string) => string;
 	runsWith: string;
@@ -107,12 +133,16 @@ export type TaskComposerViewProps = {
 	attachments: TaskComposerAttachments;
 	autoFocusPrompt?: boolean;
 	canSubmit: boolean;
+	context?: ReactNode;
 	initialPrompt?: string;
 	labels: TaskComposerLabels;
 	model: Omit<TaskComposerModelControl, "id">;
+	effort: Omit<TaskComposerEffortControl, "id" | "label">;
 	onPromptChange: (value: string) => void;
 	renderAgentControl: (control: TaskComposerAgentControl) => ReactNode;
+	renderEffortControl: (control: TaskComposerEffortControl) => ReactNode;
 	renderModelControl: (control: TaskComposerModelControl) => ReactNode;
+	showEffort: boolean;
 	submission: TaskComposerSubmission;
 };
 
@@ -139,6 +169,7 @@ const TaskPrompt = memo(function TaskPrompt({
 }: TaskPromptProps) {
 	const [value, setValue] = useState(initialValue);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	useOverlayAutoFocus(textareaRef, autoFocus === true);
 
 	useEffect(() => {
 		const el = textareaRef.current;
@@ -155,7 +186,6 @@ const TaskPrompt = memo(function TaskPrompt({
 			<textarea
 				ref={textareaRef}
 				id={id}
-				autoFocus={autoFocus}
 				className="min-h-[calc(3lh+1.75rem)] max-h-[calc(8lh+1.75rem)] w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-4 text-md leading-relaxed text-foreground outline-none placeholder:text-passive disabled:cursor-not-allowed disabled:opacity-50"
 				disabled={disabled}
 				placeholder={placeholder}
@@ -182,16 +212,21 @@ export function TaskComposerView({
 	attachments,
 	autoFocusPrompt,
 	canSubmit,
+	context,
 	initialPrompt = "",
 	labels,
 	model,
+	effort,
 	onPromptChange,
 	renderAgentControl,
+	renderEffortControl,
 	renderModelControl,
+	showEffort,
 	submission,
 }: TaskComposerViewProps) {
 	const promptId = useId();
 	const modelId = useId();
+	const effortId = useId();
 	const agentId = useId();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const promptRef = useRef(initialPrompt);
@@ -207,6 +242,7 @@ export function TaskComposerView({
 
 	const submit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
+		if (!canSubmit || submission.isSubmitting) return;
 		submission.onSubmit(promptRef.current);
 	};
 
@@ -246,6 +282,7 @@ export function TaskComposerView({
 				if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsDragging(false);
 			}}
 		>
+			{context}
 			<TaskPrompt
 				autoFocus={autoFocusPrompt}
 				disabled={submission.isSubmitting}
@@ -366,14 +403,22 @@ export function TaskComposerView({
 			)}
 
 			<div className="composer-toolbar">
-				<div className="composer-run-controls" role="group" aria-label={labels.runsWith}>
+				<div
+					className={`composer-run-controls${showEffort ? " composer-run-controls-with-effort" : ""}`}
+					role="group"
+					aria-label={labels.runsWith}
+				>
 					<div className="composer-toolbar-slot">
 						{renderAgentControl({ ...agent, id: agentId })}
 					</div>
-					<span className="composer-toolbar-divider" aria-hidden="true" />
 					<div className="composer-toolbar-slot">
 						{renderModelControl({ ...model, id: modelId })}
 					</div>
+					{showEffort ? (
+						<div className="composer-toolbar-slot composer-toolbar-effort-slot">
+							{renderEffortControl({ ...effort, id: effortId, label: labels.effort })}
+						</div>
+					) : null}
 				</div>
 
 				<button

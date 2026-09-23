@@ -24,10 +24,42 @@ type Review struct {
 	PRURL     string          `json:"prUrl"`
 	// ReviewerHandleID is the runtime handle of the live reviewer pane, reused
 	// across passes and exposed so the UI can attach its terminal.
-	ReviewerHandleID string    `json:"reviewerHandleId"`
-	AgentSessionID   string    `json:"agentSessionId"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ReviewerHandleID string `json:"reviewerHandleId"`
+	AgentSessionID   string `json:"agentSessionId"`
+	// ReviewerLaunchID is the AO runtime generation that owns the live reviewer
+	// pane on this row. It fences delayed hooks from an older replaced reviewer.
+	ReviewerLaunchID string `json:"-"`
+	// ReviewerActivityState is the latest activity hook reported by the review
+	// pane itself. It is separate from ReviewRun.Status so the UI can distinguish
+	// "review pass exists" from "reviewer is actively working right now".
+	ReviewerActivityState ActivityState `json:"reviewerActivityState,omitempty"`
+	// InterfaceMode selects the durable reviewer surface. Chat reviewers own a
+	// native conversation; TUI reviewers continue to use their terminal handle.
+	InterfaceMode          ReviewerInterfaceMode `json:"interfaceMode"`
+	ProviderConversationID string                `json:"providerConversationId"`
+	ControllerGeneration   string                `json:"controllerGeneration"`
+	ControllerError        string                `json:"controllerError"`
+	CreatedAt              time.Time             `json:"createdAt"`
+	UpdatedAt              time.Time             `json:"updatedAt"`
+}
+
+// ReviewerInterfaceMode selects the durable UI surface for a reviewer.
+type ReviewerInterfaceMode string
+
+const (
+	// ReviewerInterfaceTUI uses the reviewer's terminal handle.
+	ReviewerInterfaceTUI ReviewerInterfaceMode = "tui"
+	// ReviewerInterfaceChat uses a reviewer-owned native chat.
+	ReviewerInterfaceChat ReviewerInterfaceMode = "chat"
+)
+
+// ReviewerSurface gives clients one stable identifier for either reviewer UI.
+type ReviewerSurface struct {
+	Mode            ReviewerInterfaceMode `json:"mode"`
+	ReviewID        string                `json:"reviewId"`
+	Harness         ReviewerHarness       `json:"harness"`
+	HandleID        string                `json:"handleId,omitempty"`
+	ControllerError string                `json:"controllerError,omitempty"`
 }
 
 // ReviewRun is one review pass against a worker's PR.
@@ -96,3 +128,15 @@ const (
 	VerdictApproved         = contract.AOReviewVerdictApproved
 	VerdictChangesRequested = contract.AOReviewVerdictChangesRequested
 )
+
+// CurrentHeadReviewRun is one AO review pass recorded against a PR's current
+// head commit, reduced to the fields a derived read model needs.
+type CurrentHeadReviewRun struct {
+	SessionID SessionID
+	Harness   ReviewerHarness
+	PRURL     string
+	Status    ReviewRunStatus
+	Verdict   ReviewVerdict
+	ID        string
+	CreatedAt time.Time
+}

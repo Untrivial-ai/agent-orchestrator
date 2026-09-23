@@ -56,7 +56,8 @@ func TestProjectSetConfig_TrackerIntakeFlags(t *testing.T) {
 	if err := json.Unmarshal(capture.body, &got); err != nil {
 		t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
 	}
-	if !got.Config.TrackerIntake.Enabled || got.Config.TrackerIntake.Provider != "github" || got.Config.TrackerIntake.Repo != "acme/demo" || got.Config.TrackerIntake.Assignee != "alice" {
+	// Provider is omitted: the daemon infers it from the project's git origin.
+	if !got.Config.TrackerIntake.Enabled || got.Config.TrackerIntake.Provider != "" || got.Config.TrackerIntake.Repo != "acme/demo" || got.Config.TrackerIntake.Assignee != "alice" {
 		t.Fatalf("tracker intake request = %#v", got.Config.TrackerIntake)
 	}
 }
@@ -93,7 +94,8 @@ func TestBuildProjectConfigTrackerIntakeFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.TrackerIntake.Enabled || got.TrackerIntake.Provider != "github" || got.TrackerIntake.Repo != "acme/demo" || got.TrackerIntake.Assignee != "alice" {
+	// Provider is omitted: the daemon infers it from the project's git origin.
+	if !got.TrackerIntake.Enabled || got.TrackerIntake.Provider != "" || got.TrackerIntake.Repo != "acme/demo" || got.TrackerIntake.Assignee != "alice" {
 		t.Fatalf("tracker intake config = %#v", got.TrackerIntake)
 	}
 }

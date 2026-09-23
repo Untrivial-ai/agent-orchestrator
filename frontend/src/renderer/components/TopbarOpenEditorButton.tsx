@@ -1,4 +1,5 @@
 import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { OpenTarget, OpenTargetId } from "../../shared/editor-handoff";
 import { useEditorHandoffState, useOpenSessionTarget } from "../hooks/useEditorHandoff";
@@ -11,8 +12,10 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import {
 	AndroidStudioIcon,
+	AntigravityIcon,
 	CursorIcon,
 	JetBrainsIcon,
 	SublimeIcon,
@@ -29,6 +32,7 @@ const editorIcons: Record<string, typeof VSCodeIcon> = {
 	cursor: CursorIcon,
 	windsurf: WindsurfIcon,
 	zed: ZedIcon,
+	antigravity: AntigravityIcon,
 	sublime: SublimeIcon,
 	"android-studio": AndroidStudioIcon,
 	intellij: JetBrainsIcon,
@@ -46,6 +50,7 @@ const editorColors: Record<string, string> = {
 	vscode: "#1F9CF0",
 	"vscode-insiders": "#1F9CF0",
 	vscodium: "#2F80ED",
+	antigravity: "#4285F4",
 	sublime: "#FF9800",
 	"android-studio": "#3DDC84",
 };
@@ -64,22 +69,25 @@ function TargetIcon({ target, className }: { target?: OpenTarget; className?: st
 export function TopbarOpenEditorButton({
 	sessionId,
 	projectId,
+	sessionCreatedAt,
+	sessionTerminated,
 	style,
 }: {
 	sessionId: string;
 	projectId: string;
+	sessionCreatedAt?: string;
+	sessionTerminated?: boolean;
 	style?: React.CSSProperties;
 }) {
 	const { t } = useTranslation();
-	const stateQuery = useEditorHandoffState(sessionId);
+	const stateQuery = useEditorHandoffState(sessionId, { sessionCreatedAt, sessionTerminated });
 	const open = useOpenSessionTarget();
 	const state = stateQuery.data;
+	const [menuOpen, setMenuOpen] = useState(false);
 	const targets = state?.targets ?? [];
 	const editors = targets.filter((target) => target.kind === "editor");
 	const preferred = editors.find((target) => target.id === state?.preferredEditorId);
 	const safeTargets = targets.filter((target) => target.kind !== "editor");
-	const fileManagerName = safeTargets.find((target) => target.kind === "file_manager")?.name ?? t("editor.fileManager");
-	const terminalName = safeTargets.find((target) => target.kind === "terminal")?.name ?? t("editor.terminal");
 	const workspaceAvailable = state?.workspaceAvailable === true;
 	const busy = stateQuery.isPending || open.isPending;
 	const mainDisabled = busy || !workspaceAvailable || !preferred;
@@ -90,40 +98,68 @@ export function TopbarOpenEditorButton({
 		open.mutate({ sessionId, projectId, ...(targetId ? { targetId } : {}) });
 	};
 	const launchError = open.error instanceof Error ? open.error.message : null;
-	const guidance = !stateQuery.isPending && !workspaceAvailable
+	const workspaceError = !stateQuery.isPending && !workspaceAvailable
 		? state?.unavailableReason ?? t("editor.workspaceUnavailable")
-		: !stateQuery.isPending && editors.length === 0
-			? t("editor.noEditorGuidance", { fileManager: fileManagerName, terminal: terminalName })
-			: null;
-	const mainLabel = open.isPending ? t("editor.opening") : preferred ? t("editor.open") : t("editor.chooseEditor");
-	const mainTitle = guidance
-		?? (preferred ? t("editor.openWorkspaceInTitle", { name: preferred.name }) : t("editor.chooseEditorTitle"));
+		: null;
+	const visibleActionError = launchError ?? workspaceError;
+	const noEditorInstalled = !stateQuery.isPending && workspaceAvailable && editors.length === 0;
+	const mainTitle = stateQuery.isPending
+		? t("editor.preparingWorkspace")
+		: (workspaceError
+			?? (preferred
+				? t("editor.openWorkspaceInTitle", { name: preferred.name })
+				: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditorTitle"))));
 
 	return (
 		<>
-			{launchError || guidance ? (
-				<TopbarActionError className="max-w-content-max truncate" title={launchError ?? guidance ?? undefined}>
-					{launchError ?? guidance}
+			{visibleActionError ? (
+				<TopbarActionError className="max-w-content-max truncate" title={visibleActionError}>
+					{visibleActionError}
 				</TopbarActionError>
 			) : null}
-			<div className="inline-flex items-center" style={style}>
-				<TopbarButton
-					aria-label={preferred ? t("editor.openInAria", { name: preferred.name }) : t("editor.chooseEditor")}
-					data-priority="primary"
-					disabled={mainDisabled}
-					onClick={() => launch()}
-					title={mainTitle}
-					variant="splitMain"
-				>
-					<TargetIcon target={preferred} className="size-icon-lg" />
-					<span data-compact-label>{mainLabel}</span>
-				</TopbarButton>
-				<DropdownMenu>
-					<DropdownMenuTrigger asChild>
-						<TopbarButton aria-label={t("editor.openOptionsAria")} disabled={menuDisabled} variant="splitTrigger">
-							<ChevronDown className="size-icon-sm" aria-hidden="true" />
-						</TopbarButton>
-					</DropdownMenuTrigger>
+			<div
+				className="inline-flex items-center gap-0 rounded-md transition-colors hover:bg-interactive-hover data-[state=open]:bg-interactive-hover"
+				data-state={menuOpen ? "open" : "closed"}
+				style={style}
+			>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="inline-flex">
+							<TopbarButton
+								aria-label={stateQuery.isPending
+									? t("editor.preparingWorkspace")
+									: preferred
+										? t("editor.openInAria", { name: preferred.name })
+										: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditor"))}
+								className="hover:bg-transparent"
+								disabled={mainDisabled}
+								onClick={() => launch()}
+								variant="icon"
+							>
+								<TargetIcon target={preferred} className="size-icon-md" />
+							</TopbarButton>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{mainTitle}</TooltipContent>
+				</Tooltip>
+				<DropdownMenu onOpenChange={setMenuOpen}>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span className="inline-flex">
+								<DropdownMenuTrigger asChild>
+									<TopbarButton
+										aria-label={t("editor.openOptionsAria")}
+										className="hover:bg-transparent"
+										disabled={menuDisabled}
+										variant="icon"
+									>
+										<ChevronDown className="size-icon-sm" aria-hidden="true" />
+									</TopbarButton>
+								</DropdownMenuTrigger>
+							</span>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">{t("editor.openOptionsAria")}</TooltipContent>
+					</Tooltip>
 					<DropdownMenuContent align="end" className="min-w-52">
 						{safeTargets.map((target) => (
 							<DropdownMenuItem key={target.id} onSelect={() => launch(target.id)}>

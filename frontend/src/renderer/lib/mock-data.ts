@@ -1,3 +1,4 @@
+import type { CloudCpSessionChild } from "./cloud-cp";
 import type { PRState, PullRequestFacts, WorkspaceSummary } from "../types/workspace";
 import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import type { ShellTerminal } from "../hooks/useShellTerminals";
@@ -5,6 +6,9 @@ import type { ShellTerminal } from "../hooks/useShellTerminals";
 const now = new Date().toISOString();
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60 * 1000).toISOString();
 const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+const previewAuthorAvatarUrl = `data:image/svg+xml,${encodeURIComponent(
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" rx="20" fill="#24292f"/><circle cx="20" cy="16" r="7" fill="#fff"/><path d="M8 36c1-8 6-12 12-12s11 4 12 12" fill="#fff"/></svg>',
+)}`;
 
 const demoPr = (
 	number: number,
@@ -13,7 +17,7 @@ const demoPr = (
 	review: PullRequestFacts["review"] = "none",
 	mergeability: PullRequestFacts["mergeability"] = "mergeable",
 ): PullRequestFacts => ({
-	url: `https://github.com/acme-inc/ao-demo/pull/${number}`,
+	url: `https://github.com/Untrivial-ai/agent-orchestrator/pull/${number}`,
 	number,
 	state,
 	ci,
@@ -55,6 +59,8 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				kind: "orchestrator",
 				branch: "main",
 				status: "working",
+				kanbanColumn: "building",
+				displayStatus: "Working",
 				createdAt: hoursAgo(6),
 				updatedAt: minutesAgo(3),
 				activity: { state: "active", lastActivityAt: minutesAgo(3) },
@@ -69,6 +75,8 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "cursor",
 				branch: "demo/dashboard-screenshot",
 				status: "working",
+				kanbanColumn: "building",
+				displayStatus: "Working",
 				createdAt: hoursAgo(3),
 				updatedAt: minutesAgo(2),
 				activity: { state: "active", lastActivityAt: minutesAgo(2) },
@@ -88,6 +96,8 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "claude-code",
 				branch: "demo/terminal-polish",
 				status: "changes_requested",
+				kanbanColumn: "validating",
+				displayStatus: "Addressing comments",
 				createdAt: hoursAgo(5),
 				updatedAt: minutesAgo(18),
 				activity: { state: "waiting_input", lastActivityAt: minutesAgo(18) },
@@ -107,6 +117,9 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "copilot",
 				branch: "demo/browser-preview-stack",
 				status: "review_pending",
+				kanbanColumn: "needs_review",
+				displayStatus: "Needs human review",
+				issueId: "github:4479",
 				createdAt: hoursAgo(7),
 				updatedAt: minutesAgo(7),
 				activity: { state: "idle", lastActivityAt: minutesAgo(7) },
@@ -133,6 +146,8 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "opencode",
 				branch: "demo/project-settings-copy",
 				status: "review_pending",
+				kanbanColumn: "needs_review",
+				displayStatus: "Review pending",
 				createdAt: hoursAgo(4),
 				updatedAt: minutesAgo(31),
 				activity: { state: "idle", lastActivityAt: minutesAgo(31) },
@@ -147,6 +162,8 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "aider",
 				branch: "demo/readme-assets",
 				status: "mergeable",
+				kanbanColumn: "ready",
+				displayStatus: "Mergeable",
 				createdAt: hoursAgo(9),
 				updatedAt: minutesAgo(5),
 				activity: { state: "idle", lastActivityAt: minutesAgo(5) },
@@ -165,7 +182,9 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "grok",
 				branch: "demo/new-task-flake",
 				status: "ci_failed",
-				autoInjectCI: false,
+				kanbanColumn: "validating",
+				displayStatus: "Fixing CI failures",
+				autoInjectCI: true,
 				createdAt: hoursAgo(8),
 				updatedAt: minutesAgo(46),
 				activity: { state: "idle", lastActivityAt: minutesAgo(46) },
@@ -190,6 +209,8 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "claude-code",
 				branch: "demo/install-docs",
 				status: "working",
+				kanbanColumn: "building",
+				displayStatus: "Awaiting PR",
 				createdAt: hoursAgo(2),
 				updatedAt: minutesAgo(13),
 				activity: { state: "active", lastActivityAt: minutesAgo(13) },
@@ -204,6 +225,8 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 				provider: "codex",
 				branch: "demo/troubleshooting",
 				status: "approved",
+				kanbanColumn: "ready",
+				displayStatus: "Approved",
 				createdAt: hoursAgo(12),
 				updatedAt: minutesAgo(22),
 				activity: { state: "idle", lastActivityAt: minutesAgo(22) },
@@ -216,7 +239,7 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 const prSummary = (sessionId: string, number: number, overrides: Partial<SessionPRSummary> = {}): SessionPRSummary => {
 	const session = mockWorkspaces.flatMap((workspace) => workspace.sessions).find((item) => item.id === sessionId);
 	const facts = session?.prs.find((item) => item.number === number);
-	const url = facts?.url ?? `https://github.com/me/${session?.workspaceName ?? "preview"}/pull/${number}`;
+	const url = facts?.url ?? `https://github.com/Untrivial-ai/agent-orchestrator/pull/${number}`;
 	return {
 		url,
 		htmlUrl: url,
@@ -224,8 +247,9 @@ const prSummary = (sessionId: string, number: number, overrides: Partial<Session
 		title: session?.title ?? `PR #${number}`,
 		state: facts?.state ?? "open",
 		provider: "github",
-		repo: `me/${session?.workspaceName ?? "preview"}`,
-		author: "preview-agent",
+		repo: "Untrivial-ai/agent-orchestrator",
+		author: "octocat",
+		authorAvatarUrl: previewAuthorAvatarUrl,
 		sourceBranch: session?.branch ?? "",
 		targetBranch: "main",
 		headSha: `preview-${number}`,
@@ -283,7 +307,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 						name: "renderer smoke",
 						status: "failed",
 						conclusion: "failure",
-						url: "https://github.com/acme-inc/ao-demo/actions/runs/324001/job/1",
+						url: "https://github.com/Untrivial-ai/agent-orchestrator/actions/runs/4486001/job/1",
 					},
 				],
 			},
@@ -293,6 +317,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 	// tab's Pull request pane has something to show in the browser preview.
 	"demo-needs-input": [
 		prSummary("demo-needs-input", 318, {
+			authorAvatarUrl: undefined,
 			changedFiles: 2,
 			additions: 68,
 			deletions: 12,
@@ -305,7 +330,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 						autoInjectReview: true,
 						verdict: "changes_requested",
 						submittedAt: minutesAgo(18),
-						reviewUrl: "https://github.com/acme-inc/ao-demo/pull/318#pullrequestreview-3101",
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/318#pullrequestreview-3101",
 						body: "The activity sample is **tighter**, but the toolbar density change needs a second look before this lands.\n\n- Check compact spacing\n- Keep button labels readable",
 					},
 					{
@@ -314,7 +339,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 						isBot: true,
 						verdict: "approved",
 						submittedAt: minutesAgo(15),
-						reviewUrl: "https://github.com/acme-inc/ao-demo/pull/318#pullrequestreview-3102",
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/318#pullrequestreview-3102",
 						body: "No issues found in the terminal pane changes.",
 					},
 					{
@@ -330,7 +355,7 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 					{
 						reviewerId: "prateek",
 						count: 2,
-						reviewUrl: "https://github.com/acme-inc/ao-demo/pull/318#pullrequestreview-3101",
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/318#pullrequestreview-3101",
 						// Two comments, two separate threads — resolving addresses threads.
 						links: [
 							{ reviewId: "31801", file: "frontend/src/renderer/components/TerminalPane.tsx", line: 84, body: "The reviewer terminal header wraps awkwardly at this width. Please keep the role label and controls on one line.", autoInjectReview: true },
@@ -353,8 +378,18 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 	],
 	"demo-review-stack": [
 		prSummary("demo-review-stack", 321, {
+			state: "merged",
 			createdAt: hoursAgo(2),
 			stateChangedAt: hoursAgo(2),
+			review: {
+				decision: "changes_requested",
+				hasUnresolvedHumanComments: true,
+				reviews: [
+					{ reviewerId: "vickyshaw29", autoInjectReview: false, verdict: "changes_requested", submittedAt: hoursAgo(1), reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/321#review-1", body: "Please address the browser preview comments before merge." },
+					{ reviewerId: "Prasad-D-Ware", autoInjectReview: false, verdict: "approved", submittedAt: hoursAgo(1), reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/321#review-2", body: "The preview flow looks good overall." },
+				],
+				unresolvedBy: [{ reviewerId: "vickyshaw29", count: 3, reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/321#review-1", links: [] }],
+			},
 		}),
 		prSummary("demo-review-stack", 319, {
 			createdAt: hoursAgo(6),
@@ -365,15 +400,15 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 			stateChangedAt: hoursAgo(3),
 		}),
 		prSummary("demo-review-stack", 317, {
-			url: "https://github.com/acme-inc/ao-demo/pull/317",
-			htmlUrl: "https://github.com/acme-inc/ao-demo/pull/317",
-			state: "merged",
+			url: "https://github.com/Untrivial-ai/agent-orchestrator/pull/317",
+			htmlUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/317",
+			state: "closed",
 			createdAt: hoursAgo(7),
 			stateChangedAt: hoursAgo(1),
 			mergeability: {
 				state: "mergeable",
 				reasons: [],
-				prUrl: "https://github.com/acme-inc/ao-demo/pull/317",
+				prUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/317",
 				conflictFiles: [],
 			},
 		}),
@@ -445,11 +480,11 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 				conflictFiles: [
 					{
 						path: "src/render/texture-cache.ts",
-						url: "https://github.com/me/webgl-preview/pull/51/conflicts#src-render-texture-cache-ts",
+						url: "https://github.com/me/webgl-preview/pull/51",
 					},
 					{
 						path: "src/render/webgl-context.ts",
-						url: "https://github.com/me/webgl-preview/pull/51/conflicts#src-render-webgl-context-ts",
+						url: "https://github.com/me/webgl-preview/pull/51",
 					},
 				],
 			},
@@ -556,5 +591,71 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 				conflictFiles: [],
 			},
 		}),
+	],
+};
+
+// Children the demo orchestrator "spawned", for the inspector's Workers
+// section in browser preview mode (no control plane available there). Keyed by
+// orchestrator session id.
+const demoChild = (
+	id: string,
+	displayName: string,
+	status: string,
+	activityState: string,
+	prs: CloudCpSessionChild["prs"],
+	isTerminated = false,
+): CloudCpSessionChild => ({
+	id,
+	orgId: "demo-org",
+	projectId: "ao-demo",
+	kind: "worker",
+	harness: "claude-code",
+	displayName,
+	branch: `ao/${id.slice(0, 8)}`,
+	mode: "trusted",
+	deniedCommands: [],
+	activityState,
+	status,
+	runtimeConnected: !isTerminated,
+	isTerminated,
+	createdAt: hoursAgo(2),
+	updatedAt: minutesAgo(4),
+	prs,
+});
+
+export const mockOrchestratorChildren: Record<string, CloudCpSessionChild[]> = {
+	"ao-demo-orchestrator": [
+		demoChild("11111111-1111-4111-8111-111111111111", "Fix flaky CI", "ci_failed", "active", [
+			{
+				url: "https://github.com/me/ao-demo/pull/321",
+				number: 321,
+				state: "open",
+				ci: "failing",
+				review: "none",
+				mergeability: "unstable",
+				reviewComments: false,
+				updatedAt: minutesAgo(6),
+			},
+		]),
+		demoChild("22222222-2222-4222-8222-222222222222", "Dark mode toggle", "working", "active", []),
+		demoChild(
+			"33333333-3333-4333-8333-333333333333",
+			"Update onboarding copy",
+			"merged",
+			"idle",
+			[
+				{
+					url: "https://github.com/me/ao-demo/pull/318",
+					number: 318,
+					state: "merged",
+					ci: "passing",
+					review: "approved",
+					mergeability: "mergeable",
+					reviewComments: false,
+					updatedAt: hoursAgo(1),
+				},
+			],
+			true,
+		),
 	],
 };

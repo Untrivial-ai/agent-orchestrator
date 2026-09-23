@@ -22,6 +22,14 @@ const (
 	KindConflict
 	// KindForbidden is an authenticated ownership failure; it maps to 403.
 	KindForbidden
+	// KindTooManyRequests is a bounded local resource limit; it maps to 429.
+	KindTooManyRequests
+	// KindNotImplemented is a capability the installed provider does not expose.
+	KindNotImplemented
+	// KindUnavailable is a transient capability or local resource failure the
+	// caller should retry (for example, a temporarily busy database); it maps to
+	// 503 rather than reporting the contention as an internal server fault.
+	KindUnavailable
 )
 
 // Error is the structured error every service returns. Code is a stable machine
@@ -65,6 +73,21 @@ func Conflict(code, message string, details map[string]any) *Error {
 // Forbidden is a 403-class ownership failure.
 func Forbidden(code, message string) *Error {
 	return New(KindForbidden, code, message, nil)
+}
+
+// TooManyRequests is a 429-class local concurrency limit.
+func TooManyRequests(code, message string) *Error {
+	return New(KindTooManyRequests, code, message, nil)
+}
+
+// NotImplemented is a 501-class provider capability failure.
+func NotImplemented(code, message string) *Error {
+	return New(KindNotImplemented, code, message, nil)
+}
+
+// Unavailable is a 503-class transient local capability failure.
+func Unavailable(code, message string) *Error {
+	return New(KindUnavailable, code, message, nil)
 }
 
 // Internal is a 500-class error.

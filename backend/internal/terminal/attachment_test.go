@@ -43,6 +43,33 @@ func TestAttachmentStreamsOutputToSink(t *testing.T) {
 	eventually(t, time.Second, func() bool { return sink.string() == "hello" })
 }
 
+type exitedProcessStream struct{}
+
+func (exitedProcessStream) Read([]byte) (int, error)       { return 0, ports.ErrRuntimeProcessExited }
+func (exitedProcessStream) Write(p []byte) (int, error)    { return len(p), nil }
+func (exitedProcessStream) Close() error                   { return nil }
+func (exitedProcessStream) Resize(rows, cols uint16) error { return nil }
+
+func TestAttachmentReportsDefinitiveHostedProcessExitWithoutReattach(t *testing.T) {
+	exited := make(chan struct{})
+	attachCalls := 0
+	src := &fakeSource{alive: true, attachFn: func(context.Context, uint16, uint16) (ports.Stream, error) {
+		attachCalls++
+		return exitedProcessStream{}, nil
+	}}
+	a := newTestAttachment(src, nil, func() { close(exited) })
+
+	go a.run(context.Background())
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("definitive hosted process exit was not reported")
+	}
+	if attachCalls != 1 {
+		t.Fatalf("attach calls = %d, want 1", attachCalls)
+	}
+}
+
 func TestAttachmentWriteAndResizeReachPTY(t *testing.T) {
 	pty := newFakePTY()
 	sp := &fakeSpawner{ptys: []*fakePTY{pty}}

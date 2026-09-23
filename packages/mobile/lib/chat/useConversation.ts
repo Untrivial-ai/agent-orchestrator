@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { ServerConfig } from "../config";
 import {
+	cancelQueuedConversationTurn,
 	compactConversation,
 	getConversationConfigOptions,
 	getConversationModels,
@@ -19,14 +20,17 @@ import {
 	stageConversationAttachments,
 	steerConversation,
 	interruptConversation,
+	promoteQueuedConversationTurn,
 	type ConversationPage,
 } from "./api";
 import type { ChatConfigOption, ChatImage, ChatModel, ChatResource, ChatSkill, ConversationSnapshot, TurnSettings } from "./types";
 import { cachedConversationState, createMobileConversationPageCache, discardHistoricalPages } from "./snapshot";
 import { conversationActionError, conversationErrorCode } from "./conversationErrors";
 import { subscribeConversationEvents } from "./conversationEvents";
+import { conversationPollIntervalFor } from "./conversationPoll";
 import { createAsyncValueCache } from "./asyncValueCache";
 import { createRequestGate } from "./requestGate";
+import { withAttachmentReferences } from "./messageAttachments";
 import { loadTurnOptionCatalog } from "./turnOptionsCatalog";
 
 const REFRESH_DEBOUNCE_MS = 120;
@@ -45,6 +49,7 @@ export type PendingSend = {
 
 export type ConversationAction =
 	| "steer"
+	| "queue"
 	| "interrupt"
 	| "approval"
 	| "input"
@@ -78,6 +83,8 @@ export type MobileConversation = {
 	retrySend(id: string): Promise<void>;
 	discardSend(id: string): void;
 	steer(text: string): Promise<void>;
+	promoteQueuedTurn(turnId: string): Promise<void>;
+	cancelQueuedTurn(turnId: string): Promise<void>;
 	interrupt(): Promise<void>;
 	resolveApproval(requestId: string, decisionId: string): Promise<void>;
 	resolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
@@ -217,6 +224,18 @@ export function useMobileConversation(
 		});
 	}, [cfg, sessionId, scheduleRefresh, unavailable]);
 
+	// Poll the conversation on paths where the event stream cannot deliver.
+	// Over a Cloudflare quick tunnel the subscription above never fires — the
+	// body is forwarded in ~128 KB chunks and a chat event is a few hundred
+	// bytes — so without this the screen shows the agent working indefinitely
+	// while the reply has already landed.
+	useEffect(() => {
+		const every = conversationPollIntervalFor(cfg);
+		if (every === null || unavailable) return;
+		const timer = setInterval(() => scheduleRefresh(), every);
+		return () => clearInterval(timer);
+	}, [cfg, unavailable, scheduleRefresh]);
+
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
 			if (state === "active") void refresh();
@@ -300,6 +319,14 @@ export function useMobileConversation(
 		(text: string) => runAction("steer", () => requireConfig(cfg, (c) => steerConversation(c, sessionId, text, clientMessageId()))),
 		[cfg, runAction, sessionId],
 	);
+	const cancelQueuedTurn = useCallback(
+		(turnId: string) => runAction("queue", () => requireConfig(cfg, (c) => cancelQueuedConversationTurn(c, sessionId, turnId))),
+		[cfg, runAction, sessionId],
+	);
+	const promoteQueuedTurn = useCallback(
+		(turnId: string) => runAction("queue", () => requireConfig(cfg, (c) => promoteQueuedConversationTurn(c, sessionId, turnId))),
+		[cfg, runAction, sessionId],
+	);
 	const interrupt = useCallback(
 		() => runAction("interrupt", () => requireConfig(cfg, (c) => interruptConversation(c, sessionId))),
 		[cfg, runAction, sessionId],
@@ -372,6 +399,8 @@ export function useMobileConversation(
 		retrySend,
 		discardSend,
 		steer,
+		promoteQueuedTurn,
+		cancelQueuedTurn,
 		interrupt,
 		resolveApproval: resolveApprovalAction,
 		resolveInput: resolveInputAction,
@@ -420,10 +449,4 @@ function classifyConversationError(error: unknown): { permanent: boolean; code?:
 
 function conversationPageCacheKey(cfg: ServerConfig, sessionId: string): string {
 	return `${cfg.secure ? "https" : "http"}://${cfg.host}:${cfg.httpPort}/${cfg.password}/${sessionId}`;
-}
-
-function withAttachmentReferences(text: string, paths: string[]): string {
-	if (paths.length === 0) return text;
-	const references = paths.map((path) => `- ${path}`).join("\n");
-	return `${text.trim()}${text.trim() ? "\n\n" : ""}Attached files are available in the worktree:\n${references}`;
 }

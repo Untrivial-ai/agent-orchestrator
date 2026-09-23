@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
@@ -64,10 +65,30 @@ type harnessProbe struct {
 	ExpectedVersionPrefix string
 }
 
-var doctorHarnesses = []harnessProbe{
-	{Name: "claude-code", BinaryName: "claude", VersionArg: "--version"},
-	{Name: "codex", BinaryName: "codex", VersionArg: "--version"},
-	{Name: "muse", BinaryName: "muse", VersionArg: "--version", ExpectedVersionPrefix: "Muse Code "},
+type harnessProbeSpec struct {
+	BinaryName            string
+	VersionArg            string
+	ExpectedVersionPrefix string
+}
+
+// harnessProbeSpecs overrides per-harness probe settings for agent harnesses whose
+// binary name or version flags differ from the default convention (where BinaryName
+// defaults to the harness ID and VersionArg is empty for PATH-only probing).
+var harnessProbeSpecs = map[string]harnessProbeSpec{
+	"claude-code": {BinaryName: "claude", VersionArg: "--version"},
+	"codex":       {BinaryName: "codex", VersionArg: "--version"},
+	"opencode":    {BinaryName: "opencode", VersionArg: "--version"},
+	"muse":        {BinaryName: "muse", VersionArg: "--version", ExpectedVersionPrefix: "Muse Code "},
+	"aider":       {BinaryName: "aider", VersionArg: "--version"},
+	"goose":       {BinaryName: "goose", VersionArg: "--version"},
+	"grok":        {BinaryName: "grok", VersionArg: "--version"},
+	"devin":       {BinaryName: "devin", VersionArg: "--version"},
+	"kimi":        {BinaryName: "kimi", VersionArg: "--version"},
+	"kiro":        {BinaryName: "kiro-cli", VersionArg: "--version"},
+	"kilocode":    {BinaryName: "kilocode", VersionArg: "--version"},
+	"omp":         {BinaryName: "omp", VersionArg: "--version"},
+	"cursor":      {BinaryName: "cursor-agent"},
+	"continue":    {BinaryName: "cn"},
 }
 
 func newDoctorCommand(ctx *commandContext) *cobra.Command {
@@ -151,10 +172,14 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 
 	checks = append(checks, checkStore(cfg.DataDir), checkHooksLog(cfg.DataDir, time.Now()))
 
+	// The running daemon's own binary, when one is reachable: it, not the CLI
+	// running this command, is the `ao` the app actually uses.
+	daemonExe := ""
 	st, err := c.inspectDaemon(ctx)
 	if err != nil {
 		checks = append(checks, doctorCheck{Level: doctorFail, Section: doctorSectionCore, Name: "daemon", Message: err.Error()})
 	} else {
+		daemonExe = st.ExecutablePath
 		level := doctorPass
 		switch st.State {
 		case stateStale, stateNotReady:
@@ -175,10 +200,21 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 	checks = append(checks,
 		c.checkGit(ctx),
 		c.checkTerminalRuntime(ctx),
-		c.checkAOBinary(),
+		c.checkAOBinary(daemonExe),
 	)
-	for _, harness := range doctorHarnesses {
-		checks = append(checks, c.checkHarness(ctx, harness))
+	for _, ha := range registry.Harnessed() {
+		id := string(ha.Harness)
+		spec := harnessProbeSpecs[id]
+		binaryName := spec.BinaryName
+		if binaryName == "" {
+			binaryName = id
+		}
+		checks = append(checks, c.checkHarness(ctx, harnessProbe{
+			Name:                  id,
+			BinaryName:            binaryName,
+			VersionArg:            spec.VersionArg,
+			ExpectedVersionPrefix: spec.ExpectedVersionPrefix,
+		}))
 	}
 	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
@@ -230,18 +266,28 @@ func checkDataDirWritable(dataDir string) doctorCheck {
 	return doctorCheck{Level: doctorPass, Section: doctorSectionCore, Name: "data-dir-write", Message: "write probe succeeded"}
 }
 
-// checkAOBinary verifies the `ao` that workspace hooks would invoke. Agent
-// adapters install hook commands as a bare `ao hooks <agent> <event>`, so an
-// `ao` earlier on PATH that is not this binary (e.g. a legacy CLI without the
-// hooks command) fails every callback and silently kills activity tracking.
-// The daemon pins PATH inside the sessions it spawns, so a mismatch here is a
-// warning about every other context (manual runs, foreign panes), not a hard
-// failure.
-func (c *commandContext) checkAOBinary() doctorCheck {
+// checkAOBinary verifies the `ao` that workspace hooks and hand-typed commands
+// would invoke. Agent adapters install hook commands as a bare
+// `ao hooks <agent> <event>`, so an `ao` earlier on PATH that is not the
+// binary the app runs (e.g. a stale npm/Homebrew CLI, whose older flags make
+// current commands look broken) fails every callback and silently kills
+// activity tracking. The daemon pins PATH inside the sessions and shells it
+// spawns, so a mismatch here is a warning about every other context (manual
+// runs, foreign panes), not a hard failure.
+//
+// daemonExe is the running daemon's own binary when one is reachable, and is
+// preferred over this process's executable: `ao doctor` may itself be the
+// shadowing copy, in which case comparing against itself would report the
+// shadow as a match.
+func (c *commandContext) checkAOBinary(daemonExe string) doctorCheck {
 	const name = "ao-binary"
 	self, err := c.deps.Executable()
-	if err != nil {
+	if err != nil && daemonExe == "" {
 		return doctorCheck{Level: doctorWarn, Section: doctorSectionTools, Name: name, Message: fmt.Sprintf("could not resolve the running executable: %v", err)}
+	}
+	want, wantLabel := self, "this binary"
+	if daemonExe != "" {
+		want, wantLabel = daemonExe, "the running daemon's binary"
 	}
 	onPath, err := c.deps.LookPath("ao")
 	if err != nil || onPath == "" {
@@ -250,8 +296,14 @@ func (c *commandContext) checkAOBinary() doctorCheck {
 			Message: "ao not found in PATH; workspace hooks invoke `ao hooks <agent> <event>` (daemon-spawned sessions pin PATH to the daemon binary and are unaffected)",
 		}
 	}
-	if sameBinary(self, onPath) {
-		return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: name, Message: fmt.Sprintf("ao in PATH is this binary (%s)", onPath)}
+	if sameBinary(want, onPath) {
+		return doctorCheck{Level: doctorPass, Section: doctorSectionTools, Name: name, Message: fmt.Sprintf("ao in PATH is %s (%s)", wantLabel, onPath)}
+	}
+	if daemonExe != "" {
+		return doctorCheck{
+			Level: doctorWarn, Section: doctorSectionTools, Name: name,
+			Message: fmt.Sprintf("ao in PATH is %s, which shadows the running daemon's binary %s; remove or reorder the shadowing install so `ao` outside daemon-spawned sessions is the one the app runs", onPath, daemonExe),
+		}
 	}
 	return doctorCheck{
 		Level: doctorWarn, Section: doctorSectionTools, Name: name,

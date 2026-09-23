@@ -4,8 +4,7 @@ import { apiClient, apiErrorMessage } from "../lib/api-client";
 import type { WorkspaceSession } from "../types/workspace";
 import { agentSwitchesQueryKey, type AgentSwitch } from "./useAgentSwitches";
 import {
-	conversationConfigOptionsQueryKey,
-	conversationModelsQueryKey,
+	clearConversationProviderCatalogs,
 	conversationQueryKey,
 } from "./useConversation";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
@@ -115,11 +114,8 @@ export function useSwitchAgent() {
 				agentSwitchesQueryKey(variables.session.id),
 				(current = []) => [agentSwitch, ...current.filter((entry) => entry.id !== agentSwitch.id)],
 			);
+			clearConversationProviderCatalogs(queryClient, variables.session.id);
 			void queryClient.invalidateQueries({ queryKey: conversationQueryKey(variables.session.id) });
-			void queryClient.invalidateQueries({ queryKey: conversationModelsQueryKey(variables.session.id) });
-			void queryClient.invalidateQueries({
-				queryKey: conversationConfigOptionsQueryKey(variables.session.id),
-			});
 		},
 		onSettled: (_data, _error, variables) => {
 			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });

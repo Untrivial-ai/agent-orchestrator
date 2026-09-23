@@ -7,11 +7,37 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestResolveCursorBinaryFindsWinGetLinkOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows install location")
+	}
+	localAppData := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("USERPROFILE", t.TempDir())
+	want := filepath.Join(localAppData, "Microsoft", "WinGet", "Links", "cursor-agent.exe")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveCursorBinary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ResolveCursorBinary() = %q, want %q", got, want)
+	}
+}
 
 func TestGetLaunchCommandBuildsArgv(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "cursor-agent"}
@@ -461,6 +487,21 @@ func TestAugmentRuntimeEnvUsesAODataDir(t *testing.T) {
 
 	if got, want := env[cursorDataDirEnv], cursorDataDir(dataDir); got != want {
 		t.Fatalf("%s = %q, want %q", cursorDataDirEnv, got, want)
+	}
+}
+
+func TestAugmentRuntimeEnvAdvertisesTerminalThemeHint(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "terminal-theme"), []byte("dark\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	(&Plugin{resolvedBinary: "cursor-agent"}).AugmentRuntimeEnv(env, dataDir)
+	if env["TERM_THEME"] != "dark" {
+		t.Fatalf("TERM_THEME = %q, want dark", env["TERM_THEME"])
+	}
+	if env["COLORFGBG"] != "15;0" {
+		t.Fatalf("COLORFGBG = %q, want 15;0", env["COLORFGBG"])
 	}
 }
 

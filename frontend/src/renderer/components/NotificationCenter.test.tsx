@@ -3,12 +3,18 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aoBridge } from "../lib/bridge";
-import type { NotificationDTO, NotificationListStatus } from "../lib/notifications";
+import {
+	applyNotificationsCleared,
+	type NotificationDTO,
+	type NotificationListStatus,
+} from "../lib/notifications";
 import { useUiStore } from "../stores/ui-store";
 import { NotificationCenter, NotificationRuntime } from "./NotificationCenter";
 import { TooltipProvider } from "./ui/tooltip";
 
 const {
+	clearAllMock,
+	clearOneMock,
 	connectMock,
 	fetchNextPageMock,
 	markAllMock,
@@ -18,6 +24,8 @@ const {
 	restoreSessionMock,
 	workspaceQueryMock,
 } = vi.hoisted(() => ({
+	clearAllMock: vi.fn(),
+	clearOneMock: vi.fn(),
 	connectMock: vi.fn(),
 	fetchNextPageMock: vi.fn(),
 	markAllMock: vi.fn(),
@@ -86,6 +94,8 @@ const unreadNotifications = allNotifications.filter((item) => item.status === "u
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigateMock, useParams: () => paramsMock() }));
 
 vi.mock("../hooks/useNotificationsQuery", () => ({
+	useClearAllNotificationsMutation: () => ({ isPending: false, mutateAsync: clearAllMock }),
+	useClearNotificationMutation: () => ({ isPending: false, mutateAsync: clearOneMock, variables: undefined }),
 	useMarkAllNotificationsReadMutation: () => ({ isPending: false, mutateAsync: markAllMock }),
 	useNotificationsQuery: (status: NotificationListStatus, enabled?: boolean) => notificationQueryMock(status, enabled),
 }));
@@ -107,8 +117,9 @@ vi.mock("../lib/notifications", async (importOriginal) => ({
 	},
 }));
 
-function renderNotificationCenter() {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderNotificationCenter(
+	queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
 	return render(
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
@@ -163,6 +174,10 @@ const stableUnreadQuery = notificationQueryResult("unread");
 const stableAllQuery = notificationQueryResult("all");
 
 beforeEach(() => {
+	clearAllMock
+		.mockReset()
+		.mockResolvedValue({ clearId: "clear-1", clearEpoch: "epoch-1", clearSequence: 1, clearedCount: 4 });
+	clearOneMock.mockReset().mockResolvedValue(allNotifications[0]);
 	connectMock.mockReset();
 	paramsMock.mockReset().mockReturnValue({});
 	useUiStore.setState({ visibleTerminalKindBySession: {} });
@@ -246,6 +261,14 @@ describe("NotificationRuntime", () => {
 });
 
 describe("NotificationCenter", () => {
+	it("subscribes to workspace metadata only while the panel is open", async () => {
+		renderNotificationCenter();
+
+		expect(workspaceQueryMock).not.toHaveBeenCalled();
+		await clickOpen();
+		expect(workspaceQueryMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("uses the compact topbar bell and unread badge sizing", () => {
 		renderNotificationCenter();
 		const trigger = screen.getByRole("button", { name: /unread notifications/ });
@@ -302,6 +325,79 @@ describe("NotificationCenter", () => {
 			expect.stringContaining("Docs sweep needs input"),
 			expect.stringContaining("PR #9 merged"),
 		]);
+	});
+
+	it("clears notification history from the panel header", async () => {
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+		expect(clearAllMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("clears one notification without opening its session", async () => {
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear notification: Checkout flow needs input" }));
+
+		expect(clearOneMock).toHaveBeenCalledWith(expect.objectContaining({ id: "ntf_1" }));
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("allows other notifications to clear while one delete is pending", async () => {
+		let resolveFirst: (notification: NotificationDTO) => void = () => undefined;
+		let resolveSecond: (notification: NotificationDTO) => void = () => undefined;
+		const firstDelete = new Promise<NotificationDTO>((resolve) => {
+			resolveFirst = resolve;
+		});
+		const secondDelete = new Promise<NotificationDTO>((resolve) => {
+			resolveSecond = resolve;
+		});
+		clearOneMock.mockReturnValueOnce(firstDelete).mockReturnValueOnce(secondDelete);
+		renderNotificationCenter();
+		await clickOpen();
+
+		const first = screen.getByRole("button", { name: "Clear notification: Checkout flow needs input" });
+		const second = screen.getByRole("button", { name: "Clear notification: Docs sweep needs input" });
+		await userEvent.click(first);
+
+		expect(first).toBeDisabled();
+		expect(second).toBeEnabled();
+		await userEvent.click(second);
+		expect(clearOneMock).toHaveBeenCalledTimes(2);
+		expect(first).toBeDisabled();
+		expect(second).toBeDisabled();
+
+		resolveSecond(allNotifications[2]);
+		await waitFor(() => expect(second).toBeEnabled());
+		expect(first).toBeDisabled();
+
+		resolveFirst(allNotifications[1]);
+		await waitFor(() => expect(first).toBeEnabled());
+	});
+
+	it("keeps the row visible and reports a failed single clear", async () => {
+		clearOneMock.mockRejectedValueOnce(new Error("single clear failed"));
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear notification: Checkout flow needs input" }));
+
+		expect(await screen.findByText("single clear failed")).toBeInTheDocument();
+		expect(screen.getByText("Checkout flow needs input")).toBeInTheDocument();
+	});
+
+	it("keeps the panel contents when clear-all fails", async () => {
+		clearAllMock.mockRejectedValueOnce(new Error("clear failed"));
+		renderNotificationCenter();
+		await clickOpen();
+
+		await userEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+		expect(await screen.findByText("clear failed")).toBeInTheDocument();
+		expect(screen.getByText("Checkout flow needs input")).toBeInTheDocument();
 	});
 
 	// Opening acknowledges loaded unread ids only, so later unread pages stay
@@ -476,6 +572,37 @@ describe("NotificationCenter", () => {
 		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
 
 		expect(await screen.findByText("No notifications yet.")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
+	});
+
+	it("surfaces a failed refresh over an unrelated cached empty page", async () => {
+		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
+			...notificationQueryResult(status, { isError: status === "all" }),
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
+		}));
+		renderNotificationCenter();
+		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
+
+		expect(await screen.findByText("Could not load notifications.")).toBeInTheDocument();
+		expect(screen.queryByText("No notifications yet.")).not.toBeInTheDocument();
+	});
+
+	it("keeps the confirmed empty state when a background refresh fails after clear", async () => {
+		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
+			...notificationQueryResult(status, { isError: status === "all" }),
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
+		}));
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		applyNotificationsCleared(queryClient, {
+			clearId: "clear-1",
+			clearEpoch: "epoch-1",
+			clearSequence: 1,
+		});
+		renderNotificationCenter(queryClient);
+		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
+
+		expect(await screen.findByText("No notifications yet.")).toBeInTheDocument();
+		expect(screen.queryByText("Could not load notifications.")).not.toBeInTheDocument();
 	});
 
 	it("navigates to the session from anywhere on the row, including the body text", async () => {

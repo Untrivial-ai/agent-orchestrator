@@ -10,7 +10,10 @@
  *
  *   - Raw HTML is escaped, not rendered. Agent output is only as trustworthy as the
  *     files it just read, so `rehype-raw` is deliberately absent; markdown-only is
- *     the whole sanitization story and there is no schema to get wrong. Syntax
+ *     the whole sanitization story and there is no schema to get wrong, with one
+ *     exception: ```mermaid fences render as diagrams through `MermaidBlock`,
+ *     whose SVG passes through mermaid's strict mode plus DOMPurify with
+ *     active-content tags forbidden. Syntax
  *     highlighting keeps that property — it renders a token tree as elements
  *     rather than injecting the highlighter's HTML string.
  *   - Nothing here re-parses or re-orders content. It renders exactly the text the
@@ -31,23 +34,43 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { WrapText } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { aoBridge } from "../../lib/bridge";
 import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
-import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import {
-	ContextMenu,
-	ContextMenuContent,
-	ContextMenuItem,
-	ContextMenuTrigger,
-} from "../ui/context-menu";
+	isPotentialWorkspaceFileLink,
+	isWebLink,
+	openLinkInSystemBrowser,
+	workspaceFilePath,
+} from "../../lib/external-link-policy";
+import { AppLink } from "../AppLink";
+import {
+	explicitWorkspaceFilePath,
+	findWorkspaceFilePath,
+} from "../../lib/workspace-file-path";
 import { HighlightedCode } from "./HighlightedCode";
+import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
+import { ChatImage, ChatImageGallery, ChatImageLinkScope, isImageOnlyParagraph } from "./ChatImage";
 import "./code-theme.css";
+
+// Activity titles live inside disclosure buttons: keep inline formatting, but
+// unwrap block elements and links so provider text cannot nest interactive UI.
+const TITLE_ELEMENTS = ["code", "em", "strong", "del"];
+const TITLE_COMPONENTS: Components = {
+	code: ({ children }) => <code className="font-mono text-[0.95em]">{children}</code>,
+};
+
+export const ActivityTitle = memo(function ActivityTitle({ text }: { text: string }) {
+	return (
+		<Markdown allowedElements={TITLE_ELEMENTS} unwrapDisallowed components={TITLE_COMPONENTS}>
+			{text}
+		</Markdown>
+	);
+});
 
 /** GitHub-flavoured markdown: tables, strikethrough, task lists, autolinks. */
 const PLUGINS = [remarkGfm];
@@ -60,16 +83,33 @@ const PLUGINS = [remarkGfm];
  * and re-parse every message on every poll.
  */
 const StreamingProse = createContext(false);
-const OpenChatLink = createContext<((url: string) => void) | undefined>(undefined);
+const InsideMarkdownLink = createContext(false);
+const OpenChatLink = createContext<{
+	open?: (url: string) => void;
+	openFile?: (path: string) => void;
+	workspacePaths: string[];
+}>({ workspacePaths: [] });
 
 export function ChatLinkProvider({
 	onLinkOpen,
+	onFileOpen,
+	workspacePaths = [],
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
+	onFileOpen?: (path: string) => void;
+	workspacePaths?: string[];
 	children: ReactNode;
 }) {
-	return <OpenChatLink.Provider value={onLinkOpen}>{children}</OpenChatLink.Provider>;
+	return <OpenChatLink.Provider value={{ open: onLinkOpen, openFile: onFileOpen, workspacePaths }}>{children}</OpenChatLink.Provider>;
+}
+
+function chatUrlTransform(url: string, key: string): string | undefined {
+	// react-markdown correctly strips unknown schemes, but a Windows absolute
+	// path resembles one (C:). Preserve only hrefs that look like local paths;
+	// the click still goes through the workspace-confined preview endpoint.
+	if (key === "href" && isPotentialWorkspaceFileLink(url)) return url;
+	return defaultUrlTransform(url);
 }
 
 export const ChatMarkdown = memo(function ChatMarkdown({
@@ -94,7 +134,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 					muted ? "text-[13px] text-muted-foreground" : "text-sm text-foreground",
 				)}
 			>
-				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS} urlTransform={chatUrlTransform}>
 					{text}
 				</Markdown>
 			</div>
@@ -195,46 +235,74 @@ function compactEmoji(children: ReactNode): ReactNode {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
-	const onLinkOpen = useContext(OpenChatLink);
-	const anchor = (
-		<a
+	const { open: onLinkOpen, openFile: onFileOpen, workspacePaths } = useContext(OpenChatLink);
+	const filePath = href && onFileOpen
+		? workspaceFilePath(href, workspacePaths) ?? findWorkspaceFilePath(href, workspacePaths) ?? explicitWorkspaceFilePath(href)
+		: undefined;
+	const browserLink = href ? isWebLink(href) || !!filePath || isPotentialWorkspaceFileLink(href) : false;
+	const openInFiles = filePath && !/\.html?$/i.test(filePath) ? filePath : undefined;
+	return (
+		<AppLink
 			href={href}
-			target="_blank"
-			rel="noreferrer noopener"
+			onBrowserOpen={onLinkOpen}
+			inAppLink={href ? () => browserLink : undefined}
+			filePath={filePath}
+			onFileOpen={onFileOpen}
 			onClick={(event) => {
-				if (!href) return;
-				event.preventDefault();
-				// Cmd/Ctrl-click (the VS Code/Slack convention) and Option/Alt-click
-				// escape the in-app panel and go straight to the system browser.
-				const toSystemBrowser = event.metaKey || event.ctrlKey || event.altKey;
-				if (!toSystemBrowser && onLinkOpen && isWebLink(href)) {
-					onLinkOpen(href);
+				if (openInFiles && onFileOpen) {
+					event.preventDefault();
+					onFileOpen(openInFiles);
 					return;
 				}
-				void openLinkInSystemBrowser(href);
+				if (href && !browserLink) {
+					event.preventDefault();
+					void openLinkInSystemBrowser(href);
+				}
 			}}
+			target="_blank"
+			rel="noreferrer noopener"
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
-			{children}
-		</a>
+			<ChatImageLinkScope>
+				<InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider>
+			</ChatImageLinkScope>
+		</AppLink>
 	);
-	if (!href) return anchor;
+}
+
+/**
+ * A mermaid fence with the streaming state it was rendered under.
+ *
+ * A separate component rather than a hook call in the `pre` override because
+ * overrides are not components: hooks are illegal there, and `COMPONENTS`
+ * must stay module-level so react-markdown's memoization survives polling.
+ */
+function MermaidFence({ code }: { code: string }) {
+	const streaming = useContext(StreamingProse);
+	const { open: onLinkOpen } = useContext(OpenChatLink);
+	return <MermaidBlock code={code} streaming={streaming} onLinkOpen={onLinkOpen} />;
+}
+
+function InlineCode({ children }: { children?: ReactNode }) {
+	const { openFile: onFileOpen, workspacePaths } = useContext(OpenChatLink);
+	const insideLink = useContext(InsideMarkdownLink);
+	const text = typeof children === "string" ? children : undefined;
+	const filePath = text && onFileOpen ? findWorkspaceFilePath(text, workspacePaths) : undefined;
+	const code = (
+		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-[11.5px] text-markdown-code">
+			{children}
+		</code>
+	);
+	if (!filePath || !onFileOpen || insideLink) return code;
 	return (
-		<ContextMenu>
-			<ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
-			<ContextMenuContent className="min-w-44">
-				{/* Only http(s) may reach shell.openExternal from here; other schemes
-				    still get their address copied. */}
-				{isWebLink(href) ? (
-					<ContextMenuItem onSelect={() => void openLinkInSystemBrowser(href)}>
-						Open in system browser
-					</ContextMenuItem>
-				) : null}
-				<ContextMenuItem onSelect={() => void aoBridge.clipboard.writeText(href)}>
-					Copy link address
-				</ContextMenuItem>
-			</ContextMenuContent>
-		</ContextMenu>
+		<button
+			type="button"
+			onClick={() => onFileOpen(filePath)}
+			aria-label={`Open ${filePath} in Files`}
+			className="inline rounded text-left transition-colors hover:bg-interactive-hover"
+		>
+			{code}
+		</button>
 	);
 }
 
@@ -262,7 +330,13 @@ const COMPONENTS: Components = {
 		</h6>
 	),
 
-	p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{compactEmoji(children)}</p>,
+	// A paragraph of nothing but images is a set of pictures, not prose.
+	p: ({ children, node }) =>
+		isImageOnlyParagraph(node) ? (
+			<ChatImageGallery>{children}</ChatImageGallery>
+		) : (
+			<p className="my-2 first:mt-0 last:mb-0">{compactEmoji(children)}</p>
+		),
 
 	ul: ({ children }) => <ul className="my-2 ml-4 list-disc space-y-1 first:mt-0">{children}</ul>,
 	ol: ({ children }) => (
@@ -293,14 +367,14 @@ const COMPONENTS: Components = {
 	// on the class alone rendered those as inline code.
 	pre: ({ children }) => {
 		const fence = fenceOf(children);
-		return fence ? <CodeBlock code={fence.code} language={fence.language} /> : <>{children}</>;
+		if (!fence) return <>{children}</>;
+		// Mermaid is a diagram, not source: it renders through the sandboxed SVG
+		// path rather than the highlighter. See `MermaidBlock.tsx`.
+		if (fence.language?.toLowerCase() === "mermaid") return <MermaidFence code={fence.code} />;
+		return <CodeBlock code={fence.code} language={fence.language} />;
 	},
 	// Only inline code reaches here; `pre` above takes every fence.
-	code: ({ children }) => (
-		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-[11.5px] text-markdown-code">
-			{children}
-		</code>
-	),
+	code: InlineCode,
 
 	// Wide tables scroll inside their own container so the conversation column
 	// never scrolls sideways.
@@ -333,7 +407,5 @@ const COMPONENTS: Components = {
 	// and right-click offers the system browser and copying the address.
 	a: MarkdownLink,
 
-	img: ({ src, alt }) => (
-		<img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} className="my-2 max-w-full rounded-md border border-border" />
-	),
+	img: ChatImage,
 };

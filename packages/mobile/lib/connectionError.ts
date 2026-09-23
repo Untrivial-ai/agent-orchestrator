@@ -9,6 +9,8 @@
 
 export type ConnectionFailure =
 	| "not-ao-qr" // the scanned code wasn't an AO pairing payload
+	| "outdated-desktop" // a v1 code: AO on the computer is too old to pair with
+	| "tunnel-rotated" // nothing answered, and the only remote path was a tunnel
 	| "unreachable" // nothing answered (DNS failure, refused, timeout)
 	| "auth" // 401/403 — the password is wrong or was rotated
 	| "rate-limited" // 429 — the daemon's failed-attempt lockout
@@ -43,6 +45,16 @@ export function classifyConnectionFailure(status: number | undefined): Connectio
 export function shouldKeepPolling(status: number | undefined): boolean {
 	const failure = classifyConnectionFailure(status);
 	return failure !== "auth" && failure !== "rate-limited";
+}
+
+/**
+ * Whether a failed request is the daemon's word that the session no longer
+ * exists. Only a 404 or 410 says that. A timeout, a refused connection or a 5xx
+ * is a fact about the link, not the session, and a link comes back — so none of
+ * those may be shown or acted on as "not found".
+ */
+export function isSessionGone(status: number | undefined): boolean {
+	return status === 404 || status === 410;
 }
 
 /**
@@ -105,6 +117,20 @@ export function describeConnectionFailure(
 		reason === "unreachable" && target.platform === "ios" && isLocalNetworkHost(target.host);
 
 	switch (reason) {
+		case "tunnel-rotated":
+			return {
+				title: "Your desktop's address changed",
+				message:
+					"AO restarted on your desktop, so it has a new address. Open AO \u2192 Settings \u2192 Connect Mobile there and scan the new code.",
+				showLocalNetworkHint: false,
+			};
+		case "outdated-desktop":
+			return {
+				title: "Update AO on your desktop",
+				message:
+					"That code came from an older version of AO. Update the desktop app, then generate a new code.",
+				showLocalNetworkHint: false,
+			};
 		case "not-ao-qr":
 			return {
 				title: "Not an AO pairing code",
@@ -116,7 +142,7 @@ export function describeConnectionFailure(
 				title: "Your desktop disconnected",
 				message: isTailscaleHost(target.host)
 					? `Reached nothing at ${target.host}:${target.port}. ` +
-						"Make sure Tailscale is connected on both this phone and your computer, and that your computer is awake."
+						"Make sure Tailscale is connected on this phone and your desktop, and that your desktop is awake."
 					: `Reached nothing at ${target.host}:${target.port}. ` +
 						"Is Connect Mobile still on, and is your phone on the same Wi-Fi?",
 				showLocalNetworkHint,
@@ -126,7 +152,7 @@ export function describeConnectionFailure(
 			// and re-scanning is the actual fix, not retrying the same password.
 			return {
 				title: "Your desktop rejected the password",
-				message: "That password was rotated. Re-scan the code on your computer.",
+				message: "That password was rotated. Re-scan the code on your desktop.",
 				showLocalNetworkHint: false,
 			};
 		case "rate-limited":
@@ -136,14 +162,14 @@ export function describeConnectionFailure(
 			return {
 				title: "Too many attempts",
 				message:
-					"Your computer locked this device out after too many failed attempts. " +
+					"Your desktop locked this device out after too many failed attempts. " +
 					"It clears on its own in about a minute — check the password, then try again.",
 				showLocalNetworkHint: false,
 			};
 		case "server-error":
 			return {
 				title: "Your desktop returned an error",
-				message: `${target.host}:${target.port} answered, but with an error. Check the AO logs on your computer.`,
+				message: `${target.host}:${target.port} answered, but with an error. Check the AO logs on your desktop.`,
 				showLocalNetworkHint: false,
 			};
 	}

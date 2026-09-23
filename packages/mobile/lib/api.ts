@@ -32,12 +32,36 @@ export type DashboardPR = {
 	unresolvedThreads?: number;
 };
 
+/**
+ * Where the daemon placed a session in its delivery lifecycle, derived
+ * server-side from durable facts and independently of `status`.
+ *
+ * Mirrors the desktop contract (backend/pkg/contract/kanban.go, surfaced to the
+ * renderer as KANBAN_COLUMNS). The daemon has always sent this; mobile simply
+ * discarded it and re-derived its own grouping, which is how the two boards
+ * came to disagree about the same session.
+ */
+export const KANBAN_COLUMNS = ["building", "validating", "needs_review", "ready", "archive"] as const;
+export type KanbanColumn = (typeof KANBAN_COLUMNS)[number];
+
+export function isKanbanColumn(value: string | null | undefined): value is KanbanColumn {
+	return !!value && (KANBAN_COLUMNS as readonly string[]).includes(value);
+}
+
 export type DashboardSession = {
 	id: string;
 	projectId: string;
 	/** Opaque daemon runtime handle used only for terminal mux operations. */
 	terminalHandleId?: string;
 	status: string | null;
+	/** The daemon's own board placement. Absent on a daemon too old to send it. */
+	kanbanColumn?: KanbanColumn | null;
+	/**
+	 * The daemon's phrase for what is happening inside that column — richer than
+	 * `status` ("Awaiting PR", "Fixing CI failures"), and already localized on the
+	 * wire so clients print it without a mapping table.
+	 */
+	displayStatus?: string | null;
 	attentionLevel?: AttentionLevel | string | null;
 	activity?: string | null;
 	// Which agent CLI drives this session (claude-code, codex, …). Parsed off the
@@ -116,7 +140,11 @@ export type SessionsResponse = {
 	stats: DashboardStats;
 	// Returned here so callers don't fetch /projects a second time — getSessions
 	// already needs it to label orchestrators.
-	projects: ProjectInfo[];
+	//
+	// Null when the /projects request itself failed, which is NOT the same fact
+	// as an empty list: the board judges a saved project filter against this, so
+	// folding a failure into [] told it every project was gone (#5058 review).
+	projects: ProjectInfo[] | null;
 };
 
 // ---- Wire types (this repo's Go daemon, /api/v1/*) --------------------------
@@ -139,7 +167,9 @@ type WirePR = {
 
 type WireSession = {
 	id: string;
-	projectId: string;
+	// Absent for a standalone agent session: the daemon marks the field
+	// omitempty and a standalone session has no project to name.
+	projectId?: string;
 	terminalHandleId?: string;
 	issueId?: string;
 	kind?: string; // worker | orchestrator
@@ -149,6 +179,8 @@ type WireSession = {
 	activity?: unknown;
 	isTerminated?: boolean;
 	status?: string | null;
+	kanbanColumn?: string | null;
+	displayStatus?: string | null;
 	branch?: string;
 	createdAt?: string;
 	updatedAt?: string;
@@ -217,9 +249,13 @@ function mapSession(s: WireSession): DashboardSession {
 	const prs = (s.prs ?? []).map(mapPR);
 	return {
 		id: s.id,
-		projectId: s.projectId,
+		// "" rather than undefined: every consumer treats the id as a string, and
+		// `shortLabel(undefined)` threw inside render and took the whole board down.
+		projectId: s.projectId ?? "",
 		terminalHandleId: s.terminalHandleId,
 		status: s.status ?? null,
+		kanbanColumn: isKanbanColumn(s.kanbanColumn) ? s.kanbanColumn : null,
+		displayStatus: s.displayStatus?.trim() || null,
 		activity: activityString(s.activity),
 		harness: s.harness ?? null,
 		mode: s.mode === "chat" ? "chat" : "tui",
@@ -243,7 +279,7 @@ function mapSession(s: WireSession): DashboardSession {
 function mapOrchestrator(s: WireSession, projectName: string): OrchestratorLink {
 	return {
 		id: s.id,
-		projectId: s.projectId,
+		projectId: s.projectId ?? "",
 		terminalHandleId: s.terminalHandleId,
 		projectName,
 		status: s.status ?? null,
@@ -306,7 +342,7 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 		if ((e as { name?: string })?.name === "AbortError") {
 			// Timed out reaching the host (commonly a sleeping Tailscale peer).
 			captureMobileApiError(path, "timeout");
-			throw new Error("Request timed out - is the server reachable?", { cause: e });
+			throw new Error("Request timed out. Is the desktop reachable?", { cause: e });
 		}
 		// fetch threw without reaching the server: DNS/refused/offline.
 		captureMobileApiError(path, "offline");
@@ -377,13 +413,17 @@ export async function getSessions(cfg: ServerConfig, _projectId?: string): Promi
 	// code, fail with 429 before the new password was ever checked. Probing first
 	// caps a bad-credential tick at a single failed attempt.
 	const sessRes = await req(cfg, `${API}/sessions`);
+	// A failed /projects is reported as null rather than [] so a caller can tell
+	// "this daemon has no projects" from "we could not ask". It stays caught: an
+	// older daemon, or one blip on that one route, must not knock the board
+	// offline when /sessions answered fine.
 	const [orchRes, projects] = await Promise.all([
 		req(cfg, `${API}/orchestrators`),
-		getProjects(cfg).catch(() => [] as ProjectInfo[]),
+		getProjects(cfg).catch(() => null),
 	]);
 	const sessData = await sessRes.json();
 	const orchData = await orchRes.json();
-	const nameOf = new Map(projects.map((p) => [p.id, p.name]));
+	const nameOf = new Map((projects ?? []).map((p) => [p.id, p.name]));
 
 	const rawSessions: WireSession[] = Array.isArray(sessData?.sessions) ? sessData.sessions : [];
 	const rawOrchestrators: WireSession[] = Array.isArray(orchData?.sessions) ? orchData.sessions : [];
@@ -397,13 +437,16 @@ export async function getSessions(cfg: ServerConfig, _projectId?: string): Promi
 	// is actually running.
 	const bestByProject = new Map<string, WireSession>();
 	for (const s of rawOrchestrators) {
+		// An orchestrator belongs to a project by definition; one without is not
+		// something this screen can show or restart.
+		if (!s.projectId) continue;
 		const cur = bestByProject.get(s.projectId);
 		// Keep a live orchestrator once found; otherwise take the later entry
 		// (the daemon lists them oldest to newest).
 		if (!cur || cur.isTerminated) bestByProject.set(s.projectId, s);
 	}
 	const orchestrators = [...bestByProject.values()].map((s) =>
-		mapOrchestrator(s, nameOf.get(s.projectId) ?? s.projectId),
+		mapOrchestrator(s, nameOf.get(s.projectId ?? "") ?? s.projectId ?? ""),
 	);
 
 	return { sessions, orchestrators, orchestratorId: null, stats: {}, projects };
@@ -417,14 +460,21 @@ export async function getSessions(cfg: ServerConfig, _projectId?: string): Promi
 // "no preview". We build the URL from our own base (httpBase honors the TLS
 // toggle) rather than the daemon's `previewUrl`, which hardcodes http:// + its
 // request host and would break over a TLS tunnel (e.g. tailscale serve).
+/**
+ * The daemon's preview-files route for a workspace path, each segment escaped.
+ * Shared by the preview button and chat attachment images so the route shape
+ * lives in one place.
+ */
+export function previewFilePath(sessionId: string, path: string): string {
+	return `${API}/sessions/${encodeURIComponent(sessionId)}/preview/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export async function getPreview(cfg: ServerConfig, id: string, preferredURL?: string): Promise<{ entry: string; url: string; authenticated: boolean } | null> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/preview`);
 	const data = await res.json();
 	const entry = typeof data?.entry === "string" ? data.entry.trim() : "";
 	if (entry) {
-		// Mirror the daemon's files route: /preview/files/<entry>, each segment escaped.
-		const escaped = entry.split("/").map(encodeURIComponent).join("/");
-		const url = `${httpBase(cfg)}${API}/sessions/${encodeURIComponent(id)}/preview/files/${escaped}`;
+		const url = `${httpBase(cfg)}${previewFilePath(id, entry)}`;
 		return { entry, url, authenticated: true };
 	}
 	const external = mobileReachablePreviewURL(preferredURL, cfg.host);
@@ -681,6 +731,22 @@ export async function killSession(cfg: ServerConfig, id: string): Promise<void> 
 	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/kill`, { method: "POST" });
 }
 
+/** Rename the worker shown on the board without changing its conversation history. */
+export async function renameSession(cfg: ServerConfig, id: string, displayName: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		body: JSON.stringify({ displayName }),
+	});
+}
+
+export async function pinSession(cfg: ServerConfig, id: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/pin`, { method: "POST" });
+}
+
+export async function unpinSession(cfg: ServerConfig, id: string): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/pin`, { method: "DELETE" });
+}
+
 export async function restoreSession(cfg: ServerConfig, id: string): Promise<void> {
 	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/restore`, { method: "POST" });
 }
@@ -699,7 +765,7 @@ export async function sendMessage(cfg: ServerConfig, id: string, message: string
 
 export async function spawnSession(
 	cfg: ServerConfig,
-	opts: { projectId: string; prompt?: string; issueId?: string; harness?: string; mode?: SessionMode },
+	opts: { projectId: string; prompt?: string; issueId?: string; harness?: string; mode?: SessionMode; attachments?: SpawnAttachmentInput[] },
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/sessions`, {
 		method: "POST",
@@ -715,11 +781,17 @@ export async function spawnSession(
 			// the phone depend on a desktop preference it cannot see.
 			mode: opts.mode ?? "chat",
 			kind: "worker",
+			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
 	});
 	const data = await res.json();
 	return mapSession(data?.session ?? data);
 }
+
+export type SpawnAttachmentInput = {
+	mimeType: string;
+	data: string;
+};
 
 export async function getSession(cfg: ServerConfig, id: string): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}`);
@@ -729,7 +801,7 @@ export async function getSession(cfg: ServerConfig, id: string): Promise<Dashboa
 
 export async function delegateTask(
 	cfg: ServerConfig,
-	opts: { projectId: string; brief: string; agent?: string; model?: string; mode: SessionMode },
+	opts: { projectId: string; brief: string; agent?: string; model?: string; mode: SessionMode; attachments?: SpawnAttachmentInput[] },
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/orchestrators/delegate`, {
 		method: "POST",
@@ -739,6 +811,7 @@ export async function delegateTask(
 			agent: opts.agent || undefined,
 			model: opts.model || undefined,
 			mode: opts.mode,
+			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
 	});
 	const data = await res.json();
