@@ -1,0 +1,66 @@
+---
+title: "Project dashboards, workflow automation, and health checks"
+description: "Project-scoped navigation arrived alongside automated task lifecycle controls and practical maintenance tools."
+date: "2026-03-15"
+rangeStart: "2026-03-09"
+rangeEnd: "2026-03-15"
+historical: true
+---
+
+
+## Project-focused dashboard navigation <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/381" />
+
+The dashboard can be scoped by project, with sidebar navigation that keeps larger multi-project setups understandable.
+
+## Automated backlog claiming, task breakdown, and verification <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/365" />
+
+AO can claim backlog work, break it into tasks, watch lifecycle state, and apply a verification gate before completion.
+
+## Built-in installation diagnostics and updates <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/437" />
+
+New doctor and update commands make it easier to diagnose an installation and keep it current.
+
+## Improvements
+
+### Agents
+
+- **Support distinct worker and orchestrator agents** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/439" />
+
+### Product
+
+- **Reduce dashboard SSE refresh and render churn** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/451" />
+- **Add dashboard orchestrator spawn action** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/441" />
+- **Add orchestrator recovery automation** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/362" />
+- **Add OpenClaw notifier plugin for AO escalations** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/372" />
+- **Add v1 feedback tools and structured report storage** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/403" />
+
+### Pull requests
+
+- **Add SCM webhook lifecycle triggers** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/394" />
+
+
+---
+
+## Bug fixes
+
+### Agents
+
+- **Pause workers on model limits and stabilize session visibility** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/367" />
+- **Prevent orchestrator sessions from owning PRs** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/432" />
+- **Implement stuck detection using agent-stuck threshold** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/376" />
+- **Protect orchestrators from session cleanup** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/453" />
+- **Implement PR325 session capture fallback and spawn race hardening** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/366" />
+- **Gate fresh session sends on interactive readiness** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/438" />
+- **Skip PR auto-detection for orchestrator sessions** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/442" />
+- **Improve active session status reliability across agents** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/449" />
+
+### Pull requests
+
+- **Wire built-in GitLab integrations** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/393" />
+- **Scope orchestrators per project across cli and web** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/433" />
+
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

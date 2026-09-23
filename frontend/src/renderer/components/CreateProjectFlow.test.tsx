@@ -4,7 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
+import { CloudCpError } from "../lib/cloud-cp";
 import { useUiStore } from "../stores/ui-store";
+import { TooltipProvider } from "./ui/tooltip";
 
 const bridgeMocks = vi.hoisted(() => ({
 	checkAncestorRepo: vi.fn(),
@@ -12,8 +14,11 @@ const bridgeMocks = vi.hoisted(() => ({
 	checkGitHubRepositoryAvailability: vi.fn(),
 	chooseDirectory: vi.fn(),
 	getGitHubLogin: vi.fn(),
+	getCachedGitHubOwners: vi.fn(),
+	refreshGitHubOwners: vi.fn(),
 	getRepositoryBranch: vi.fn(),
 	scanImportFolder: vi.fn(),
+	connectProviderAuth: vi.fn(),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -29,10 +34,16 @@ vi.mock("../lib/bridge", () => ({
 			checkAncestorRepo: bridgeMocks.checkAncestorRepo,
 			checkGitRepository: bridgeMocks.checkGitRepository,
 			checkGitHubRepositoryAvailability: bridgeMocks.checkGitHubRepositoryAvailability,
-			chooseDirectory: bridgeMocks.chooseDirectory,
-			getGitHubLogin: bridgeMocks.getGitHubLogin,
-			getRepositoryBranch: bridgeMocks.getRepositoryBranch,
+		chooseDirectory: bridgeMocks.chooseDirectory,
+		getGitHubLogin: bridgeMocks.getGitHubLogin,
+		getCachedGitHubOwners: bridgeMocks.getCachedGitHubOwners,
+		refreshGitHubOwners: bridgeMocks.refreshGitHubOwners,
+		getRepositoryBranch: bridgeMocks.getRepositoryBranch,
 			scanImportFolder: bridgeMocks.scanImportFolder,
+			openExternal: vi.fn().mockResolvedValue(undefined),
+		},
+		cloud: {
+			connectProviderAuth: bridgeMocks.connectProviderAuth,
 		},
 	},
 }));
@@ -44,12 +55,30 @@ vi.mock("../lib/api-client", () => ({
 	apiErrorMessage: apiMocks.apiErrorMessage,
 }));
 
+const githubDaemonMocks = vi.hoisted(() => ({
+	getGitHubStatus: vi.fn().mockResolvedValue({ connected: false }),
+	listGitHubRepos: vi.fn().mockResolvedValue({ repos: [] }),
+	saveGitHubPAT: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/github-daemon", () => ({
+	getGitHubStatus: githubDaemonMocks.getGitHubStatus,
+	listGitHubRepos: githubDaemonMocks.listGitHubRepos,
+	saveGitHubPAT: githubDaemonMocks.saveGitHubPAT,
+	isGitHubAuthInvalidError: (error: unknown) =>
+		typeof error === "object" && error !== null && "code" in error && error.code === "GITHUB_AUTH_INVALID",
+}));
+
 // Cloud stand-ins: the flow only consumes the gate flag, the session status,
 // and the typed client's createProject; everything else stays out of scope.
 const cloudMocks = vi.hoisted(() => ({
 	cloudEnabled: false,
 	sessionStatus: "unauthenticated",
 	createProject: vi.fn(),
+	listProviderConnections: vi.fn(),
+	listUserProviderConnections: vi.fn(),
+	putGitHubPAT: vi.fn(),
+	validateSavedRepositoryAccess: vi.fn(),
 	signIn: vi.fn(),
 }));
 
@@ -69,7 +98,13 @@ vi.mock("../lib/cloud-session", () => ({
 
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({
-		client: { createProject: cloudMocks.createProject },
+		client: {
+			createProject: cloudMocks.createProject,
+			listProviderConnections: cloudMocks.listProviderConnections,
+			listUserProviderConnections: cloudMocks.listUserProviderConnections,
+			putGitHubPAT: cloudMocks.putGitHubPAT,
+			validateSavedRepositoryAccess: cloudMocks.validateSavedRepositoryAccess,
+		},
 		ready: cloudMocks.cloudEnabled && cloudMocks.sessionStatus === "authenticated",
 		baseUrl: "https://cp.example.com",
 	}),
@@ -88,13 +123,21 @@ vi.mock("../hooks/useCloudOrg", () => ({
 // tests render inside a provider. Local-only tests don't need one.
 function CloudTestProviders({ children }: { children: ReactNode }) {
 	const [queryClient] = useState(() => new QueryClient());
-	return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+	return (
+		<TooltipProvider>
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		</TooltipProvider>
+	);
 }
 
 // Probe stand-in: the real sheet needs a QueryClientProvider + agent catalog to
 // render. These tests only care which path/kind CreateProjectFlow hands it and
 // whether it's open, so a thin stub keeps the suite fast and focused.
-vi.mock("./CreateProjectAgentSheet", () => ({
+// RequiredAgentField is left real (the cloud agent step below renders it
+// directly against provider-connection state); only the heavy local sheet,
+// which needs its own daemon-backed state, is stubbed.
+vi.mock("./CreateProjectAgentSheet", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./CreateProjectAgentSheet")>()),
 	CreateProjectAgentSheet: ({
 		error,
 		kind,
@@ -136,7 +179,7 @@ vi.mock("./CloneRepositoryDialog", () => ({
 		value: { remoteUrl: string; destinationParent: string };
 	}) =>
 		open ? (
-			<div data-testid="clone-dialog">
+			<div data-testid="clone-dialog" data-destination={value.destinationParent}>
 				<input
 					aria-label="Clone URL"
 					value={value.remoteUrl}
@@ -242,19 +285,55 @@ beforeEach(() => {
 	bridgeMocks.checkGitHubRepositoryAvailability.mockReset().mockResolvedValue({ available: true });
 	bridgeMocks.chooseDirectory.mockReset();
 	bridgeMocks.getGitHubLogin.mockReset().mockResolvedValue("");
+	bridgeMocks.getCachedGitHubOwners.mockReset().mockResolvedValue([{ login: "username", avatarUrl: "https://avatars.example/username" }, { login: "acme", avatarUrl: "https://avatars.example/acme" }]);
+	bridgeMocks.refreshGitHubOwners.mockReset().mockResolvedValue([{ login: "username", avatarUrl: "https://avatars.example/username" }, { login: "acme", avatarUrl: "https://avatars.example/acme" }]);
 	bridgeMocks.getRepositoryBranch.mockReset().mockResolvedValue(undefined);
 	bridgeMocks.scanImportFolder.mockReset().mockImplementation(async ({ path }: { path: string }) => okScan(path));
+	bridgeMocks.connectProviderAuth.mockReset().mockRejectedValue(new Error("No browser auth flow for github in tests"));
 	apiMocks.POST.mockReset();
 	apiMocks.apiErrorMessage.mockClear();
 	cloudMocks.cloudEnabled = false;
 	cloudMocks.sessionStatus = "unauthenticated";
 	cloudMocks.createProject.mockReset();
+	cloudMocks.listProviderConnections.mockReset().mockResolvedValue({
+		providerConnections: [
+			{
+				id: "conn-1",
+				provider: "claude-code",
+				label: "default",
+				config: {},
+				validationState: "valid",
+				createdAt: "2026-01-01T00:00:00Z",
+				updatedAt: "2026-01-01T00:00:00Z",
+			},
+		],
+	});
+	cloudMocks.putGitHubPAT.mockReset().mockResolvedValue({
+		providerConnection: { id: "gh-1", provider: "github", label: "default", config: {}, validationState: "valid", createdAt: "", updatedAt: "" },
+	});
+	cloudMocks.validateSavedRepositoryAccess.mockReset().mockResolvedValue({ writeAccess: true });
+	cloudMocks.listUserProviderConnections.mockReset().mockResolvedValue({ providerConnections: [] });
+	githubDaemonMocks.getGitHubStatus.mockReset().mockResolvedValue({ connected: false });
+	githubDaemonMocks.listGitHubRepos.mockReset().mockResolvedValue({ repos: [] });
+	githubDaemonMocks.saveGitHubPAT.mockReset().mockResolvedValue(undefined);
 	cloudMocks.signIn.mockReset();
 	window.localStorage.clear();
 	useUiStore.setState({ globalToast: null, globalToasts: [] });
 });
 
 describe("CreateProjectFlow droppedPath", () => {
+	it("shows the standalone agent action when the host provides one", async () => {
+		const onCreateStandaloneAgent = vi.fn();
+		const user = userEvent.setup();
+		renderChooseFlow({ onCreateStandaloneAgent });
+
+		await user.click(screen.getByRole("button", { name: "New project" }));
+		await user.click(await screen.findByRole("button", { name: "New standalone agent" }));
+
+		expect(onCreateStandaloneAgent).toHaveBeenCalledOnce();
+		await waitFor(() => expect(screen.queryByRole("button", { name: "New standalone agent" })).not.toBeInTheDocument());
+	});
+
 	it("does not open on mount", () => {
 		render(<CreateProjectFlow mode="choose" {...noop} droppedPath={null} />);
 		expect(screen.queryByRole("button", { name: "Import a workspace folder" })).not.toBeInTheDocument();
@@ -346,6 +425,17 @@ describe("CreateProjectFlow droppedPath", () => {
 
 		expect(screen.getByTestId("agent-sheet")).toHaveAttribute("data-path", "/dropped/first");
 		expect(screen.queryByRole("button", { name: "Import an existing project" })).not.toBeInTheDocument();
+	});
+
+	it.each([null, "/chosen/projects"])("uses a sensible clone destination with saved folder %s", async (saved) => {
+		window.localStorage.removeItem("ao.clone.lastDestinationParent");
+		if (saved) window.localStorage.setItem("ao.clone.lastDestinationParent", saved);
+		const user = userEvent.setup();
+		const { rerender } = render(<CreateProjectFlow mode="choose" {...noop} openSignal={0} />);
+		rerender(<CreateProjectFlow mode="choose" {...noop} openSignal={1} />);
+		await user.click(await screen.findByRole("button", { name: "Clone from Git" }));
+		expect(await screen.findByTestId("clone-dialog")).toHaveAttribute("data-destination", saved ?? "~/ao/projects");
+		window.localStorage.removeItem("ao.clone.lastDestinationParent");
 	});
 
 	it("ignores a drop while the clone-from-Git dialog is open", async () => {
@@ -516,6 +606,7 @@ describe("CreateProjectFlow droppedPath", () => {
 		await act(async () => finishCreate());
 		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Creating the project" })).not.toBeInTheDocument());
 	});
+
 });
 
 describe("CreateProjectFlow project import validation", () => {
@@ -565,7 +656,7 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import a workspace folder");
 
-		expect(await screen.findByText("This is a single project, not a collection of projects. Import it as a project instead.")).toBeInTheDocument();
+		expect(await screen.findByText("This is a single repository, not a collection of repositories. Import it as a project instead.")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
 		expect(screen.queryByText("proj")).not.toBeInTheDocument();
 
@@ -582,7 +673,57 @@ describe("CreateProjectFlow project import validation", () => {
 		});
 	});
 
-	it("keeps workspace mode after preparing a child repository", async () => {
+	it("keeps workspace import available when the parent repository has no remote", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/workspace",
+			repos: [{
+				name: "app",
+				path: "/repo/workspace/app",
+				relativePath: "app",
+				branch: "main",
+				remote: "https://github.com/acme/app.git",
+				hasRemote: true,
+				isRepo: true,
+				hasCommit: true,
+				status: "ok",
+				needsGitInit: false,
+			}],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/workspace", {
+					nextStep: "continue",
+					root: { isRepo: true, hasCommit: true, hasOrigin: false, requiredActions: ["create_remote_repository"] },
+					childRepos: [{
+						repoPath: "/repo/workspace/app",
+						isRepo: true,
+						hasCommit: true,
+						hasOrigin: true,
+						isEmptyFolder: false,
+						needsGitInit: false,
+						requiredActions: [],
+						blockingErrors: [],
+					}],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow();
+		await openSource(user, "Import a workspace folder");
+
+		expect(screen.queryByText("This is a single repository, not a collection of repositories. Import it as a project instead.")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Import as project" })).not.toBeInTheDocument();
+		expect(await screen.findByText("app")).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+
+		expect(await screen.findByTestId("agent-sheet")).toHaveAttribute("data-kind", "workspace");
+		expect(screen.getByTestId("agent-sheet")).toHaveAttribute("data-path", "/repo/workspace");
+	});
+
+	it("blocks workspace import when a child repository has no remote", async () => {
 		const user = userEvent.setup();
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
 		bridgeMocks.scanImportFolder.mockResolvedValue({
@@ -600,19 +741,11 @@ describe("CreateProjectFlow project import validation", () => {
 				needsGitInit: false,
 			}],
 		});
-		const workspaceRoot = {
-			isRepo: false,
-			hasCommit: false,
-			hasOrigin: false,
-			needsGitInit: true,
-			requiredActions: [],
-		};
-		apiMocks.POST
-			.mockResolvedValueOnce({
+		apiMocks.POST.mockResolvedValueOnce({
 				data: {
 					...projectValidation("/repo/workspace", {
 						nextStep: "prepare_git",
-						root: workspaceRoot,
+						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, requiredActions: [] },
 						childRepos: [{
 							repoPath: "/repo/workspace/app",
 							isRepo: true,
@@ -626,48 +759,73 @@ describe("CreateProjectFlow project import validation", () => {
 					}),
 					importKind: "workspace",
 				},
-			})
-			.mockResolvedValueOnce({
-				data: {
-					events: [{ repoPath: "/repo/workspace/app", action: "set_remote", state: "success" }],
-					validation: {
-						...projectValidation("/repo/workspace", {
-							root: workspaceRoot,
-							childRepos: [{
-								repoPath: "/repo/workspace/app",
-								isRepo: true,
-								hasCommit: true,
-								hasOrigin: true,
-								isEmptyFolder: false,
-								needsGitInit: false,
-								requiredActions: [],
-								blockingErrors: [],
-							}],
-						}),
-						importKind: "workspace",
-					},
-				},
 			});
 
 		renderChooseFlow();
 		await openSource(user, "Import a workspace folder");
-		await user.click(await screen.findByRole("checkbox"));
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		expect(screen.getByText("Set an origin remote for the child repositories marked below before importing this workspace.")).toBeInTheDocument();
+		expect(screen.getByText("app")).toBeInTheDocument();
+		expect(screen.getByText("Setup required")).toBeInTheDocument();
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+		expect(screen.queryByRole("textbox", { name: "Origin remote URL" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+		expect(apiMocks.POST).toHaveBeenCalledTimes(1);
+	});
 
-		expect(await screen.findByTestId("agent-sheet")).toHaveAttribute("data-kind", "workspace");
-		expect(screen.getByTestId("agent-sheet")).toHaveAttribute("data-path", "/repo/workspace");
-		expect(screen.queryByRole("dialog", { name: "Prepare project" })).not.toBeInTheDocument();
-		expect(apiMocks.POST).toHaveBeenNthCalledWith(2, "/api/v1/imports/prepare-git", {
-			body: {
+	it("disables workspace import when no child Git repositories exist", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
+		bridgeMocks.scanImportFolder.mockResolvedValue({ path: "/repo/workspace", repos: [] });
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/workspace", {
+					isValid: false,
+					blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"],
+					nextStep: "error",
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"] },
+				}),
 				importKind: "workspace",
-				path: "/repo/workspace",
-				repositories: [{
-					repoPath: "/repo/workspace/app",
-					approvedActions: ["set_remote"],
-					remoteUrl: "https://github.com/username/app.git",
-				}],
 			},
 		});
+
+		renderChooseFlow();
+		await openSource(user, "Import a workspace folder");
+
+		expect(screen.getByText("Importing a workspace requires at least one direct child Git repository that already has a commit and an origin remote. You can import this folder as a project instead.")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Go Back" })).toBeInTheDocument();
+		expect(useUiStore.getState().globalToast).toBeNull();
+		expect(screen.getByRole("dialog", { name: "Import workspace" })).not.toHaveClass("modal-shake");
+	});
+
+	it("keeps workspace import disabled when only non-Git child folders exist", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/workspace",
+			repos: [{ name: "empty", path: "/repo/workspace/empty", relativePath: "empty", branch: "", remote: "", hasRemote: false, isRepo: false, hasCommit: false, status: "ok", needsGitInit: true }],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/workspace", {
+					isValid: false,
+					blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"],
+					nextStep: "error",
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, blockingErrors: ["WORKSPACE_CHILD_REPO_REQUIRED"] },
+					childRepos: [],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow();
+		await openSource(user, "Import a workspace folder");
+
+		expect(screen.getByText("Importing a workspace requires at least one direct child Git repository that already has a commit and an origin remote. You can import this folder as a project instead.")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Import as project" })).toBeInTheDocument();
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 	});
 
 	it("blocks invalid workspace validation with a toast and modal shake", async () => {
@@ -693,45 +851,6 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(screen.getByRole("dialog", { name: "Import workspace" })).toHaveClass("modal-shake"));
 		expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
 		expect(screen.queryByText("Import failed · workspace not registered")).not.toBeInTheDocument();
-	});
-
-	it("toasts and shakes the workspace modal when child Git preparation fails", async () => {
-		const user = userEvent.setup();
-		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/workspace");
-		bridgeMocks.scanImportFolder.mockResolvedValue({
-			path: "/repo/workspace",
-			repos: [{ name: "app", path: "/repo/workspace/app", relativePath: "app", branch: "main", remote: "", hasRemote: false, isRepo: true, hasCommit: true, status: "ok", needsGitInit: false }],
-		});
-		apiMocks.POST
-			.mockResolvedValueOnce({
-				data: {
-					...projectValidation("/repo/workspace", {
-						nextStep: "prepare_git",
-						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true, requiredActions: [] },
-						childRepos: [{ repoPath: "/repo/workspace/app", isRepo: true, hasCommit: true, hasOrigin: false, isEmptyFolder: false, needsGitInit: false, requiredActions: ["set_remote"], blockingErrors: [] }],
-					}),
-					importKind: "workspace",
-				},
-			})
-			.mockResolvedValueOnce({
-				data: {
-					events: [{ repoPath: "/repo/workspace/app", action: "set_remote", state: "error", error: "rpc INTERNAL_FAILURE request_id=secret" }],
-					validation: {
-						...projectValidation("/repo/workspace", { nextStep: "prepare_git" }),
-						importKind: "workspace",
-					},
-				},
-			});
-
-		renderChooseFlow();
-		await openSource(user, "Import a workspace folder");
-		await user.click(await screen.findByRole("checkbox"));
-		await user.click(screen.getByRole("button", { name: "Continue" }));
-
-		await waitFor(() => expect(screen.getByRole("dialog", { name: "Import workspace" })).toHaveClass("modal-shake"));
-		expect(useUiStore.getState().globalToast?.body).toBe("/repo/workspace/app failed while running Remote setup. Review the step below, then retry or go back.");
-		expect(screen.queryByText(/INTERNAL_FAILURE|request_id/)).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
 	});
 
 	it("uses one shared backdrop while switching between flow modals", async () => {
@@ -839,15 +958,17 @@ describe("CreateProjectFlow project import validation", () => {
 		await openSource(user, "Import an existing project");
 
 		expect(await screen.findByText("Prepare project")).toBeInTheDocument();
-		expect(screen.getByText("Project setup")).toBeInTheDocument();
+		expect(screen.queryByText("Project setup")).not.toBeInTheDocument();
+		expect(screen.getByText("project")).toBeInTheDocument();
+		expect(screen.getByText("does not have a GitHub remote. AO will create a repository, add it as origin, and push the current branch.")).toBeInTheDocument();
 		expect(screen.queryByRole("checkbox", { name: "Set up Git for this project" })).not.toBeInTheDocument();
 		expect(screen.queryByText("Git initialization")).not.toBeInTheDocument();
 		expect(screen.queryByText("Initial commit")).not.toBeInTheDocument();
 		expect(screen.queryByText("Remote setup")).not.toBeInTheDocument();
 		expect(screen.queryByText("Create the first commit so the project has a usable history.")).not.toBeInTheDocument();
-		expect(screen.getByLabelText("Owner")).toHaveValue("username");
+		await waitFor(() => expect(screen.getByLabelText("Owner")).toHaveTextContent("username"));
 		expect(screen.getByLabelText("Repository name")).toHaveValue("project");
-		expect(screen.getByText("Create a private GitHub repo?")).toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeDisabled();
 		expect(screen.queryByText("Plain folder")).not.toBeInTheDocument();
 		expect(screen.queryByText("No commit yet")).not.toBeInTheDocument();
 		expect(screen.queryByText("No origin remote")).not.toBeInTheDocument();
@@ -900,10 +1021,33 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import an existing project");
 
-		expect(await screen.findByLabelText("Owner")).toHaveValue("username");
+		await waitFor(() => expect(screen.getByLabelText("Owner")).toHaveTextContent("username"));
 		expect(screen.getByLabelText("Repository name")).toHaveValue("project-no-git");
-		expect(screen.getByText("Will create `https://github.com/username/project-no-git.git`")).toBeInTheDocument();
-		expect(await screen.findByText("Repository name is available.")).toHaveClass("text-emerald-600");
+			expect(screen.queryByText(/Will create/)).not.toBeInTheDocument();
+		expect(screen.queryByText("Repository name is available.")).not.toBeInTheDocument();
+	});
+
+	it("shows Other after selecting a custom GitHub owner", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project-no-git");
+		apiMocks.POST.mockResolvedValueOnce({
+			data: projectValidation("/repo/project-no-git", {
+				nextStep: "prepare_git",
+				root: {
+					hasOrigin: false,
+					requiredActions: ["create_remote_repository"],
+				},
+			}),
+		});
+
+		renderChooseFlow();
+		await openSource(user, "Import an existing project");
+
+		await user.click(await screen.findByLabelText("Owner"));
+		await user.click(await screen.findByRole("option", { name: "Use a different owner" }));
+
+		expect(screen.getByText("Other")).toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: "Owner" })).toHaveValue("username");
 	});
 
 	it("requires an available GitHub repository name", async () => {
@@ -924,9 +1068,8 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import an existing project");
 
-		expect(await screen.findByText("Repository name is already in use for this owner.")).toBeInTheDocument();
-		expect(screen.getByText("Repository name is already in use for this owner.")).toHaveClass("text-red-600");
-		expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+		expect(await screen.findByRole("alert")).toHaveTextContent("Repository name is already in use for this owner.");
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeDisabled();
 	});
 
 	it("checks repository availability again when the repository name changes", async () => {
@@ -955,8 +1098,53 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.type(repoNameInput, "project-new");
 
 		await waitFor(() => expect(bridgeMocks.checkGitHubRepositoryAvailability).toHaveBeenLastCalledWith({ owner: "username", name: "project-new" }));
-		expect(await screen.findByText("Repository name is available.")).toHaveClass("text-emerald-600");
-		expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+		expect(screen.getByText("project")).toBeInTheDocument();
+		expect(screen.queryByText("Repository name is available.")).not.toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled();
+	});
+
+	it.each([
+		"/repo/AO Desktop App",
+		"C:\\repo\\AO Desktop App",
+	])("normalizes spaces in a repository name from %s", async (repoPath) => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue(repoPath);
+		apiMocks.POST
+			.mockResolvedValueOnce({
+				data: projectValidation(repoPath, {
+					nextStep: "prepare_git",
+					root: { hasOrigin: false, requiredActions: ["create_remote_repository"] },
+				}),
+			})
+			.mockResolvedValueOnce({
+				data: {
+					events: [{ repoPath, action: "create_remote_repository", state: "success" }],
+					validation: projectValidation(repoPath),
+				},
+			});
+
+		renderChooseFlow();
+		await openSource(user, "Import an existing project");
+
+		expect(await screen.findByLabelText("Repository name")).toHaveValue("AO Desktop App");
+		expect(screen.getByText("Will create `AO-Desktop-App`")).toBeInTheDocument();
+		await waitFor(() => expect(bridgeMocks.checkGitHubRepositoryAvailability).toHaveBeenCalledWith({
+			owner: "username",
+			name: "AO-Desktop-App",
+		}));
+		await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
+		await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
+
+		await waitFor(() => expect(apiMocks.POST).toHaveBeenLastCalledWith("/api/v1/imports/prepare-git", {
+			body: {
+				importKind: "project",
+				path: repoPath,
+				approvedActions: ["create_remote_repository"],
+				remoteUrl: "https://github.com/username/AO-Desktop-App.git",
+				githubRepository: { owner: "username", name: "AO-Desktop-App", private: true },
+				stepwise: true,
+			},
+		}));
 	});
 
 	it("prepares the project and then opens agent selection", async () => {
@@ -1016,10 +1204,19 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import an existing project");
 		const ownerInput = await screen.findByLabelText("Owner");
-		await user.clear(ownerInput);
-		await user.type(ownerInput, "acme");
-		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+		const privateRepository = screen.getByRole("switch", { name: "Private repository" });
+		expect(privateRepository).toBeChecked();
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
+		await user.click(privateRepository);
+		expect(privateRepository).not.toBeChecked();
+		expect(screen.getByRole("switch", { name: "Public repository" })).toBe(privateRepository);
+		expect(screen.getByText("Public repository")).toBeInTheDocument();
+		expect(screen.getByText("Anyone on the internet can see this repo")).toBeInTheDocument();
+			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
+			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
 		await waitFor(() =>
 			expect(apiMocks.POST).toHaveBeenLastCalledWith("/api/v1/imports/prepare-git", {
@@ -1028,7 +1225,7 @@ describe("CreateProjectFlow project import validation", () => {
 					path: "/repo/project",
 					approvedActions: ["git_init", "git_commit", "create_remote_repository"],
 					remoteUrl: "https://github.com/acme/project.git",
-					githubRepository: { owner: "acme", name: "project" },
+					githubRepository: { owner: "acme", name: "project", private: false },
 					stepwise: true,
 				},
 			}),
@@ -1037,6 +1234,44 @@ describe("CreateProjectFlow project import validation", () => {
 		const sheet = await screen.findByTestId("agent-sheet");
 		expect(sheet).toHaveAttribute("data-path", "/repo/project");
 		expect(screen.queryByText("Prepare project")).not.toBeInTheDocument();
+	});
+
+	it("updates visibility toggle label, helper text, and accessible name dynamically when toggled", async () => {
+		const user = userEvent.setup();
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		apiMocks.POST.mockResolvedValueOnce({
+			data: projectValidation("/repo/project", {
+				nextStep: "prepare_git",
+				root: { hasOrigin: false, requiredActions: ["create_remote_repository"] },
+			}),
+		});
+
+		renderChooseFlow();
+
+		await openSource(user, "Import an existing project");
+		const ownerInput = await screen.findByLabelText("Owner");
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+
+		// Default state is ON (Private repository)
+		const toggle = screen.getByRole("switch", { name: "Private repository" });
+		expect(toggle).toBeChecked();
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
+
+		// Toggle to OFF (Public repository)
+		await user.click(toggle);
+		expect(toggle).not.toBeChecked();
+		expect(screen.getByRole("switch", { name: "Public repository" })).toBe(toggle);
+		expect(screen.getByText("Public repository")).toBeInTheDocument();
+		expect(screen.getByText("Anyone on the internet can see this repo")).toBeInTheDocument();
+
+		// Toggle back to ON (Private repository)
+		await user.click(toggle);
+		expect(toggle).toBeChecked();
+		expect(screen.getByRole("switch", { name: "Private repository" })).toBe(toggle);
+		expect(screen.getByText("Private repository")).toBeInTheDocument();
+		expect(screen.getByText("Only you and people you invite can see this repo")).toBeInTheDocument();
 	});
 
 	it("blocks an unavailable GitHub repository before Git preparation", async () => {
@@ -1057,7 +1292,7 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(bridgeMocks.checkGitHubRepositoryAvailability).toHaveBeenCalledWith({ owner: "username", name: "project" }));
 		expect(apiMocks.POST).toHaveBeenCalledTimes(1);
 		expect(screen.getByText("Repository name is already in use for this owner.")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+			expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeDisabled();
 		expect(screen.queryByTestId("agent-sheet")).not.toBeInTheDocument();
 	});
 
@@ -1083,43 +1318,60 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(sheet).toHaveClass("modal-shake"));
 	});
 
-	it.each(["single_repo", "workspace"] as const)("passes the checked-out root branch when importing %s", async (kind) => {
+	it("submits single_repo imports without a blocking branch lookup", async () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn(async () => undefined);
 		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
-		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
-		if (kind === "workspace") {
-			bridgeMocks.scanImportFolder.mockResolvedValue({
-				path: "/repo/project",
-				repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
-			});
-			apiMocks.POST.mockResolvedValueOnce({
-				data: {
-					...projectValidation("/repo/project", {
-						root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
-						childRepos: [{
-							repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
-							isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
-						}],
-					}),
-					importKind: "workspace",
-				},
-			});
-		} else {
-			apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
-		}
+		apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
 
 		renderChooseFlow({ onCreateProject });
-		await openSource(user, kind === "workspace" ? "Import a workspace folder" : "Import an existing project");
-		if (kind === "workspace") {
-			await user.click(await screen.findByRole("button", { name: "Continue" }));
-		}
+		await openSource(user, "Import an existing project");
 		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
 
 		await waitFor(() =>
 			expect(onCreateProject).toHaveBeenCalledWith({
 				path: "/repo/project",
-				asWorkspace: kind === "workspace",
+				asWorkspace: false,
+				workerAgent: "codex",
+				orchestratorAgent: "codex",
+			}),
+		);
+		// The daemon resolves the base branch itself; the import must not
+		// block on a branch lookup before submitting.
+		expect(bridgeMocks.getRepositoryBranch).not.toHaveBeenCalled();
+	});
+
+	it("preserves the checked-out root branch when importing a workspace", async () => {
+		const user = userEvent.setup();
+		const onCreateProject = vi.fn(async () => undefined);
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		bridgeMocks.getRepositoryBranch.mockResolvedValue("main");
+		bridgeMocks.scanImportFolder.mockResolvedValue({
+			path: "/repo/project",
+			repos: [{ ...okScan("/repo/project/app").repos[0], name: "app", relativePath: "app" }],
+		});
+		apiMocks.POST.mockResolvedValueOnce({
+			data: {
+				...projectValidation("/repo/project", {
+					root: { isRepo: false, hasCommit: false, hasOrigin: false, needsGitInit: true },
+					childRepos: [{
+						repoPath: "/repo/project/app", isRepo: true, hasCommit: true, hasOrigin: true,
+						isEmptyFolder: false, needsGitInit: false, requiredActions: [], blockingErrors: [],
+					}],
+				}),
+				importKind: "workspace",
+			},
+		});
+
+		renderChooseFlow({ onCreateProject });
+		await openSource(user, "Import a workspace folder");
+		await user.click(await screen.findByRole("button", { name: "Continue" }));
+		await user.click(await screen.findByRole("button", { name: "Submit agents" }));
+
+		await waitFor(() =>
+			expect(onCreateProject).toHaveBeenCalledWith({
+				path: "/repo/project",
+				asWorkspace: true,
 				defaultBranch: "main",
 				workerAgent: "codex",
 				orchestratorAgent: "codex",
@@ -1167,10 +1419,10 @@ describe("CreateProjectFlow project import validation", () => {
 
 		await openSource(user, "Import an existing project");
 		const ownerInput = await screen.findByLabelText("Owner");
-		await user.clear(ownerInput);
-		await user.type(ownerInput, "acme");
-		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
+			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
 		expect(await screen.findByText("Running project setup. AO is preparing this repository now.")).toBeInTheDocument();
 		expect(screen.getAllByText("In progress")).toHaveLength(1);
@@ -1274,10 +1526,10 @@ describe("CreateProjectFlow project import validation", () => {
 		renderChooseFlow();
 		await openSource(user, "Import an existing project");
 		const ownerInput = await screen.findByLabelText("Owner");
-		await user.clear(ownerInput);
-		await user.type(ownerInput, "acme");
-		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-		await user.click(screen.getByRole("button", { name: "Continue" }));
+		await user.click(ownerInput);
+		await user.click(await screen.findByRole("option", { name: "acme" }));
+			await waitFor(() => expect(screen.getByRole("button", { name: "Create repository and continue" })).toBeEnabled());
+			await user.click(screen.getByRole("button", { name: "Create repository and continue" }));
 
 		await waitFor(() => expect(useUiStore.getState().globalToast?.body).toMatch(/failed while running Initial commit/i));
 		await waitFor(() => expect(screen.getByRole("dialog", { name: "Prepare project" })).toHaveClass("modal-shake"));
@@ -1295,75 +1547,375 @@ describe("CreateProjectFlow project import validation", () => {
 	});
 });
 
-describe("CreateProjectFlow cloud offering", () => {
-	it("hides the Local | Cloud choice when the cloud gate is off", () => {
+	describe("CreateProjectFlow cloud offering", () => {
+	it("hides the Cloud project source when the cloud gate is off", () => {
 		cloudMocks.sessionStatus = "authenticated";
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
-		expect(screen.queryByRole("tab", { name: "Cloud" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "New cloud project" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Import an existing project" })).toBeInTheDocument();
 	});
 
-	it("shows the Cloud choice and sign-in prompt when the user is signed out", async () => {
+	it("shows the Cloud project source and sign-in prompt when the user is signed out", async () => {
 		cloudMocks.cloudEnabled = true;
 		const user = userEvent.setup();
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
-		expect(screen.getByRole("tab", { name: "Local", selected: true })).toBeInTheDocument();
-		await user.click(screen.getByRole("tab", { name: "Cloud" }));
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
 		expect(screen.getByText(/sign in to AO Cloud to create a cloud project/i)).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Sign in to AO Cloud" }));
 		expect(cloudMocks.signIn).toHaveBeenCalledOnce();
 	});
 
-	it("shows the choice defaulting to Local when the gate is on and the user is signed in", () => {
+	it("shows Cloud in a separate card above the local project sources", () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
-		expect(screen.getByRole("tab", { name: "Local", selected: true })).toBeInTheDocument();
-		expect(screen.getByRole("tab", { name: "Cloud", selected: false })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Import an existing project" })).toBeInTheDocument();
+		const cloud = screen.getByRole("button", { name: "New cloud project" });
+		const local = screen.getByRole("button", { name: "Import an existing project" });
+		expect(cloud.closest(".rounded-md")).toHaveClass("border-[var(--color-border-import-modal)]", "bg-[var(--color-bg-import-modal)]");
+		expect(local.closest(".rounded-md")).toHaveClass("border-[var(--color-border-import-modal)]", "bg-[var(--color-bg-import-modal)]");
+		expect(local).toHaveClass("border-[var(--color-border-import-modal)]");
+		expect(screen.queryByText("Local")).not.toBeInTheDocument();
+		expect(cloud.closest(".rounded-md")).not.toBe(local.closest(".rounded-md"));
+		expect(cloud.compareDocumentPosition(local) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 	});
 
-	it("creates a cloud project through the control-plane client instead of the daemon flow", async () => {
+	it("omits the cloud form heading and underlines the GitHub setup toggle", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+
+		expect(screen.queryByRole("heading", { name: "New cloud project" })).not.toBeInTheDocument();
+		const manualSetup = screen.getByRole("button", { name: "Manually setup" });
+		expect(manualSetup).toHaveClass("decoration-dotted");
+
+		await user.click(manualSetup);
+		expect(screen.getByRole("button", { name: "Auth with GitHub" })).toHaveClass("decoration-dotted");
+	});
+
+	it("uses the control-plane GitHub credential when creating from a private repository", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		cloudMocks.listUserProviderConnections.mockResolvedValue({
+			providerConnections: [
+				{
+					id: "github-1",
+					provider: "github",
+					label: "default",
+					config: {},
+					validationState: "valid",
+					createdAt: "2026-01-01T00:00:00Z",
+					updatedAt: "2026-01-01T00:00:00Z",
+				},
+			],
+		});
+		githubDaemonMocks.getGitHubStatus.mockResolvedValue({ connected: true });
+		githubDaemonMocks.listGitHubRepos.mockResolvedValue({
+			repos: [
+				{
+					name: "private-repo",
+					full_name: "acme/private-repo",
+					private: true,
+					default_branch: "main",
+					clone_url: "https://github.com/acme/private-repo.git",
+				},
+			],
+		});
+		cloudMocks.createProject.mockResolvedValue({ project: { id: "cp-private" } });
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		const privateRepo = await screen.findByRole("option", { name: /acme\/private-repo/ });
+		await user.selectOptions(screen.getAllByRole("combobox")[0], privateRepo);
+		expect(screen.getByLabelText("Project name")).toHaveValue("private-repo");
+		await user.click(await screen.findByRole("button", { name: "Create cloud project" }));
+
+		await waitFor(() =>
+			expect(cloudMocks.validateSavedRepositoryAccess).toHaveBeenCalledWith({
+				repositoryUrl: "https://github.com/acme/private-repo.git",
+			}),
+		);
+		await waitFor(() =>
+				expect(cloudMocks.createProject).toHaveBeenCalledWith("org-1", {
+					displayName: "private-repo",
+					repositoryUrl: "https://github.com/acme/private-repo.git",
+					defaultBranch: "main",
+					config: {
+						worker: { agent: "claude-code" },
+						orchestrator: { agent: "claude-code" },
+					},
+				}),
+		);
+	});
+
+	it("asks to connect GitHub when the credential exists locally but not in the control plane", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		githubDaemonMocks.getGitHubStatus.mockResolvedValue({ connected: true });
+		cloudMocks.listUserProviderConnections.mockResolvedValue({ providerConnections: [] });
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+
+		expect(await screen.findByRole("button", { name: /^Connect GitHub/ })).toBeInTheDocument();
+		expect(githubDaemonMocks.listGitHubRepos).not.toHaveBeenCalled();
+	});
+
+	it("reconnects GitHub after the stored credential is revoked", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		githubDaemonMocks.getGitHubStatus.mockResolvedValue({ connected: true });
+		cloudMocks.listUserProviderConnections.mockResolvedValue({
+			providerConnections: [{
+				id: "github-1",
+				provider: "github",
+				label: "default",
+				config: {},
+				validationState: "valid",
+				createdAt: "",
+				updatedAt: "",
+			}],
+		});
+		const invalidCredential = Object.assign(new Error("GitHub authorization expired."), {
+			status: 401,
+			code: "GITHUB_AUTH_INVALID",
+		});
+		githubDaemonMocks.listGitHubRepos.mockRejectedValue(invalidCredential);
+		// GitHub App exchange returns the access token plus refresh material.
+		bridgeMocks.connectProviderAuth.mockResolvedValue({
+			secret: "replacement-token",
+			refreshToken: "replacement-refresh",
+			expiresIn: 28800,
+			refreshTokenExpiresIn: 15552000,
+		});
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		const reconnect = await screen.findByRole("button", { name: "Reconnect GitHub" });
+		await user.click(reconnect);
+
+		await waitFor(() => expect(bridgeMocks.connectProviderAuth).toHaveBeenCalledWith({
+			baseUrl: "https://cp.example.com",
+			orgId: "org-1",
+			provider: "github",
+		}));
+		// The refresh material is forwarded to the daemon so the token self-renews.
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith(
+			"replacement-token",
+			expect.objectContaining({ refreshToken: "replacement-refresh", expiresIn: 28800, refreshTokenExpiresIn: 15552000 }),
+		));
+		await waitFor(() => expect(cloudMocks.putGitHubPAT).toHaveBeenCalledWith({ secret: "replacement-token" }));
+	});
+
+	it("advances to the agent step, then creates a cloud project with the selected agents", async () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
 		cloudMocks.createProject.mockResolvedValue({ project: { id: "cp-1" } });
+		// Don't pre-set listUserProviderConnections so OAuth panel shows
 		const onCreateProject = vi.fn();
 		const user = userEvent.setup();
 		render(<CreateProjectFlow embedded mode="choose" {...noop} onCreateProject={onCreateProject} />, {
 			wrapper: CloudTestProviders,
 		});
 
-		await user.click(screen.getByRole("tab", { name: "Cloud" }));
-		await user.type(screen.getByLabelText("Repository URL"), "https://github.com/acme/web-app");
+		// Single screen: enter project name, switch to PAT mode, fill fields, create
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
 		await user.type(screen.getByLabelText("Project name"), "web-app");
-		await user.click(screen.getByRole("button", { name: "Create cloud project" }));
+		await user.click(screen.getByRole("button", { name: "Manually setup" }));
+
+		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_setup_token");
+		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith("ghp_setup_token"));
+
+		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/web-app");
+
+		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
+		await waitFor(() => expect(createButton).not.toBeDisabled());
+		await user.click(screen.getByLabelText("Worker agent"));
+		expect(screen.getByRole("option", { name: /Codex/ })).toHaveAttribute("data-disabled");
+		expect(screen.queryByRole("option", { name: "Manage agents…" })).not.toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		await user.click(createButton);
 
 		await waitFor(() =>
 			expect(cloudMocks.createProject).toHaveBeenCalledWith("org-1", {
 				displayName: "web-app",
 				repositoryUrl: "https://github.com/acme/web-app",
 				defaultBranch: "main",
+				config: {
+					worker: { agent: "claude-code" },
+					orchestrator: { agent: "claude-code" },
+				},
 			}),
 		);
 		expect(onCreateProject).not.toHaveBeenCalled();
 		expect(bridgeMocks.chooseDirectory).not.toHaveBeenCalled();
 	});
 
-	it("blocks a non-https repository URL without calling the control plane", async () => {
+	it("blocks a non-https repository URL without advancing past the repository step", async () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
 		const user = userEvent.setup();
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
-		await user.click(screen.getByRole("tab", { name: "Cloud" }));
-		await user.type(screen.getByLabelText("Repository URL"), "git@github.com:acme/web-app.git");
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
 		await user.type(screen.getByLabelText("Project name"), "web-app");
-		await user.click(screen.getByRole("button", { name: "Create cloud project" }));
+		await user.click(screen.getByRole("button", { name: "Manually setup" }));
+
+		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_token");
+		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalled());
+
+		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "git@github.com:acme/web-app.git");
+
+		const createButton = screen.getByRole("button", { name: "Create cloud project" });
+		await user.click(createButton);
 
 		expect(await screen.findByText("Enter an https repository URL.")).toBeInTheDocument();
 		expect(cloudMocks.createProject).not.toHaveBeenCalled();
+	});
+
+	it("treats a cloud-auth 401 on PAT save as an expired session, not an invalid token", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		// The control plane rejects PUT /me/github-pat at its auth middleware (the
+		// AO Cloud session token expired) before the PAT is ever validated.
+		cloudMocks.putGitHubPAT.mockRejectedValueOnce(
+			new CloudCpError("The access token is invalid or expired.", { status: 401, code: "unauthorized" }),
+		);
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.type(screen.getByLabelText("Project name"), "web-app");
+		await user.click(screen.getByRole("button", { name: "Manually setup" }));
+		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_validtoken00000000000000000000000");
+		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+
+		// Re-auth is triggered and the token is NOT blamed.
+		await waitFor(() => expect(cloudMocks.signIn).toHaveBeenCalled());
+		expect(await screen.findByText(/AO Cloud session expired/i)).toBeInTheDocument();
+		expect(screen.queryByText("The access token is invalid or expired.")).not.toBeInTheDocument();
+	});
+
+	it("returns from GitHub setup to the project source list", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.click(screen.getByRole("button", { name: "Back" }));
+
+		expect(screen.getByRole("button", { name: "Clone from Git" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "New cloud project" })).toBeInTheDocument();
+	});
+
+	it("catches an unreachable repository at create, then retries after a GitHub token is saved", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		cloudMocks.createProject
+			.mockRejectedValueOnce(
+				new CloudCpError("Can't reach this repository — it may be private, or the URL may be wrong.", {
+					status: 422,
+					code: "repository_unreachable",
+				}),
+			)
+			.mockResolvedValueOnce({ project: { id: "cp-1" } });
+		githubDaemonMocks.saveGitHubPAT.mockResolvedValue(undefined);
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		// Single screen: enter project name, switch to PAT mode, fill fields, create
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.type(screen.getByLabelText("Project name"), "private-repo");
+		await user.click(screen.getByRole("button", { name: "Manually setup" }));
+
+		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_validtoken00000000000000000000000");
+		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith("ghp_validtoken00000000000000000000000"));
+
+		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/private-repo");
+
+		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
+		await waitFor(() => expect(createButton).not.toBeDisabled());
+		await user.click(createButton);
+
+		// The failure shows in both CloudAgentSetupStep and the unreachable banner
+		const alerts = screen.getAllByRole("alert");
+		expect(alerts.some(a => /can't reach this repository/i.test(a.textContent ?? ""))).toBe(true);
+	});
+
+	it("blocks project creation if the token is read-only", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		cloudMocks.validateSavedRepositoryAccess.mockResolvedValue({ writeAccess: false });
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		// Single screen: enter project name, switch to PAT mode, fill fields, create
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.type(screen.getByLabelText("Project name"), "read-only-repo");
+		await user.click(screen.getByRole("button", { name: "Manually setup" }));
+
+		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_readonlytoken");
+		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalled());
+
+		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/read-only-repo");
+
+		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
+		await waitFor(() => expect(createButton).not.toBeDisabled());
+		await user.click(createButton);
+
+		// The error shows in both CloudAgentSetupStep and the read-only banner
+		await waitFor(() => {
+			const alerts = screen.getAllByRole("alert");
+			expect(alerts.some(a => /does not have push access/i.test(a.textContent ?? ""))).toBe(true);
+		});
+		expect(screen.getByRole("button", { name: "Update Token" })).toBeInTheDocument();
+	});
+
+	it("shows a retry button when GitHub is temporarily unavailable", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		cloudMocks.validateSavedRepositoryAccess.mockRejectedValue(
+			new CloudCpError("GitHub is temporarily unavailable.", {
+				status: 502,
+				code: "provider_unavailable",
+			})
+		);
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		// Single screen: enter project name, switch to PAT mode, fill fields, create
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.type(screen.getByLabelText("Project name"), "unavailable-repo");
+		await user.click(screen.getByRole("button", { name: "Manually setup" }));
+
+		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_token");
+		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalled());
+
+		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/unavailable-repo");
+
+		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
+		await waitFor(() => expect(createButton).not.toBeDisabled());
+		await user.click(createButton);
+
+		// The error shows in both CloudAgentSetupStep and the unavailable banner
+		await waitFor(() => {
+			const alerts = screen.getAllByRole("alert");
+			expect(alerts.some(a => /GitHub is temporarily unavailable/i.test(a.textContent ?? ""))).toBe(true);
+		});
+		expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
 	});
 });

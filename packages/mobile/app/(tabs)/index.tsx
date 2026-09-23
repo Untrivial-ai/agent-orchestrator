@@ -1,56 +1,95 @@
-import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActivityIndicator, FlatList, Keyboard, Platform, StyleSheet, View } from "react-native";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { useKeyboardState, useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { attentionOf, type DashboardSession } from "../../lib/api";
 import { classifyConnectionFailure, describeConnectionFailure } from "../../lib/connectionError";
 import { tunnelMayHaveRotated } from "../../lib/staleTunnel";
 import { haptics } from "../../lib/haptics";
-import { groupSessions, type BoardSection, type BoardZone } from "../../lib/agentsView";
-import { ProjectSwitcher } from "../../lib/ProjectSwitcher";
-import { SessionCard } from "../../lib/SessionCard";
-import { useApp, useVisibleSessions } from "../../lib/store";
+import { StaleBanner } from "../../lib/StaleBanner";
+import { useApp } from "../../lib/store";
+import { UnpairedState } from "../../lib/UnpairedState";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
-import { MINUTE_MS, useNow } from "../../lib/useNow";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
-import { Button, EmptyState, HeaderIconButton, ScreenHeader, SectionHeader } from "../../lib/ui";
+import { Button, EmptyState, HeaderIconButton, ScreenHeader } from "../../lib/ui";
+import { WorkerBoardList, type BoardRow } from "../../lib/worker-board-list";
+import { WorkerDock } from "../../lib/worker-dock";
+import { workerDockKeyboardLayout, workerDockLift, workerListBottomInset } from "../../lib/worker-dock-layout";
+import { WorkerControlsSheet } from "../../lib/worker-controls-sheet";
+import {
+	ALL_WORKER_PROJECTS,
+	filterWorkersByProject,
+	spawnProjectParam,
+	workerProjectLabel,
+	workerSearchPresentation,
+} from "../../lib/worker-controls";
+import { space } from "../../lib/tokens";
 
-// The archive rides along as one more section so it scrolls with the board
-// rather than being pinned like desktop's strip — a phone has no room for a
-// permanent footer above the tab bar.
-type ListSection = BoardSection | { zone: "archive"; label: string; color: string; data: DashboardSession[] };
+export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
 export default function FleetScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
+
 	const router = useRouter();
 	const insets = useSafeAreaInsets();
-	const { configured, loading, error, errorStatus, connection, config, refresh, activeProjectId, notificationsUnread, activeEndpoints } =
+	const { configured, loading, error, errorStatus, connection, config, refresh, sessions, projects, notificationsUnread, activeEndpoints } =
 		useApp();
-	const sessions = useVisibleSessions();
 	const [refreshing, setRefreshing] = useState(false);
-	// Collapsed by default, like desktop's archive strip: it is history, and on a
-	// long-running project it is most of the sessions.
-	const [archiveOpen, setArchiveOpen] = useState(false);
+	const [query, setQuery] = useState("");
+	const [searchRequested, setSearchRequested] = useState(false);
+	const [controlsOpen, setControlsOpen] = useState(false);
+	const [workerProjectId, setWorkerProjectId] = useState(ALL_WORKER_PROJECTS);
+	// Stable identities so the memoised dock is not rebuilt on every poll — a
+	// re-render mid-tap is what made the filter menu open only sometimes.
+	const openSearch = useCallback(() => setSearchRequested(true), []);
+	const closeSearch = useCallback(() => {
+		Keyboard.dismiss();
+		setQuery("");
+		setSearchRequested(false);
+	}, []);
+	const openControls = useCallback(() => {
+		Keyboard.dismiss();
+		haptics.tap();
+		setControlsOpen(true);
+	}, []);
+	const spawnWorker = useCallback(() => {
+		Keyboard.dismiss();
+		haptics.tap();
+		router.push({ pathname: "/spawn", params: spawnProjectParam(workerProjectId) });
+	}, [router, workerProjectId]);
+	// Two selectors rather than the whole state object, so the board re-renders
+	// only when one of these two values actually changes.
+	//
+	// The hook listens on keyboardWillShow / keyboardDidHide — `will`, not `did`.
+	// That is the fix: the Android branch this replaces listened for
+	// keyboardDidShow, which fires only once the IME has finished animating, so
+	// the dock and the list inset arrived a beat after the keyboard had landed.
+	const keyboardHeight = useKeyboardState((state) => state.height);
+	const keyboardVisible = useKeyboardState((state) => state.isVisible);
+	// The keyboard's own animated height, for the dock. The `isVisible` flag above
+	// turns over when the keyboard has *finished* moving, so anything positioned
+	// from it arrives late — see `workerDockLift`.
+	const keyboardAnimation = useReanimatedKeyboardAnimation();
+	const listRef = useTabScrollToTop<FlatList<BoardRow>>();
 
-	const listRef = useTabScrollToTop<SectionList<DashboardSession, ListSection>>();
+	const projectSessions = useMemo(
+		() => filterWorkersByProject(sessions, workerProjectId),
+		[sessions, workerProjectId],
+	);
+	const searchOpen = workerSearchPresentation(searchRequested, query) === "expanded";
+	const selectedProjectLabel = workerProjectLabel(projects, workerProjectId);
 
-	// Relative timestamps go stale on their own; the board owns the clock.
-	const now = useNow(MINUTE_MS);
-
-	const { sections, archived } = useMemo(() => groupSessions(t, sessions), [t, sessions]);
-
-	// The archive is the last section, rendered only when expanded so a collapsed
-	// strip costs nothing to scroll past.
-	const listSections = useMemo<ListSection[]>(() => {
-		if (archived.length === 0) return sections;
-		return [
-			...sections,
-			{ zone: "archive" as const, label: "Archive", color: t.textFaint, data: archiveOpen ? archived : [] },
-		];
-	}, [sections, archived, archiveOpen, t]);
+	useEffect(() => {
+		if (
+			workerProjectId !== ALL_WORKER_PROJECTS &&
+			!projects.some((project) => project.id === workerProjectId)
+		) {
+			setWorkerProjectId(ALL_WORKER_PROJECTS);
+		}
+	}, [projects, workerProjectId]);
 
 	// Turn the poll's raw failure ("401 - missing or invalid connection password")
 	// into the same human copy the pairing screens use, keyed on the cause.
@@ -74,32 +113,6 @@ export default function FleetScreen() {
 		[errorStatus, config?.host, config?.httpPort, activeEndpoints, connection],
 	);
 
-	const counts = useMemo(() => {
-		let working = 0;
-		let needsYou = 0;
-		let mergeable = 0;
-		for (const s of sessions) {
-			const a = attentionOf(s);
-			if (a === "working") working++;
-			else if (a === "respond" || a === "action") needsYou++;
-			else if (a === "merge") mergeable++;
-		}
-		return { working, needsYou, mergeable };
-	}, [sessions]);
-
-	// A stat scrolls to its section. Guarded: scrollToLocation on a section that
-	// isn't rendered warns and does nothing, so a zero-count stat is inert rather
-	// than appearing broken.
-	const jumpTo = useCallback(
-		(zone: BoardZone) => {
-			const index = listSections.findIndex((s) => s.zone === zone);
-			if (index < 0) return;
-			haptics.select();
-			listRef.current?.scrollToLocation({ sectionIndex: index, itemIndex: 0, viewOffset: 8 });
-		},
-		[listSections, listRef],
-	);
-
 	const onRefresh = useCallback(async () => {
 		haptics.tap();
 		setRefreshing(true);
@@ -107,32 +120,30 @@ export default function FleetScreen() {
 		setRefreshing(false);
 	}, [refresh]);
 
+	const keyboardLayout = workerDockKeyboardLayout(keyboardHeight, insets.bottom, keyboardVisible);
+	// `progress`, not the animated `height`: that value is the keyboard's frame
+	// origin, which is negative while the keyboard is up (the library's own
+	// avoiding view negates it before use). Feeding it to a `max(…, 0)` produced a
+	// lift of exactly nothing, which parked the search field under the keyboard.
+	const dockRise = useAnimatedStyle(() => ({
+		transform: [{ translateY: -keyboardAnimation.progress.value * workerDockLift(keyboardHeight, insets.bottom) }],
+	}));
+
 	if (!configured) {
 		return (
 			<View style={styles.screen}>
 				<View style={{ height: insets.top }} />
-				<EmptyState
-					icon="server"
-					// Where a user who skipped onboarding lands. Deliberately not a
-					// restatement of the welcome screen — they've already read that and
-					// chosen to move past it. This says what is missing and offers the
-					// one action that fixes it, going straight to the scanner rather
-					// than sending them to Settings to hunt for a field.
-					title="No desktop paired"
-					message="Scan the pairing code from AO → Settings → Connect Mobile to drive your agents from here."
-					action={<Button title="Scan pairing code" icon="maximize" onPress={() => router.push("/pair")} />}
-				/>
+				<ScreenHeader title="Workers" />
+				<UnpairedState />
 			</View>
 		);
 	}
 
 	return (
-		<View style={styles.screen}>
+		<View style={[styles.screen, { paddingBottom: keyboardLayout.rootPaddingBottom }]}>
 			<View style={{ height: insets.top }} />
 			<ScreenHeader
-				title="Agents"
-				subtitle={config?.host}
-				status={connection}
+				title="Workers"
 				right={
 					<HeaderIconButton
 						icon="bell"
@@ -142,37 +153,27 @@ export default function FleetScreen() {
 					/>
 				}
 			/>
-
-			<View style={styles.stats}>
-				<Stat n={counts.working} label="working" color={t.orange} onPress={() => jumpTo("working")} />
-				<Stat n={counts.needsYou} label="need you" color={t.amber} onPress={() => jumpTo("action")} />
-				<Stat n={counts.mergeable} label="mergeable" color={t.green} onPress={() => jumpTo("merge")} />
-			</View>
-
-			<ProjectSwitcher />
+			{/* Above the list rather than inside ListEmptyComponent: the case this
+			    exists for is a populated board whose poll has died. */}
+			<StaleBanner error={!!error} onRetry={onRefresh} />
 
 			{loading && sessions.length === 0 ? (
 				<View style={styles.center}>
-					<ActivityIndicator color={t.blue} />
+					<ActivityIndicator color={t.accent} />
 				</View>
 			) : (
-				<SectionList
-					ref={listRef}
-					sections={listSections}
-					keyExtractor={(item) => `${item.projectId}:${item.id}`}
-					contentContainerStyle={{ paddingBottom: 120 }}
-					stickySectionHeadersEnabled={false}
-					refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.blue} />}
-					renderSectionHeader={({ section }) =>
-						section.zone === "archive" ? (
-							<ArchiveHeader count={archived.length} open={archiveOpen} onToggle={() => setArchiveOpen((v) => !v)} />
-						) : (
-							<SectionHeader label={section.label} color={section.color} count={section.data.length} />
-						)
-					}
-					renderItem={({ item }) => <SessionCard session={item} showProject={activeProjectId === "all"} now={now} />}
+				<WorkerBoardList
+					sessions={projectSessions}
+					query={query}
+					identityKey={`${workerProjectId}|${query.trim()}`}
+					listRef={listRef}
+					contentBottomInset={workerListBottomInset(keyboardLayout.dockBottom)}
+					refreshing={refreshing}
+					onRefresh={onRefresh}
 					ListEmptyComponent={
-						error ? (
+						query.trim() ? (
+							<EmptyState icon="search" title="No workers found" message={`No workers match “${query.trim()}”.`} />
+						) : error ? (
 							<EmptyState
 								icon="wifi-off"
 								title={failure.title}
@@ -187,79 +188,51 @@ export default function FleetScreen() {
 									</View>
 								}
 							/>
+						) : workerProjectId !== ALL_WORKER_PROJECTS ? (
+							<EmptyState
+								icon="folder"
+								title={`No workers in ${selectedProjectLabel}`}
+								message="Choose another project from the Workers controls."
+							/>
 						) : (
 							<EmptyState
 								icon="moon"
-								title="No active agents"
-								message="Spawn a worker to put your fleet to work."
-								action={<Button title="New agent" icon="plus" onPress={() => router.push("/spawn")} />}
+								title="No active workers"
+								message="Spawn a worker to get started."
+								action={<Button title="New agent" icon="plus" onPress={() => router.push({ pathname: "/spawn", params: spawnProjectParam(workerProjectId) })} />}
 							/>
 						)
 					}
 				/>
 			)}
 
-			{/* Spawn FAB */}
-			<Pressable
-				onPress={() => {
-					haptics.tap();
-					router.push("/spawn");
-				}}
-				style={({ pressed }) => [styles.fab, pressed && { opacity: 0.85 }]}
-			>
-				<Feather name="plus" size={24} color={t.onAccent} />
-			</Pressable>
+			{/* Resting position plus the keyboard's lift, animated: the dock travels with
+			    the keys instead of jumping once they have finished moving. */}
+			<Animated.View style={[styles.dock, { bottom: keyboardLayout.restingBottom }, dockRise]}>
+				<WorkerDock
+					query={query}
+					onQueryChange={setQuery}
+					searchOpen={searchOpen}
+					onSearchOpen={openSearch}
+					onSearchClose={closeSearch}
+					onOpenControls={openControls}
+					projectFiltered={workerProjectId !== ALL_WORKER_PROJECTS}
+					projects={projects}
+					selectedProjectId={workerProjectId}
+					onSelectProject={setWorkerProjectId}
+					onSpawn={spawnWorker}
+				/>
+			</Animated.View>
+
+			<WorkerControlsSheet
+				open={controlsOpen}
+				onDismiss={() => setControlsOpen(false)}
+				onSearch={() => setSearchRequested(true)}
+				projects={projects}
+				selectedProjectId={workerProjectId}
+				onSelectProject={setWorkerProjectId}
+			/>
 		</View>
-	);
-}
-
-function ArchiveHeader({ count, open, onToggle }: { count: number; open: boolean; onToggle: () => void }) {
-	const t = useTheme();
-	const styles = useThemedStyles(makeStyles);
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityState={{ expanded: open }}
-			accessibilityLabel={`Archive, ${count} session${count === 1 ? "" : "s"}`}
-			onPress={() => {
-				haptics.tap();
-				onToggle();
-			}}
-			style={({ pressed }) => [styles.archiveHeader, pressed && { opacity: 0.6 }]}
-		>
-			<Feather name={open ? "chevron-down" : "chevron-right"} size={14} color={t.textTertiary} />
-			<Text style={styles.archiveLabel}>ARCHIVE</Text>
-			<Text style={styles.archiveCount}>{count}</Text>
-		</Pressable>
-	);
-}
-
-function Stat({
-	n,
-	label,
-	color,
-	onPress,
-}: {
-	n: number;
-	label: string;
-	color: string;
-	onPress: () => void;
-}) {
-	const t = useTheme();
-	const styles = useThemedStyles(makeStyles);
-	// Zero means the section isn't on the board, so there is nowhere to jump.
-	const active = n > 0;
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={`${n} ${label}${active ? ". Scroll to section." : ""}`}
-			disabled={!active}
-			onPress={onPress}
-			style={({ pressed }) => [styles.stat, pressed && active && styles.statPressed]}
-		>
-			<Text style={[styles.statN, { color: active ? color : t.textFaint }]}>{n}</Text>
-			<Text style={styles.statLabel}>{label}</Text>
-		</Pressable>
 	);
 }
 
@@ -267,50 +240,12 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
-		errorActions: { flexDirection: "row", gap: 10, alignItems: "center" },
-		stats: {
-			flexDirection: "row",
-			gap: 10,
-			paddingHorizontal: 16,
-			paddingTop: 4,
-			paddingBottom: 10,
-		},
-		stat: {
-			flex: 1,
-			backgroundColor: t.bgElevated,
-			borderRadius: 12,
-			borderWidth: 1,
-			borderColor: t.borderSubtle,
-			paddingVertical: 12,
-			paddingHorizontal: 14,
-		},
-		statPressed: { backgroundColor: t.bgElevatedHover, borderColor: t.borderDefault },
-		statN: { fontSize: 24, fontWeight: "800", fontFamily: t.fontMono },
-		statLabel: { color: t.textTertiary, fontSize: 11, fontWeight: "600", marginTop: 2 },
-		archiveHeader: {
-			flexDirection: "row",
-			alignItems: "center",
-			gap: 8,
-			paddingHorizontal: 16,
-			paddingTop: 22,
-			paddingBottom: 10,
-		},
-		archiveLabel: { color: t.textTertiary, fontSize: 11, letterSpacing: 1.2, fontWeight: "700", flex: 1 },
-		archiveCount: { color: t.textFaint, fontSize: 12, fontWeight: "700", fontFamily: t.fontMono },
-		fab: {
+		errorActions: { flexDirection: "row", gap: space.sm, alignItems: "center" },
+		dock: {
 			position: "absolute",
-			right: 18,
-			bottom: 24,
-			width: 56,
-			height: 56,
-			borderRadius: 28,
-			backgroundColor: t.blue,
-			alignItems: "center",
-			justifyContent: "center",
-			shadowColor: "#000",
-			shadowOpacity: 0.4,
-			shadowRadius: 12,
-			shadowOffset: { width: 0, height: 4 },
-			elevation: 8,
+			left: 16,
+			right: 16,
+			height: 52,
+			flexDirection: "row",
 		},
 	});

@@ -35,7 +35,10 @@ func Open(dataDir string) (*sqlite.Store, error) {
 		return nil, fmt.Errorf("clone migrated template: %w", err)
 	}
 
-	store, err := sqlite.Open(dataDir)
+	// Fast path: skip all Goose migration/repair/reconciliation — the cloned
+	// database was fully migrated by buildTemplateDatabase and its schema
+	// version is verified by OpenPreMigrated before opening the pools.
+	store, err := sqlite.OpenPreMigrated(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("open cloned store: %w", err)
 	}

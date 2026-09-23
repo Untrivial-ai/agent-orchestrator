@@ -76,8 +76,8 @@ test(`renderer: workspace import preserves the root branch and explains unresolv
 	await page.getByRole("button", { name: "New project", exact: true }).first().click();
 	await page.getByRole("button", { name: "Import a workspace folder", exact: true }).click();
 	await expect(page.getByText("api", { exact: true })).toBeVisible();
-	await expect(page.getByText("docs", { exact: true })).toBeVisible();
-	await expect(page.getByRole("button", { name: /Not a Git repo.*Set up/ })).toBeVisible();
+	await expect(page.getByText("docs", { exact: true })).not.toBeVisible();
+	await expect(page.getByRole("button", { name: /Set up|Hide setup/ })).not.toBeVisible();
 	await page.getByRole("button", { name: "Continue", exact: true }).click();
 	await page.getByRole("button", { name: "Create workspace and start", exact: true }).click();
 	await expect(page).toHaveURL(/projects\/local-root/);

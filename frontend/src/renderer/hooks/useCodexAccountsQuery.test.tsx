@@ -15,6 +15,7 @@ import { writeCodexAccounts } from "./codex-accounts-state";
 const response: CodexAccountsResponse = {
 	accountRevision: 0,
 	accounts: [],
+	deviceReconciliation: { status: "verified", activeAccountVerified: false, reasonCode: "verified", retryable: false },
 	capabilities: {
 		nativeLogin: { state: "supported", reasonCode: "supported", reason: "available" },
 		globalSwitch: { state: "supported", reasonCode: "supported", reason: "available" },
@@ -62,28 +63,25 @@ describe("Codex account query", () => {
 		expect(queryClient.getQueryData(codexAccountsQueryKey)).toEqual(live);
 	});
 
-	it("ensures on surface open, focus, and visibility without polling", async () => {
+	it("ensures on focus and visibility without polling", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(codexAccountsQueryKey, response);
 		renderHook(() => useEnsureCodexAccounts(), { wrapper: wrapper(queryClient) });
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		expect(postMock).toHaveBeenLastCalledWith("/api/v1/agents/codex/accounts/ensure", {
-			body: { accountIds: [], includeUsage: false },
-		});
+		expect(postMock).not.toHaveBeenCalled();
 		const setIntervalSpy = vi.spyOn(window, "setInterval");
 		await act(async () => {
 			window.dispatchEvent(new Event("focus"));
 			await Promise.resolve();
 			await Promise.resolve();
 		});
-		expect(postMock).toHaveBeenCalledTimes(2);
+		expect(postMock).toHaveBeenCalledTimes(1);
 		Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 		await act(async () => {
 			document.dispatchEvent(new Event("visibilitychange"));
 			await Promise.resolve();
 			await Promise.resolve();
 		});
-		expect(postMock).toHaveBeenCalledTimes(3);
+		expect(postMock).toHaveBeenCalledTimes(2);
 		expect(setIntervalSpy).not.toHaveBeenCalled();
 		setIntervalSpy.mockRestore();
 	});
@@ -96,6 +94,10 @@ describe("Codex account query", () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(codexAccountsQueryKey, stale);
 		renderHook(() => useEnsureCodexAccounts(), { wrapper: wrapper(queryClient) });
+		await act(async () => {
+			window.dispatchEvent(new Event("focus"));
+			await Promise.resolve();
+		});
 		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
 
 		writeCodexAccounts(queryClient, live, "replace");

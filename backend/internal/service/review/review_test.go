@@ -28,7 +28,7 @@ type fakeStore struct {
 	sessionAutoInjectReview *bool
 
 	updateCalls        int
-	agentSessionUpdate int
+	activityUpdates    int
 	markCalls          int
 	markedIDs          []string
 	resolvedCommentIDs []string
@@ -41,12 +41,26 @@ func (f *fakeStore) GetReviewByID(_ context.Context, id string) (domain.Review, 
 	return domain.Review{}, false, nil
 }
 
-func (f *fakeStore) UpdateReviewAgentSessionID(_ context.Context, id, agentSessionID string) (bool, error) {
+func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error) {
 	if !f.reviewOK || f.review.ID != id {
 		return false, nil
 	}
-	f.agentSessionUpdate++
-	f.review.AgentSessionID = agentSessionID
+	switch {
+	case f.review.ReviewerLaunchID != "" && launchID != f.review.ReviewerLaunchID:
+		return false, nil
+	case f.review.ReviewerLaunchID == "" && launchID != "":
+		return false, nil
+	}
+	f.activityUpdates++
+	if agentSessionID != "" {
+		f.review.AgentSessionID = agentSessionID
+	}
+	if state != "" {
+		f.review.ReviewerActivityState = state
+	}
+	if launchID != "" {
+		f.review.ReviewerLaunchID = launchID
+	}
 	return true, nil
 }
 
@@ -313,11 +327,85 @@ func TestApplyReviewActivitySignalPersistsNativeReviewerSessionID(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("ApplyReviewActivitySignal: %v", err)
 	}
-	if st.agentSessionUpdate != 1 || st.review.AgentSessionID != "opencode-native-2" {
-		t.Fatalf("agent session update calls=%d review=%+v", st.agentSessionUpdate, st.review)
+	if st.activityUpdates != 1 || st.review.AgentSessionID != "opencode-native-2" {
+		t.Fatalf("activity update calls=%d review=%+v", st.activityUpdates, st.review)
 	}
 	if st.review.SessionID != "worker-1" {
 		t.Fatalf("worker session id changed: %+v", st.review)
+	}
+}
+
+func TestApplyReviewActivitySignalPersistsReviewerActivityState(t *testing.T) {
+	st := &fakeStore{
+		reviewOK: true,
+		review:   domain.Review{ID: "review-1", SessionID: "worker-1", Harness: domain.ReviewerOpenCode},
+	}
+	svc := New(nil, st)
+
+	if err := svc.ApplyReviewActivitySignal(context.Background(), "review-1", ActivitySignal{
+		Event: "stop",
+		State: domain.ActivityIdle,
+	}); err != nil {
+		t.Fatalf("ApplyReviewActivitySignal: %v", err)
+	}
+	if st.activityUpdates != 1 || st.review.ReviewerActivityState != domain.ActivityIdle {
+		t.Fatalf("activity update calls=%d review=%+v", st.activityUpdates, st.review)
+	}
+}
+
+func TestApplyReviewActivitySignalIgnoresStaleLaunchGeneration(t *testing.T) {
+	st := &fakeStore{
+		reviewOK: true,
+		review: domain.Review{
+			ID:                    "review-1",
+			SessionID:             "worker-1",
+			Harness:               domain.ReviewerOpenCode,
+			ReviewerLaunchID:      "launch-current",
+			ReviewerActivityState: domain.ActivityActive,
+		},
+	}
+	svc := New(nil, st)
+
+	if err := svc.ApplyReviewActivitySignal(context.Background(), "review-1", ActivitySignal{
+		Event:    "stop",
+		State:    domain.ActivityIdle,
+		LaunchID: "launch-stale",
+	}); err != nil {
+		t.Fatalf("ApplyReviewActivitySignal stale generation: %v", err)
+	}
+	if st.activityUpdates != 0 {
+		t.Fatalf("stale generation performed update calls=%d review=%+v", st.activityUpdates, st.review)
+	}
+	if st.review.ReviewerActivityState != domain.ActivityActive || st.review.ReviewerLaunchID != "launch-current" {
+		t.Fatalf("stale generation changed persisted review = %+v", st.review)
+	}
+}
+
+func TestApplyReviewActivitySignalIgnoresMissingLaunchIDAfterGenerationClaimed(t *testing.T) {
+	st := &fakeStore{
+		reviewOK: true,
+		review: domain.Review{
+			ID:                    "review-1",
+			SessionID:             "worker-1",
+			Harness:               domain.ReviewerOpenCode,
+			ReviewerLaunchID:      "launch-current",
+			ReviewerActivityState: domain.ActivityActive,
+			AgentSessionID:        "native-current",
+		},
+	}
+	svc := New(nil, st)
+
+	if err := svc.ApplyReviewActivitySignal(context.Background(), "review-1", ActivitySignal{
+		Event:          "session-start",
+		AgentSessionID: "legacy-native",
+	}); err != nil {
+		t.Fatalf("ApplyReviewActivitySignal missing launch id: %v", err)
+	}
+	if st.activityUpdates != 0 {
+		t.Fatalf("missing launch id performed update calls=%d review=%+v", st.activityUpdates, st.review)
+	}
+	if st.review.ReviewerActivityState != domain.ActivityActive || st.review.ReviewerLaunchID != "launch-current" || st.review.AgentSessionID != "native-current" {
+		t.Fatalf("missing launch id changed persisted review = %+v", st.review)
 	}
 }
 
@@ -430,6 +518,58 @@ func TestSubmitManySendsCombinedChangesRequested(t *testing.T) {
 	if runs[0].Status != domain.ReviewRunDelivered || runs[0].DeliveredAt == nil || !runs[0].DeliveredAt.Equal(now) ||
 		runs[1].Status != domain.ReviewRunDelivered || runs[1].DeliveredAt == nil || !runs[1].DeliveredAt.Equal(now) {
 		t.Fatalf("submitted runs not stamped delivered: %+v", runs)
+	}
+}
+
+func TestSubmitManySkipsSupersededRunAndDeliversSiblings(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	st := &fakeStore{
+		ok: true,
+		batchRuns: []domain.ReviewRun{
+			{ID: "run-1", SessionID: "mer-1", BatchID: "batch-1", PRURL: "pr1", TargetSHA: "sha1", Status: domain.ReviewRunRunning},
+			// A newer-commit trigger superseded run-2 while the reviewer was still
+			// working on the original batch.
+			{ID: "run-2", SessionID: "mer-1", BatchID: "batch-1", PRURL: "pr2", TargetSHA: "sha2", Status: domain.ReviewRunFailed},
+		},
+		prs: []domain.PullRequest{{URL: "pr1", HeadSHA: "sha1"}, {URL: "pr2", HeadSHA: "sha2-new"}},
+	}
+	reducer := &fakeReducer{outcome: lifecycle.ReviewDeliverySent}
+	svc := New(nil, st, WithLifecycleReducer(reducer), WithClock(func() time.Time { return now }))
+
+	runs, err := svc.SubmitMany(context.Background(), "mer-1", []SubmittedReview{
+		{RunID: "run-1", Verdict: domain.VerdictChangesRequested, Body: "fix pr1"},
+		{RunID: "run-2", Verdict: domain.VerdictChangesRequested, Body: "fix pr2"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitMany must deliver valid siblings when one run was superseded: %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != "run-1" || runs[0].Status != domain.ReviewRunDelivered {
+		t.Fatalf("want only run-1 delivered, got %+v", runs)
+	}
+	if reducer.batchCalls != 1 || len(reducer.gotBatch) != 1 || reducer.gotBatch[0].RunID != "run-1" {
+		t.Fatalf("want run-1 delivered independently; batchCalls=%d got=%+v", reducer.batchCalls, reducer.gotBatch)
+	}
+}
+
+func TestSubmitManyRejectsOnlySupersededRuns(t *testing.T) {
+	st := &fakeStore{
+		ok: true,
+		batchRuns: []domain.ReviewRun{{
+			ID: "run-1", SessionID: "mer-1", BatchID: "batch-1", PRURL: "pr1", TargetSHA: "sha1", Status: domain.ReviewRunCancelled,
+		}},
+	}
+	reducer := &fakeReducer{outcome: lifecycle.ReviewDeliverySent}
+	svc := New(nil, st, WithLifecycleReducer(reducer))
+
+	if _, err := svc.SubmitMany(context.Background(), "mer-1", []SubmittedReview{{
+		RunID: "run-1", Verdict: domain.VerdictApproved,
+	}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	} else if !strings.Contains(err.Error(), "superseded: run-1") {
+		t.Fatalf("err = %v, want rejected run id", err)
+	}
+	if reducer.batchCalls != 0 {
+		t.Fatalf("only superseded runs must not trigger delivery: batchCalls=%d", reducer.batchCalls)
 	}
 }
 

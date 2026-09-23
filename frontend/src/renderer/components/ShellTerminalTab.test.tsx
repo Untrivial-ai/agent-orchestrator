@@ -94,11 +94,11 @@ describe("ShellTerminalTab rename", () => {
 		expect(onSelect).toHaveBeenCalledOnce();
 	});
 
-	it("swaps the terminal glyph for close on hover without reserving a trailing close column", () => {
+	it("reveals close in the terminal glyph's slot on hover", () => {
 		renderTab({ appearance: "connected", isActive: true });
 
 		const closeButton = screen.getByRole("button", { name: "Close terminal ao" });
-		expect(closeButton.parentElement).toHaveClass("absolute", "left-2", "inset-y-0");
+		expect(closeButton.parentElement).toHaveClass("absolute", "inset-y-0", "left-2");
 		expect(closeButton).toHaveClass(
 			"opacity-0",
 			"pointer-events-none",
@@ -106,9 +106,7 @@ describe("ShellTerminalTab rename", () => {
 		);
 		expect(closeButton).not.toHaveClass("transition-opacity", "transition-[opacity,background,color]");
 		expect(closeButton).not.toHaveClass("w-control-sm");
-		expect(screen.getByRole("tab", { name: "ao" }).querySelector("svg")).toHaveClass(
-			"group-hover:opacity-0",
-		);
+		expect(screen.getByRole("tab", { name: "ao" }).querySelector("svg")).toHaveClass("group-hover:opacity-0");
 		expect(screen.getByRole("tab", { name: "ao" })).toHaveAttribute("aria-selected", "true");
 	});
 

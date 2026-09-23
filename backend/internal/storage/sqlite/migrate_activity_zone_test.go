@@ -13,9 +13,7 @@ import (
 // agent-switch source-stop predicate then matches zero rows and strands the
 // saga. Migration 0120 rewrites those rows to the canonical UTC form.
 func TestMigration0120NormalizesLocalZoneActivityTimestamps(t *testing.T) {
-	db := openTestDB(t)
-
-	upTo(t, db, 94)
+	db := openMigratedDatabaseCopy(t, 94)
 
 	now := time.Now().UTC()
 	if _, err := db.Exec(`INSERT INTO projects (id, path, display_name, registered_at)

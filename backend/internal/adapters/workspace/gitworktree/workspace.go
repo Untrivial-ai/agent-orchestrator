@@ -30,6 +30,36 @@ var (
 	ErrUnsafePath = errors.New("gitworktree: unsafe workspace path")
 )
 
+// teardownLocks serializes the repo-touching git worktree teardown sequences
+// (destroy, ForceDestroy, forceDestroyPath) per repository. Each writes shared
+// `.git/worktrees/*` metadata, and project removal now tears down all of a
+// project's sessions concurrently, so interleaved prune/remove/list commands
+// against one repo would race. Different repositories are independent and stay
+// unlocked, so unrelated projects still tear down in parallel.
+var (
+	teardownMu    sync.Mutex
+	teardownLocks = map[string]*sync.Mutex{}
+)
+
+// repoTeardownLock canonicalizes repo and returns the release for the
+// per-repository teardown lock a single git worktree teardown sequence must
+// hold while it mutates the repo.
+func repoTeardownLock(repo string) (func(), error) {
+	key, err := physicalAbs(repo)
+	if err != nil {
+		return nil, err
+	}
+	teardownMu.Lock()
+	m := teardownLocks[key]
+	if m == nil {
+		m = &sync.Mutex{}
+		teardownLocks[key] = m
+	}
+	teardownMu.Unlock()
+	m.Lock()
+	return m.Unlock, nil
+}
+
 // ErrPreservedConflict is an adapter-local alias of ports.ErrPreservedConflict.
 // Tests inside this package use this name; callers outside use ports.ErrPreservedConflict
 // and errors.Is works because the adapter wraps the ports sentinel.
@@ -625,6 +655,13 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 	if err != nil {
 		return ports.WorkspaceReclaimAlreadyAbsent, err
 	}
+	// Serialize this repo's teardown against other sessions of the same project
+	// being killed concurrently; git worktree metadata is shared per repo.
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		return ports.WorkspaceReclaimAlreadyAbsent, fmt.Errorf("gitworktree: repo path: %w", err)
+	}
+	defer unlock()
 	// Sampled before any teardown step runs, so it reflects the state this call
 	// found rather than the state it left behind. Only a definite absence counts
 	// as already-absent; a stat that fails for any other reason (permissions, a
@@ -673,6 +710,9 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 		return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune", path)
 	}
 	if err := removeAllWithRetry(ctx, path); err != nil {
+		if errors.Is(err, errRemoveRetryExhausted) {
+			return reclaim, fmt.Errorf("gitworktree: remove unregistered path %q: %w (cause: %w)", path, ports.ErrWorkspaceDeferred, err)
+		}
 		return reclaim, fmt.Errorf("gitworktree: remove unregistered path %q: %w", path, err)
 	}
 	return reclaim, nil
@@ -698,6 +738,11 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 	if err != nil {
 		return err
 	}
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		return fmt.Errorf("gitworktree: repo path: %w", err)
+	}
+	defer unlock()
 	if err := w.requireReachableRepo(repo); err != nil {
 		return err
 	}
@@ -1488,6 +1533,11 @@ func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspa
 }
 
 func (w *Workspace) forceDestroyPath(ctx context.Context, repo, path string) error {
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		return fmt.Errorf("gitworktree: repo path: %w", err)
+	}
+	defer unlock()
 	if err := w.requireReachableRepo(repo); err != nil {
 		return err
 	}

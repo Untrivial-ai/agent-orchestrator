@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -74,6 +76,25 @@ func TestReviewCommandUsesReadOnlySandbox(t *testing.T) {
 	}
 }
 
+func TestReviewCommandEmitsConfiguredCodexEffort(t *testing.T) {
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	got, err := New().ReviewCommand(context.Background(), ports.ReviewInvocation{
+		Config: ports.AgentConfig{Effort: "high"},
+		Prompt: "review it",
+	})
+	if err != nil {
+		t.Fatalf("ReviewCommand: %v", err)
+	}
+	if !slices.Contains(got.Argv, "model_reasoning_effort='high'") {
+		t.Fatalf("review command %#v missing configured Codex effort", got.Argv)
+	}
+}
+
 func TestReviewMessageReturnsTaskPrompt(t *testing.T) {
 	got, err := (&Reviewer{}).ReviewMessage(context.Background(), ports.ReviewInvocation{Prompt: "next review"})
 	if err != nil {
@@ -132,6 +153,9 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndReadOnlySandbox(t *testing.T)
 	}
 	if !ok {
 		t.Fatal("ReviewRestoreCommand ok = false, want true")
+	}
+	if !got.NativeResumed {
+		t.Fatal("ReviewRestoreCommand did not report native resume")
 	}
 	want := []string{
 		"agent", "resume",

@@ -485,6 +485,30 @@ func TestGetRestoreCommandPreservesModel(t *testing.T) {
 	}
 }
 
+// TestGetRestoreCommandAppendsResumeTimePrompt covers resuming a reviewer
+// after it was killed and re-triggered: the new task must be embedded in the
+// resume argv (mirroring GetLaunchCommand), or the resumed session would sit
+// idle with no work to act on.
+func TestGetRestoreCommandAppendsResumeTimePrompt(t *testing.T) {
+	p := &Plugin{resolvedBinary: "muse"}
+	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Prompt: "review the new commit",
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "muse-native-1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := []string{"muse", "--trust-workspace", "resume", "muse-native-1", "review the new commit"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v", cmd, want)
+	}
+}
+
 func TestGetRestoreCommandInjectsPromptAndManagedHooksEnvironment(t *testing.T) {
 	dataDir := t.TempDir()
 	p := &Plugin{resolvedBinary: "muse"}

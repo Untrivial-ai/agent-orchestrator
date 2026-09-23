@@ -383,11 +383,21 @@ func TestDeriveKanbanPresentationSinglePR(t *testing.T) {
 			want:       contract.DisplayExited,
 		},
 		{
-			name:       "failing ci with auto-fix on is being fixed",
-			session:    contract.KanbanSessionFacts{AutoInjectCI: true},
+			name: "failing ci with auto-fix on and worker active is being fixed",
+			session: contract.KanbanSessionFacts{
+				SessionFacts: contract.SessionFacts{Activity: contract.ActivityActive},
+				AutoInjectCI: true,
+			},
 			pr:         contract.KanbanPRFacts{URL: "pr/1", CI: contract.CIFailing},
 			wantColumn: contract.KanbanValidating,
 			want:       contract.DisplayFixingCI,
+		},
+		{
+			name:       "failing ci with auto-fix on but worker idle says ci failing",
+			session:    contract.KanbanSessionFacts{AutoInjectCI: true},
+			pr:         contract.KanbanPRFacts{URL: "pr/1", CI: contract.CIFailing},
+			wantColumn: contract.KanbanValidating,
+			want:       contract.DisplayCIFailing,
 		},
 		{
 			name:       "failing ci on a draft with auto-fix off says ci failing",
@@ -396,14 +406,41 @@ func TestDeriveKanbanPresentationSinglePR(t *testing.T) {
 			want:       contract.DisplayCIFailing,
 		},
 		{
-			name:    "an ao changes request with auto-inject on is being addressed",
-			session: contract.KanbanSessionFacts{AutoInjectReview: true},
+			name: "an ao changes request with auto-inject on and worker active is being addressed",
+			session: contract.KanbanSessionFacts{
+				SessionFacts:     contract.SessionFacts{Activity: contract.ActivityActive},
+				AutoInjectReview: true,
+			},
 			pr: contract.KanbanPRFacts{
 				URL:       "pr/1",
 				ReviewRun: contract.KanbanReviewRunFacts{Present: true, ChangesRequested: true},
 			},
 			wantColumn: contract.KanbanValidating,
 			want:       contract.DisplayAddressingComments,
+		},
+		{
+			name:    "an ao changes request with auto-inject on but worker idle needs review",
+			session: contract.KanbanSessionFacts{AutoInjectReview: true},
+			pr: contract.KanbanPRFacts{
+				URL:       "pr/1",
+				ReviewRun: contract.KanbanReviewRunFacts{Present: true, ChangesRequested: true},
+			},
+			wantColumn: contract.KanbanValidating,
+			want:       contract.DisplayNeedsReview,
+		},
+		{
+			name: "a silent worker past grace has no signal",
+			session: contract.KanbanSessionFacts{
+				SessionFacts: contract.SessionFacts{
+					HasSignal:      false,
+					SignalExpected: true,
+					LastActivityAt: time.Unix(0, 0),
+				},
+				AutoInjectCI: true,
+			},
+			pr:         contract.KanbanPRFacts{URL: "pr/1", CI: contract.CIFailing},
+			wantColumn: contract.KanbanValidating,
+			want:       contract.DisplayNoSignal,
 		},
 		{
 			name: "an ao changes request with auto-inject off needs review",
@@ -460,6 +497,37 @@ func TestDeriveKanbanPresentationSinglePR(t *testing.T) {
 			want:       contract.DisplayNeedsHumanReview,
 		},
 		{
+			name: "a blocked worker outranks an open review",
+			session: contract.KanbanSessionFacts{
+				SessionFacts: contract.SessionFacts{Activity: contract.ActivityBlocked},
+			},
+			pr:         contract.KanbanPRFacts{URL: "pr/1"},
+			wantColumn: contract.KanbanNeedsReview,
+			want:       contract.DisplayBlocked,
+		},
+		{
+			name: "an exited worker outranks an open review",
+			session: contract.KanbanSessionFacts{
+				SessionFacts: contract.SessionFacts{Activity: contract.ActivityExited},
+			},
+			pr:         contract.KanbanPRFacts{URL: "pr/1"},
+			wantColumn: contract.KanbanNeedsReview,
+			want:       contract.DisplayExited,
+		},
+		{
+			name: "a silent worker past grace has no signal while in review",
+			session: contract.KanbanSessionFacts{
+				SessionFacts: contract.SessionFacts{
+					HasSignal:      false,
+					SignalExpected: true,
+					LastActivityAt: time.Unix(0, 0),
+				},
+			},
+			pr:         contract.KanbanPRFacts{URL: "pr/1"},
+			wantColumn: contract.KanbanNeedsReview,
+			want:       contract.DisplayNoSignal,
+		},
+		{
 			name:       "failing ci nobody is fixing says ci failing",
 			pr:         contract.KanbanPRFacts{URL: "pr/1", CI: contract.CIFailing},
 			wantColumn: contract.KanbanNeedsReview,
@@ -475,14 +543,27 @@ func TestDeriveKanbanPresentationSinglePR(t *testing.T) {
 			want:       contract.DisplayCommented,
 		},
 		{
-			name:    "external comments with auto-inject on are being addressed",
-			session: contract.KanbanSessionFacts{AutoInjectReview: true},
+			name: "external comments with auto-inject on and worker active are being addressed",
+			session: contract.KanbanSessionFacts{
+				SessionFacts:     contract.SessionFacts{Activity: contract.ActivityActive},
+				AutoInjectReview: true,
+			},
 			pr: contract.KanbanPRFacts{
 				URL:            "pr/1",
 				ExternalReview: contract.KanbanExternalReviewFacts{Comments: true},
 			},
 			wantColumn: contract.KanbanNeedsReview,
 			want:       contract.DisplayAddressingComments,
+		},
+		{
+			name:    "external comments with auto-inject on but worker idle are commented",
+			session: contract.KanbanSessionFacts{AutoInjectReview: true},
+			pr: contract.KanbanPRFacts{
+				URL:            "pr/1",
+				ExternalReview: contract.KanbanExternalReviewFacts{Comments: true},
+			},
+			wantColumn: contract.KanbanNeedsReview,
+			want:       contract.DisplayCommented,
 		},
 		{
 			name: "an external changes request nobody is addressing requests changes",
@@ -495,8 +576,11 @@ func TestDeriveKanbanPresentationSinglePR(t *testing.T) {
 			want:       contract.DisplayChangesRequested,
 		},
 		{
-			name:    "an external changes request with auto-inject on stays in review while being addressed",
-			session: contract.KanbanSessionFacts{AutoInjectReview: true},
+			name: "an external changes request with auto-inject on and worker active stays in review while being addressed",
+			session: contract.KanbanSessionFacts{
+				SessionFacts:     contract.SessionFacts{Activity: contract.ActivityActive},
+				AutoInjectReview: true,
+			},
 			pr: contract.KanbanPRFacts{
 				URL:            "pr/1",
 				Review:         contract.ReviewChangesRequest,
@@ -504,6 +588,17 @@ func TestDeriveKanbanPresentationSinglePR(t *testing.T) {
 			},
 			wantColumn: contract.KanbanNeedsReview,
 			want:       contract.DisplayAddressingComments,
+		},
+		{
+			name:    "an external changes request with auto-inject on but worker idle requests changes",
+			session: contract.KanbanSessionFacts{AutoInjectReview: true},
+			pr: contract.KanbanPRFacts{
+				URL:            "pr/1",
+				Review:         contract.ReviewChangesRequest,
+				ExternalReview: contract.KanbanExternalReviewFacts{ChangesRequested: true},
+			},
+			wantColumn: contract.KanbanNeedsReview,
+			want:       contract.DisplayChangesRequested,
 		},
 
 		// Ready: how the pr landed, or what stands between it and the button.
@@ -614,7 +709,10 @@ func TestDeriveKanbanPresentationSpeaksForTheChosenPR(t *testing.T) {
 	t.Run("a merged pr does not hide live work", func(t *testing.T) {
 		t.Parallel()
 		got := contract.DeriveKanbanPresentation(
-			contract.KanbanSessionFacts{AutoInjectCI: true},
+			contract.KanbanSessionFacts{
+				SessionFacts: contract.SessionFacts{Activity: contract.ActivityActive},
+				AutoInjectCI: true,
+			},
 			[]contract.KanbanPRFacts{
 				{URL: "pr/1", Merged: true, UpdatedAt: newer},
 				{URL: "pr/2", CI: contract.CIFailing, UpdatedAt: older},

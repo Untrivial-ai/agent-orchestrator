@@ -81,13 +81,18 @@ export function VSCodeIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
 // "Open with" list shows each editor's own logo rather than a stand-in. Paths
 // are simple-icons' (cursor, windsurf, zedindustries); VS Code is hand-authored
 // because simple-icons does not carry that restricted brand.
-function BrandGlyph({ d, className, ...props }: SVGProps<SVGSVGElement> & { d: string }) {
+function BrandGlyph({
+	d,
+	className,
+	viewBox = "0 0 24 24",
+	...props
+}: SVGProps<SVGSVGElement> & { d: string; viewBox?: string }) {
 	return (
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
 			width="24"
 			height="24"
-			viewBox="0 0 24 24"
+			viewBox={viewBox}
 			fill="currentColor"
 			className={className}
 			{...props}
@@ -144,4 +149,11 @@ export function VSCodiumIcon(props: SVGProps<SVGSVGElement>) {
 
 export function AndroidStudioIcon(props: SVGProps<SVGSVGElement>) {
 	return <BrandGlyph d={ANDROID_STUDIO_PATH} {...props} />;
+}
+
+const ANTIGRAVITY_PATH =
+	"M144.248 149.062c7.5 5.626 18.75 1.876 8.437-8.437-30.937-30-24.375-112.5-62.812-112.5-38.438 0-31.875 82.5-62.813 112.5-11.25 11.25.938 14.063 8.438 8.437 29.062-19.687 27.187-54.375 54.375-54.375 27.187 0 25.312 34.688 54.375 54.375Z";
+
+export function AntigravityIcon(props: SVGProps<SVGSVGElement>) {
+	return <BrandGlyph d={ANTIGRAVITY_PATH} viewBox="0 0 180 180" {...props} />;
 }

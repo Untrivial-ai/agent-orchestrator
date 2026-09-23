@@ -185,6 +185,9 @@ func TestReviewRestoreCommandUsesNativeSessionAndReappliesPolicy(t *testing.T) {
 	if !ok {
 		t.Fatal("ReviewRestoreCommand ok = false, want true")
 	}
+	if !spec.NativeResumed {
+		t.Fatal("ReviewRestoreCommand did not report native resume")
+	}
 	if strings.Join(spec.Argv, " ") != "kimchi --session kimchi-native-1" {
 		t.Fatalf("argv = %#v", spec.Argv)
 	}

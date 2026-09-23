@@ -7,9 +7,11 @@ import MakerNSIS from "./makers/maker-nsis";
 import MakerDMG, { isSigningConfigured, sealDmg, verifyDmg, verifyMacArtifact } from "./makers/maker-dmg";
 import { machoHasX86_64Slice } from "./makers/macho-archs";
 import MakerAppImage from "./makers/maker-appimage";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { BUNDLED_TMUX_VERSION } from "./scripts/tmux-version.mjs";
 
 // Default GitHub release target (production). Releases land on Untrivial-ai
 // (the org the repo was transferred to in July 2026; AgentWrapper and aoagents
@@ -63,6 +65,7 @@ export function extraResourcesForPlatform(platform: NodeJS.Platform): string[] {
 		"daemon",
 		"agent-browser",
 		"resources/acp-runtime",
+		...(platform === "darwin" ? ["update-helper"] : []),
 		...(platform === "darwin" || platform === "linux" ? ["tmux"] : []),
 		"assets/icon.png",
 		"assets/icon.ico",
@@ -166,6 +169,11 @@ const config: ForgeConfig = {
 		// AO_RELEASE_REPO at build time.
 		prePackage: async (_forgeConfig, platform, arch) => {
 			await prepareNativeDependencies(platform as NodeJS.Platform, arch);
+			if (platform === "darwin") {
+				const helperBuild = spawnSync(process.execPath, [path.resolve("scripts/build-update-helper.mjs"), "--arch", arch], { stdio: "inherit" });
+				if (helperBuild.error) throw helperBuild.error;
+				if (helperBuild.status !== 0) throw new Error("macOS update helper build failed");
+			}
 			const { owner, name } = parseReleaseRepo(process.env.AO_RELEASE_REPO);
 			const yml = [
 				"provider: github",
@@ -200,12 +208,28 @@ const config: ForgeConfig = {
 					const appBundle = readdirSync(outputPath).find((entry) => entry.endsWith(".app"));
 					if (!appBundle) throw new Error(`packaged macOS app bundle missing from ${outputPath}`);
 					resourcesPath = path.join(outputPath, appBundle, "Contents", "Resources");
+					const helper = path.join(resourcesPath, "update-helper", "ao-update-progress");
+					if (!existsSync(helper)) throw new Error(`packaged macOS update helper missing from ${helper}`);
 				}
 				const binary = path.join(resourcesPath, "tmux", "bin", "tmux");
 				if (!existsSync(binary)) throw new Error(`packaged tmux missing from ${binary}`);
 				const version = spawnSync(binary, ["-V"], { encoding: "utf8" });
-				if (version.status !== 0 || version.stdout.trim() !== "tmux 3.5a") {
+				if (version.status !== 0 || version.stdout.trim() !== `tmux ${BUNDLED_TMUX_VERSION}`) {
 					throw new Error(`packaged tmux failed verification at ${binary}: ${version.stderr || version.stdout}`);
+				}
+				const socket = path.join(tmpdir(), `ao-tmux-smoke-${process.pid}.sock`);
+				const smoke = spawnSync(binary, ["-S", socket, "-f", "/dev/null", "new-session", "-d", "true"], {
+					encoding: "utf8",
+					timeout: 5_000,
+				});
+				try {
+					if (smoke.error || smoke.status !== 0) {
+						const detail = smoke.error?.message || smoke.stderr || smoke.stdout;
+						throw new Error(`packaged tmux could not create a session at ${binary}: ${detail}`);
+					}
+				} finally {
+					spawnSync(binary, ["-S", socket, "kill-server"], { stdio: "ignore" });
+					rmSync(socket, { force: true });
 				}
 			}
 		},

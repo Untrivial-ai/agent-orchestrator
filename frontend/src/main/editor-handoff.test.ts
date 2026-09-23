@@ -19,25 +19,18 @@ function deps(overrides: Partial<EditorHandoffDeps> = {}): EditorHandoffDeps {
 	};
 }
 
-// Builds win32 deps whose PATH and install-location probing can be driven
-// entirely by mocks. Expected command paths are built with path.join so the
-// assertions hold whether the suite runs on Windows (backslash separators) or
-// POSIX CI runners (forward slashes). Each win32 test supplies an isExecutable
-// that recognizes the specific installer shim it is exercising.
+// Simulate Windows paths consistently on every test host.
 function winDeps(overrides: Partial<EditorHandoffDeps> = {}): EditorHandoffDeps {
 	return deps({
 		platform: "win32",
-		// PATH uses a drive letter without a trailing colon. The resolver splits
-		// PATH by path.delimiter, which is ":" on POSIX CI runners — a "C:" entry
-		// would be broken in two ("C" and "/bin") and the directory never found.
 		env: {
-			PATH: path.join("C", "bin"),
-			LOCALAPPDATA: path.join("C:", "Users", "tester", "AppData", "Local"),
-			ProgramFiles: path.join("C:", "Program Files"),
+			PATH: path.win32.join("C", "bin"),
+			LOCALAPPDATA: path.win32.join("C:", "Users", "tester", "AppData", "Local"),
+			ProgramFiles: path.win32.join("C:", "Program Files"),
 			PATHEXT: ".COM;.EXE;.BAT;.CMD",
 			ComSpec: "C:\\Windows\\System32\\cmd.exe",
 		},
-		homeDir: path.join("C:", "Users", "tester"),
+		homeDir: path.win32.join("C:", "Users", "tester"),
 		isDirectory: () => false,
 		...overrides,
 	});
@@ -54,6 +47,78 @@ describe("editor handoff", () => {
 		const state = await handoff.getState("ao-1");
 		expect(state).toMatchObject({ preferredEditorId: "cursor", workspaceAvailable: true });
 		expect(state.targets.map(({ id }) => id)).toEqual(["cursor", "vscode", "file-manager", "terminal"]);
+	});
+
+	it("opens Neovim in macOS Terminal with shell-safe workspace quoting", async () => {
+		const workspacePath = "/work trees/it's & safe";
+		const input = deps({
+			resolveWorkspace: vi.fn().mockResolvedValue(workspacePath),
+			isExecutable: (candidatePath) => candidatePath === "/bin/nvim",
+			isDirectory: () => false,
+		});
+		const handoff = createEditorHandoff(input);
+
+		const state = await handoff.getState("ao-1");
+		expect(state.targets.map(({ id }) => id)).toContain("neovim");
+		await handoff.open({ sessionId: "ao-1", targetId: "neovim" });
+
+		expect(input.launch).toHaveBeenCalledWith(
+			"/usr/bin/osascript",
+			["-e", `tell application "Terminal"\nactivate\ndo script "exec '/bin/nvim' '/work trees/it'\\\\''s & safe'"\nend tell`],
+			workspacePath,
+		);
+	});
+
+	it.each([
+		["x-terminal-emulator", ["-e"]],
+		["gnome-terminal", ["--"]],
+		["konsole", ["-e"]],
+		["xfce4-terminal", ["--execute"]],
+		["kitty", []],
+		["alacritty", ["-e"]],
+	] as const)("opens Neovim through the Linux %s launcher", async (terminalCommand, argsBeforeCommand) => {
+		const workspacePath = "/work trees/ao-1";
+		const input = deps({
+			platform: "linux",
+			env: { PATH: "/bin" },
+			resolveWorkspace: vi.fn().mockResolvedValue(workspacePath),
+			isExecutable: (candidatePath) => ["/bin/nvim", `/bin/${terminalCommand}`].includes(candidatePath),
+			isDirectory: () => false,
+		});
+		const handoff = createEditorHandoff(input);
+
+		await handoff.open({ sessionId: "ao-1", targetId: "neovim" });
+
+		expect(input.launch).toHaveBeenCalledWith(
+			`/bin/${terminalCommand}`,
+			[...argsBeforeCommand, "/bin/nvim", workspacePath],
+			workspacePath,
+		);
+	});
+
+	it("opens Neovim through Command Prompt on Windows without expanding workspace percent sequences", async () => {
+		const workspacePath = "C:\\work trees\\%TEMP% & fix";
+		const input = deps({
+			platform: "win32",
+			env: {
+				PATH: "C:\\bin",
+				PATHEXT: ".EXE",
+				ComSpec: "C:\\Windows\\System32\\cmd.exe",
+			},
+			homeDir: "C:\\Users\\tester",
+			resolveWorkspace: vi.fn().mockResolvedValue(workspacePath),
+			isExecutable: (candidatePath) => candidatePath === "C:\\bin\\nvim.exe",
+			isDirectory: () => false,
+		});
+		const handoff = createEditorHandoff(input);
+
+		await handoff.open({ sessionId: "ao-1", targetId: "neovim" });
+
+		expect(input.launch).toHaveBeenCalledWith(
+			"C:\\Windows\\System32\\cmd.exe",
+			["/d", "/s", "/v:off", "/k", `""C:\\bin\\nvim.exe" ".""`],
+			workspacePath,
+		);
 	});
 
 	it("reports a missing workspace without hiding the available targets", async () => {
@@ -102,14 +167,59 @@ describe("editor handoff", () => {
 			"Could not open VS Code. Check that it is installed and try again.",
 		);
 	});
+
+	it.each(["Antigravity IDE", "Antigravity"])(
+		"finds Antigravity IDE on macOS via %s.app bundle and launches with open -a",
+		async (bundleName) => {
+			const input = deps({
+				platform: "darwin",
+				isExecutable: () => false,
+				isDirectory: (candidatePath) => candidatePath === `/Applications/${bundleName}.app`,
+			});
+			const handoff = createEditorHandoff(input);
+			const state = await handoff.getState("ao-1");
+			const antigravity = state.targets.find(({ id }) => id === "antigravity");
+			expect(antigravity).toEqual({ id: "antigravity", name: "Antigravity IDE", kind: "editor" });
+
+			await handoff.open({ sessionId: "ao-1", targetId: "antigravity" });
+			expect(input.launch).toHaveBeenCalledWith(
+				"/usr/bin/open",
+				["-a", bundleName, "/worktrees/ao-1"],
+				"/worktrees/ao-1",
+			);
+		},
+	);
+
+	it.each(["antigravity-ide", "antigravity"])(
+		"finds Antigravity IDE on Linux via %s on PATH",
+		async (command) => {
+			const input = deps({
+				platform: "linux",
+				env: { PATH: "/usr/bin" },
+				isExecutable: (candidatePath) => candidatePath === `/usr/bin/${command}`,
+				isDirectory: () => false,
+			});
+			const handoff = createEditorHandoff(input);
+			const state = await handoff.getState("ao-1");
+			const antigravity = state.targets.find(({ id }) => id === "antigravity");
+			expect(antigravity).toEqual({ id: "antigravity", name: "Antigravity IDE", kind: "editor" });
+
+			await handoff.open({ sessionId: "ao-1", targetId: "antigravity" });
+			expect(input.launch).toHaveBeenCalledWith(
+				`/usr/bin/${command}`,
+				["/worktrees/ao-1"],
+				"/worktrees/ao-1",
+			);
+		},
+	);
 });
 
 describe("editor handoff (win32 fallback discovery)", () => {
 	// Cursor's Windows per-user install keeps its .cmd shim under
 	// resources\app\bin (the VS Code fork layout), not a top-level bin dir.
-	const cursorBin = path.join("C:", "Users", "tester", "AppData", "Local", "Programs", "Cursor", "resources", "app", "bin", "cursor.cmd");
-	const vscodeSystemBin = path.join("C:", "Program Files", "Microsoft VS Code", "bin", "code.cmd");
-	const vscodeAgentExec = path.join("C:", "Program Files", "Microsoft VS Code", "bin", "code.exe");
+	const cursorBin = path.win32.join("C:", "Users", "tester", "AppData", "Local", "Programs", "Cursor", "resources", "app", "bin", "cursor.cmd");
+	const vscodeSystemBin = path.win32.join("C:", "Program Files", "Microsoft VS Code", "bin", "code.cmd");
+	const vscodeAgentExec = path.win32.join("C:", "Program Files", "Microsoft VS Code", "bin", "code.exe");
 
 	it("finds an editor that is present only in the per-user LOCALAPPDATA install dir", async () => {
 		const handoff = createEditorHandoff(winDeps({ isExecutable: installedExecutables(cursorBin) }));
@@ -118,12 +228,20 @@ describe("editor handoff (win32 fallback discovery)", () => {
 		expect(cursor).toBeDefined();
 	});
 
+	it("finds Antigravity IDE when present in LOCALAPPDATA install dir", async () => {
+		const antigravityBin = path.win32.join("C:", "Users", "tester", "AppData", "Local", "Programs", "Antigravity IDE", "bin", "antigravity-ide.cmd");
+		const handoff = createEditorHandoff(winDeps({ isExecutable: installedExecutables(antigravityBin) }));
+		const state = await handoff.getState("ao-1");
+		const antigravity = state.targets.find(({ id }) => id === "antigravity");
+		expect(antigravity).toEqual({ id: "antigravity", name: "Antigravity IDE", kind: "editor" });
+	});
+
 	it("prefers a Windows-native .cmd shim over a bare extension-less sh script on PATH", async () => {
 		// VS Code/Cursor ship a bare `code` sh script and a `code.cmd` batch
 		// side by side; spawn must use the .cmd so cmd.exe can run it.
-		const dir = path.join("C", "bin");
-		const shScript = path.join(dir, "code");
-		const cmdShim = path.join(dir, "code.cmd");
+		const dir = path.win32.join("C", "bin");
+		const shScript = path.win32.join(dir, "code");
+		const cmdShim = path.win32.join(dir, "code.cmd");
 		const input = winDeps({ isExecutable: installedExecutables(shScript, cmdShim) });
 		const handoff = createEditorHandoff(input);
 		await handoff.open({ sessionId: "ao-1", targetId: "vscode" });
@@ -138,7 +256,7 @@ describe("editor handoff (win32 fallback discovery)", () => {
 	});
 
 	it("prefers a PATH install over the fallback install dirs", async () => {
-		const pathCode = path.join("C", "bin", "code.cmd");
+		const pathCode = path.win32.join("C", "bin", "code.cmd");
 		const input = winDeps({ isExecutable: installedExecutables(pathCode, vscodeAgentExec) });
 		const handoff = createEditorHandoff(input);
 		await handoff.open({ sessionId: "ao-1", targetId: "vscode" });
@@ -154,7 +272,7 @@ describe("editor handoff (win32 fallback discovery)", () => {
 	it("safely ignores nonexistent fallback roots (unset env vars) instead of throwing", async () => {
 		const input = winDeps({
 			env: {
-				PATH: path.join("C", "bin"),
+				PATH: path.win32.join("C", "bin"),
 				PATHEXT: ".COM;.EXE;.BAT;.CMD",
 			},
 			isExecutable: () => false,
@@ -181,7 +299,7 @@ describe("editor handoff (win32 fallback discovery)", () => {
 	});
 
 	it("still resolves an editor on linux via its extra search dirs (not the win32 fallback)", async () => {
-		const code = path.join("/usr/local/bin", "code");
+		const code = path.posix.join("/usr/local/bin", "code");
 		const input = deps({
 			platform: "linux",
 			env: { PATH: "/bin" },

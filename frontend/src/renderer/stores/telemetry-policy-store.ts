@@ -36,6 +36,7 @@ export const useTelemetryPolicyStore = create<TelemetryPolicyState>((set, get) =
 		try { await pendingLoad; } finally { pendingLoad = null; }
 	},
 	setEnabled: async (enabled) => {
+		if (get().saving) return;
 		set({ saving: true, saveError: false });
 		try { set({ view: await aoBridge.telemetry.setEventsEnabled(enabled), loaded: true, saving: false }); }
 		catch { set({ saving: false, saveError: true }); }

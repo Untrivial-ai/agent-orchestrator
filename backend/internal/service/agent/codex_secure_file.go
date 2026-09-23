@@ -63,10 +63,19 @@ type codexFileReplacement struct {
 	admitted  codexFileState
 	stageInfo os.FileInfo
 	wantHash  [sha256.Size]byte
+	inspect   func(string, bool) (codexFileState, error)
 	done      bool
 }
 
 func readCodexFileState(path string, allowMissing bool) ([]byte, codexFileState, error) {
+	return readCodexFileStateWith(path, allowMissing, openCodexFileNoFollow)
+}
+
+func readCodexDeviceFileState(path string, allowMissing bool) ([]byte, codexFileState, error) {
+	return readCodexFileStateWith(path, allowMissing, openCodexDeviceFileNoFollow)
+}
+
+func readCodexFileStateWith(path string, allowMissing bool, openFile func(string) (*os.File, error)) ([]byte, codexFileState, error) {
 	parent := filepath.Dir(path)
 	if err := validateCodexDirectoryAncestors(parent); err != nil {
 		return nil, codexFileState{}, errors.New("codex file has an unsafe ancestor")
@@ -89,7 +98,7 @@ func readCodexFileState(path string, allowMissing bool) ([]byte, codexFileState,
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > codexMaxCredentialBytes || !codexPrivateFileMode(info) {
 		return nil, codexFileState{}, errors.New("codex file is not a safe private regular file")
 	}
-	f, err := openCodexFileNoFollow(path)
+	f, err := openFile(path)
 	if err != nil {
 		return nil, codexFileState{}, errors.New("codex file could not be opened safely")
 	}
@@ -117,6 +126,11 @@ func inspectCodexFile(path string, allowMissing bool) (codexFileState, error) {
 	return state, err
 }
 
+func inspectCodexDeviceFile(path string, allowMissing bool) (codexFileState, error) {
+	_, state, err := readCodexDeviceFileState(path, allowMissing)
+	return state, err
+}
+
 func sameCodexFileState(left, right codexFileState) bool {
 	if left.exists != right.exists {
 		return false
@@ -129,6 +143,14 @@ func prepareCodexFileReplacement(path string, data []byte) (*codexFileReplacemen
 }
 
 func prepareCodexFileReplacementInDirectory(path string, data []byte, requirePrivateDirectory bool) (*codexFileReplacement, error) {
+	return prepareCodexFileReplacementInDirectoryWith(path, data, requirePrivateDirectory, inspectCodexFile)
+}
+
+func prepareCodexDeviceFileReplacementInDirectory(path string, data []byte) (*codexFileReplacement, error) {
+	return prepareCodexFileReplacementInDirectoryWith(path, data, false, inspectCodexDeviceFile)
+}
+
+func prepareCodexFileReplacementInDirectoryWith(path string, data []byte, requirePrivateDirectory bool, inspect func(string, bool) (codexFileState, error)) (*codexFileReplacement, error) {
 	if len(data) == 0 || len(data) > codexMaxCredentialBytes {
 		return nil, errors.New("codex file content is empty or too large")
 	}
@@ -143,7 +165,7 @@ func prepareCodexFileReplacementInDirectory(path string, data []byte, requirePri
 	if err := cleanupCodexFileStaging(dir); err != nil {
 		return nil, err
 	}
-	admitted, err := inspectCodexFile(path, true)
+	admitted, err := inspect(path, true)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +199,7 @@ func prepareCodexFileReplacementInDirectory(path string, data []byte, requirePri
 		return nil, codexStorageIOFailure("codex replacement staging could not be finalized", err)
 	}
 	return &codexFileReplacement{
-		target: path, staged: tmpName, admitted: admitted, stageInfo: stageInfo, wantHash: sha256.Sum256(data),
+		target: path, staged: tmpName, admitted: admitted, stageInfo: stageInfo, wantHash: sha256.Sum256(data), inspect: inspect,
 	}, nil
 }
 
@@ -193,7 +215,7 @@ func (r *codexFileReplacement) Commit() error {
 	if r == nil || r.done {
 		return errors.New("codex replacement is no longer pending")
 	}
-	current, err := inspectCodexFile(r.target, true)
+	current, err := r.inspect(r.target, true)
 	if err != nil || !sameCodexFileState(r.admitted, current) {
 		return errCodexFileChanged
 	}
@@ -204,7 +226,7 @@ func (r *codexFileReplacement) Commit() error {
 	if err := syncCodexDirectory(filepath.Dir(r.target)); err != nil {
 		return &codexFileMutationError{err: errors.New("codex replacement directory could not be synchronized"), committed: true}
 	}
-	after, err := inspectCodexFile(r.target, false)
+	after, err := r.inspect(r.target, false)
 	if err != nil || !after.exists || !os.SameFile(r.stageInfo, after.info) || after.hash != r.wantHash {
 		return errors.New("codex replacement could not be verified")
 	}
@@ -305,6 +327,10 @@ func inspectCodexCleanupFile(path string) (os.FileInfo, error) {
 }
 
 func removeCodexFileIdentityBound(path string) error {
+	return removeCodexFileIdentityBoundWith(path, inspectCodexFile)
+}
+
+func removeCodexFileIdentityBoundWith(path string, inspect func(string, bool) (codexFileState, error)) error {
 	dir := filepath.Dir(path)
 	if _, dirErr := os.Lstat(dir); dirErr == nil {
 		if err := validateCodexDirectory(dir, false); err != nil {
@@ -316,7 +342,7 @@ func removeCodexFileIdentityBound(path string) error {
 	} else if !errors.Is(dirErr, os.ErrNotExist) {
 		return errors.New("codex removal directory could not be inspected")
 	}
-	_, admitted, err := readCodexFileState(path, true)
+	admitted, err := inspect(path, true)
 	if err != nil || !admitted.exists {
 		return err
 	}
@@ -332,7 +358,7 @@ func removeCodexFileIdentityBound(path string) error {
 	if err := os.Remove(tombstone); err != nil {
 		return errors.New("codex removal staging could not be prepared")
 	}
-	current, err := inspectCodexFile(path, false)
+	current, err := inspect(path, false)
 	if err != nil || !sameCodexFileState(admitted, current) {
 		return errCodexFileChanged
 	}
@@ -344,7 +370,7 @@ func removeCodexFileIdentityBound(path string) error {
 			_ = os.Rename(tombstone, path)
 		}
 	}
-	moved, err := inspectCodexFile(tombstone, false)
+	moved, err := inspect(tombstone, false)
 	if err != nil || !sameCodexFileState(admitted, moved) {
 		restoreSubstitute()
 		return errCodexFileChanged

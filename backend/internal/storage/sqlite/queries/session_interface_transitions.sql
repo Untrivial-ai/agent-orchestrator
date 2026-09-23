@@ -1,24 +1,24 @@
 -- name: InsertSessionInterfaceTransition :one
 INSERT INTO session_interface_transitions (
-    id, session_id, source_mode, target_mode, policy, phase,
+    id, session_id, source_mode, target_mode, policy, history_policy, phase,
     native_conversation_id, error_code, error_detail,
     created_at, updated_at, completed_at, notice_acknowledged_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL)
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
-          created_at, updated_at, completed_at, notice_acknowledged_at;
+          created_at, updated_at, completed_at, notice_acknowledged_at, history_policy;
 
 -- name: GetSessionInterfaceTransition :one
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE id = ?;
 
 -- name: GetActiveSessionInterfaceTransition :one
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE session_id = ?
   AND phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
@@ -28,16 +28,19 @@ LIMIT 1;
 -- name: GetLatestSessionInterfaceTransition :one
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE session_id = ?
+-- Tests and injected clocks can assign multiple sagas the same timestamp.
+-- This rowid table is append-only for a surviving session, so descending rowid
+-- is the unique insertion-order tie-break that identifies the newer saga.
 ORDER BY created_at DESC, rowid DESC
 LIMIT 1;
 
 -- name: ListActiveSessionInterfaceTransitions :many
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
-       created_at, updated_at, completed_at, notice_acknowledged_at
+       created_at, updated_at, completed_at, notice_acknowledged_at, history_policy
 FROM session_interface_transitions
 WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
 ORDER BY created_at;
@@ -45,7 +48,7 @@ ORDER BY created_at;
 -- name: ListDeliverableSessionInterfaceTransitions :many
 SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase,
        t.native_conversation_id, t.error_code, t.error_detail,
-       t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at
+       t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy
 FROM session_interface_transitions AS t
 WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required')
   AND EXISTS (
@@ -72,7 +75,7 @@ WHERE id = sqlc.arg(id)
   AND phase IN ('failed', 'recovery_required')
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
-          created_at, updated_at, completed_at, notice_acknowledged_at;
+          created_at, updated_at, completed_at, notice_acknowledged_at, history_policy;
 
 -- name: EnqueueSessionInterfaceTransitionMessage :exec
 INSERT INTO session_interface_transition_messages (

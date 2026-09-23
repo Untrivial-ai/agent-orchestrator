@@ -35,7 +35,7 @@ type claudePlugin interface {
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
-	return acpdriver.New(acpdriver.Config{
+	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
@@ -47,6 +47,7 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			ports.ChatCapabilityUsage:        true,
 			ports.ChatCapabilityDiffs:        true,
 			ports.ChatCapabilityPlans:        true,
+			ports.ChatCapabilityCompaction:   true,
 		},
 		Probe: func(ctx context.Context) error {
 			if _, err := resolveRuntime(ctx); err != nil {
@@ -98,7 +99,7 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 		SessionMeta:    claudeSessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
-	}, log)
+	}, log)}
 }
 
 func validateClaudeACPExecutable(binary, goos string) error {

@@ -84,10 +84,11 @@ type GitPreparationInput struct {
 	Stepwise         bool                            `json:"stepwise,omitempty"`
 }
 
-// GitHubRepositoryPreparation describes the private GitHub repository AO should create for a project import.
+// GitHubRepositoryPreparation describes the GitHub repository AO should create for a project import.
 type GitHubRepositoryPreparation struct {
-	Owner string `json:"owner,omitempty"`
-	Name  string `json:"name,omitempty"`
+	Owner   string `json:"owner,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Private *bool  `json:"private,omitempty"`
 }
 
 // GitRepositoryPreparationInput approves Git preparation for one repository.
@@ -230,7 +231,7 @@ func (m *Manager) Validate(ctx context.Context, in ImportValidationInput) (Impor
 		return result, nil
 	}
 	if importKind == ImportKindWorkspace {
-		if root.IsRepo {
+		if root.IsRepo && root.HasOrigin {
 			result.Warning = "This folder is already a Git project. AO will import it as a project instead of a workspace."
 			result.NextStep = ImportNextStepChooseImportKind
 			return result, nil
@@ -543,6 +544,11 @@ func runGitPreparationAction(ctx context.Context, path, action string, in GitRep
 			return fmt.Errorf("record default branch: %w", err)
 		}
 	case GitPreparationActionCommit:
+		// Empty clones already have .git and skip the init action. Record their
+		// actual initial branch too, before committing so a retry cannot lose it.
+		if err := gitdefault.New("git", nil).RecordInitialBranch(ctx, path); err != nil {
+			return err
+		}
 		if _, err := importGitOutput(ctx, path, "add", "-A"); err != nil {
 			return fmt.Errorf("stage files: %w", err)
 		}
@@ -571,8 +577,12 @@ func runGitPreparationAction(ctx context.Context, path, action string, in GitRep
 			repository := owner + "/" + name
 			remoteURL := "https://github.com/" + repository + ".git"
 			if currentRemoteURL := resolveImportOriginURL(path); currentRemoteURL == "" {
-				if _, err := importGhOutputFunc(ctx, path, "repo", "create", repository, "--private"); err != nil {
-					return fmt.Errorf("create private GitHub repository: %w", err)
+				visibility := "--private"
+				if in.GitHubRepository.Private != nil && !*in.GitHubRepository.Private {
+					visibility = "--public"
+				}
+				if _, err := importGhOutputFunc(ctx, path, "repo", "create", repository, visibility); err != nil {
+					return fmt.Errorf("create GitHub repository: %w", err)
 				}
 				if err := setImportOriginURL(ctx, path, remoteURL); err != nil {
 					return err

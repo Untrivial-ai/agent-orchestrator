@@ -1,19 +1,28 @@
-import { autoUpdater } from "electron-updater";
+import { autoUpdater as stockAutoUpdater } from "electron-updater";
+import { MacDifferentialV2Updater } from "./mac-differential-v2-updater";
+import macV2TrustedKeys from "../../scripts/mac-differential-v2-trust.json";
+import macDifferentialRollout from "../../scripts/mac-differential-rollout.json";
 import { CancellationToken } from "builder-util-runtime";
 import { app, dialog, autoUpdater as nativeAutoUpdater } from "electron";
-import { accessSync, constants as fsConstants, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { startMacUpdateProgress } from "./mac-update-progress";
+import { markUpdateRelaunch } from "./update-relaunch-flag";
+import { accessSync, constants as fsConstants, existsSync, lstatSync, readFileSync, readdirSync, statfsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import semver from "semver";
+import { AO_BUNDLE_ID } from "./stale-app-copies";
 import type { RequestOptions } from "node:http";
 import {
   readUpdateSettings,
+  macDifferentialUpdatesEnabled,
   updateUpdateSettings,
   writeUpdateSettings,
   UPDATE_SETTINGS_FILE_NAME,
   type UpdateChannel,
   type UpdateSettings,
   type UpdateStatus,
+  type UpdateInstallResult,
 } from "./update-settings";
 import { reconcileFeaturePin } from "./feature-builds";
 import { evaluateEscalation } from "./escalation-evaluator";
@@ -21,10 +30,100 @@ import {
   isNetErrorMessage,
   normalizeReleaseNotes,
   updateFailureOutcome,
+  updateFailureCategory,
   type UpdateOutcome,
   type UpdatePhase,
   type UpdateTrigger,
 } from "../shared/update-telemetry";
+
+// Current AO uses the stock full-ZIP path. A future compatible build explicitly
+// selects the v2 subclass; old clients never learn its metadata or map URLs.
+const autoUpdater = process.platform === "darwin" && macDifferentialRollout.enabled === true
+  ? new MacDifferentialV2Updater({ trustedKeys: macV2TrustedKeys })
+  : stockAutoUpdater;
+
+const FAIL_CLOSED_UPDATE_SETTINGS: UpdateSettings = {
+  enabled: false,
+  channel: "latest",
+  nightlyAck: false,
+  feature: null,
+  macDifferentialUpdates: false,
+};
+let lastAppliedUpdateSettings: UpdateSettings = FAIL_CLOSED_UPDATE_SETTINGS;
+let developerModeHydrated = false;
+let developerModeRequested = false;
+let differentialEligible = false;
+let pendingTargetBytes: number | undefined;
+let offeredUpdateVersion: string | undefined;
+let offeredMacFiles: Array<{ url: string; size?: number }> = [];
+
+function selectMacTargetBytes(arm64: boolean): void {
+  const hasArm64 = offeredMacFiles.some(file => file.url.includes("arm64"));
+  const file = offeredMacFiles.find(file =>
+    /\.zip(?:$|[?#])/i.test(file.url) && file.url.includes("arm64") === (arm64 && hasArm64));
+  pendingTargetBytes = typeof file?.size === "number" && Number.isFinite(file.size) && file.size >= 0
+    ? file.size : undefined;
+}
+let transferObservation = {
+  eligible: false,
+  attemptedDifferential: false,
+  fallback: false,
+  transferred: undefined as number | undefined,
+};
+let updaterLoggerWired = false;
+
+// electron-updater defaults this flag to false on macOS. Override it before
+// any renderer or settings hydration can race an update operation.
+if (process.platform === "darwin") autoUpdater.disableDifferentialDownload = true;
+
+export function applyUpdaterPolicy(
+  settings: UpdateSettings,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  lastAppliedUpdateSettings = settings;
+  // Keep this gate closed until the dependency and older-client feed isolation
+  // contracts pass. This repository never generates macOS release sidecars.
+  const eligible = macDifferentialRollout.enabled === true && developerModeHydrated && macDifferentialUpdatesEnabled({ platform, settings });
+  differentialEligible = eligible;
+  if (platform === "darwin") autoUpdater.disableDifferentialDownload = !eligible;
+  console.info("[auto-updater] mac differential policy", {
+    eligible,
+    platform,
+    channel: settings.channel,
+    featurePinned: settings.feature !== null,
+    developerMode: settings.macDifferentialUpdates === true,
+  });
+}
+
+// This observes the pinned dependency's phase messages, never its raw URLs,
+// paths, HTTP headers or error stacks. Unknown messages cannot leak credentials.
+function wireUpdaterLogger(): void {
+  if (updaterLoggerWired || process.platform !== "darwin" || macDifferentialRollout.enabled !== true) return;
+  updaterLoggerWired = true;
+  const base = autoUpdater.logger ?? console;
+  const observe = (level: "info" | "warn" | "error" | "debug", first: unknown) => {
+    const message = typeof first === "string" ? first : "";
+    if (message === "Checked for macOS Rosetta environment (isRosetta=true)" ||
+        message === "Checked 'uname -a': arm64=true") {
+      selectMacTargetBytes(true);
+    }
+    if (message.startsWith("Download block maps") || message.startsWith("Differential download:")) {
+      transferObservation.attemptedDifferential = true;
+      base.info("[auto-updater] differential transfer attempted");
+    } else if (/(?:fall(?:ing)? back|fallback) to full download/i.test(message)) {
+      transferObservation.fallback = true;
+      base.warn("[auto-updater] differential transfer fell back to full download");
+    } else if (level === "warn" || level === "error") {
+      base[level](`[auto-updater] ${updateFailureCategory(message)}`);
+    }
+  };
+  autoUpdater.logger = {
+    info: (first: unknown) => observe("info", first),
+    warn: (first: unknown) => observe("warn", first),
+    error: (first: unknown) => observe("error", first),
+    debug: (first: unknown) => observe("debug", first),
+  };
+}
 
 // reconcileAndPersist clears a pinned feature build whose PR has been retired
 // (merged/closed/deleted/expired) and persists the change, so the next check
@@ -95,9 +194,214 @@ let lastCheckError: string | undefined;
 // re-evaluated every 30 minutes while the update sits uninstalled. stateDir is
 // captured from whichever entry point wired the events (both receive it).
 let stagedVersion: string | undefined;
-let nativeInstallReady = process.platform !== "darwin";
-let preparationTimer: ReturnType<typeof setTimeout> | undefined;
-let preparationStalled = false;
+// A persisted stamp is not an installer handoff in this process. In particular,
+// MacUpdater has no native feed/server after relaunch until it downloads again.
+let stagedInCurrentProcess = false;
+let macRestartPreparation: Promise<UpdateInstallResult> | undefined;
+let macRestartRequested = false;
+let restartFailureHandler: (() => void) | undefined;
+let macRestartProgress: Awaited<ReturnType<typeof startMacUpdateProgress>> | undefined;
+let nativeReadyVersion: string | undefined;
+let nativePreparationError: Error | undefined;
+// Squirrel.Mac staging has no progress event and no cancel API, so a fixed
+// deadline punished slow disks (#5170). Watch the staging dir for growth and
+// give up only after a stretch of no progress; fall back to a fixed cap when the
+// growth signal can't be read.
+const STAGE_POLL_INTERVAL_MS = 10_000;
+const STAGE_INACTIVITY_TIMEOUT_MS = 90_000;
+// After ditto finishes extracting, ShipIt verifies the code signature: a
+// read-only phase where the staging bytes plateau while real work continues.
+// That plateau can outlast the inactivity window, so never call a stall on
+// bytes alone until this much total time has passed; a genuinely wedged stage
+// still trips on the no-signal and absolute caps below.
+const STAGE_VERIFY_GRACE_MS = 3 * 60_000;
+const STAGE_NO_SIGNAL_CAP_MS = 6 * 60_000;
+const STAGE_ABSOLUTE_CAP_MS = 15 * 60_000;
+// A ShipIt extract unpacks the downloaded zip and keeps both the old and new
+// bundles around during the swap, so it needs several times the archive size in
+// free space. Derive the requirement from the artifact we actually downloaded
+// rather than a flat number: a small nightly should not be refused on a disk
+// that comfortably fits it. A floor keeps a safety margin, and a cap keeps a
+// large build from demanding more than the extraction realistically uses. When
+// the artifact size is unknown, fall back to the cap.
+const STAGE_ARCHIVE_EXPANSION_FACTOR = 3;
+const STAGE_FREE_BYTES_FLOOR = 512 * 1024 * 1024;
+const STAGE_FREE_BYTES_CAP = 2 * 1024 * 1024 * 1024;
+
+function requiredFreeBytesToStage(archiveBytes: number | undefined): number {
+  if (!archiveBytes || archiveBytes <= 0) return STAGE_FREE_BYTES_CAP;
+  const derived = archiveBytes * STAGE_ARCHIVE_EXPANSION_FACTOR;
+  return Math.min(STAGE_FREE_BYTES_CAP, Math.max(STAGE_FREE_BYTES_FLOOR, derived));
+}
+// Short user-facing lines; the raw ditto/pkzip/codesign detail is logged, not shown.
+const STAGE_STALL_MESSAGE = "Couldn't finish preparing the update. AO stayed open, so nothing changed. Retry to try again.";
+const STAGE_DISK_MESSAGE = "Not enough disk space to install the update. Free up space, then retry.";
+let nativePreparationBlocked: Error | undefined;
+let rejectNativeOperation: ((error: Error) => void) | undefined;
+let nativePreparation: { version: string; promise: Promise<void>; finish(error?: Error): void } | undefined;
+
+// Squirrel.Mac stages into ~/Library/Caches/<bundleId>.ShipIt. This is the OS
+// updater's own working area: AO only READS it (never writes, keeps no AO state
+// there; AO state stays under ~/.ao) and every read fails open to undefined.
+// The path is our own bundle id, not the first ".ShipIt" that happens to be in
+// the cache: another Electron app's staging dir would give a bogus byte signal
+// that keeps the watchdog alive (or falsely full) while our own stage stalls.
+function macShipItDir(): string | undefined {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const dir = path.join(os.homedir(), "Library", "Caches", `${AO_BUNDLE_ID}.ShipIt`);
+    return existsSync(dir) ? dir : undefined;
+  } catch { return undefined; }
+}
+
+// Bytes under the staging area, bounded so a poll can't walk a huge tree.
+// undefined means no readable signal.
+function shipItStagingBytes(dir: string | undefined): number | undefined {
+  if (dir === undefined) return undefined;
+  let total = 0;
+  let seen = 0;
+  const budget = 20_000;
+  const walk = (d: string): void => {
+    let names: string[];
+    try { names = readdirSync(d); } catch { return; }
+    for (const name of names) {
+      if (seen >= budget) return;
+      seen += 1;
+      const full = path.join(d, name);
+      let st;
+      try { st = lstatSync(full); } catch { continue; }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(full);
+      else total += st.size;
+    }
+  };
+  walk(dir);
+  return seen === 0 ? undefined : total;
+}
+
+// True when the volume clearly lacks room to extract and swap the given
+// requirement. Fails open.
+function insufficientDiskForStaging(requiredBytes: number): boolean {
+  if (process.platform !== "darwin") return false;
+  try {
+    const target = macShipItDir() ?? path.join(os.homedir(), "Library", "Caches");
+    const { bavail, bsize } = statfsSync(target);
+    return Number(bavail) * Number(bsize) < requiredBytes;
+  } catch { return false; }
+}
+
+// Rewrites only known extraction/verification failures to a short line; any
+// other error passes through so its own recovery and messaging stay intact.
+function shortStagingMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/no space left on device/i.test(raw)) return STAGE_DISK_MESSAGE;
+  if (/ditto:|pkzip|code ?signature|codesign|failed to (?:extract|unzip)/i.test(raw)) return STAGE_STALL_MESSAGE;
+  return raw;
+}
+
+function blockNativePreparation(message: string): void {
+  nativePreparationBlocked = new Error(message);
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  activeDownloadCancellation?.cancel();
+}
+
+// Test seam: override the filesystem probes to drive the watchdog
+// deterministically. A fresh module import restores the defaults.
+let readStagingBytes: (dir: string | undefined) => number | undefined = shipItStagingBytes;
+let stagingDiskIsFull: (requiredBytes: number) => boolean = insufficientDiskForStaging;
+export function __setStagingProbesForTesting(probes: {
+  readStagingBytes?: (dir: string | undefined) => number | undefined;
+  stagingDiskIsFull?: (requiredBytes: number) => boolean;
+}): void {
+  if (probes.readStagingBytes) readStagingBytes = probes.readStagingBytes;
+  if (probes.stagingDiskIsFull) stagingDiskIsFull = probes.stagingDiskIsFull;
+}
+
+function beginNativePreparation(version: string, archiveBytes?: number): void {
+  if (nativePreparationBlocked) return;
+  if (nativePreparation) {
+    nativePreparationBlocked = new Error(STAGE_STALL_MESSAGE);
+    nativePreparation.finish(nativePreparationBlocked);
+    return;
+  }
+  // Catch a full disk before ditto fails partway with a cryptic pkzip error (#5170).
+  if (stagingDiskIsFull(requiredFreeBytesToStage(archiveBytes))) {
+    blockNativePreparation(STAGE_DISK_MESSAGE);
+    nativeReadyVersion = undefined;
+    nativePreparationError = nativePreparationBlocked;
+    broadcast(stagedDownloadedStatus());
+    return;
+  }
+  nativeReadyVersion = undefined;
+  nativePreparationError = undefined;
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+  // The native event can arrive outside a queued operation. Always observe rejection.
+  void promise.catch(() => undefined);
+  const preparation = {
+    version, promise,
+    finish(error?: Error) {
+      if (nativePreparation !== preparation) return;
+      clearInterval(watchdog);
+      nativePreparation = undefined;
+      nativePreparationError = error;
+      if (error) {
+        nativeReadyVersion = undefined;
+        rejectNativeOperation?.(error);
+        reject(error);
+      } else { nativeReadyVersion = version; resolve(); }
+    },
+  };
+  // Squirrel creates the .ShipIt dir only after electron-updater has already
+  // emitted update-downloaded (it stages on the checkForUpdates() call that
+  // fires right after this handler runs), so the dir usually does not exist yet
+  // at this point. Keep re-resolving it until it appears, otherwise the growth
+  // signal never engages and every stage falls back to the flat no-signal cap.
+  let stagingDir = macShipItDir();
+  const startedAt = Date.now();
+  let lastBytes = readStagingBytes(stagingDir);
+  let lastProgressAt = startedAt;
+  const trip = (): void => {
+    // No cancel API, so never stage again on top of a stalled request even if
+    // its JS transfer settles later; recovery is a clean relaunch.
+    console.error(`native update preparation stalled after ${Math.round((Date.now() - startedAt) / 1000)}s with no staging progress`);
+    blockNativePreparation(STAGE_STALL_MESSAGE);
+    preparation.finish(nativePreparationBlocked);
+    broadcast(stagedDownloadedStatus());
+  };
+  const watchdog = setInterval(() => {
+    const now = Date.now();
+    if (stagingDir === undefined) stagingDir = macShipItDir();
+    const bytes = readStagingBytes(stagingDir);
+    if (bytes !== undefined && (lastBytes === undefined || bytes > lastBytes)) {
+      lastBytes = bytes;
+      lastProgressAt = now;
+    }
+    const haveSignal = bytes !== undefined;
+    // A byte plateau only counts as a stall once it has outlasted the
+    // signature-verification grace, so a legitimate verify phase is not mistaken
+    // for a wedge.
+    const plateauStalled =
+      haveSignal &&
+      now - lastProgressAt >= STAGE_INACTIVITY_TIMEOUT_MS &&
+      now - startedAt >= STAGE_VERIFY_GRACE_MS;
+    if (
+      now - startedAt >= STAGE_ABSOLUTE_CAP_MS ||
+      plateauStalled ||
+      (!haveSignal && now - startedAt >= STAGE_NO_SIGNAL_CAP_MS)
+    ) {
+      trip();
+    }
+  }, STAGE_POLL_INTERVAL_MS);
+  watchdog.unref?.();
+  nativePreparation = preparation;
+}
+
+function isNativeInstallReady(): boolean {
+  return process.platform !== "darwin" || (stagedInCurrentProcess && nativeReadyVersion !== undefined && nativeReadyVersion === stagedVersion);
+}
 // Release notes for the build currently on offer or staged, already
 // sanitized. Held here because only the updater events carry it, and the
 // renderer needs it on every subsequent status too, not just the one event.
@@ -114,14 +418,27 @@ let stagedEscalated = false;
 let stagedRequestId: string | undefined;
 let escalationTimer: ReturnType<typeof setInterval> | undefined;
 let escalationStateDir: string | undefined;
-const STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-const NIGHTLY_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+// Automatic re-check cadence for a long-running session. A fresh check also
+// runs on every launch (startAutoUpdates), so most users are current the moment
+// they open the app; this interval only governs sessions left open for a long
+// stretch. Kept to once a day on every channel: 15-minute nightly polling and
+// hourly stable polling were redundant background work and, on a cold network,
+// a source of launch-time check errors. Trade-off: the failing-checks nudge
+// needs consecutive automatic failures, and every launch supplies one, so users
+// who restart still trip it quickly; but a session left open continuously on a
+// broken updater now waits days rather than hours before the nudge appears.
+// Feature pins (a pr<N> channel) are the case a daily interval bites hardest: a
+// new build pushed to that PR is not noticed until relaunch, and the 30-minute
+// retirement poll only catches the PR closing, not a fresh build on it. Accepted
+// deliberately, since a pinned session is short-lived and relaunch re-checks.
+const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let automaticUpdateTimer: ReturnType<typeof setInterval> | undefined;
 let automaticUpdateTimerIntervalMs: number | undefined;
 type UpdaterOperation =
   | "automatic-check"
   | "manual-check"
   | "manual-download"
+  | "manual-install"
   | "settings-write"
   | "return-home"
   // Recovery cleanup. Queued rather than run inline so a download cannot start
@@ -244,6 +561,16 @@ function sendToRenderer(channel: string, payload: unknown): void {
 // from "updates:status", so suppressing a status for UI reasons (as the
 // automatic path does) never suppresses the telemetry for it.
 function emitUpdateOutcome(outcome: UpdateOutcome): void {
+  if (outcome.phase === "download" && process.platform === "darwin") {
+    outcome = {
+      ...outcome,
+      differential_eligible: transferObservation.eligible,
+      transfer_mode: transferObservation.attemptedDifferential ? "differential" : "full",
+      fallback: transferObservation.fallback,
+      ...(transferObservation.transferred === undefined ? {} : { transferred_bytes: transferObservation.transferred }),
+      ...(pendingTargetBytes === undefined ? {} : { target_bytes: pendingTargetBytes }),
+    };
+  }
   sendToRenderer("updates:telemetry", outcome);
 }
 
@@ -361,6 +688,11 @@ interface GitHubReleaseSummary {
   assets?: Array<{ name?: string }>;
 }
 
+// Retain only one public release response. Revalidate on every check: a 304
+// avoids transferring/parsing the whole history without hiding a new release.
+// Never use cached discovery on a network failure or for another repository.
+let releaseDiscoveryCache: { url: string; etag: string; releases: GitHubReleaseSummary[] } | undefined;
+
 /**
  * Resolve a completed Nightly release through GitHub's API. electron-updater's
  * GitHub provider discovers prereleases through releases.atom, which can lag
@@ -374,20 +706,28 @@ async function fetchLatestCompletedPrereleaseTag(
   channel: string,
 ): Promise<{ tag: string; body?: string } | undefined> {
   try {
+    const url = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100`;
+    const cached = releaseDiscoveryCache?.url === url ? releaseDiscoveryCache : undefined;
     const response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100`,
+      url,
       {
         cache: "no-store",
         headers: {
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
           "User-Agent": `ao-desktop/${app.getVersion()}`,
+          ...(cached ? { "If-None-Match": cached.etag } : {}),
         },
         signal: AbortSignal.timeout(10000),
       },
     );
-    if (!response.ok) return undefined;
-    const releases = (await response.json()) as GitHubReleaseSummary[];
+    if (response.status !== 304 && !response.ok) return undefined;
+    const releases = response.status === 304 ? cached?.releases : (await response.json()) as GitHubReleaseSummary[];
+    if (!Array.isArray(releases)) return undefined;
+    if (response.status !== 304) {
+      const etag = response.headers.get("etag");
+      releaseDiscoveryCache = etag ? { url, etag, releases } : undefined;
+    }
     const manifestName = `${channel}${platformSuffix()}.yml`;
     const newest = releases
       .filter((release) => {
@@ -528,7 +868,7 @@ function stagedStamp(): Pick<UpdateStatus, "staged"> {
       ...(stagedVersion === undefined ? {} : { version: stagedVersion }),
       stagedAt: stagedAtMs,
       escalated: stagedEscalated,
-      ...(nativeInstallReady ? {} : { ready: false }),
+      ...(isNativeInstallReady() ? {} : { ready: false }),
     },
   };
 }
@@ -548,7 +888,11 @@ function stagedUpdateFile(stateDir: string): string {
   return path.join(stateDir, STAGED_UPDATE_FILE_NAME);
 }
 
-/** Fire-and-forget: losing this file costs provenance, never correctness. */
+// Keep removal behind older writes so a failed staging attempt cannot reappear
+// on relaunch, or delete the provenance of its replacement.
+let stagedPersistenceQueue: Promise<unknown> = Promise.resolve();
+
+/** Persist in event order without blocking updater events. */
 function persistStagedBuild(stateDir: string | undefined): void {
   if (stateDir === undefined || stagedVersion === undefined || stagedAtMs === undefined) return;
   const payload = `${JSON.stringify({
@@ -558,14 +902,17 @@ function persistStagedBuild(stateDir: string | undefined): void {
   })}\n`;
   // mkdir first: this can be the earliest write into the state dir on a fresh
   // install, and writeUpdateSettings is not guaranteed to have run yet.
-  void mkdir(stateDir, { recursive: true, mode: 0o750 })
+  stagedPersistenceQueue = stagedPersistenceQueue
+    .then(() => mkdir(stateDir, { recursive: true, mode: 0o750 }))
     .then(() => writeFile(stagedUpdateFile(stateDir), payload, { mode: 0o600 }))
     .catch(() => undefined);
 }
 
 function forgetPersistedStagedBuild(stateDir: string | undefined): void {
   if (stateDir === undefined) return;
-  void unlink(stagedUpdateFile(stateDir)).catch(() => undefined);
+  stagedPersistenceQueue = stagedPersistenceQueue
+    .then(() => unlink(stagedUpdateFile(stateDir)))
+    .catch(() => undefined);
 }
 
 /**
@@ -675,18 +1022,48 @@ function discardStagedBuild(): void {
   // Nothing valid is installable until the replacement lands: the only build in
   // the cache belongs to a channel the user has left.
   awaitingStagedReplacement = true;
-  nativeInstallReady = process.platform !== "darwin";
-  clearTimeout(preparationTimer);
-  preparationStalled = false;
+  nativeReadyVersion = undefined;
+  stagedInCurrentProcess = false;
   forgetPersistedStagedBuild(escalationStateDir);
   offeredReleaseNotes = undefined;
   directFeedReleaseNotes = undefined;
   stagedVersion = undefined;
+  stagedInCurrentProcess = false;
   stagedChannel = undefined;
   stagedAtMs = undefined;
   stagedEscalated = false;
   stagedRequestId = undefined;
   stopEscalationTimer();
+}
+
+const MAC_STAGING_FAILURE_MESSAGE =
+  "macOS couldn't prepare the update because files were missing from its temporary installation copy. Check for updates and download it again to retry. If it happens again, install the latest app manually from GitHub Releases.";
+
+function handleMacStagingFailure(err: unknown, requestId = activeUpdaterRequestId): boolean {
+  if (process.platform !== "darwin") return false;
+  const message = err instanceof Error ? err.message : String(err);
+  // Match the installer failure, not an unrelated ENOENT or download error.
+  if (
+    !/ditto:/i.test(message) ||
+    !/\.ShipIt\/update[^/]*\/.*\.app\//i.test(message) ||
+    !/No such file or directory/i.test(message)
+  ) return false;
+  console.error("macOS update staging failed:", err);
+  // AO's download event precedes native extraction. A failure can also arrive
+  // before that stamp exists; neither case proves an installer is ready.
+  discardStagedBuild();
+  downloadStalled = false;
+  applyInstallOnQuitPolicy();
+  automaticCheckPreviousStatus = undefined;
+  broadcast({
+    state: "error",
+    message: MAC_STAGING_FAILURE_MESSAGE,
+    ...(requestId === undefined ? {} : { requestId }),
+  });
+  // Leave the verified ZIP alone. The failed copy is owned by ShipIt; repeating
+  // the download handoff lets the native updater prepare it again. Deleting a
+  // live cache here could race a newer download or an installer still reading it.
+  return true;
 }
 
 /** A build is downloaded and waiting to install, and we know which one. */
@@ -702,7 +1079,7 @@ function supersedesStagedBuild(version: string | undefined): boolean {
 type UpdateCheckOutcome = Awaited<ReturnType<typeof autoUpdater.checkForUpdates>>;
 
 const UPDATE_CHECK_TIMEOUT_MS = 60_000;
-const UPDATE_CHECK_TIMEOUT_MESSAGE = "Update check timed out. Check your connection and try again.";
+const UPDATE_CHECK_TIMEOUT_MESSAGE = "Update check timed out. The update service did not respond in time. Try again.";
 
 // electron-updater owns this executor but omits it from its public declarations.
 // Limit the adapter to metadata requests; downloads retain their own cancellation.
@@ -728,7 +1105,16 @@ async function checkForUpdatesWithDeadline(): Promise<UpdateCheckOutcome> {
   };
   const timer = setTimeout(() => {
     timedOut = true;
-    broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE }));
+    // Automatic checks suppress their own transient failures in the UI (see the
+    // "error the user never asked for" note in the error handler). Surfacing the
+    // timeout here would defeat that and strand a red error on the Settings panel
+    // after a slow launch-time check the user never requested. The throw below
+    // still routes an automatic timeout through the suppression + failing-checks
+    // nudge path. Manual and return-home checks are user-initiated, so they still
+    // get the error immediately at the deadline.
+    if (activeUpdaterOperation !== "automatic-check") {
+      broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE }));
+    }
     // Cancellation aborts the request AND rejects its promise. Do not race the
     // check: electron-updater must clear its cached promise before AO retries.
     for (const token of tokens) token.cancel();
@@ -770,8 +1156,8 @@ function settleCheckStatus(result: UpdateCheckOutcome): void {
 // state, so transient check states can restore the row without recomputing.
 function stagedDownloadedStatus(): UpdateStatus {
   return {
-    state: preparationStalled ? "error" : nativeInstallReady ? "downloaded" : "preparing",
-    ...(preparationStalled ? { message: "Update preparation stopped responding. Check for updates to retry." } : {}),
+    state: nativePreparationBlocked ? "error" : isNativeInstallReady() || !stagedInCurrentProcess ? "downloaded" : "preparing",
+    ...(nativePreparationBlocked ? { message: nativePreparationBlocked.message } : {}),
     version: stagedVersion,
     stagedAt: stagedAtMs,
     escalated: stagedEscalated,
@@ -792,8 +1178,9 @@ async function runEscalationCheck(): Promise<void> {
   }
   if (escalationStateDir === undefined) return;
   // A newer build is being pulled; let its progress own the status stream.
-  if (lastStatus.state === "downloading" || lastStatus.state === "preparing" || preparationStalled) return;
-  const observedVersion = stagedVersion;
+  if (lastStatus.state === "downloading" || lastStatus.state === "preparing" || nativePreparationBlocked) return;
+  const evaluatedVersion = stagedVersion;
+  const evaluatedAt = stagedAtMs;
   try {
     const settings = await readUpdateSettings(escalationStateDir);
     let important = false;
@@ -809,7 +1196,7 @@ async function runEscalationCheck(): Promise<void> {
           : Promise.resolve(false),
       ]);
     }
-    if (["downloading", "preparing"].includes(lastStatus.state) || stagedVersion !== observedVersion) return;
+    if (["downloading", "preparing"].includes(lastStatus.state) || stagedVersion !== evaluatedVersion || stagedAtMs !== evaluatedAt) return;
     stagedEscalated = evaluateEscalation({
       channel: settings.channel,
       stagedAt: stagedAtMs,
@@ -845,17 +1232,32 @@ async function runSerializedUpdaterOperation(
   requestId?: string,
 ): Promise<void> {
   const run = async () => {
+    if (nativePreparationBlocked) throw nativePreparationBlocked;
+    // A completed proxy transfer is not completed native staging. Holding this
+    // gate prevents a late native event for A being attributed to a newer B.
+    if (nativePreparation) await nativePreparation.promise;
     activeUpdaterOperation = operation;
     activeUpdaterRequestId = requestId;
     activeUpdaterPhase = operation === "manual-download" ? "download" : "check";
-    pendingUpdateVersion = undefined;
+    pendingUpdateVersion = operation === "manual-download" ? offeredUpdateVersion : undefined;
     if (operation === "automatic-check") {
       automaticCheckNetFailureCounted = false;
       automaticCheckFailureCounted = false;
     }
+    const nativeFailure = new Promise<never>((_resolve, reject) => { rejectNativeOperation = reject; });
     try {
-      await runOperation();
+      await Promise.race([runOperation(), nativeFailure]);
+      if (nativePreparation) await nativePreparation.promise;
+      if (nativePreparationBlocked) throw nativePreparationBlocked;
+    } catch (err) {
+      // Recover before releasing the queue. An outer caller catch can run after
+      // the next download starts and would discard that replacement's stamp.
+      if ((operation === "automatic-check" || operation === "manual-check" ||
+        operation === "manual-download" || operation === "return-home") &&
+        handleMacStagingFailure(err, requestId)) return;
+      throw err;
     } finally {
+      rejectNativeOperation = undefined;
       activeUpdaterOperation = undefined;
       activeUpdaterRequestId = undefined;
       if (operation === "automatic-check")
@@ -906,6 +1308,7 @@ async function runRetirementPoll(stateDir: string): Promise<void> {
       if (settings.feature === null || settings.feature === undefined) {
         // Pin was cleared: drop the now-dead pr<N> channel right away instead of
         // waiting for the next manual or launch-time check to notice.
+        applyUpdaterPolicy(settings);
         configureFeed(settings);
       }
     });
@@ -966,7 +1369,32 @@ function automaticChecksAreFailing(): boolean {
 function publishFailingChecks(): void {
   if (!automaticChecksAreFailing() || failingChecksPublished) return;
   failingChecksPublished = true;
+  clearUnrecoverableRememberedBuild();
   broadcast(lastStatus);
+}
+
+// A build remembered from staged-update.json but never re-established in the
+// current process leaves the sidebar showing "Restart to update" for a build
+// that may not be installable: on macOS the native updater has no handoff, and
+// on Windows/Linux the cached installer exe may be missing or stale. If
+// automatic checks keep failing (network down, rate limited, feed 404), the
+// self-healing re-download never happens and the button is a permanent no-op.
+// Clear the stale metadata so the UI stops advertising an uninstallable build.
+function clearUnrecoverableRememberedBuild(): void {
+  if (stagedInCurrentProcess) return;
+  if (!hasStagedBuild()) return;
+  console.warn(
+    "clearing remembered staged build %s: automatic checks have failed %d times without re-establishing native readiness",
+    stagedVersion,
+    consecutiveAutomaticCheckFailures,
+  );
+  forgetPersistedStagedBuild(escalationStateDir);
+  stagedVersion = undefined;
+  stagedAtMs = undefined;
+  stagedChannel = undefined;
+  stagedEscalated = false;
+  stagedRequestId = undefined;
+  stopEscalationTimer();
 }
 
 // errorMessage extracts the user-facing message for an update error status,
@@ -1224,18 +1652,38 @@ function installE2EUpdateSentinel(): void {
 // to the renderer as an UpdateStatus. Idempotent: safe to call on every entry
 // point (launch auto-check and manual check).
 function wireUpdaterEvents(): void {
+  wireUpdaterLogger();
   if (eventsWired) return;
   eventsWired = true;
-  installE2EUpdateSentinel();
   if (process.platform === "darwin") {
     nativeAutoUpdater.on("update-downloaded", (_event, _notes, releaseName) => {
-      if (!hasStagedBuild() || (releaseName && releaseName !== stagedVersion)) return;
-      nativeInstallReady = true;
-      preparationStalled = false;
-      clearTimeout(preparationTimer);
+      if (!nativePreparation || (releaseName && releaseName !== nativePreparation.version)) return;
+      nativePreparation.finish();
       broadcast(lastStatus.state === "downloading" ? lastStatus : stagedDownloadedStatus());
     });
+    nativeAutoUpdater.on("error", (error) => {
+      // Log the full detail; surface only a short line.
+      console.error("native macOS updater error during staging:", error);
+      const short = new Error(shortStagingMessage(error));
+      nativePreparation?.finish(short);
+      nativeReadyVersion = undefined;
+      nativePreparationError = short;
+      if (macRestartRequested) {
+        macRestartRequested = false;
+        macRestartPreparation = undefined;
+        stagedInCurrentProcess = false;
+        void macRestartProgress?.fail(short.message).catch(() => undefined);
+        broadcast({ state: "error", message: short.message });
+        // Squirrel can close the windows, then fail to persist its relaunch
+        // request. Restore AO in that still-running process instead of leaving
+        // the user with no app window and no possible automatic restart.
+        restartFailureHandler?.();
+      }
+    });
   }
+  // Registered last so a native update-downloaded reaches the sentinel handler
+  // through the test harness's single-handler map lookup.
+  installE2EUpdateSentinel();
   // With a build staged, "checking" briefly hides the sidebar restart row; that
   // is acceptable and self-healing: the available / not-available handlers below
   // restore the enriched downloaded status right after.
@@ -1255,6 +1703,15 @@ function wireUpdaterEvents(): void {
     broadcastUpdaterStatus({ state: "checking" });
   });
   autoUpdater.on("update-available", (info) => {
+    offeredMacFiles = Array.isArray(info?.files) ? info.files : [];
+    offeredUpdateVersion = info?.version;
+    selectMacTargetBytes(process.arch === "arm64");
+    transferObservation = {
+      eligible: differentialEligible,
+      attemptedDifferential: false,
+      fallback: false,
+      transferred: undefined,
+    };
     // A successful check proves the network stack is healthy.
     consecutiveAutomaticNetFailures = 0;
     consecutiveAutomaticCheckFailures = 0;
@@ -1305,13 +1762,18 @@ function wireUpdaterEvents(): void {
     consecutiveAutomaticCheckFailures = 0;
     failingChecksPublished = false;
     activeUpdaterPhase = "download";
+    const transferred = Number.isFinite(p?.transferred) && p.transferred >= 0 ? p.transferred : undefined;
+    const total = Number.isFinite(p?.total) && p.total >= 0 ? p.total : undefined;
+    const bytesPerSecond = Number.isFinite(p?.bytesPerSecond) && p.bytesPerSecond >= 0 ? p.bytesPerSecond : undefined;
+    transferObservation.transferred = transferred;
     if (p?.transferred === undefined || p.transferred !== lastStatus.transferred) armDownloadStallWatchdog();
     return broadcastUpdaterStatus({
       state: p?.percent >= 100 ? "preparing" : "downloading",
       version: pendingUpdateVersion,
       percent: Math.max(0, Math.min(100, Math.floor(p?.percent ?? 0))),
-      transferred: p?.transferred,
-      total: p?.total,
+      ...(transferred === undefined ? {} : { transferred }),
+      ...(total === undefined ? {} : { total }),
+      ...(bytesPerSecond === undefined ? {} : { bytesPerSecond }),
     });
   });
   autoUpdater.on("update-downloaded", (info) => {
@@ -1329,8 +1791,17 @@ function wireUpdaterEvents(): void {
     // Resetting stagedAtMs there would mean the latest-channel 48h escalation rule
     // could never fire, because the clock is only ever minutes old.
     const restaged = stagedAtMs !== undefined && info?.version === stagedVersion;
-    if (!restaged) nativeInstallReady = process.platform !== "darwin";
     stagedVersion = info?.version;
+    stagedInCurrentProcess = true;
+    if (process.platform === "darwin" && stagedVersion) {
+      // electron-updater carries the artifact sizes in the manifest; the mac
+      // build is a single zip, so the largest entry is the archive we staged.
+      const archiveBytes = info?.files?.reduce(
+        (max, file) => Math.max(max, file?.size ?? 0),
+        0,
+      );
+      beginNativePreparation(stagedVersion, archiveBytes || undefined);
+    }
     stagedChannel = autoUpdater.channel ?? undefined;
     offeredReleaseNotes =
       normalizeReleaseNotes(info?.releaseNotes) ?? offeredReleaseNotes ?? directFeedReleaseNotes;
@@ -1339,15 +1810,6 @@ function wireUpdaterEvents(): void {
       stagedEscalated = false;
     }
     stagedRequestId = activeUpdaterRequestId;
-    if (!nativeInstallReady) {
-      clearTimeout(preparationTimer);
-      preparationStalled = false;
-      preparationTimer = setTimeout(() => {
-        preparationStalled = true;
-        broadcast(stagedDownloadedStatus());
-      }, DOWNLOAD_STALL_TIMEOUT_MS);
-      preparationTimer.unref?.();
-    }
     // A build is staged again, so install-on-quit has something correct to run,
     // and a later rejection is a NEW one rather than a repeat delivery.
     handledInstallRejection = undefined;
@@ -1363,8 +1825,8 @@ function wireUpdaterEvents(): void {
     // process open on quit.
     void runEscalationCheck();
     // Re-arming on a re-stage would push the next evaluation out by another 30
-    // minutes every time, and the nightly channel re-stages every 15 — the loop
-    // would never get a turn. Leave the running timer alone in that case.
+    // minutes every time a background check re-stages the same build, so the
+    // loop would never get a turn. Leave the running timer alone in that case.
     if (!restaged || escalationTimer === undefined) {
       stopEscalationTimer();
       escalationTimer = setInterval(
@@ -1376,6 +1838,10 @@ function wireUpdaterEvents(): void {
   });
   autoUpdater.on("error", (err) => {
     clearDownloadStallWatchdog();
+    if (handleMacStagingFailure(err)) {
+      emitUpdateFailure(err);
+      return;
+    }
     if (downloadStalled) {
       // Our own cancellation surfacing as an error. The stall status is already
       // published and is more useful than "cancelled"; replacing it would lose
@@ -1547,10 +2013,15 @@ export function getUpdateStatus(): UpdateStatus {
   };
 }
 
-function automaticUpdateCheckInterval(settings: UpdateSettings): number {
-  return settings.channel === "nightly" && settings.feature === null
-    ? NIGHTLY_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS
-    : STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
+// The cadence is one number for every channel today, so this ignores its
+// argument. Kept as a settings-taking seam on purpose: it is the single place a
+// future per-channel cadence (for example a shorter interval for feature pins)
+// would branch, and the scheduler already carries the interval through
+// runAutomaticUpdateCheck's return value and re-arms when it changes, so
+// reintroducing a variable cadence stays a one-function change. The _settings
+// underscore is the signal that the parameter is deliberately unused for now.
+function automaticUpdateCheckInterval(_settings: UpdateSettings): number {
+  return AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
 }
 
 /**
@@ -1594,7 +2065,7 @@ async function runAutomaticUpdateCheck(
   stateDir: string,
 ): Promise<number> {
   let nextIntervalMs =
-    automaticUpdateTimerIntervalMs ?? STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
+    automaticUpdateTimerIntervalMs ?? AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
   try {
     await runSerializedUpdaterOperation("automatic-check", async () => {
       const settings = await reconcileAndPersist(
@@ -1605,6 +2076,7 @@ async function runAutomaticUpdateCheck(
 
       escalationStateDir = stateDir;
       wireUpdaterEvents();
+      applyUpdaterPolicy(settings);
       configureFeed(settings);
       // Discovery is always on for the selected release channel. This preference
       // controls only whether electron-updater downloads the discovered build or
@@ -1614,9 +2086,9 @@ async function runAutomaticUpdateCheck(
       // electron-updater does not treat "already in the cache" as done: a cache
       // hit still runs the download task's completion path, which on macOS copies
       // the whole zip to update.zip and hands Squirrel a fresh install request.
-      // With autoDownload on, that repeated for every check for as long as the
-      // user went without quitting — 175 MB of copying and a ShipIt spawn every
-      // 15 minutes on nightly. Anything genuinely newer than the staged build is
+      // With autoDownload on, that repeated on every check for as long as the
+      // user went without quitting: 175 MB of copying and a ShipIt spawn on each
+      // automatic check. Anything genuinely newer than the staged build is
       // still fetched, below.
       // A staged build from a channel the user has left is already armed with
       // the OS installer; the replacement must be fetched even when automatic
@@ -1628,7 +2100,7 @@ async function runAutomaticUpdateCheck(
       // every check, forever. A stale staged build still overrides, because
       // leaving THAT one armed installs a channel the user has left.
       autoUpdater.autoDownload =
-        staleStaged || (hasStagedBuild() && !nativeInstallReady) ||
+        staleStaged || (hasStagedBuild() && !isNativeInstallReady()) ||
         (settings.enabled && !hasStagedBuild() && !automaticRecoveryExhausted());
       applyInstallOnQuitPolicy();
       // Only prerelease channels resolve a direct feed. Skipping the await on
@@ -1663,6 +2135,7 @@ async function runAutomaticUpdateCheck(
         // pre-check status so the renderer is neither stuck on "checking" nor
         // denied the stale-check nudge once the streak crosses the threshold
         // (#3526). Record before restoring so the restore broadcast is stamped.
+        if (handleMacStagingFailure(err)) return;
         if (activeUpdaterPhase === "download") {
           if (!downloadStalled && lastStatus.state !== "error") broadcast(withActiveRequest({ state: "error", message: errorMessage(err), version: pendingUpdateVersion }));
         } else {
@@ -1747,13 +2220,26 @@ export async function startAutoUpdates(stateDir: string): Promise<void> {
     schedulePeriodicAutomaticUpdateCheck(stateDir, intervalMs);
 }
 
+// The mirror belongs to Developer Mode IPC. A stale settings form must not
+// restore an old value when changing channel or automatic-download preference.
+async function persistRendererUpdateSettings(
+  stateDir: string,
+  settings: UpdateSettings,
+): Promise<UpdateSettings> {
+  return updateUpdateSettings(stateDir, current => ({
+    ...settings,
+    macDifferentialUpdates: current.macDifferentialUpdates === true,
+  }));
+}
+
 async function persistUpdaterSettings(
   stateDir: string,
   settings: UpdateSettings,
 ): Promise<void> {
-  await writeUpdateSettings(stateDir, settings);
-  configureFeed(settings);
-  reconcileAutomaticUpdateSchedule(stateDir, settings);
+  const next = await persistRendererUpdateSettings(stateDir, settings);
+  applyUpdaterPolicy(next);
+  configureFeed(next);
+  reconcileAutomaticUpdateSchedule(stateDir, next);
 }
 
 /** Persist settings and reconcile the live updater feed/timer as one updater operation. */
@@ -1808,19 +2294,18 @@ export async function checkForUpdatesNow(
     await runSerializedUpdaterOperation(
       "manual-check",
       async () => {
-        if (options.settings)
-          await writeUpdateSettings(stateDir, options.settings);
-        const settings = await reconcileAndPersist(
-          stateDir,
-          options.settings ?? (await readUpdateSettings(stateDir)),
-        );
+        const requested = options.settings
+          ? await persistRendererUpdateSettings(stateDir, options.settings)
+          : await readUpdateSettings(stateDir);
+        const settings = await reconcileAndPersist(stateDir, requested);
+        applyUpdaterPolicy(settings);
         reconcileAutomaticUpdateSchedule(stateDir, settings);
         configureFeed(settings);
         // Same reason as the automatic path: a channel switch leaves the old
         // channel's build armed, and only staging the new one over it helps.
         const staleStaged = stagedBuildIsStale(settings);
         if (staleStaged) discardStagedBuild();
-        autoUpdater.autoDownload = staleStaged || (hasStagedBuild() && !nativeInstallReady);
+        autoUpdater.autoDownload = staleStaged || (hasStagedBuild() && !isNativeInstallReady());
         applyInstallOnQuitPolicy();
         broadcastUpdaterStatus({ state: "checking" });
         const restoreFeed = await configureDirectPrereleaseFeed(settings);
@@ -1916,13 +2401,14 @@ export async function returnToHome(
           current.feature ? { ...current, feature: null } : current,
         );
         const settings = await reconcileAndPersist(stateDir, cleared);
+        applyUpdaterPolicy(settings);
         reconcileAutomaticUpdateSchedule(stateDir, settings);
         configureFeed(settings);
         // Leaving a pinned PR build is the same class of switch: its build is
         // armed and has to be superseded, not merely forgotten.
         const staleStaged = stagedBuildIsStale(settings);
         if (staleStaged) discardStagedBuild();
-        autoUpdater.autoDownload = staleStaged || (hasStagedBuild() && !nativeInstallReady);
+        autoUpdater.autoDownload = staleStaged || (hasStagedBuild() && !isNativeInstallReady());
         applyInstallOnQuitPolicy();
         broadcastUpdaterStatus({ state: "checking" });
         const result = await checkForUpdatesWithDeadline();
@@ -1983,6 +2469,8 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
         pendingUpdateVersion = lastStatus.version ?? version;
         broadcastUpdaterStatus({ state: "downloading", version: pendingUpdateVersion });
         activeDownloadCancellation = token;
+        applyUpdaterPolicy(lastAppliedUpdateSettings);
+        transferObservation = { eligible: differentialEligible, attemptedDifferential: false, fallback: false, transferred: undefined };
         armDownloadStallWatchdog();
         await autoUpdater.downloadUpdate(token);
       },
@@ -2014,6 +2502,29 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
     manualDownloadPending = false;
     clearDownloadStallWatchdog();
   }
+}
+
+/** Persist the narrow Developer Mode mirror and apply its fail-closed policy. */
+export async function setMacDifferentialUpdates(
+  stateDir: string,
+  enabled: boolean,
+): Promise<void> {
+  if (typeof enabled !== "boolean") return;
+  developerModeRequested = enabled;
+  // Revoke eligibility synchronously, even while a previous operation is busy.
+  // An already-started dependency download retains its captured options.
+  if (!enabled) {
+    developerModeHydrated = false;
+    applyUpdaterPolicy(FAIL_CLOSED_UPDATE_SETTINGS);
+  }
+  await runSerializedUpdaterOperation("settings-write", async () => {
+    const settings = await updateUpdateSettings(stateDir, (current) => ({
+      ...current,
+      macDifferentialUpdates: enabled,
+    }));
+    developerModeHydrated = enabled && developerModeRequested;
+    applyUpdaterPolicy(settings);
+  });
 }
 
 // getMacInstallBlocker is the macOS install preflight. An app launched straight
@@ -2075,7 +2586,7 @@ export function getMacInstallBlocker(): string | undefined {
 // the staged build wait for a location it can actually install from.
 function applyInstallOnQuitPolicy(): void {
   const blocker = getMacInstallBlocker();
-  autoUpdater.autoInstallOnAppQuit = blocker === undefined && !awaitingStagedReplacement;
+  autoUpdater.autoInstallOnAppQuit = blocker === undefined && !awaitingStagedReplacement && !nativePreparationBlocked;
   if (awaitingStagedReplacement) {
     console.info(
       "install-on-quit disabled until the replacement build is staged; the cached one belongs to a channel the user left",
@@ -2091,26 +2602,177 @@ function applyInstallOnQuitPolicy(): void {
 
 // quitAndInstallUpdate installs a downloaded update and relaunches. isSilent
 // false keeps the installer UI on Windows; isForceRunAfter relaunches the app.
-export function quitAndInstallUpdate(): void {
-	if (!app.isPackaged) return;
+export function setUpdateRestartFailureHandler(handler: () => void): void { restartFailureHandler = handler; }
+
+export function isUpdateRestartRequested(): boolean { return macRestartRequested; }
+
+export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<UpdateInstallResult> {
+  if (confirmedVersion !== undefined && (typeof confirmedVersion !== "string" || !confirmedVersion.trim())) {
+    throw new Error("A valid confirmed update version is required.");
+  }
+  if (!app.isPackaged) return;
+  if (awaitingStagedReplacement) {
+    throw new Error("Check for updates and download an update before restarting to install.");
+  }
   const blocker = getMacInstallBlocker();
   if (blocker !== undefined) {
-    console.warn("update install blocked:", blocker);
-    // A dialog, not a status broadcast: the click came from the sidebar row,
-    // and replacing the "downloaded" status would hide that row (losing the
-    // retry affordance) without guaranteeing the user ever sees the message.
-    // The staged build stays staged; after the user moves the app the same
-    // row installs it.
-    void dialog.showMessageBox({
-      type: "warning",
-      message: "The update can't be installed from this location",
-      detail: blocker,
-      buttons: ["OK"],
-    });
+    throw new Error(blocker);
+  }
+  if (process.platform !== "darwin") {
+    if (!hasStagedBuild() || lastStatus.state === "downloading" || lastStatus.state === "preparing") {
+      throw new Error("The update is not ready to install. Check for updates again.");
+    }
+    if (!stagedInCurrentProcess) {
+      await runSerializedUpdaterOperation("manual-install", async () => {
+        await prepareRememberedNonDarwinUpdate();
+      });
+    }
+    if (confirmedVersion !== undefined && stagedVersion && confirmedVersion !== stagedVersion) {
+      return { state: "confirmation-required", version: stagedVersion,
+        releaseNotes: lastStatus.state === "downloaded" && lastStatus.version === stagedVersion ? lastStatus.releaseNotes : undefined };
+    }
+    // Signal the next boot that it is a post-update relaunch so the startup loader
+    // shows "Updating / Restarting" copy. macOS gets this via the same marker on
+    // its own path below; here it is the only such signal (no native helper).
+    if (escalationStateDir && stagedVersion) {
+      // Best-effort and time-bounded: a hung state-dir write must never delay the
+      // install. The marker only drives startup-loader copy.
+      await Promise.race([
+        markUpdateRelaunch({ stateDir: escalationStateDir, version: stagedVersion }).catch((err) => {
+          console.warn("failed to write post-update relaunch marker:", err);
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 750)),
+      ]);
+    }
+    autoUpdater.quitAndInstall(false, true);
     return;
   }
-  if (!hasStagedBuild() || !nativeInstallReady || lastStatus.state === "downloading" || lastStatus.state === "preparing") return;
-  autoUpdater.quitAndInstall(false, true);
+  if (macRestartPreparation) return macRestartPreparation;
+  let confirmation: UpdateInstallResult;
+  macRestartPreparation = runSerializedUpdaterOperation("manual-install", async () => {
+    let progress: Awaited<ReturnType<typeof startMacUpdateProgress>> | undefined;
+    try {
+      if (!escalationStateDir || !hasStagedBuild()) {
+        throw new Error("Check for updates and download an update before restarting to install.");
+      }
+      if (!stagedInCurrentProcess) {
+        confirmation = await prepareRememberedMacUpdate(confirmedVersion);
+        if (confirmation) return;
+      }
+      if (confirmedVersion !== undefined && stagedVersion && confirmedVersion !== stagedVersion) {
+        confirmation = { state: "confirmation-required", version: stagedVersion,
+          releaseNotes: lastStatus.state === "downloaded" && lastStatus.version === stagedVersion ? lastStatus.releaseNotes : undefined };
+        return;
+      }
+      const version = stagedVersion;
+      if (!version) throw new Error("The update is no longer ready to install. Check for updates again.");
+      await waitForNativePreparation(version);
+      // The helper must acknowledge it is up (its READY handshake) before AO
+      // quits. It stays hidden on the normal path and only shows a window if the
+      // update stalls or fails.
+      progress = await startMacUpdateProgress({
+        stateDir: escalationStateDir,
+        resourcesPath: process.resourcesPath,
+        appPath: path.resolve(process.execPath, "..", "..", ".."),
+        version,
+      });
+      progress.assertAlive();
+      macRestartProgress = progress;
+      macRestartRequested = true;
+      // Same cross-platform post-update signal the renderer reads at boot. This
+      // is separate from the helper's active.json handshake above and only drives
+      // the startup loader copy; failing to write it must not abort the install.
+      // Best-effort and time-bounded: a hung state-dir write must never delay the
+      // install. The marker only drives startup-loader copy.
+      await Promise.race([
+        markUpdateRelaunch({ stateDir: escalationStateDir, version }).catch((err) => {
+          console.warn("failed to write post-update relaunch marker:", err);
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 750)),
+      ]);
+      autoUpdater.quitAndInstall(false, true);
+      if (!macRestartRequested) throw nativePreparationError ?? new Error("The installer could not restart AO.");
+    } catch (err) {
+      macRestartRequested = false;
+      stagedInCurrentProcess = false;
+      nativeReadyVersion = undefined;
+      console.error("failed to prepare update for restart:", err);
+      await progress?.fail(errorMessage(err)).catch(() => undefined);
+      broadcast({ state: "error", message: errorMessage(err) });
+      throw err;
+    }
+  }).then(() => confirmation).finally(() => { if (!macRestartRequested) macRestartPreparation = undefined; });
+  return macRestartPreparation;
+}
+
+async function waitForNativePreparation(version: string): Promise<void> {
+  if (nativePreparationBlocked) throw nativePreparationBlocked;
+  if (nativePreparation?.version === version) await nativePreparation.promise;
+  if (nativePreparationError) throw nativePreparationError;
+  if (nativeReadyVersion !== version || stagedVersion !== version) {
+    throw new Error("The update is not ready in macOS. Check for updates again.");
+  }
+}
+
+async function prepareRememberedMacUpdate(confirmedVersion?: string): Promise<UpdateInstallResult> {
+  if (!escalationStateDir) throw new Error("Check for updates before restarting to install.");
+  const settings = await reconcileAndPersist(escalationStateDir, await readUpdateSettings(escalationStateDir));
+  configureFeed(settings);
+  autoUpdater.autoDownload = false;
+  applyInstallOnQuitPolicy();
+  broadcastUpdaterStatus({ state: "checking" });
+  const restoreFeed = await configureDirectPrereleaseFeed(settings);
+  try {
+    const result = await checkForUpdatesWithDeadline();
+    if (result?.isUpdateAvailable !== true) {
+      throw new Error("The remembered update is no longer available on the selected channel. Check for updates and try again.");
+    }
+    // A remembered stamp is not permission to install a different release.
+    // Stop before downloading/arming it so cancelling the new confirmation
+    // cannot install the unconfirmed target on a later ordinary quit.
+    if (confirmedVersion !== undefined && result.updateInfo.version !== confirmedVersion) {
+      return {
+        state: "confirmation-required",
+        version: result.updateInfo.version,
+        releaseNotes: normalizeReleaseNotes(result.updateInfo.releaseNotes) ?? directFeedReleaseNotes,
+      };
+    }
+    activeUpdaterPhase = "download";
+    pendingUpdateVersion = result.updateInfo.version;
+    const token = new CancellationToken();
+    activeDownloadCancellation = token;
+    // A cache hit re-establishes the native feed. The download promise is not
+    // native readiness: waitForNativePreparation separately gates the quit.
+    await autoUpdater.downloadUpdate(token);
+  } finally {
+    restoreFeed?.();
+  }
+}
+
+// On Windows and Linux, a remembered staged build has no installer file in
+// electron-updater's in-memory state (downloadedUpdateHelper is null). Calling
+// quitAndInstall against that throws "No update filepath provided." Re-download
+// the build so the installer exe/AppImage is present before requesting install.
+async function prepareRememberedNonDarwinUpdate(): Promise<void> {
+  if (!escalationStateDir) throw new Error("Check for updates before restarting to install.");
+  const settings = await reconcileAndPersist(escalationStateDir, await readUpdateSettings(escalationStateDir));
+  configureFeed(settings);
+  autoUpdater.autoDownload = false;
+  broadcastUpdaterStatus({ state: "checking" });
+  const restoreFeed = await configureDirectPrereleaseFeed(settings);
+  try {
+    const result = await checkForUpdatesWithDeadline();
+    if (result?.isUpdateAvailable !== true) {
+      throw new Error("The remembered update is no longer available. Check for updates and try again.");
+    }
+    activeUpdaterPhase = "download";
+    pendingUpdateVersion = result.updateInfo.version;
+    const token = new CancellationToken();
+    activeDownloadCancellation = token;
+    await autoUpdater.downloadUpdate(token);
+  } finally {
+    restoreFeed?.();
+  }
 }
 
 // ensureUpdatePrefs prompts once (first run, before any settings file exists)

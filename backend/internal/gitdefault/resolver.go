@@ -20,7 +20,7 @@ const (
 	legacyWorkspaceCommitSubject = "chore: initialize AO workspace root"
 	// ManagedDefaultConfigKey records the branch AO selected when it initialized
 	// a repository itself. It is intentionally repo-local and is only consulted
-	// when the repository has no remotes.
+	// when the repository has no remote branches yet.
 	ManagedDefaultConfigKey = "ao.defaultBranch"
 )
 
@@ -71,6 +71,24 @@ func New(binary string, run Runner) *Resolver {
 	return &Resolver{binary: binary, run: run}
 }
 
+// RecordInitialBranch records the branch AO is about to give its first commit.
+// Call only while initializing an unborn repository; ordinary default-branch
+// resolution must never infer a default from the current checkout.
+func (r *Resolver) RecordInitialBranch(ctx context.Context, repo string) error {
+	out, err := r.run(ctx, r.binary, "-C", repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return fmt.Errorf("determine initial branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return errors.New("determine initial branch: empty symbolic HEAD")
+	}
+	if _, err := r.run(ctx, r.binary, "-C", repo, "config", "--local", ManagedDefaultConfigKey, branch); err != nil {
+		return fmt.Errorf("record initial branch: %w", err)
+	}
+	return nil
+}
+
 // Inspect resolves from local, durable repository metadata only. It never
 // contacts a remote, so it is suitable for project read models and registration.
 func (r *Resolver) Inspect(ctx context.Context, repo string) (Resolution, error) {
@@ -83,6 +101,9 @@ func (r *Resolver) Inspect(ctx context.Context, repo string) (Resolution, error)
 	}
 	if cached, ok := r.cachedRemoteHead(ctx, repo, remote); ok {
 		return cached, nil
+	}
+	if initialized, ok := r.initializedBeforeFirstPush(ctx, repo, remote); ok {
+		return initialized, nil
 	}
 	return Resolution{}, unresolvedf(
 		"remote %q in repository %q has no cached HEAD", remote, repo,
@@ -157,12 +178,31 @@ func (r *Resolver) Resolve(ctx, remoteCtx context.Context, repo string) (Resolut
 	if cached, ok := r.cachedRemoteHead(ctx, repo, remote); ok {
 		return cached, nil
 	}
+	// A known live default must not be replaced by the initial local branch
+	// merely because fetching it failed.
+	if branch == "" {
+		if initialized, ok := r.initializedBeforeFirstPush(ctx, repo, remote); ok {
+			return initialized, nil
+		}
+	}
 	if liveErr == nil {
 		liveErr = errors.New("remote did not advertise a symbolic HEAD")
 	}
 	return Resolution{}, unresolvedf(
 		"could not resolve remote %q HEAD for repository %q (%v)", remote, repo, liveErr,
 	)
+}
+
+// An empty clone can have an AO-created initial commit before its first push.
+// Keep remote HEAD authoritative once available, and never use this fallback
+// when the selected remote already has fetched branches.
+func (r *Resolver) initializedBeforeFirstPush(ctx context.Context, repo, remote string) (Resolution, bool) {
+	out, err := r.run(ctx, r.binary, "-C", repo, "for-each-ref", "--format=%(refname)", "refs/remotes/"+remote+"/")
+	if err != nil || strings.TrimSpace(string(out)) != "" {
+		return Resolution{}, false
+	}
+	resolved, err := r.resolveAOInitialized(ctx, repo)
+	return resolved, err == nil
 }
 
 func (r *Resolver) selectRemote(ctx context.Context, repo string) (string, []string, error) {

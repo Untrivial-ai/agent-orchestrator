@@ -82,6 +82,38 @@ a ZIP for electron-updater. The ZIP and `latest-mac.yml` must remain available:
 electron-updater cannot install an update from a DMG. Nightly and preview
 channels omit the first-install DMG.
 
+## Isolated macOS differential v2
+
+Current AO uses full-ZIP macOS updates. It explicitly sets
+`disableDifferentialDownload = true` before checks. The local rollout stop is
+false and the v2 signing keyring is empty. Windows/Linux updater and feed
+behavior is unchanged. No bridge release is part of this design.
+
+Legacy macOS feeds permanently remain free of `blockMapSize`, blockmap or v2
+references, and conventional `.zip.blockmap` assets. Old clients derive that
+conventional suffix regardless of Developer Mode and may seed their next cache
+cycle even after full fallback. Their discovery paths must remain empty.
+
+The separately gated v2 resolver uses signed `ao-diff-v2-mac.json` and versioned
+`.zip.aoblockmap` assets on the same GitHub release. Those names are never
+requested by legacy clients. No public build/feed/publish hook generates them.
+A future independently reviewed conductor change must verify exact signed
+metadata and asset inventories without relaxing the legacy prohibition.
+
+The v2 MacUpdater subclass uses the dependency's declared protected extension
+and exclusively owned handles. Range failures, including 416, settle before
+MacUpdater starts one full fallback. Stock 6.8.9's unsafe differential worker
+is never invoked. Current AO remains on the stock full-only path.
+
+See [the v2 protocol and acceptance contract](mac-differential-v2.md) for exact
+schema, naming, signing, generation/verification, rollback and runtime limits.
+The production client reauthorizes marked final-cache hits against a fresh signed
+manifest and byte-verifies them before handoff. Cancellation remains terminal
+through the protected downloaded-event boundary immediately before Squirrel.
+The feature stays locally disabled until real packaged macOS acceptance and the
+private conductor inventory, signing, draft-redownload, and rollback gates are
+complete. No public repository workflow publishes or activates v2 assets.
+
 ## Incident rule
 
 Exactly one publisher is a correctness requirement. If the conductor is
@@ -89,3 +121,82 @@ unavailable or a release is partially staged, stop and recover through the
 private runbook. Do not dispatch a public publishing workflow, create a
 substitute release, mutate an existing release, or publish from a second
 identity.
+
+## macOS repair installer
+
+The repair `.pkg` is a separate, user-initiated installation path for Macs whose
+installed updater cannot complete an update. It replaces
+`/Applications/Agent Orchestrator.app` using macOS Installer; it does not invoke
+Electron's updater, download a payload at install time, or touch AO user data.
+It is an additional release artifact: the existing ZIP and update feeds remain
+required. It does not add a remote repair button to old installed versions.
+
+Users must quit AO before running the package. If AO's ShipIt installer is
+still running, the repair must wait; restart the Mac and run the repair before
+opening AO. The installer must not terminate processes or install concurrently
+with ShipIt. After installation, users open AO normally. Installs in custom
+locations and unreadable or unrelated destination bundle metadata require
+separate support; the repair must not guess which app to replace.
+
+### Conductor integration required before distribution
+
+The public packaging script is `frontend/scripts/build-mac-repair-installer.mjs`.
+It consumes an already signed, notarized, stapled app and verifies the app with
+`verify-mac-artifact.sh`. The production path requires a **Developer ID
+Installer** identity, distinct from the **Developer ID Application** identity
+used for the app and DMG, and a notarytool keychain profile. Follow the script's
+usage for exact arguments. Unsigned testing packages are not user downloads.
+
+Example invocation from the private conductor after configuring its keychain:
+
+```bash
+node public/frontend/scripts/build-mac-repair-installer.mjs \
+  --app '/path/to/Agent Orchestrator.app' \
+  --output '/path/to/dist/Agent.Orchestrator-repair-arm64.pkg' \
+  --identity "$APPLE_INSTALLER_SIGNING_IDENTITY" \
+  --keychain-profile AO_REPAIR_NOTARY
+```
+
+The builder refuses an existing output file. It verifies the input, copied app
+and expanded package payload before notarizing the signed package. Neither the
+public CI test job nor this command publishes artifacts.
+
+The private conductor must:
+
+1. Import the Installer certificate/private key into its temporary keychain and
+   configure its notarytool profile. Keep credentials in the conductor.
+2. Invoke the script from the pinned public source checkout after each app is
+   signed, notarized and stapled. Build each intended channel and architecture
+   explicitly; do not replace the stable download with a nightly repair.
+3. Include the resulting signed/notarized package in the artifact inventory,
+   local and remote verification, checksums and atomic publication. Account for
+   the additional notarization submissions in the job timeout.
+4. Provide a direct, architecture-appropriate download link from the AO website
+   and recovery announcement. This avoids GitHub navigation but still requires
+   users to download and run the package. Do not expose the link before its
+   artifact is published and verified.
+
+At implementation time, the conductor imported the Application certificate;
+Installer signing was not wired into its workflow. Source support in this PR
+alone does **not** produce or publish a usable recovery download.
+
+### Repair release gates
+
+An unsigned package build/expansion and mocked guard tests establish packaging
+structure, not a working signed recovery. Before distribution, test a signed
+candidate on isolated Macs or VMs, on Apple Silicon and Intel:
+
+- Upgrade from stable 0.12.10 and 0.12.11 and the reported nightly builds; confirm
+  the chosen target version launches and existing AO data is preserved.
+- Repair the same version with damaged app contents; reject a newer installed
+  version, wrong architecture, unrelated destination and symlink destination.
+- Reject active AO and active AO ShipIt, including AO quit triggering a staged
+  update. The repair must not race that update.
+- Verify the package's signature, Gatekeeper acceptance and staple with
+  `verify-mac-artifact.sh`; verify the expanded and installed app with the same
+  script. Do not run an unsigned fixture on a user's Mac.
+- Confirm the repaired installation can subsequently update through the normal
+  updater, including filesystem ownership after macOS Installer runs.
+
+Test the normal old-version-to-candidate update path too. A repair download is
+only necessary for affected installs that cannot complete that path.

@@ -6,7 +6,9 @@
 package systemcheck
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"runtime"
@@ -70,8 +72,7 @@ func New(harnesses HarnessCatalog, executables ports.ExecutableFinder) *Service 
 }
 
 // NewWithCommandRunner returns a Service that can also verify GitHub CLI
-// authentication. The probe discards token output and records only whether
-// gh could resolve a credential.
+// credential configuration. The probe never captures token output.
 func NewWithCommandRunner(harnesses HarnessCatalog, executables ports.ExecutableFinder, commands ports.CommandRunner) *Service {
 	return &Service{harnesses: harnesses, executables: executables, commands: commands}
 }
@@ -126,6 +127,10 @@ func (s *Service) OpenGitHubAuthTerminal(ctx context.Context) (shellterm.ShellTe
 		return shellterm.ShellTerminal{}, apierr.Internal("GITHUB_AUTH_TERMINAL_UNAVAILABLE", "GitHub authentication terminal service is unavailable.")
 	}
 	return s.terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{
+		// Keep the native interactive flow so users can choose GitHub.com or
+		// Enterprise, HTTPS or SSH, and any authentication mode supported by their
+		// installed gh version. The renderer forwards the terminal protocol replies
+		// these prompts require.
 		Argv:  []string{path, "auth", "login"},
 		Title: "Connect GitHub",
 	})
@@ -256,8 +261,38 @@ func (s *Service) checkGitHubAuth(ctx context.Context) Requirement {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	if err := s.commands.Run(probeCtx, []string{path, "auth", "token"}, io.Discard, io.Discard); err != nil {
-		return Requirement{ID: "github-auth", Label: "GitHub access", Detail: detail}
+	var stdout bytes.Buffer
+	err = s.commands.Run(probeCtx, []string{path, "auth", "status", "--active", "--json", "hosts"}, &stdout, io.Discard)
+	var status struct {
+		Hosts map[string][]struct {
+			Active bool   `json:"active"`
+			State  string `json:"state"`
+		} `json:"hosts"`
 	}
-	return Requirement{ID: "github-auth", Label: "GitHub access", Satisfied: true, Detail: "GitHub CLI is signed in."}
+	if err == nil && json.Unmarshal(stdout.Bytes(), &status) == nil {
+		// An empty host map is a definitive sign-out, not a validation failure.
+		if len(status.Hosts) == 0 {
+			return Requirement{ID: "github-auth", Label: "GitHub access", Detail: detail}
+		}
+		for _, accounts := range status.Hosts {
+			for _, account := range accounts {
+				if account.Active && account.State == "success" {
+					return Requirement{ID: "github-auth", Label: "GitHub access", Satisfied: true, Detail: "GitHub CLI is signed in."}
+				}
+			}
+		}
+	}
+	// Unsupported/malformed JSON or failed validation falls back to the local
+	// credential check so an offline user is not prompted to sign in again.
+	if s.hasGitHubAuth(ctx, path) {
+		return Requirement{ID: "github-auth", Label: "GitHub access", Satisfied: true, Detail: "GitHub CLI is signed in."}
+	}
+	return Requirement{ID: "github-auth", Label: "GitHub access", Detail: detail}
+}
+
+func (s *Service) hasGitHubAuth(ctx context.Context, path string) bool {
+	// Give the local credential probe its own budget, even when status timed out.
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return s.commands.Run(probeCtx, []string{path, "auth", "token"}, io.Discard, io.Discard) == nil
 }

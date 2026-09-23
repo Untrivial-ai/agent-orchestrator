@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/gitdefault"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 )
 
@@ -434,7 +435,7 @@ func TestPrepareGitRunsApprovedMissingActionsInOrder(t *testing.T) {
 	}
 }
 
-func TestPrepareGitProjectImportCreatesPrivateGitHubRepository(t *testing.T) {
+func TestPrepareGitProjectImportCreatesPublicGitHubRepository(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	if out, err := exec.Command("git", "init", "-b", "main", root).CombinedOutput(); err != nil {
@@ -468,13 +469,15 @@ func TestPrepareGitProjectImportCreatesPrivateGitHubRepository(t *testing.T) {
 	t.Cleanup(func() { importGitOutputFunc = originalGitOutput })
 	svc := New(Deps{Store: newFakeStore()})
 
+	private := false
 	result, err := svc.PrepareGit(ctx, GitPreparationInput{
 		ImportKind:      ImportKindProject,
 		Path:            root,
 		ApprovedActions: []string{GitPreparationActionCreateRemoteRepository},
 		GitHubRepository: &GitHubRepositoryPreparation{
-			Owner: "octo",
-			Name:  "project",
+			Owner:   "octo",
+			Name:    "project",
+			Private: &private,
 		},
 	})
 	if err != nil {
@@ -486,7 +489,7 @@ func TestPrepareGitProjectImportCreatesPrivateGitHubRepository(t *testing.T) {
 	if gotDir != root {
 		t.Fatalf("gh dir = %q, want %q", gotDir, root)
 	}
-	wantArgs := []string{"repo", "create", "octo/project", "--private"}
+	wantArgs := []string{"repo", "create", "octo/project", "--public"}
 	wantActions(t, gotArgs, wantArgs)
 	wantGitCalls := [][]string{
 		{"remote", "add", "origin", "https://github.com/octo/project.git"},
@@ -903,6 +906,26 @@ func TestValidateWorkspaceImportOfGitRepoRequiresProjectChoice(t *testing.T) {
 	}
 }
 
+func TestValidateWorkspaceImportOfRootRepoWithoutOriginUsesChildRepos(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "workspace")
+	gitRepoWithCommitNoOrigin(t, root)
+	child := filepath.Join(root, "child")
+	gitRepoWithCommitWithOrigin(t, child, "https://example.invalid/child.git")
+	svc := New(Deps{Store: newFakeStore()})
+
+	result, err := svc.Validate(ctx, ImportValidationInput{ImportKind: ImportKindWorkspace, Path: root})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if !result.IsValid || result.NextStep != ImportNextStepContinue || result.Warning != "" {
+		t.Fatalf("result = %#v, want workspace import to continue", result)
+	}
+	if len(result.ChildRepos) != 1 || result.ChildRepos[0].RepoPath != child || !result.ChildRepos[0].HasOrigin {
+		t.Fatalf("childRepos = %#v, want ready child repository", result.ChildRepos)
+	}
+}
+
 func TestValidateWorkspaceImportReportsBareChildRepository(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1130,5 +1153,37 @@ func wantCode(t *testing.T, err error, code string) {
 	}
 	if apiErr.Code != code {
 		t.Fatalf("code = %q, want %q", apiErr.Code, code)
+	}
+}
+
+func TestPrepareGitEmptyCloneRecordsInitialBranchForWorkspaceResolution(t *testing.T) {
+	for _, branch := range []string{"main", "trunk"} {
+		t.Run(branch, func(t *testing.T) {
+			ctx := context.Background()
+			origin := filepath.Join(t.TempDir(), "empty.git")
+			repo := filepath.Join(t.TempDir(), "clone")
+			for _, args := range [][]string{
+				{"init", "--bare", "-b", branch, origin},
+				{"clone", origin, repo},
+				{"-C", repo, "symbolic-ref", "HEAD", "refs/heads/" + branch},
+			} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v (%s)", args, err, out)
+				}
+			}
+			svc := New(Deps{Store: newFakeStore()})
+			result, err := svc.PrepareGit(ctx, GitPreparationInput{
+				ImportKind: ImportKindProject, Path: repo,
+				ApprovedActions:  []string{GitPreparationActionCommit},
+				InitialCommitMsg: "Start my project",
+			})
+			if err != nil || result.Validation.NextStep != ImportNextStepContinue {
+				t.Fatalf("PrepareGit: %#v, %v", result, err)
+			}
+			resolved, err := gitdefault.New("", nil).Resolve(ctx, ctx, repo)
+			if err != nil || resolved.Branch != branch || resolved.Source != gitdefault.SourceAOInitialized {
+				t.Fatalf("resolve prepared clone: %#v, %v", resolved, err)
+			}
+		})
 	}
 }

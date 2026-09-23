@@ -3,6 +3,7 @@ import Constants from "expo-constants";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import PostHog from "posthog-react-native";
+import type { SessionMode } from "../api";
 import { buildMobileContext } from "./context";
 import { type ActiveStorage } from "./dailyActive";
 import {
@@ -112,20 +113,29 @@ export const telemetryActiveStorage: ActiveStorage = {
 };
 
 /** Feature ids the featureUsed allowlist accepts. */
-export type MobileFeature = "spawn" | "merge" | "kill" | "restore" | "conductor" | "send";
+export type MobileFeature = "spawn" | "merge" | "kill" | "restore" | "conductor" | "send" | "handoff";
+
+/** Extra allowlisted context for a feature event. `mode` distinguishes chat vs tui. */
+export type FeatureContext = { mode?: SessionMode };
 
 /**
  * Runs an action and reports feature_used with its outcome, without changing the
- * action's own return value or error. Best-effort: a null client (pre-init) is a
- * no-op, and telemetry never swallows or alters the action's result.
+ * action's own return value or error. `context` carries allowlisted extras (e.g.
+ * the chat/tui `mode`) onto both the success and failure event. Best-effort: a
+ * null client (pre-init) is a no-op, and telemetry never swallows or alters the
+ * action's result.
  */
-export async function trackFeature<T>(feature: MobileFeature, run: () => Promise<T>): Promise<T> {
+export async function trackFeature<T>(
+	feature: MobileFeature,
+	run: () => Promise<T>,
+	context?: FeatureContext,
+): Promise<T> {
 	try {
 		const result = await run();
-		telemetry?.capture(MOBILE_EVENTS.featureUsed, { feature, outcome: "succeeded" });
+		telemetry?.capture(MOBILE_EVENTS.featureUsed, { feature, outcome: "succeeded", ...context });
 		return result;
 	} catch (error) {
-		telemetry?.capture(MOBILE_EVENTS.featureUsed, { feature, outcome: "failed" });
+		telemetry?.capture(MOBILE_EVENTS.featureUsed, { feature, outcome: "failed", ...context });
 		throw error;
 	}
 }
