@@ -159,7 +159,11 @@ function bracketPastedText(text: string, bracketedPasteMode: boolean): string {
 // happens to end at the last column joins too; buffer-level precision (what
 // getSelectionPosition gives us here) is already applied, the rest has no
 // on-screen marker to read.
-function joinVisuallyContinuousLines(term: Terminal, selection: string): string {
+function joinVisuallyContinuousLines(term: Terminal, selection: string, columnSelection: boolean): string {
+	// xterm's column mode intentionally keeps one text line per selected buffer
+	// row, even when the upper row fills the grid. Joining those rows would
+	// change the rectangular selection into a single line.
+	if (columnSelection) return selection;
 	const range = term.getSelectionPosition();
 	if (!range) return selection;
 	const lineBreak = selection.includes("\r\n") ? "\r\n" : "\n";
@@ -801,8 +805,10 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		scrollbarTrack?.addEventListener("pointercancel", scrollbarPointerUp);
 		scheduleScrollbarUpdate();
 
+		let columnSelectionActive = false;
+		let pendingColumnSelection: boolean | null = null;
 		const copySelection = (options?: { clipboardData?: DataTransfer | null }) => {
-			const selection = joinVisuallyContinuousLines(term, term.getSelection());
+			const selection = joinVisuallyContinuousLines(term, term.getSelection(), columnSelectionActive);
 			if (!selection) return false;
 			options?.clipboardData?.setData("text/plain", selection);
 			void aoBridge.clipboard
@@ -943,6 +949,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				focusTerminal();
 			},
 			selectAll: () => {
+				columnSelectionActive = false;
+				pendingColumnSelection = null;
 				term.selectAll();
 				focusTerminal();
 			},
@@ -1047,15 +1055,21 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		let pointerSelectionArmed = false;
 		const disarmPointerSelection = () => {
 			pointerSelectionArmed = false;
+			pendingColumnSelection = null;
 		};
 		const pointerDown = (event: PointerEvent) => {
 			if (event.button !== 0) return;
 			pointerSelectionArmed = true;
+			// xterm uses Alt-drag for column selection on Windows and Linux. On
+			// macOS, Option is configured to force regular selection instead.
+			pendingColumnSelection = event.altKey && !isMacPlatform();
 		};
 		const pointerUp = (event: PointerEvent) => {
 			if (event.button !== 0) return;
 			if (!pointerSelectionArmed) return;
 			pointerSelectionArmed = false;
+			columnSelectionActive = pendingColumnSelection ?? false;
+			pendingColumnSelection = null;
 			if (!useUiStore.getState().terminalCopyOnSelect) return;
 			copySelection();
 		};

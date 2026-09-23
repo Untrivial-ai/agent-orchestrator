@@ -1250,6 +1250,28 @@ describe("XtermTerminal", () => {
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("hellowo\r\nnext");
 	});
 
+	it.each([
+		["Linux x86_64", "bc\nhi"],
+		["Win32", "bc\r\nhi"],
+	])("preserves one row per buffer line for Alt-drag column selections on %s", async (platform, selection) => {
+		setNavigatorPlatform(platform);
+		const { container } = render(<XtermTerminal theme="dark" />);
+		const terminal = state.lastTerminal!;
+		terminal.cols = 5;
+		terminal.bufferLines = [
+			{ isWrapped: false, translateToString: (t) => (t ? "hello" : "hello") },
+			{ isWrapped: false, translateToString: (t) => (t ? "thing" : "thing") },
+		];
+		terminal.selectionRange = { start: { x: 1, y: 0 }, end: { x: 3, y: 1 } };
+		terminal.selection = selection;
+
+		const host = container.querySelector(".terminal-xterm-host")!;
+		fireEvent.pointerDown(host, { altKey: true, button: 0 });
+		fireEvent.pointerUp(document, { altKey: true, button: 0 });
+
+		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith(selection));
+	});
+
 	it("joins full-width rows of wide characters by cell coverage, not string length", () => {
 		render(<XtermTerminal theme="dark" />);
 		const terminal = state.lastTerminal!;
