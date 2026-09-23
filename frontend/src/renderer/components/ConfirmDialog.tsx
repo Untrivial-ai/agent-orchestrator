@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,15 @@ export function ConfirmDialog({
 	onOpenChange,
 }: ConfirmDialogProps) {
 	const { t } = useTranslation();
+	// Radix aims its close-time focus at a DialogTrigger, but these confirms are
+	// opened programmatically, so that ref is null and the keyboard user is
+	// dropped on <body> — several tab stops away from the control they came
+	// from. Remember whatever had focus when the dialog opened and put it back.
+	const returnFocusRef = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		if (open) returnFocusRef.current = document.activeElement as HTMLElement | null;
+	}, [open]);
+
 	// Sized for a two-line prompt, not a settings form: the shared settings
 	// frame (575px, 38px footer pills) reads oversized around one question, so
 	// the confirm narrows the dialog and compacts the buttons while keeping the
@@ -65,6 +75,14 @@ export function ConfirmDialog({
 				// session being confirmed). The modal — dimmed backdrop included — owns
 				// its own clicks. Radix still dismisses on the native pointerdown.
 				onClick={(event) => event.stopPropagation()}
+				onCloseAutoFocus={(event) => {
+					const target = returnFocusRef.current;
+					// A confirmed action often removes its own trigger (the archived row
+					// disappears); fall back to Radix's handling when it is gone.
+					if (!target?.isConnected) return;
+					event.preventDefault();
+					target.focus();
+				}}
 				overlay={<DialogOverlay onClick={(event) => event.stopPropagation()} />}
 			>
 				<DialogClose asChild>

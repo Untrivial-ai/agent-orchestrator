@@ -1488,6 +1488,26 @@ describe("SessionsBoard", () => {
 		expect(screen.getByRole("dialog", { name: "Are you sure you want to archive idle worker?" })).toBeInTheDocument();
 	});
 
+	it("returns focus to the archive control after backing out of the confirm", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "s-merged", title: "merged worker", status: "merged" })])],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoard("p1");
+
+		await userEvent.click(screen.getByRole("button", { name: "Archive merged worker" }));
+		await screen.findByRole("dialog");
+		await userEvent.click(screen.getByRole("button", { name: "No" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+		// Radix aims close-time focus at a DialogTrigger; these confirms open
+		// programmatically, so without an explicit restore the keyboard user is
+		// stranded on <body> instead of the control they came from.
+		expect(screen.getByRole("button", { name: "Archive merged worker" })).toHaveFocus();
+		expect(postMock).not.toHaveBeenCalled();
+	});
+
 	it("terminates a live merged session from its card without opening the session", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [workspaceWithSessions([boardSession({ id: "s-merged", title: "merged worker", status: "merged" })])],
