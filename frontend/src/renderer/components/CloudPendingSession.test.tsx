@@ -128,4 +128,19 @@ describe("CloudPendingSession", () => {
 		await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
 		expect(create.mock.calls[1]?.[0]).toBe(create.mock.calls[0]?.[0]);
 	});
+
+	it("hides elapsed startup copy after session creation fails", async () => {
+		const pending = register({
+			create: async () => {
+				throw new Error("route unavailable");
+			},
+			startedAtMs: performance.now() - 21_000,
+		});
+		await createCloudPendingSession(pending.attemptId);
+		render(<PendingHarness identifier={pending.routeSessionId} />);
+
+		expect(screen.getByText("Saving session failed")).toBeInTheDocument();
+		expect(screen.queryByText("Still working")).not.toBeInTheDocument();
+		expect(screen.queryByText("Taking longer than usual")).not.toBeInTheDocument();
+	});
 });

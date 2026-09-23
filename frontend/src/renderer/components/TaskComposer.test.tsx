@@ -258,6 +258,62 @@ describe("TaskComposer", () => {
 		);
 	});
 
+	it("falls back to direct creation when session preparation is unsupported", async () => {
+		h.cloudProjects.push({ id: "cloud-project" });
+		h.prepareCloudSession.mockRejectedValue(
+			Object.assign(new Error("route unavailable"), { status: 404 }),
+		);
+		h.createCloudSession.mockResolvedValue({ session: { id: "cloud-session-2" } });
+		const onCreated = vi.fn();
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="cloud-project" onCreated={onCreated} />
+			</Wrap>,
+		);
+		await waitFor(() => expect(h.capture).toHaveBeenCalledWith(
+			"ao.renderer.cloud_preparation_failed",
+			{ project_id: "cloud-project" },
+		));
+		fireEvent.change(task(), { target: { value: "Keep this prompt" } });
+		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("cloud-session-2"));
+		expect(h.prepareCloudSession).toHaveBeenCalledOnce();
+		expect(h.commitCloudPreparation).not.toHaveBeenCalled();
+		expect(h.createCloudSession).toHaveBeenCalledWith(
+			"org-1",
+			expect.objectContaining({ prompt: "Keep this prompt" }),
+			expect.objectContaining({ idempotencyKey: expect.any(String) }),
+		);
+	});
+
+	it("falls back when the unsupported preparation response arrives after submit", async () => {
+		h.cloudProjects.push({ id: "cloud-project" });
+		let rejectPreparation!: (error: Error) => void;
+		h.prepareCloudSession.mockReturnValue(new Promise((_resolve, reject) => {
+			rejectPreparation = reject;
+		}));
+		h.createCloudSession.mockResolvedValue({ session: { id: "cloud-session-2" } });
+		const onCreated = vi.fn();
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="cloud-project" onCreated={onCreated} />
+			</Wrap>,
+		);
+		fireEvent.change(task(), { target: { value: "Start while preparing" } });
+		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
+
+		await act(async () => {
+			rejectPreparation(Object.assign(new Error("route unavailable"), { status: 404 }));
+		});
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("cloud-session-2"));
+		expect(h.prepareCloudSession).toHaveBeenCalledOnce();
+		expect(h.commitCloudPreparation).not.toHaveBeenCalled();
+		expect(h.createCloudSession).toHaveBeenCalledOnce();
+	});
+
 	it("detaches an unsubmitted Cloud preparation when the composer closes", async () => {
 		h.cloudProjects.push({ id: "cloud-project" });
 		h.prepareCloudSession.mockResolvedValue(preparationResponse("cloud-session-1"));

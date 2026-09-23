@@ -184,11 +184,13 @@ export function CloudPendingSession({ attempt, session }: CloudPendingSessionPro
 		}
 	};
 
-	const timedStatus = elapsedMs >= 45_000
-		? t("cloud.pending.takingLonger")
-		: elapsedMs >= 20_000
-			? t("cloud.pending.stillWorking")
-			: undefined;
+	const timedStatus = startupFailed
+		? undefined
+		: elapsedMs >= 45_000
+			? t("cloud.pending.takingLonger")
+			: elapsedMs >= 20_000
+				? t("cloud.pending.stillWorking")
+				: undefined;
 	const showRetry = startupFailed || elapsedMs >= 90_000;
 	const initialState = attempt.createState === "failed"
 		? t("cloud.pending.state.failed")

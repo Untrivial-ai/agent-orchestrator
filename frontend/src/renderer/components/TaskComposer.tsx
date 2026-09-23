@@ -21,6 +21,7 @@ import {
 } from "../lib/cloud-pending-session";
 import {
 	isCloudSessionPreparationExpired,
+	isCloudSessionPreparationUnsupported,
 	startCloudSessionPreparation,
 	type CloudSessionPreparation,
 } from "../lib/cloud-session-preparation";
@@ -137,6 +138,7 @@ export function TaskComposer({
 	const [effortTouched, setEffortTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const cloudPreparationRef = useRef<CloudSessionPreparation | undefined>(undefined);
+	const cloudPreparationUnavailableRef = useRef<unknown>(undefined);
 	const [error, setError] = useState<string | undefined>();
 	const [fallbackAction, setFallbackAction] = useState<FallbackAction>();
 	const {
@@ -483,6 +485,9 @@ export function TaskComposer({
 				selectedProvider ?? "",
 			]),
 			create: async (idempotencyKey, clientInstanceId) => {
+				if (cloudPreparationUnavailableRef.current !== undefined) {
+					throw cloudPreparationUnavailableRef.current;
+				}
 				void captureRendererEvent("ao.renderer.cloud_preparation_requested", { project_id: projectId });
 				try {
 					const { preparation: lease, session } = await cloudClient.prepareSession(
@@ -498,6 +503,9 @@ export function TaskComposer({
 					void captureRendererEvent("ao.renderer.cloud_preparation_succeeded", { project_id: projectId });
 					return { lease, sessionId: session.id };
 				} catch (error) {
+					if (isCloudSessionPreparationUnsupported(error)) {
+						cloudPreparationUnavailableRef.current = error;
+					}
 					void captureRendererEvent("ao.renderer.cloud_preparation_failed", { project_id: projectId });
 					throw error;
 				}
@@ -594,7 +602,9 @@ export function TaskComposer({
 		approvalMode?: "bypass-permissions",
 	) => {
 		if (!projectId || !canSubmit || isSubmitting) return;
-		const activePreparation = isCloudProject ? cloudPreparationRef.current : undefined;
+		const activePreparation = isCloudProject && cloudPreparationUnavailableRef.current === undefined
+			? cloudPreparationRef.current
+			: undefined;
 		const cloudStartupAttempt = isCloudProject
 			? (activePreparation?.attempt ?? beginCloudStartupAttempt())
 			: undefined;
@@ -637,9 +647,11 @@ export function TaskComposer({
 								prompt: brief,
 							});
 						} catch (error) {
-							if (!isCloudSessionPreparationExpired(error)) throw error;
+							const expired = isCloudSessionPreparationExpired(error);
+							if (!expired && !isCloudSessionPreparationUnsupported(error)) throw error;
 							void captureRendererEvent("ao.renderer.cloud_preparation_commit_recovered", {
 								project_id: projectId,
+								reason: expired ? "expired" : "unsupported",
 							});
 							return createCloudTask(baseInput, idempotencyKey);
 						}

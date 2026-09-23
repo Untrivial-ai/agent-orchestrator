@@ -7,6 +7,7 @@ vi.mock("./cloud-startup-timing", () => ({
 }));
 
 import {
+	isCloudSessionPreparationUnsupported,
 	resetCloudSessionPreparationRegistryForTests,
 	startCloudSessionPreparation,
 	type CloudSessionPreparationRegistration,
@@ -56,6 +57,12 @@ afterEach(() => {
 });
 
 describe("cloud session preparation", () => {
+	it("distinguishes an absent preparation route from a missing resource", () => {
+		expect(isCloudSessionPreparationUnsupported({ status: 404 })).toBe(true);
+		expect(isCloudSessionPreparationUnsupported({ status: 404, code: "not_found" })).toBe(false);
+		expect(isCloudSessionPreparationUnsupported({ status: 500 })).toBe(false);
+	});
+
 	it("starts immediately and commits the same durable session", async () => {
 		const options = registration();
 		const preparation = startCloudSessionPreparation(options);

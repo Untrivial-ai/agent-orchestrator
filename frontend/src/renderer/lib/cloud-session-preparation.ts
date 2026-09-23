@@ -249,6 +249,12 @@ export function isCloudSessionPreparationExpired(error: unknown): boolean {
 		(error as { code?: unknown }).code === "PREPARATION_EXPIRED";
 }
 
+export function isCloudSessionPreparationUnsupported(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const failure = error as { code?: unknown; status?: unknown };
+	return failure.status === 404 && failure.code === undefined;
+}
+
 async function renewEntry(entry: PreparationEntry): Promise<CloudSessionPreparationLease> {
 	if (entry.renewInFlight) return entry.renewInFlight;
 	emitEvent(entry, "renewal_attempted");
