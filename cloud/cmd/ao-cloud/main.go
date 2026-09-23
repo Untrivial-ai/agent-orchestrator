@@ -381,6 +381,7 @@ func run(logger *slog.Logger) error {
 		LocalSessionTTL:           cfg.LocalSessionTTL,
 		SandboxProvider:           cfg.SandboxProvider,
 		AvailableSandboxProviders: cfg.AvailableSandboxProviders,
+		CapabilityGatedProviders:  cfg.CapabilityGatedProviders,
 		Provisioning:              provisioningDefaults(cfg),
 		WorkerTokens:              workerTokens,
 		WorkerTokenTTL:            cfg.WorkerTokenTTL(),

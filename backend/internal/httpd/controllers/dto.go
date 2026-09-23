@@ -143,6 +143,11 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// PRNumberParam is the associated pull-request number in Files routes.
+type PRNumberParam struct {
+	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`
+}
+
 // AgentSwitchIDParam is the {switchId} path parameter for one durable switch saga.
 type AgentSwitchIDParam struct {
 	SwitchID string `path:"switchId" description:"Durable agent-switch identifier."`
@@ -212,6 +217,26 @@ type WorkspaceFileRevisionQuery struct {
 	WorkspaceVersion string `query:"workspaceVersion,omitempty" description:"Opaque workspace snapshot token used for consistency checks."`
 	ExpectedRevision string `query:"expectedRevision,omitempty" description:"Opaque revision token used for optimistic consistency checks."`
 	CommitSHA        string `query:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
+}
+
+// PRFilesQuery selects the associated pull request when multiple providers or
+// repositories can have the same pull-request number.
+type PRFilesQuery struct {
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileQuery identifies one file in an associated pull request.
+type PRFileQuery struct {
+	Path         string `query:"path" required:"true" description:"Repository-relative file path."`
+	PreviousPath string `query:"previousPath,omitempty" description:"Previous repository-relative path supplied by the selected PR file summary for rename detection."`
+	SourceURL    string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileRevisionQuery selects one immutable side of a pull-request comparison.
+type PRFileRevisionQuery struct {
+	Path      string `query:"path" required:"true" description:"Repository-relative file path."`
+	Side      string `query:"side,omitempty" enum:"before,after" description:"Comparison side. Defaults to after."`
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
 }
 
 // WorkspaceSearchQuery is the query string accepted by the workspace path search.
@@ -313,10 +338,10 @@ type SpawnSessionRequest struct {
 	// selected harness can honor the model before launching.
 	Model string `json:"model,omitempty" maxLength:"256"`
 
-	// DisplayName is the sidebar label for the session, capped at 20 characters.
+	// DisplayName is the sidebar label for the session, capped at 100 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
 	// dialog) may omit it and fall back to the session id in the read model.
-	DisplayName string `json:"displayName,omitempty" maxLength:"20"`
+	DisplayName string `json:"displayName,omitempty" maxLength:"100"`
 	// Attachments are files pasted or dropped into the task brief. Each carries
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.
@@ -434,6 +459,14 @@ type ListWorkspaceFilesResponse struct {
 	// upstream, detached HEAD).
 	Ahead  *int `json:"ahead,omitempty"`
 	Behind *int `json:"behind,omitempty"`
+}
+
+// ListPRFilesResponse is the exact base...head changed-file set for one PR.
+type ListPRFilesResponse struct {
+	SessionID domain.SessionID       `json:"sessionId"`
+	Files     []WorkspaceFileSummary `json:"files"`
+	Truncated bool                   `json:"truncated"`
+	Summary   WorkspaceSummary       `json:"summary"`
 }
 
 // WorkspaceFileSections groups a session workspace's changed files by git
@@ -591,7 +624,7 @@ type SessionPreviewResponse struct {
 
 // RenameSessionRequest is the body of PATCH /api/v1/sessions/{sessionId}.
 type RenameSessionRequest struct {
-	DisplayName string `json:"displayName" minLength:"1"`
+	DisplayName string `json:"displayName" minLength:"1" maxLength:"100"`
 }
 
 // SetSessionReviewerRequest sets the durable reviewer preference for a session.
@@ -1696,6 +1729,26 @@ type ImportStatusResponse struct {
 // of the import run (counts + notes), reused verbatim from the import engine.
 type ImportRunResponse struct {
 	Report legacyimport.Report `json:"report"`
+}
+
+// ListDirsQuery is the query string accepted by GET /api/v1/fs/dirs.
+type ListDirsQuery struct {
+	Path string `query:"path,omitempty" description:"Absolute directory on the daemon host to list. When omitted, the daemon user's home directory."`
+}
+
+// FSEntry is one directory in a /api/v1/fs/dirs listing.
+type FSEntry struct {
+	Name    string `json:"name" description:"Directory name."`
+	Path    string `json:"path" description:"Absolute path of the directory on the daemon host."`
+	GitRepo bool   `json:"gitRepo" description:"True when the directory carries a .git entry (clone or worktree checkout)."`
+}
+
+// ListDirsResponse is the body of GET /api/v1/fs/dirs.
+type ListDirsResponse struct {
+	Path      string    `json:"path" description:"Absolute path that was listed."`
+	Parent    string    `json:"parent" description:"Absolute path of the listed directory's parent; equals path at the filesystem root."`
+	Entries   []FSEntry `json:"entries" description:"Subdirectories, excluding dotted names."`
+	Truncated bool      `json:"truncated,omitempty" description:"True when the listing hit the entry cap and more subdirectories exist."`
 }
 
 // DevImportProjectsRequest is the body of POST /api/v1/dev/import-projects.

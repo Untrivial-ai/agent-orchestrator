@@ -267,7 +267,7 @@ function WorkerRowContents({
 						placeholder="Worker name"
 						placeholderTextColor={t.textFaint}
 						selectionColor={t.blue}
-						maxLength={120}
+						maxLength={100}
 						returnKeyType="done"
 						onSubmitEditing={onRenameSave}
 						style={styles.renameInput}

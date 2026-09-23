@@ -17,6 +17,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 )
@@ -84,10 +85,14 @@ func Build() ([]byte, error) {
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
 		*(&openapi31.Tag{Name: "browser"}).WithDescription(
 			"Target-isolated desktop browser runtime (loopback only)"),
+		*(&openapi31.Tag{Name: "fs"}).WithDescription(
+			"Read-only filesystem browsing for remote clients"),
 		*(&openapi31.Tag{Name: "system"}).WithDescription(
 			"Local machine readiness checks the desktop app runs before showing the board"),
 		*(&openapi31.Tag{Name: "link-preview"}).WithDescription(
 			"Server-side unfurl of external links for the CSP-locked renderer"),
+		*(&openapi31.Tag{Name: "github"}).WithDescription(
+			"Local GitHub personal access token storage and repository listing"),
 	}
 
 	for _, op := range operations() {
@@ -219,6 +224,9 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersGetProjectResponse":                       "ProjectGetResponse",
 	"ControllersProjectOrDegraded":                        "ProjectOrDegraded",
 	"ControllersListSessionsQuery":                        "ListSessionsQuery",
+	"ControllersListDirsQuery":                            "ListDirsQuery",
+	"ControllersListDirsResponse":                         "ListDirsResponse",
+	"ControllersFSEntry":                                  "FSEntry",
 	"ControllersCleanupSessionsQuery":                     "CleanupSessionsQuery",
 	"ControllersListSessionsResponse":                     "ListSessionsResponse",
 	"ControllersSpawnSessionRequest":                      "SpawnSessionRequest",
@@ -258,6 +266,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersCleanupSessionsResponse":                  "CleanupSessionsResponse",
 	"ControllersCleanupSkippedSession":                    "CleanupSkippedSession",
 	"ControllersWorkspaceFileQuery":                       "WorkspaceFileQuery",
+	"ControllersPRFileQuery":                              "PRFileQuery",
+	"ControllersPRFileRevisionQuery":                      "PRFileRevisionQuery",
 	"ControllersUpdateWorkspaceFileRequest":               "UpdateWorkspaceFileRequest",
 	"ControllersWorkspaceFileBlobQuery":                   "WorkspaceFileBlobQuery",
 	"ControllersWorkspaceFileRevisionQuery":               "WorkspaceFileRevisionQuery",
@@ -266,6 +276,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersStageSessionAttachmentsResponse":          "StageSessionAttachmentsResponse",
 	"ControllersAttachmentInput":                          "AttachmentInput",
 	"ControllersListWorkspaceFilesResponse":               "ListWorkspaceFilesResponse",
+	"ControllersListPRFilesResponse":                      "ListPRFilesResponse",
 	"ControllersWorkspaceFileSummary":                     "WorkspaceFileSummary",
 	"ControllersWorkspaceFileSections":                    "WorkspaceFileSections",
 	"ControllersWorkspaceCommitSummary":                   "WorkspaceCommitSummary",
@@ -460,6 +471,9 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ProjectUpdateSettingsInput":        "UpdateProjectSettingsInput",
 	"ProjectWorkspaceRepo":              "WorkspaceRepo",
 	"SessionWorkspaceFileStatus":        "WorkspaceFileStatus",
+	// httpd/controllers: GitHub PAT wire envelopes
+	"ControllersPutGitHubPATRequest": "PutGitHubPATRequest",
+	"GithubpatRepo":                  "GitHubRepo",
 }
 
 // markRequestBodyRequired sets requestBody.required: true on the operation's
@@ -561,6 +575,7 @@ func operations() []operation {
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
+	ops = append(ops, fsOperations()...)
 	ops = append(ops, devOperations()...)
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, mobileDeviceOperations()...)
@@ -1498,6 +1513,25 @@ func importOperations() []operation {
 	}
 }
 
+// fsOperations declares the read-only filesystem-browsing operations. Must stay
+// 1:1 with the routes FSController.Register mounts (enforced by the parity test).
+func fsOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/fs/dirs", id: "listDirs", tag: "fs",
+			summary:    "List the subdirectories of a directory on the daemon host",
+			pathParams: []any{controllers.ListDirsQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListDirsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+	}
+}
+
 // devOperations declares developer-only API operations. Must stay 1:1 with
 // the routes DevController.Register mounts (enforced by the parity test).
 func devOperations() []operation {
@@ -2062,6 +2096,28 @@ func sessionOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/pr/{prNumber}/files", id: "listSessionPRFiles", tag: "sessions",
+			summary:    "List the exact base-to-head changed files for an associated pull request",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.PRNumberParam{}, controllers.PRFilesQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListPRFilesResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/pr/{prNumber}/file", id: "getSessionPRFile", tag: "sessions",
+			summary:    "Read one file from an associated pull request base-to-head diff",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.PRNumberParam{}, controllers.PRFileQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.WorkspaceFileResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/workspace/events", id: "streamSessionWorkspaceChanges", tag: "sessions",
 			summary:    "Stream session workspace file changes",
 			pathParams: []any{controllers.SessionIDParam{}},
@@ -2124,6 +2180,17 @@ func sessionOperations() []operation {
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision", id: "getSessionPRFileRevision", tag: "sessions",
+			summary:    "Read one text-capable side of a pull request comparison",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.PRNumberParam{}, controllers.PRFileRevisionQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.WorkspaceFileRevisionResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},
 		{
@@ -2566,6 +2633,28 @@ func prOperations() []operation {
 				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
+		},
+		// GitHub PAT + repos (local daemon storage)
+		{
+			method: http.MethodPut, path: "/api/v1/github/pat", id: "putGitHubPAT", tag: "github",
+			summary: "Store a GitHub personal access token locally",
+			reqBody: controllers.PutGitHubPATRequest{},
+			resps:   []respUnit{{http.StatusOK, map[string]string{"status": "ok"}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/github/pat", id: "deleteGitHubPAT", tag: "github",
+			summary: "Remove the stored GitHub personal access token",
+			resps:   []respUnit{{http.StatusOK, map[string]string{"status": "ok"}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/github/status", id: "getGitHubStatus", tag: "github",
+			summary: "Check whether a GitHub personal access token is stored locally",
+			resps:   []respUnit{{http.StatusOK, map[string]bool{"connected": false}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/github/repos", id: "listGitHubRepos", tag: "github",
+			summary: "List repositories accessible with the stored GitHub token",
+			resps:   []respUnit{{http.StatusOK, map[string]any{"repos": []githubpat.Repo{}}}, {http.StatusUnauthorized, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
 		},
 	}
 }

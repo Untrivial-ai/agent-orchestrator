@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { aoBridge } from "../lib/bridge";
 import type { TerminalTarget } from "../types/terminal";
+import type { FilesSource } from "../hooks/useSessionWorkspaceFiles";
 import {
 	applyDocumentTheme,
 	applyDocumentThemeStyle,
@@ -56,6 +57,8 @@ export type InspectorSessionState = {
 	browserUnseen?: boolean;
 	/** Files tab: review changed files directly. Defaults to true; false shows the full tree. */
 	filesChangedOnly?: boolean;
+	/** Files tab: source shared by the docked and maximized explorers. */
+	filesSource?: FilesSource;
 	/** The session-entry defaulting (Summary tab, baseline browser reveal) has already run once for this session's lifetime. */
 	initialized?: boolean;
 };
@@ -154,6 +157,7 @@ export type UiState = {
 	setBrowserContentRevealed: (sessionId: string, revealed: boolean) => void;
 	setBrowserUnseen: (sessionId: string, unseen: boolean) => void;
 	setFilesChangedOnly: (sessionId: string, changedOnly: boolean) => void;
+	setFilesSource: (sessionId: string, source: FilesSource) => void;
 	setCommandPaletteOpen: (open: boolean) => void;
 	setProjectRestarting: (projectId: string, restarting: boolean) => void;
 	setProjectProvisioning: (projectId: string, provisioning: boolean) => void;
@@ -381,6 +385,16 @@ export const useUiStore = create<UiState>((set, get) => ({
 				inspectorSessions: {
 					...state.inspectorSessions,
 					[sessionId]: { ...current, filesChangedOnly },
+				},
+			};
+		}),
+	setFilesSource: (sessionId, filesSource) =>
+		set((state) => {
+			const current = inspectorState(state.inspectorSessions, sessionId);
+			return {
+				inspectorSessions: {
+					...state.inspectorSessions,
+					[sessionId]: { ...current, filesSource },
 				},
 			};
 		}),

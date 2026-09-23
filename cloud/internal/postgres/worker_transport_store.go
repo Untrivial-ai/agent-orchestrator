@@ -37,6 +37,16 @@ const (
 	interactionRefreshThrottle = 30 * time.Second
 )
 
+// isWorkspaceWriteKind reports whether a request kind mutates workspace files
+// and must therefore be gated by the viewer-role and read-only-session checks.
+// The review file-write endpoint dispatches "workspace.review.write", so it has
+// to be covered here too; otherwise a viewer-role member or a read-only session
+// could overwrite files through the review write path while the legacy
+// "workspace.write" path is correctly refused.
+func isWorkspaceWriteKind(kind string) bool {
+	return kind == "workspace.write" || kind == "workspace.review.write"
+}
+
 func (s *Store) CreateWorkspaceRequest(
 	ctx context.Context,
 	principal domain.Principal,
@@ -46,7 +56,7 @@ func (s *Store) CreateWorkspaceRequest(
 ) (domain.WorkerRequest, error) {
 	var request domain.WorkerRequest
 	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
-		if access.Role == "viewer" && kind == "workspace.write" {
+		if access.Role == "viewer" && isWorkspaceWriteKind(kind) {
 			return ErrForbidden
 		}
 		var err error
@@ -91,7 +101,7 @@ func createWorkerRequest(
 	if terminated {
 		return domain.WorkerRequest{}, ErrWorkerUnavailable
 	}
-	if kind == "workspace.write" && effectiveMode(mode, modeCap) == "read-only" {
+	if isWorkspaceWriteKind(kind) && effectiveMode(mode, modeCap) == "read-only" {
 		return domain.WorkerRequest{}, ErrWorkspaceReadOnly
 	}
 	var outstanding int
