@@ -49,10 +49,12 @@ var errNativeHistoryLoadAttemptTimeout = errors.New("native history load attempt
 // the SQLite store.
 type Store interface {
 	CreateConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
+	CreateReviewConversation(ctx context.Context, id, reviewID string, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
 	OpenNativeConversation(ctx context.Context, id string, scope domain.ConversationScope, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error)
 	CreateProjectConversationWithContextReset(ctx context.Context, id string, project domain.ProjectID, session domain.SessionID, reset domain.ConversationActivity, now time.Time) (domain.ConversationRecord, error)
 	ConversationForSession(ctx context.Context, session domain.SessionID) (domain.ConversationRecord, error)
 	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, generation string) error
+	ClaimReviewChatController(ctx context.Context, reviewID, providerID, generation string, now time.Time) (bool, error)
 	ConversationBranch(ctx context.Context, conversationID, branchID string) (domain.ConversationBranch, error)
 	ConversationEditAnchor(ctx context.Context, conversationID, replacedTurnID string) (domain.ConversationEditAnchor, error)
 	RepairIncompleteConversationEdit(ctx context.Context, sessionID domain.SessionID, conversationID string, now time.Time) (domain.ConversationBranch, bool, error)
@@ -61,11 +63,14 @@ type Store interface {
 	UpdateConversationBranchReplacement(ctx context.Context, branchID, replacementTurnID string) error
 
 	AdoptProviderTurn(ctx context.Context, conversationID string, session domain.SessionID, generation, turnID, providerTurnID string, now time.Time) error
+	AdoptReviewProviderTurn(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation, turnID, providerTurnID string, now time.Time) error
 	AppendImportedUserMessage(ctx context.Context, conversationID, providerTurnID string, msg domain.ConversationMessage, now time.Time) error
 
 	AppendUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error)
+	AppendReviewUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error)
 	ConversationMessageByClientID(ctx context.Context, conversationID, clientMessageID string) (domain.ConversationMessage, bool, error)
 	AppendRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error)
+	AppendReviewRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error)
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
@@ -181,6 +186,7 @@ func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controller
 // Controller drives one Chat session.
 type Controller struct {
 	sessionID    domain.SessionID
+	reviewID     string
 	conversation domain.ConversationRecord
 	generation   string
 	harness      domain.AgentHarness
@@ -298,6 +304,7 @@ var ErrRetryUnsupported = errors.New("current agent cannot retry this prompt con
 
 func newController(
 	sessionID domain.SessionID,
+	owner domain.ConversationOwner,
 	conversation domain.ConversationRecord,
 	generation string,
 	harness domain.AgentHarness,
@@ -312,6 +319,7 @@ func newController(
 ) *Controller {
 	c := &Controller{
 		sessionID:              sessionID,
+		reviewID:               reviewOwnerID(owner),
 		conversation:           conversation,
 		generation:             generation,
 		harness:                harness,
@@ -347,6 +355,20 @@ func newController(
 		c.mcpServers[server.Name] = server
 	}
 	return c
+}
+
+func reviewOwnerID(owner domain.ConversationOwner) string {
+	if owner.Kind == domain.ConversationOwnerReview {
+		return owner.ID
+	}
+	return ""
+}
+
+func (c *Controller) owner() domain.ConversationOwner {
+	if c.reviewID != "" {
+		return domain.ReviewConversationOwner(c.reviewID)
+	}
+	return domain.SessionConversationOwner(c.sessionID)
 }
 
 // restoreLiveTurnOwnership rebuilds the volatile busy gate from durable facts
@@ -1371,8 +1393,15 @@ func (c *Controller) sendLocked(
 		DeliveryContentJSON: deliveryContent,
 	}
 
-	created, err := c.store.AppendUserMessage(
-		ctx, c.conversation.ID, c.sessionID, c.generation, record, turnID, now)
+	var (
+		created bool
+		err     error
+	)
+	if c.reviewID == "" {
+		created, err = c.store.AppendUserMessage(ctx, c.conversation.ID, c.sessionID, c.generation, record, turnID, now)
+	} else {
+		created, err = c.store.AppendReviewUserMessage(ctx, c.conversation.ID, c.sessionID, c.reviewID, c.generation, record, turnID, now)
+	}
 	if err != nil {
 		return domain.ConversationTurn{}, fmt.Errorf("record user message: %w", err)
 	}
@@ -1391,6 +1420,7 @@ func (c *Controller) sendLocked(
 			ID:                 turnID,
 			ConversationID:     c.conversation.ID,
 			HandledBySessionID: c.sessionID,
+			HandledByReviewID:  c.reviewID,
 			State:              domain.TurnStateQueued,
 			RequestedAt:        now,
 		}, nil
@@ -1473,14 +1503,19 @@ func (c *Controller) RetryTurn(ctx context.Context, turnID string) (domain.Conve
 	now := c.now()
 	newTurnID := c.newID()
 	key := retryClientMessagePrefix + newTurnID
-	created, err := c.store.AppendRetryUserMessage(ctx, c.conversation.ID, c.sessionID, c.generation,
-		domain.ConversationMessage{
-			ID:                  c.newID(),
-			Text:                prompt.Text,
-			Origin:              prompt.Origin,
-			ClientMessageID:     key,
-			DeliveryContentJSON: prompt.DeliveryContentJSON,
-		}, newTurnID, turnID, now)
+	retryMessage := domain.ConversationMessage{
+		ID:                  c.newID(),
+		Text:                prompt.Text,
+		Origin:              prompt.Origin,
+		ClientMessageID:     key,
+		DeliveryContentJSON: prompt.DeliveryContentJSON,
+	}
+	var created bool
+	if c.reviewID == "" {
+		created, err = c.store.AppendRetryUserMessage(ctx, c.conversation.ID, c.sessionID, c.generation, retryMessage, newTurnID, turnID, now)
+	} else {
+		created, err = c.store.AppendReviewRetryUserMessage(ctx, c.conversation.ID, c.sessionID, c.reviewID, c.generation, retryMessage, newTurnID, turnID, now)
+	}
 	if err != nil {
 		return domain.ConversationTurn{}, fmt.Errorf("record retried message: %w", err)
 	}
@@ -2669,9 +2704,14 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 				// from its own history. Adopting it is what keeps every item it emits
 				// correlated, and without that the activities arrive with no turn and the
 				// timeline quietly stops grouping them.
-				if err := c.store.AdoptProviderTurn(ctx, c.conversation.ID, c.sessionID,
-					c.generation, c.newID(), event.ProviderTurnID, now); err != nil {
-					return fmt.Errorf("adopt provider-started turn %s: %w", event.ProviderTurnID, err)
+				var adoptErr error
+				if c.reviewID == "" {
+					adoptErr = c.store.AdoptProviderTurn(ctx, c.conversation.ID, c.sessionID, c.generation, c.newID(), event.ProviderTurnID, now)
+				} else {
+					adoptErr = c.store.AdoptReviewProviderTurn(ctx, c.conversation.ID, c.sessionID, c.reviewID, c.generation, c.newID(), event.ProviderTurnID, now)
+				}
+				if adoptErr != nil {
+					return fmt.Errorf("adopt provider-started turn %s: %w", event.ProviderTurnID, adoptErr)
 				}
 			}
 		}
@@ -3158,6 +3198,11 @@ func (c *Controller) applyThreadTitle(ctx context.Context, title string, now tim
 	if normalized == "" {
 		return nil
 	}
+	if c.reviewID != "" {
+		// A reviewer title belongs only to its durable conversation. Applying it
+		// through the worker-session CAS would rename the reviewed task.
+		return nil
+	}
 	applied, err := c.store.ApplyProviderTitle(
 		ctx, c.conversation.ID, c.sessionID, normalized, now)
 	if err != nil {
@@ -3532,7 +3577,7 @@ func (c *Controller) reportActivity(
 	event string,
 	now time.Time,
 ) {
-	if c.activity == nil {
+	if c.activity == nil || c.reviewID != "" {
 		return
 	}
 	if err := c.activity.ApplyActivitySignal(ctx, c.sessionID, ports.ActivitySignal{

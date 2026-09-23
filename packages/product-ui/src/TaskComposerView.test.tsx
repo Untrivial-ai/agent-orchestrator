@@ -31,6 +31,7 @@ function viewProps(overrides: Partial<TaskComposerViewProps> = {}): TaskComposer
 		onPromptChange: vi.fn(),
 		labels: {
 			addFile: "Add file",
+			effort: "Effort",
 			fallbackAction: "Create as Terminal UI",
 			removeFile: (name) => `Remove ${name}`,
 			runsWith: "Runs with",
@@ -72,6 +73,12 @@ function viewProps(overrides: Partial<TaskComposerViewProps> = {}): TaskComposer
 			onModelChange: vi.fn(),
 			onModeChange: vi.fn(),
 		},
+		effort: {
+			disabled: false,
+			options: ["low", "high"],
+			value: "high",
+			onChange: vi.fn(),
+		},
 		attachments: {
 			items: [],
 			onAddFiles: vi.fn(),
@@ -95,6 +102,12 @@ function viewProps(overrides: Partial<TaskComposerViewProps> = {}): TaskComposer
 				onChange={(event) => control.onModelChange(event.target.value)}
 			/>
 		),
+		renderEffortControl: (control) => (
+			<button type="button" aria-label={control.label} onClick={() => control.onChange("low")}>
+				{control.value}
+			</button>
+		),
+		showEffort: true,
 		...overrides,
 	};
 }
@@ -118,7 +131,30 @@ describe("TaskComposerView", () => {
 		expect(props.agent.onChange).toHaveBeenCalledWith("claude-code");
 		fireEvent.change(screen.getByRole("textbox", { name: "Model" }), { target: { value: "gpt-5.1" } });
 		expect(props.model.onModelChange).toHaveBeenCalledWith("gpt-5.1");
+		fireEvent.click(screen.getByRole("button", { name: "Effort" }));
+		expect(props.effort.onChange).toHaveBeenCalledWith("low");
 		expect(screen.getByRole("group", { name: "Runs with" })).toHaveClass("composer-run-controls");
+	});
+
+	it("renders execution context before the task prompt", () => {
+		const { container } = render(
+			<TaskComposerView
+				{...viewProps({ context: <div data-testid="execution-context">project context</div> })}
+			/>,
+		);
+
+		const context = screen.getByTestId("execution-context");
+		const prompt = screen.getByRole("textbox", { name: "Task" });
+		expect(context).toBeInTheDocument();
+		expect(Boolean(context.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+		expect(container.querySelector("form")?.firstElementChild).toBe(context);
+	});
+
+	it("omits effort when the selected model does not advertise it", () => {
+		render(<TaskComposerView {...viewProps({ showEffort: false })} />);
+
+		expect(screen.getByRole("group", { name: "Runs with" })).not.toHaveClass("composer-run-controls-with-effort");
+		expect(screen.queryByRole("button", { name: "Effort" })).not.toBeInTheDocument();
 	});
 
 	it("claims the caret when asked to autofocus, and reclaims it from a surface that steals it", async () => {
@@ -174,6 +210,17 @@ describe("TaskComposerView", () => {
 
 		rerender(<TaskComposerView {...viewProps({ canSubmit: false })} />);
 		expect(screen.getByRole("button", { name: "Start task" })).toBeDisabled();
+	});
+
+	it("blocks form and Enter submission while project context is unavailable", () => {
+		const props = viewProps({ canSubmit: false });
+		const { container } = render(<TaskComposerView {...props} />);
+		const prompt = screen.getByRole("textbox", { name: "Task" });
+
+		fireEvent.keyDown(prompt, { key: "Enter", shiftKey: false, altKey: false });
+		fireEvent.submit(container.querySelector("form") as HTMLFormElement);
+
+		expect(props.submission.onSubmit).not.toHaveBeenCalled();
 	});
 
 	it("forwards picked, pasted, dropped, and removed attachments", () => {

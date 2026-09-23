@@ -398,6 +398,29 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getAllByText("Already durable")).toHaveLength(1);
 	});
 
+	it("resolves a relative image in agent prose against this session workspace", () => {
+		const snapshot = idleSnapshot(chatFixtureEmpty);
+		snapshot.items.push({
+			kind: "message",
+			id: "assistant-image",
+			turnId: "turn-image",
+			sequence: 1,
+			revision: 0,
+			role: "assistant",
+			origin: "provider",
+			text: "![screenshot](docs/screenshot.png)",
+			streaming: false,
+			createdAt: "2026-09-09T00:00:00Z",
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		const src = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+		const url = new URL(src, "http://127.0.0.1");
+		expect(url.pathname).toBe(`/api/v1/sessions/${encodeURIComponent(snapshot.sessionId)}/workspace/file/blob`);
+		expect(url.searchParams.get("path")).toBe("docs/screenshot.png");
+	});
+
 	it("makes composer and history controls inert while a durable agent switch owns input", () => {
 		render(<ChatWorkspace snapshot={idleSnapshot()} agentInputDisabled />);
 
@@ -3045,6 +3068,15 @@ describe("ChatWorkspace reviewer tabs", () => {
 
 		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "false");
 		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("hides and inerts the worker conversation while a typed reviewer owns the body", () => {
+		render(<ChatWorkspace snapshot={idleSnapshot()} reviewerChatSelected session={chatSession} />);
+
+		const workerConversation = screen.getByTestId("chat-conversation-panel");
+		expect(workerConversation).toHaveAttribute("hidden");
+		expect(workerConversation).toHaveAttribute("aria-hidden", "true");
+		expect(workerConversation).toHaveAttribute("inert");
 	});
 
 	it("keeps the chat draft, attachments, edit, and scroll state mounted while Reviewer is selected", async () => {

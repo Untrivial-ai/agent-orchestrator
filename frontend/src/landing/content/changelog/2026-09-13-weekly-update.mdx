@@ -1,0 +1,64 @@
+---
+title: "Durable chat, fast large diffs, and smoother project imports"
+description: "Chat survives daemon restarts, large files stay responsive, and creating or importing a repository gets you to the board sooner."
+date: "2026-09-13"
+rangeStart: "2026-09-07"
+rangeEnd: "2026-09-13"
+historical: true
+---
+
+## Chat providers survive daemon restarts <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4766" />
+
+Active chat providers remain attached across daemon restarts, preserving the conversation instead of forcing a fresh session.
+
+## Large files and diffs stay responsive <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5175" /> <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5172" />
+
+Virtualized file and diff rendering keeps long reviews smooth while broader desktop responsiveness work reduces interface stalls.
+
+## Create or import a repository without waiting on setup <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5092" /> <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5127" />
+
+Project setup can create a GitHub repository when needed, then open the board while provisioning continues in the background.
+
+## Browser screenshots, downloads, and Safari profile import <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4994" /> <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5285" />
+
+The embedded browser can capture screenshots and download files, while macOS users can explicitly import an existing Safari profile.
+
+## Improvements
+
+### Terminal
+
+- **User-created shells survive a desktop relaunch.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5040" />
+- **macOS terminals support familiar line-boundary keyboard shortcuts.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5199" />
+
+### Updates
+
+- **Sidebar downloads now progress into a live install flow.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5047" />
+
+### Command line
+
+- **`ao doctor` checks all registered agent harness binaries.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5025" />
+
+---
+
+## Bug fixes
+
+### Chat
+
+- **Queued edits and their delivery receipts persist across restarts.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5109" />
+- **Inline edits recover without losing their branch state.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5110" />
+- **Draft attachments and composer text survive lifecycle changes.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5107" /> <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5106" />
+- **A failed turn no longer drains later queued work.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5188" />
+
+### Updates
+
+- **A repair installer recovers broken macOS updates and shows reliable restart progress.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5002" />
+- **Rejected or repeatedly failing staged builds are cleared so update checks can recover.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4981" /> <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/5206" />
+
+### Terminal
+
+- **Back-pressure protects terminal WebSocket connections during heavy output.** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4552" />
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

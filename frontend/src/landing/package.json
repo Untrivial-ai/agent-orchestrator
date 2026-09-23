@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "changelog:draft": "node scripts/changelog/draft.mjs",
+    "changelog:backfill": "node scripts/changelog/backfill.mjs",
+    "changelog:test": "node --test scripts/changelog/changelog-core-tests.mjs",
+    "changelog:ui-test": "node --test scripts/changelog/ui-consistency-tests.mjs",
+    "changelog:validate": "node scripts/changelog/validate.mjs",
     "icons:generate": "node scripts/generate-favicons.mjs",
     "icons:check": "node scripts/generate-favicons.mjs --check",
     "dev": "next dev",

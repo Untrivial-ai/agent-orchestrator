@@ -1,4 +1,5 @@
 import type { Theme } from "../theme";
+import { space } from "../tokens";
 
 export function jumpToLatestColors(t: Theme) {
 	return {
@@ -9,16 +10,15 @@ export function jumpToLatestColors(t: Theme) {
 
 export function composerSurfaceStyle(t: Theme) {
 	return {
-		paddingHorizontal: 4,
-		paddingTop: 8,
-		paddingBottom: 14,
+		paddingHorizontal: space.xxs,
+		paddingTop: space.sm,
+		paddingBottom: space.md,
 	};
 }
 
 export function userMessageSurfaceStyle(t: Theme) {
 	return {
 		backgroundColor: t.bgElevated,
-		borderColor: t.borderDefault,
 		foregroundColor: t.textPrimary,
 	};
 }

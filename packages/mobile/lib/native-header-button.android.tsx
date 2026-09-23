@@ -1,7 +1,8 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Pressable, StyleSheet } from "react-native";
 import { useTheme } from "./ThemeProvider";
 import type { NativeHeaderButtonIcon } from "./native-header-button";
+import { iconSize, type } from "./tokens";
 
 const icons: Record<NativeHeaderButtonIcon, keyof typeof Feather.glyphMap> = {
 	menu: "menu",
@@ -9,6 +10,7 @@ const icons: Record<NativeHeaderButtonIcon, keyof typeof Feather.glyphMap> = {
 	close: "x",
 	check: "check",
 	back: "chevron-left",
+	more: "more-horizontal",
 };
 
 export function NativeHeaderButton({
@@ -26,14 +28,14 @@ export function NativeHeaderButton({
 			testID={`header-${icon}`}
 			accessibilityRole="button"
 			accessibilityLabel={label}
-			android_ripple={{ color: t.tintBlue, borderless: true, radius: 22 }}
+			android_ripple={{ color: t.accentTint, borderless: true, radius: 22 }}
 			onPress={onPress}
 			style={({ pressed }) => [
 				styles.button,
-				{ backgroundColor: pressed ? t.tintBlue : t.bgElevated, borderColor: t.borderDefault },
+				{ backgroundColor: pressed ? t.accentTint : t.bgElevated, borderColor: t.borderDefault },
 			]}
 		>
-			<Feather name={icons[icon]} size={22} color={t.textSecondary} />
+			<Feather name={icons[icon]} size={iconSize.lg} color={t.textSecondary} />
 		</Pressable>
 	);
 }
@@ -42,7 +44,7 @@ const styles = StyleSheet.create({
 	button: {
 		width: 44,
 		height: 44,
-		borderRadius: 22,
+		borderRadius: 20, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",
 		justifyContent: "center",

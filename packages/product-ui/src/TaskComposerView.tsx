@@ -62,7 +62,11 @@ export type TaskComposerModelOption = {
 export type TaskComposerModelCatalog = {
 	allowCustom: boolean;
 	customModelEntry: "none" | "direct" | "configured";
+	lastSuccessAt?: string | null;
 	models: TaskComposerModelOption[];
+	refreshError?: string;
+	refreshState?: "idle" | "queued" | "refreshing" | "error";
+	retryAt?: string | null;
 	selectionMode: "catalog" | "text" | "mode";
 };
 
@@ -78,6 +82,15 @@ export type TaskComposerModelControl = {
 	onModeChange: (value: string) => void;
 	onModelChange: (value: string) => void;
 	projectId: string;
+	value: string;
+};
+
+export type TaskComposerEffortControl = {
+	disabled: boolean;
+	id: string;
+	label: string;
+	onChange: (value: string) => void;
+	options: string[];
 	value: string;
 };
 
@@ -105,6 +118,7 @@ export type TaskComposerSubmission = {
 
 export type TaskComposerLabels = {
 	addFile: string;
+	effort: string;
 	fallbackAction: string;
 	removeFile: (name: string) => string;
 	runsWith: string;
@@ -119,12 +133,16 @@ export type TaskComposerViewProps = {
 	attachments: TaskComposerAttachments;
 	autoFocusPrompt?: boolean;
 	canSubmit: boolean;
+	context?: ReactNode;
 	initialPrompt?: string;
 	labels: TaskComposerLabels;
 	model: Omit<TaskComposerModelControl, "id">;
+	effort: Omit<TaskComposerEffortControl, "id" | "label">;
 	onPromptChange: (value: string) => void;
 	renderAgentControl: (control: TaskComposerAgentControl) => ReactNode;
+	renderEffortControl: (control: TaskComposerEffortControl) => ReactNode;
 	renderModelControl: (control: TaskComposerModelControl) => ReactNode;
+	showEffort: boolean;
 	submission: TaskComposerSubmission;
 };
 
@@ -194,16 +212,21 @@ export function TaskComposerView({
 	attachments,
 	autoFocusPrompt,
 	canSubmit,
+	context,
 	initialPrompt = "",
 	labels,
 	model,
+	effort,
 	onPromptChange,
 	renderAgentControl,
+	renderEffortControl,
 	renderModelControl,
+	showEffort,
 	submission,
 }: TaskComposerViewProps) {
 	const promptId = useId();
 	const modelId = useId();
+	const effortId = useId();
 	const agentId = useId();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const promptRef = useRef(initialPrompt);
@@ -219,6 +242,7 @@ export function TaskComposerView({
 
 	const submit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
+		if (!canSubmit || submission.isSubmitting) return;
 		submission.onSubmit(promptRef.current);
 	};
 
@@ -258,6 +282,7 @@ export function TaskComposerView({
 				if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsDragging(false);
 			}}
 		>
+			{context}
 			<TaskPrompt
 				autoFocus={autoFocusPrompt}
 				disabled={submission.isSubmitting}
@@ -378,13 +403,22 @@ export function TaskComposerView({
 			)}
 
 			<div className="composer-toolbar">
-				<div className="composer-run-controls" role="group" aria-label={labels.runsWith}>
+				<div
+					className={`composer-run-controls${showEffort ? " composer-run-controls-with-effort" : ""}`}
+					role="group"
+					aria-label={labels.runsWith}
+				>
 					<div className="composer-toolbar-slot">
 						{renderAgentControl({ ...agent, id: agentId })}
 					</div>
 					<div className="composer-toolbar-slot">
 						{renderModelControl({ ...model, id: modelId })}
 					</div>
+					{showEffort ? (
+						<div className="composer-toolbar-slot composer-toolbar-effort-slot">
+							{renderEffortControl({ ...effort, id: effortId, label: labels.effort })}
+						</div>
+					) : null}
 				</div>
 
 				<button
