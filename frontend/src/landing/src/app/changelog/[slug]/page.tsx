@@ -63,7 +63,7 @@ export default async function ChangelogEntryPage({
   const backLabel = entry.source === "release" ? "Release archive" : "Changelog";
 
 	return (
-		<main className="relative min-h-screen">
+		<main className="relative min-h-screen select-text">
 			<header className="relative">
 				<div className="relative mx-auto max-w-4xl px-6 pb-8 pt-16 md:pt-20">
           <Link

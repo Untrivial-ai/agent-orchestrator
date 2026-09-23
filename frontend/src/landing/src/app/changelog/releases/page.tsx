@@ -16,7 +16,7 @@ export default async function ReleaseArchivePage() {
 	const releases = await getStableReleaseEntries();
 
 	return (
-		<main className="relative min-h-screen">
+		<main className="relative min-h-screen select-text">
 			<header className="relative">
 				<div className="relative mx-auto max-w-4xl px-6 pb-12 pt-16 md:pb-16 md:pt-24">
 					<Link

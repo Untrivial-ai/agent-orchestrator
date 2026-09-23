@@ -35,7 +35,7 @@ export default function ChangelogPage() {
   const entries = getWeeklyUpdates();
 
   return (
-    <main className="relative min-h-screen">
+    <main className="relative min-h-screen select-text">
       <header className="relative">
         <div className="relative mx-auto max-w-4xl px-6 pb-10 pt-16 md:pb-14 md:pt-24">
           <span className="text-sm font-mono text-muted-foreground tracking-[0.5px]">

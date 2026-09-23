@@ -16,7 +16,7 @@ export async function ChangelogEntry({ entry }: ChangelogEntryProps) {
 	const formattedDate = formatChangelogDate(entry.date);
 
 	return (
-		<article id={`changelog-${entry.slug}`} className="relative">
+		<article id={`changelog-${entry.slug}`} className="relative select-text">
 			{/* Sticky date label positioned beside the article on wide screens. */}
 			<div
 				className="hidden lg:flex absolute top-0 bottom-0 items-start"

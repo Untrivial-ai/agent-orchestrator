@@ -110,6 +110,11 @@ jobs:
       - name: Verify generated landing favicons
         run: npm run icons:check --prefix src/landing
 
+      - name: Build and verify landing changelog
+        run: |
+          npm run build --prefix src/landing
+          npm run changelog:ui-test --prefix src/landing
+
       - name: Typecheck project
         run: npm run typecheck
 

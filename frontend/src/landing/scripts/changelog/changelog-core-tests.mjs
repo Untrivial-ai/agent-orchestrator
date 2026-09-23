@@ -9,6 +9,7 @@ import {
 	renderWeeklyDraft,
 } from "./changelog-core.mjs";
 import { selectDraftInputs } from "./draft.mjs";
+import { resolveWeeklyDate } from "./resolve-date.mjs";
 
 const pullRequest = (overrides = {}) => ({
 	number: 42,
@@ -178,5 +179,36 @@ test("recollects the complete week when an existing draft is regenerated", () =>
 	assert.deepEqual(
 		selected.pullRequests.map((item) => item.number),
 		[42, 43],
+	);
+});
+
+test("scheduled Monday runs publish the completed Sunday window", () => {
+	assert.equal(
+		resolveWeeklyDate({
+			eventName: "schedule",
+			now: new Date("2026-09-28T00:15:00Z"),
+		}),
+		"2026-09-27",
+	);
+});
+
+test("manual weekly runs preserve the requested date", () => {
+	assert.equal(
+		resolveWeeklyDate({
+			eventName: "workflow_dispatch",
+			requestedDate: "2026-09-20",
+			now: new Date("2026-09-28T00:15:00Z"),
+		}),
+		"2026-09-20",
+	);
+});
+
+test("manual weekly runs without a date use the current UTC date", () => {
+	assert.equal(
+		resolveWeeklyDate({
+			eventName: "workflow_dispatch",
+			now: new Date("2026-09-28T23:45:00Z"),
+		}),
+		"2026-09-28",
 	);
 });
