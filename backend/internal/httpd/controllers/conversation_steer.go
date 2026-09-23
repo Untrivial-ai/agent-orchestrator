@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -16,13 +17,63 @@ import (
 // steerPath is the one route this file owns, named once so the not-implemented
 // answer and the spec cannot drift apart.
 const steerPath = "/api/v1/sessions/{sessionId}/conversation/steer"
+const steerOrSendPath = "/api/v1/sessions/{sessionId}/conversation/steer-or-send"
 const queuedTurnSteerPath = "/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/steer"
+
+type steerOrSendService interface {
+	SteerOrSend(context.Context, domain.SessionID, ports.ChatUserMessage, bool) (chatsvc.SteerOrSendResult, error)
+}
 
 // PromoteQueuedTurnResponse reports where one durable queued turn landed.
 type PromoteQueuedTurnResponse struct {
 	SourceTurnID   string `json:"sourceTurnId"`
 	ProviderTurnID string `json:"providerTurnId"`
 	ActivityID     string `json:"activityId"`
+}
+
+func (c *ConversationsController) steerOrSend(w http.ResponseWriter, r *http.Request) {
+	svc, ok := c.Svc.(steerOrSendService)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", steerOrSendPath)
+		return
+	}
+	var req SteerConversationRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	content, attachmentErr := conversationContent(SendConversationMessageRequest{
+		Attachments: req.Attachments,
+	})
+	if attachmentErr != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			attachmentErr.code, attachmentErr.message, nil)
+		return
+	}
+	result, err := svc.SteerOrSend(
+		r.Context(),
+		domain.SessionID(chi.URLParam(r, "sessionId")),
+		ports.ChatUserMessage{
+			Text: req.Text, Content: content, ClientMessageID: req.ClientMessageID,
+			Origin: domain.MessageOriginHuman,
+		},
+		req.RecoverOnly,
+	)
+	if err != nil {
+		writeSteerError(w, r, err)
+		return
+	}
+	response := SteerOrSendConversationResponse{Duplicate: result.Duplicate}
+	if result.Steered {
+		response.Outcome = "steered"
+		response.ProviderTurnID = result.Steer.ProviderTurnID
+		response.ActivityID = result.Steer.ActivityID
+	} else {
+		response.Outcome = "sent"
+		response.TurnID = result.Turn.ID
+		response.ProviderTurnID = result.Turn.ProviderTurnID
+		response.State = result.Turn.State
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, response)
 }
 
 // steer sends guidance into the in-flight turn.
@@ -43,6 +94,17 @@ func (c *ConversationsController) steer(w http.ResponseWriter, r *http.Request) 
 	}
 	var req SteerConversationRequest
 	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	if req.RecoverOnly {
+		result, err := c.Svc.RecoverSteer(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), req.ClientMessageID)
+		if err != nil {
+			writeSteerError(w, r, err)
+			return
+		}
+		envelope.WriteJSON(w, http.StatusAccepted, SteerConversationResponse{
+			ProviderTurnID: result.ProviderTurnID, ActivityID: result.ActivityID,
+		})
 		return
 	}
 	content, attachmentErr := conversationContent(SendConversationMessageRequest{
@@ -139,6 +201,16 @@ func writeSteerError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"CHAT_UNSUPPORTED_STEER_CONTENT",
 			"this agent cannot steer every attachment in that message", nil)
+
+	case errors.Is(err, chatsvc.ErrSteerDeliveryUncertain):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_STEER_UNCERTAIN",
+			"the provider may have received this guidance; retry only with the same recovery action", nil)
+
+	case errors.Is(err, chatsvc.ErrSteerIdempotencyConflict):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_STEER_IDEMPOTENCY_CONFLICT",
+			"this delivery handle belongs to different guidance", nil)
 
 	case errors.Is(err, chatsvc.ErrNoActiveTurn):
 		// Ordinary: the turn finished while the user was typing. Steering has nothing

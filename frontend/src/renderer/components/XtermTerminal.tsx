@@ -52,6 +52,9 @@ import {
 import { buildTerminalThemes } from "../lib/terminal-themes";
 import { useUiStore, type Theme, type ThemeStyle } from "../stores/ui-store";
 import { TerminalSearch } from "./TerminalSearch";
+import { useLinkPreview } from "../hooks/useLinkPreview";
+import { LinkPreviewCard, LinkPreviewCardLoading } from "./LinkPreviewCard";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -128,6 +131,10 @@ function loadRenderer(term: Terminal): void {
 const SUPPRESS_NATIVE_PASTE_MS = 100;
 /** Long enough to notice, short enough that a second copy reads as a second copy. */
 const COPY_TOAST_MS = 1400;
+/** Hover dwell before the link preview card opens, matching ui/hover-card. */
+const LINK_PREVIEW_OPEN_MS = 300;
+/** Grace period to move the pointer from the link into the preview card. */
+const LINK_PREVIEW_CLOSE_MS = 300;
 const AUTOFOCUS_RETRY_FRAMES = 2;
 const COLOR_SCHEME_UPDATE_MODE = 2031;
 const COLOR_SCHEME_QUERY = 996;
@@ -252,10 +259,12 @@ function canAutoFocusTerminal(host: HTMLElement): boolean {
 	if (!(activeElement instanceof HTMLElement) || activeElement === document.body || !activeElement.isConnected) return true;
 	if (host.contains(activeElement)) return true;
 	// Selecting a session in the sidebar deliberately leaves its navigation
-	// button focused. Terminal tabs are the same intentional handoff within the
-	// pane. Every other focused control remains authoritative.
+	// button focused. Terminal tabs and controls that launch an inline PTY are
+	// the same intentional handoff. Every other focused control remains
+	// authoritative.
 	return (
 		activeElement.matches("button[aria-current='page']") ||
+		activeElement.matches("button[data-terminal-focus-handoff='true']") ||
 		(activeElement.matches("button[role='tab'][aria-current]") &&
 			activeElement.closest('[data-testid="session-workspace-topbar"]') !== null)
 	);
@@ -270,6 +279,11 @@ type XtermInternal = Terminal & {
 		_selectionService?: {
 			enable: () => void;
 			shouldForceSelection: (event: MouseEvent) => boolean;
+			// xterm installs this listener on document while a drag selection is
+			// active. It is private, but xterm exposes no public hook for changing
+			// the document-wide drag behavior.
+			_mouseMoveListener?: EventListener;
+			_dragScrollAmount?: number;
 		};
 	};
 };
@@ -332,6 +346,34 @@ function configureScrollbarReservation(term: Terminal): void {
 	if (viewport) viewport.scrollBarWidth = isMacPlatform() ? MAC_TERMINAL_SCROLLBAR_WIDTH : 0;
 }
 
+// xterm deliberately keeps drag selection listening on document. When a drag
+// leaves the terminal horizontally, its coordinate conversion clamps the pointer
+// to the last terminal column. In split layouts that turns a drag into the
+// neighboring inspector into a selection of a full-width TUI sidebar (OpenCode
+// is the visible example). Keep vertical overflow intact for xterm's standard
+// drag-to-scroll behavior, but do not extend a selection into a sibling pane.
+function confineDragSelectionToTerminalWidth(term: Terminal): void {
+	const internal = term as XtermInternal;
+	const selectionService = internal._core?._selectionService;
+	const element = internal._core?.element;
+	const originalMouseMoveListener = selectionService?._mouseMoveListener;
+	if (!selectionService || !element || !originalMouseMoveListener) return;
+
+	selectionService._mouseMoveListener = (event: Event) => {
+		if (!(event instanceof MouseEvent)) return;
+		const { left, right } = element.getBoundingClientRect();
+		if (event.clientX < left || event.clientX > right) {
+			// xterm's document-level drag timer continues using its last vertical
+			// overflow value. Clear that value when the pointer enters a sibling
+			// pane, otherwise a previous below-the-terminal drag keeps scrolling and
+			// extends the frozen selection.
+			selectionService._dragScrollAmount = 0;
+			return;
+		}
+		originalMouseMoveListener(event);
+	};
+}
+
 export function XtermTerminal(props: XtermTerminalProps) {
 	const { t } = useTranslation();
 	const themeStyle = useUiStore((state) => state.themeStyle);
@@ -364,6 +406,17 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	// hover/leave callbacks so the right-click menu can offer "Open in system
 	// browser" for it.
 	const hoveredLinkRef = useRef<string | null>(null);
+	// Link preview card anchored at the hover position. The trigger is a
+	// zero-size fixed element, mirroring the context menu below; open/close
+	// delays are manual because the card is controlled (no real anchor hover).
+	const [linkPreview, setLinkPreview] = useState<{ url: string; x: number; y: number } | null>(null);
+	const linkPreviewTimerRef = useRef<number | undefined>(undefined);
+	const linkPreviewControlsRef = useRef<{
+		show: (url: string, x: number, y: number) => void;
+		hide: (immediately?: boolean) => void;
+		cancelHide: () => void;
+	}>({ show: () => undefined, hide: () => undefined, cancelHide: () => undefined });
+	const linkPreviewQuery = useLinkPreview(linkPreview?.url ?? "", linkPreview !== null);
 	// Latest callbacks in a ref so the mount effect stays dependency-free — we
 	// never tear down and recreate the terminal because a handler identity
 	// changed between renders.
@@ -428,10 +481,40 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			copiedToastTimerRef.current = undefined;
 		}, COPY_TOAST_MS);
 	};
+	linkPreviewControlsRef.current = {
+		show: (url, x, y) => {
+			// Same overlay rule as the copy toast: hidden retained terminals show nothing.
+			if (callbacksRef.current.isVisible === false) return;
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
+			linkPreviewTimerRef.current = window.setTimeout(() => {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview({ url, x, y });
+			}, LINK_PREVIEW_OPEN_MS);
+		},
+		hide: (immediately = false) => {
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
+			if (immediately) {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview(null);
+				return;
+			}
+			linkPreviewTimerRef.current = window.setTimeout(() => {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview(null);
+			}, LINK_PREVIEW_CLOSE_MS);
+		},
+		cancelHide: () => {
+			if (linkPreviewTimerRef.current !== undefined) {
+				window.clearTimeout(linkPreviewTimerRef.current);
+				linkPreviewTimerRef.current = undefined;
+			}
+		},
+	};
 
 	useEffect(
 		() => () => {
 			if (copiedToastTimerRef.current !== undefined) window.clearTimeout(copiedToastTimerRef.current);
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
 		},
 		[],
 	);
@@ -504,11 +587,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}
 			window.open(uri, "_blank", "noopener");
 		};
-		const trackHover = (_event: MouseEvent, uri: string) => {
-			hoveredLinkRef.current = isWebLink(uri) ? uri : null;
+		const trackHover = (event: MouseEvent, uri: string) => {
+			const webUri = isWebLink(uri) ? uri : null;
+			hoveredLinkRef.current = webUri;
+			if (webUri) linkPreviewControlsRef.current.show(webUri, event.clientX, event.clientY);
+			else linkPreviewControlsRef.current.hide(true);
 		};
 		const clearHover = () => {
 			hoveredLinkRef.current = null;
+			linkPreviewControlsRef.current.hide();
 		};
 
 		let term: Terminal;
@@ -584,6 +671,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		loadRenderer(term);
 		term.options.macOptionClickForcesSelection = true;
 		forceSelectionMode(term);
+		confineDragSelectionToTerminalWidth(term);
 
 		// xterm 5's native viewport scrollbar follows macOS's system auto-hide
 		// preference even when its WebKit pseudo-elements are styled. Keep the
@@ -967,6 +1055,26 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// hidden behind the cover. A normally parked terminal still ignores them.
 		const scheduleVisibleFit = () => scheduleStableFit(fitAllowsHidden);
 		fitRef.current = scheduleVisibleFit;
+		// ResizeObserver delivers after layout and before paint. Calling fit() from
+		// that callback reads xterm geometry and can allocate its renderer while
+		// Chromium is still resolving the inspector/terminal split, turning one
+		// rail frame into a nested layout cycle. A controlled rail only needs xterm
+		// to follow on the next frame; the final quiet-window fit remains exact.
+		// Coalescing also handles multiple observer deliveries in one frame.
+		let liveFitFrame: number | null = null;
+		const scheduleLiveFit = () => {
+			if (liveFitFrame !== null) return;
+			liveFitFrame = requestAnimationFrame(() => {
+				liveFitFrame = null;
+				if (host.closest('[data-terminal-live-resize="true"]')) {
+					fitTerminal();
+					return;
+				}
+				// The marker may have cleared while this frame was queued. Keep the
+				// ordinary final-fit path rather than skipping the terminal's last size.
+				scheduleVisibleFit();
+			});
+		};
 
 		const raf = requestAnimationFrame(fitTerminal);
 		// 50/250ms catch the common settle; 600/1200ms are a session-bounded
@@ -982,7 +1090,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		}
 		const observer = new ResizeObserver(() => {
 			if (host.closest('[data-terminal-live-resize="true"]')) {
-				fitTerminal();
+				scheduleLiveFit();
 				return;
 			}
 			scheduleVisibleFit();
@@ -1280,10 +1388,6 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
 			prepareForActivation,
-			// Live buffer discriminator for predictive local echo on cloud panes:
-			// predictions run only while the NORMAL buffer is active (alt-screen
-			// TUIs repaint too aggressively to predict into).
-			bufferType: () => term.buffer.active.type,
 			notifyCursorColorScheme: () => {
 				if (callbacksRef.current.supportsCursorColorScheme) {
 					notifyCursorScheme(callbacksRef.current.theme, false, true);
@@ -1309,6 +1413,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			if (searchAddonRef.current === searchAddon) searchAddonRef.current = null;
 			fitRef.current = null;
 			cancelAnimationFrame(raf);
+			if (liveFitFrame !== null) cancelAnimationFrame(liveFitFrame);
 			for (const timer of settleTimers) window.clearTimeout(timer);
 			if (fitQuietTimer !== null) clearTimeout(fitQuietTimer);
 			if (fitCapTimer !== null) clearTimeout(fitCapTimer);
@@ -1367,6 +1472,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 
 	useEffect(() => {
 		if (!props.focusRequested || props.isVisible === false) return undefined;
+		let initialFocusTimer: number | null = null;
 		let retryFrame: number | null = null;
 		let retriesRemaining = AUTOFOCUS_RETRY_FRAMES;
 		let cancelled = false;
@@ -1385,10 +1491,24 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			focusTerminal();
 		};
 
-		focusIfAllowed();
+		// A terminal tab/session click has already made the retained xterm visible.
+		// Calling `focus()` in this same discrete React effect can synchronously
+		// trigger browser focus/layout work while the click is still being handled.
+		// Defer only an already-permitted focus to a later task. A blocked focus
+		// keeps the existing rAF retry path so a closing dialog is handled promptly.
+		const initialHost = hostRef.current;
+		if (initialHost && canAutoFocusTerminal(initialHost)) {
+			initialFocusTimer = window.setTimeout(() => {
+				initialFocusTimer = null;
+				focusIfAllowed();
+			}, 0);
+		} else {
+			focusIfAllowed();
+		}
 
 		return () => {
 			cancelled = true;
+			if (initialFocusTimer !== null) window.clearTimeout(initialFocusTimer);
 			if (retryFrame !== null) cancelAnimationFrame(retryFrame);
 		};
 	}, [focusTerminal, props.focusRequested, props.isVisible]);
@@ -1509,6 +1629,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				>
 					{contextMenu.link ? (
 						<>
+							<DropdownMenuItem disabled={!props.onLinkOpen} onSelect={() => {
+								const { link } = contextMenu;
+								setContextMenuOpen(false);
+								if (link) props.onLinkOpen?.(link);
+							}}>
+								{t("link.openInAOBrowser")}
+							</DropdownMenuItem>
 							<DropdownMenuItem
 								onSelect={() => {
 									const { link } = contextMenu;
@@ -1516,7 +1643,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 									if (link) void aoBridge.app.openExternal(link);
 								}}
 							>
-								{t("terminal.openSystemBrowser")}
+								{t("link.openInExternalBrowser")}
+							</DropdownMenuItem>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onSelect={() => {
+								const { link } = contextMenu;
+								setContextMenuOpen(false);
+								if (link) void aoBridge.clipboard.writeText(link);
+							}}>
+								{t("link.copy")}
 							</DropdownMenuItem>
 							<DropdownMenuSeparator />
 						</>
@@ -1547,6 +1682,45 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					) : null}
 				</DropdownMenuContent>
 			</DropdownMenu>
+			<HoverCard
+				open={linkPreview !== null}
+				onOpenChange={(open) => {
+					if (!open) linkPreviewControlsRef.current.hide(true);
+				}}
+			>
+				<HoverCardTrigger asChild>
+					<button
+						type="button"
+						aria-hidden="true"
+						tabIndex={-1}
+						style={{
+							border: 0,
+							height: 0,
+							left: linkPreview?.x ?? 0,
+							opacity: 0,
+							padding: 0,
+							pointerEvents: "none",
+							position: "fixed",
+							top: linkPreview?.y ?? 0,
+							width: 0,
+						}}
+					/>
+				</HoverCardTrigger>
+				{linkPreview && !linkPreviewQuery.isError ? (
+					<HoverCardContent
+						collisionPadding={8}
+						portalContainer={contextMenuPortalContainer}
+						onPointerEnter={() => linkPreviewControlsRef.current.cancelHide()}
+						onPointerLeave={() => linkPreviewControlsRef.current.hide()}
+					>
+						{linkPreviewQuery.data ? (
+							<LinkPreviewCard url={linkPreview.url} preview={linkPreviewQuery.data} />
+						) : (
+							<LinkPreviewCardLoading />
+						)}
+					</HoverCardContent>
+				) : null}
+			</HoverCard>
 		</>
 	);
 }

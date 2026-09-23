@@ -59,10 +59,16 @@ type readinessEntry struct {
 }
 
 type readinessCall struct {
+	key            readinessCallKey
 	done           chan struct{}
 	checks         readinessInvalidation
 	installVersion uint64
 	authVersion    uint64
+}
+
+type readinessCallKey struct {
+	id           string
+	presenceOnly bool
 }
 
 type readinessCoordinator struct {
@@ -80,7 +86,7 @@ type readinessCoordinator struct {
 
 	mu      sync.Mutex
 	entries map[string]*readinessEntry
-	calls   map[string]*readinessCall
+	calls   map[readinessCallKey]*readinessCall
 }
 
 type unsupportedAgentError struct{ id string }
@@ -129,7 +135,7 @@ func newReadinessCoordinator(cfg readinessCoordinatorConfig) *readinessCoordinat
 		installTimeout: cfg.InstallTimeout, authTimeout: cfg.AuthTimeout,
 		retryDelays: cfg.RetryDelays, workers: cfg.Workers,
 		authenticationCheck: cfg.AuthenticationCheck,
-		entries:             make(map[string]*readinessEntry, len(cfg.Agents)), calls: make(map[string]*readinessCall),
+		entries:             make(map[string]*readinessEntry, len(cfg.Agents)), calls: make(map[readinessCallKey]*readinessCall),
 	}
 	for _, item := range cfg.Agents {
 		id := string(item.Harness)
@@ -192,8 +198,9 @@ func (c *readinessCoordinator) Force(ctx context.Context, agentIDs []string, pur
 }
 
 // FindInstalled returns as soon as one bounded installation-only ensure
-// confirms a harness. Checks already in progress remain shared and continue
-// under the daemon context after this caller stops waiting.
+// confirms a harness. Compatible checks already in progress remain shared and
+// continue under the daemon context after this caller stops waiting; presence
+// checks never inherit an execution-enabled identity probe.
 func (c *readinessCoordinator) FindInstalled(ctx context.Context, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, bool) {
 	if err := ctx.Err(); err != nil || !purpose.Valid() {
 		return domain.AgentReadinessSnapshot{}, false
@@ -242,6 +249,10 @@ func (c *readinessCoordinator) FindInstalled(ctx context.Context, purpose domain
 }
 
 func (c *readinessCoordinator) ensure(ctx context.Context, agentIDs []string, purpose domain.AgentReadinessPurpose, requested readinessInvalidation) ([]domain.AgentReadinessSnapshot, error) {
+	return c.ensureMode(ctx, agentIDs, purpose, requested, false)
+}
+
+func (c *readinessCoordinator) ensureMode(ctx context.Context, agentIDs []string, purpose domain.AgentReadinessPurpose, requested readinessInvalidation, presenceOnly bool) ([]domain.AgentReadinessSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -268,7 +279,7 @@ func (c *readinessCoordinator) ensure(ctx context.Context, agentIDs []string, pu
 				results <- result{index: index, err: ctx.Err()}
 				return
 			}
-			item, err := c.ensureOne(ctx, id, purpose, requested, false)
+			item, err := c.ensureOne(ctx, id, purpose, requested, presenceOnly)
 			results <- result{index: index, item: item, err: err}
 		}(index, id)
 	}
@@ -307,7 +318,8 @@ func (c *readinessCoordinator) ensureOne(ctx context.Context, id string, purpose
 		c.logDecision(id, purpose, "retry_delayed", 0, snapshot, readinessFailureCategory(snapshot), nextRetry)
 		return snapshot, nil
 	}
-	if call := c.calls[id]; call != nil {
+	key := readinessCallKey{id: id, presenceOnly: presenceOnly}
+	if call := c.calls[key]; call != nil {
 		joinedAt := c.now()
 		joinedChecks := call.checks
 		joinedInstallVersion := call.installVersion
@@ -334,13 +346,38 @@ func (c *readinessCoordinator) ensureOne(ctx context.Context, id string, purpose
 			return domain.AgentReadinessSnapshot{}, ctx.Err()
 		}
 	}
+	if presenceOnly {
+		if call := c.calls[readinessCallKey{id: id}]; call != nil {
+			snapshot := c.snapshotLocked(entry, purpose)
+			// A prior installed state is not proof while an execution-enabled
+			// refresh is still replacing it. Presence callers must not inherit
+			// that in-flight call or report the stale state as installed.
+			snapshot.Installation.State = domain.AgentInstallationUnknown
+			snapshot.EffectiveReadiness = domain.EffectiveAgentReadiness(snapshot.Installation.State, snapshot.Authentication.State)
+			c.mu.Unlock()
+			c.logDecision(id, purpose, "presence_in_flight_execution", 0, snapshot, "", time.Time{})
+			return snapshot, nil
+		}
+	} else if call := c.calls[readinessCallKey{id: id, presenceOnly: true}]; call != nil {
+		// Presence and identity checks have different guarantees. Let a normal
+		// caller wait for the process-free pass to finish, then retry so an
+		// identity-pending result cannot satisfy the normal check from cache.
+		c.mu.Unlock()
+		select {
+		case <-call.done:
+			return c.ensureOne(ctx, id, purpose, requested, false)
+		case <-ctx.Done():
+			return domain.AgentReadinessSnapshot{}, ctx.Err()
+		}
+	}
 	call := &readinessCall{
+		key:            key,
 		done:           make(chan struct{}),
 		checks:         needed,
 		installVersion: entry.installVersion,
 		authVersion:    entry.authVersion,
 	}
-	c.calls[id] = call
+	c.calls[key] = call
 	entry.checking = needed
 	started := c.now()
 	c.mu.Unlock()
@@ -430,7 +467,8 @@ func (c *readinessCoordinator) runCheck(id string, purpose domain.AgentReadiness
 			preserveInstallationFailure(&entry.snapshot.Installation, install)
 		} else {
 			entry.snapshot.Installation = install
-			if entry.installVersion == call.installVersion {
+			if entry.installVersion == call.installVersion &&
+				(!presenceOnly || install.ReasonCode != domain.AgentReadinessReasonInstallIdentityPending) {
 				entry.invalidated &^= readinessInvalidateInstallation
 			}
 		}
@@ -469,7 +507,7 @@ func (c *readinessCoordinator) runCheck(id string, purpose domain.AgentReadiness
 	snapshot := c.snapshotLocked(entry, purpose)
 	nextRetry := entry.nextRetryAt
 	duration := c.now().Sub(started)
-	delete(c.calls, id)
+	delete(c.calls, call.key)
 	close(call.done)
 	c.mu.Unlock()
 	c.logDecision(id, purpose, "new_check", duration, snapshot, failureCode, nextRetry)
@@ -487,6 +525,9 @@ func (c *readinessCoordinator) checkInstallation(item agentregistry.HarnessAgent
 		path, err = resolver.ResolveBinary(ctx)
 	} else {
 		return successfulInstallation(attempted, domain.AgentInstallationUnknown, domain.AgentReadinessReasonInstallCheckUnsupported, "Installation checks are not supported for this harness."), false
+	}
+	if errors.Is(err, ports.ErrAgentBinaryIdentityUnknown) {
+		return successfulInstallation(attempted, domain.AgentInstallationUnknown, domain.AgentReadinessReasonInstallIdentityPending, item.Manifest.Name+" is present but its identity has not been confirmed."), false
 	}
 	if err == nil && path != "" {
 		return successfulInstallation(attempted, domain.AgentInstallationInstalled, domain.AgentReadinessReasonInstalled, item.Manifest.Name+" is installed."), false
@@ -555,10 +596,16 @@ func (c *readinessCoordinator) Invalidate(agentID string, invalidation readiness
 
 func (c *readinessCoordinator) Warm() {
 	go func() {
-		// Finish the bounded presence pass first so the desktop startup gate can
-		// reuse installation work without waiting behind an authentication probe.
-		_, _ = c.EnsureInstallation(c.ctx, nil, domain.AgentReadinessPurposeDisplay)
-		_, _ = c.Ensure(c.ctx, nil, domain.AgentReadinessPurposeDisplay)
+		// Warm installation through the process-free capability first. Goose's
+		// normal resolver validates identity by running --help, so startup must
+		// not accidentally turn this background cache fill into an execution
+		// probe. Adapters without a presence capability retain their existing
+		// installation check behavior.
+		_, _ = c.ensureMode(c.ctx, nil, domain.AgentReadinessPurposeDisplay, readinessInvalidateInstallation, true)
+		// Preserve the warm authentication pass without asking adapters to
+		// resolve installation again. An identity-pending installation yields an
+		// inconclusive auth observation until an explicit normal refresh.
+		_, _ = c.ensureMode(c.ctx, nil, domain.AgentReadinessPurposeDisplay, readinessInvalidateAuthentication, false)
 	}()
 }
 

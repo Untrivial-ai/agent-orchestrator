@@ -83,6 +83,20 @@ describe("buildDaemonEnv", () => {
 		expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin:/opt/homebrew/sbin:/usr/local/bin:/bin:/usr/sbin:/sbin");
 	});
 
+	it("keeps the probed login shell over launchd's generic process shell", () => {
+		const env = buildDaemonEnv(
+			{ ...minimalProcessEnv, SHELL: "/bin/sh" },
+			{ PATH: "/opt/homebrew/bin", SHELL: "/bin/zsh" },
+			{},
+		);
+		expect(env.SHELL).toBe("/bin/zsh");
+	});
+
+	it("keeps the configured login shell when the Finder environment probe fails", () => {
+		const env = buildDaemonEnv({ ...minimalProcessEnv, SHELL: "/bin/sh" }, null, {}, "/bin/zsh");
+		expect(env.SHELL).toBe("/bin/zsh");
+	});
+
 	it("still produces a PATH containing the floor when shellEnv is null", () => {
 		const env = buildDaemonEnv(minimalProcessEnv, null, {});
 		for (const dir of FALLBACK_PATH_DIRS) {
@@ -133,6 +147,18 @@ describe("resolveShellPath", () => {
 	it("falls back to /bin/zsh when blank", () => {
 		expect(resolveShellPath({ SHELL: "   " })).toBe("/bin/zsh");
 	});
+
+	it("replaces launchd's generic shell with the configured macOS login shell", () => {
+		expect(resolveShellPath({ SHELL: "/bin/sh" }, "/bin/fish")).toBe("/bin/fish");
+	});
+
+	it("uses the configured macOS login shell when launchd leaves SHELL unset", () => {
+		expect(resolveShellPath({}, "/bin/bash")).toBe("/bin/bash");
+	});
+
+	it("preserves /bin/sh when it is the configured login shell", () => {
+		expect(resolveShellPath({ SHELL: "/bin/sh" }, "/bin/sh")).toBe("/bin/sh");
+	});
 });
 
 describe("resolveShellEnv", () => {
@@ -141,7 +167,21 @@ describe("resolveShellEnv", () => {
 		expect(await resolveShellEnv({ SHELL: "/bin/zsh" }, run)).toEqual({
 			PATH: "/opt/homebrew/bin",
 			FOO: "bar",
+			SHELL: "/bin/zsh",
 		});
+	});
+
+	it("probes and records the configured shell for a launchd GUI environment", async () => {
+		let probed = "";
+		const run: ShellRunner = async (shellPath) => {
+			probed = shellPath;
+			return `${SHELL_ENV_SENTINEL}PATH=/opt/homebrew/bin\0SHELL=/bin/sh\0`;
+		};
+		expect(await resolveShellEnv({ SHELL: "/bin/sh" }, run, "/bin/zsh")).toEqual({
+			PATH: "/opt/homebrew/bin",
+			SHELL: "/bin/zsh",
+		});
+		expect(probed).toBe("/bin/zsh");
 	});
 
 	it("returns null when the runner returns null", async () => {

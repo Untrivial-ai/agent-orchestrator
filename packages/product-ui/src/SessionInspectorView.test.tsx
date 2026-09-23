@@ -11,6 +11,7 @@ import {
   InspectorPullRequestCardView,
   InspectorReviewsView,
   SessionInspectorShellView,
+  SessionInspectorSummaryView,
   type InspectorReviewLabels,
 } from "./SessionInspectorView";
 import type { ExternalLinkProps } from "./external-link";
@@ -138,6 +139,7 @@ describe("SessionInspectorShellView", () => {
       />,
     );
     const body = screen.getByRole("tablist").parentElement?.nextElementSibling;
+    expect(screen.getByRole("tablist").parentElement).toHaveClass("session-inspector__topbar--browser");
     expect(body).toHaveClass(
       "session-inspector__body--browser",
       "p-0",
@@ -166,6 +168,22 @@ describe("SessionInspectorShellView", () => {
 });
 
 describe("portable inspector presentations", () => {
+  it("places execution context before pull request details", () => {
+    render(
+      <SessionInspectorSummaryView
+        activity={<div>activity</div>}
+        activityTitle="Activity"
+        context={<div data-testid="execution-context">context</div>}
+        pullRequestCards={<div>pull request</div>}
+        pullRequestTitle="Pull request"
+      />,
+    );
+
+    const context = screen.getByTestId("execution-context");
+    const pullRequest = screen.getByText("pull request");
+    expect(Boolean(context.compareDocumentPosition(pullRequest) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
   it("renders PR facts and host-owned actions from a neutral view model", () => {
     render(
       <InspectorPullRequestCardView

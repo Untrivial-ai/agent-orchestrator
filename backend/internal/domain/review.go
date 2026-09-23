@@ -33,8 +33,33 @@ type Review struct {
 	// pane itself. It is separate from ReviewRun.Status so the UI can distinguish
 	// "review pass exists" from "reviewer is actively working right now".
 	ReviewerActivityState ActivityState `json:"reviewerActivityState,omitempty"`
-	CreatedAt             time.Time     `json:"createdAt"`
-	UpdatedAt             time.Time     `json:"updatedAt"`
+	// InterfaceMode selects the durable reviewer surface. Chat reviewers own a
+	// native conversation; TUI reviewers continue to use their terminal handle.
+	InterfaceMode          ReviewerInterfaceMode `json:"interfaceMode"`
+	ProviderConversationID string                `json:"providerConversationId"`
+	ControllerGeneration   string                `json:"controllerGeneration"`
+	ControllerError        string                `json:"controllerError"`
+	CreatedAt              time.Time             `json:"createdAt"`
+	UpdatedAt              time.Time             `json:"updatedAt"`
+}
+
+// ReviewerInterfaceMode selects the durable UI surface for a reviewer.
+type ReviewerInterfaceMode string
+
+const (
+	// ReviewerInterfaceTUI uses the reviewer's terminal handle.
+	ReviewerInterfaceTUI ReviewerInterfaceMode = "tui"
+	// ReviewerInterfaceChat uses a reviewer-owned native chat.
+	ReviewerInterfaceChat ReviewerInterfaceMode = "chat"
+)
+
+// ReviewerSurface gives clients one stable identifier for either reviewer UI.
+type ReviewerSurface struct {
+	Mode            ReviewerInterfaceMode `json:"mode"`
+	ReviewID        string                `json:"reviewId"`
+	Harness         ReviewerHarness       `json:"harness"`
+	HandleID        string                `json:"handleId,omitempty"`
+	ControllerError string                `json:"controllerError,omitempty"`
 }
 
 // ReviewRun is one review pass against a worker's PR.

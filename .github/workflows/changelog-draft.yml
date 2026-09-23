@@ -1,0 +1,120 @@
+name: Draft weekly changelog
+
+on:
+  schedule:
+    - cron: "0 16 * * 0"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Changelog date in YYYY-MM-DD format (defaults to today UTC)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: weekly-changelog
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/src/landing/package-lock.json
+
+      - name: Install landing dependencies
+        working-directory: frontend/src/landing
+        run: npm ci
+
+      - name: Choose weekly branch
+        id: branch
+        shell: bash
+        env:
+          REQUESTED_DATE: ${{ inputs.date }}
+        run: |
+          date="${REQUESTED_DATE:-$(date -u +%F)}"
+          if [[ ! "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "Invalid changelog date: $date" >&2
+            exit 1
+          fi
+          branch="changelog/$date"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "name=$branch" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch"
+            git switch --force-create "$branch" "origin/$branch"
+          else
+            git switch --create "$branch"
+          fi
+
+      - name: Generate draft
+        id: draft
+        working-directory: frontend/src/landing
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run changelog:draft -- --date=${{ steps.branch.outputs.date }}
+
+      - name: Validate draft
+        if: steps.draft.outputs.has_changes == 'true'
+        working-directory: frontend/src/landing
+        run: |
+          npm run changelog:test
+          npm run changelog:validate
+          npm run build
+
+      - name: Commit draft
+        if: steps.draft.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          ENTRY_PATH: ${{ steps.draft.outputs.entry_path }}
+          CHANGELOG_DATE: ${{ steps.draft.outputs.date }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "frontend/src/landing/$ENTRY_PATH"
+          git commit -m "docs: draft weekly changelog $CHANGELOG_DATE"
+          git push --set-upstream origin "${{ steps.branch.outputs.name }}"
+
+      - name: Open or update pull request
+        if: steps.draft.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+          CHANGELOG_DATE: ${{ steps.draft.outputs.date }}
+          BODY_PATH: ${{ steps.draft.outputs.body_path }}
+        run: |
+          existing="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "docs: weekly changelog $CHANGELOG_DATE" --body-file "$BODY_PATH"
+            pull_request="$existing"
+          else
+            pull_request_url="$(gh pr create --draft --base main --head "$BRANCH" --title "docs: weekly changelog $CHANGELOG_DATE" --body-file "$BODY_PATH")"
+            pull_request="$(gh pr view "$pull_request_url" --json number --jq '.number')"
+          fi
+
+          gh pr edit "$pull_request" \
+            --add-assignee somewherelostt,illegalcall,AgentWrapper \
+            --add-reviewer somewherelostt,illegalcall,AgentWrapper
+
+          marker='<!-- weekly-changelog-review-request -->'
+          existing_notice="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pull_request/comments" \
+            --jq ".[] | select(.body | contains(\"$marker\")) | .id" | head -n 1)"
+          if [ -z "$existing_notice" ]; then
+            gh pr comment "$pull_request" --body "$marker
+          @somewherelostt @illegalcall @AgentWrapper — the weekly changelog draft is ready for editorial review.
+
+          Please confirm the included changes are available to users, rewrite the generated copy, add exactly one high-quality image or video for the most important feature, verify links and previews, then mark the PR ready and merge it after CI passes."
+          fi

@@ -111,8 +111,11 @@ export type WorkspaceSession = {
 	 * {@link status} already produced.
 	 */
 	displayStatus?: string;
+	statusReadiness?: "checking" | "ready" | "unavailable";
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
+	/** Whether the cloud worker has a current control-plane connection. */
+	runtimeConnected?: boolean;
 	chatProviderPreserved?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
 	terminateOnPrMerge?: boolean;
@@ -157,7 +160,12 @@ export type WorkspaceSession = {
 	 * org the session is scoped to so its terminal can be opened against the CP;
 	 * absent for local sessions, which route through the local daemon.
 	 */
-	cloud?: { orgId: string };
+	cloud?: {
+		orgId: string;
+		sandboxProvider?: string;
+		desiredState?: string;
+		observedState?: string;
+	};
 };
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in
@@ -177,6 +185,10 @@ export function canonicalTrackerIssueId(issueId?: string): string | undefined {
 }
 
 export type ProjectKind = "single_repo" | "workspace" | "scratch";
+
+/** UI-only grouping for sessions that have no daemon project row. */
+export const STANDALONE_WORKSPACE_ID = "__standalone__" as const;
+export const STANDALONE_PROJECT_KIND = "standalone" as const;
 
 /** Sentinel `kind` value for projects hosted by the AO cloud control plane. */
 export const CLOUD_PROJECT_KIND = "cloud" as const;
@@ -215,7 +227,7 @@ export function primaryPR(session: WorkspaceSession): PullRequestFacts | undefin
 	return sortedPRs(session)[0];
 }
 
-export function isOrchestratorSession(session: WorkspaceSession): boolean {
+export function isOrchestratorSession(session: Pick<WorkspaceSession, "id" | "kind">): boolean {
 	return session.kind === "orchestrator" || session.id.endsWith("-orchestrator");
 }
 
@@ -297,6 +309,15 @@ export function sessionIsActive(session: WorkspaceSession): boolean {
 	return session.isTerminated !== true && session.status !== "terminated";
 }
 
+/**
+ * Whether the agent PROCESS is gone while the session ROW is still alive —
+ * Ctrl+C, `/exit`, a usage limit. Recovered with `resume-agent`, not `restore`.
+ * Not `sessionIsActive`, which reports row liveness and calls this state alive.
+ */
+export function sessionAgentExited(session: WorkspaceSession | undefined): boolean {
+	return Boolean(session && session.activity?.state === "exited" && sessionIsActive(session));
+}
+
 export function sessionNeedsAttention(session: WorkspaceSession): boolean {
 	return presentationAttentionZone(session) === "action";
 }
@@ -313,7 +334,7 @@ export type WorkspaceSummary = {
 	 * the AO cloud control plane carry CLOUD_PROJECT_KIND — branch on
 	 * `kind === CLOUD_PROJECT_KIND`.
 	 */
-	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND;
+	kind?: ProjectKind | typeof CLOUD_PROJECT_KIND | typeof STANDALONE_PROJECT_KIND;
 	/** Local checkout path; empty string for cloud projects (no local folder). */
 	path: string;
 	folderMissing?: boolean;
@@ -377,4 +398,42 @@ export function orchestratorHealth(workspace: WorkspaceSummary, restarting = fal
 export function toAgentProvider(provider?: string): AgentProvider {
 	if (provider === "fake") return provider;
 	return AGENT_OPTIONS.find((candidate) => candidate === provider) ?? "codex";
+}
+
+export type NextSessionNavigation =
+	| { target: "session"; sessionId: string }
+	| { target: "project" };
+
+/**
+ * Resolves where to navigate after an active session is killed.
+ * Prioritizes:
+ * 1. Adjacent remaining worker session (previous if available, else first remaining).
+ * 2. Active non-terminated orchestrator if no worker sessions remain.
+ * 3. Project board if no alive sessions remain.
+ */
+export function resolveNextNavigationAfterSessionKill(
+	workspace: WorkspaceSummary | undefined,
+	killedSessionId: string,
+	sessionsInDisplayOrder?: WorkspaceSession[],
+): NextSessionNavigation {
+	if (!workspace) return { target: "project" };
+
+	const workerList = (sessionsInDisplayOrder ?? sortedWorkerSessions(workspace.sessions)).filter(
+		(s) => s.isTerminated !== true,
+	);
+	const currentIndex = workerList.findIndex((s) => s.id === killedSessionId);
+	const remaining = workerList.filter((s) => s.id !== killedSessionId);
+
+	if (remaining.length > 0) {
+		const nextIndex = currentIndex > 0 ? currentIndex - 1 : 0;
+		const nextSession = remaining[nextIndex] ?? remaining[0];
+		return { target: "session", sessionId: nextSession.id };
+	}
+
+	const orchestrator = newestActiveOrchestrator(workspace.sessions);
+	if (orchestrator && orchestrator.id !== killedSessionId && orchestrator.isTerminated !== true) {
+		return { target: "session", sessionId: orchestrator.id };
+	}
+
+	return { target: "project" };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { Menu, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { HashLink } from "../../../HashLink/HashLink";

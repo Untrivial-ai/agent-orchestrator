@@ -46,6 +46,10 @@ func openCodexFileNoFollow(path string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), filepath.Base(path)), nil
 }
 
+func openCodexDeviceFileNoFollow(path string) (*os.File, error) {
+	return openCodexFileNoFollow(path)
+}
+
 func codexPrivateFileMode(info os.FileInfo) bool {
 	return info.Mode().Perm()&0o077 == 0
 }
@@ -56,6 +60,12 @@ func protectCodexPrivateDirectory(path string) error {
 
 func protectCodexPrivateFile(_ string, file *os.File) error {
 	return file.Chmod(0o600)
+}
+
+func protectCodexDeviceCredentialFile(_ string) error {
+	// The staged replacement is already owner-only on Unix. Windows needs a
+	// separate post-commit hook because the final path receives a device ACL.
+	return nil
 }
 
 func validateCodexDirectory(path string, requirePrivate bool) error {

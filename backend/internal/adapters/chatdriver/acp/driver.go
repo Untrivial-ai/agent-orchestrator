@@ -187,7 +187,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	if d.cfg.ValidateTurnSettings != nil {
 		if err := d.cfg.ValidateTurnSettings(cfg.Permissions, ports.ChatTurnSettings{
-			Model: cfg.Model, Approval: cfg.Permissions,
+			Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions,
 		}); err != nil {
 			return nil, fmt.Errorf("validate ACP session settings: %w", err)
 		}
@@ -250,7 +250,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		cfg.Permissions, d.cfg.ValidateTurnSettings, resp.ConfigOptions,
 		conv.legacyWire.modelState(), resp.Modes,
 	)
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Approval: cfg.Permissions}); err != nil {
+	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
 		// Initial model and permission mode may have been applied via launch-time
 		// flags (e.g. kimchiacp passes --model, --auto, --yolo). An agent that
 		// does not implement the runtime ACP setters returns -32601; tolerate it
@@ -367,7 +367,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		resp, err := historyConversation.loadHistory(resumeCtx)
 		if err != nil {
 			conv.discard()
-			return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, normalizeACPError("ACP session/load", err))
+			return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, normalizeACPLoadError("ACP session/load", err))
 		}
 		configOptions = resp.ConfigOptions
 		modes = resp.Modes
@@ -618,9 +618,33 @@ func isACPMethodNotFound(err error) bool {
 	return errors.As(err, &requestErr) && requestErr.Code == -32601
 }
 
+// isACPInternalError reports whether err is a JSON-RPC -32603 "Internal error"
+// from the ACP agent. The SDK coerces any handler error the agent did not shape
+// itself into this code, so it is how a provider reports its own failure (for
+// example Claude Code's own "context deadline exceeded" while replaying a
+// transcript) rather than a protocol or authentication problem.
+func isACPInternalError(err error) bool {
+	var requestErr *acpsdk.RequestError
+	return errors.As(err, &requestErr) && requestErr.Code == -32603
+}
+
 func normalizeACPError(operation string, err error) error {
 	if isACPAuthRequired(err) {
 		return fmt.Errorf("%w: %s: %w", ports.ErrChatAuthRequired, operation, err)
 	}
 	return fmt.Errorf("%s: %w", operation, err)
+}
+
+// normalizeACPLoadError normalizes a failed ACP session/load whose calling
+// context is still alive. A -32603 answer then means the provider itself could
+// not replay the transcript; it is mapped to ports.ErrChatHistoryLoadFailed so
+// the settle loop stops re-sending the same load and the interface transition
+// reports a dedicated code instead of a generic resume failure. Callers must
+// check their own context first: the SDK also synthesizes -32603 when the
+// caller's context ends mid-request.
+func normalizeACPLoadError(operation string, err error) error {
+	if isACPInternalError(err) && !isACPAuthRequired(err) {
+		return fmt.Errorf("%w: %s: %w", ports.ErrChatHistoryLoadFailed, operation, err)
+	}
+	return normalizeACPError(operation, err)
 }

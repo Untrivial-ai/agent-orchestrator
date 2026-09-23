@@ -2,6 +2,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect } from "react";
 import { ManualConnectSheet } from "../../lib/ManualConnectSheet";
 import { releaseSheetResult, takeSheetResult } from "../../lib/sheetResult";
+import { backOr } from "../../lib/backNavigation";
 
 // Manual host/password entry, as a native form sheet. The pairing screen parks
 // what should happen after a successful connect (it navigates on), so this only
@@ -16,9 +17,11 @@ export default function ConnectSheetRoute() {
 		<ManualConnectSheet
 			onConnected={() => {
 				const done = takeSheetResult<void>(resultKey);
-				router.back();
+				backOr(router);
 				done?.();
 			}}
 		/>
 	);
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

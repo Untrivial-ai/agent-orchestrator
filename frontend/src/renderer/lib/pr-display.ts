@@ -226,7 +226,7 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 			statusRows.push(cardStatus("ci", pr.ci.state === "pending" ? "pr.card.checksPending" : "pr.card.checksLoading", "neutral", undefined, [], prChecksUrl(pr), true));
 		}
 		statusRows.push(cardStatus("review", "pr.card.reviewStatus", reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments), reviewStatusDetail(pr)));
-		const mergeable = pr.mergeability.state !== "conflicting" && pr.ci.state === "passing" && pr.review.decision === "approved";
+		const mergeable = prCanMerge(pr);
 		const checkingReadiness = pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown";
 		return { primary, supporting, statusRows, readiness: {
 			label: appI18n.t(checkingReadiness ? "pr.merge.checkingReadiness" : mergeable ? "pr.merge.mergeable" : "pr.merge.notMergeableYet"),
@@ -265,20 +265,40 @@ function cardStatus(
 	return { key, label: appI18n.t(labelKey), detail, href, breathe, links, tone };
 }
 
+export function prCanMerge(pr: SessionPRSummary): boolean {
+	return (
+		pr.state === "open" &&
+		pr.ci.state === "passing" &&
+		pr.mergeability.state === "mergeable" &&
+		reviewAllowsMerge(pr.review.decision) &&
+		!pr.review.hasUnresolvedHumanComments
+	);
+}
+
+function reviewAllowsMerge(decision: SessionPRSummary["review"]["decision"]): boolean {
+	return decision === "approved" || decision === "none";
+}
+
 function reviewStatusDetail(pr: SessionPRSummary): string {
 	switch (pr.review.decision) {
 		case "approved": return appI18n.t("pr.review.requirementSatisfied");
 		case "changes_requested": return appI18n.t("pr.review.changesActive");
 		case "review_required": return appI18n.t("pr.review.requiredNotSubmitted");
-		default: return appI18n.t("pr.review.pending");
+		case "none": return appI18n.t("pr.review.notRequired");
 	}
 }
 
 function mergeReadinessDetail(pr: SessionPRSummary): string {
 	if (pr.mergeability.state === "conflicting") return appI18n.t("pr.merge.reasonConflict");
 	if (pr.ci.state === "failing") return appI18n.t("pr.merge.reasonChecksFailing");
-	if (pr.review.decision !== "approved") return appI18n.t("pr.merge.reasonReview");
+	if (!reviewAllowsMerge(pr.review.decision)) return appI18n.t("pr.merge.reasonReview");
+	if (pr.review.hasUnresolvedHumanComments) return appI18n.t("pr.merge.reasonComments");
+	if (pr.mergeability.state !== "mergeable") return providerBlockedDetail(pr);
 	return appI18n.t("pr.merge.reasonReady");
+}
+
+function providerBlockedDetail(pr: SessionPRSummary): string {
+	return appI18n.t("pr.merge.providerBlocked", { provider: pr.provider === "gitlab" ? "GitLab" : "GitHub" });
 }
 
 export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {
@@ -394,7 +414,7 @@ function mergeSummary(pr: SessionPRSummary): string | undefined {
 		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.conflictsWithBase") : undefined;
 	}
 	if (pr.mergeability.state === "blocked" || pr.mergeability.state === "unstable") {
-		return mergeLinks(pr).length === 0 ? appI18n.t("pr.merge.providerBlocked") : undefined;
+		return mergeLinks(pr).length === 0 ? providerBlockedDetail(pr) : undefined;
 	}
 	return formatDiffSummary(pr);
 }
@@ -608,17 +628,15 @@ function visibleMergeReasons(pr: SessionPRSummary): string[] {
 	return pr.mergeability.reasons.filter((reason) => reason !== "blocked_by_provider");
 }
 
+// GitHub's and GitLab's `/conflicts` subpages only exist when the host judges the
+// conflict resolvable in its web editor; otherwise they 404. The PR page always
+// exists and shows the conflict banner, so link there instead.
 function mergeConflictUrl(pr: SessionPRSummary): string | undefined {
-	return prSubpageUrl(pr, "conflicts") ?? pr.mergeability.prUrl ?? prBrowserUrl(pr);
+	return prURL(pr) ?? pr.mergeability.prUrl ?? prBrowserUrl(pr);
 }
 
 function prBaseUrl(pr: SessionPRSummary): string | undefined {
 	return prURL(pr);
-}
-
-function prSubpageUrl(pr: SessionPRSummary, subpage: "conflicts"): string | undefined {
-	const base = prURL(pr);
-	return base ? `${base}/${subpage}` : undefined;
 }
 
 function prURL(pr: SessionPRSummary): string | undefined {

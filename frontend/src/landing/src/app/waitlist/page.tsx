@@ -91,8 +91,8 @@ export default function WaitlistPage() {
                 Request your spot
               </h2>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                We only need the basics right now: where to reach you and what
-                role you hold at your company.
+                We only need the basics right now: where to reach you, what
+                role you hold, and one public profile.
               </p>
             </div>
             <CloudWaitlistForm />

@@ -6,8 +6,7 @@ import (
 )
 
 func TestMigration0098LeavesLegacyNativeIdentitiesUnverified(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 97)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 97)
 
 	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
 	mustExec(t, db, `

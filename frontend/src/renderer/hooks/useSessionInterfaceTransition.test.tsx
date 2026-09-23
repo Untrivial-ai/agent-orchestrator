@@ -675,6 +675,25 @@ describe("interface switch readiness", () => {
 		expect(getMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("stops progress polling while shutdown is unconfirmed and permits a fresh status read", async () => {
+		const transition = {
+			id: "blocked-transition", sessionId: "session-1", sourceMode: "tui", targetMode: "chat",
+			policy: "drain", phase: "target_starting", errorCode: "TARGET_STOP_UNCONFIRMED",
+			createdAt: "2026-09-13T10:00:00Z", updatedAt: "2026-09-13T10:00:00Z",
+		};
+		getMock.mockResolvedValue({ data: { supported: true, transition }, error: undefined });
+		const { result } = renderHook(() => useSessionInterfaceTransition("session-1"), { wrapper });
+		await waitFor(() => expect(result.current.transition?.errorCode).toBe("TARGET_STOP_UNCONFIRMED"));
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(getMock).toHaveBeenCalledTimes(1);
+		getMock.mockResolvedValue({
+			data: { supported: true, transition: { ...transition, phase: "recovery_required", errorCode: "DAEMON_RESTARTED" } },
+			error: undefined,
+		});
+		await act(async () => { await result.current.refreshStatus(); });
+		await waitFor(() => expect(result.current.transition?.phase).toBe("recovery_required"));
+	});
+
 	it("forces a durable status read when a start response is ambiguous", async () => {
 		const transition = {
 			id: "transition-after-response-loss",

@@ -94,10 +94,8 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 	if err != nil {
 		return ClaimPRResult{}, err
 	}
-	if err := requireSameRepo(prURL, project.RepoOriginURL); err != nil {
-		if project.Config.CanonicalRepoURL == "" || requireSameRepo(prURL, project.Config.CanonicalRepoURL) != nil {
-			return ClaimPRResult{}, err
-		}
+	if err := s.requireProjectPRRepository(ctx, project, prURL); err != nil {
+		return ClaimPRResult{}, err
 	}
 	if s.scm == nil || s.prClaimer == nil {
 		return ClaimPRResult{}, ErrSCMUnavailable
@@ -139,13 +137,36 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 	}
 	prs = claimedFirst(prs, prURL)
 	// TODO: implement workspace branch checkout. Until then, leave BranchChanged
-	// false and let CLI output omit the checkout line rather than claiming the
-	// session was already on the PR branch.
+	// false and have CLI output report that the workspace was unchanged, without
+	// assuming the session was already on the PR branch.
 	res := ClaimPRResult{PRs: prs, BranchChanged: false, DonorWasTerminated: outcome.OwnerTerminated}
 	if outcome.PreviousOwner != "" && outcome.PreviousOwner != id {
 		res.TakenOverFrom = []domain.SessionID{outcome.PreviousOwner}
 	}
 	return res, nil
+}
+
+func (s *Service) requireProjectPRRepository(ctx context.Context, project domain.ProjectRecord, prURL string) error {
+	originErr := requireSameRepo(prURL, project.RepoOriginURL)
+	if originErr == nil || (project.Config.CanonicalRepoURL != "" && requireSameRepo(prURL, project.Config.CanonicalRepoURL) == nil) {
+		return nil
+	}
+	if project.Kind.WithDefault() != domain.ProjectKindWorkspace {
+		return originErr
+	}
+	repos, err := s.store.ListWorkspaceRepos(ctx, project.ID)
+	if err != nil {
+		return fmt.Errorf("list workspace repositories for project %s: %w", project.ID, err)
+	}
+	for _, repo := range repos {
+		// A workspace root and local-only children may have no SCM identity.
+		// Only registered, parseable origins authorize a child repository;
+		// arbitrary checkout remotes never grant claim permission.
+		if requireSameRepo(prURL, repo.RepoOriginURL) == nil {
+			return nil
+		}
+	}
+	return ErrProjectMismatch
 }
 
 func (s *Service) fetchClaimObservation(ctx context.Context, ref ports.SCMPRRef) (ports.SCMObservation, error) {
@@ -297,7 +318,7 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, revi
 	for _, th := range obs.Review.Threads {
 		threads = append(threads, domain.PullRequestReviewThread{ThreadID: th.ID, Path: th.Path, Line: th.Line, Resolved: th.Resolved, IsBot: th.IsBot, UpdatedAt: now})
 		for _, c := range th.Comments {
-			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
+			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
 		}
 	}
 	return pr, checks, reviews, threads, comments

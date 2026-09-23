@@ -48,6 +48,14 @@ type fakeConversationService struct {
 	approvalDecision  ports.ChatDecision
 	inputRequestID    string
 	inputResponse     ports.ChatInputResponse
+	reviewSnapshot    chatsvc.Snapshot
+	reviewErr         error
+	reviewID          string
+	reviewBefore      int64
+	reviewLimit       int64
+	reviewOwner       domain.ConversationOwner
+	reviewRequestID   string
+	reviewInterrupted bool
 }
 
 func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID, string, ports.ChatUserMessage) (chatsvc.EditMessageResult, error) {
@@ -80,6 +88,31 @@ func (f *fakeConversationService) ResolveInput(_ context.Context, _ domain.Sessi
 }
 
 func (f *fakeConversationService) Interrupt(context.Context, domain.SessionID) error { return nil }
+
+func (f *fakeConversationService) SnapshotPageForReview(_ context.Context, reviewID string, before, limit int64) (chatsvc.Snapshot, error) {
+	f.reviewID, f.reviewBefore, f.reviewLimit = reviewID, before, limit
+	return f.reviewSnapshot, f.reviewErr
+}
+
+func (f *fakeConversationService) SendForOwner(_ context.Context, owner domain.ConversationOwner, message ports.ChatUserMessage) (domain.ConversationTurn, error) {
+	f.reviewOwner, f.sent = owner, message
+	return domain.ConversationTurn{ID: "review-turn", State: domain.TurnStateRunning}, f.reviewErr
+}
+
+func (f *fakeConversationService) ResolveForOwner(_ context.Context, owner domain.ConversationOwner, requestID string, decision ports.ChatDecision) error {
+	f.reviewOwner, f.reviewRequestID, f.approvalDecision = owner, requestID, decision
+	return f.reviewErr
+}
+
+func (f *fakeConversationService) ResolveInputForOwner(_ context.Context, owner domain.ConversationOwner, requestID string, response ports.ChatInputResponse) error {
+	f.reviewOwner, f.reviewRequestID, f.inputResponse = owner, requestID, response
+	return f.reviewErr
+}
+
+func (f *fakeConversationService) InterruptForOwner(_ context.Context, owner domain.ConversationOwner) error {
+	f.reviewOwner, f.reviewInterrupted = owner, true
+	return f.reviewErr
+}
 
 func (f *fakeConversationService) Models(context.Context, domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
 	return nil, domain.ConversationSettings{}, nil

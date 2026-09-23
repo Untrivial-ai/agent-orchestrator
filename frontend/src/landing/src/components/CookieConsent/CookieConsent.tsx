@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@ao/ui/button";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import posthog from "posthog-js";
 import { useEffect, useState } from "react";
