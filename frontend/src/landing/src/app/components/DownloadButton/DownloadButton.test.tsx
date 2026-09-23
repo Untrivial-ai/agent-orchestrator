@@ -5,7 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../../../lib/analytics", () => ({ track: vi.fn() }));
 
 import { Platform } from "../../hooks/useOS";
-import { DownloadButton, getDownloadIconKind } from "./DownloadButton";
+import {
+  DownloadButton,
+  getDownloadHref,
+  getDownloadIconKind,
+} from "./DownloadButton";
 
 describe("DownloadButton", () => {
   it("renders stable copy with CSS-selected mobile and desktop icons", () => {
@@ -28,5 +32,11 @@ describe("DownloadButton", () => {
     expect(getDownloadIconKind(Platform.MacAppleSilicon)).toBe("apple");
     expect(getDownloadIconKind(Platform.MacIntel)).toBe("apple");
     expect(getDownloadIconKind(Platform.Unknown)).toBe("apple");
+  });
+
+  it("links detected Windows users directly to the installer", () => {
+    expect(getDownloadHref(Platform.Windows)).toContain(
+      "agent-orchestrator-win32-x64.exe",
+    );
   });
 });
