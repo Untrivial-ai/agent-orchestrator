@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../lib/icons";
 import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
@@ -29,6 +29,8 @@ import { useApp } from "../lib/store";
 import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { Button } from "../lib/ui";
+import { iconSize, space, type } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 export { SheetErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
 
@@ -109,10 +111,11 @@ export default function SpawnModal() {
 	const project = projects.find((item) => item.id === projectId);
 	const projectWorkerAgent = projectDetail?.config?.worker?.agent ?? projectDetail?.agent ?? "";
 	const projectWorkerModel = projectDetail?.config?.worker?.agentConfig?.model ?? projectDetail?.config?.agentConfig?.model ?? "";
-	const catalogDefault = modelCatalog?.models.find((item) => item.isDefault)?.id ?? "";
-	const resolvedModel = resolveSpawnModel({ selectedAgent: harness, projectWorkerAgent, projectWorkerModel, catalogDefault });
+	const resolvedModel = resolveSpawnModel({ selectedAgent: harness, projectWorkerAgent, projectWorkerModel });
 	const displayedModel = modelTouched ? model : resolvedModel;
-	const displayedModelLabel = displayedModel ? modelCatalog?.models.find((item) => item.id === displayedModel)?.label ?? displayedModel : "Auto";
+	// "Automatic" when the project pins nothing, because that is the truth: the
+	// provider picks, and naming a model here promised one the session never ran.
+	const displayedModelLabel = displayedModel ? modelCatalog?.models.find((item) => item.id === displayedModel)?.label ?? displayedModel : "Automatic";
 	const modelSelection = modelTouched ? model : "__auto__";
 	const hasComposerMessage = Boolean(
 		(mode === "chat" && !loading && agents.length === 0)
@@ -221,7 +224,7 @@ export default function SpawnModal() {
 			setAttachments(next.attachments);
 			setAttachmentError(next.error);
 		} catch (cause) {
-			setAttachmentError(cause instanceof Error ? cause.message : "Could not read the selected file.");
+			setAttachmentError(cause instanceof Error ? cause.message : "Couldn't read that file.");
 		}
 	};
 
@@ -237,7 +240,7 @@ export default function SpawnModal() {
 				projectId: projectId ?? undefined,
 				prompt: prompt.trim() || undefined,
 				harness: harness || undefined,
-				model: modelOverride(displayedModel, resolvedModel, modelTouched),
+				model: modelOverride(displayedModel, modelTouched),
 				mode,
 				attachments: attachments.map(({ mimeType, data }) => ({ mimeType, data })),
 			});
@@ -249,7 +252,7 @@ export default function SpawnModal() {
 			// transition to finish so the two happen back-to-back, not on top of each
 			// other. The session screen shows its own "connecting" state while the
 			// terminal attaches, so landing on it before the PTY is ready is expected.
-			router.back();
+			backOr(router);
 			InteractionManager.runAfterInteractions(() => {
 				router.push({
 					pathname: "/session/[id]",
@@ -274,14 +277,14 @@ export default function SpawnModal() {
 					<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachments}>
 						{attachments.map((item, index) => (
 							<View key={`${item.name}-${index}`} style={styles.attachment}>
-								<Feather name="file-text" size={14} color={t.blue} />
+								<Feather name="file-text" size={iconSize.sm} color={t.accent} />
 								<Text numberOfLines={1} style={styles.attachmentName}>{item.name}</Text>
 								<Pressable
 									hitSlop={8}
 									accessibilityLabel={`Remove ${item.name}`}
 									onPress={() => setAttachments((current) => current.filter((candidate) => candidate !== item))}
 								>
-									<Feather name="x" size={13} color={t.textTertiary} />
+									<Feather name="x" size={iconSize.xs} color={t.textTertiary} />
 								</Pressable>
 							</View>
 						))}
@@ -336,7 +339,7 @@ export default function SpawnModal() {
 					enablePanDownToClose
 					enableDynamicSizing
 					backgroundStyle={{ backgroundColor: t.bgBase }}
-					onClose={() => router.back()}
+					onClose={() => backOr(router)}
 				>
 					<BottomSheetView style={styles.androidSheet}>
 						{content}
@@ -366,20 +369,20 @@ function spawnErrorCopy(e: unknown): string {
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
-		content: { flex: 1, paddingHorizontal: 18, paddingTop: 18, paddingBottom: 8, gap: 10 },
+		content: { flex: 1, paddingHorizontal: space.lg, paddingTop: space.lg, paddingBottom: space.sm, gap: space.sm },
 		androidModalRoot: { flex: 1, backgroundColor: "transparent" },
 		androidSheet: {
-			paddingTop: 6,
-			paddingBottom: 12,
+			paddingTop: space.xs,
+			paddingBottom: space.md,
 			backgroundColor: t.bgBase,
 		},
-		androidContent: { flex: 0, paddingTop: 12, paddingBottom: 0 },
+		androidContent: { flex: 0, paddingTop: space.md, paddingBottom: space.none },
 		flexSpacer: { flex: 1 },
-		messages: { gap: 6 },
+		messages: { gap: space.xs },
 		promptHost: { width: "100%", height: 112 },
-		attachments: { gap: 8 },
-		attachment: { maxWidth: 190, height: 36, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, borderRadius: 12, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderSubtle },
-		attachmentName: { flexShrink: 1, color: t.textSecondary, fontSize: 12 },
-		warn: { color: t.amber, fontSize: 13, lineHeight: 18 },
-		error: { color: t.red, fontSize: 13, lineHeight: 18 },
+		attachments: { gap: space.sm },
+		attachment: { maxWidth: 190, height: 36, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, borderRadius: 12, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderSubtle },
+		attachmentName: { fontFamily: "Geist_400Regular", flexShrink: 1, color: t.textSecondary, fontSize: type.caption1.fontSize },
+		warn: { fontFamily: "Geist_400Regular", color: t.amber, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+		error: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 	});

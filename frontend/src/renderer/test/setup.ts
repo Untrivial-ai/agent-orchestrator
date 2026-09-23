@@ -301,6 +301,8 @@ if (typeof window !== "undefined") {
 			setBadge: async () => undefined,
 			devBounce: async () => undefined,
 			onClick: () => () => undefined,
+			onPlaySound: () => () => undefined,
+			reportSoundFailure: () => undefined,
 		},
 		tray: {
 			setAttentionState: () => undefined,
@@ -338,6 +340,14 @@ if (typeof window !== "undefined") {
 		featureBuilds: {
 			list: async () => [],
 			getActive: async () => null,
+		},
+		remotes: {
+			list: async () => [],
+			add: async () => "offline" as const,
+			update: async () => "offline" as const,
+			remove: async () => undefined,
+			probe: async () => "offline" as const,
+			request: async () => ({ status: 0, body: null }),
 		},
 		cloud: {
 			getSession: async () => null,

@@ -44,22 +44,28 @@ import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
 import { OrchestratorChildrenSection } from "./OrchestratorChildrenSection";
 import { ProductExternalLink } from "./ProductExternalLink";
+import { ResumeAgentControl } from "./ResumeAgentControl";
 import {
 	sessionScmSummaryQueryKey,
 	useSessionScmSummary,
 	type SessionPRSummary,
 } from "../hooks/useSessionScmSummary";
 import { useSessionUsage, type SessionUsage } from "../hooks/useSessionUsage";
-import { useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
+import { sessionWorkspaceFilesQueryKey, useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
+import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
 import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
 import { prBrowserUrl, prCanMerge, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { findProjectOrchestrator, sortedPRs, STANDALONE_WORKSPACE_ID } from "../types/workspace";
+import {
+	openPRs,
+	resolveNextNavigationAfterSessionKill,
+	sortedPRs,
+	STANDALONE_WORKSPACE_ID,
+} from "../types/workspace";
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
-import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
@@ -166,6 +172,8 @@ export const SessionInspector = memo(function SessionInspector({
 	onToggleBrowserPopOut,
 	onOpenFiles,
 	onOpenReviewFile,
+	onOpenReviewerChat,
+	onWorkerMessageSent,
 	filesView,
 	browserView,
 	view: viewProp,
@@ -180,6 +188,8 @@ export const SessionInspector = memo(function SessionInspector({
 	onToggleBrowserPopOut?: (next: boolean) => void;
 	onOpenFiles?: () => void;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+	onOpenReviewerChat?: (reviewId: string) => void;
+	onWorkerMessageSent?: () => void;
 	filesView?: ReactNode;
 	browserView?: BrowserViewModel;
 	/** Controlled active tab. Omit to let the inspector own its own selection. */
@@ -194,7 +204,20 @@ export const SessionInspector = memo(function SessionInspector({
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
-	const filesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const inspectorQueryClient = useQueryClient();
+	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const localWorkspaceData = session ? inspectorQueryClient.getQueryData<{ files?: unknown[] }>(sessionWorkspaceFilesQueryKey(session.id)) : undefined;
+	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
+	const cloudOrgId = session?.cloud?.orgId;
+	const cloudReview = useQuery({
+		queryKey: ["cloud-workspace-review", cloudBaseUrl, cloudOrgId ?? "", session?.id ?? "", "summary"],
+		enabled: cloudReady && session?.cloud !== undefined && cloudOrgId !== undefined,
+		refetchInterval: 5_000,
+		queryFn: () => cloudCpClient.getWorkspaceReview(cloudOrgId!, session!.id),
+	});
+	const cloudFilesChangedCount = cloudReview.data?.summary.files;
+	const filesChangedCount = session?.cloud ? (cloudFilesChangedCount ? cloudFilesChangedCount : undefined) : localFilesChangedCount;
+	const hasWorkspaceInventory = session?.cloud ? Boolean(cloudReview.data?.files.length) : Boolean(localWorkspaceData?.files?.length);
 	const setView = useCallback((next: InspectorView) => {
 		setInternalView(next);
 		onViewChange?.(next);
@@ -219,7 +242,7 @@ export const SessionInspector = memo(function SessionInspector({
 			...entry,
 			badge: entry.id === "browser" && browserUnseen,
 			displayLabel:
-				entry.id === "files" && filesChangedCount !== undefined
+				entry.id === "files" && filesChangedCount !== undefined && (filesChangedCount > 0 || hasWorkspaceInventory)
 					? t("files.tabCount", { count: filesChangedCount })
 					: label,
 			label,
@@ -265,7 +288,7 @@ export const SessionInspector = memo(function SessionInspector({
 				loadingText={session ? undefined : t("inspector.loadingSession")}
 				onViewChange={setView}
 				reviewsView={
-					session ? <ReviewsView onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} session={session} /> : undefined
+					session ? <ReviewsView onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} onOpenReviewerChat={onOpenReviewerChat} onWorkerMessageSent={onWorkerMessageSent} session={session} /> : undefined
 				}
 				summaryView={
 					session ? <SummaryView canOpenReviews={reviewsAvailable} onOpenReviews={openReviews} session={session} /> : undefined
@@ -322,7 +345,11 @@ const SummaryView = memo(function SummaryView({
 			activity={
 				<>
 					<ActivityTimeline prs={prSummaries} session={session} />
-					<ResumeAgentControl session={session} />
+					<ResumeAgentControl
+						className="w-full"
+						containerClassName="mt-3 border-t border-(--color-border-settings-input) pt-3"
+						session={session}
+					/>
 				</>
 			}
 			activityTitle={t("inspector.activity")}
@@ -367,14 +394,18 @@ const ReviewsView = memo(function ReviewsView({
 	session,
 	onOpenReviewFile,
 	onOpenReviewerTerminal,
+	onOpenReviewerChat,
+	onWorkerMessageSent,
 }: {
 	session: WorkspaceSession;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 	onOpenReviewerTerminal?: OpenReviewerTerminal;
+	onOpenReviewerChat?: (reviewId: string) => void;
+	onWorkerMessageSent?: () => void;
 }) {
 	return (
 		<div role="tabpanel">
-			<ReviewsSection onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} session={session} />
+			<ReviewsSection onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} onOpenReviewerChat={onOpenReviewerChat} onWorkerMessageSent={onWorkerMessageSent} session={session} />
 		</div>
 	);
 });
@@ -1038,59 +1069,6 @@ function formatModelName(modelID: string): string {
 	return formatted.join(" ") || modelID;
 }
 
-function ResumeAgentControl({ session }: { session: WorkspaceSession }) {
-	const { t } = useTranslation();
-	const queryClient = useQueryClient();
-	const resume = useMutation({
-		mutationFn: async () => {
-			if (usePreviewData) return;
-			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
-				params: { path: { sessionId: session.id } },
-			});
-			if (error) throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
-			return data;
-		},
-		onSuccess: async (data) => {
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			if (data?.resumeMode === "saved_prompt") {
-				void aoBridge.notifications
-					.show({
-						id: `resume-agent-fallback:${session.id}:${Date.now()}`,
-						title: t("inspector.startedFromPrompt"),
-						body: t("inspector.resumeFallbackBody"),
-					})
-					.catch((err) => {
-						console.warn("Unable to show resume fallback notification", err);
-					});
-			}
-		},
-	});
-
-	if (session.isTerminated === true || session.activity?.state !== "exited" || session.activeAgentSwitch) return null;
-
-	const error = resume.error instanceof Error ? resume.error.message : null;
-	return (
-		<div className="mt-3 border-t border-(--color-border-settings-input) pt-3">
-			<Button
-				className="w-full"
-				disabled={resume.isPending}
-				onClick={() => resume.mutate()}
-				size="sm"
-				type="button"
-				variant="outline"
-			>
-				<Play className="size-icon-sm" aria-hidden="true" />
-				{resume.isPending ? t("inspector.resumingAgent") : t("inspector.resumeAgent")}
-			</Button>
-			{error ? (
-				<p className="mt-2 text-2xs leading-normal text-error" role="status">
-					{error}
-				</p>
-			) : null}
-		</div>
-	);
-}
-
 function SessionControls({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
@@ -1127,21 +1105,24 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 
 	const confirmTermination = () => {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
-		const orchestrator = findProjectOrchestrator(workspaces, session.workspaceId);
+		const workspace = workspaces.find((w) => w.id === session.workspaceId);
+		const nextNav = resolveNextNavigationAfterSessionKill(workspace, session.id);
+		
 		setConfirmOpen(false);
 		terminate.mutate(session);
-		if (orchestrator) {
+		
+		if (nextNav.target === "session") {
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
-				params: { projectId: session.workspaceId, sessionId: orchestrator.id },
+				params: { projectId: session.workspaceId, sessionId: nextNav.sessionId },
 			});
-			return;
+		} else {
+			if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
+				void navigate({ to: "/" });
+				return;
+			}
+			void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 		}
-		if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
-			void navigate({ to: "/" });
-			return;
-		}
-		void navigate({ to: "/projects/$projectId", params: { projectId: session.workspaceId } });
 	};
 
 	if (session.isTerminated === true) return null;
@@ -1465,6 +1446,7 @@ function TimelinePill({ label, tone }: { label: string; tone: string; breathe: b
 function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 	const states: ScmTimelineState[] = [];
 	const seen = new Set<ScmTimelineState>();
+	const open = new Set(openPRs(session));
 	const add = (state: ScmTimelineState) => {
 		if (seen.has(state)) return;
 		seen.add(state);
@@ -1474,7 +1456,7 @@ function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 	if (session.status === "ci_failed") add("ci_failed");
 	if (session.status === "changes_requested") add("changes_requested");
 	for (const pr of session.prs) {
-		if (pr.ci === "failing") add("ci_failed");
+		if (open.has(pr) && pr.ci === "failing") add("ci_failed");
 		if (pr.review === "changes_requested") add("changes_requested");
 		if (pr.mergeability === "conflicting") add("conflict");
 	}
@@ -1504,10 +1486,14 @@ function ReviewsSection({
 	session,
 	onOpenReviewFile,
 	onOpenReviewerTerminal,
+	onOpenReviewerChat,
+	onWorkerMessageSent,
 }: {
 	session: WorkspaceSession;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 	onOpenReviewerTerminal?: OpenReviewerTerminal;
+	onOpenReviewerChat?: (reviewId: string) => void;
+	onWorkerMessageSent?: () => void;
 }) {
 	const { t } = useTranslation();
 	const hasPr = sortedPRs(session).length > 0;
@@ -1623,7 +1609,9 @@ function ReviewsSection({
 				setReviewNotice(t("inspector.reviewAlreadyRanForCommit"));
 				return;
 			}
-			if (data?.reviewerHandleId) {
+			if (data?.reviewerSurface?.mode === "chat" && data.reviewerSurface.reviewId) {
+				onOpenReviewerChat?.(data.reviewerSurface.reviewId);
+			} else if (data?.reviewerHandleId) {
 				const harness = started.latestRun.harness || "reviewer";
 				onOpenReviewerTerminal?.({ handleId: data.reviewerHandleId, harness });
 			}
@@ -1717,6 +1705,7 @@ function ReviewsSection({
 				githubPRs={githubReviews}
 				isLoading={scmSummary.isLoading}
 				onOpenReviewFile={onOpenReviewFile}
+				onWorkerMessageSent={onWorkerMessageSent}
 				reviewStates={reviewStates}
 				runs={reviewsQuery.data?.runs ?? []}
 				session={session}
@@ -1736,6 +1725,7 @@ function MergedReviewsSection({
 	githubPRs,
 	isLoading,
 	onOpenReviewFile,
+	onWorkerMessageSent,
 	reviewStates,
 	runs,
 	session,
@@ -1743,6 +1733,7 @@ function MergedReviewsSection({
 	githubPRs: SessionPRSummary[];
 	isLoading: boolean;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+	onWorkerMessageSent?: () => void;
 	reviewStates: PRReviewState[];
 	runs: ReviewRunFacts[];
 	session: WorkspaceSession;
@@ -1780,19 +1771,28 @@ function MergedReviewsSection({
 		void queryClient.invalidateQueries({ queryKey: sessionScmSummaryQueryKey(session.id) });
 		void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 	};
-	const sendInlineCommentToWorker = async (comment: InspectorInlineComment & { reviewerId?: string }) => {
+	const sendMessageToWorker = async (message: string, fallbackError: string) => {
+		if (session.mode === "chat") {
+			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/conversation/messages", {
+				params: { path: { sessionId: session.id } },
+				body: { text: message, clientMessageId: crypto.randomUUID() },
+			});
+			if (error) throw new Error(apiErrorMessage(error, fallbackError));
+			return;
+		}
 		const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 			params: { path: { sessionId: session.id } },
-			body: { message: formatInlineReviewCommentMessage(comment) },
+			body: { message },
 		});
-		if (error) throw new Error(apiErrorMessage(error, "Unable to send review comment to worker agent"));
+		if (error) throw new Error(apiErrorMessage(error, fallbackError));
+	};
+	const sendInlineCommentToWorker = async (comment: InspectorInlineComment & { reviewerId?: string }) => {
+		await sendMessageToWorker(formatInlineReviewCommentMessage(comment), "Unable to send review comment to worker agent");
+		onWorkerMessageSent?.();
 	};
 	const sendReviewSummaryToWorker = async (summary: InspectorReviewSummaryAction) => {
-		const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
-			params: { path: { sessionId: session.id } },
-			body: { message: formatReviewSummaryMessage(summary) },
-		});
-		if (error) throw new Error(apiErrorMessage(error, "Unable to send review summary to worker agent"));
+		await sendMessageToWorker(formatReviewSummaryMessage(summary), "Unable to send review summary to worker agent");
+		onWorkerMessageSent?.();
 	};
 	const groups: InspectorReviewGroup[] = rows.map(([number, { ao, github }]) => {
 		const aoRuns = ao ? [...(runsByPR.get(ao.prUrl) ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];

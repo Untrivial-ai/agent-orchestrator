@@ -51,6 +51,7 @@ type conversation struct {
 	threadID        string
 	historyParentID string
 	providerScopeID string
+	readOnly        bool
 	events          chan ports.ChatEvent
 	// Effective defaults returned when Codex opened or resumed this thread.
 	threadModel, threadEffort string
@@ -310,7 +311,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		// must not produce a second turn.
 		params["clientUserMessageId"] = msg.ClientMessageID
 	}
-	applyTurnSettings(params, msg.Settings)
+	applyTurnSettings(params, msg.Settings, c.readOnly)
 
 	var resp struct {
 		Turn struct {
@@ -333,7 +334,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 // Only fields the caller actually chose are sent. An omitted field lets the
 // provider fall back to what the thread was started with, which is why a caller
 // that chooses nothing behaves exactly as it did before per-turn settings existed.
-func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
+func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings, readOnly bool) {
 	if settings.Model != "" {
 		params["model"] = settings.Model
 	}
@@ -351,6 +352,11 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
 		params["approvalPolicy"] = policy
 		params["approvalsReviewer"] = approvalReviewer(settings.Approval)
 		params["sandboxPolicy"] = turnSandboxPolicy(sandbox)
+	}
+	if readOnly {
+		params["approvalPolicy"] = "never"
+		params["approvalsReviewer"] = "user"
+		params["sandboxPolicy"] = turnSandboxPolicy("read-only")
 	}
 }
 

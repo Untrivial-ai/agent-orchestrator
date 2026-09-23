@@ -142,6 +142,11 @@ type conversation struct {
 	historyEvents []ports.ChatEvent
 	historyErr    error
 	historyLoaded bool
+	// replayMu protects only the replay inbox and its transition to live
+	// delivery; normalization of replay batches does not hold it.
+	replayMu      sync.Mutex
+	replaying     bool
+	replayUpdates []acpsdk.SessionNotification
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
@@ -622,7 +627,6 @@ func (c *conversation) finishPrompt(
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
 		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
 	})
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 
 	c.mu.Lock()
 	if c.activeTurn == turnID {
@@ -635,6 +639,7 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
 
 func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {

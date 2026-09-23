@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -52,7 +53,10 @@ import (
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
+	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
+	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
@@ -325,8 +329,11 @@ func Run() error {
 	messenger := newSessionMessenger(store, runtimeAdapter, log)
 	lifecycleMessenger := newModeAwareMessenger()
 	notificationHub := notify.NewHub()
-	notifier := notificationsvc.New(notificationsvc.Deps{Store: store})
-	notificationWriter := notify.New(notify.Deps{Store: store, Publisher: notificationHub})
+	notificationBarrier := &sync.Mutex{}
+	notifier := notificationsvc.New(notificationsvc.Deps{
+		Store: store, Publisher: notificationHub, Barrier: notificationBarrier, Logger: log,
+	})
+	notificationWriter := notify.New(notify.Deps{Store: store, Publisher: notificationHub, Barrier: notificationBarrier})
 	// Resolution transitions that happened while the daemon was down never
 	// reached lifecycle, so re-check open notifications against the durable
 	// session/PR facts before serving. Best-effort: a failure here only leaves
@@ -445,6 +452,18 @@ func Run() error {
 			}
 			agentSvc.ObserveActiveCodexAccountCapacity(observation)
 		},
+		// A model the user picked in ChatUI must land on the session before the
+		// next prompt routes, so a later TUI rebuild resumes with the same model
+		// instead of reverting to the project default.
+		OnModelChanged: func(sessionID domain.SessionID, model string) {
+			if sessMgr == nil {
+				return
+			}
+			if err := sessMgr.PersistChatModel(ctx, sessionID, model); err != nil {
+				log.Warn("persist ChatUI model on session failed; a TUI rebuild may resume with a different model",
+					"sessionID", sessionID, "model", model, "error", err)
+			}
+		},
 	})
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)
@@ -521,7 +540,7 @@ func Run() error {
 	lcStack.LCM.SetSessionInputLease(sessMgr)
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log, OnModelScopeChanged: agentSvc.InvalidateProjectModelCatalogs})
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, tracker, log)
 
 	hostCommands := systemexec.New(cfg.DataDir)
@@ -569,7 +588,7 @@ func Run() error {
 	// lifetime — see internal/service/shellterm.
 	shellTermSvc := startShellTerminals(ctx, cfg, runtimeAdapter, store, projectSvc, sessionSvc, log)
 	systemChecks.SetGitHubAuthTerminalOpener(shellTermSvc)
-	agentAuthSvc := agentauth.NewWithAgentResolver(hostCommands, agentSvc, shellTermSvc)
+	agentAuthSvc := agentauth.NewWithAgentResolver(hostCommands, agentSvc, shellTermSvc, cfg.DataDir)
 	agentSvc.SetCodexAccountLoginTerminalOpener(shellTermSvc)
 	// Late-bound so Kill/Cleanup close a session's scoped shells before its
 	// worktree is torn down (shellTermSvc cannot exist before sessMgr does; see
@@ -667,6 +686,12 @@ func Run() error {
 			log.Error("cdc pipeline shutdown", "err", cdcErr)
 		}
 		return fmt.Errorf("reconcile sessions on boot: %w", reconcileErr)
+	}
+	// Reviewer-owned Chat controllers are durable independently of the worker's
+	// currently selected reviewer. Recover them through the required review
+	// service contract before accepting new automatic review work.
+	if reconcileErr := reviewSvc.RecoverChatReviewers(ctx); reconcileErr != nil {
+		log.Warn("reviewer chat recovery deferred", "err", reconcileErr)
 	}
 	agentSvc.WarmCodexAccounts()
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})
@@ -772,8 +797,10 @@ func Run() error {
 		DeviceRoster:       deviceRoster,
 		DeviceLive:         presenceTracker,
 		Import:             importsvc.New(importsvc.Deps{Store: store}),
+		Directories:        fsbrowsersvc.New(),
 		ShellTerminals:     shellTermSvc,
 		AgentAuth:          agentAuthSvc,
+		GitHub:             githubpat.New(cfg.DataDir),
 		Conversations:      chatSvc,
 		Settings:           settingsSvc,
 		CDC:                store,
@@ -791,6 +818,7 @@ func Run() error {
 			},
 		}),
 		Browser:             browserService,
+		LinkPreview:         linkpreviewsvc.New(nil),
 		PreviewServer:       managedPreview,
 		SessionCapabilities: browserAuthority,
 		AgentSwitchPolicy:   policyCoordinator,

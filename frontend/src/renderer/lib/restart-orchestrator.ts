@@ -17,6 +17,7 @@ type RestartProjectOrchestratorOptions = {
 	setOrchestratorReplacementError: (projectId: string, failure: OrchestratorReplacementFailure | null) => void;
 	onError?: (error: unknown) => void;
 	mode?: SessionMode;
+	approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
 };
 
 async function refreshWorkspaceState(queryClient: QueryClient) {
@@ -36,6 +37,7 @@ export async function restartProjectOrchestrator({
 	setOrchestratorReplacementError,
 	onError,
 	mode,
+	approvalMode,
 }: RestartProjectOrchestratorOptions) {
 	// Keep the initiating control focused while the restart is pending so
 	// keyboard users retain a focus target for the duration of the operation;
@@ -46,7 +48,7 @@ export async function restartProjectOrchestrator({
 	setProjectRestarting(projectId, true);
 	// Keep any replacement-error dialog mounted so Retry retains focus while pending.
 	try {
-		const sessionId = await spawnOrchestrator(projectId, "restart", true, mode);
+		const sessionId = await spawnOrchestrator(projectId, "restart", true, mode, approvalMode);
 		await refreshWorkspaceState(queryClient);
 		setOrchestratorReplacementError(projectId, null);
 		if (activeElement instanceof HTMLElement) activeElement.blur();
@@ -59,7 +61,7 @@ export async function restartProjectOrchestrator({
 		setOrchestratorReplacementError(projectId, {
 			message: error instanceof Error ? error.message : "Could not replace orchestrator",
 			...(error instanceof OrchestratorSpawnError
-				? { code: error.code, requestId: error.requestId }
+				? { code: error.code, requestId: error.requestId, details: error.details }
 				: {}),
 		});
 		onError?.(error);

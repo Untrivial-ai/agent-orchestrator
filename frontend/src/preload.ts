@@ -21,6 +21,8 @@ import {
 	type TrayOpenSessionTarget,
 } from "./shared/tray";
 import type { DaemonStatus } from "./shared/daemon-status";
+import type { RemoteHostView } from "./main/remotes-ipc";
+import type { RemoteHealth, RemoteRequestInit, RemoteResponse } from "./main/remote-request";
 import type {
 	EditorHandoffState,
 	OpenSessionTargetInput,
@@ -540,7 +542,7 @@ const api = {
 		},
 	},
 	notifications: {
-		show: (notification: { id: string; title: string; body?: string; type?: string }) =>
+		show: (notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) =>
 			ipcRenderer.invoke("notifications:show", notification) as Promise<void>,
 		setBadge: (count: number) => ipcRenderer.invoke("notifications:setBadge", count) as Promise<void>,
 		devBounce: () => ipcRenderer.invoke("notifications:devBounce") as Promise<void>,
@@ -551,6 +553,14 @@ const api = {
 				ipcRenderer.off("notifications:click", wrapped);
 			};
 		},
+		onPlaySound: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on("notifications:playSound", wrapped);
+			return () => {
+				ipcRenderer.off("notifications:playSound", wrapped);
+			};
+		},
+		reportSoundFailure: () => ipcRenderer.send("notifications:soundFailed"),
 	},
 	tray: {
 		setAttentionState: (state: TrayAttentionState) => ipcRenderer.send(TRAY_SET_ATTENTION_STATE_CHANNEL, state),
@@ -615,13 +625,34 @@ const api = {
 		list: () => ipcRenderer.invoke("featureBuilds:list") as Promise<FeatureBuild[]>,
 		getActive: () => ipcRenderer.invoke("featureBuilds:getActive") as Promise<{ pr: number } | null>,
 	},
+	// Saved AO daemons, shared with the CLI's ~/.ao/remotes.json. Everything the
+	// renderer receives back is password-free (see main/remotes-ipc.ts); the
+	// plaintext password only ever travels renderer -> main, on `add`.
+	remotes: {
+		list: () => ipcRenderer.invoke("remotes:list") as Promise<RemoteHostView[]>,
+		add: (input: { label: string; url: string; password: string }) =>
+			ipcRenderer.invoke("remotes:add", input) as Promise<RemoteHealth>,
+		// An edit carries only what changed: an omitted password keeps the saved
+		// one, so a rotated credential is fixed without the renderer ever holding
+		// the old one.
+		update: (url: string, changes: { label?: string; url?: string; password?: string }) =>
+			ipcRenderer.invoke("remotes:update", url, changes) as Promise<RemoteHealth>,
+		remove: (url: string) => ipcRenderer.invoke("remotes:remove", url) as Promise<void>,
+		probe: (url: string) => ipcRenderer.invoke("remotes:probe", url) as Promise<RemoteHealth>,
+		request: (url: string, init: RemoteRequestInit) =>
+			ipcRenderer.invoke("remotes:request", url, init) as Promise<RemoteResponse>,
+	},
 	cloud: {
 		getSession: () => ipcRenderer.invoke("cloud:getSession") as Promise<CloudAccount | null>,
 		signIn: () => ipcRenderer.invoke("cloud:signIn") as Promise<void>,
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
 		cancelProviderAuth: () => ipcRenderer.invoke("cloud:cancelProviderAuth") as Promise<void>,
 		connectProviderAuth: (input: { baseUrl: string; orgId: string; provider: string }) =>
-			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<void>,
+			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<
+				| string
+				| { secret: string; refreshToken?: string; expiresIn?: number; refreshTokenExpiresIn?: number }
+				| void
+			>,
 		// Dev-only local (email/password) sign-in against a loopback Docker CP.
 		// Whether the surface is offered is decided in main (unpackaged/dev +
 		// loopback); the renderer only mirrors it for UI visibility.

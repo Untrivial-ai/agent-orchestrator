@@ -9,6 +9,11 @@ import { AppLink } from "../AppLink";
  */
 
 import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import {
+	ACCENT_ACTION_SEGMENT,
+	ACCENT_ACTION_SHELL,
+	QUIET_ACTION_PILL,
+} from "./action-pill";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -2284,7 +2289,7 @@ export function ApprovalCard({
 					{denyDecision ? (
 						<button
 							type="button"
-							className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border-strong bg-background/20 px-2.5 text-[12.5px] text-foreground/90 transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50"
+							className={QUIET_ACTION_PILL}
 							disabled={busy}
 							onClick={() => onDecide?.(requestId, denyDecision.id)}
 						>
@@ -2298,10 +2303,10 @@ export function ApprovalCard({
 					) : null}
 
 					{allowOnceDecision ? (
-						<div className="flex h-7 overflow-hidden rounded-full bg-logo-accent text-logo-accent-foreground shadow-sm">
+						<div className={ACCENT_ACTION_SHELL}>
 							<button
 								type="button"
-								className="inline-flex items-center gap-1.5 px-2.5 text-[12.5px] transition-colors hover:bg-logo-accent-bright focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+								className={ACCENT_ACTION_SEGMENT}
 								disabled={busy}
 								onClick={() => onDecide?.(requestId, allowOnceDecision.id)}
 							>
@@ -2347,7 +2352,7 @@ export function ApprovalCard({
 						<button
 							key={decision.id}
 							type="button"
-							className="inline-flex h-7 items-center rounded-full border border-border-strong bg-background/20 px-2.5 text-[12.5px] text-foreground/90 transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50"
+							className={QUIET_ACTION_PILL}
 							disabled={busy}
 							onClick={() => onDecide?.(requestId, decision.id)}
 						>

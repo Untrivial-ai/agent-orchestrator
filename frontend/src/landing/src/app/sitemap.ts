@@ -1,7 +1,8 @@
 import { COMPANY } from "@ao/shared/constants";
 import type { MetadataRoute } from "next";
 import { getBlogPosts } from "@/lib/blog";
-import { getChangelogEntries } from "@/lib/changelog";
+import { getWeeklyUpdates } from "@/lib/changelog";
+import { getStableReleaseEntries } from "@/lib/changelog-releases";
 import { getComparisonPages } from "@/lib/compare";
 import { getAllDocSlugs } from "@/lib/docs";
 import { getAllLegalSlugs, getLegalPage } from "@/lib/legal";
@@ -68,6 +69,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 			priority: 0.9,
 		},
 		{
+			url: `${baseUrl}/changelog/releases/`,
+			lastModified: new Date(),
+			changeFrequency: "weekly",
+			priority: 0.6,
+		},
+		{
 			url: `${baseUrl}/llms.txt`,
 			lastModified: new Date(),
 			changeFrequency: "weekly",
@@ -83,7 +90,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 		priority: 0.8,
 	}));
 
-	const changelogEntries = await getChangelogEntries();
+	const changelogEntries = getWeeklyUpdates();
 	const changelogPages: MetadataRoute.Sitemap = changelogEntries.map(
 		(entry) => ({
 			url: `${baseUrl}/changelog/${entry.slug}/`,
@@ -92,6 +99,14 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 			priority: 0.8,
 		}),
 	);
+	const releasePages: MetadataRoute.Sitemap = (
+		await getStableReleaseEntries()
+	).map((entry) => ({
+		url: `${baseUrl}/changelog/${entry.slug}/`,
+		lastModified: new Date(entry.date),
+		changeFrequency: "yearly" as const,
+		priority: 0.4,
+	}));
 
 	const people = getAllPeople();
 	const teamPages: MetadataRoute.Sitemap = people.map((person) => ({
@@ -132,6 +147,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 		...docsPages,
 		...blogPages,
 		...changelogPages,
+		...releasePages,
 		...teamPages,
 		...comparisonPages,
 		...legalPages,

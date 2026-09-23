@@ -6,6 +6,7 @@ import { haptics } from "../haptics";
 import { useTheme, useThemeState } from "../ThemeProvider";
 import type { ChatTurnSettingsControlProps } from "./ChatTurnSettingsControl.types";
 import { applyTurnSettingChoice, turnSettingsRows, turnSettingsSummary, type TurnSettingRow } from "./turnSettingsModel";
+import { iconSize, type } from "../tokens";
 
 export function ChatTurnSettingsControl({ snapshot, models, options, disabled, onSettings, onOption }: ChatTurnSettingsControlProps) {
 	const t = useTheme();
@@ -23,9 +24,9 @@ export function ChatTurnSettingsControl({ snapshot, models, options, disabled, o
 	};
 
 	return (
-		<Host matchContents={{ horizontal: true, vertical: true }} ignoreSafeArea="all" style={styles.host} colorScheme={scheme} seedColor={t.blue}>
+		<Host matchContents={{ horizontal: true, vertical: true }} ignoreSafeArea="all" style={styles.host} colorScheme={scheme} seedColor={t.accent}>
 			<Menu
-				label={<HStack spacing={7}><Text modifiers={[font({ size: 13, weight: "semibold" })]}>{label}</Text><Image systemName="chevron.right" size={11} /></HStack>}
+				label={<HStack spacing={7}><Text modifiers={[font({ size: 13, weight: "semibold" })]}>{label}</Text><Image systemName="chevron.right" size={iconSize.xs} /></HStack>}
 				modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 10, vertical: 10 }), frame({ minHeight: 44, alignment: "leading" }), disabledModifier(Boolean(disabled))]}
 			>
 				<Section title="Turn settings">

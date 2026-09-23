@@ -143,6 +143,11 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// PRNumberParam is the associated pull-request number in Files routes.
+type PRNumberParam struct {
+	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`
+}
+
 // AgentSwitchIDParam is the {switchId} path parameter for one durable switch saga.
 type AgentSwitchIDParam struct {
 	SwitchID string `path:"switchId" description:"Durable agent-switch identifier."`
@@ -205,6 +210,26 @@ type WorkspaceFileRevisionQuery struct {
 	WorkspaceVersion string `query:"workspaceVersion,omitempty" description:"Opaque workspace snapshot token used for consistency checks."`
 	ExpectedRevision string `query:"expectedRevision,omitempty" description:"Opaque revision token used for optimistic consistency checks."`
 	CommitSHA        string `query:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
+}
+
+// PRFilesQuery selects the associated pull request when multiple providers or
+// repositories can have the same pull-request number.
+type PRFilesQuery struct {
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileQuery identifies one file in an associated pull request.
+type PRFileQuery struct {
+	Path         string `query:"path" required:"true" description:"Repository-relative file path."`
+	PreviousPath string `query:"previousPath,omitempty" description:"Previous repository-relative path supplied by the selected PR file summary for rename detection."`
+	SourceURL    string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileRevisionQuery selects one immutable side of a pull-request comparison.
+type PRFileRevisionQuery struct {
+	Path      string `query:"path" required:"true" description:"Repository-relative file path."`
+	Side      string `query:"side,omitempty" enum:"before,after" description:"Comparison side. Defaults to after."`
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
 }
 
 // WorkspaceSearchQuery is the query string accepted by the workspace path search.
@@ -306,10 +331,10 @@ type SpawnSessionRequest struct {
 	// selected harness can honor the model before launching.
 	Model string `json:"model,omitempty" maxLength:"256"`
 
-	// DisplayName is the sidebar label for the session, capped at 20 characters.
+	// DisplayName is the sidebar label for the session, capped at 100 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
 	// dialog) may omit it and fall back to the session id in the read model.
-	DisplayName string `json:"displayName,omitempty" maxLength:"20"`
+	DisplayName string `json:"displayName,omitempty" maxLength:"100"`
 	// Attachments are files pasted or dropped into the task brief. Each carries
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.
@@ -427,6 +452,14 @@ type ListWorkspaceFilesResponse struct {
 	// upstream, detached HEAD).
 	Ahead  *int `json:"ahead,omitempty"`
 	Behind *int `json:"behind,omitempty"`
+}
+
+// ListPRFilesResponse is the exact base...head changed-file set for one PR.
+type ListPRFilesResponse struct {
+	SessionID domain.SessionID       `json:"sessionId"`
+	Files     []WorkspaceFileSummary `json:"files"`
+	Truncated bool                   `json:"truncated"`
+	Summary   WorkspaceSummary       `json:"summary"`
 }
 
 // WorkspaceFileSections groups a session workspace's changed files by git
@@ -584,7 +617,7 @@ type SessionPreviewResponse struct {
 
 // RenameSessionRequest is the body of PATCH /api/v1/sessions/{sessionId}.
 type RenameSessionRequest struct {
-	DisplayName string `json:"displayName" minLength:"1"`
+	DisplayName string `json:"displayName" minLength:"1" maxLength:"100"`
 }
 
 // SetSessionReviewerRequest sets the durable reviewer preference for a session.
@@ -618,9 +651,11 @@ func (r *SetSessionAutoReviewRequest) UnmarshalJSON(data []byte) error {
 
 // SetSessionPreviewRequest is the body of POST /api/v1/sessions/{sessionId}/preview.
 // An empty url asks the daemon to autodetect a static entry point in the
-// session workspace; a non-empty url is used verbatim as the preview target.
+// session workspace; a non-empty url is resolved as a workspace file when
+// possible and otherwise retained as an external target.
 type SetSessionPreviewRequest struct {
-	URL string `json:"url,omitempty" description:"Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace."`
+	URL                  string `json:"url,omitempty" description:"Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace."`
+	RequireWorkspaceFile bool   `json:"requireWorkspaceFile,omitempty" description:"Reject the target unless it resolves to an existing file in the session workspace."`
 }
 
 // StartPreviewServerRequest selects one named entry from .ao/launch.json. The
@@ -1184,6 +1219,11 @@ type ReviewSessionIDParam struct {
 	ID string `path:"reviewSessionID" description:"Reviewer session identifier, currently the per-harness review row id."`
 }
 
+// ReviewIDParam identifies a durable reviewer-owned conversation.
+type ReviewIDParam struct {
+	ReviewID string `path:"reviewId" description:"Reviewer conversation identifier."`
+}
+
 // SpawnOrchestratorRequest is the body of POST /api/v1/orchestrators.
 type SpawnOrchestratorRequest struct {
 	ProjectID domain.ProjectID `json:"projectId"`
@@ -1192,6 +1232,9 @@ type SpawnOrchestratorRequest struct {
 	// idempotent ensure returns the existing orchestrator unchanged, and a clean
 	// replacement inherits the existing orchestrator's currently committed mode.
 	Mode domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
+	// ApprovalMode is an optional per-session override. The UI uses the explicit
+	// bypass value only after the user accepts an approval-less Chat fallback.
+	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
 }
 
 // SpawnOrchestratorResponse is the body of POST /api/v1/orchestrators.
@@ -1665,6 +1708,14 @@ type MarkAllNotificationsReadResponse struct {
 	UpdatedCount  int64                  `json:"updatedCount" description:"Number of notifications changed from unread to read."`
 }
 
+// ClearNotificationsResponse is the body of DELETE /api/v1/notifications.
+type ClearNotificationsResponse struct {
+	ClearedCount  int64  `json:"clearedCount" description:"Number of notifications deleted."`
+	ClearID       string `json:"clearId" description:"Identifier shared with the ordered notification_cleared stream event."`
+	ClearEpoch    string `json:"clearEpoch" description:"Daemon epoch for ordering notification clears across one daemon lifetime."`
+	ClearSequence int64  `json:"clearSequence" description:"Monotonic notification-clear sequence within clearEpoch."`
+}
+
 // ImportStatusResponse is the body of GET /api/v1/import: whether a legacy AO
 // install is available to import, and the root the daemon would read from.
 type ImportStatusResponse struct {
@@ -1676,6 +1727,26 @@ type ImportStatusResponse struct {
 // of the import run (counts + notes), reused verbatim from the import engine.
 type ImportRunResponse struct {
 	Report legacyimport.Report `json:"report"`
+}
+
+// ListDirsQuery is the query string accepted by GET /api/v1/fs/dirs.
+type ListDirsQuery struct {
+	Path string `query:"path,omitempty" description:"Absolute directory on the daemon host to list. When omitted, the daemon user's home directory."`
+}
+
+// FSEntry is one directory in a /api/v1/fs/dirs listing.
+type FSEntry struct {
+	Name    string `json:"name" description:"Directory name."`
+	Path    string `json:"path" description:"Absolute path of the directory on the daemon host."`
+	GitRepo bool   `json:"gitRepo" description:"True when the directory carries a .git entry (clone or worktree checkout)."`
+}
+
+// ListDirsResponse is the body of GET /api/v1/fs/dirs.
+type ListDirsResponse struct {
+	Path      string    `json:"path" description:"Absolute path that was listed."`
+	Parent    string    `json:"parent" description:"Absolute path of the listed directory's parent; equals path at the filesystem root."`
+	Entries   []FSEntry `json:"entries" description:"Subdirectories, excluding dotted names."`
+	Truncated bool      `json:"truncated,omitempty" description:"True when the listing hit the entry cap and more subdirectories exist."`
 }
 
 // DevImportProjectsRequest is the body of POST /api/v1/dev/import-projects.
@@ -1734,6 +1805,23 @@ type EndpointsResponse struct {
 type IdentityResponse struct {
 	HostID     string `json:"hostId"`
 	APIVersion int    `json:"apiVersion"`
+}
+
+// LinkPreviewQuery selects the external page to unfurl.
+type LinkPreviewQuery struct {
+	URL string `query:"url" description:"Absolute http(s) URL of the page to preview."`
+}
+
+// LinkPreviewResponse is the body of GET /api/v1/link-preview (200). Only URL
+// is guaranteed; every other field is omitted when the page does not provide
+// it, so the renderer renders whatever subset arrived.
+type LinkPreviewResponse struct {
+	URL         string `json:"url"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	ImageURL    string `json:"imageUrl,omitempty"`
+	SiteName    string `json:"siteName,omitempty"`
+	FaviconURL  string `json:"faviconUrl,omitempty"`
 }
 
 // MobileStatusResponse is the body of the Connect Mobile status/enable/disable/

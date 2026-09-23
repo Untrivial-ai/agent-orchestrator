@@ -8,7 +8,8 @@ export function PRBadge({ url }: PRBadgeProps) {
 	return (
 		<a
 			href={url}
-			className="text-xs font-mono text-muted-foreground no-underline bg-muted px-1.5 py-0.5 rounded opacity-70 hover:opacity-100 transition-opacity"
+			aria-label={`Pull request #${prNumber}`}
+			className="font-mono text-[0.8em] font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground"
 		>
 			#{prNumber}
 		</a>

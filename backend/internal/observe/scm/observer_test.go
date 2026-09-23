@@ -870,7 +870,7 @@ func TestPoll_DiscoversWorkspaceChildRepoPR(t *testing.T) {
 
 func TestPoll_DiscoversWorkspaceChildRepoUpstreamPR(t *testing.T) {
 	oldRemoteURLs := gitRemoteURLsFunc
-	gitRemoteURLsFunc = func(path string) []string {
+	gitRemoteURLsFunc = func(_ context.Context, path string) []string {
 		if strings.HasSuffix(filepath.ToSlash(path), "/api") {
 			return []string{"https://github.com/o/api.git", "https://github.com/upstream/api.git"}
 		}
@@ -1250,7 +1250,7 @@ func TestPoll_ReviewHashDrivesPersistenceAndLifecycle(t *testing.T) {
 	review := ports.SCMReviewObservation{
 		Decision: string(domain.ReviewChangesRequest),
 		Reviews:  []ports.SCMReviewSummaryObservation{{ID: "review-1", Author: "ann", State: string(domain.ReviewChangesRequest), URL: "https://github.com/o/r/pull/1#pullrequestreview-1", SubmittedAt: time.Unix(199, 0).UTC()}},
-		Threads:  []ports.SCMReviewThreadObservation{{ID: "t1", Path: "f.go", Line: 2, Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Author: "ann", Body: "fix this"}}}},
+		Threads:  []ports.SCMReviewThreadObservation{{ID: "t1", Path: "f.go", Line: 2, IsBot: true, Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Author: "ann", IsBot: false, Body: "fix this"}}}},
 	}
 	provider := &fakeProvider{repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo", NotModified: true}}, observations: map[string]ports.SCMObservation{}, reviews: map[string]ports.SCMReviewObservation{prKey(testRepo, 1): review}}
 	lc := &fakeLifecycle{}
@@ -1264,6 +1264,9 @@ func TestPoll_ReviewHashDrivesPersistenceAndLifecycle(t *testing.T) {
 	}
 	if len(store.writes[0].reviews) != 1 || store.writes[0].reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" {
 		t.Fatalf("review summaries not persisted: %#v", store.writes[0].reviews)
+	}
+	if len(store.writes[0].comments) != 1 || store.writes[0].comments[0].IsBot {
+		t.Fatalf("comment author identity was not preserved through persistence: %#v", store.writes[0].comments)
 	}
 	if len(store.writes) != 2 {
 		t.Fatalf("review change with lifecycle should write held-back facts then acknowledgement, got %d writes", len(store.writes))
@@ -3138,7 +3141,7 @@ func TestPoll_SecondScanNameDoesNotRebaselineTrackedPR(t *testing.T) {
 	oldRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old", Name: "r", Repo: "old/r"}
 	newRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "new", Name: "r", Repo: "new/r"}
 	restoreRemotes := gitRemoteURLsFunc
-	gitRemoteURLsFunc = func(string) []string {
+	gitRemoteURLsFunc = func(context.Context, string) []string {
 		return []string{"https://github.com/new/r.git", "https://github.com/old/r.git"}
 	}
 	defer func() { gitRemoteURLsFunc = restoreRemotes }()

@@ -11,6 +11,15 @@ import { useUiStore } from "../stores/ui-store";
 import { useTelemetryPolicyStore } from "../stores/telemetry-policy-store";
 import { TooltipProvider } from "./ui/tooltip";
 
+const { harnessSettingsSectionMock } = vi.hoisted(() => ({ harnessSettingsSectionMock: vi.fn() }));
+
+vi.mock("./settings/HarnessSettingsSection", () => ({
+	HarnessSettingsSection: (props: { focusAgentId?: string; titleHidden?: boolean }) => {
+		harnessSettingsSectionMock(props);
+		return <div data-testid="harness-settings-section" />;
+	},
+}));
+
 const {
 	getUpdate,
 	setUpdate,
@@ -110,12 +119,12 @@ vi.mock("../lib/bridge", () => ({
 	},
 }));
 
-function renderForm(section: GlobalSettingsSection = "all") {
+function renderForm(section: GlobalSettingsSection = "all", focusAgentId?: string) {
 	const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	render(
 		<QueryClientProvider client={qc}>
 			<TooltipProvider>
-				<GlobalSettingsForm section={section} />
+				<GlobalSettingsForm focusAgentId={focusAgentId} section={section} />
 			</TooltipProvider>
 		</QueryClientProvider>,
 	);
@@ -123,6 +132,7 @@ function renderForm(section: GlobalSettingsSection = "all") {
 }
 
 beforeEach(async () => {
+	harnessSettingsSectionMock.mockReset();
 	for (const m of [
 		getUpdate,
 		setUpdate,
@@ -191,12 +201,19 @@ beforeEach(async () => {
 		saving: false,
 		saveError: false,
 	});
-	useUiStore.setState({ developerMode: false });
+	useUiStore.setState({ developerMode: false, remoteHosts: false });
 	useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true }, loaded: true, saving: false, saveError: false });
 	document.documentElement.lang = "en";
 });
 
 describe("GlobalSettingsForm", () => {
+	it("propagates a Harness focus target through the settings catalog", async () => {
+		renderForm("harness", "cursor");
+
+		expect(await screen.findByTestId("harness-settings-section")).toBeInTheDocument();
+		expect(harnessSettingsSectionMock).toHaveBeenCalledWith({ focusAgentId: "cursor", titleHidden: true });
+	});
+
 	it("keeps Browser in its dedicated settings page", async () => {
 		renderForm("general");
 		expect(await screen.findByLabelText("Settings")).toBeInTheDocument();
@@ -233,6 +250,21 @@ describe("GlobalSettingsForm", () => {
 		expect(setMacDifferentialUpdates).toHaveBeenCalledWith(true);
 		await user.click(screen.getByLabelText("Updates channel"));
 		expect(await screen.findByRole("menuitem", { name: "Feature Releases" })).toBeInTheDocument();
+	});
+
+	it("offers Remote hosts as a switch right below Developer Mode and persists it", async () => {
+		const user = userEvent.setup();
+		renderForm();
+		const developerMode = await screen.findByRole("switch", { name: "Developer mode" });
+		const remoteHosts = screen.getByRole("switch", { name: "Remote hosts (experimental)" });
+		expect(remoteHosts).toHaveAttribute("aria-checked", "false");
+		// "Underneath Developer Mode": the next switch in document order.
+		expect(developerMode.compareDocumentPosition(remoteHosts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(screen.getAllByRole("switch").indexOf(remoteHosts)).toBe(screen.getAllByRole("switch").indexOf(developerMode) + 1);
+
+		await user.click(remoteHosts);
+		expect(window.localStorage.getItem("ao.remoteHosts")).toBe("true");
+		expect(useUiStore.getState().remoteHosts).toBe(true);
 	});
 
 	it("shows the available feature builds after choosing Feature Releases", async () => {

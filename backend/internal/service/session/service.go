@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/singleflight"
 
@@ -21,6 +22,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
+const maxDisplayNameLen = 100
+
 // Store is the read-only persistence surface needed to assemble controller-facing session read models.
 type Store interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
@@ -29,6 +32,7 @@ type Store interface {
 	GetActiveAgentSwitch(ctx context.Context, sessionID domain.SessionID) (domain.AgentSwitch, bool, error)
 	ListActiveAgentSwitches(ctx context.Context) ([]domain.AgentSwitch, error)
 	RenameSession(ctx context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error)
+	RenameSessionIfDisplayName(ctx context.Context, id domain.SessionID, currentDisplayName, displayName string, updatedAt time.Time) (bool, error)
 	SetSessionPreviewURL(ctx context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error)
 	SetSessionTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
@@ -63,6 +67,7 @@ type ListFilter struct {
 // *sessionmanager.Manager in production, a fake in tests.
 type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
+	RunBackgroundTask(ctx context.Context, id domain.SessionID, systemPrompt, prompt string) (string, error)
 	SwitchAgent(ctx context.Context, id domain.SessionID, cfg sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error)
 	RecoverAgentSwitch(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error)
 	ListAgentSwitches(ctx context.Context, id domain.SessionID) ([]domain.AgentSwitch, error)
@@ -193,6 +198,13 @@ type Service struct {
 	// normal, not a broken pipeline. nil means "unknown": never downgrade.
 	signalCapable         func(domain.AgentHarness) bool
 	chatProviderPreserved func(domain.SessionID) bool
+	// githubIdentity optionally resolves the operator's authenticated GitHub
+	// account so the handle rides along with product telemetry. Nil disables it
+	// and the emitter degrades to anonymous.
+	githubIdentity         ports.ScopedIdentityResolver
+	titleRefinementSlots   chan struct{}
+	titleRefinementMu      sync.Mutex
+	titleRefinementCancels map[domain.SessionID]context.CancelFunc
 }
 
 // SetChatProviderPreserver wires the live Chat lifetime observation after both
@@ -229,6 +241,9 @@ type Deps struct {
 	// wiring passes activitydispatch.SupportsHarness. Left nil, no session is
 	// ever downgraded to no_signal.
 	SignalCapable func(domain.AgentHarness) bool
+	// GithubIdentity resolves the operator's authenticated GitHub account so the
+	// handle rides along with product telemetry.
+	GithubIdentity ports.ScopedIdentityResolver
 }
 
 // NewWithDeps wires a session service with optional PR-claim dependencies.
@@ -237,7 +252,7 @@ func NewWithDeps(d Deps) *Service {
 	if backgroundContext == nil {
 		backgroundContext = context.Background()
 	}
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity, titleRefinementSlots: make(chan struct{}, delegatedTaskTitleConcurrency), titleRefinementCancels: map[domain.SessionID]context.CancelFunc{}}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -381,6 +396,14 @@ func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, dur
 	}
 	projectID := rec.ProjectID
 	sessionID := rec.ID
+	payload := map[string]any{
+		"kind":        string(rec.Kind),
+		"harness":     string(rec.Harness),
+		"duration_ms": durationMs,
+	}
+	if actor, ok := s.githubActor(ctx); ok {
+		payload["github_actor"] = actor
+	}
 	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
 		Name:       "ao.session.spawned",
 		Source:     "session_service",
@@ -389,12 +412,24 @@ func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, dur
 		ProjectID:  &projectID,
 		SessionID:  &sessionID,
 		RequestID:  reqid.FromContext(ctx),
-		Payload: map[string]any{
-			"kind":        string(rec.Kind),
-			"harness":     string(rec.Harness),
-			"duration_ms": durationMs,
-		},
+		Payload:    payload,
 	})
+}
+
+// githubActor returns the operator's GitHub login when the authenticated
+// account resolves to a human, and ("", false) for every failure mode (resolver
+// unset, no token, GET /user failure, offline, org or bot account, empty login)
+// so the event stays anonymous. Host is left empty because GitHub identity is
+// not host-scoped.
+func (s *Service) githubActor(ctx context.Context) (string, bool) {
+	if s.githubIdentity == nil {
+		return "", false
+	}
+	identity, err := s.githubIdentity.AuthenticatedIdentityForProvider(ctx, "github", "")
+	if err != nil || !identity.Human || identity.Login == "" {
+		return "", false
+	}
+	return identity.Login, true
 }
 
 func (s *Service) emitFirstSessionSpawned(ctx context.Context, rec domain.SessionRecord, project domain.ProjectRecord) {
@@ -462,6 +497,7 @@ func (s *Service) SpawnOrchestrator(
 	projectID domain.ProjectID,
 	clean bool,
 	requestedMode domain.SessionMode,
+	approval domain.PermissionMode,
 ) (domain.Session, error) {
 	unlock := s.lockOrchestratorProject(projectID)
 	defer unlock()
@@ -503,6 +539,9 @@ func (s *Service) SpawnOrchestrator(
 		ProjectID:     projectID,
 		Kind:          domain.KindOrchestrator,
 		RequestedMode: mode,
+		AgentConfig: ports.AgentConfig{
+			Permissions: approval,
+		},
 	})
 	if err != nil {
 		return domain.Session{}, err
@@ -727,6 +766,7 @@ func restoreModeView(mode sessionmanager.RestoreMode) RestoreModeView {
 
 // Kill delegates terminal intent and teardown to the internal manager.
 func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
+	s.cancelTitleRefinement(id)
 	freed, err := s.manager.Kill(ctx, id)
 	return freed, toAPIError(err)
 }
@@ -736,6 +776,7 @@ func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 // when the claim step fails, avoiding the orphan terminated row that a plain
 // Kill would leave behind.
 func (s *Service) RollbackSpawn(ctx context.Context, id domain.SessionID) (RollbackOutcome, error) {
+	s.cancelTitleRefinement(id)
 	deleted, killed, err := s.manager.RollbackSpawn(ctx, id)
 	if err != nil {
 		return RollbackOutcome{}, toAPIError(err)
@@ -755,6 +796,9 @@ func (s *Service) Rename(ctx context.Context, id domain.SessionID, displayName s
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" {
 		return apierr.Invalid("DISPLAY_NAME_REQUIRED", "Display name is required", nil)
+	}
+	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
+		return apierr.Invalid("DISPLAY_NAME_TOO_LONG", fmt.Sprintf("Display name must be %d characters or fewer", maxDisplayNameLen), nil)
 	}
 	renamed, err := s.store.RenameSession(ctx, id, displayName, time.Now().UTC())
 	if err != nil {

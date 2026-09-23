@@ -1,13 +1,23 @@
 import { type QueryClient, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
-import { toKanbanColumn, type WorkspaceSession, type WorkspaceSummary } from "../types/workspace";
+import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
+import {
+	applyTerminatedSession,
+	clearOptimisticSessionKill,
+	trackOptimisticSessionKill,
+} from "./optimistic-session-kills";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
 import { createRendererCloudCpClient } from "./useCloudCp";
 import { settingsQueryKey, type Settings } from "./useSettings";
+import { useUiStore } from "../stores/ui-store";
+import { appI18n } from "../i18n";
 import type { CloudCpSession } from "../lib/cloud-cp";
 
 type TerminateSessionOptions = {
+	/** Fires synchronously as the kill starts — before the cache drops the row. */
+	onOptimistic?: (session: WorkspaceSession) => void;
+	/** Fires after a successful kill and its workspace refresh have settled. */
 	onSuccess?: (session: WorkspaceSession) => void;
 };
 
@@ -29,21 +39,6 @@ async function terminateSession(queryClient: QueryClient, session: WorkspaceSess
 		const fallback = response ? `Failed to terminate session (${response.status})` : "Failed to terminate session";
 		throw new Error(apiErrorMessage(error, fallback));
 	}
-}
-
-// A killed session keeps its row and flips to terminated, which is exactly what
-// the next workspace fetch would report. Applying it locally lets the board
-// settle on the click rather than on the refetch.
-function markTerminated(sessionId: string) {
-	return (session: WorkspaceSession): WorkspaceSession =>
-		session.id === sessionId
-			? {
-				...session,
-				isTerminated: true,
-				status: "terminated",
-				kanbanColumn: toKanbanColumn(undefined, "terminated"),
-			}
-			: session;
 }
 
 // The merged board recomputes cloud cards from cloudSessionsQueryKey, NOT from
@@ -110,24 +105,29 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 		mutationKey: terminateSessionMutationKey,
 		mutationFn: async (session: WorkspaceSession) => {
 			void captureRendererEvent("ao.renderer.session_kill_requested", { project_id: session.workspaceId });
+			const toastTitle = appI18n.t("shell.killingNamed", { title: session.branch || session.workspaceName || "Session" });
+			useUiStore.getState().showGlobalToast(toastTitle, undefined, "info");
+
 			await terminateSession(queryClient, session);
 		},
-		// Archive the card on the click, not on the round trip: the CP delete is
-		// slow (terminate session + tear down the sandbox), and a card that does
-		// not move reads as "the click did nothing" — the reason a delete needed
-		// two or three taps. Roll the optimistic write back in onError.
+		// Navigate and archive the card on the click, not on the round trip: the
+		// delete is slow (daemon kill or CP delete + sandbox teardown), and a row
+		// that does not move reads as "the click did nothing" — the reason a
+		// delete needed two or three taps. Roll every optimistic write back in
+		// onError and re-apply it across CDC/refetches while the kill is in flight.
 		onMutate: async (session): Promise<TerminateMutationContext> => {
+			// Navigate first while the row is still on screen / in closed-over lists.
+			options.onOptimistic?.(session);
+			// Drop in-flight workspace fetches so they cannot overwrite the optimistic
+			// remove with a pre-kill snapshot (CDC + refetchInterval race).
 			await queryClient.cancelQueries({ queryKey: workspaceQueryKey });
 			const workspace: WorkspaceSnapshot = [
 				workspaceQueryKey,
 				queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey),
 			];
+			trackOptimisticSessionKill(session.id);
 			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
-				workspaces?.map((ws) =>
-					ws.id === session.workspaceId
-						? { ...ws, sessions: ws.sessions.map(markTerminated(session.id)) }
-						: ws,
-				),
+				applyTerminatedSession(workspaces, session.id),
 			);
 			const cloud: CloudSnapshot[] = [];
 			if (session.cloud) {
@@ -142,23 +142,29 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 			}
 			return { workspace, cloud };
 		},
-		onSuccess: (_data, session) => {
+		onSuccess: async (_data, session) => {
 			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
-			// The optimistic write already settled the board; refresh in the
-			// background to reconcile with the control plane's real state.
-			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			// Reinforce before refresh; keep the optimistic id until this refetch finishes.
+			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
+				applyTerminatedSession(workspaces, session.id),
+			);
+			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 			// A cloud kill also lives in the cloud sessions query, which the board
 			// merges in separately, so refresh it too.
-			if (session.cloud) void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+			if (session.cloud) await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
 			options.onSuccess?.(session);
 		},
 		onError: (_error, session, context) => {
 			void captureRendererEvent("ao.renderer.session_kill_failed", { project_id: session.workspaceId });
 			// Restore the pre-mutation snapshots so a failed kill un-archives the card
 			// rather than leaving it wrongly terminated.
+			clearOptimisticSessionKill(session.id);
 			const ctx = context as TerminateMutationContext | undefined;
 			if (ctx?.workspace) queryClient.setQueryData(ctx.workspace[0], ctx.workspace[1]);
 			for (const [key, sessions] of ctx?.cloud ?? []) queryClient.setQueryData(key, sessions);
+		},
+		onSettled: (_data, error, session) => {
+			if (!error) clearOptimisticSessionKill(session.id);
 		},
 	});
 }

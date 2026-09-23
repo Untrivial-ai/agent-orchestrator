@@ -23,8 +23,10 @@ describe("streaming response layout", () => {
 
 describe("elicitation typography", () => {
 	it("matches the question to regular assistant copy", () => {
-		expect(source).toContain('inputQuestion: { color: t.textPrimary, fontSize: 16, lineHeight: 24, fontWeight: "500" }');
-		expect(source).toContain("inputRequest: { marginVertical: 12, paddingHorizontal: 2, paddingTop: 6, paddingBottom: 20, gap: 12 }");
+		// The family is required next to every weight now, so this pins the parts
+		// that carry the intent: the question reads at assistant-copy size and weight.
+		expect(source).toContain('fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "500" }');
+		expect(source).toContain("inputRequest: { marginVertical: space.md, paddingHorizontal: space.hair, paddingTop: space.xs, paddingBottom: space.xl, gap: space.md }");
 		expect(source).toContain('inputActions: { minHeight: 36, flexDirection: "row"');
 	});
 });
