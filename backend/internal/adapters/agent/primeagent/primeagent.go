@@ -32,6 +32,10 @@ func New() *Plugin {
 	return &Plugin{}
 }
 
+// EmitsSemanticMessageAcceptance reports that AO's Prime Agent plugin includes
+// the accepted prompt text in its user-prompt-submit callback.
+func (p *Plugin) EmitsSemanticMessageAcceptance() bool { return true }
+
 // AugmentRuntimeEnv points Prime Agent at AO's isolated profile so persistent
 // daemon/config state stays under AO_DATA_DIR instead of the user's normal
 // ~/.prime/agent profile.
@@ -45,6 +49,7 @@ func (p *Plugin) AugmentRuntimeEnv(env map[string]string, dataDir string) {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.SemanticMessageAcceptanceSignaler = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
 var _ ports.AgentNativeSessionTerminator = (*Plugin)(nil)
 var _ ports.ActiveTurnSteerer = (*Plugin)(nil)

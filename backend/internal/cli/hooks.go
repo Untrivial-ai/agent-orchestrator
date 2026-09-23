@@ -57,6 +57,7 @@ type setActivityAPIRequest struct {
 	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty"`
 	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty"`
 	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty"`
+	CoordinationID               string                              `json:"coordinationId,omitempty"`
 	ProviderTurnID               string                              `json:"providerTurnId,omitempty"`
 	SubmissionID                 string                              `json:"submissionId,omitempty"`
 	TranscriptPath               string                              `json:"transcriptPath,omitempty"`
@@ -270,6 +271,7 @@ type hookConversationSnapshot struct {
 	LatestUserPrompt      string
 	LatestAssistantUpdate string
 	CheckpointOrigin      domain.ConversationCheckpointOrigin
+	CoordinationID        string
 	TranscriptPath        string
 }
 
@@ -332,11 +334,13 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 			origin = domain.ConversationCheckpointOriginCoordination
 		}
 	}
+	coordinationID, _ := domain.ReportDeliveryID(observedPrompt)
 	return hookConversationSnapshot{
 		ProviderTurnID:        turnID,
 		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
 		LatestAssistantUpdate: capHookText(assistant, maxHookInteractionLen),
 		CheckpointOrigin:      origin,
+		CoordinationID:        coordinationID,
 		TranscriptPath:        capHookText(firstHookValue(p.TranscriptPath, p.TranscriptPathCamel), maxHookTranscriptPath),
 	}
 }
@@ -352,7 +356,8 @@ func firstHookValue(values ...string) string {
 
 func isAOCoordinationMessage(value string) bool {
 	value = strings.TrimSpace(value)
-	return strings.HasPrefix(value, "<ao-handoff-request") ||
+	_, reportDelivery := domain.ReportDeliveryID(value)
+	return reportDelivery || strings.HasPrefix(value, "<ao-handoff-request") ||
 		strings.HasPrefix(value, "AO transferred the previous agent's context in hidden system instructions.")
 }
 
@@ -533,6 +538,10 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	switch domain.AgentHarness(agent) {
 	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue:
 		conversation = hookConversationFacts(domain.AgentHarness(agent), event, payload)
+	case domain.HarnessOpenCode, domain.HarnessGrok, domain.HarnessKilocode,
+		domain.HarnessOMP, domain.HarnessPi,
+		domain.HarnessAmp, domain.HarnessPrimeAgent:
+		conversation = hookSemanticAcceptanceFacts(event, payload)
 	}
 	path := "sessions/" + url.PathEscape(sessionID) + "/activity"
 	req := setActivityAPIRequest{
@@ -544,6 +553,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		LatestUserPrompt:             conversation.LatestUserPrompt,
 		LatestAssistantUpdate:        conversation.LatestAssistantUpdate,
 		ConversationCheckpointOrigin: conversation.CheckpointOrigin,
+		CoordinationID:               conversation.CoordinationID,
 		ProviderTurnID:               conversation.ProviderTurnID,
 		TranscriptPath:               conversation.TranscriptPath,
 		LaunchID:                     launchID,
@@ -568,6 +578,29 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		c.reportHookFailure(agent, event, sessionID, err)
 	}
 	return nil
+}
+
+// hookSemanticAcceptanceFacts extracts only AO's opaque delivery identity.
+// OpenCode and Grok expose accepted prompt text, but ordinary prompt content is
+// not part of their durable conversation-checkpoint contract.
+func hookSemanticAcceptanceFacts(event string, payload []byte) hookConversationSnapshot {
+	if event != "user-prompt-submit" {
+		return hookConversationSnapshot{}
+	}
+	var p struct {
+		Prompt string `json:"prompt"`
+	}
+	if json.Unmarshal(payload, &p) != nil {
+		return hookConversationSnapshot{}
+	}
+	id, ok := domain.ReportDeliveryID(p.Prompt)
+	if !ok {
+		return hookConversationSnapshot{}
+	}
+	return hookConversationSnapshot{
+		CheckpointOrigin: domain.ConversationCheckpointOriginCoordination,
+		CoordinationID:   id,
+	}
 }
 
 func (c *commandContext) postActivityHook(ctx context.Context, path string, req setActivityAPIRequest) error {
@@ -744,7 +777,9 @@ func (c *commandContext) emitSessionStartContext(agent, event, sessionID string)
 // $AO_DATA_DIR/hooks.log so the failure can be diagnosed after the fact.
 func (c *commandContext) reportHookFailure(agent, event, sessionID string, cause error) {
 	msg := fmt.Sprintf("ao hooks %s %s: %v", agent, event, cause)
-	_, _ = fmt.Fprintln(c.deps.Err, msg)
+	if !errors.Is(cause, errDaemonNotRunning) {
+		_, _ = fmt.Fprintln(c.deps.Err, msg)
+	}
 	dataDir := strings.TrimSpace(os.Getenv("AO_DATA_DIR"))
 	if dataDir == "" {
 		return

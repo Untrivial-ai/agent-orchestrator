@@ -2,7 +2,7 @@ package sqlite
 
 import "testing"
 
-func TestMigration0153ReviewNotificationsRoundTrip(t *testing.T) {
+func TestMigration0155ReviewNotificationsRoundTrip(t *testing.T) {
 	db := openMigratedDatabaseCopy(t, 151)
 	const timestamp = "2026-09-23T08:00:00Z"
 	if _, err := db.Exec(`
@@ -17,7 +17,7 @@ INSERT INTO notifications (
 );`, timestamp, timestamp, timestamp, timestamp, timestamp, timestamp); err != nil {
 		t.Fatal(err)
 	}
-	upTo(t, db, 153)
+	upTo(t, db, 155)
 
 	assertReviewNotificationSchema := func() {
 		t.Helper()
@@ -86,7 +86,7 @@ FROM notifications WHERE id = 'notice-1'`).Scan(
 	}
 	assertExistingNotification()
 
-	upTo(t, db, 153)
+	upTo(t, db, 155)
 	assertReviewNotificationSchema()
 	assertExistingNotification()
 }

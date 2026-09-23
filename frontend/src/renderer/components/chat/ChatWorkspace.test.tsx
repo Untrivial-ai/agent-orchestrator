@@ -202,6 +202,17 @@ const chatSession = {
 } satisfies WorkspaceSession;
 
 describe("HumanMessage attachments", () => {
+	it("hides appended worker report context from the human message", async () => {
+		const text =
+			"Please continue\n\n<ao-worker-reports>\nReports since your previous turn:\n\n[done] ao://sessions/project/worker\nFinished\n</ao-worker-reports>";
+		render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+
+		expect(screen.getByText("Please continue")).toBeInTheDocument();
+		expect(screen.queryByText(/Reports since your previous turn/)).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Copy user message" }));
+		expect(writeText).toHaveBeenCalledWith("Please continue");
+	});
+
 	function renderImageAttachment(header: string, name: string) {
 		render(
 			<HumanMessage
