@@ -35,10 +35,18 @@ const state = vi.hoisted(() => ({
 				viewportY: number;
 				getLine: (
 					row: number,
-				) => { translateToString: (trimRight: boolean) => string; isWrapped: boolean } | undefined;
+				) =>
+					| {
+							translateToString: (trimRight: boolean, startColumn?: number, endColumn?: number) => string;
+							isWrapped: boolean;
+					  }
+					| undefined;
 			};
 		};
-		bufferLines: Array<{ translateToString: (trimRight: boolean) => string; isWrapped: boolean }>;
+		bufferLines: Array<{
+			translateToString: (trimRight: boolean, startColumn?: number, endColumn?: number) => string;
+			isWrapped: boolean;
+		}>;
 		selectionRange?: { start: { x: number; y: number }; end: { x: number; y: number } };
 		getSelectionPosition():
 			| { start: { x: number; y: number }; end: { x: number; y: number } }
@@ -84,7 +92,10 @@ vi.mock("@xterm/xterm", () => ({
 		keyHandler?: (event: KeyboardEvent) => boolean;
 		wheelHandler?: (event: WheelEvent) => boolean;
 		modes = { bracketedPasteMode: false, mouseTrackingMode: "vt200" };
-		bufferLines: Array<{ translateToString: (trimRight: boolean) => string; isWrapped: boolean }> = [];
+		bufferLines: Array<{
+			translateToString: (trimRight: boolean, startColumn?: number, endColumn?: number) => string;
+			isWrapped: boolean;
+		}> = [];
 		buffer = {
 			active: {
 				baseY: 0,
@@ -1222,6 +1233,39 @@ describe("XtermTerminal", () => {
 		} as unknown as KeyboardEvent);
 
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("hellowo\nnext");
+	});
+
+	it.each([
+		["joins a visibly full row despite stale backing padding", "hello   ", "hello\nwo", "hellowo"],
+		["keeps a visibly short row separate despite stale backing text", "hi   stale", "hi\nwo", "hi\nwo"],
+	])("%s after a terminal resize", (_name, backingText, selection, expected) => {
+		render(<XtermTerminal theme="dark" />);
+		const terminal = state.lastTerminal!;
+		terminal.cols = 5;
+		terminal.bufferLines = [
+			{
+				isWrapped: false,
+				translateToString: (trimRight, startColumn = 0, endColumn = backingText.length) => {
+					const text = backingText.slice(startColumn, endColumn);
+					return trimRight ? text.trimEnd() : text;
+				},
+			},
+			{ isWrapped: false, translateToString: (trimRight) => (trimRight ? "wo" : "wo   ") },
+		];
+		terminal.selectionRange = { start: { x: 0, y: 0 }, end: { x: 2, y: 1 } };
+		terminal.selection = selection;
+
+		terminal.keyHandler!({
+			key: "c",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent);
+
+		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith(expected);
 	});
 
 	it("joins Windows CRLF rows without changing preserved row breaks", () => {

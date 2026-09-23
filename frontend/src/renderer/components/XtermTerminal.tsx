@@ -177,11 +177,11 @@ function joinVisuallyContinuousLines(term: Terminal, selection: string, columnSe
 		const text = lines[++index];
 		if (text === undefined) break;
 		const previous = buffer.getLine(row - 1);
-		// Full grid = content in the last cell. Read the composed cell text (null
-		// cells compose to spaces, a wide char skips its continuation cell), not a
-		// UTF-16 length: a row packed with wide (CJK) characters is full while its
-		// string stays shorter than the grid.
-		const continuous = !!previous && !/\s$/.test(previous.translateToString(false));
+		// Full grid = content in the last visible cell. Read only the current grid
+		// width because xterm can retain backing cells after a resize. Null cells
+		// compose to spaces and a wide char skips its continuation cell, so this
+		// stays cell-accurate without comparing UTF-16 length to cols.
+		const continuous = !!previous && !/\s$/.test(previous.translateToString(false, 0, term.cols));
 		joined += `${continuous ? "" : lineBreak}${text}`;
 	}
 	return joined;
