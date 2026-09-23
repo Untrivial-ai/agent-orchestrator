@@ -689,7 +689,32 @@ export async function markAllNotificationsRead(cfg: ServerConfig): Promise<void>
 
 export type PRFailingCheck = { name: string; status?: string; conclusion?: string; url?: string };
 export type PRConflictFile = { path: string; url?: string };
-export type PRUnresolvedReviewer = { reviewerId: string; count: number; reviewUrl?: string; isBot?: boolean };
+export type PRReviewCommentLink = {
+	url?: string;
+	reviewId?: string;
+	file?: string;
+	line?: number;
+	body?: string;
+	autoInjectReview: boolean;
+};
+
+export type PRUnresolvedReviewer = {
+	reviewerId: string;
+	count: number;
+	links: PRReviewCommentLink[];
+	reviewUrl?: string;
+	isBot?: boolean;
+};
+
+export type PRReviewEntry = {
+	reviewerId: string;
+	verdict: "none" | "approved" | "changes_requested" | "review_required";
+	body?: string;
+	reviewUrl?: string;
+	submittedAt: string;
+	isBot?: boolean;
+	autoInjectReview: boolean;
+};
 
 export type SessionPRSummary = {
 	url: string;
@@ -709,6 +734,8 @@ export type SessionPRSummary = {
 		decision: "none" | "approved" | "changes_requested" | "review_required";
 		hasUnresolvedHumanComments: boolean;
 		unresolvedBy: PRUnresolvedReviewer[];
+		resolvedBy?: PRUnresolvedReviewer[];
+		reviews?: PRReviewEntry[];
 	};
 	mergeability: {
 		state: "unknown" | "mergeable" | "conflicting" | "blocked" | "unstable";
@@ -772,6 +799,13 @@ export type SessionReviews = {
 	runs: ReviewRun[];
 };
 
+export type ReviewerAgentConfig = {
+	effort?: string;
+	mode?: string;
+	model?: string;
+	permissions?: string;
+};
+
 export async function getSessionReviews(cfg: ServerConfig, sessionId: string): Promise<SessionReviews> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews`);
 	const data = await res.json();
@@ -795,6 +829,54 @@ export async function cancelSessionReview(cfg: ServerConfig, sessionId: string):
 
 export async function restoreSessionReviewer(cfg: ServerConfig, sessionId: string): Promise<void> {
 	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/restore`, { method: "POST" });
+}
+
+export async function switchSessionReviewer(
+	cfg: ServerConfig,
+	sessionId: string,
+	harness?: string,
+	agentConfig?: ReviewerAgentConfig,
+): Promise<SessionReviews> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/switch`, {
+		method: "POST",
+		body: JSON.stringify({
+			...(harness ? { harness } : {}),
+			...(agentConfig ? { agentConfig } : {}),
+		}),
+	});
+	const data = await res.json();
+	return {
+		reviewerHandleId: typeof data?.reviewerHandleId === "string" ? data.reviewerHandleId : "",
+		reviewerHarness: typeof data?.reviewerHarness === "string" ? data.reviewerHarness : undefined,
+		reviewerActivityState: data?.reviewerActivityState,
+		reviewerSurface: data?.reviewerSurface,
+		reviews: Array.isArray(data?.reviews) ? data.reviews : [],
+		runs: Array.isArray(data?.runs) ? data.runs : [],
+	};
+}
+
+export async function requestSessionRereview(
+	cfg: ServerConfig,
+	sessionId: string,
+	pullRequestUrl: string,
+	reviewerId: string,
+): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/rerequest`, {
+		method: "POST",
+		body: JSON.stringify({ pullRequestUrl, reviewerId }),
+	});
+}
+
+export async function resolveSessionReviewComment(
+	cfg: ServerConfig,
+	sessionId: string,
+	pullRequestUrl: string,
+	commentUrl: string,
+): Promise<void> {
+	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/comments/resolve`, {
+		method: "POST",
+		body: JSON.stringify({ pullRequestUrl, commentUrl }),
+	});
 }
 
 // ---- Writes / actions -------------------------------------------------------

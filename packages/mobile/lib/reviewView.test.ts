@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { PRReviewState, ReviewRun } from "./api";
-import { reviewBatchAction, reviewerDestination, reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewStatusLabel, reviewStatusVisual, reviewVerdictLabel, shortCommit } from "./reviewView";
+import type { DashboardSession, PRReviewState, ReviewRun } from "./api";
+import { reviewBatchAction, reviewerDestination, reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewRouteForSession, reviewStatusLabel, reviewStatusVisual, reviewVerdictLabel, shortCommit } from "./reviewView";
 
 const run = (over: Partial<ReviewRun> = {}): ReviewRun => ({
 	id: "run-1", reviewId: "review-1", sessionId: "worker-1", batchId: "", harness: "codex",
@@ -15,6 +15,24 @@ const state = (over: Partial<PRReviewState> = {}): PRReviewState => ({
 });
 
 describe("mobile review presentation", () => {
+	it("builds a review route from the session's current pull request", () => {
+		const session = { id: "worker-1", pr: { number: 12, url: "https://github.com/acme/repo/pull/12" } } as DashboardSession;
+		expect(reviewRouteForSession(session)).toEqual({
+			pathname: "/review/[sessionId]",
+			params: { sessionId: "worker-1", prNumber: "12", prUrl: "https://github.com/acme/repo/pull/12" },
+		});
+	});
+
+	it("prefers the first PR in the current list and omits sessions without one", () => {
+		const session = {
+			id: "worker-1",
+			pr: { number: 10, url: "legacy" },
+			prs: [{ number: 12, url: "current" }, { number: 13, url: "other" }],
+		} as DashboardSession;
+		expect(reviewRouteForSession(session)?.params).toMatchObject({ prNumber: "12", prUrl: "current" });
+		expect(reviewRouteForSession({ id: "worker-2" } as DashboardSession)).toBeUndefined();
+	});
+
 	it("matches the exact PR URL before falling back to its number", () => {
 		const reviews = [state({ prUrl: "other", prNumber: 12 }), state()];
 		expect(reviewForPullRequest(reviews, state().prUrl, 12)?.prUrl).toBe(state().prUrl);

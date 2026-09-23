@@ -29,7 +29,8 @@ describe("workerContextActions", () => {
 	});
 
 	it("offers the pull request only when there is one", () => {
-		expect(ids({ hasPr: true })).toContain("openPr");
+		const action = workerContextActions(state({ hasPr: true })).find((item) => item.id === "openPr");
+		expect(action).toEqual({ id: "openPr", title: "Review pull request" });
 		expect(ids()).not.toContain("openPr");
 	});
 

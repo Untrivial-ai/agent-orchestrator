@@ -1,4 +1,13 @@
-import type { PRReviewState, ReviewRun, SessionReviews } from "./api";
+import type { DashboardSession, PRReviewState, ReviewRun, SessionReviews } from "./api";
+
+export function reviewRouteForSession(session: DashboardSession) {
+	const pr = session.prs?.[0] ?? session.pr;
+	if (!pr) return undefined;
+	return {
+		pathname: "/review/[sessionId]" as const,
+		params: { sessionId: session.id, prNumber: String(pr.number), prUrl: pr.url },
+	};
+}
 
 export function reviewForPullRequest(
 	reviews: PRReviewState[],

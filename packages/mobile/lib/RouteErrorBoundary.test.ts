@@ -39,6 +39,7 @@ const sheetRoutes = [
 	"sheets/conversation-rename.tsx",
 	"sheets/model.tsx",
 	"sheets/project.tsx",
+	"sheets/review-actions.tsx",
 	"sheets/store-update.tsx",
 ];
 

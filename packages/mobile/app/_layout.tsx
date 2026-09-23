@@ -30,6 +30,7 @@ const SHEET_ROUTES = [
 	{ name: "sheets/conversation-actions", detents: [0.6, 0.95] },
 	{ name: "sheets/conversation-rename", detents: [0.35, 0.65] },
 	{ name: "sheets/composer-picker", detents: [0.6, 0.95] },
+	{ name: "sheets/review-actions", detents: [0.6, 0.95] },
 	{ name: "sheets/store-update", detents: "fitToContents" },
 ] as const;
 

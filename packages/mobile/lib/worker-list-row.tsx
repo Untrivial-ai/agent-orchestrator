@@ -10,12 +10,12 @@ import { toneColor } from "./prView";
 import { statusVisual, type Theme } from "./theme";
 import { rowDividerWidth } from "./divider";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
-import { openGitHub } from "./openGitHub";
 import { workerContextActions, type WorkerActionId } from "./worker-action-model";
 import { WorkerRowActions } from "./worker-row-actions";
 import { WorkerRowInteraction } from "./worker-row-interaction";
 import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
 import { normalizeConversationTitle } from "./chat/conversationMenuModel";
+import { reviewRouteForSession } from "./reviewView";
 
 export function WorkerListRow({
 	session,
@@ -112,8 +112,7 @@ export function WorkerListRow({
 		});
 	};
 
-	// prLine returns display text, not a link, so the url comes off the session.
-	const prUrl = (session.prs?.length ? session.prs[0] : session.pr)?.url ?? null;
+	const reviewRoute = reviewRouteForSession(session);
 	const terminated = session.isTerminated === true || session.status === "terminated";
 	const contextActions = workerContextActions({
 		pinned: Boolean(session.isPinned),
@@ -121,7 +120,7 @@ export function WorkerListRow({
 		// A live session whose agent has stopped: exited or crashed, but the AO
 		// session around it is still intact, so resuming is the lighter fix.
 		stopped: !terminated && (session.status === "exited" || session.status === "errored"),
-		hasPr: Boolean(prUrl),
+		hasPr: Boolean(reviewRoute),
 	});
 
 	const runAction = useCallback((id: WorkerActionId) => {
@@ -142,13 +141,13 @@ export function WorkerListRow({
 			case "restore":
 				return onRestore();
 			case "openPr":
-				if (prUrl) void openGitHub(prUrl);
+				if (reviewRoute) router.push(reviewRoute);
 				return;
 			default:
 				return onDelete();
 		}
 	// openSession closes over router and session, both stable enough for a row.
-	}, [onDelete, onRenameStart, onResume, onRestore, onSetPinned, prUrl, row.title]);
+	}, [onDelete, onRenameStart, onResume, onRestore, onSetPinned, reviewRoute, router, row.title]);
 
 	return (
 		<WorkerRowInteraction

@@ -46,7 +46,7 @@ export function workerContextActions(state: WorkerActionState): WorkerAction[] {
 	actions.push(state.pinned ? { id: "unpin", title: "Unpin" } : { id: "pin", title: "Pin" });
 	actions.push({ id: "rename", title: "Rename" });
 
-	if (state.hasPr) actions.push({ id: "openPr", title: "Open pull request" });
+	if (state.hasPr) actions.push({ id: "openPr", title: "Review pull request" });
 
 	// Last and marked destructive: the native menus render it apart from the rest,
 	// and the screen still raises its own confirmation before calling kill.

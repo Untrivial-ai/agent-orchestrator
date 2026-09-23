@@ -46,8 +46,11 @@ export default function ReviewDetailScreen() {
 	const review = reviewForPullRequest(data?.reviews ?? [], prUrl, Number(prNumber) || undefined);
 	useLayoutEffect(() => navigation.setOptions({ title: review?.title || "Review" }), [navigation, review?.title]);
 	useLayoutEffect(() => navigation.setOptions({
-		headerRight: review?.prUrl ? () => <Pressable accessibilityRole="link" accessibilityLabel={`Open pull request ${review.prNumber} in GitHub`} hitSlop={10} onPress={() => { haptics.tap(); void openGitHub(review.prUrl); }}><Feather name="external-link" size={19} color={t.textSecondary} /></Pressable> : undefined,
-	}), [navigation, review?.prNumber, review?.prUrl, t.textSecondary]);
+		headerRight: review?.prUrl ? () => <View style={styles.headerActions}>
+			<Pressable accessibilityRole="link" accessibilityLabel={`Open pull request ${review.prNumber} in GitHub`} hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); void openGitHub(review.prUrl); }}><Feather name="external-link" size={19} color={t.textSecondary} /></Pressable>
+			<Pressable accessibilityRole="button" accessibilityLabel="More review actions" hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); router.push({ pathname: "/sheets/review-actions", params: { sessionId, prUrl: review.prUrl, reviewer: data?.reviewerHarness ?? "" } }); }}><Feather name="more-horizontal" size={21} color={t.textSecondary} /></Pressable>
+		</View> : undefined,
+	}), [data?.reviewerHarness, navigation, review?.prNumber, review?.prUrl, router, sessionId, styles.headerAction, styles.headerActions, t.textSecondary]);
 	useEffect(() => {
 		if (review?.status !== "running") return;
 		const timer = setInterval(() => void load(true), 2_000);
@@ -183,4 +186,6 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	error: { color: t.red, fontSize: 13, lineHeight: 18 },
 	scopeNote: { color: t.textTertiary, fontSize: 12, lineHeight: 17, textAlign: "center", paddingHorizontal: 12 },
 	previousCard: { opacity: 0.78 },
+	headerActions: { flexDirection: "row", alignItems: "center", gap: 2 },
+	headerAction: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
 });
