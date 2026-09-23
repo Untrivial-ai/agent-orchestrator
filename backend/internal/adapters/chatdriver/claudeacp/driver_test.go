@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
@@ -21,6 +22,14 @@ func TestClaudeSessionMetaAppendsWithoutReplacingPreset(t *testing.T) {
 	}
 	if prompt["type"] != "preset" || prompt["preset"] != "claude_code" || prompt["append"] != "AO standing instructions" {
 		t.Fatalf("systemPrompt = %#v", prompt)
+	}
+}
+
+func TestClaudeSessionMetaNeverIncludesReplayContext(t *testing.T) {
+	meta := claudeSessionMeta(acpdriver.LaunchConfig{SystemPrompt: "AO standing instructions"})
+	prompt := meta["systemPrompt"].(map[string]any)
+	if strings.Contains(prompt["append"].(string), "replayed-conversation") {
+		t.Fatal("replay context entered the system prompt")
 	}
 }
 
@@ -46,6 +55,31 @@ func TestClaudeSessionOptionsUseACPConfigIDs(t *testing.T) {
 	}
 }
 
+func TestValidateClaudeACPExecutableRejectsWindowsCommandShims(t *testing.T) {
+	tests := []struct {
+		name    string
+		binary  string
+		goos    string
+		wantErr bool
+	}{
+		{name: "native executable", binary: `C:\\npm\\claude.exe`, goos: "windows"},
+		{name: "cmd shim", binary: `C:\\npm\\claude.cmd`, goos: "windows", wantErr: true},
+		{name: "bat shim", binary: `C:\\npm\\claude.BAT`, goos: "windows", wantErr: true},
+		{name: "non-Windows shim", binary: "/tmp/claude.cmd", goos: "linux"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClaudeACPExecutable(tc.binary, tc.goos)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateClaudeACPExecutable(%q, %q) error = %v, wantErr %v", tc.binary, tc.goos, err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "native claude.exe") {
+				t.Fatalf("error = %q, want actionable native executable guidance", err)
+			}
+		})
+	}
+}
+
 func TestRuntimeCommandOverride(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -58,5 +92,29 @@ func TestRuntimeCommandOverride(t *testing.T) {
 	}
 	if launch.command != executable || len(launch.args) != 0 {
 		t.Fatalf("runtime = %#v", launch)
+	}
+}
+
+type fakePlugin struct{}
+
+func (fakePlugin) ResolveBinary(context.Context) (string, error) { return "/bin/echo", nil }
+func (fakePlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusAuthorized, nil
+}
+
+func TestClaudeAdvertisesCompactionCapability(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AO_CLAUDE_ACP_COMMAND", executable)
+
+	d := New(fakePlugin{}, nil)
+	caps, err := d.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !caps.Has(ports.ChatCapabilityCompaction) {
+		t.Fatal("Claude ACP driver should advertise compaction capability")
 	}
 }

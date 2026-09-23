@@ -85,7 +85,10 @@ func (p *conPTYProcess) Close() error {
 			if p.cmd.Process != nil {
 				_ = p.cmd.Process.Kill()
 			}
-			<-p.waitDone
+			// Mirror the Unix escape hatch: a process that survives Kill must
+			// not block Close (and daemon shutdown) forever. waitForExit
+			// bounds the wait and Close returns regardless.
+			waitForExit(p.waitDone, killGrace)
 		}
 	})
 	return nil

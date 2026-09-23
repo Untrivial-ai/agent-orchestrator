@@ -1,293 +1,44 @@
 ---
-title: Remote Access
-description: Access the AO dashboard from another device or over Tailscale. Covers ports, binding, reverse proxies, power management, and security.
+title: Connect Mobile
+description: Pair the native AO mobile app through the authenticated, opt-in LAN listener.
 ---
 
-# Remote Access
+AO's primary daemon listener is always bound to `127.0.0.1`. It is unauthenticated because it is loopback-only, and its host cannot be changed. Do not expose it with `HOST=0.0.0.0`, a public reverse proxy, or port forwarding.
 
-By default the AO dashboard binds to `localhost:3000` and is only accessible from the machine it runs on. This page explains how to access it from another device — your phone, a second laptop, or a remote machine — using Tailscale or direct network binding.
+For a phone, the desktop app creates a separate listener through **Connect Mobile**. It is disabled by default, binds to the LAN only while enabled, requires a bearer connection password, and exposes app API routes without exposing daemon-control routes.
 
-## Tailscale (recommended)
+## Pair on the same network
 
-[Tailscale](https://tailscale.com) creates a private WireGuard mesh network between your devices. Every device gets a stable IP like `100.x.x.x` and a DNS name like `my-laptop.tail1234.ts.net`. No port forwarding, no firewall rules required.
+1. Install the AO mobile app and put the phone on the same trusted Wi-Fi as the desktop.
+2. Open desktop **Settings → Connect Mobile**.
+3. Enable mobile access.
+4. In the mobile app, scan the pairing code to fill the address, port, and connection password automatically.
+5. If entering details manually, copy all three values from the desktop.
 
-### Setup
+The listener normally uses port `3011` and can fall back to another available port. Always use the actually displayed port. Disabling Connect Mobile closes the listener; regenerating the password disconnects existing clients.
 
-1. Install Tailscale on both the machine running AO and the device you want to access it from.
+## Tailscale
 
-   ```bash
-   # macOS
-   brew install --cask tailscale
+For access away from the same Wi-Fi, install Tailscale on both devices and sign in to the same tailnet. Enable Connect Mobile, find the desktop's `100.x` address with `tailscale ip -4`, then enter that address, the displayed mobile port, and the connection password in the mobile app. Leave TLS disabled.
 
-   # Ubuntu / Debian
-   curl -fsSL https://tailscale.com/install.sh | sh
-   ```
+Do not use `tailscale serve` to expose the primary loopback daemon. The native app should connect to the authenticated mobile listener.
 
-2. Start Tailscale and authenticate:
+## Security model
 
-   ```bash
-   sudo tailscale up
-   ```
+- The mobile listener uses plaintext HTTP by design and is intended for a trusted home network or private tailnet.
+- Every REST and terminal connection requires the rotating password.
+- Repeated failed authentication is locked out per source.
+- `/shutdown`, telemetry controls, and mobile-control routes remain loopback-only.
+- Mobile settings are persisted in a mode-`0600` file under `~/.ao/mobile/config.json`. The rotating password is stored there so the desktop can redisplay it; authentication comparisons use its in-memory hash.
 
-3. Find your machine's Tailscale IP:
+Anyone who can observe traffic on an untrusted network may read the password and session traffic. Turn Connect Mobile off when it is not needed, and do not expose its port to the public internet.
 
-   ```bash
-   tailscale ip -4
-   # e.g. 100.64.0.1
-   ```
+## What mobile supports
 
-4. Bind AO to all interfaces so Tailscale traffic can reach it:
+The Expo/React Native app is a native control surface over the same daemon resources as desktop. New mobile sessions prefer Chat when a compatible installed harness is available; Terminal UI remains an explicit compatibility choice.
 
-   ```yaml
-   # agent-orchestrator.yaml
-   port: 3000
-   ```
+Mobile supports structured Chat, Terminal UI, session creation, the same capability-gated Chat/TUI handoff, approvals and structured input, changed files, model/provider controls, compaction and rollback, voice dictation, attachments, and a session-scoped worktree shell.
 
-   Then start AO with `HOST=0.0.0.0` so it listens on all interfaces (not just localhost):
-
-   ```bash
-   HOST=0.0.0.0 ao start
-   ```
-
-   Access the dashboard from another Tailscale device at:
-
-   ```
-   http://100.64.0.1:3000
-   ```
-
-   Or using the MagicDNS hostname (if you have MagicDNS enabled in your Tailnet):
-
-   ```
-   http://my-laptop.tail1234.ts.net:3000
-   ```
-
-### Tailscale serve (optional — HTTPS)
-
-For HTTPS with a valid certificate, use `tailscale serve`:
-
-```bash
-tailscale serve https:443 / http://localhost:3000
-```
-
-This makes the dashboard available at `https://my-laptop.tail1234.ts.net` with a Let's Encrypt certificate managed by Tailscale. The WebSocket connections for the terminal also work through Tailscale serve.
-
-## Binding to a specific interface
-
-AO uses Next.js for the dashboard. To bind to all interfaces (required for any remote access without Tailscale serve), set the `HOST` environment variable:
-
-```bash
-# Bind to all interfaces
-HOST=0.0.0.0 ao start
-```
-
-Or set it in your shell profile:
-
-```bash
-export HOST=0.0.0.0
-ao start
-```
-
-To bind to a specific IP only (e.g. your Tailscale IP):
-
-```bash
-HOST=100.64.0.1 ao start
-```
-
-The terminal WebSocket ports (`terminalPort` and `directTerminalPort`) also need to be reachable. If you're using Tailscale, the mesh handles this transparently as long as the ports are not firewalled locally.
-
-## macOS: preventing sleep
-
-If you run AO on a Mac, the machine going to sleep will kill the agents and the dashboard. Use `caffeinate` to prevent sleep while AO is running:
-
-```bash
-caffeinate -i ao start
-```
-
-`caffeinate -i` prevents idle sleep (triggered by inactivity) but still allows display sleep. For a machine you want to run headlessly overnight:
-
-```bash
-# Prevent all sleep (including display)
-caffeinate -dims ao start
-```
-
-To run AO persistently in the background as a launchd service, create a plist at `~/Library/LaunchAgents/com.ao.orchestrator.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.ao.orchestrator</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/ao</string>
-    <string>start</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOST</key>
-    <string>0.0.0.0</string>
-  </dict>
-</dict>
-</plist>
-```
-
-Load it with:
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.ao.orchestrator.plist
-```
-
-## Reverse proxy
-
-If you want to expose AO over a domain name with TLS, or place it behind an authentication layer, you can front it with nginx or Caddy.
-
-**Important:** AO uses two WebSocket servers (one for tmux-attached terminals, one for direct PTY terminals). Your proxy must forward HTTP upgrade headers for both.
-
-### Environment variables for proxied setups
-
-| Variable                       | Purpose                                                                                               |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `HOST=0.0.0.0`                 | Bind the Next.js dashboard to all interfaces                                                          |
-| `TERMINAL_PORT`                | Override the tmux WS server port (server-side)                                                        |
-| `DIRECT_TERMINAL_PORT`         | Override the direct PTY WS server port (server-side)                                                  |
-| `NEXT_PUBLIC_TERMINAL_WS_PATH` | Override the WebSocket base path the browser client dials — required when the proxy rewrites the path |
-
-### nginx
-
-```nginx
-server {
-  listen 443 ssl;
-  server_name ao.example.com;
-
-  # SSL cert config here
-
-  # Dashboard
-  location / {
-    proxy_pass http://127.0.0.1:3000;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  }
-
-  # Terminal WebSockets — tmux mux
-  location /ws/terminal/ {
-    proxy_pass http://127.0.0.1:14800/;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 86400;
-  }
-
-  # Terminal WebSockets — direct PTY
-  location /ws/direct/ {
-    proxy_pass http://127.0.0.1:14801/;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 86400;
-  }
-}
-```
-
-Then start AO with the matching path env var so the browser client dials through the proxy:
-
-```bash
-HOST=0.0.0.0 NEXT_PUBLIC_TERMINAL_WS_PATH=/ws/terminal ao start
-```
-
-### Caddy
-
-Caddy handles WebSocket upgrades automatically — no explicit `Upgrade` headers needed:
-
-```
-ao.example.com {
-  reverse_proxy /ws/terminal/* 127.0.0.1:14800
-  reverse_proxy /ws/direct/* 127.0.0.1:14801
-  reverse_proxy 127.0.0.1:3000
-}
-```
-
-Start AO the same way:
-
-```bash
-HOST=0.0.0.0 NEXT_PUBLIC_TERMINAL_WS_PATH=/ws/terminal ao start
-```
-
-### Pinning WebSocket ports
-
-By default AO auto-detects available ports for the WebSocket servers starting at 14800/14801. To pin them (required when configuring a reverse proxy), set them in `agent-orchestrator.yaml`:
-
-```yaml
-port: 3000
-terminalPort: 14800
-directTerminalPort: 14801
-```
-
-Or pass them as environment variables when starting:
-
-```bash
-HOST=0.0.0.0 TERMINAL_PORT=14800 DIRECT_TERMINAL_PORT=14801 ao start
-```
-
-## Accessing the dashboard from mobile
-
-The AO dashboard is a responsive web app — it works on mobile browsers. Connect over Tailscale and open the URL in Safari or Chrome. The Kanban board and session detail views are usable on a phone screen.
-
-**Limitations on mobile:**
-
-- The built-in terminal (xterm.js) works but is difficult to type in on a touch screen. Use it to read agent output; for sending messages use the session detail input field.
-- There is no native mobile app. Notifications go through your configured notifiers (Slack, desktop, etc.) — there is no push notification to the browser.
-
-## Security considerations
-
-**AO has no authentication.** Anyone who can reach the HTTP port can view all sessions, read terminal output, send messages to agents, and trigger merges. Never expose the dashboard port to the public internet.
-
-Mitigations:
-
-- Use Tailscale — the mesh is authenticated and encrypted end-to-end. Only your devices can reach the IP.
-- If you must use a public host, put a reverse proxy with HTTP Basic Auth (nginx, Caddy) in front of AO. See the [Reverse proxy](#reverse-proxy) section above.
-- Firewall the port at the OS level and only allow Tailscale traffic:
-
-  ```bash
-  # UFW example — allow only Tailscale interface
-  sudo ufw allow in on tailscale0 to any port 3000
-  sudo ufw deny 3000
-  ```
-
-**Environment variables and secrets** in agent processes are visible to anyone with dashboard access. Do not run AO on a shared machine without Tailscale or auth.
-
-**Webhook endpoint:** If you expose the dashboard publicly and have GitHub (or another tracker) configured, the `/api/webhooks` endpoint receives push events from GitHub. This endpoint is protected by a webhook secret configured in your tracker settings — verify the secret is set before exposing the port publicly.
-
-For more on project identity, local config, and runtime data, see [Configuration](/docs/configuration).
-
-## Port reference
-
-| Port    | Default            | Config key           | Env var override       | Purpose                              |
-| ------- | ------------------ | -------------------- | ---------------------- | ------------------------------------ |
-| `3000`  | dashboard HTTP     | `port`               | `PORT`                 | Next.js app + API routes             |
-| `14800` | tmux terminal WS   | `terminalPort`       | `TERMINAL_PORT`        | WebSocket for tmux-attached terminal |
-| `14801` | direct terminal WS | `directTerminalPort` | `DIRECT_TERMINAL_PORT` | WebSocket for direct PTY terminal    |
-
-If you run multiple AO instances on the same machine, change all three ports to avoid `EADDRINUSE` errors:
-
-```yaml
-# Second AO instance
-port: 3001
-terminalPort: 14810
-directTerminalPort: 14811
-```
-
-Note: When `terminalPort` and `directTerminalPort` are not set in the config or as env vars, AO auto-detects a free port pair starting from 14800. Set them explicitly whenever you configure a reverse proxy or firewall rules.
-
-## See also
-
-- [Configuration](/docs/configuration) — global registry and local project config
-- [Projects](/docs/configuration/projects) — per-project behavior options
-- [Troubleshooting](/docs/troubleshooting) — connection and port issues
+<Callout type="info">
+	Chat and Terminal UI are two controllers for the same AO session. Switching does not create a new worktree, but a first switch from Terminal UI to Chat does not reconstruct old terminal screen output as structured messages.
+</Callout>

@@ -248,3 +248,73 @@ func TestAuthLockoutIsPerSource(t *testing.T) {
 		t.Fatalf("source B with wrong password: got %d want 401", w.Code)
 	}
 }
+
+// reqTo builds a request to an arbitrary path so the identity exemption can be
+// probed alongside the normal authenticated surface.
+func reqTo(method, path, auth string) *http.Request {
+	r := httptest.NewRequest(method, path, nil)
+	r.RemoteAddr = "192.168.1.50:5555"
+	if auth != "" {
+		r.Header.Set("Authorization", auth)
+	}
+	return r
+}
+
+// The phone must be able to ask "who are you?" before it presents a
+// credential. Without this, verifying an endpoint's identity would require
+// sending the bearer token to whatever device happens to hold that private IP
+// on the current network — see docs/adr/0003.
+func TestAuthExemptsIdentityProbe(t *testing.T) {
+	h, _ := newAuthUnderTest("secret12", time.Now)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, reqTo(http.MethodGet, "/api/v1/identity", ""))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unauthenticated identity probe got %d, want 200", w.Code)
+	}
+}
+
+// The exemption is one method on one exact path. These are the guards that
+// stop it widening into a general hole in the LAN listener.
+func TestAuthExemptionIsNarrow(t *testing.T) {
+	h, _ := newAuthUnderTest("secret12", time.Now)
+
+	for _, tc := range []struct {
+		name, method, path string
+		want               int
+	}{
+		{"exact path, GET", http.MethodGet, "/api/v1/identity", http.StatusOK},
+		{"write to the same path", http.MethodPost, "/api/v1/identity", http.StatusUnauthorized},
+		{"nested below it", http.MethodGet, "/api/v1/identity/secrets", http.StatusUnauthorized},
+		{"prefix collision", http.MethodGet, "/api/v1/identityzzz", http.StatusUnauthorized},
+		{"trailing slash", http.MethodGet, "/api/v1/identity/", http.StatusUnauthorized},
+		{"unrelated route", http.MethodGet, "/api/v1/sessions", http.StatusUnauthorized},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, reqTo(tc.method, tc.path, ""))
+		if w.Code != tc.want {
+			t.Errorf("%s (%s %s): got %d want %d", tc.name, tc.method, tc.path, w.Code, tc.want)
+		}
+	}
+}
+
+// A probe carrying no credential must not count toward the lockout, or an
+// unauthenticated phone racing several endpoints would lock itself out.
+func TestIdentityProbeDoesNotCountTowardLockout(t *testing.T) {
+	h, lock := newAuthUnderTest("secret12", time.Now)
+
+	for range 10 {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, reqTo(http.MethodGet, "/api/v1/identity", ""))
+	}
+
+	if lock.blocked("192.168.1.50") {
+		t.Fatal("identity probes triggered the lockout")
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req("Bearer secret12"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("authenticated request after probes got %d, want 200", w.Code)
+	}
+}

@@ -54,6 +54,7 @@ func TestReviewCommandPreservesAgentAndAppliesReadOnlyPolicy(t *testing.T) {
 		WorkspacePath:  "/ws/w1",
 		Prompt:         "review it",
 		SystemPrompt:   "review only",
+		Config:         ports.AgentConfig{Model: "gpt-5"},
 		TaskPromptRoot: filepath.Join("ao", "prompts", "reviewer"),
 	})
 	if err != nil {
@@ -62,6 +63,9 @@ func TestReviewCommandPreservesAgentAndAppliesReadOnlyPolicy(t *testing.T) {
 
 	if agent.got.Permissions != ports.PermissionModeDefault {
 		t.Fatalf("permissions = %q, want default before reviewer policy overlay", agent.got.Permissions)
+	}
+	if agent.got.Config.Model != "gpt-5" {
+		t.Fatalf("launch config model = %q, want gpt-5", agent.got.Config.Model)
 	}
 	if agent.got.WorkspacePath != "/ws/w1" || agent.got.Prompt != "review it" || agent.got.SystemPrompt != "review only" {
 		t.Fatalf("launch config = %+v", agent.got)

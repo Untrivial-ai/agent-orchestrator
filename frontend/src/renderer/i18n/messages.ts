@@ -18,7 +18,9 @@ export const frMessages = fr;
 export const deMessages = de;
 export const ptBRMessages = ptBR;
 
-export type MessageKey = keyof typeof enMessages;
+export type MessageKey = {
+	[K in keyof typeof enMessages]: typeof enMessages[K] extends string ? K : never;
+}[keyof typeof enMessages];
 
 type PluralCategory = "zero" | "one" | "two" | "few" | "many" | "other";
 export type PluralMessageKey = MessageKey extends infer Key extends string
@@ -29,17 +31,17 @@ export type PluralMessageKey = MessageKey extends infer Key extends string
 
 export type MessageCatalog = Record<MessageKey, string>;
 
-const catalogs: Record<AppLocale, Readonly<Record<string, string>>> = {
-	en: enMessages,
-	"zh-CN": zhCNMessages,
-	ja: jaMessages,
-	ko: koMessages,
-	es: esMessages,
-	fr: frMessages,
-	de: deMessages,
-	"pt-BR": ptBRMessages,
+const catalogs: Record<AppLocale, MessageCatalog> = {
+	en: enMessages as unknown as MessageCatalog,
+	"zh-CN": zhCNMessages as unknown as MessageCatalog,
+	ja: jaMessages as unknown as MessageCatalog,
+	ko: koMessages as unknown as MessageCatalog,
+	es: esMessages as unknown as MessageCatalog,
+	fr: frMessages as unknown as MessageCatalog,
+	de: deMessages as unknown as MessageCatalog,
+	"pt-BR": ptBRMessages as unknown as MessageCatalog,
 };
 
-export function catalogFor(locale: AppLocale): Readonly<Record<string, string>> {
+export function catalogFor(locale: AppLocale): MessageCatalog {
 	return catalogs[locale] ?? catalogs.en;
 }

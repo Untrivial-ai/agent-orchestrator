@@ -39,7 +39,18 @@ func TestAmpSettingsAuthStatusAuthorizedWithAPIKey(t *testing.T) {
 	}
 }
 
-func TestAmpSettingsAuthStatusUnauthorizedWithEmptyAPIKey(t *testing.T) {
+func TestAmpSecretsAuthStatusAuthorizedWithDocumentedSecretsFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"accessToken":"amp-token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, ok, err := ampSecretsAuthStatus(path)
+	if err != nil || !ok || status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = (%q, %v, %v), want (authorized, true, nil)", status, ok, err)
+	}
+}
+
+func TestAmpSettingsAuthStatusUnknownWithEmptyAPIKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	if err := os.WriteFile(path, []byte(`{"amp.apiKey":""}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,19 +60,19 @@ func TestAmpSettingsAuthStatusUnauthorizedWithEmptyAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 
-func TestAmpUsageAuthStatusAuthorizedOnSuccessfulUsage(t *testing.T) {
+func TestAmpUsageAuthStatusAuthorizedWhenSignedIn(t *testing.T) {
 	t.Setenv("AMP_API_KEY", "")
 	t.Setenv("AMP_SETTINGS_FILE", filepath.Join(t.TempDir(), "missing-settings.json"))
-	restore := mockAuthProbeRunner(t, func(ctx context.Context, name string, arg ...string) ([]byte, error) {
+	restore := mockAmpAuthProbeRunner(t, func(_ context.Context, name string, arg ...string) ([]byte, error) {
 		if name != "amp" || !reflect.DeepEqual(arg, []string{"usage", "--no-color"}) {
 			t.Fatalf("command = %s %#v, want amp usage --no-color", name, arg)
 		}
-		return []byte("Credits remaining: 100"), nil
+		return []byte("Signed in as agentsubs@pkarnal.com\nIndividual credits: -$0.07 remaining"), nil
 	})
 	defer restore()
 
@@ -74,24 +85,22 @@ func TestAmpUsageAuthStatusAuthorizedOnSuccessfulUsage(t *testing.T) {
 	}
 }
 
-func TestAmpUsageAuthStatusUnauthorizedFromUsageOutput(t *testing.T) {
-	t.Setenv("AMP_API_KEY", "")
-	t.Setenv("AMP_SETTINGS_FILE", filepath.Join(t.TempDir(), "missing-settings.json"))
-	restore := mockAuthProbeRunner(t, func(ctx context.Context, name string, arg ...string) ([]byte, error) {
+func TestAmpUsageAuthStatusUnknownWhenNotConfirmed(t *testing.T) {
+	restore := mockAmpAuthProbeRunner(t, func(context.Context, string, ...string) ([]byte, error) {
 		return []byte("login required"), errors.New("exit status 1")
 	})
 	defer restore()
 
-	got, err := (&Plugin{resolvedBinary: "amp"}).AuthStatus(context.Background())
+	got, err := ampUsageAuthStatus(context.Background(), "amp")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusUnauthorized)
+	if got != ports.AgentAuthStatusUnknown {
+		t.Fatalf("AuthStatus = %q, want %q", got, ports.AgentAuthStatusUnknown)
 	}
 }
 
-func mockAuthProbeRunner(t *testing.T, runner func(context.Context, string, ...string) ([]byte, error)) func() {
+func mockAmpAuthProbeRunner(t *testing.T, runner func(context.Context, string, ...string) ([]byte, error)) func() {
 	t.Helper()
 	previous := authprobe.CmdRunner
 	authprobe.CmdRunner = runner

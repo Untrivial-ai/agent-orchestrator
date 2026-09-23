@@ -17,16 +17,19 @@ const DEMO_COMPONENTS = [
 ];
 
 const FEATURE_BACKGROUNDS = [
-	"/optimized/feature3.webp",
-	"/optimized/feature.webp",
-	"/optimized/feature4.webp",
-	"/optimized/feature2.webp",
-	"/optimized/feature3.webp",
+	"feature3",
+	"feature",
+	"feature4",
+	"feature2",
+	"feature3",
 ] as const;
 
 export function FeaturesSection() {
 	return (
-		<section className="relative px-4 py-16 sm:px-8 sm:py-20 lg:px-[30px] lg:py-24">
+		<section
+			id="features"
+			className="relative px-4 py-16 sm:px-8 sm:py-20 lg:px-[30px] lg:py-24"
+		>
 			<div className="max-w-7xl mx-auto">
 				{/* Feature Rows */}
 				<div className="space-y-20 sm:space-y-24 lg:space-y-32">
@@ -65,7 +68,6 @@ export function FeaturesSection() {
 										backgroundImage={
 											FEATURE_BACKGROUNDS[index % FEATURE_BACKGROUNDS.length]
 										}
-										preload
 									>
 										{DemoComponent && <DemoComponent />}
 									</FeatureDemo>

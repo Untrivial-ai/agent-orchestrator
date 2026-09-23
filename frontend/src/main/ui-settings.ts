@@ -24,8 +24,12 @@ async function readUiSettingsUnlocked(stateDir: string): Promise<UiSettings> {
 	}
 }
 
-async function writeUiSettingsUnlocked(stateDir: string, settings: UiSettings): Promise<UiSettings> {
-	const next = coerceUiSettings(settings);
+async function writeUiSettingsUnlocked(stateDir: string, patch: Partial<UiSettings>): Promise<UiSettings> {
+	// A caller only sends the field it changed (e.g. just `locale` or just
+	// `soundNotificationsEnabled`); merge onto the persisted settings so one
+	// setting's write never resets the other back to its default.
+	const current = await readUiSettingsUnlocked(stateDir);
+	const next = coerceUiSettings({ ...current, ...patch });
 	await mkdir(stateDir, { recursive: true, mode: 0o750 });
 	const file = path.join(stateDir, UI_SETTINGS_FILE_NAME);
 	const data = `${JSON.stringify(next, null, 2)}\n`;
@@ -49,7 +53,7 @@ export async function readUiSettings(stateDir: string): Promise<UiSettings> {
 	return readUiSettingsUnlocked(stateDir);
 }
 
-/** Atomically and serially write UI settings (temp file + rename). */
-export async function writeUiSettings(stateDir: string, settings: UiSettings): Promise<UiSettings> {
-	return runSettingsOperation(() => writeUiSettingsUnlocked(stateDir, settings));
+/** Atomically and serially merge-write UI settings (temp file + rename). */
+export async function writeUiSettings(stateDir: string, patch: Partial<UiSettings>): Promise<UiSettings> {
+	return runSettingsOperation(() => writeUiSettingsUnlocked(stateDir, patch));
 }

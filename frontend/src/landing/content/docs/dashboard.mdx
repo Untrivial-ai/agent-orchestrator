@@ -1,168 +1,88 @@
 ---
 title: Dashboard
-description: Use the AO dashboard to monitor agents, respond to sessions, review PRs, manage projects, and open live terminals.
+description: Use the AO desktop app to supervise projects, sessions, pull requests, reviews, and previews.
 ---
 
-The AO dashboard is the control room for running agents. It shows what each session is doing, which PRs need review, where agents are blocked, and which projects are active.
+The Agent Orchestrator desktop app is the main control surface. It runs the local daemon, keeps projects and sessions visible, and lets you move between a worker's Chat or terminal, pull-request context, review runs, changed files, and browser preview.
 
-Start it with:
+## The App Shell
 
-```bash
-ao start
-```
+| Area | What it contains |
+| --- | --- |
+| **Sidebar** | Registered projects and their worker or orchestrator sessions. |
+| **Board / center pane** | Sessions grouped by their current derived state. |
+| **Session view** | Structured Chat or the live native Terminal UI. |
+| **Inspector** | Pull request, reviews, files, and browser preview for the selected session. |
 
-By default it opens at:
+AO remembers the session's committed interface mode. Opening a Chat session restores its paged conversation timeline; opening a TUI session reconnects to its terminal through the daemon mux.
 
-```text
-http://localhost:3000
-```
+## Read Session State
 
-## Read The Board
+AO does not persist a display-status label. It derives what you see from durable facts such as agent activity, termination, controller state, and current pull-request checks, reviews, and mergeability.
 
-The main dashboard groups sessions by what you need to do next.
+Common activity signals include:
 
-| Column      | What it means                                      | What you usually do                       |
-| ----------- | -------------------------------------------------- | ----------------------------------------- |
-| **Working** | Agent is actively coding or running commands       | Let it run                                |
-| **Pending** | Session exists but has not started useful work yet | Check if it stays here too long           |
-| **Review**  | PR is open and waiting for review                  | Review the PR or wait for CI              |
-| **Respond** | Agent needs input or hit a blocker                 | Open the session and reply                |
-| **Merge**   | PR is approved and checks are green                | Merge or let your merge workflow continue |
+- **Active** — the controller is currently working.
+- **Idle** — it is alive and ready for another instruction.
+- **Waiting for input** — the agent is at an empty prompt and can receive a follow-up.
+- **Blocked** — an approval or permission decision is pending; automation will not inject input.
+- **Exited** — the controller reported that it ended.
 
-Live merged sessions remain visible in the **Ready to merge / Merged** lane. Terminated runtimes, including terminated sessions whose PR is merged, appear in the collapsed **Archive** area and can be restored when you need to inspect or continue them. Expand Archive to switch between the default multi-column card layout and compact rows; AO remembers your choice.
+A failed or unknown runtime probe alone is not proof that a session is dead.
 
-When multiple projects are registered, the dashboard opens with a project overview. Pick a project to see its board, or use the project filter to scope dashboard, PR, and session views.
+## Work In Chat
 
-## Handle A Session
+Chat sessions show durable messages, provider activities, commands, plans, changed files, approvals, structured questions, usage, and compaction state. History loads in bounded pages so long-running sessions remain responsive.
 
-Click a session card to open its detail page.
+The composer sends a provider turn through the daemon. A Chat session can also open a session-scoped worktree shell without creating an agent TUI pane.
 
-Use the detail page to:
+## Work In Terminal UI
 
-- Read the current status, branch, linked issue, and linked PR.
-- See whether the agent is active, idle, blocked, waiting for input, or exited.
-- Inspect PR size, CI checks, review state, and unresolved comments.
-- Send a message to the agent.
-- Kill or restore the session.
-- Open the live terminal.
+TUI sessions preserve the selected harness's native terminal experience. The desktop terminal connects through one daemon WebSocket mux: tmux-backed on macOS/Linux and conpty-backed on Windows.
 
-For review comments, use **Ask Agent to Fix** when the right next step is obvious. Use a manual message when you need to add context or constrain the fix:
+Use the terminal for native prompts and interactive tools. Use AO's message controls for routine follow-ups so lifecycle reactions can apply the correct delivery policy.
 
-```text
-Keep this change limited to the API route. Do not refactor the shared client.
-```
+## Switch Interfaces
 
-## Review PRs
+Compatible Claude Code and Codex sessions show **Open Chat** or **Open Terminal UI**. AO replaces the controller inside the same session and worktree. If work is in progress, choose whether to let the current turn finish and drain or stop and interrupt it. Progress and recovery state survive daemon restarts.
 
-PR status lives on the session board and session detail pages. Cards move into **Review** or **Merge** when a linked PR needs attention, and the session detail view shows size, CI state, review decision, and unresolved threads.
+## Pull Requests And Reviews
 
-Use the board when you want a queue of sessions that need review; open a session when you need the full PR context.
+Once a session has a linked pull request, the inspector shows a concise summary:
 
-## Manage Projects
+- Pull-request identity and link.
+- CI state, including failing check names and links.
+- Reviewer information and unresolved-review counts.
+- Mergeability and reasons the pull request is not ready.
 
-The sidebar shows registered projects. Use it to move between projects, add another repository, or open a project's settings.
+AO can run configured reviewer agents, send review findings back to the worker, resolve review comments, and request a merge. Raw CI logs and full review bodies are not part of the concise desktop summary.
 
-Project settings let you edit behavior fields without changing the repository identity. That means you can change things like agent, runtime, tracker, SCM, and reactions, but AO keeps the registered path, storage key, and repository identity stable.
+## Browser Preview
 
-If a project is degraded because its local config is invalid or still in an older wrapped format, the dashboard shows a repair state instead of hiding the project.
+The Browser tab displays the preview target explicitly selected for the session with `ao preview`, `ao preview <url>`, or `ao preview start`. Each worker receives an isolated ephemeral browser profile, while tabs inside one worker share cookies and web storage.
 
-## Use The Terminal
+AO's browser bridge can support agent-driven navigation, snapshots, clicks, typing, screenshots, console inspection, and temporary network-metadata capture. Network capture is off by default, bounded, omits bodies and sensitive values, and expires automatically.
 
-Each session detail page includes a live terminal attached to the agent process.
+## Notifications
 
-Use the terminal to inspect what the agent is doing, recover from stuck prompts, or run a quick command in the session context. For normal guidance, prefer the message box; it is easier for the agent to treat as instruction.
+The notification center keeps durable alerts for sessions that need input, pull requests ready to merge, merged pull requests, and pull requests closed without merging. Use **Unread** and **All**, mark items read, or click through to the relevant session or pull request. Electron also shows app toasts while AO is running.
 
-AO has two terminal backends:
+## Connect Mobile
 
-| Backend              | Used when          | Default port |
-| -------------------- | ------------------ | ------------ |
-| tmux WebSocket mux   | `runtime: tmux`    | `14800`      |
-| direct PTY WebSocket | `runtime: process` | `14801`      |
+In settings, **Connect Mobile** enables an authenticated LAN listener and shows pairing details. The mobile app uses the same durable sessions, Chat history, and event stream. It supports Chat by default and can open a TUI session through the authenticated terminal mux.
 
-The terminal reconnects automatically when the WebSocket drops. If terminal output works but input feels awkward on mobile, send messages from the session controls instead.
+Connect Mobile is plaintext and intended only for a trusted home network. Turning it off closes the LAN listener.
 
-## Use AO On Mobile
+## Project Settings
 
-On smaller screens, the dashboard switches to a mobile layout:
+Project settings configure worker and orchestrator roles without changing the registered repository identity. The desktop app writes through the daemon API; it does not directly edit the database or run session logic in the renderer.
 
-- A bottom tab bar links to Dashboard and Orchestrator.
-- Sessions are ordered by urgency: Respond, Merge, Review, Pending, Working.
-- Tapping a card opens a bottom sheet with quick actions.
-- The terminal opens in a compact full-screen style.
+GitHub is the current shipped SCM observation path. Do not expect every tracker or SCM named in historical plugin documentation to be active in the Go rewrite.
 
-Mobile is useful for checking status and sending short replies. Long terminal work is still better on desktop.
-
-## Orchestrator Sessions
-
-When a project has an orchestrator session, the dashboard links to it from the project header or mobile tab bar.
-
-If multiple orchestrator sessions exist for the same project, `/orchestrators?project={projectId}` lets you choose one or start a new orchestrator session.
-
-Use the orchestrator view when you care about the whole agent fleet instead of one worker session.
-
-## Freshness And Updates
-
-The dashboard receives live session updates over `/api/events`. AO sends snapshots every five seconds. When sessions are added or removed, the dashboard refreshes the full session list from `/api/sessions`.
-
-If GitHub or GitLab rate limits are hit, PR details can become stale for a short time. The dashboard shows a warning banner and refreshes automatically when data is available again.
-
-The favicon and document title also change when sessions need attention, so you can keep the dashboard open in a background tab.
-
-## Routes
-
-| Route                                 | Use for                                   |
-| ------------------------------------- | ----------------------------------------- |
-| `/`                                   | Project overview or current project board |
-| `/projects/{projectId}`               | One project's board                       |
-| `/projects/{projectId}/settings`      | Project behavior settings                 |
-| `/settings`                           | Global app settings                       |
-| `/sessions/{id}`                      | Session detail and terminal               |
-| `/projects/{projectId}/sessions/{id}` | Project-scoped session detail             |
-| `/orchestrators?project={projectId}`  | Pick or start an orchestrator session     |
-
-Internal API routes such as `/api/events`, `/api/sessions`, `/api/projects`, and `/api/spawn` are used by the dashboard. They are not a stable public API yet.
-
-## Ports
-
-The full dashboard experience uses three ports:
-
-| Service                 | Default           | Config                                         |
-| ----------------------- | ----------------- | ---------------------------------------------- |
-| Dashboard HTTP          | `3000`            | `port` or `PORT`                               |
-| tmux terminal WebSocket | auto from `14800` | `terminalPort` or `TERMINAL_PORT`              |
-| direct PTY WebSocket    | auto from `14801` | `directTerminalPort` or `DIRECT_TERMINAL_PORT` |
-
-For remote access, prefer Tailscale and keep AO off the public internet. See [Remote access](/docs/configuration/remote-access).
-
-## Troubleshooting
-
-**The board is empty**  
-Check that the project is registered and that you are viewing the right project filter.
-
-**A session looks stale**  
-Wait one poll cycle, then refresh. If PR data is stale, check for a rate-limit banner.
-
-**Terminal does not connect**  
-Make sure the terminal WebSocket port is reachable. If you use a reverse proxy, it must forward WebSocket upgrade headers.
-
-**A project cannot be edited**  
-Fix the local config first. The dashboard only writes behavior fields when the project config loads cleanly.
-
-**A session needs input**  
-Open the session detail page and send a short, direct instruction. The agent receives it in the running session.
-
-## Next Steps
+## Next
 
 <Cards>
-	<Card title="Quickstart" href="/docs/quickstart" description="Start AO, spawn a session, and handle the first PR." />
-	<Card
-		title="Configuration"
-		href="/docs/configuration"
-		description="Understand global registry and local project settings."
-	/>
-	<Card
-		title="Remote access"
-		href="/docs/configuration/remote-access"
-		description="Open the dashboard from another device safely."
-	/>
+	<Card title="Quickstart" href="/docs/quickstart" description="Create and follow the first worker session." />
+	<Card title="Architecture" href="/docs/architecture" description="Understand the daemon, storage, events, and controller modes." />
+	<Card title="Examples" href="/docs/examples" description="Try practical desktop and CLI workflows." />
 </Cards>

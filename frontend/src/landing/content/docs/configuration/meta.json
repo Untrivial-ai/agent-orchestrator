@@ -1,5 +1,5 @@
 {
 	"title": "Configuration",
 	"defaultOpen": false,
-	"pages": ["projects", "reactions", "remote-access"]
+	"pages": ["projects", "lifecycle-automation", "remote-access"]
 }

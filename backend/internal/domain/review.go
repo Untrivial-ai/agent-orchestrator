@@ -3,6 +3,8 @@ package domain
 import (
 	"errors"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 )
 
 // ErrDuplicateReviewRun is returned by InsertReviewRun when a run already exists
@@ -22,10 +24,42 @@ type Review struct {
 	PRURL     string          `json:"prUrl"`
 	// ReviewerHandleID is the runtime handle of the live reviewer pane, reused
 	// across passes and exposed so the UI can attach its terminal.
-	ReviewerHandleID string    `json:"reviewerHandleId"`
-	AgentSessionID   string    `json:"agentSessionId"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ReviewerHandleID string `json:"reviewerHandleId"`
+	AgentSessionID   string `json:"agentSessionId"`
+	// ReviewerLaunchID is the AO runtime generation that owns the live reviewer
+	// pane on this row. It fences delayed hooks from an older replaced reviewer.
+	ReviewerLaunchID string `json:"-"`
+	// ReviewerActivityState is the latest activity hook reported by the review
+	// pane itself. It is separate from ReviewRun.Status so the UI can distinguish
+	// "review pass exists" from "reviewer is actively working right now".
+	ReviewerActivityState ActivityState `json:"reviewerActivityState,omitempty"`
+	// InterfaceMode selects the durable reviewer surface. Chat reviewers own a
+	// native conversation; TUI reviewers continue to use their terminal handle.
+	InterfaceMode          ReviewerInterfaceMode `json:"interfaceMode"`
+	ProviderConversationID string                `json:"providerConversationId"`
+	ControllerGeneration   string                `json:"controllerGeneration"`
+	ControllerError        string                `json:"controllerError"`
+	CreatedAt              time.Time             `json:"createdAt"`
+	UpdatedAt              time.Time             `json:"updatedAt"`
+}
+
+// ReviewerInterfaceMode selects the durable UI surface for a reviewer.
+type ReviewerInterfaceMode string
+
+const (
+	// ReviewerInterfaceTUI uses the reviewer's terminal handle.
+	ReviewerInterfaceTUI ReviewerInterfaceMode = "tui"
+	// ReviewerInterfaceChat uses a reviewer-owned native chat.
+	ReviewerInterfaceChat ReviewerInterfaceMode = "chat"
+)
+
+// ReviewerSurface gives clients one stable identifier for either reviewer UI.
+type ReviewerSurface struct {
+	Mode            ReviewerInterfaceMode `json:"mode"`
+	ReviewID        string                `json:"reviewId"`
+	Harness         ReviewerHarness       `json:"harness"`
+	HandleID        string                `json:"handleId,omitempty"`
+	ControllerError string                `json:"controllerError,omitempty"`
 }
 
 // ReviewRun is one review pass against a worker's PR.
@@ -38,7 +72,10 @@ type ReviewRun struct {
 	// legacy/single-run delivery.
 	BatchID string          `json:"batchId"`
 	Harness ReviewerHarness `json:"harness"`
-	PRURL   string          `json:"prUrl"`
+	// TriggerSource records whether this pass was requested by a user or by the
+	// daemon auto-review coordinator.
+	TriggerSource ReviewTriggerSource `json:"triggerSource" enum:"manual,auto"`
+	PRURL         string              `json:"prUrl"`
 	// TargetSHA is the PR head commit this pass reviewed.
 	TargetSHA string          `json:"targetSha"`
 	Status    ReviewRunStatus `json:"status"`
@@ -59,31 +96,47 @@ type ReviewRun struct {
 	AutoInjectReview bool `json:"autoInjectReview"`
 }
 
+// ReviewTriggerSource identifies who initiated a review pass.
+type ReviewTriggerSource string
+
+const (
+	// ReviewTriggerManual marks a user-initiated review pass.
+	ReviewTriggerManual ReviewTriggerSource = "manual"
+	// ReviewTriggerAuto marks a daemon-initiated review pass.
+	ReviewTriggerAuto ReviewTriggerSource = "auto"
+)
+
 // ReviewRunStatus is the lifecycle state of a single review pass.
-type ReviewRunStatus string
+type ReviewRunStatus = contract.AOReviewRunStatus
 
 // Review run statuses.
 const (
-	ReviewRunRunning   ReviewRunStatus = "running"
-	ReviewRunComplete  ReviewRunStatus = "complete"
-	ReviewRunDelivered ReviewRunStatus = "delivered"
-	ReviewRunFailed    ReviewRunStatus = "failed"
-	ReviewRunCancelled ReviewRunStatus = "cancelled"
+	ReviewRunRunning   = contract.AOReviewRunRunning
+	ReviewRunComplete  = contract.AOReviewRunComplete
+	ReviewRunDelivered = contract.AOReviewRunDelivered
+	ReviewRunFailed    = contract.AOReviewRunFailed
+	ReviewRunCancelled = contract.AOReviewRunCancelled
 )
 
 // ReviewVerdict is the outcome a reviewer reports. The empty verdict marks a
 // run that has not produced an outcome yet.
-type ReviewVerdict string
+type ReviewVerdict = contract.AOReviewVerdict
 
 // Review verdicts.
 const (
-	VerdictNone             ReviewVerdict = ""
-	VerdictApproved         ReviewVerdict = "approved"
-	VerdictChangesRequested ReviewVerdict = "changes_requested"
+	VerdictNone             = contract.AOReviewVerdictNone
+	VerdictApproved         = contract.AOReviewVerdictApproved
+	VerdictChangesRequested = contract.AOReviewVerdictChangesRequested
 )
 
-// Valid reports whether v is a verdict a reviewer may submit (the empty verdict
-// is a stored default, not a submittable one).
-func (v ReviewVerdict) Valid() bool {
-	return v == VerdictApproved || v == VerdictChangesRequested
+// CurrentHeadReviewRun is one AO review pass recorded against a PR's current
+// head commit, reduced to the fields a derived read model needs.
+type CurrentHeadReviewRun struct {
+	SessionID SessionID
+	Harness   ReviewerHarness
+	PRURL     string
+	Status    ReviewRunStatus
+	Verdict   ReviewVerdict
+	ID        string
+	CreatedAt time.Time
 }

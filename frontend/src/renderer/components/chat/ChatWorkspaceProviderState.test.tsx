@@ -1,4 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { render as rtlRender, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import {
@@ -9,6 +11,15 @@ import {
 	chatFixtureThreadError,
 } from "../../lib/chat-fixture";
 import type { ConversationSnapshot } from "../../types/conversation";
+import { TooltipProvider } from "../ui/tooltip";
+
+function render(ui: ReactElement) {
+	const result = rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
+	return {
+		...result,
+		rerender: (nextUi: ReactElement) => result.rerender(<TooltipProvider>{nextUi}</TooltipProvider>),
+	};
+}
 
 // The surface-level wiring: which snapshot fields produce which chrome, and — the part
 // that is easy to get wrong — which combinations stay quiet.
@@ -17,6 +28,16 @@ const MODELS = [
 	{ id: "gpt-5.6-terra", displayName: "gpt-5.6-terra", default: true },
 	{ id: "gpt-5.6-terra-mini", displayName: "gpt-5.6-terra-mini", default: false },
 ];
+
+function withoutPendingApproval(snapshot: ConversationSnapshot): ConversationSnapshot {
+	return {
+		...snapshot,
+		items: snapshot.items.filter(
+			(item) =>
+				!(item.kind === "activity" && item.activityKind === "approval" && item.status === "pending"),
+		),
+	};
+}
 
 describe("reasoning", () => {
 	it("keeps provider reasoning out of the conversation chrome", () => {
@@ -119,7 +140,77 @@ describe("plan", () => {
 });
 
 describe("provider state chrome", () => {
-	it("puts the credential demand above everything else that is wrong", () => {
+	it.each(["completion", "notification", "both"])("keeps the %s failure in chat while preserving sign-in guidance", (source) => {
+		const reason = "Provider access denied.\n\nContact your administrator.";
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureReauth,
+			account: { ...chatFixtureReauth.account, reauthReason: reason },
+			turns: chatFixtureReauth.turns.map((turn) =>
+				turn.id === "turn-2" ? { ...turn, state: "failed", errorMessage: source === "notification" ? undefined : reason } : turn,
+			),
+			items: [
+				...chatFixtureReauth.items.filter(
+					(item) => !(item.kind === "activity" && item.detail?.event === "auth.reauth_required"),
+				),
+				{
+					kind: "activity",
+					id: "transient-provider-failure",
+					turnId: "turn-2",
+					sequence: chatFixtureReauth.latestSequence + 1,
+					revision: 1,
+					activityKind: "system",
+					status: "failed",
+					summary: "Provider access denied.",
+					detail: { event: "provider.failure", text: "Contact your administrator." },
+					createdAt: "2026-08-03T00:00:00Z",
+				},
+				{
+					kind: "activity",
+					id: "earlier-recovered-warning",
+					turnId: "turn-2",
+					sequence: chatFixtureReauth.latestSequence + 2,
+					revision: 1,
+					activityKind: "system",
+					status: "completed",
+					summary: "Earlier recovered warning",
+					detail: { event: "provider.failure" },
+					createdAt: "2026-08-03T00:00:00Z",
+				},
+			],
+			latestSequence: chatFixtureReauth.latestSequence + 2,
+		};
+		if (source !== "completion") {
+			snapshot.items.push({
+				kind: "activity", id: "terminal-error", turnId: "turn-2",
+				sequence: ++snapshot.latestSequence, revision: 1,
+				activityKind: "error", status: "failed", summary: reason,
+				createdAt: "2026-08-03T00:00:00Z",
+			});
+		}
+		const { rerender } = render(<ChatWorkspace snapshot={snapshot} />);
+		expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to keep going");
+		expect(screen.getByRole("alert")).toHaveTextContent("login");
+		expect(screen.getByRole("alert")).not.toHaveTextContent("Provider access denied");
+		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+		expect(screen.getByText(/Contact your administrator/)).toBeInTheDocument();
+		expect(screen.getByText("Earlier recovered warning")).toBeInTheDocument();
+
+		rerender(<ChatWorkspace snapshot={structuredClone(snapshot)} />);
+		expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to keep going");
+		expect(screen.getByRole("alert")).toHaveTextContent("login");
+		expect(screen.getByRole("alert")).not.toHaveTextContent("Provider access denied");
+		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+
+		rerender(
+			<ChatWorkspace
+				snapshot={{ ...snapshot, account: { ...snapshot.account, reauthReason: "Session expired." } }}
+			/>,
+		);
+		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+		expect(screen.getByRole("alert")).toHaveTextContent("Session expired.");
+	});
+
+	it("keeps credential recovery available when the failure is not in loaded history", () => {
 		render(<ChatWorkspace snapshot={chatFixtureReauth} />);
 		expect(screen.getByRole("alert")).toHaveTextContent(/Sign in again to keep going/);
 	});
@@ -151,18 +242,19 @@ describe("model reroute", () => {
 	it("names what answered rather than what was asked for", () => {
 		render(
 			<ChatWorkspace
-				snapshot={chatFixtureRerouted}
+				snapshot={withoutPendingApproval(chatFixtureRerouted)}
 				models={MODELS}
 				onChooseSettings={vi.fn()}
 			/>,
 		);
 		// The control the user reads to know which model is in play now names the model
 		// that replied, and says whose place it took.
-		expect(
-			screen.getByRole("button", {
-				name: /answered with gpt-5\.6-terra-mini instead of gpt-5\.6-terra/,
-			}),
-		).toBeInTheDocument();
+		const trigger = screen.getByRole("button", {
+			name: "Model and reasoning effort for the next turn",
+		});
+		expect(trigger.getAttribute("title")).toMatch(
+			/answered with gpt-5\.6-terra-mini instead of gpt-5\.6-terra/,
+		);
 		expect(screen.getByLabelText(/Substituted for gpt-5\.6-terra$/)).toBeInTheDocument();
 	});
 
@@ -180,8 +272,30 @@ describe("model reroute", () => {
 	});
 
 	it("keeps naming the chosen model when nothing was substituted", () => {
-		render(<ChatWorkspace snapshot={chatFixture} models={MODELS} onChooseSettings={vi.fn()} />);
-		expect(screen.getByText("gpt-5.6-terra")).toBeInTheDocument();
+		render(
+			<ChatWorkspace
+				snapshot={withoutPendingApproval(chatFixture)}
+				models={MODELS}
+				onChooseSettings={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText(/gpt-5\.6-terra/)).toBeInTheDocument();
 		expect(screen.queryByLabelText(/Substituted for/)).not.toBeInTheDocument();
+	});
+});
+
+
+describe("empty project session permissions", () => {
+	it.each(["orchestrator", "worker"] as const)("exposes permissions and project remembering for an empty %s", async (role) => {
+		const user = userEvent.setup();
+		const remember = vi.fn();
+		render(<ChatWorkspace sessionRole={role} snapshot={{ ...chatFixture, items: [], turns: [],
+			controller: { state: "ready" }, settings: { approvalMode: "auto" } }}
+			onChooseSettings={vi.fn()} onRememberPermissions={remember} />);
+		const picker = screen.getByRole("button", { name: "Approval policy for the next turn" });
+		expect(picker).toBeEnabled();
+		await user.click(picker);
+		await user.click(screen.getByRole("menuitem", { name: "Remember for this project" }));
+		expect(remember).toHaveBeenCalledWith("auto");
 	});
 });

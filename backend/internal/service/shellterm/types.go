@@ -15,7 +15,6 @@
 package shellterm
 
 import (
-	"path/filepath"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -41,17 +40,27 @@ type ShellTerminal struct {
 type OpenShellTerminalInput struct {
 	ProjectID domain.ProjectID `json:"projectId,omitempty"`
 	SessionID domain.SessionID `json:"sessionId,omitempty"`
+	Shell     string           `json:"shell,omitempty"`
 }
 
-// shellTerminalTitle labels a tab by the directory the shell started in, which
-// is the only thing that distinguishes one shell pane from another in the UI.
-// A path that has no usable base (a bare root, or an empty string) falls back
-// to a generic label rather than rendering an empty tab.
-func shellTerminalTitle(workingDir string) string {
-	base := filepath.Base(workingDir)
-	switch base {
-	case "", ".", string(filepath.Separator):
-		return "Shell"
-	}
-	return base
+// InitialInputReadyState describes a terminal state that is ready to receive
+// the command's initial input.
+type InitialInputReadyState struct {
+	Text      string
+	RawPrefix string
+}
+
+// OpenCommandTerminalInput is a daemon-trusted command terminal request. It
+// is intentionally separate from OpenShellTerminalInput: public callers may
+// open only the user's login shell, while backend callers provide a reviewed
+// command. InitialInput and InitialInputReadyStates are private backend-only
+// values from the reviewed auth registry; the input is sent only after the
+// harness renders one of its known editor-ready states.
+type OpenCommandTerminalInput struct {
+	Argv                    []string
+	Env                     map[string]string
+	WorkingDir              string
+	Title                   string
+	InitialInput            string
+	InitialInputReadyStates []InitialInputReadyState
 }

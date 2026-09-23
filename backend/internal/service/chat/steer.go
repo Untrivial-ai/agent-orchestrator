@@ -41,6 +41,22 @@ var (
 	// ErrSteerTextRequired refuses an empty steer. There is no keystroke concept in
 	// Chat mode: an empty body is a caller bug, not a way to nudge the agent.
 	ErrSteerTextRequired = errors.New("steer text is required")
+	// ErrTurnNotQueued reports a selected source that has already dispatched,
+	// settled, or been claimed by another promotion.
+	ErrTurnNotQueued = errors.New("turn is not queued")
+	// ErrPromotionUncertain prevents automatic redelivery after the provider may
+	// have accepted guidance but AO could not durably record the result.
+	ErrPromotionUncertain = errors.New("queued turn promotion delivery is uncertain")
+	// ErrSteerDeliveryUncertain means AO reserved an idempotency handle but cannot
+	// prove whether the provider accepted it. Reusing the handle is safe and must
+	// never contact the provider again; inventing a fresh handle is not.
+	ErrSteerDeliveryUncertain = errors.New("steer delivery is uncertain")
+	// ErrSteerIdempotencyConflict refuses reuse of one handle for different
+	// guidance. Dispatching either request would make the handle lie about identity.
+	ErrSteerIdempotencyConflict = errors.New("steer idempotency handle belongs to different guidance")
+	// ErrSteerContentUnsupported means the provider cannot accept every structured
+	// block. The whole queued message stays undelivered.
+	ErrSteerContentUnsupported = errors.New("steer content is unsupported")
 )
 
 // SteerResult is what a steer did, for a client that has to attribute it.
@@ -52,6 +68,23 @@ type SteerResult struct {
 	// ActivityID is the timeline row recording the guidance, so a client can
 	// reconcile an optimistic bubble with the durable one instead of showing both.
 	ActivityID string
+}
+
+// SteerOrSendResult identifies whether one atomic request joined an active turn
+// or opened a normal turn while the conversation was idle.
+type SteerOrSendResult struct {
+	Steered   bool
+	Duplicate bool
+	Steer     SteerResult
+	Turn      domain.ConversationTurn
+}
+
+// PromoteQueuedTurnResult attributes a durable queue item to the running turn
+// that absorbed it.
+type PromoteQueuedTurnResult struct {
+	SourceTurnID   string
+	ProviderTurnID string
+	ActivityID     string
 }
 
 // maxSteerSummaryRunes bounds the one-line label a steer lands on the timeline
@@ -78,10 +111,212 @@ func (s *Service) Steer(
 	if err != nil {
 		return SteerResult{}, err
 	}
-	if _, ok := controller.conv.(ports.ChatSteerer); !ok {
-		return SteerResult{}, ErrSteerUnsupported
-	}
 	return controller.Steer(ctx, msg)
+}
+
+// RecoverSteer reads only the durable receipt. A missing controller or a changed
+// interface cannot turn an earlier accepted/uncertain delivery into a rejection.
+func (s *Service) RecoverSteer(ctx context.Context, id domain.SessionID, clientMessageID string) (SteerResult, error) {
+	if clientMessageID == "" {
+		return SteerResult{}, ErrSteerDeliveryUncertain
+	}
+	conversation, err := s.store.ConversationForSession(ctx, id)
+	if err != nil {
+		return SteerResult{}, fmt.Errorf("%w: load conversation: %w", ErrSteerDeliveryUncertain, err)
+	}
+	delivery, found, err := s.store.SteerDelivery(ctx, conversation.ID, clientMessageID)
+	if err != nil {
+		return SteerResult{}, fmt.Errorf("%w: load receipt: %w", ErrSteerDeliveryUncertain, err)
+	}
+	if !found {
+		return SteerResult{}, ErrSteerDeliveryUncertain
+	}
+	return replaySteerDelivery(delivery, delivery.RequestJSON)
+}
+
+// SteerOrSend routes one idempotent request through the session's live Chat
+// controller without exposing a state-check race to the caller.
+func (s *Service) SteerOrSend(
+	ctx context.Context,
+	id domain.SessionID,
+	msg ports.ChatUserMessage,
+	recoverOnly bool,
+) (SteerOrSendResult, error) {
+	if strings.TrimSpace(msg.Text) == "" && !recoverOnly {
+		return SteerOrSendResult{}, ErrSteerTextRequired
+	}
+	if msg.ClientMessageID == "" {
+		return SteerOrSendResult{}, ErrSteerDeliveryUncertain
+	}
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return SteerOrSendResult{}, err
+	}
+	controller, err := s.Controller(id)
+	if err != nil {
+		return SteerOrSendResult{}, err
+	}
+	return controller.SteerOrSend(ctx, msg, recoverOnly)
+}
+
+// PromoteQueuedTurn delivers one already queued turn into the active turn. The
+// daemon reads the queued content; callers identify it but cannot replace it.
+func (s *Service) PromoteQueuedTurn(
+	ctx context.Context,
+	id domain.SessionID,
+	turnID string,
+) (PromoteQueuedTurnResult, error) {
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	controller, err := s.Controller(id)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	if _, ok := controller.conv.(ports.ChatSteerer); !ok {
+		return PromoteQueuedTurnResult{}, ErrSteerUnsupported
+	}
+	return controller.PromoteQueuedTurn(ctx, turnID)
+}
+
+// PromoteQueuedTurn reserves a durable queue item, asks the provider to absorb
+// it, then records the destination and retires the source as one store operation.
+func (c *Controller) PromoteQueuedTurn(
+	ctx context.Context,
+	turnID string,
+) (PromoteQueuedTurnResult, error) {
+	steerer, ok := c.conv.(ports.ChatSteerer)
+	if !ok {
+		return PromoteQueuedTurnResult{}, ErrSteerUnsupported
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.handoffActive() {
+		return PromoteQueuedTurnResult{}, ErrControllerHandoff
+	}
+
+	source, err := c.store.TurnByID(ctx, turnID)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	if source.ConversationID != c.conversation.ID {
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s", domain.ErrNoConversationTurn, turnID)
+	}
+	if source.State != domain.TurnStateQueued {
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s", ErrTurnNotQueued, turnID)
+	}
+
+	target, ok := c.awaitAcknowledgedTurn(ctx)
+	if !ok {
+		return PromoteQueuedTurnResult{}, ErrNoActiveTurn
+	}
+	queued, err := c.store.ReserveQueuedTurnForPromotion(ctx, c.conversation.ID, turnID, c.now())
+	if err != nil {
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s: %w", ErrTurnNotQueued, turnID, err)
+	}
+	release := func() {
+		if releaseErr := c.store.ReleaseQueuedTurnPromotion(
+			context.WithoutCancel(ctx), c.conversation.ID, turnID); releaseErr != nil {
+			c.log.Error("failed to release queued turn promotion", "turn", turnID, "error", releaseErr)
+		}
+	}
+	if queued.Origin != domain.MessageOriginHuman {
+		release()
+		return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %s", ErrTurnNotQueued, turnID)
+	}
+	settleUncertain := func(cause error) error {
+		// A transport error commonly cancels the request context after the provider
+		// may already have accepted the steer. The durable safety transition must
+		// survive that cancellation or the source remains visibly queued forever.
+		settleCtx := context.WithoutCancel(ctx)
+		if settleErr := c.store.SettleTurnByID(
+			settleCtx, turnID, domain.TurnStateFailed, ErrPromotionUncertain.Error(), c.now()); settleErr != nil {
+			c.log.Error("failed to settle uncertain queued turn promotion",
+				"turn", turnID, "cause", cause, "error", settleErr)
+		}
+		return fmt.Errorf("%w: %w", ErrPromotionUncertain, cause)
+	}
+
+	var content []ports.ChatContent
+	if queued.DeliveryContentJSON != "" {
+		if err := json.Unmarshal([]byte(queued.DeliveryContentJSON), &content); err != nil {
+			release()
+			return PromoteQueuedTurnResult{}, fmt.Errorf("decode queued chat content: %w", err)
+		}
+	}
+	msg := ports.ChatUserMessage{
+		Text: queued.Text, Content: content, Origin: queued.Origin,
+		ClientMessageID: queued.ClientMessageID,
+	}
+	ref, err := steerer.Steer(ctx, target, msg)
+	if err != nil {
+		classified := classify(err)
+		switch {
+		case errors.Is(err, ports.ErrChatNoSteerableTurn):
+			release()
+			return PromoteQueuedTurnResult{}, ErrNoActiveTurn
+		case errors.Is(err, ports.ErrChatTurnNotSteerable):
+			release()
+			return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %w", ErrTurnNotSteerable, err)
+		case errors.Is(err, ports.ErrChatSteerContentUnsupported):
+			release()
+			return PromoteQueuedTurnResult{}, fmt.Errorf("%w: %w", ErrSteerContentUnsupported, err)
+		case errors.Is(classified, ErrProviderRefused):
+			release()
+			return PromoteQueuedTurnResult{}, classified
+		default:
+			return PromoteQueuedTurnResult{}, settleUncertain(
+				fmt.Errorf("steer queued turn %s: %w", turnID, err))
+		}
+	}
+	landed := ref.ProviderTurnID
+	if landed == "" {
+		landed = target
+	}
+	activityID := c.newID()
+	activity, err := makeSteerActivity(activityID, msg, turnID)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, settleUncertain(err)
+	}
+	if err := c.store.CompleteQueuedTurnPromotion(
+		ctx, c.conversation.ID, turnID, landed, activity, c.now()); err != nil {
+		return PromoteQueuedTurnResult{}, settleUncertain(err)
+	}
+	return PromoteQueuedTurnResult{
+		SourceTurnID: turnID, ProviderTurnID: landed, ActivityID: activityID,
+	}, nil
+}
+
+type durableSteerRefusal struct {
+	kind           domain.ConversationSteerRejectionKind
+	cause          error
+	reserveContext string
+	persistContext string
+}
+
+func (c *Controller) rejectSteerBeforeDispatch(
+	ctx context.Context,
+	clientMessageID, requestJSON string,
+	refusal durableSteerRefusal,
+) (SteerResult, error) {
+	if clientMessageID == "" {
+		return SteerResult{}, refusal.cause
+	}
+	delivery, created, err := c.store.ReserveSteerDelivery(
+		ctx, c.conversation.ID, clientMessageID, requestJSON, c.now())
+	if err != nil {
+		return SteerResult{}, fmt.Errorf("%w: %s: %w",
+			ErrSteerDeliveryUncertain, refusal.reserveContext, err)
+	}
+	if !created {
+		return replaySteerDelivery(delivery, requestJSON)
+	}
+	if err := c.store.RejectSteerDelivery(
+		context.WithoutCancel(ctx), c.conversation.ID, clientMessageID,
+		refusal.kind, refusal.cause.Error(), c.now()); err != nil {
+		return SteerResult{}, fmt.Errorf("%w: %s: %w",
+			ErrSteerDeliveryUncertain, refusal.persistContext, err)
+	}
+	return SteerResult{}, refusal.cause
 }
 
 // Steer hands guidance to the provider for the turn currently in flight, then
@@ -94,18 +329,52 @@ func (s *Service) Steer(
 // exactly that window, the second after someone realizes they sent the wrong thing,
 // so the same helper Interrupt uses to ride out that gap is used here.
 //
-// The provider is asked first and AO writes second. If the provider declines,
-// nothing has been recorded — a timeline claiming guidance the agent never received
-// would be worse than the refusal, because the user would stop waiting for it.
+// AO durably reserves a caller-supplied client handle before provider I/O. A
+// definitive refusal settles that handle as rejected, success records the visible
+// activity and accepted result atomically, and any gap between those facts remains
+// uncertain forever. That fail-closed state is what makes a retry unable to deliver
+// the same guidance twice even when the provider ignores the client handle.
 func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (SteerResult, error) {
-	steerer, ok := c.conv.(ports.ChatSteerer)
-	if !ok {
-		return SteerResult{}, ErrSteerUnsupported
-	}
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	return c.steerLocked(ctx, msg)
+}
+
+func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage) (SteerResult, error) {
+
+	requestJSON, err := encodeSteerDeliveryRequest(msg)
+	if err != nil {
+		return SteerResult{}, err
+	}
+	if msg.ClientMessageID != "" {
+		delivery, found, loadErr := c.store.SteerDelivery(
+			ctx, c.conversation.ID, msg.ClientMessageID)
+		if loadErr != nil {
+			return SteerResult{}, fmt.Errorf("%w: load prior result: %w",
+				ErrSteerDeliveryUncertain, loadErr)
+		}
+		if found {
+			return replaySteerDelivery(delivery, requestJSON)
+		}
+	}
 	if c.handoffActive() {
-		return SteerResult{}, ErrControllerHandoff
+		return c.rejectSteerBeforeDispatch(ctx, msg.ClientMessageID, requestJSON,
+			durableSteerRefusal{
+				kind:           domain.ConversationSteerRejectedInterfaceTransition,
+				cause:          ErrControllerHandoff,
+				reserveContext: "reserve interface-transition refusal",
+				persistContext: "persist interface-transition refusal",
+			})
+	}
+	steerer, ok := c.conv.(ports.ChatSteerer)
+	if !ok {
+		return c.rejectSteerBeforeDispatch(ctx, msg.ClientMessageID, requestJSON,
+			durableSteerRefusal{
+				kind:           domain.ConversationSteerRejectedUnsupported,
+				cause:          ErrSteerUnsupported,
+				reserveContext: "reserve unsupported result",
+				persistContext: "persist unsupported result",
+			})
 	}
 
 	turn, ok := c.awaitAcknowledgedTurn(ctx)
@@ -113,34 +382,231 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 		// Nothing is in flight. Reusing the interrupt sentinel keeps one code for
 		// "there is no turn" across every command that needs one; the endpoint says
 		// what to do about it.
-		return SteerResult{}, ErrNoActiveTurn
+		return c.rejectSteerBeforeDispatch(ctx, msg.ClientMessageID, requestJSON,
+			durableSteerRefusal{
+				kind:           domain.ConversationSteerRejectedNoActiveTurn,
+				cause:          ErrNoActiveTurn,
+				reserveContext: "reserve refusal",
+				persistContext: "persist no-active-turn refusal",
+			})
+	}
+	if msg.ClientMessageID != "" {
+		delivery, created, reserveErr := c.store.ReserveSteerDelivery(
+			ctx, c.conversation.ID, msg.ClientMessageID, requestJSON, c.now())
+		if reserveErr != nil {
+			return SteerResult{}, fmt.Errorf("%w: reserve delivery: %w",
+				ErrSteerDeliveryUncertain, reserveErr)
+		}
+		if !created {
+			return replaySteerDelivery(delivery, requestJSON)
+		}
 	}
 
 	ref, err := steerer.Steer(ctx, turn, msg)
 	if err != nil {
-		switch {
-		case errors.Is(err, ports.ErrChatNoSteerableTurn):
-			// The turn ended, or was replaced, between AO's check and the provider's.
-			// The provider is the authority on that, and losing the race is ordinary.
-			return SteerResult{}, ErrNoActiveTurn
-		case errors.Is(err, ports.ErrChatTurnNotSteerable):
-			return SteerResult{}, fmt.Errorf("%w: %w", ErrTurnNotSteerable, err)
+		kind, definitive, refused := classifySteerRejection(err)
+		if definitive {
+			if msg.ClientMessageID != "" {
+				if rejectErr := c.store.RejectSteerDelivery(
+					context.WithoutCancel(ctx), c.conversation.ID, msg.ClientMessageID,
+					kind, refused.Error(), c.now()); rejectErr != nil {
+					return SteerResult{}, fmt.Errorf("%w: persist provider refusal: %w",
+						ErrSteerDeliveryUncertain, rejectErr)
+				}
+			}
+			return SteerResult{}, refused
 		}
-		return SteerResult{}, classify(fmt.Errorf("steer turn %s: %w", turn, err))
+		wrapped := classify(fmt.Errorf("steer turn %s: %w", turn, err))
+		if msg.ClientMessageID != "" {
+			return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, wrapped)
+		}
+		return SteerResult{}, wrapped
 	}
 
 	landed := ref.ProviderTurnID
 	if landed == "" {
 		landed = turn
 	}
-	activityID, err := c.recordSteer(ctx, landed, msg)
+	if msg.ClientMessageID == "" {
+		activityID, recordErr := c.recordSteer(ctx, landed, msg)
+		if recordErr != nil {
+			// The guidance IS with the agent; only AO's record of it failed. Reporting the
+			// error rather than swallowing it, because a steer the timeline never mentions
+			// is a conversation whose next answer has no visible cause.
+			return SteerResult{ProviderTurnID: landed}, recordErr
+		}
+		return SteerResult{ProviderTurnID: landed, ActivityID: activityID}, nil
+	}
+	activityID := c.newID()
+	activity, err := makeSteerActivity(activityID, msg, "")
 	if err != nil {
-		// The guidance IS with the agent; only AO's record of it failed. Reporting the
-		// error rather than swallowing it, because a steer the timeline never mentions
-		// is a conversation whose next answer has no visible cause.
-		return SteerResult{ProviderTurnID: landed}, err
+		return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, err)
+	}
+	if err := c.store.CompleteSteerDelivery(
+		context.WithoutCancel(ctx), c.conversation.ID, msg.ClientMessageID,
+		landed, activity, c.now()); err != nil {
+		return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, err)
 	}
 	return SteerResult{ProviderTurnID: landed, ActivityID: activityID}, nil
+}
+
+// SteerOrSend selects and persists one delivery outcome while holding the same
+// lock used by ordinary sends and steering.
+func (c *Controller) SteerOrSend(
+	ctx context.Context,
+	msg ports.ChatUserMessage,
+	recoverOnly bool,
+) (SteerOrSendResult, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	if existing, found, err := c.store.ConversationMessageByClientID(
+		ctx, c.conversation.ID, msg.ClientMessageID,
+	); err != nil {
+		return SteerOrSendResult{}, fmt.Errorf("recover sent message: %w", err)
+	} else if found {
+		turn, err := c.store.TurnByID(ctx, existing.TurnID)
+		if err != nil {
+			return SteerOrSendResult{}, fmt.Errorf("recover sent turn: %w", err)
+		}
+		return SteerOrSendResult{Duplicate: true, Turn: turn}, nil
+	}
+
+	requestJSON, err := encodeSteerDeliveryRequest(msg)
+	if err != nil {
+		return SteerOrSendResult{}, err
+	}
+	if delivery, found, err := c.store.SteerDelivery(
+		ctx, c.conversation.ID, msg.ClientMessageID,
+	); err != nil {
+		return SteerOrSendResult{}, fmt.Errorf("%w: load prior result: %w", ErrSteerDeliveryUncertain, err)
+	} else if found {
+		replayRequest := requestJSON
+		if recoverOnly {
+			replayRequest = delivery.RequestJSON
+		}
+		steered, replayErr := replaySteerDelivery(delivery, replayRequest)
+		if replayErr == nil {
+			return SteerOrSendResult{Steered: true, Duplicate: true, Steer: steered}, nil
+		}
+		if !errors.Is(replayErr, ErrNoActiveTurn) || recoverOnly {
+			return SteerOrSendResult{}, replayErr
+		}
+	}
+	if recoverOnly {
+		return SteerOrSendResult{}, ErrSteerDeliveryUncertain
+	}
+
+	if _, active := c.awaitAcknowledgedTurn(ctx); active {
+		steered, err := c.steerLocked(ctx, msg)
+		if err == nil {
+			return SteerOrSendResult{Steered: true, Steer: steered}, nil
+		}
+		if !errors.Is(err, ErrNoActiveTurn) {
+			return SteerOrSendResult{}, err
+		}
+	}
+
+	turn, err := c.sendLocked(ctx, msg, false)
+	if err != nil {
+		return SteerOrSendResult{}, err
+	}
+	return SteerOrSendResult{Turn: turn}, nil
+}
+
+type steerDeliveryRequest struct {
+	Text     string                  `json:"text"`
+	Content  []ports.ChatContent     `json:"content,omitempty"`
+	Origin   domain.MessageOrigin    `json:"origin"`
+	Settings deliveryRequestSettings `json:"settings"`
+}
+
+func encodeSteerDeliveryRequest(msg ports.ChatUserMessage) (string, error) {
+	encoded, err := json.Marshal(steerDeliveryRequest{
+		Text: msg.Text, Content: msg.Content, Origin: normalizeOrigin(msg.Origin),
+		Settings: deliveryRequestSettings{
+			Model: msg.Settings.Model, Effort: msg.Settings.Effort, Approval: msg.Settings.Approval,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode steer delivery request: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func replaySteerDelivery(
+	delivery domain.ConversationSteerDelivery,
+	requestJSON string,
+) (SteerResult, error) {
+	if delivery.RequestJSON != requestJSON {
+		return SteerResult{}, ErrSteerIdempotencyConflict
+	}
+	switch delivery.State {
+	case domain.ConversationSteerAccepted:
+		return SteerResult{
+			ProviderTurnID: delivery.ProviderTurnID,
+			ActivityID:     delivery.ActivityID,
+		}, nil
+	case domain.ConversationSteerRejected:
+		return SteerResult{}, replaySteerRejection(delivery)
+	case domain.ConversationSteerReserved:
+		return SteerResult{}, ErrSteerDeliveryUncertain
+	default:
+		return SteerResult{}, fmt.Errorf("%w: invalid durable state %q",
+			ErrSteerDeliveryUncertain, delivery.State)
+	}
+}
+
+type storedSteerRejection struct {
+	message string
+	cause   error
+}
+
+func (e storedSteerRejection) Error() string { return e.message }
+func (e storedSteerRejection) Unwrap() error { return e.cause }
+
+func replaySteerRejection(delivery domain.ConversationSteerDelivery) error {
+	var cause error
+	switch delivery.RejectionKind {
+	case domain.ConversationSteerRejectedNoActiveTurn:
+		cause = ErrNoActiveTurn
+	case domain.ConversationSteerRejectedUnsupported:
+		cause = ErrSteerUnsupported
+	case domain.ConversationSteerRejectedTurnNotSteerable:
+		cause = ErrTurnNotSteerable
+	case domain.ConversationSteerRejectedContentUnsupported:
+		cause = ErrSteerContentUnsupported
+	case domain.ConversationSteerRejectedByProvider:
+		cause = ErrProviderRefused
+	case domain.ConversationSteerRejectedInterfaceTransition:
+		cause = ErrControllerHandoff
+	default:
+		return fmt.Errorf("%w: invalid durable rejection %q",
+			ErrSteerDeliveryUncertain, delivery.RejectionKind)
+	}
+	return storedSteerRejection{message: delivery.RejectionMessage, cause: cause}
+}
+
+func classifySteerRejection(
+	err error,
+) (domain.ConversationSteerRejectionKind, bool, error) {
+	switch {
+	case errors.Is(err, ports.ErrChatNoSteerableTurn):
+		// The turn ended, or was replaced, between AO's check and the provider's.
+		// The provider is the authority on that, and losing the race is ordinary.
+		return domain.ConversationSteerRejectedNoActiveTurn, true, ErrNoActiveTurn
+	case errors.Is(err, ports.ErrChatTurnNotSteerable):
+		return domain.ConversationSteerRejectedTurnNotSteerable, true,
+			fmt.Errorf("%w: %w", ErrTurnNotSteerable, err)
+	case errors.Is(err, ports.ErrChatSteerContentUnsupported):
+		return domain.ConversationSteerRejectedContentUnsupported, true,
+			fmt.Errorf("%w: %w", ErrSteerContentUnsupported, err)
+	}
+	classified := classify(err)
+	if errors.Is(classified, ErrProviderRefused) {
+		return domain.ConversationSteerRejectedByProvider, true, classified
+	}
+	return "", false, classified
 }
 
 // recordSteer writes the guidance onto the turn that took it.
@@ -163,6 +629,23 @@ func (c *Controller) recordSteer(
 	providerTurnID string,
 	msg ports.ChatUserMessage,
 ) (string, error) {
+	id := c.newID()
+	activity, err := makeSteerActivity(id, msg, "")
+	if err != nil {
+		return "", err
+	}
+	if err := c.store.UpsertActivity(ctx, c.conversation.ID, providerTurnID,
+		activity, c.now()); err != nil {
+		return "", fmt.Errorf("record steer on turn %s: %w", providerTurnID, err)
+	}
+	return id, nil
+}
+
+func makeSteerActivity(
+	id string,
+	msg ports.ChatUserMessage,
+	sourceTurnID string,
+) (domain.ConversationActivity, error) {
 	detail := map[string]any{
 		"event":  "steer",
 		"text":   msg.Text,
@@ -171,32 +654,28 @@ func (c *Controller) recordSteer(
 	if msg.ClientMessageID != "" {
 		detail["clientMessageId"] = msg.ClientMessageID
 	}
+	if sourceTurnID != "" {
+		detail["sourceTurnId"] = sourceTurnID
+	}
+	if len(msg.Content) > 0 {
+		detail["content"] = msg.Content
+	}
 	encoded, err := json.Marshal(detail)
 	if err != nil {
-		return "", fmt.Errorf("encode steer detail: %w", err)
+		return domain.ConversationActivity{}, fmt.Errorf("encode steer detail: %w", err)
 	}
-
-	id := c.newID()
-	if err := c.store.UpsertActivity(ctx, c.conversation.ID, providerTurnID,
-		domain.ConversationActivity{
-			ID:     id,
-			Kind:   domain.ActivityKindSystem,
-			Status: domain.ActivityStatusCompleted,
-			// Delivered, not pending: the provider accepted it before this ran.
-			Summary: steerSummary(msg.Text),
-			Detail:  encoded,
-			// A synthetic item key, so a client retrying with the same idempotency
-			// handle updates this row instead of adding a second one. Prefixed because
-			// this id is AO's, not the provider's, and the two share a column.
-			ProviderItemID: steerItemID(msg.ClientMessageID),
-		}, c.now()); err != nil {
-		return "", fmt.Errorf("record steer on turn %s: %w", providerTurnID, err)
-	}
-
-	// No activity signal is reported. A steer only happens while a turn is running,
-	// so the session is already Active; saying so again would be a signal that
-	// carries no news.
-	return id, nil
+	return domain.ConversationActivity{
+		ID:     id,
+		Kind:   domain.ActivityKindSystem,
+		Status: domain.ActivityStatusCompleted,
+		// Delivered, not pending: the provider accepted it before this ran.
+		Summary: steerSummary(msg.Text),
+		Detail:  encoded,
+		// A synthetic item key, so a client retrying with the same idempotency
+		// handle updates this row instead of adding a second one. Prefixed because
+		// this id is AO's, not the provider's, and the two share a column.
+		ProviderItemID: steerItemID(msg.ClientMessageID),
+	}, nil
 }
 
 // steerItemID is the dedupe key for a recorded steer, or empty when the caller

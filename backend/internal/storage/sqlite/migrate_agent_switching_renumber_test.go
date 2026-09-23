@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -43,22 +42,11 @@ func TestMigrateRepairsLegacyAgentSwitchSchemas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db := openAgentSwitchMigrationTestDB(t)
-			upTo(t, db, tt.migrateTo)
+			db := openMigratedDatabaseCopy(t, tt.migrateTo)
 			applyLegacyAgentSwitchMigrations(t, db, tt.switchPath, tt.handoffPath)
 			assertAgentSwitchMigrationHistoryRepaired(t, db)
 		})
 	}
-}
-
-func openAgentSwitchMigrationTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
 }
 
 func applyLegacyAgentSwitchMigrations(t *testing.T, db *sql.DB, switchPath, handoffPath string) {
@@ -67,10 +55,11 @@ func applyLegacyAgentSwitchMigrations(t *testing.T, db *sql.DB, switchPath, hand
 	if err != nil {
 		t.Fatalf("read agent-switch migration: %v", err)
 	}
+	normalizedAgentSwitchMigration := strings.ReplaceAll(string(agentSwitchMigration), "\r\n", "\n")
 	// Reconstruct the exact pre-consolidation table shape. The historical 0084
 	// below then adds only the two finalized-handoff columns, leaving transcript
 	// status for the compatibility repair to add.
-	legacyAgentSwitchMigration := strings.ReplaceAll(string(agentSwitchMigration), `    source_transcript_status   TEXT NOT NULL DEFAULT 'not_attempted'
+	legacyAgentSwitchMigration := strings.ReplaceAll(normalizedAgentSwitchMigration, `    source_transcript_status   TEXT NOT NULL DEFAULT 'not_attempted'
         CHECK (source_transcript_status IN ('not_attempted', 'available', 'unavailable')),
 `, "")
 	legacyAgentSwitchMigration = strings.ReplaceAll(legacyAgentSwitchMigration, `    semantic_handoff_included INTEGER NOT NULL DEFAULT 0
@@ -92,7 +81,7 @@ func applyLegacyAgentSwitchMigrations(t *testing.T, db *sql.DB, switchPath, hand
 		`            'mode', NEW.session_mode
 `,
 	)
-	if legacyAgentSwitchMigration == string(agentSwitchMigration) ||
+	if legacyAgentSwitchMigration == normalizedAgentSwitchMigration ||
 		strings.Contains(legacyAgentSwitchMigration, "source_transcript_status") ||
 		strings.Contains(legacyAgentSwitchMigration, "semantic_handoff_included") ||
 		strings.Contains(legacyAgentSwitchMigration, "final_handoff_path") ||

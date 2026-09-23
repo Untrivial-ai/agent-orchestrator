@@ -86,8 +86,10 @@ func buildRoleOverride(src *legacyRole, notes *[]string, label string) domain.Ro
 func buildProjectConfig(pc legacyProjectConfig, notes *[]string) domain.ProjectConfig {
 	var cfg domain.ProjectConfig
 
-	// defaultBranch: omit "main" so the common case keeps config NULL.
-	if b := strings.TrimSpace(pc.DefaultBranch); b != "" && b != domain.DefaultBranchName {
+	// Preserve every explicit legacy branch, including main. An omitted branch
+	// now means automatic remote-HEAD resolution, which is not equivalent to a
+	// legacy project explicitly pinned to main.
+	if b := strings.TrimSpace(pc.DefaultBranch); b != "" {
 		cfg.DefaultBranch = b
 	}
 	if pc.SessionPrefix != "" {

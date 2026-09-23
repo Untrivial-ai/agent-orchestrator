@@ -1,29 +1,10 @@
 ---
-title: Terminals overview
-description: How you attach to a running agent. iTerm2 on macOS, or the dashboard's built-in xterm.js.
+title: Terminal surface
+description: The built-in desktop terminal backed by AO's WebSocket mux.
 ---
 
-The **terminal** plugin is what `ao open` and `ao session attach` use. If you only ever look at the dashboard, you don't need to think about it.
+AO does not select between terminal plugins. The desktop app provides an xterm-based terminal surface and the daemon exposes a WebSocket terminal mux.
 
-<PluginGrid>
-	<PluginCard
-		name="iTerm2"
-		logo="iterm2"
-		href="/docs/plugins/terminals/iterm2"
-		description="Open attached tabs in iTerm2 via AppleScript (macOS only)."
-	/>
-	<PluginCard
-		name="Web"
-		logo="web"
-		href="/docs/plugins/terminals/web"
-		description="Dashboard xterm.js session URL. Cross-platform."
-	/>
-</PluginGrid>
+For Terminal UI sessions, the mux attaches to the platform runtime: `tmux` on macOS/Linux and ConPTY on Windows. Structured Chat sessions can open a separate shell scoped to the same session worktree without creating an agent terminal pane.
 
-## Default
-
-AO picks `iterm2` on macOS when iTerm2 is installed; falls back to `web` otherwise. You can pin the choice:
-
-```yaml
-terminal: web
-```
+See [desktop terminal](/docs/plugins/terminals/web) for connection behavior.

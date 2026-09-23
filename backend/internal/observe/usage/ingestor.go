@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 )
 
@@ -24,6 +26,7 @@ const (
 type ingestorStore interface {
 	GetUsageSourceForIngestion(context.Context, int64) (domain.UsageSourceContext, bool, error)
 	ApplyUsageChunk(context.Context, int64, int64, time.Time, domain.SourceCursorState, []domain.ModelUsageEvent) error
+	HasOpenUsageAttribution(context.Context, int64) (bool, error)
 	MarkUsageSourceState(context.Context, int64, domain.UsageSourceState, string, *time.Time, time.Time) (bool, error)
 	MarkUsageSourceFailure(context.Context, int64, int64, string, time.Time, time.Time) (bool, error)
 	ReplaceUsageSource(context.Context, int64, string, domain.UsageSourceRecord, time.Time) (domain.UsageSourceRecord, error)
@@ -37,6 +40,11 @@ type IngestorConfig struct {
 	RecordBytes      int
 	FinalizationWait time.Duration
 	Clock            func() time.Time
+	Pricing          *pricing.Manager
+	OnPricingError   func(error)
+	// RequestAttributionRepair asks for a legacy repair pass. See
+	// notifyLateRouteEvidence for the one window it closes.
+	RequestAttributionRepair func()
 }
 
 // IngestResult tells the coordinator whether another immediate chunk, source
@@ -59,6 +67,9 @@ type Ingestor struct {
 	recordBytes      int
 	finalizationWait time.Duration
 	now              func() time.Time
+	pricing          *pricing.Manager
+	onPricingError   func(error)
+	requestRepair    func()
 	openTranscript   func(string) (*os.File, error)
 	afterRead        func()
 }
@@ -77,12 +88,18 @@ func NewIngestor(store ingestorStore, cfg IngestorConfig) *Ingestor {
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
 	}
+	if cfg.OnPricingError == nil {
+		cfg.OnPricingError = func(error) {}
+	}
 	return &Ingestor{
 		store:            store,
 		chunkBytes:       cfg.ChunkBytes,
 		recordBytes:      cfg.RecordBytes,
 		finalizationWait: cfg.FinalizationWait,
 		now:              cfg.Clock,
+		pricing:          cfg.Pricing,
+		onPricingError:   cfg.OnPricingError,
+		requestRepair:    cfg.RequestAttributionRepair,
 		openTranscript:   os.Open,
 	}
 }
@@ -286,14 +303,53 @@ func (i *Ingestor) Ingest(ctx context.Context, sourceID int64) (IngestResult, er
 			errors.New("transcript changed during ingestion"),
 		)
 	}
-	if err := i.store.ApplyUsageChunk(
-		ctx,
-		source.Source.ID,
-		source.Source.ByteOffset,
-		source.Source.UpdatedAt,
-		parsed.Cursor,
-		parsed.Events,
-	); err != nil {
+	apply := func() error {
+		return i.store.ApplyUsageChunk(
+			ctx,
+			source.Source.ID,
+			source.Source.ByteOffset,
+			source.Source.UpdatedAt,
+			parsed.Cursor,
+			parsed.Events,
+		)
+	}
+	if i.pricing != nil {
+		apply = func() error {
+			return i.pricing.WithSnapshot(ctx, func(snapshot *pricing.Snapshot) error {
+				for index := range parsed.Events {
+					// Live ingestion prices only what the transcript or the
+					// binding's route hint named outright. Resolving the model
+					// against the catalog would turn "one catalog lists this
+					// name" into a billed provider and a dollar amount in the
+					// same write, for a session whose route may simply not have
+					// been recorded yet. Deriving it is the legacy repairer's
+					// job, once no hook is coming.
+					estimate, estimateErr := snapshot.Estimate(parsed.Events[index])
+					if estimateErr != nil {
+						parsed.Events[index].Costs.PricingVersion = snapshot.ProviderVersion(parsed.Events[index].BillingProviderID)
+						i.onPricingError(fmt.Errorf("estimate usage event %q: %w", parsed.Events[index].SourceEventKey, estimateErr))
+						continue
+					}
+					parsed.Events[index].Costs = domain.UsageEventCosts{
+						InputCostNanos:       estimate.InputNanos,
+						CachedInputCostNanos: estimate.CachedInputNanos,
+						OutputCostNanos:      estimate.OutputNanos,
+						EstimatedCostNanos:   estimate.TotalNanos,
+						PricingVersion:       estimate.PricingVersion,
+					}
+				}
+				return i.store.ApplyUsageChunk(
+					ctx,
+					source.Source.ID,
+					source.Source.ByteOffset,
+					source.Source.UpdatedAt,
+					parsed.Cursor,
+					parsed.Events,
+				)
+			})
+		}
+	}
+	if err := apply(); err != nil {
 		if errors.Is(err, domain.ErrUsageSourceEventConflict) {
 			if _, markErr := i.store.MarkUsageSourceState(
 				ctx,
@@ -312,12 +368,48 @@ func (i *Ingestor) Ingest(ctx context.Context, sourceID int64) (IngestResult, er
 		}
 		return result, fmt.Errorf("apply usage source %d: %w", source.Source.ID, err)
 	}
+	i.notifyLateRouteEvidence(ctx, source.Source.ID)
 	result.Reconcile = parsed.newCodexChild
 	if parsed.Cursor.State == domain.UsageSourceComplete {
 		return result, i.completeBinding(ctx, source.Source.BindingID, now)
 	}
 	result.More = progressed && !chunk.atEOF && !chunk.readToEOF
 	return result, nil
+}
+
+// notifyLateRouteEvidence asks for a repair pass when a chunk landed
+// unattributed events on a binding that already knows its route.
+//
+// The hook that resolves a route fires the repair trigger exactly once. A chunk
+// parsed before that hook but applied after it slips straight through the pass
+// it fired: those rows did not exist yet when the pass read the table, and
+// nothing fires again for this binding until the daemon restarts. Re-reading
+// the source is the point — the context this chunk was parsed against is
+// precisely the stale one.
+func (i *Ingestor) notifyLateRouteEvidence(ctx context.Context, sourceID int64) {
+	if i.requestRepair == nil {
+		return
+	}
+	// A binding with no route yet leaves rows open on every chunk, and its own
+	// hook will fire the trigger when one arrives; a route the hook could not
+	// name is never going to produce one. Only a usable route is worth a pass.
+	source, ok, err := i.store.GetUsageSourceForIngestion(ctx, sourceID)
+	if err != nil || !ok {
+		return
+	}
+	switch strings.TrimSpace(source.ProviderHint) {
+	case "", pricing.UnidentifiedBillingRoute:
+		return
+	}
+	// Asking the table rather than the parsed chunk catches the second way a
+	// row is left open under a known route: a replaced transcript re-emits an
+	// event, the replay deduplicates against the stored row and rehomes it, and
+	// the parsed event carrying the route is discarded with the duplicate.
+	open, err := i.store.HasOpenUsageAttribution(ctx, sourceID)
+	if err != nil || !open {
+		return
+	}
+	i.requestRepair()
 }
 
 func codexChunkAttributionMatches(

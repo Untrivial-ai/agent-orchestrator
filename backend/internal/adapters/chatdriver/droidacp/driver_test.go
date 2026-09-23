@@ -1,6 +1,7 @@
 package droidacp
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 )
 
 func TestConfigureUsesUserDroidACPDaemonAndStandingInstructions(t *testing.T) {
-	args, env, err := configure(acpdriver.LaunchConfig{SystemPrompt: "Follow AO orchestrator rules."})
+	args, env, err := configure(context.Background(), acpdriver.LaunchConfig{SystemPrompt: "Follow AO orchestrator rules."})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -29,7 +30,7 @@ func TestConfigureUsesUserDroidACPDaemonAndStandingInstructions(t *testing.T) {
 }
 
 func TestConfigureOmitsEmptySystemPrompt(t *testing.T) {
-	args, _, err := configure(acpdriver.LaunchConfig{SystemPrompt: "  "})
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{SystemPrompt: "  "})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -40,7 +41,7 @@ func TestConfigureOmitsEmptySystemPrompt(t *testing.T) {
 }
 
 func TestConfigureMapsFullBypassToDroidExecFlag(t *testing.T) {
-	args, _, err := configure(acpdriver.LaunchConfig{
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{
 		Permissions: ports.PermissionModeBypassPermissions,
 	})
 	if err != nil {
@@ -56,7 +57,7 @@ func TestConfigureMapsFullBypassToDroidExecFlag(t *testing.T) {
 
 func TestConfigureReusesDroidRuntimeModelAndAutonomySettings(t *testing.T) {
 	dataDir := t.TempDir()
-	args, _, err := configure(acpdriver.LaunchConfig{
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{
 		SessionID: "worker-1", DataDir: dataDir, Model: "claude-sonnet-5",
 		Permissions: ports.PermissionModeAuto,
 	})
@@ -91,7 +92,7 @@ func TestConfigureReusesDroidRuntimeModelAndAutonomySettings(t *testing.T) {
 }
 
 func TestConfigureRequiresAODataDirForDroidRuntimeSettings(t *testing.T) {
-	_, _, err := configure(acpdriver.LaunchConfig{Model: "claude-sonnet-5"})
+	_, _, err := configure(context.Background(), acpdriver.LaunchConfig{Model: "claude-sonnet-5"})
 	if err == nil {
 		t.Fatal("configure succeeded without AO data directory")
 	}

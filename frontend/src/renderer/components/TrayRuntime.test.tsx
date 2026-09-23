@@ -1,6 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import { attentionZone, workerSessions, type WorkspaceSession, type WorkspaceSummary } from "../types/workspace";
 
 const h = vi.hoisted(() => ({
 	setAttentionState: vi.fn(),
@@ -10,7 +10,15 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
-	useWorkspaceQuery: () => ({ data: h.workspaces }),
+	useWorkspaceTraySessions: () => ({
+		data: h.workspaces.flatMap((workspace) =>
+			workerSessions(workspace.sessions).flatMap((session) => {
+				const zone = attentionZone(session);
+				if ((zone === "merge" && session.status === "merged") || (zone !== "action" && zone !== "merge")) return [];
+				return [{ projectId: workspace.id, projectName: workspace.name, sessionId: session.id, title: session.title, zone }];
+			}),
+		),
+	}),
 	workspaceQueryKey: ["workspaces"],
 }));
 

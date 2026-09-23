@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { TurnPlan } from "./TurnPlan";
 import type { ConversationPlan } from "../../types/conversation";
@@ -61,5 +62,20 @@ describe("TurnPlan", () => {
 	it("omits the explanation when the provider gave none", () => {
 		render(<TurnPlan plan={{ steps: plan.steps }} />);
 		expect(screen.queryByText(/Land the store first/)).not.toBeInTheDocument();
+	});
+
+	it("collapses the plan body when the header icon is clicked", async () => {
+		const user = userEvent.setup();
+		render(<TurnPlan plan={plan} />);
+
+		expect(screen.getByRole("list")).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Collapse plan" }));
+		expect(screen.queryByRole("list")).not.toBeInTheDocument();
+		expect(screen.queryByText(/Land the store first/)).not.toBeInTheDocument();
+		expect(screen.getByText("1/3")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Expand plan" }));
+		expect(screen.getByRole("list")).toBeInTheDocument();
+		expect(screen.getByText(/Land the store first/)).toBeInTheDocument();
 	});
 });

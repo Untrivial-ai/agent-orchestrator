@@ -69,9 +69,9 @@ func TestParseSessionModeRejectsUnknownInsteadOfFallingBack(t *testing.T) {
 	}
 }
 
-func TestDefaultSessionModeIsTUIForUpgradeCompatibility(t *testing.T) {
+func TestDefaultSessionModeIsTUIForSettingsFailureCompatibility(t *testing.T) {
 	if DefaultSessionMode != SessionModeTUI {
-		t.Fatalf("DefaultSessionMode = %q, want %q so an upgrade changes no existing workflow",
+		t.Fatalf("DefaultSessionMode = %q, want %q so a settings failure keeps terminal spawns working",
 			DefaultSessionMode, SessionModeTUI)
 	}
 }
@@ -84,10 +84,14 @@ func TestTurnStateTerminal(t *testing.T) {
 		{TurnStateQueued, false},
 		{TurnStateRunning, false},
 		{TurnStateCompleted, true},
+		// A recovered turn is terminal, but its provider outcome was unavailable
+		// during history replay. It must not keep the controller busy.
+		{TurnStateRecovered, true},
 		// Interrupted is terminal but is not a failure: the provider reports it
 		// as its own status and AO must not relabel it as an error.
 		{TurnStateInterrupted, true},
 		{TurnStateFailed, true},
+		{TurnStateCancelled, true},
 	} {
 		if got := tc.state.Terminal(); got != tc.want {
 			t.Errorf("TurnState(%q).Terminal() = %v, want %v", tc.state, got, tc.want)

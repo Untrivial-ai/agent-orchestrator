@@ -31,27 +31,83 @@ const (
 	// cursorHookCommandPrefix identifies the hook commands AO owns, so
 	// install skips duplicates and uninstall recognizes AO entries by
 	// prefix without an embedded template to diff against.
-	cursorHookCommandPrefix = "ao hooks cursor "
+	cursorHookCommandPrefix           = "ao hooks cursor "
+	cursorLegacyPermissionHookCommand = cursorHookCommandPrefix + "permission-request"
 )
 
 // cursorHookFile is the on-disk shape of .cursor/hooks.json. It is used by tests
-// to decode the written file. Cursor keys hooks by camelCase native event name;
-// each value is an array of objects carrying a "command" string.
+// to decode the written file. Cursor keys hooks by camelCase native event name.
 type cursorHookFile struct {
 	Version int                          `json:"version"`
 	Hooks   map[string][]cursorHookEntry `json:"hooks"`
 }
 
 type cursorHookEntry struct {
-	Command string `json:"command"`
+	Command    string
+	FailClosed bool
+	raw        json.RawMessage
+}
+
+func (e *cursorHookEntry) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	e.raw = append(e.raw[:0], data...)
+	e.Command = ""
+	e.FailClosed = false
+	_ = json.Unmarshal(fields["command"], &e.Command)
+	_ = json.Unmarshal(fields["failClosed"], &e.FailClosed)
+	return nil
+}
+
+func (e cursorHookEntry) MarshalJSON() ([]byte, error) {
+	return e.raw, nil
+}
+
+func newCursorHookEntry(command string, failClosed bool) (cursorHookEntry, error) {
+	commandJSON, err := json.Marshal(command)
+	if err != nil {
+		return cursorHookEntry{}, err
+	}
+	fields := map[string]json.RawMessage{"command": commandJSON}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return cursorHookEntry{}, err
+	}
+	entry := cursorHookEntry{Command: command, raw: raw}
+	if err := entry.setFailClosed(failClosed); err != nil {
+		return cursorHookEntry{}, err
+	}
+	return entry, nil
+}
+
+func (e *cursorHookEntry) setFailClosed(failClosed bool) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(e.raw, &fields); err != nil {
+		return err
+	}
+	e.FailClosed = failClosed
+	if failClosed {
+		fields["failClosed"] = json.RawMessage("true")
+	} else {
+		delete(fields, "failClosed")
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	e.raw = raw
+	return nil
 }
 
 // cursorHookSpec describes one hook AO installs, defined in code rather than
 // read from an embedded hooks file. Event is Cursor's native camelCase event
 // name; Command is the AO sub-command dispatched when the hook fires.
 type cursorHookSpec struct {
-	Event   string
-	Command string
+	Event      string
+	Command    string
+	FailClosed bool
 }
 
 // cursorManagedHooks is the source of truth for the hooks AO installs. The
@@ -61,8 +117,12 @@ var cursorManagedHooks = []cursorHookSpec{
 	{Event: "sessionStart", Command: cursorHookCommandPrefix + "session-start"},
 	{Event: "beforeSubmitPrompt", Command: cursorHookCommandPrefix + "user-prompt-submit"},
 	{Event: "stop", Command: cursorHookCommandPrefix + "stop"},
-	{Event: "beforeShellExecution", Command: cursorHookCommandPrefix + "permission-request"},
-	{Event: "beforeMCPExecution", Command: cursorHookCommandPrefix + "permission-request"},
+	{Event: "beforeShellExecution", Command: cursorHookCommandPrefix + "before-shell-execution", FailClosed: true},
+	{Event: "beforeMCPExecution", Command: cursorHookCommandPrefix + "before-mcp-execution", FailClosed: true},
+	{Event: "afterShellExecution", Command: cursorHookCommandPrefix + "after-shell-execution"},
+	{Event: "afterMCPExecution", Command: cursorHookCommandPrefix + "after-mcp-execution"},
+	{Event: "postToolUse", Command: cursorHookCommandPrefix + "post-tool-use"},
+	{Event: "postToolUseFailure", Command: cursorHookCommandPrefix + "post-tool-use-failure"},
 }
 
 // GetAgentHooks installs AO's Cursor hooks into the worktree-local
@@ -91,9 +151,18 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 		if err := parseCursorHookEvent(rawHooks, event, &existing); err != nil {
 			return fmt.Errorf("cursor.GetAgentHooks: %w", err)
 		}
+		existing = removeCursorLegacyPermissionHooks(event, existing)
 		for _, spec := range specs {
-			if !cursorHookCommandExists(existing, spec.Command) {
-				existing = append(existing, cursorHookEntry{Command: spec.Command})
+			if index := cursorHookCommandIndex(existing, spec.Command); index >= 0 {
+				if err := existing[index].setFailClosed(spec.FailClosed); err != nil {
+					return fmt.Errorf("cursor.GetAgentHooks: update %s hook: %w", event, err)
+				}
+			} else {
+				entry, err := newCursorHookEntry(spec.Command, spec.FailClosed)
+				if err != nil {
+					return fmt.Errorf("cursor.GetAgentHooks: create %s hook: %w", event, err)
+				}
+				existing = append(existing, entry)
 			}
 		}
 		if err := marshalCursorHookEvent(rawHooks, event, existing); err != nil {
@@ -484,7 +553,15 @@ func cursorManagedEvents() []string {
 }
 
 func isCursorManagedHook(command string) bool {
-	return strings.HasPrefix(command, cursorHookCommandPrefix)
+	if command == cursorLegacyPermissionHookCommand {
+		return true
+	}
+	for _, spec := range cursorManagedHooks {
+		if command == spec.Command {
+			return true
+		}
+	}
+	return false
 }
 
 // removeCursorManagedHooks strips AO hook entries from an event's array,
@@ -494,6 +571,21 @@ func removeCursorManagedHooks(entries []cursorHookEntry) []cursorHookEntry {
 	for _, hook := range entries {
 		if !isCursorManagedHook(hook.Command) {
 			kept = append(kept, hook)
+		}
+	}
+	return kept
+}
+
+func removeCursorLegacyPermissionHooks(event string, entries []cursorHookEntry) []cursorHookEntry {
+	switch event {
+	case "beforeShellExecution", "beforeMCPExecution":
+	default:
+		return entries
+	}
+	kept := make([]cursorHookEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Command != cursorLegacyPermissionHookCommand {
+			kept = append(kept, entry)
 		}
 	}
 	return kept
@@ -523,11 +615,11 @@ func marshalCursorHookEvent(rawHooks map[string]json.RawMessage, event string, e
 	return nil
 }
 
-func cursorHookCommandExists(entries []cursorHookEntry, command string) bool {
-	for _, hook := range entries {
+func cursorHookCommandIndex(entries []cursorHookEntry, command string) int {
+	for index, hook := range entries {
 		if hook.Command == command {
-			return true
+			return index
 		}
 	}
-	return false
+	return -1
 }

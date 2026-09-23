@@ -1,166 +1,108 @@
 ---
 title: Quickstart
-description: Start AO, spawn one worker session, and follow it from task to pull request.
+description: Add a project, start one worker, and follow it from task to pull request.
 ---
 
-
-This quickstart walks through the smallest useful AO loop: start the dashboard, create one worker session, watch it work, and clean it up after the PR is merged.
+This guide follows the smallest useful AO loop in the desktop app: add one repository, start one worker, watch it work, and review the result.
 
 <Callout type="info" title="Before you start">
-	Complete [Installation](/docs/installation) first. You need `ao`, Git, one authenticated source-control CLI such as
-	`gh`, and one signed-in agent CLI.
+	Install AO, authenticate `gh` for a GitHub project, and sign in to one supported agent harness. See [Installation](/docs/installation).
 </Callout>
 
 ## Pick A Safe First Task
 
-Use a repository where you can push a branch and open a pull request. For the first run, choose a task that is easy to review:
+Choose a repository where you can create a branch and pull request. Good first tasks have a clear finish line:
 
-- Fix a small bug with a clear failure.
+- Fix a small bug with a reproducible failure.
+- Add one focused test.
 - Update a short documentation page.
-- Add a narrow test.
-- Make a small refactor with obvious acceptance criteria.
-
-Avoid broad tasks like “improve auth” or “clean up the app.” AO can run many agents, but each worker still needs a task with a visible finish line.
+- Make a narrow refactor with explicit acceptance criteria.
 
 ## Run The First Session
 
 <Steps>
 <Step>
 
-### Start AO
+### Add the repository
 
-From the repository you want AO to manage:
-
-```bash
-cd ~/code/my-repo
-ao start
-```
-
-On the first run, AO creates `agent-orchestrator.yaml`, starts the dashboard, and starts an orchestrator session for the project. The dashboard URL is printed in the terminal, usually `http://localhost:3000`.
-
-Keep this terminal running. It owns the dashboard and lifecycle polling.
+Open Agent Orchestrator, choose **Add project**, and select the local repository. The desktop app registers it and keeps the original checkout intact.
 
 </Step>
 <Step>
 
-### Spawn one worker
+### Create a worker
 
-Open a second terminal in the same repository.
+Create a new task from the project and enter a short name plus a specific prompt. Select an installed agent harness.
 
-<Tabs items={["GitHub issue", "Freeform prompt"]}>
-  <Tab value="GitHub issue">
-  ```bash
-  ao spawn 42
-  ```
+Choose the interface that fits the task:
 
-Replace `42` with the issue number. AO fetches the issue through `gh`, creates a worktree, starts the configured worker agent, and gives it the issue context.
+- **Chat** for structured conversation, activities, approvals, plans, and durable history.
+- **Terminal UI** for the harness's native interactive terminal.
 
-  </Tab>
-  <Tab value="Freeform prompt">
-  ```bash
-  ao spawn --prompt "Update the README install section to mention Node 20"
-  ```
-
-Use this when the task is not tracked in GitHub, GitLab, or Linear yet. Keep the prompt specific and reviewable.
-
-  </Tab>
-</Tabs>
-
-The command prints the session id and dashboard URL. Session names use the project prefix, for example `myrepo-1`.
+AO creates an isolated git worktree and branch for the session before launching the selected controller.
 
 </Step>
 <Step>
 
-### Watch the dashboard
+### Follow the session
 
-Open the session card. You should see:
+Select the session in the sidebar or board. The main pane shows either its Chat conversation or live terminal. The inspector keeps session details, pull-request state, reviews, changed files, and browser preview close at hand.
 
-- The worker activity state: active, ready, idle, waiting for input, blocked, or exited.
-- The worktree path and branch name.
-- The live terminal output.
-- The PR link after the agent creates one.
-- CI and review state after a PR exists.
-
-Use `ao status` when you want the same high-level view in a terminal:
-
-```bash
-ao status
-```
+Activity such as active, idle, waiting for input, blocked, or exited is combined with pull-request facts to derive the status shown by AO.
 
 </Step>
 <Step>
 
-### Intervene only when needed
+### Give feedback
 
-AO routes routine feedback back to the worker:
+Use the Chat composer or session message controls for follow-up instructions. Keep corrections concrete:
 
-- CI failure: AO sends failure context to the session.
-- Requested changes: AO sends the review feedback to the session.
-- Merge conflicts: AO can ask the worker to rebase or resolve the conflict.
-- Agent stuck or waiting for input: AO notifies you.
-
-If you need to give the worker a direct instruction, use `ao send`:
-
-```bash
-ao send myrepo-1 "Keep the fix smaller. Do not refactor the API layer."
+```text
+Keep this change limited to the API route. Do not refactor the shared client.
 ```
 
-Use `ao send` instead of raw terminal input. It preserves AO's busy detection, retry handling, and message formatting.
+For a TUI session, the terminal remains available when direct interaction is needed.
 
 </Step>
 <Step>
 
-### Review and merge
+### Review the pull request
 
-When the PR is green and ready, review it like any other pull request. AO does not merge by default.
+After the worker opens or claims a pull request, AO shows a concise summary of CI, reviewers, unresolved review comments, and mergeability. You can run a reviewer agent, send requested changes back to the worker, resolve comments, or merge when appropriate.
 
-After the PR is merged or the issue is closed, clean up completed sessions:
-
-```bash
-ao session cleanup --dry-run
-ao session cleanup
-```
+AO never force-deletes a dirty worktree. Cleanup preserves user work when it cannot safely remove a session workspace.
 
 </Step>
 </Steps>
 
-## What AO Created
+## Try A Browser Preview
 
-| Item                      | What it means                                                                                    |
-| ------------------------- | ------------------------------------------------------------------------------------------------ |
-| `agent-orchestrator.yaml` | Project config: plugins, projects, reactions, runtime, and notifier choices.                     |
-| Orchestrator session      | A coordinating session started by `ao start`; it supervises worker sessions.                     |
-| Worker session            | The agent process that works on one issue or prompt.                                             |
-| Worktree                  | An isolated checkout for the worker's branch.                                                    |
-| Session metadata          | Files under `~/.agent-orchestrator/...` that let AO track branch, PR, status, and runtime state. |
+For a web task, start the app inside the session and select its URL with the optional CLI:
 
-## If Something Looks Wrong
+```bash
+ao preview http://127.0.0.1:5173
+```
 
-| Symptom                                 | First check                                                                   |
-| --------------------------------------- | ----------------------------------------------------------------------------- |
-| Dashboard is not updating               | Make sure the `ao start` terminal is still running.                           |
-| `ao spawn` warns that AO is not running | Start AO with `ao start` before spawning.                                     |
-| GitHub issue or PR data is missing      | Run `gh auth status` and check the `repo` field in `agent-orchestrator.yaml`. |
-| Agent started but does nothing          | Open the session terminal and send a clear instruction with `ao send`.        |
-| Windows spawn fails with tmux errors    | Set `defaults.runtime: process` in `agent-orchestrator.yaml`.                 |
+If the repository includes `.ao/launch.json`, `ao preview start` can start a configured development server. The Browser tab then displays the selected target. AO does not guess a preview target merely because a worker exists.
+
+## Try Switching Interfaces
+
+Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. An idle session can switch directly. If a turn is busy, AO asks whether to finish and drain it or stop and interrupt it before replacing the controller. The AO session and worktree remain the same.
+
+## Optional CLI
+
+The CLI is a thin client for the app-owned daemon. It is useful for scripting and terminal-first workflows, but is not required for normal desktop use.
+
+```bash
+ao status
+ao session ls
+ao send --session <session-id> --message "Run the focused tests before you finish."
+```
 
 ## Next
 
 <Cards>
-	<Card
-		title="Parallel issues"
-		description="Spawn several worker sessions without duplicating active work."
-		href="/docs/guides/parallel-issues"
-	/>
-	<Card title="CI recovery" description="See how AO reacts when checks fail." href="/docs/guides/ci-recovery" />
-	<Card
-		title="Configuration"
-		description="Tune agents, runtimes, projects, reactions, and notifiers."
-		href="/docs/configuration"
-	/>
-	<Card
-		title="Dashboard"
-		description="Understand session cards, attention zones, and live terminal views."
-		href="/docs/dashboard"
-	/>
+	<Card title="Dashboard" description="Learn the board, session view, inspector, Chat, and terminal." href="/docs/dashboard" />
+	<Card title="Architecture" description="See how the desktop app and daemon coordinate sessions." href="/docs/architecture" />
+	<Card title="Examples" description="Try current desktop and CLI workflows." href="/docs/examples" />
 </Cards>

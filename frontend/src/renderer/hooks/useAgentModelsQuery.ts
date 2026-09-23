@@ -6,8 +6,11 @@ export type AgentModelCatalog = components["schemas"]["AgentModelsResponse"];
 
 const MODEL_CATALOG_VALIDATION_INTERVAL_MS = 10 * 60 * 1_000;
 
+export const agentModelsQueryPrefix = (agentId: string) =>
+	["agent-models", agentId] as const;
+
 export const agentModelsQueryKey = (agentId: string, projectId: string) =>
-	["agent-models", agentId, projectId] as const;
+	[...agentModelsQueryPrefix(agentId), projectId] as const;
 
 async function requestAgentModels(
 	agentId: string,

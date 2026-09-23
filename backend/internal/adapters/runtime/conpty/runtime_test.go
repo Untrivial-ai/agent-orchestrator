@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,10 +29,251 @@ func livePID() int { return os.Getpid() }
 // ponytail: PID 2147483647 (MaxInt32) is never a real process; signal-0 returns ESRCH.
 func deadPID() int { return 2147483647 }
 
-func TestRuntimeDoesNotAdvertiseStyledRenderedTerminalOutput(t *testing.T) {
-	var runtime any = New(Options{})
-	if _, ok := runtime.(ports.StyledTerminalOutputReader); ok {
-		t.Fatal("raw ConPTY history must not be used as rendered composer state")
+func TestProbeFencedRuntimeCompleteRegistryAbsentIsDead(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{})
+
+	got := rt.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-absent"}, SessionID: "sess-absent", Generation: "launch-1",
+	})
+	if got.Liveness != ports.FencedDead || got.Reason != ports.FencedReasonExactAbsent {
+		t.Fatalf("ProbeFencedRuntime absent = %+v, want dead/exact_absent", got)
+	}
+}
+
+func TestProbeFencedRuntimeRegistryMalformedIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "windows-pty-hosts.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := New(Options{RunFilePath: filepath.Join(dir, "running.json")})
+
+	got := rt.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-malformed"}, SessionID: "sess-malformed", Generation: "launch-1",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonRegistryMalformed {
+		t.Fatalf("ProbeFencedRuntime malformed = %+v, want unknown/registry_malformed", got)
+	}
+}
+
+func TestRegistryResolutionHonorsCallerCancellation(t *testing.T) {
+	isolateRegistry(t)
+	spawnCalls := 0
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		spawnCalls++
+		return "127.0.0.1:1", livePID(), nil
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, createErr := rt.Create(ctx, ports.RuntimeConfig{
+		SessionID: "sess-cancelled", WorkspacePath: t.TempDir(), Argv: []string{"codex"},
+	})
+	if !errors.Is(createErr, context.Canceled) || spawnCalls != 0 {
+		t.Fatalf("Create cancelled during resolution = err %v spawnCalls %d, want context cancellation before spawn", createErr, spawnCalls)
+	}
+	if err := rt.Destroy(ctx, ports.RuntimeHandle{ID: "sess-cancelled"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Destroy cancelled during resolution = %v, want context cancellation", err)
+	}
+	if _, err := rt.IsAlive(ctx, ports.RuntimeHandle{ID: "sess-cancelled"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("IsAlive cancelled during resolution = %v, want context cancellation", err)
+	}
+	probe := rt.ProbeFencedRuntime(ctx, ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-cancelled"}, SessionID: "sess-cancelled", Generation: "launch-1",
+	})
+	if probe.Liveness != ports.FencedUnknown || probe.Reason != ports.FencedReasonProbeFailed {
+		t.Fatalf("ProbeFencedRuntime cancelled during resolution = %+v, want unknown/probe_failed", probe)
+	}
+}
+
+func TestCreateAndDestroyPassCallerContextToRegistryMutations(t *testing.T) {
+	isolateRegistry(t)
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "registry-mutation")
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		return "127.0.0.1:1", livePID(), nil
+	}})
+	rt.killHost = func(string) error { return nil }
+	rt.pidIsAlive = func(int) bool { return false }
+	registerCalls := 0
+	rt.registerHost = func(got context.Context, _ ptyregistry.Entry) error {
+		registerCalls++
+		if got.Value(contextKey{}) != "registry-mutation" {
+			t.Fatalf("Register context value = %v, want caller context", got.Value(contextKey{}))
+		}
+		return nil
+	}
+	rt.unregisterHost = func(got context.Context, _ string) error {
+		if got.Value(contextKey{}) != "registry-mutation" {
+			t.Fatalf("Unregister context value = %v, want caller context", got.Value(contextKey{}))
+		}
+		return nil
+	}
+
+	handle, err := rt.Create(ctx, ports.RuntimeConfig{
+		SessionID: "sess-registry-context", WorkspacePath: t.TempDir(), Argv: []string{"codex"},
+		Env: map[string]string{runtimeLaunchIDEnv: "registry-context-launch"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if registerCalls != 2 {
+		t.Fatalf("Register calls = %d, want reservation and ready updates", registerCalls)
+	}
+	if err := rt.Destroy(ctx, handle); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+}
+
+func TestProbeFencedRuntimeGenerationMismatchIsUnknown(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{})
+	rt.sessions["sess-mismatch"] = &hostSession{addr: "127.0.0.1:1", pid: livePID(), launchID: "launch-old"}
+
+	got := rt.ProbeFencedRuntime(context.Background(), ports.FencedRuntimeRef{
+		Handle: ports.RuntimeHandle{ID: "sess-mismatch"}, SessionID: "sess-mismatch", Generation: "launch-new",
+	})
+	if got.Liveness != ports.FencedUnknown || got.Reason != ports.FencedReasonGenerationMismatch {
+		t.Fatalf("ProbeFencedRuntime mismatch = %+v, want unknown/generation_mismatch", got)
+	}
+}
+
+func TestPartialCreateCleanupFailureReturnsRuntimeEffectEvidence(t *testing.T) {
+	isolateRegistry(t)
+	createErr := errors.New("spawn response lost")
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		return "127.0.0.1:1", livePID(), createErr
+	}})
+	rt.killHost = func(string) error { return errors.New("cleanup denied") }
+	rt.pidIsAlive = func(int) bool { return true }
+	rt.processFinder = func(int) (processKiller, error) { return nil, errors.New("permission denied") }
+	rt.destroyWait = 0
+
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "sess-partial", WorkspacePath: "/tmp/ws", Argv: []string{"codex"},
+	})
+	if handle.ID != "" || err == nil {
+		t.Fatalf("Create partial = (%+v, %v), want empty direct handle and evidence error", handle, err)
+	}
+	var effect ports.RuntimeEffectError
+	if !errors.As(err, &effect) {
+		t.Fatalf("Create error %T does not implement RuntimeEffectError", err)
+	}
+	if effect.PossibleHandle().ID != "sess-partial" || effect.EffectOutcome() != ports.RuntimeEffectPossible || effect.CleanupOutcome() != ports.RuntimeCleanupFailed {
+		t.Fatalf("Create effect evidence = handle %+v effect %q cleanup %q", effect.PossibleHandle(), effect.EffectOutcome(), effect.CleanupOutcome())
+	}
+}
+
+func TestRuntimeProvidesStyledRenderedTerminalOutput(t *testing.T) {
+	isolateRegistry(t)
+	hosts := map[string]*inProcHost{}
+	runtime := New(Options{Spawner: fakeSpawnerFor(t, hosts, livePID())})
+	var candidate any = runtime
+	if _, ok := candidate.(ports.StyledTerminalOutputReader); !ok {
+		t.Fatal("ConPTY runtime must expose its rendered current surface")
+	}
+
+	handle, err := runtime.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "sess-styled",
+		WorkspacePath: "/tmp/w",
+		Argv:          []string{"sh"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := hosts[handle.ID]
+	defer host.cleanup(t)
+
+	if _, err := host.pty.WriteOutput([]byte("\x1b[2J\x1b[HOLD TRANSCRIPT\n")); err != nil {
+		t.Fatal(err)
+	}
+	current := "\x1b[2J\x1b[H────────────────\n❯ \x1b[2mAsk a question\x1b[0m\n────────────────\n"
+	if _, err := host.pty.WriteOutput([]byte(current)); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		output, outputErr := runtime.GetStyledOutput(context.Background(), handle, 10)
+		if outputErr != nil {
+			t.Fatal(outputErr)
+		}
+		if strings.Contains(output, "Ask a question") {
+			if strings.Contains(output, "OLD TRANSCRIPT") {
+				t.Fatalf("styled output retained overwritten history: %q", output)
+			}
+			if !strings.Contains(output, "\x1b[") {
+				t.Fatalf("styled output lost ANSI cell styling: %q", output)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rendered current surface never became observable: %q", output)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestRuntimeRejectsStyledOutputFromARecoveredLegacyHost(t *testing.T) {
+	isolateRegistry(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	requestType := make(chan byte, 1)
+	serverDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverDone <- acceptErr
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		header := make([]byte, 5)
+		if _, readErr := io.ReadFull(conn, header); readErr != nil {
+			serverDone <- readErr
+			return
+		}
+		requestType <- header[0]
+		payload := []byte(fmt.Sprintf(`{"alive":true,"pid":%d}`, livePID()))
+		frame, encodeErr := EncodeMessage(MsgStatusRes, payload)
+		if encodeErr != nil {
+			serverDone <- encodeErr
+			return
+		}
+		_, writeErr := conn.Write(frame)
+		serverDone <- writeErr
+	}()
+
+	if err := ptyregistry.Register(context.Background(), ptyregistry.Entry{
+		SessionID: "sess-legacy", PtyHostPID: livePID(), PipePath: listener.Addr().String(),
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := New(Options{})
+	_, err = runtime.GetStyledOutput(context.Background(), ports.RuntimeHandle{ID: "sess-legacy"}, 10)
+	if !errors.Is(err, ports.ErrStyledTerminalOutputUnavailable) {
+		t.Fatalf("GetStyledOutput error = %v, want ErrStyledTerminalOutputUnavailable", err)
+	}
+	if got := <-requestType; got != MsgStatusReq {
+		t.Fatalf("legacy host request = 0x%02x, want capability-safe MsgStatusReq", got)
+	}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatal(serverErr)
+	}
+	_ = listener.Close()
+
+	// The negotiated legacy result is cached per adopted host. A second call
+	// must return the capability sentinel without dialing the now-closed socket.
+	_, err = runtime.GetStyledOutput(context.Background(), ports.RuntimeHandle{ID: "sess-legacy"}, 10)
+	if !errors.Is(err, ports.ErrStyledTerminalOutputUnavailable) {
+		t.Fatalf("cached GetStyledOutput error = %v, want ErrStyledTerminalOutputUnavailable", err)
 	}
 }
 
@@ -150,7 +392,7 @@ func TestCreate_RegistersSession(t *testing.T) {
 	}
 
 	// Registry must have the entry.
-	entries, err := ptyregistry.List()
+	entries, err := ptyregistry.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -165,6 +407,39 @@ func TestCreate_RegistersSession(t *testing.T) {
 	}
 
 	hosts["sess-abc"].cleanup(t)
+}
+
+// TestCreate_RunFilePathScopesRegistryToInstanceDir verifies Create honors
+// Options.RunFilePath, registering into that instance's own registry file
+// instead of the ~/.ao default. This is the fix for two AO daemon instances
+// on one machine (e.g. a headless dev daemon and the desktop app) silently
+// sharing one pty-host registry and cross-wiring same-named sessions.
+func TestCreate_RunFilePathScopesRegistryToInstanceDir(t *testing.T) {
+	isolateRegistry(t)
+	instanceDir := t.TempDir()
+	hosts := map[string]*inProcHost{}
+	rt := New(Options{
+		Spawner:     fakeSpawnerFor(t, hosts, livePID()),
+		RunFilePath: filepath.Join(instanceDir, "running.json"),
+	})
+
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     domain.SessionID("sess-scoped"),
+		WorkspacePath: "/tmp/workspace",
+		Argv:          []string{"claude-code"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if handle.ID != "sess-scoped" {
+		t.Fatalf("handle.ID = %q, want %q", handle.ID, "sess-scoped")
+	}
+	defer hosts["sess-scoped"].cleanup(t)
+
+	wantPath := filepath.Join(instanceDir, "windows-pty-hosts.json")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("expected registry at instance dir %s: %v", wantPath, err)
+	}
 }
 
 // TestCreate_DuplicateErrors verifies a second Create for the same session id fails.
@@ -556,7 +831,7 @@ func TestDestroy_KillsHostAndCleansUp(t *testing.T) {
 	}
 
 	// Registry entry must be gone.
-	entries, _ := ptyregistry.List()
+	entries, _ := ptyregistry.List(context.Background())
 	for _, e := range entries {
 		if e.SessionID == "sess-destroy" {
 			t.Fatal("expected registry entry removed after Destroy")
@@ -596,9 +871,54 @@ func TestDestroyRetainsSessionWhenPIDCannotBeStopped(t *testing.T) {
 	}
 }
 
+func TestDestroyRequiresCompleteResolutionEvidence(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, rt *Runtime, registryPath string)
+	}{
+		{
+			name: "malformed registry",
+			setup: func(t *testing.T, _ *Runtime, registryPath string) {
+				if err := os.WriteFile(registryPath, []byte("not json"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unreadable registry",
+			setup: func(t *testing.T, _ *Runtime, registryPath string) {
+				if err := os.Mkdir(registryPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unresolved in-memory reservation",
+			setup: func(_ *testing.T, rt *Runtime, _ string) {
+				rt.sessions["sess-unresolved"] = nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			registryPath := filepath.Join(dir, "windows-pty-hosts.json")
+			rt := New(Options{RunFilePath: filepath.Join(dir, "running.json")})
+			t.Cleanup(func() { ptyregistry.SetRunFilePath("") })
+			tt.setup(t, rt, registryPath)
+
+			err := rt.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-unresolved"})
+			if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+				t.Fatalf("Destroy error = %v, want ErrRuntimeProbeInconclusive", err)
+			}
+		})
+	}
+}
+
 // TestResolveViaRegistry verifies that with an empty in-memory map but a
-// registry entry pointing at a live in-process host, IsAlive and SendMessage
-// still work (simulates a daemon restart).
+// registry entry pointing at a live in-process host, status, styled output, and
+// input still work (simulates a daemon restart).
 func TestResolveViaRegistry(t *testing.T) {
 	isolateRegistry(t)
 
@@ -609,7 +929,7 @@ func TestResolveViaRegistry(t *testing.T) {
 	defer h.cleanup(t)
 
 	// Manually register the host in the registry.
-	err := ptyregistry.Register(ptyregistry.Entry{
+	err := ptyregistry.Register(context.Background(), ptyregistry.Entry{
 		SessionID:    "sess-reg",
 		PtyHostPID:   h.pid,
 		PipePath:     h.addr, // addr stored in PipePath field
@@ -630,6 +950,24 @@ func TestResolveViaRegistry(t *testing.T) {
 	}
 	if !alive {
 		t.Fatal("expected IsAlive=true via registry resolution")
+	}
+
+	if _, err := h.pty.WriteOutput([]byte("\x1b[2J\x1b[H\x1b[2mrecovered current screen\x1b[0m")); err != nil {
+		t.Fatal(err)
+	}
+	styledDeadline := time.Now().Add(time.Second)
+	for {
+		styled, styledErr := rt.GetStyledOutput(ctx, ports.RuntimeHandle{ID: "sess-reg"}, 10)
+		if styledErr != nil {
+			t.Fatalf("GetStyledOutput via registry: %v", styledErr)
+		}
+		if strings.Contains(styled, "recovered current screen") {
+			break
+		}
+		if time.Now().After(styledDeadline) {
+			t.Fatalf("recovered host styled surface never became observable: %q", styled)
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	// SendMessage must work via registry resolution.
@@ -682,13 +1020,54 @@ func TestClientGetOutput_HappyPath(t *testing.T) {
 
 	f.ring.Append([]byte("alpha\nbeta\ngamma\n"))
 
-	text, err := clientGetOutput(f.addr, 2)
+	text, err := clientGetOutput(context.Background(), f.addr, 2)
 	if err != nil {
 		t.Fatalf("clientGetOutput: %v", err)
 	}
 	want := f.ring.Tail(2)
 	if text != want {
 		t.Fatalf("clientGetOutput = %q, want %q", text, want)
+	}
+}
+
+func TestClientStatusContext_CancellationStopsProbe(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		close(accepted)
+		_, _ = io.Copy(io.Discard, conn) // consume the request without replying
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, _, statusErr := clientStatusContext(ctx, listener.Addr().String())
+		result <- statusErr
+	}()
+
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("status probe did not connect")
+	}
+	cancel()
+	select {
+	case statusErr := <-result:
+		if !errors.Is(statusErr, context.Canceled) {
+			t.Fatalf("clientStatusContext error = %v, want context.Canceled", statusErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("status probe ignored context cancellation")
 	}
 }
 

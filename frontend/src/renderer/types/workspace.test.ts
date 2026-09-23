@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { AGENT_OPTIONS } from "@aoagents/product-ui";
 import {
 	attentionZone,
 	canonicalTrackerIssueId,
 	findProjectOrchestrator,
 	newestActiveOrchestrator,
 	orchestratorHealth,
+	sessionAgentExited,
 	sessionIsActive,
 	sessionNeedsAttention,
 	toAgentProvider,
@@ -109,6 +111,23 @@ describe("sessionIsActive", () => {
 		expect(sessionIsActive(sessionWith({ status: "pr_open" }))).toBe(true);
 		expect(sessionIsActive(sessionWith({ status: "exited" }))).toBe(true);
 	});
+});
+
+describe("sessionAgentExited", () => {
+	it.each([undefined, false])(
+		"rejects a terminated status when isTerminated is %s",
+		(isTerminated) => {
+			expect(
+				sessionAgentExited(
+					sessionWith({
+						status: "terminated",
+						isTerminated,
+						activity: { state: "exited", lastActivityAt: "2026-09-21T00:00:00Z" },
+					}),
+				),
+			).toBe(false);
+		},
+	);
 });
 
 describe("findProjectOrchestrator", () => {
@@ -257,9 +276,11 @@ describe("orchestratorHealth", () => {
 });
 
 describe("toAgentProvider", () => {
-	it("passes through a known provider", () => {
-		expect(toAgentProvider("opencode")).toBe("opencode");
-		expect(toAgentProvider("muse")).toBe("muse");
+	it.each(AGENT_OPTIONS)("passes through the shared provider %s", (provider) => {
+		expect(toAgentProvider(provider)).toBe(provider);
+	});
+	it("passes through Prime Agent", () => {
+		expect(toAgentProvider("prime-agent")).toBe("prime-agent");
 	});
 
 	it("defaults unknown and undefined providers to codex", () => {

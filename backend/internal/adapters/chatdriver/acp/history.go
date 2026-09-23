@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -12,24 +14,141 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+const aoInternalReplayMetaKey = "ao.internalReplay"
+
+// refreshableConversation is returned only when the agent advertised
+// session/load. Calling session/load again on the already resumed ACP connection
+// asks the provider to replay its durable transcript again; it does not start a
+// new provider conversation or merely reread historyEvents.
+type refreshableConversation struct {
+	*conversation
+	loadMu      sync.Mutex
+	loadRequest acpsdk.LoadSessionRequest
+}
+
+var _ ports.ChatHistoryRefresher = (*refreshableConversation)(nil)
+
+func newRefreshableConversation(
+	conversation *conversation,
+	request acpsdk.LoadSessionRequest,
+) *refreshableConversation {
+	return &refreshableConversation{conversation: conversation, loadRequest: request}
+}
+
+func (c *refreshableConversation) loadHistory(ctx context.Context) (acpsdk.LoadSessionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return acpsdk.LoadSessionResponse{}, err
+	}
+
+	c.beginHistoryReplay(string(c.loadRequest.SessionId))
+	response, err := c.conn.LoadSession(ctx, c.loadRequest)
+	if err != nil {
+		c.abortHistoryReplay()
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	// The SDK waits for all notifications preceding this response to finish
+	// delivery. They are now captured, but not yet normalized.
+	if err := c.drainAndFinishReplay(ctx); err != nil {
+		c.abortHistoryReplay()
+		return acpsdk.LoadSessionResponse{}, err
+	}
+	return response, nil
+}
+
+// captureReplayUpdate also accepts arrivals during normalization. A response
+// watermark is a lower bound on delivery, not an exact replay/live boundary.
+// As before, history capture stays active until finishHistoryReplay.
+func (c *conversation) captureReplayUpdate(params acpsdk.SessionNotification) bool {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	if !c.replaying {
+		return false
+	}
+	c.replayUpdates = append(c.replayUpdates, params)
+	return true
+}
+
+func (c *conversation) drainAndFinishReplay(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.replayMu.Lock()
+		raw := c.replayUpdates
+		c.replayUpdates = nil
+		if len(raw) == 0 {
+			// Serialize final turn settlement and capture closure with delivery.
+			// Only this finalization holds the inbox lock, never a replay batch.
+			c.finishHistoryReplay()
+			c.replaying = false
+			c.replayMu.Unlock()
+			return nil
+		}
+		c.replayMu.Unlock()
+		for i := range raw {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// SDK handler errors are log-only; preserve that behavior.
+			if err := c.processUpdate(raw[i]); err != nil {
+				c.log.Warn("failed to handle replayed notification", "err", err)
+			}
+			raw[i] = acpsdk.SessionNotification{}
+		}
+	}
+}
+
+// RefreshHistory implements ports.ChatHistoryRefresher with a new ACP
+// session/load request. Replaying identical provider data is safe because the
+// capture regenerates the same stable ProviderEventID values, and the Chat
+// projector deduplicates those identities when importing a settled snapshot.
+func (c *refreshableConversation) RefreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
+	if _, err := c.loadHistory(ctx); err != nil {
+		// When AO's own context ended, the SDK reports that as a synthetic
+		// -32603 carrying the context error text. That is AO's deadline, not a
+		// provider verdict, so it must not be classified as a provider failure.
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, fmt.Errorf("refresh ACP session history: %w: %w", contextErr, err)
+		}
+		return nil, normalizeACPLoadError("refresh ACP session history", err)
+	}
+	return c.ReadHistory(ctx)
+}
+
 // historyCapture receives the session/update replay produced by ACP session/load.
 // ACP deliberately replays a flat stream rather than provider turns, so user
 // message ids are the durable boundaries from which AO reconstructs settled turns.
+//
+// Replay notifications are buffered separately from the normalized history to
+// reduce work on the SDK's sequential delivery path. This is an in-memory
+// backlog, not transcript pruning or a guarantee against SDK queue overflow.
 type historyCapture struct {
-	sessionID       string
-	events          []ports.ChatEvent
-	occurrences     map[string]int
-	turnID          string
-	turnUserID      string
-	pendingUserID   string
-	pendingUserText string
-	fallbackID      int
+	sessionID           string
+	events              []ports.ChatEvent
+	occurrences         map[string]int
+	turnID              string
+	turnUserID          string
+	turnHasProvider     bool
+	pendingUserID       string
+	pendingNativeUserID string
+	pendingUserText     string
+	fallbackID          int
 }
 
 // beginHistoryReplay diverts provider events away from the live Events channel.
 // The controller has not started consuming yet, and a long transcript can be much
 // larger than that channel's bounded live-stream buffer.
 func (c *conversation) beginHistoryReplay(sessionID string) {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	c.replaying = true
+	c.replayUpdates = nil
+
 	c.mu.Lock()
 	c.sessionID = sessionID
 	c.activeTurn = ""
@@ -45,13 +164,22 @@ func (c *conversation) beginHistoryReplay(sessionID string) {
 		occurrences: make(map[string]int),
 	}
 	c.historyEvents = nil
+	c.historyErr = nil
+	c.historyLoaded = false
 	c.historyMu.Unlock()
 }
 
 func (c *conversation) abortHistoryReplay() {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	c.replaying = false
+	c.replayUpdates = nil
+
 	c.historyMu.Lock()
 	c.history = nil
 	c.historyEvents = nil
+	c.historyErr = nil
+	c.historyLoaded = false
 	c.historyMu.Unlock()
 
 	c.mu.Lock()
@@ -59,15 +187,25 @@ func (c *conversation) abortHistoryReplay() {
 	c.mu.Unlock()
 }
 
-// finishHistoryReplay settles the last reconstructed turn, then exposes the
-// captured facts through ChatHistoryReader for the controller's transactional,
-// idempotent import path.
+// finishHistoryReplay closes the capture without inventing an outcome for its
+// final turn. ACP session/load guarantees only that all stored entries were
+// replayed; it does not report their terminal outcomes. Recovered is the shared
+// terminal state for that evidence gap; service reconciliation replaces it with
+// AO's known completed/interrupted/failed result when a durable turn matches.
 func (c *conversation) finishHistoryReplay() {
-	c.finishHistoryTurn()
+	c.historyMu.Lock()
+	hasTail := c.history != nil && c.history.turnID != ""
+	c.historyMu.Unlock()
+
+	if hasTail {
+		c.finishHistoryTurn(domain.TurnStateRecovered)
+	}
 
 	c.historyMu.Lock()
 	if c.history != nil {
 		c.historyEvents = append([]ports.ChatEvent(nil), c.history.events...)
+		c.historyErr = nil
+		c.historyLoaded = true
 	}
 	c.history = nil
 	c.historyMu.Unlock()
@@ -86,6 +224,13 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 	}
 	c.historyMu.Lock()
 	defer c.historyMu.Unlock()
+	if !c.historyLoaded {
+		return nil, fmt.Errorf("%w: ACP session/resume does not replay prior updates; session/load is required",
+			ports.ErrChatHistoryUnavailable)
+	}
+	if c.historyErr != nil {
+		return nil, c.historyErr
+	}
 	return append([]ports.ChatEvent(nil), c.historyEvents...), nil
 }
 
@@ -105,6 +250,11 @@ func (c *conversation) prepareHistoryUpdate(update acpsdk.SessionUpdate) bool {
 	c.flushHistoryUserMessage()
 	if seed, needsTurn := historyUpdateTurnSeed(update); needsTurn {
 		c.ensureHistoryTurn(seed)
+		c.historyMu.Lock()
+		if c.history != nil && c.history.turnID != "" {
+			c.history.turnHasProvider = true
+		}
+		c.historyMu.Unlock()
 	}
 	return false
 }
@@ -120,6 +270,7 @@ func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMe
 	if chunk.MessageId != nil {
 		messageID = strings.TrimSpace(*chunk.MessageId)
 	}
+	nativeID := messageID
 
 	c.historyMu.Lock()
 	if c.history == nil {
@@ -144,7 +295,7 @@ func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMe
 	c.historyMu.Unlock()
 
 	if finishPrevious {
-		c.finishHistoryTurn()
+		c.finishHistoryTurn(domain.TurnStateRecovered)
 		startTurn = true
 	}
 	if startTurn {
@@ -155,6 +306,7 @@ func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMe
 	c.historyMu.Lock()
 	if c.history != nil {
 		c.history.pendingUserID = messageID
+		c.history.pendingNativeUserID = nativeID
 		c.history.pendingUserText += text
 	}
 	c.historyMu.Unlock()
@@ -166,13 +318,28 @@ func (c *conversation) startHistoryTurn(userID string) {
 		c.historyMu.Unlock()
 		return
 	}
-	turnID := "acp-history-turn:" + c.history.sessionID + ":" + userID
+	namespace := c.providerScopeID
+	var turnID string
+	if namespace == "" {
+		turnID = legacyHistoryTurnID(c.history.sessionID, userID)
+	} else {
+		turnID = historyTurnID(namespace, userID)
+	}
 	c.history.turnID = turnID
 	c.history.turnUserID = userID
+	c.history.turnHasProvider = false
 	c.historyMu.Unlock()
 
 	c.resetHistoryItems(turnID)
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turnID})
+}
+
+func historyTurnID(namespace, userID string) string {
+	return "acp-history-turn:" + lengthPrefixedTuple(namespace, userID)
+}
+
+func legacyHistoryTurnID(sessionID, userID string) string {
+	return "acp-history-turn:" + sessionID + ":" + userID
 }
 
 func (c *conversation) ensureHistoryTurn(seed string) {
@@ -197,8 +364,10 @@ func (c *conversation) flushHistoryUserMessage() {
 	}
 	turnID := c.history.turnID
 	messageID := c.history.pendingUserID
+	nativeID := c.history.pendingNativeUserID
 	text := c.history.pendingUserText
 	c.history.pendingUserID = ""
+	c.history.pendingNativeUserID = ""
 	c.history.pendingUserText = ""
 	c.historyMu.Unlock()
 
@@ -206,15 +375,16 @@ func (c *conversation) flushHistoryUserMessage() {
 		return
 	}
 	c.emit(ports.ChatEvent{
-		Kind:            ports.ChatEventUserMessageCompleted,
-		ProviderTurnID:  turnID,
-		ProviderItemID:  messageID,
-		ClientMessageID: messageID,
-		Text:            text,
+		Kind:                ports.ChatEventUserMessageCompleted,
+		NativeUserMessageID: nativeID,
+		ProviderTurnID:      turnID,
+		ProviderItemID:      c.providerItemID(messageID),
+		ClientMessageID:     c.providerItemID(messageID),
+		Text:                text,
 	})
 }
 
-func (c *conversation) finishHistoryTurn() {
+func (c *conversation) finishHistoryTurn(state domain.TurnState) {
 	c.flushHistoryUserMessage()
 
 	c.historyMu.Lock()
@@ -225,17 +395,20 @@ func (c *conversation) finishHistoryTurn() {
 	turnID := c.history.turnID
 	c.historyMu.Unlock()
 
-	c.settleOpenItems(turnID)
-	c.emit(ports.ChatEvent{
-		Kind:           ports.ChatEventTurnCompleted,
-		ProviderTurnID: turnID,
-		TurnState:      domain.TurnStateCompleted,
-	})
+	c.settleOpenItems(turnID, state)
+	if state != "" {
+		c.emit(ports.ChatEvent{
+			Kind:           ports.ChatEventTurnCompleted,
+			ProviderTurnID: turnID,
+			TurnState:      state,
+		})
+	}
 
 	c.historyMu.Lock()
 	if c.history != nil && c.history.turnID == turnID {
 		c.history.turnID = ""
 		c.history.turnUserID = ""
+		c.history.turnHasProvider = false
 		c.history.pendingUserID = ""
 		c.history.pendingUserText = ""
 	}
@@ -262,18 +435,45 @@ func (c *conversation) captureHistoryEvent(event ports.ChatEvent) bool {
 	if c.history == nil {
 		return false
 	}
+	if alias, ok := c.legacyProviderItemAlias(event.ProviderItemID); ok {
+		event.ProviderItemAliases = append(event.ProviderItemAliases, alias)
+	}
 	if event.ProviderEventID == "" {
-		base := strings.Join([]string{
-			c.history.sessionID,
-			string(event.Kind),
-			event.ProviderTurnID,
-			event.ProviderItemID,
-			event.ClientMessageID,
-			event.RequestID,
-		}, "\x00")
+		namespace := c.providerScopeID
+		if namespace == "" {
+			namespace = c.history.sessionID
+		}
+		var base string
+		if c.providerScopeID == "" {
+			// Deployed ACP histories used this delimiter encoding before durable
+			// provider scopes existed. Keep it only for migrated unscoped roots so
+			// their replay event identities remain stable across the upgrade. Every
+			// newly created root and provider boundary uses the injective form below.
+			base = strings.Join([]string{
+				namespace,
+				string(event.Kind),
+				event.ProviderTurnID,
+				event.ProviderItemID,
+				event.ClientMessageID,
+				event.RequestID,
+			}, "\x00")
+		} else {
+			base = lengthPrefixedTuple(
+				namespace,
+				string(event.Kind),
+				event.ProviderTurnID,
+				event.ProviderItemID,
+				event.ClientMessageID,
+				event.RequestID,
+			)
+		}
 		occurrence := c.history.occurrences[base]
 		c.history.occurrences[base] = occurrence + 1
-		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", base, occurrence)))
+		digestInput := lengthPrefixedTuple(base, strconv.Itoa(occurrence))
+		if c.providerScopeID == "" {
+			digestInput = fmt.Sprintf("%s\x00%d", base, occurrence)
+		}
+		digest := sha256.Sum256([]byte(digestInput))
 		event.ProviderEventID = fmt.Sprintf("acp-history:%x", digest)
 	}
 	c.history.events = append(c.history.events, event)
@@ -315,8 +515,24 @@ func historicalUserContent(content acpsdk.ContentBlock) string {
 	case content.ResourceLink != nil:
 		return fmt.Sprintf("[File: %s]", content.ResourceLink.Name)
 	case content.Resource != nil:
+		if isInternalReplayResource(content.Resource) {
+			return ""
+		}
 		return "[Embedded context]"
 	default:
 		return ""
 	}
+}
+
+func isInternalReplayResource(content *acpsdk.ContentBlockResource) bool {
+	resource := content.Resource
+	if text := resource.TextResourceContents; text != nil {
+		internal, _ := text.Meta[aoInternalReplayMetaKey].(bool)
+		return internal && text.Uri == ports.ChatInternalReplayResourceURI
+	}
+	if blob := resource.BlobResourceContents; blob != nil {
+		internal, _ := blob.Meta[aoInternalReplayMetaKey].(bool)
+		return internal && blob.Uri == ports.ChatInternalReplayResourceURI
+	}
+	return false
 }

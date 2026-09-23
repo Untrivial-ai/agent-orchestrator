@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
@@ -281,24 +282,107 @@ func TestGetRestoreCommandNoID(t *testing.T) {
 	}
 }
 
-func TestGetAgentHooksNoOp(t *testing.T) {
-	if err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: t.TempDir()}); err != nil {
-		t.Fatalf("GetAgentHooks err = %v, want nil", err)
+func TestGetLaunchCommandExplicitlyLoadsManagedExtension(t *testing.T) {
+	workspace := t.TempDir()
+	p := &Plugin{resolvedBinary: "pi"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		WorkspacePath: workspace,
+		Prompt:        "fix the bug",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pi", "--extension", filepath.Join(workspace, ".pi", "extensions", "ao-activity.ts"), "fix the bug"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
 }
 
-func TestSessionInfoNoOp(t *testing.T) {
+func TestGetRestoreCommandExplicitlyLoadsManagedExtension(t *testing.T) {
+	workspace := t.TempDir()
+	p := &Plugin{resolvedBinary: "pi"}
+	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Session: ports.SessionRef{
+			WorkspacePath: workspace,
+			Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: "native-pi-1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("ok=false, want true")
+	}
+	want := []string{"pi", "--extension", filepath.Join(workspace, ".pi", "extensions", "ao-activity.ts"), "--session", "native-pi-1"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v", cmd, want)
+	}
+}
+
+func TestGetAgentHooksInstallsManagedActivityExtension(t *testing.T) {
+	workspace := t.TempDir()
+	if err := (&Plugin{resolvedBinary: fakePiBinary(t, "0.80.6")}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+		t.Fatalf("GetAgentHooks err = %v", err)
+	}
+
+	extensionPath := filepath.Join(workspace, ".pi", "extensions", "ao-activity.ts")
+	data, err := os.ReadFile(extensionPath)
+	if err != nil {
+		t.Fatalf("read managed extension: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"agent-orchestrator: managed pi activity extension",
+		`pi.on("session_start"`,
+		`pi.on("before_agent_start"`,
+		`pi.on("agent_end"`,
+		`pi.on("agent_settled"`,
+		`pi.on("session_shutdown"`,
+		`"hooks", "pi", hookName`,
+		"getSessionId()",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("managed extension missing %q:\n%s", want, text)
+		}
+	}
+
+	gitignore, err := os.ReadFile(filepath.Join(workspace, ".pi", "extensions", ".gitignore"))
+	if err != nil {
+		t.Fatalf("read extension .gitignore: %v", err)
+	}
+	if !strings.Contains(string(gitignore), "/ao-activity.ts") {
+		t.Fatalf("extension .gitignore does not ignore AO file:\n%s", gitignore)
+	}
+}
+
+func TestGetAgentHooksRefusesForeignManagedPath(t *testing.T) {
+	workspace := t.TempDir()
+	extensionPath := filepath.Join(workspace, ".pi", "extensions", "ao-activity.ts")
+	if err := os.MkdirAll(filepath.Dir(extensionPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extensionPath, []byte("export default function userExtension() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := (&Plugin{resolvedBinary: fakePiBinary(t, "0.80.6")}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: workspace})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("GetAgentHooks err = %v, want foreign-file refusal", err)
+	}
+}
+
+func TestSessionInfoReadsHookMetadata(t *testing.T) {
 	info, ok, err := (&Plugin{}).SessionInfo(context.Background(), ports.SessionRef{
 		Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "019e950e-52e0-7411-961b-d380ca7e610f"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok {
-		t.Fatalf("ok=true with info %#v, want no-op false", info)
+	if !ok {
+		t.Fatal("ok=false, want hook-derived session info")
 	}
-	if !reflect.DeepEqual(info, ports.SessionInfo{}) {
-		t.Fatalf("info = %#v, want zero", info)
+	if info.AgentSessionID != "019e950e-52e0-7411-961b-d380ca7e610f" {
+		t.Fatalf("AgentSessionID = %q, want native Pi id", info.AgentSessionID)
 	}
 }
 

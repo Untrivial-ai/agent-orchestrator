@@ -53,11 +53,13 @@ type clineHookSpec struct {
 //   - UserPromptSubmit -> user-prompt-submit  (user message submitted: active)
 //   - PreToolUse       -> permission-request  (about to act: approval point)
 //   - TaskCancel       -> stop                (task cancelled/aborted: idle)
+//   - TaskComplete     -> stop                (task completed normally: idle)
 var clineManagedHooks = []clineHookSpec{
 	{Event: "TaskStart", Subcommand: "session-start"},
 	{Event: "UserPromptSubmit", Subcommand: "user-prompt-submit"},
 	{Event: "PreToolUse", Subcommand: "permission-request"},
 	{Event: "TaskCancel", Subcommand: "stop"},
+	{Event: "TaskComplete", Subcommand: "stop"},
 }
 
 // GetAgentHooks installs AO's Cline hook scripts into the worktree-local

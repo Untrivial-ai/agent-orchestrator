@@ -1,0 +1,50 @@
+---
+title: Lifecycle automation
+description: How AO currently routes CI failures, review feedback, and merge conflicts to the correct session.
+---
+
+AO has built-in lifecycle automation. It is not currently a user-configurable `reactions:` schema: YAML keys such as `retries`, `escalateAfter`, `auto-merge`, and notifier routing belong to the retired implementation and are not accepted by current project configuration.
+
+## What AO handles
+
+| Observation | Current behavior |
+| --- | --- |
+| Failing CI checks | Sends the failing check names and links to the owning session |
+| Changes requested or unresolved review comments | Sends focused unresolved feedback to the owning session |
+| Merge conflict | Asks the eligible session to rebase and resolve it |
+| PR ready to merge | Creates a durable in-app notification |
+| PR merged or closed | Updates session facts and creates/resolves notifications |
+| Session needs input | Creates a durable notification for human attention |
+
+Messages are signature-deduplicated, so an unchanged set of failures or comments is not sent on every poll. A changed failure set or changed unresolved feedback can produce a fresh nudge.
+
+## Mode-aware delivery
+
+Lifecycle messages go through the same session manager as user messages:
+
+- Terminal UI sessions receive the message through their runtime.
+- Chat sessions receive a native provider turn and persist it in the structured conversation.
+
+AO does not run both controllers at once. A handoff between compatible interfaces drains or interrupts the old controller before committing the new one.
+
+## Notifications
+
+The desktop notification center keeps durable read/unread history for input requests, merge-ready PRs, merged PRs, and PRs closed without merging. Electron also shows an app toast while the app is running.
+
+AO does not currently configure Slack, Discord, webhook notifiers, per-reaction retry budgets, or automatic merge from project config. Merge explicitly from the desktop or with:
+
+```bash
+ao pr merge <pr-number>
+```
+
+## Reviews
+
+SCM observation and AO reviewer agents are related but distinct:
+
+- The GitHub observer watches a claimed PR and feeds CI/review/merge facts into lifecycle.
+- AO review runs launch a configured reviewer agent against a worker PR. Use the desktop Reviews view or `ao review trigger`, `ao review ls`, and `ao review cancel`.
+
+<Cards>
+	<Card title="CI recovery" href="/docs/guides/ci-recovery" description="Follow the built-in CI feedback loop." />
+	<Card title="Review loop" href="/docs/guides/review-loop" description="Work with GitHub feedback and AO reviewer agents." />
+</Cards>

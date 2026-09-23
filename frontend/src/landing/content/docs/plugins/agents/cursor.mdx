@@ -1,71 +1,15 @@
 ---
 title: Cursor
-description: Cursor Agent CLI — IDE-like editing from the terminal, with PATH-wrapper PR tracking.
+description: Built-in Terminal UI support for the Cursor Agent CLI.
 ---
 
-
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="cursor" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>agent</code> · Name: <code>cursor</code> · Binary: <code>agent</code>
-	</span>
-</div>
-
-The [Cursor Agent CLI](https://cursor.com/docs) brings Cursor's editing model to a terminal. AO spawns it per session, wraps `gh`/`git`, and tracks activity via the AO activity log.
-
-<PlatformSupport macos="full" linux="full" windows="full" />
-
-## Install
+AO's Cursor adapter resolves the Cursor Agent CLI from your machine and checks its local readiness through the agent catalog.
 
 ```bash
-curl https://cursor.com/install -fsS | bash
+ao agent ls --refresh
+ao spawn --project my-app --name cursor-task --agent cursor --mode tui
 ```
 
-Verify:
+Cursor is currently Terminal UI-only; requesting `--mode chat` fails with an unsupported-Chat error rather than silently creating a different interface.
 
-```bash
-agent --help
-```
-
-You should see "Cursor Agent" in the output. If you don't, the `agent` binary in your PATH is something else (e.g. an unrelated tool) — reorder your PATH so the Cursor one wins.
-
-## Use
-
-```yaml title="agent-orchestrator.yaml"
-agent: cursor
-```
-
-No plugin-level config.
-
-## How it works
-
-- **Launch:** AO runs `agent` inside the worktree.
-- **Activity tracking:** AO writes a JSONL to `{workspace}/.ao/activity.jsonl` each poll cycle based on terminal output classification. The dashboard reads from there.
-- **PR + git tracking:** PATH wrappers at `~/.ao/bin/gh` / `~/.ao/bin/git` intercept calls to record PR metadata.
-- **Session resume:** Not supported — every spawn is a fresh Cursor session.
-
-## Detection
-
-The plugin's `detect()` checks `agent --help` output for the strings `Cursor Agent` and `--approve-mcps` to avoid false positives with other binaries named `agent`.
-
-## Environment variables
-
-| Variable        | Set by AO | Purpose                    |
-| --------------- | --------- | -------------------------- |
-| `AO_SESSION_ID` | ✓         | AO session id              |
-| `AO_ISSUE_ID`   | ✓         | Issue identifier           |
-| `PATH`          | ✓         | Prepends `~/.ao/bin`       |
-| `GH_PATH`       | ✓         | Absolute path to real `gh` |
-
-## Troubleshooting
-
-<Accordions>
-	<Accordion title="AO says Cursor Agent isn't detected">
-		The plugin only recognises the real Cursor binary by its help output. Run `agent --help` — if you see a different
-		tool's help, remove or shadow it, or reinstall Cursor Agent.
-	</Accordion>
-	<Accordion title="Dashboard never leaves `active`">
-		Cursor doesn't emit its own session JSONL. AO classifies based on terminal output — if your terminal is being
-		captured by another tool, the classification can drift. `ao doctor` will flag this.
-	</Accordion>
-</Accordions>
+AO records activity through the adapter's supported hooks and terminal signals. There is no Cursor npm plugin or `agent-orchestrator.yaml` block to install.

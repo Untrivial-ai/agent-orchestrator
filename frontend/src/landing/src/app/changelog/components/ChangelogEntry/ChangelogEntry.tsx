@@ -16,20 +16,16 @@ export async function ChangelogEntry({ entry }: ChangelogEntryProps) {
 	const formattedDate = formatChangelogDate(entry.date);
 
 	return (
-		<article
-			id={`changelog-${entry.slug}`}
-			className="relative border-b border-border pb-16 last:border-b-0"
-		>
-			{/* Sticky date label positioned to the left of the gridline */}
+		<article id={`changelog-${entry.slug}`} className="relative">
+			{/* Sticky date label positioned beside the article on wide screens. */}
 			<div
 				className="hidden lg:flex absolute top-0 bottom-0 items-start"
 				style={{ right: "calc(100% + 24px)" }}
 			>
-				<div className="sticky top-24 flex items-center gap-3 pt-1">
+				<div className="sticky top-24 pt-1">
 					<span className="text-sm font-mono text-muted-foreground whitespace-nowrap">
 						{formattedDate}
 					</span>
-					<div className="w-0.5 h-5 bg-orange-500" />
 				</div>
 			</div>
 
@@ -50,7 +46,7 @@ export async function ChangelogEntry({ entry }: ChangelogEntryProps) {
 
 			{/* Featured image */}
 			{entry.image && (
-				<div className="relative mb-6 overflow-hidden border border-border">
+				<div className="relative mb-6 overflow-hidden">
 					{/* biome-ignore lint/performance/noImgElement: Need native img for natural dimensions */}
 					<img src={entry.image} alt={entry.title} className="w-full h-auto" />
 				</div>
@@ -66,9 +62,11 @@ export async function ChangelogEntry({ entry }: ChangelogEntryProps) {
 			{/* Body. Curated entries compile as MDX (custom components); GitHub
 			    release bodies are plain Markdown, rendered without the MDX compiler
 			    so arbitrary text can never be parsed as MDX. */}
-			<div className="prose prose-invert max-w-none prose-headings:font-medium prose-headings:tracking-[-0.5px] prose-h2:text-xl prose-h2:mt-8 prose-h2:mb-4 prose-h3:text-lg prose-h3:mt-6 prose-h3:mb-3 prose-p:text-muted-foreground prose-p:leading-relaxed prose-li:text-muted-foreground prose-strong:text-foreground prose-a:text-foreground prose-a:underline prose-a:underline-offset-4 hover:prose-a:text-muted-foreground prose-hr:border-border prose-hr:my-8">
+			<div className="prose prose-invert max-w-none prose-headings:font-medium prose-headings:tracking-[-0.5px] prose-h2:text-xl prose-h2:mt-8 prose-h2:mb-4 prose-h3:text-lg prose-h3:mt-6 prose-h3:mb-3 prose-p:text-muted-foreground prose-p:leading-relaxed prose-li:text-muted-foreground prose-strong:font-medium prose-strong:text-foreground prose-a:text-foreground prose-a:underline prose-a:underline-offset-4 hover:prose-a:text-muted-foreground">
 				{entry.source === "release" ? (
-					<ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown>
+					<ReactMarkdown components={{ hr: () => null }} remarkPlugins={[remarkGfm]}>
+						{entry.content}
+					</ReactMarkdown>
 				) : (
 					<MDXRemote
 						source={entry.content}

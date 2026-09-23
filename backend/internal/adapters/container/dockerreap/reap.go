@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // SessionLabel is the label key a worker's own `docker run` should set to
@@ -51,7 +52,7 @@ type commandRunner interface {
 type execRunner struct{}
 
 func (execRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := aoprocess.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

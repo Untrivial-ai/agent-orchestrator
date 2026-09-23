@@ -15,12 +15,14 @@ const (
 	claudeHookTimeout       = 30
 )
 
-// claudeStartupMatcher is referenced by pointer so SessionStart serializes with
-// its required "startup" matcher.
-var claudeStartupMatcher = "startup"
+// claudeSessionStartMatcher is referenced by pointer so SessionStart serializes
+// with Claude's documented source matcher. "startup" alone misses --resume
+// relaunches (and /clear, compact, fork), so the native session id is not
+// confirmed under the new RuntimeLaunchID until the next user prompt (#4122).
+var claudeSessionStartMatcher = "startup|resume|clear|compact|fork"
 
 // claudeManagedHooks is the source of truth for the hooks AO installs:
-// SessionStart (under the "startup" matcher), UserPromptSubmit, the tool-use
+// SessionStart (startup/resume/clear/compact/fork), UserPromptSubmit, the tool-use
 // trio (PreToolUse, PostToolUse, PostToolUseFailure), PermissionRequest,
 // Stop, Notification, and SessionEnd. They report normalized session metadata
 // and activity-state signals back into AO's store (see DeriveActivityState).
@@ -32,10 +34,13 @@ var claudeStartupMatcher = "startup"
 // approved tool finishes — the daemon-side precedence rule is what makes these
 // signals safe against parallel-subagent traffic (the naive mapping without it
 // was reverted in PR #5's review). PermissionRequest fires when a permission
-// dialog appears and carries the blocking tool_name; `ao hooks` writes nothing
-// to stdout, so installing it never injects a permission decision.
+// dialog appears and carries the blocking tool_name; for worker sessions
+// `ao hooks` writes nothing to stdout, so installing it never injects a
+// permission decision. Headless reviewer sessions (AO_REVIEW_SESSION_ID set)
+// are the one exception: nobody can answer the dialog there, so the hook
+// replies with an allow/deny decision (see cli.reviewerPermissionDecision, #4810).
 var claudeManagedHooks = []hooksjson.HookSpec{
-	{Event: "SessionStart", Matcher: &claudeStartupMatcher, Command: claudeHookCommandPrefix + "session-start"},
+	{Event: "SessionStart", Matcher: &claudeSessionStartMatcher, Command: claudeHookCommandPrefix + "session-start"},
 	{Event: "UserPromptSubmit", Command: claudeHookCommandPrefix + "user-prompt-submit"},
 	{Event: "PreToolUse", Command: claudeHookCommandPrefix + "pre-tool-use"},
 	{Event: "PostToolUse", Command: claudeHookCommandPrefix + "post-tool-use"},
@@ -50,11 +55,12 @@ var claudeManagedHooks = []hooksjson.HookSpec{
 // claudeHooks manages AO's hooks in the workspace-local
 // .claude/settings.local.json file.
 var claudeHooks = hooksjson.Manager{
-	Label:         "claude-code",
-	CommandPrefix: claudeHookCommandPrefix,
-	Timeout:       claudeHookTimeout,
-	Path:          claudeSettingsPath,
-	Managed:       claudeManagedHooks,
+	Label:                 "claude-code",
+	CommandPrefix:         claudeHookCommandPrefix,
+	LegacyCommandPrefixes: []string{"ao hooks continue "},
+	Timeout:               claudeHookTimeout,
+	Path:                  claudeSettingsPath,
+	Managed:               claudeManagedHooks,
 }
 
 func claudeSettingsPath(workspacePath string) string {

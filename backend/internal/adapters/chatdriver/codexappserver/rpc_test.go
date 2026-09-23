@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const notificationReplayBurst = 4096
+
 // fakeAppServer stands in for the `codex app-server` process over in-memory
 // pipes, so the transport is tested without spawning anything.
 type fakeAppServer struct {
@@ -177,6 +179,61 @@ func TestNotificationsAreFannedOut(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for %q", want)
 		}
+	}
+}
+
+func TestNotificationReplayBurstRetainsTerminalFrame(t *testing.T) {
+	c, fake := newFakeAppServer(t, rejectAllServerRequests)
+	for i := 0; i < notificationReplayBurst; i++ {
+		fake.push(`{"method":"item/agentMessage/delta","params":{"delta":"x"}}`)
+	}
+	fake.push(`{"method":"turn/completed","params":{"turn":{"status":"completed"}}}`)
+
+	foundTerminal := false
+	for i := 0; i < notificationReplayBurst+1; i++ {
+		if n := <-c.notifs(); n.Method == "turn/completed" {
+			foundTerminal = true
+		}
+	}
+	if !foundTerminal {
+		t.Fatal("turn/completed was dropped when replay exceeded the notification buffer")
+	}
+}
+
+func TestNotificationRelayAppliesBackpressureAtByteLimit(t *testing.T) {
+	c, fake := newFakeAppServer(t, rejectAllServerRequests)
+	const oversizedReplayFrames = 40
+	largeFrame := `{"method":"item/agentMessage/delta","params":{"delta":"` +
+		strings.Repeat("x", 1<<20) + `"}}`
+	producerDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < oversizedReplayFrames; i++ {
+			if _, err := io.WriteString(fake.toClient, largeFrame+"\n"); err != nil {
+				producerDone <- err
+				return
+			}
+		}
+		producerDone <- nil
+	}()
+
+	select {
+	case err := <-producerDone:
+		if err != nil {
+			t.Fatalf("provider write failed before backpressure: %v", err)
+		}
+		t.Fatal("notification relay accepted more than its byte budget without backpressure")
+	case <-time.After(3 * time.Second):
+	}
+
+	for i := 0; i < oversizedReplayFrames; i++ {
+		select {
+		case <-c.notifs():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out draining notification %d", i)
+		}
+	}
+	if err := <-producerDone; err != nil {
+		t.Fatalf("provider did not resume after notifications drained: %v", err)
 	}
 }
 

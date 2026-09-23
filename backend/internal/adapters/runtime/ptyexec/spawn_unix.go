@@ -119,7 +119,11 @@ func (p *creackPTY) Close() error {
 			if p.cmd.Process != nil {
 				_ = p.cmd.Process.Kill()
 			}
-			<-done
+			// SIGKILL reaps a well-behaved process and done closes; a process
+			// wedged in uninterruptible kernel state survives it, so blocking
+			// on done here would hang daemon shutdown forever. waitForExit
+			// bounds the wait and Close releases the PTY master regardless.
+			waitForExit(done, killGrace)
 		}
 		p.closeErr = p.f.Close()
 	})

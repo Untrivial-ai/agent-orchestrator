@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
@@ -29,9 +30,10 @@ func recoverTelemetry(log *slog.Logger, sink ports.EventSink) func(http.Handler)
 						"panic", fmt.Sprint(rec),
 						"stack", stack,
 					)
+					path := telemetrymeta.RoutePattern(r)
+					panicKind := telemetrymeta.PanicKind(rec)
+					fingerprint := telemetrymeta.Fingerprint("httpd", "http_request_panic", r.Method, path, panicKind)
 					if sink != nil {
-						path := telemetrymeta.RoutePattern(r)
-						panicKind := telemetrymeta.PanicKind(rec)
 						sink.Emit(r.Context(), ports.TelemetryEvent{
 							Name:       "ao.daemon.panic",
 							Source:     "http",
@@ -45,10 +47,19 @@ func recoverTelemetry(log *slog.Logger, sink ports.EventSink) func(http.Handler)
 								"path":              path,
 								"panic_kind":        panicKind,
 								"stack_fingerprint": telemetrymeta.Fingerprint("httpd", "http_request_panic", path, panicKind, stack),
-								"fingerprint":       telemetrymeta.Fingerprint("httpd", "http_request_panic", r.Method, path, panicKind),
+								"fingerprint":       fingerprint,
 							},
 						})
 					}
+					// Capture the panic to Sentry with its Go stack.
+					sentryobs.CapturePanic(r.Context(), rec, stack, map[string]string{
+						"component":  "httpd",
+						"operation":  "http_request_panic",
+						"method":     r.Method,
+						"path":       path,
+						"panic_kind": panicKind,
+						"request_id": middleware.GetReqID(r.Context()),
+					}, fingerprint)
 					writeRecoveredError(w, r)
 				}
 			}()

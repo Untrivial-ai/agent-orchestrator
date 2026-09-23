@@ -1,97 +1,54 @@
 ---
 title: CI recovery
-description: How AO detects red CI and nudges the agent to investigate without you babysitting.
+description: How AO observes failing GitHub checks and sends focused context to the owning session.
 ---
 
+When a claimed GitHub pull request has failing checks, AO's SCM observer records the new facts and routes a recovery message to the session that owns the PR.
 
-When your PR's CI goes red, AO notices before you do and tells the agent to fix it. You get a notification, the agent pushes a fix, and the cycle repeats until CI is green.
+## The flow
 
-## How it works
+1. AO polls the claimed PR through its GitHub provider.
+2. The lifecycle reducer derives `ci_failed` from the stored PR facts.
+3. AO formats the failing check names and links into one focused message.
+4. The session manager delivers it through the active interface: a native Chat turn or the Terminal UI runtime.
+5. The desktop updates the PR summary and failing-check links from the same durable facts.
 
-1. The **SCM plugin** polls the PR's check runs via `gh pr checks` (or `glab`).
-2. The **lifecycle manager** transitions the session to `ci_failed` when any required check fails.
-3. The **agent plugin** is woken with a prompt like _"CI failed on PR #42. The failing checks are X and Y. Investigate and push a fix."_
-4. The **notifier plugin** pings you (desktop, Slack, Discord, whatever you configured).
+AO fingerprints the failing-check set. An unchanged failure is not resent on every poll; a changed set can produce a new nudge.
 
-No webhooks, no CI integration to install. The `gh` CLI you already authenticated with is doing the work.
+## Make sure the PR is linked
 
-## What the agent sees
-
-When the session transitions to `ci_failed`, AO injects a short context block into the agent prompt:
-
-- The failing check names
-- A link to the run log (the agent can fetch it with `gh run view` via the PATH wrapper)
-- The PR number
-- The branch name
-
-The agent's next response usually inspects the log, reproduces the failure locally if it can, and pushes a commit. Then CI re-runs and the loop closes.
-
-## Configurable behavior
-
-```yaml title="agent-orchestrator.yaml"
-reactions:
-  ciFailed:
-    enabled: true # default
-    maxRetries: 3 # stop after 3 automatic rounds
-    cooldownSeconds: 30 # wait before nudging the agent again
-```
-
-If the agent has tried three times and CI is still red, the session transitions to `blocked` and AO stops nudging — you take it from there.
-
-## Manual retry
-
-Tell AO to re-check a specific PR right now:
+PRs created by a session are discovered and associated through normal observation. To attach an existing PR explicitly:
 
 ```bash
-ao review-check         # check every project
-ao review-check myproject
-ao review-check --dry-run   # show what would happen, don't nudge
+ao session claim-pr <pr-number-or-url>
+# From outside the worker, target it explicitly:
+ao session claim-pr <session-id> <pr-number-or-url>
 ```
 
-## When it doesn't kick in
+Inside a worker, the one-argument form uses `AO_SESSION_ID` automatically.
 
-- **PR not linked to a session.** If you created the PR manually and didn't run `ao session claim-pr`, AO doesn't know about it.
-- **Check status is `neutral` or `skipped`.** AO only reacts to `failure` and `error`.
-- **PR is in draft.** AO waits for ready-for-review before treating CI as binding.
-- **`reactions.ciFailed.enabled: false`** in your config.
-
-<Callout type="info">
-  Claiming a PR retroactively: `ao session claim-pr 123 <sessionId>` — AO now tracks its CI.
-</Callout>
-
-## Linking a manually-opened PR
-
-Sometimes you want the agent to work on an existing PR instead of an issue:
+Or claim it while creating a session:
 
 ```bash
-ao spawn --claim-pr 123 --assign-on-github
+ao spawn --project my-project --name fix-pr-42 \
+  --claim-pr 42 --mode chat
 ```
 
-This creates a session, points it at PR #123, and (with `--assign-on-github`) assigns the PR to you so it shows up in your GitHub filters. Subsequent CI failures flow into the normal recovery loop.
+Use `--no-takeover` if the operation should fail when another active session already owns the PR.
 
-## How the CI failure flow works
+## What the agent receives
 
-When CI goes red, AO sends two distinct messages to the agent in sequence:
+The message includes the failing checks and available run URLs, plus the PR identity. Raw CI logs are not copied into AO's desktop API; the agent can follow the supplied links and use the repository host's CLI to inspect logs.
 
-1. **Reaction message (poll cycle N).** The lifecycle manager detects that CI transitioned to `ci_failed` and fires the `ci-failed` reaction. This sends the configured `message` (or the default: _"CI failed on PR #42…"_) to the agent via `ao send`.
+## Follow progress
 
-2. **Detailed follow-up (poll cycle N+1, ~30 s later).** On the next poll cycle, AO calls `formatCIFailureMessage()` with the actual failing checks and sends a second message with each check's name, conclusion status, and a direct link to the run log. This is delivered via `sessionManager.send()` directly — it does **not** go through `executeReaction()`, so it does not consume the `ci-failed` reaction's retry budget.
+Open the session inspector to see the PR, CI state, and failing-check links. The notification center is for human attention such as input requests and merge readiness; CI recovery itself is routed to the agent session.
 
-The follow-up is unconditional. Even if you have set a custom `ci-failed.message`, the detailed check list arrives on the next poll regardless — your custom message is the first nudge; the structured check data is always the second.
+## Current limits
 
-AO fingerprints the set of failing checks (name + status + conclusion). If the same failure set is still present on a subsequent cycle, AO skips re-sending to avoid spamming the agent. When the failure set changes (e.g. one check is fixed and a new one appears), the fingerprint changes and both messages are sent again.
+- The shipped SCM observer is the GitHub path.
+- CI automation is built in and is not configured through a `reactions:` YAML block.
+- There is no `ao review-check` command or configurable CI retry/escalation budget.
+- Draft and required-check semantics come from the normalized PR facts rather than a user reaction rule.
 
-## Escalation
-
-`retries` controls how many reaction attempts AO makes before giving up and escalating to a human:
-
-```yaml title="agent-orchestrator.yaml"
-reactions:
-  ci-failed:
-    retries: 3 # escalate after 3 failed attempts (default: unlimited)
-    escalateAfter: "1h" # …or after a wall-clock duration, whichever comes first
-```
-
-`escalateAfter` accepts either a duration string (e.g. `"30m"`, `"1h"`) or an integer attempt count. When either threshold is crossed, AO emits a `reaction.escalated` event and notifies you via the configured notifier instead of sending another message to the agent.
-
-See [Reactions configuration](/docs/configuration/reactions) for the full set of options.
+If automatic delivery is unavailable, open the owning Chat or Terminal UI session and send a follow-up directly with the desktop composer or `ao send`.

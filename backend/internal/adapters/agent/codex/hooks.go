@@ -12,6 +12,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 // Codex (0.136+) never loads hook config from AO's per-session worktrees, so
@@ -105,7 +106,12 @@ func appendSessionHookFlagsForExecutable(cmd *[]string, executable string) {
 
 func shellQuoteHookExecutable(executable string) string {
 	if runtime.GOOS == "windows" {
-		return `"` + executable + `"`
+		// Codex invokes command hooks through PowerShell on Windows. A bare quoted
+		// path (`"C:\...\ao.exe"`) parses as a string expression, not an invocation,
+		// so SessionStart/UserPromptSubmit/Stop all fail before ao.exe runs
+		// ("Unexpected token 'hooks'"). Prefixing the quoted path with the call
+		// operator `& ` turns it into a command invocation that runs the binary.
+		return `& "` + executable + `"`
 	}
 	return `'` + strings.ReplaceAll(executable, `'`, `'"'"'`) + `'`
 }
@@ -122,19 +128,7 @@ func shellQuoteHookExecutable(executable string) string {
 // by the canonicalized cwd first and the literal path second (on macOS the two
 // commonly differ, e.g. /tmp vs /private/tmp).
 func appendWorkspaceTrustFlag(cmd *[]string, workspacePath string) {
-	path := strings.TrimSpace(workspacePath)
-	if path == "" {
-		return
-	}
-	keys := []string{path}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
-		keys = append(keys, resolved)
-	}
-	entries := make([]string, 0, len(keys))
-	for _, key := range keys {
-		entries = append(entries, codexTOMLConfigString(key)+`={trust_level="trusted"}`)
-	}
-	*cmd = append(*cmd, "-c", "projects={"+strings.Join(entries, ",")+"}")
+	*cmd = append(*cmd, agentruntime.CodexWorkspaceTrustArgs(workspacePath)...)
 }
 
 func codexTOMLConfigString(s string) string {

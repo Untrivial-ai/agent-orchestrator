@@ -49,7 +49,7 @@ func TestCLIStatus_Mocked(t *testing.T) {
 				return []byte(tt.mockOutput), tt.mockError
 			}
 
-			status, err := CLIStatus(context.Background(), "mockbinary", nil)
+			status, err := CLIStatus(context.Background(), "mockbinary", [][]string{{"auth", "status"}})
 			if (err != nil) != tt.wantError {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -57,6 +57,44 @@ func TestCLIStatus_Mocked(t *testing.T) {
 				t.Errorf("CLIStatus() = %v, want %v", status, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestCLIStatusRequiresExplicitCommands(t *testing.T) {
+	oldCmdRunner := CmdRunner
+	defer func() { CmdRunner = oldCmdRunner }()
+	called := false
+	CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, error) {
+		called = true
+		return []byte("authenticated"), nil
+	}
+
+	status, err := CLIStatus(context.Background(), "mockbinary", nil)
+	if err != nil {
+		t.Fatalf("CLIStatus: %v", err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusUnknown)
+	}
+	if called {
+		t.Fatal("CLIStatus ran a command without explicit adapter commands")
+	}
+}
+
+func TestCLIStatusTimeoutDegradesToUnknown(t *testing.T) {
+	oldCmdRunner := CmdRunner
+	defer func() { CmdRunner = oldCmdRunner }()
+	CmdRunner = func(ctx context.Context, name string, arg ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	status, err := CLIStatus(context.Background(), "mockbinary", [][]string{{"auth", "status"}})
+	if err != nil {
+		t.Fatalf("CLIStatus: %v", err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want %q", status, ports.AgentAuthStatusUnknown)
 	}
 }
 

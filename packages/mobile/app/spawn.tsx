@@ -1,42 +1,59 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
+import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
+import * as DocumentPicker from "expo-document-picker";
+import { File } from "expo-file-system";
 import { useEffect, useMemo, useState } from "react";
 import {
 	InteractionManager,
-	KeyboardAvoidingView,
 	Platform,
 	Pressable,
 	ScrollView,
 	StyleSheet,
 	Text,
-	TextInput,
 	View,
 } from "react-native";
-import { AgentLogo } from "../lib/AgentLogo";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { agentErrorCopy } from "../lib/agentError";
 import { defaultAgent, rankAgents } from "../lib/agentPicker";
-import { ApiError, getAgents, getSettings, type AgentCatalog, type SessionMode } from "../lib/api";
+import { ApiError, getAgentModels, getAgents, getProject, getSettings, type AgentCatalog, type AgentModelCatalog, type ProjectDetail, type SessionMode } from "../lib/api";
 import { classifyConnectionFailure, describeConnectionFailure } from "../lib/connectionError";
 import { chatErrorCopy, isChatPreflightError } from "../lib/chatError";
 import { haptics } from "../lib/haptics";
-import { agentSheetRoute, projectSheetRoute } from "../lib/sheetResult";
+import { resolveSpawnProject } from "../lib/projectFilter";
+import { modelOverride, resolveSpawnAgent, resolveSpawnModel, spawnModelSourceChanged } from "../lib/spawnModel";
+import { appendSpawnAttachments, type SpawnAttachment } from "../lib/spawn-attachments";
+import { SpawnComposerControls } from "../lib/spawn-composer-controls";
+import { SpawnPromptInput } from "../lib/spawn-prompt-input";
 import { useApp } from "../lib/store";
 import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
-import { Button, SettingsGroup, SettingsRow } from "../lib/ui";
+import { Button } from "../lib/ui";
+
+export { SheetErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
 
 export default function SpawnModal() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
-	const { projects, activeProjectId, config, spawn } = useApp();
+	const { projectId: routeProjectId } = useLocalSearchParams<{ projectId?: string }>();
+	const { projects, projectsKnown, activeProjectId, config, spawn } = useApp();
 
 	const [projectId, setProjectId] = useState<string | null>(null);
 	const [harness, setHarness] = useState("");
+	const [agentTouched, setAgentTouched] = useState(false);
 	const [mode, setMode] = useState<SessionMode>("chat");
 	const [chatHarnesses, setChatHarnesses] = useState<string[]>([]);
-	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
+	const [attachments, setAttachments] = useState<SpawnAttachment[]>([]);
+	const [attachmentError, setAttachmentError] = useState<string>();
+	const [model, setModel] = useState("");
+	const [modelTouched, setModelTouched] = useState(false);
+	const [modelCatalog, setModelCatalog] = useState<AgentModelCatalog>();
+	const [projectDetail, setProjectDetail] = useState<ProjectDetail>();
+	const [projectDetailLoadedFor, setProjectDetailLoadedFor] = useState<string | null>(null);
+	const [modelLoading, setModelLoading] = useState(false);
+	const [modelError, setModelError] = useState<string>();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -45,14 +62,21 @@ export default function SpawnModal() {
 	const [loading, setLoading] = useState(true);
 	const [offerTUI, setOfferTUI] = useState(false);
 
+
+
 	// Seed from the active project, or the only project. Mirrors the store's
 	// `targetProject()`; kept here because the screen needs it as UI state to
 	// drive the picker's value and the button's disabled state.
 	useEffect(() => {
-		if (projectId) return;
-		if (activeProjectId !== "all") setProjectId(activeProjectId);
-		else if (projects.length === 1) setProjectId(projects[0].id);
-	}, [activeProjectId, projects, projectId]);
+		const nextProjectId = resolveSpawnProject(
+			projectId,
+			routeProjectId,
+			activeProjectId,
+			projects,
+			projectsKnown,
+		);
+		if (nextProjectId !== projectId) changeProject(nextProjectId);
+	}, [activeProjectId, projects, projectsKnown, projectId, routeProjectId]);
 
 	useEffect(() => {
 		if (!config) return;
@@ -64,8 +88,6 @@ export default function SpawnModal() {
 				setCatalog(c);
 				setChatHarnesses(settings.chatHarnesses);
 				setCatalogError(null);
-				const ranked = rankAgents(c).filter((agent) => settings.chatHarnesses.includes(agent.id));
-				setHarness((h) => (h && settings.chatHarnesses.includes(h) ? h : (defaultAgent(ranked) ?? "")));
 			})
 			.catch((e) => {
 				// Previously swallowed into `catalog = null`, which left an empty
@@ -84,18 +106,129 @@ export default function SpawnModal() {
 	// copy of it — see app/sheets/agent.tsx.
 	const allAgents = useMemo(() => rankAgents(catalog), [catalog]);
 	const agents = useMemo(() => mode === "chat" ? allAgents.filter((agent) => chatHarnesses.includes(agent.id)) : allAgents, [allAgents, chatHarnesses, mode]);
-	const selectedAgent = agents.find((a) => a.id === harness);
-	const project = projects.find((p) => p.id === projectId);
+	const project = projects.find((item) => item.id === projectId);
+	const projectWorkerAgent = projectDetail?.config?.worker?.agent ?? projectDetail?.agent ?? "";
+	const projectWorkerModel = projectDetail?.config?.worker?.agentConfig?.model ?? projectDetail?.config?.agentConfig?.model ?? "";
+	const catalogDefault = modelCatalog?.models.find((item) => item.isDefault)?.id ?? "";
+	const resolvedModel = resolveSpawnModel({ selectedAgent: harness, projectWorkerAgent, projectWorkerModel, catalogDefault });
+	const displayedModel = modelTouched ? model : resolvedModel;
+	const displayedModelLabel = displayedModel ? modelCatalog?.models.find((item) => item.id === displayedModel)?.label ?? displayedModel : "Auto";
+	const modelSelection = modelTouched ? model : "__auto__";
+	const hasComposerMessage = Boolean(
+		(mode === "chat" && !loading && agents.length === 0)
+		|| catalogError
+		|| modelError
+		|| attachmentError
+		|| error
+		|| offerTUI,
+	);
+
+	useEffect(() => {
+		if (!config || !projectId) { setProjectDetail(undefined); setProjectDetailLoadedFor(null); return; }
+		let cancelled = false;
+		setProjectDetailLoadedFor(null);
+		getProject(config, projectId)
+			.then((nextProject) => { if (!cancelled) setProjectDetail(nextProject); })
+			.catch((cause) => { if (!cancelled) setModelError(cause instanceof Error ? cause.message : String(cause)); })
+			.finally(() => { if (!cancelled) setProjectDetailLoadedFor(projectId); });
+		return () => { cancelled = true; };
+	}, [config, projectId]);
+
+	useEffect(() => {
+		if (agentTouched || loading || !catalog) return;
+		if (projectId && projectDetailLoadedFor !== projectId) return;
+		const nextHarness = resolveSpawnAgent({
+			projectWorkerAgent: projectDetail?.config?.worker?.agent,
+			projectAgent: projectDetail?.agent,
+			availableAgents: agents.filter((agent) => agent.selectable).map((agent) => agent.id),
+		});
+		setHarness((current) => current === nextHarness ? current : nextHarness);
+	}, [agentTouched, agents, catalog, loading, projectDetail, projectDetailLoadedFor, projectId]);
+
+	useEffect(() => {
+		if (!config || !projectId || !harness) { setModelCatalog(undefined); return; }
+		let cancelled = false;
+		setModelLoading(true);
+		getAgentModels(config, harness, projectId)
+			.then((nextCatalog) => { if (!cancelled) { setModelCatalog(nextCatalog); setModelError(nextCatalog.warning); } })
+			.catch((cause) => { if (!cancelled) setModelError(cause instanceof Error ? cause.message : String(cause)); })
+			.finally(() => { if (!cancelled) setModelLoading(false); });
+		return () => { cancelled = true; };
+	}, [config, harness, projectId]);
+
+	const clearModelOverride = () => { setModel(""); setModelTouched(false); };
+	const resetModelSource = () => { clearModelOverride(); setModelCatalog(undefined); setModelError(undefined); };
+	const changeProject = (nextProjectId: string | null) => {
+		if (!spawnModelSourceChanged({ projectId, agentId: harness }, { projectId: nextProjectId, agentId: harness })) return;
+		resetModelSource();
+		setProjectDetail(undefined);
+		setProjectDetailLoadedFor(null);
+		setAgentTouched(false);
+		setProjectId(nextProjectId);
+	};
+	const selectAgent = (nextHarness: string) => {
+		if (!spawnModelSourceChanged({ projectId, agentId: harness }, { projectId, agentId: nextHarness })) return;
+		resetModelSource();
+		setAgentTouched(true);
+		setHarness(nextHarness);
+	};
+	const selectMode = (nextMode: SessionMode) => {
+		if (nextMode === mode) return;
+		const nextHarness = nextMode === "chat"
+			? (chatHarnesses.includes(harness) ? harness : (defaultAgent(allAgents.filter((agent) => chatHarnesses.includes(agent.id))) ?? ""))
+			: (harness || (defaultAgent(allAgents) ?? ""));
+		if (spawnModelSourceChanged({ projectId, agentId: harness }, { projectId, agentId: nextHarness })) {
+			resetModelSource();
+			setAgentTouched(false);
+		}
+		setMode(nextMode);
+		setHarness(nextHarness);
+	};
+	const selectModel = (nextModel: string) => {
+		if (nextModel === "__auto__") {
+			clearModelOverride();
+			return;
+		}
+		setModel(nextModel);
+		setModelTouched(true);
+	};
+	const pickAttachments = async () => {
+		setAttachmentError(undefined);
+		try {
+			const result = await DocumentPicker.getDocumentAsync({
+				multiple: true,
+				copyToCacheDirectory: true,
+				type: "*/*",
+			});
+			if (result.canceled) return;
+			const picked: SpawnAttachment[] = [];
+			for (const asset of result.assets) {
+				const file = new File(asset.uri);
+				const bytes = asset.size ?? file.size ?? 0;
+				// Avoid reading an oversized file into JS memory merely to reject it.
+				if (bytes > 10 * 1024 * 1024) {
+					picked.push({ name: asset.name, mimeType: asset.mimeType || "application/octet-stream", data: "", bytes });
+					continue;
+				}
+				picked.push({
+					name: asset.name,
+					mimeType: asset.mimeType || "application/octet-stream",
+					data: await file.base64(),
+					bytes,
+				});
+			}
+			const next = appendSpawnAttachments(attachments, picked);
+			setAttachments(next.attachments);
+			setAttachmentError(next.error);
+		} catch (cause) {
+			setAttachmentError(cause instanceof Error ? cause.message : "Could not read the selected file.");
+		}
+	};
 
 	const onSpawn = async () => {
 		// Validated on submit rather than by disabling the button — desktop's
 		// choice, and the better one: a disabled button with no explanation is
 		// worse than a message naming what is missing.
-		if (!name.trim() || !prompt.trim()) {
-			haptics.error();
-			setError("Name and task are required.");
-			return;
-		}
 		setBusy(true);
 		setError(null);
 		setOfferTUI(false);
@@ -103,9 +236,10 @@ export default function SpawnModal() {
 			const session = await spawn({
 				projectId: projectId ?? undefined,
 				prompt: prompt.trim() || undefined,
-				issueId: name.trim() || undefined,
 				harness: harness || undefined,
+				model: modelOverride(displayedModel, resolvedModel, modelTouched),
 				mode,
+				attachments: attachments.map(({ mimeType, data }) => ({ mimeType, data })),
 			});
 			haptics.success();
 			// Dismiss the modal first, then open the freshly spawned session's mode-aware surface
@@ -130,116 +264,89 @@ export default function SpawnModal() {
 		}
 	};
 
-	return (
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-			<ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
-				<Text style={styles.lead}>
-					Spawn a worker agent. It gets its own isolated workspace, then starts on the task you give it.
-				</Text>
-
-				<SettingsGroup footer="Agent availability is cached.">
-					<SettingsRow
-						icon="folder"
-						label="Project"
-						value={project?.name ?? "Choose a project"}
-						onPress={() =>
-							router.push(
-								projectSheetRoute({
-									selected: projectId ?? "",
-									onSelect: setProjectId,
-									// "All projects" is a filter — there is nothing to spawn into.
-									includeAll: false,
-									title: "Project",
-									subtitle: "Where this agent gets its workspace.",
-								}),
-							)
-						}
-					/>
-					<SettingsRow
-						icon="cpu"
-						label="Agent"
-						value={loading ? "Loading…" : (selectedAgent?.label ?? "Choose an agent")}
-						// The collapsed row carries the mark too, as desktop's trigger does.
-						leading={selectedAgent ? <AgentLogo harness={selectedAgent.id} size={20} /> : undefined}
-						disabled={loading}
-						onPress={() => router.push(agentSheetRoute({ selected: harness, onSelect: setHarness, allowed: mode === "chat" ? chatHarnesses : undefined, mode }))}
-					/>
-				</SettingsGroup>
-
-				<Text style={styles.label}>INTERFACE</Text>
-				<View accessibilityRole="radiogroup" style={styles.modeControl}>
-					<ModeChoice
-						label="Chat"
-						detail="Native conversation"
-						selected={mode === "chat"}
-						onPress={() => {
-							setMode("chat");
-							setHarness((current) => chatHarnesses.includes(current) ? current : (defaultAgent(allAgents.filter((agent) => chatHarnesses.includes(agent.id))) ?? ""));
-						}}
-					/>
-					<ModeChoice label="Terminal UI" detail="Agent's own TUI" selected={mode === "tui"} onPress={() => { setMode("tui"); setHarness((current) => current || (defaultAgent(allAgents) ?? "")); }} />
+	const content = (
+		<View style={[styles.content, Platform.OS === "android" && styles.androidContent]}>
+				<View style={styles.promptHost}>
+					<SpawnPromptInput value={prompt} onChangeText={setPrompt} />
 				</View>
-				<Text style={styles.hint}>{mode === "chat" ? "Chat is the mobile default. The agent runs through its structured controller; no tmux is created for it." : "Compatibility mode. The agent runs inside tmux and mobile mirrors its terminal."}</Text>
-				{mode === "chat" && !loading && agents.length === 0 ? <Text style={styles.warn}>No installed agent on this AO host currently supports Chat. Choose Terminal UI or install/authenticate a Chat-capable agent.</Text> : null}
 
-				{catalogError ? <Text style={styles.warn}>{catalogError}</Text> : null}
+				{attachments.length ? (
+					<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachments}>
+						{attachments.map((item, index) => (
+							<View key={`${item.name}-${index}`} style={styles.attachment}>
+								<Feather name="file-text" size={14} color={t.blue} />
+								<Text numberOfLines={1} style={styles.attachmentName}>{item.name}</Text>
+								<Pressable
+									hitSlop={8}
+									accessibilityLabel={`Remove ${item.name}`}
+									onPress={() => setAttachments((current) => current.filter((candidate) => candidate !== item))}
+								>
+									<Feather name="x" size={13} color={t.textTertiary} />
+								</Pressable>
+							</View>
+						))}
+					</ScrollView>
+				) : null}
 
-				<Text style={styles.label}>NAME</Text>
-				<TextInput
-					style={styles.input}
-					value={name}
-					onChangeText={setName}
-					placeholder="e.g. fix flaky login test"
-					placeholderTextColor={t.textFaint}
-					autoCapitalize="sentences"
-					returnKeyType="next"
+		{Platform.OS === "ios" ? <View style={styles.flexSpacer} /> : null}
+
+		{hasComposerMessage ? <View style={styles.messages}>
+					{mode === "chat" && !loading && agents.length === 0 ? <Text style={styles.warn}>No installed agent on this AO host currently supports Chat. Choose Terminal UI or install/authenticate a Chat-capable agent.</Text> : null}
+					{catalogError ? <Text style={styles.warn}>{catalogError}</Text> : null}
+					{modelError ? <Text style={styles.warn}>{modelError}</Text> : null}
+					{attachmentError ? <Text style={styles.warn}>{attachmentError}</Text> : null}
+					{error ? <Text style={styles.error}>{error}</Text> : null}
+					{offerTUI ? <Button title="Create as Terminal UI instead" variant="ghost" icon="terminal" onPress={() => { selectMode("tui"); setOfferTUI(false); setError(null); }} /> : null}
+				</View> : null}
+
+				{/* The controls ride the keyboard on the UI thread.
+				    iOS does not lift this form sheet for the IME, and every
+				    height-based attempt moved late or not at all: a settled keyboard
+				    height only lands after the animation, animated padding is
+				    interpolated on the JS thread, and a keyboard-avoiding wrapper
+				    mismeasures its own frame inside a sheet, leaving Start task behind
+				    the keyboard. A sticky view translates by the live offset, so
+				    the selectors and the button sit directly above it. */}
+				<KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+				<SpawnComposerControls
+					projects={projects.map((item) => ({ id: item.id, label: item.name }))}
+					projectId={project?.id ?? null}
+					onSelectProject={changeProject}
+					agents={agents.filter((item) => item.selectable).map((item) => ({ id: item.id, label: item.label }))}
+					harness={harness}
+					onSelectHarness={selectAgent}
+					models={modelCatalog?.models.map((item) => ({ id: item.id, label: item.label })) ?? []}
+					modelSelection={modelSelection}
+					modelLabel={displayedModelLabel}
+					onSelectModel={selectModel}
+					onAttach={() => { void pickAttachments(); }}
+					onSpawn={() => { void onSpawn(); }}
+					busy={busy}
+					disabled={!projectId || !harness || busy || modelLoading || loading}
 				/>
-				<Text style={styles.hint}>What this session is called on the board.</Text>
-
-				<Text style={styles.label}>TASK</Text>
-				<TextInput
-					style={[styles.input, styles.textarea]}
-					value={prompt}
-					onChangeText={setPrompt}
-					placeholder="e.g. Fix the flaky login test and open a PR"
-					placeholderTextColor={t.textFaint}
-					multiline
-					autoCapitalize="sentences"
-				/>
-
-				{error ? <Text style={styles.error}>{error}</Text> : null}
-				{offerTUI ? <Button title="Create as Terminal UI instead" variant="ghost" icon="terminal" onPress={() => { setMode("tui"); setOfferTUI(false); setError(null); }} style={{ marginTop: 12 }} /> : null}
-
-				<Button
-					title="Spawn agent"
-					icon="zap"
-					loading={busy}
-					onPress={onSpawn}
-					disabled={!projectId || !harness}
-					style={{ marginTop: 20 }}
-				/>
-				<Button title="Cancel" variant="ghost" onPress={() => router.back()} style={{ marginTop: 10 }} />
-			</ScrollView>
-
-		</KeyboardAvoidingView>
+				</KeyboardStickyView>
+		</View>
 	);
-}
 
-function ModeChoice({ label, detail, selected, onPress }: { label: string; detail: string; selected: boolean; onPress(): void }) {
-	const t = useTheme();
-	const styles = useThemedStyles(makeStyles);
-	return (
-		<Pressable
-			accessibilityRole="radio"
-			accessibilityState={{ selected }}
-			onPress={() => { haptics.select(); onPress(); }}
-			style={({ pressed }) => [styles.modeChoice, selected && styles.modeChoiceSelected, pressed && { opacity: 0.75 }]}
-		>
-			<Feather name={label === "Chat" ? "message-square" : "terminal"} size={16} color={selected ? t.blue : t.textTertiary} />
-			<View style={{ flex: 1 }}><Text style={[styles.modeLabel, selected && { color: t.blue }]}>{label}</Text><Text style={styles.modeDetail}>{detail}</Text></View>
-			{selected ? <Feather name="check" size={15} color={t.blue} /> : null}
-		</Pressable>
-	);
+	if (Platform.OS === "android") {
+		return (
+			<View style={styles.androidModalRoot}>
+				<BottomSheet
+					index={0}
+					enablePanDownToClose
+					enableDynamicSizing
+					backgroundStyle={{ backgroundColor: t.bgBase }}
+					onClose={() => router.back()}
+				>
+					<BottomSheetView style={styles.androidSheet}>
+						{content}
+					</BottomSheetView>
+				</BottomSheet>
+			</View>
+		);
+	}
+
+	return <View style={styles.screen}>{content}</View>;
 }
 
 // Human copy for a failed spawn, matching every other screen. This one used to
@@ -259,33 +366,20 @@ function spawnErrorCopy(e: unknown): string {
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
-		lead: { color: t.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 22 },
-		label: {
-			color: t.textTertiary,
-			fontSize: 11,
-			letterSpacing: 1.2,
-			fontWeight: "700",
-			marginTop: 18,
-			marginBottom: 8,
-			marginLeft: 4,
+		content: { flex: 1, paddingHorizontal: 18, paddingTop: 18, paddingBottom: 8, gap: 10 },
+		androidModalRoot: { flex: 1, backgroundColor: "transparent" },
+		androidSheet: {
+			paddingTop: 6,
+			paddingBottom: 12,
+			backgroundColor: t.bgBase,
 		},
-		input: {
-			backgroundColor: t.bgElevated,
-			borderColor: t.borderSubtle,
-			borderWidth: 1,
-			borderRadius: 12,
-			color: t.textPrimary,
-			paddingHorizontal: 14,
-			paddingVertical: 12,
-			fontSize: 15,
-		},
-		textarea: { minHeight: 96, textAlignVertical: "top" },
-		hint: { color: t.textTertiary, fontSize: 12, lineHeight: 17, marginTop: 8, marginHorizontal: 4 },
-		warn: { color: t.amber, fontSize: 13, lineHeight: 18, marginTop: 4 },
-		error: { color: t.red, fontSize: 13, lineHeight: 18, marginTop: 16 },
-		modeControl: { flexDirection: "row", gap: 9 },
-		modeChoice: { flex: 1, minHeight: 64, flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: 12, borderWidth: 1, borderColor: t.borderSubtle, backgroundColor: t.bgElevated },
-		modeChoiceSelected: { borderColor: t.blue, backgroundColor: t.tintBlue },
-		modeLabel: { color: t.textPrimary, fontSize: 13, fontWeight: "700" },
-		modeDetail: { color: t.textTertiary, fontSize: 9, marginTop: 2 },
+		androidContent: { flex: 0, paddingTop: 12, paddingBottom: 0 },
+		flexSpacer: { flex: 1 },
+		messages: { gap: 6 },
+		promptHost: { width: "100%", height: 112 },
+		attachments: { gap: 8 },
+		attachment: { maxWidth: 190, height: 36, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, borderRadius: 12, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderSubtle },
+		attachmentName: { flexShrink: 1, color: t.textSecondary, fontSize: 12 },
+		warn: { color: t.amber, fontSize: 13, lineHeight: 18 },
+		error: { color: t.red, fontSize: 13, lineHeight: 18 },
 	});

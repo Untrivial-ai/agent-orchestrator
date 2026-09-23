@@ -36,6 +36,14 @@ type recordingWorkspace struct {
 	path               string
 }
 
+func (w *recordingWorkspace) ResolveDefaultBranch(_ context.Context, _ string, _ string) (ports.WorkspaceDefaultBranch, error) {
+	return ports.WorkspaceDefaultBranch{Remote: "origin", Branch: "main", BaseRef: "refs/remotes/origin/main"}, nil
+}
+
+func (w *recordingWorkspace) FetchDefaultBranch(_ context.Context, _ string, _ ports.WorkspaceDefaultBranch) error {
+	return nil
+}
+
 func (w *recordingWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
 	w.createCalls++
 	w.lastCreate = cfg

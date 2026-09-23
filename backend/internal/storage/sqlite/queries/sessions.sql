@@ -1,51 +1,127 @@
 -- name: NextSessionNum :one
 SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id = ?;
 
+-- name: NextStandaloneSessionNum :one
+SELECT COALESCE(MAX(num), 0) + 1 AS next FROM sessions WHERE project_id IS NULL;
+
+-- name: SessionIDExists :one
+SELECT COUNT(*) > 0 FROM sessions WHERE id = ?;
+
 -- name: InsertSession :exec
 INSERT INTO sessions (
-    id, project_id, num, issue_id, kind, harness, reviewer_harness, display_name,
+    id, project_id, num, issue_id, kind, harness, reviewer_harness, reviewer_agent_config, auto_review_enabled, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, workspace_repo_path, diff_base_sha, diff_base_ref, runtime_handle_id,
-    runtime_launch_id, agent_session_id, prompt,
-    latest_user_prompt, latest_assistant_update, native_transcript_path,
+    runtime_launch_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
-    session_mode, provider_conversation_id, controller_generation,
-    created_at, updated_at, is_pinned, pinned_at, auto_inject_review
+    session_mode, provider_conversation_id, controller_generation, model, session_permissions,
+    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
 
 -- name: UpdateSession :exec
 UPDATE sessions SET
-    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, display_name = ?,
+    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?, display_name = ?,
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, prompt = ?,
-    latest_user_prompt = ?, latest_assistant_update = ?, native_transcript_path = ?,
+    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, native_identity_observed_at = ?, prompt = ?,
+    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, latest_assistant_update_at = ?,
+    conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
+    conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?, native_checkpoint_evidence = ?,
+    native_transcript_path = ?,
     preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
     cleanup_generation = ?, browser_capability_verifier = ?,
-    provider_conversation_id = ?, controller_generation = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?
+    provider_conversation_id = ?, controller_generation = ?, model = ?, updated_at = ?,
+    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?
 WHERE id = ?;
+
+-- name: UpdateSessionModel :execrows
+UPDATE sessions
+SET model = sqlc.arg(model)
+WHERE id = sqlc.arg(id);
+
+-- name: UpdateBrowserCapabilityVerifier :execrows
+-- Rotate only the browser credential for the exact controller owner observed by
+-- the launcher. This must not replay a stale SessionRecord over newer lifecycle,
+-- activity, termination, provider ownership, or user-visible recency facts.
+UPDATE sessions SET
+    browser_capability_verifier = sqlc.arg(browser_capability_verifier)
+WHERE id = sqlc.arg(id)
+  AND harness = sqlc.arg(expected_harness)
+  AND session_mode = sqlc.arg(expected_session_mode)
+  AND is_terminated = sqlc.arg(expected_is_terminated)
+  AND runtime_launch_id = sqlc.arg(expected_runtime_launch_id)
+  AND agent_session_id = sqlc.arg(expected_agent_session_id)
+  AND agent_session_id_launch_id = sqlc.arg(expected_agent_session_id_launch_id)
+  AND provider_conversation_id = sqlc.arg(expected_provider_conversation_id)
+  AND controller_generation = sqlc.arg(expected_controller_generation);
 
 -- name: RecordSessionLatestUserPrompt :execrows
 UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),
+    latest_user_prompt_at = sqlc.arg(updated_at),
+    latest_assistant_update = '',
+    conversation_checkpoint_state = 'legacy',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_terminated = 0
   AND updated_at <= sqlc.arg(updated_at);
 
+-- name: RecordSessionHumanMessage :execrows
+-- Chat message insertion already owns controller/idempotency fencing. Compare
+-- against the dedicated fact timestamp here so unrelated lifecycle writes do
+-- not suppress a newer human message.
+UPDATE sessions SET
+    latest_user_prompt = sqlc.arg(latest_user_prompt),
+    latest_user_prompt_at = sqlc.arg(latest_user_prompt_at),
+    latest_assistant_update = '',
+    conversation_checkpoint_state = 'legacy',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
+    updated_at = MAX(updated_at, sqlc.arg(latest_user_prompt_at))
+WHERE id = sqlc.arg(id)
+  AND is_terminated = 0
+  AND (latest_user_prompt_at IS NULL OR latest_user_prompt_at <= sqlc.arg(latest_user_prompt_at));
+
 -- name: ClaimChatControllerGeneration :execrows
 -- A Chat controller claims ownership before its event goroutine starts. Provider
 -- projections compare against this value in the same transaction as their write,
 -- so an older controller cannot mutate a session after a replacement takes over.
+-- Ownership changes are not activity and must not advance the board's recency.
 UPDATE sessions
-SET controller_generation = ?, updated_at = ?
+SET controller_generation = ?
 WHERE id = ? AND session_mode = 'chat';
+
+-- name: ActivateConversationBranchSession :execrows
+-- The branch and its native-history checkpoint have the same owner. A fork or
+-- branch activation cannot retain the previous native conversation's hook facts.
+UPDATE sessions
+SET updated_at = sqlc.arg(updated_at),
+    latest_user_prompt = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN latest_user_prompt ELSE '' END,
+    latest_assistant_update = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN latest_assistant_update ELSE '' END,
+    latest_assistant_update_at = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN latest_assistant_update_at ELSE NULL END,
+    conversation_checkpoint_state = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN conversation_checkpoint_state ELSE 'empty' END,
+    conversation_checkpoint_generation = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN conversation_checkpoint_generation ELSE '' END,
+    conversation_checkpoint_native_id = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN conversation_checkpoint_native_id ELSE '' END,
+    conversation_checkpoint_turn_id = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN conversation_checkpoint_turn_id ELSE '' END,
+    conversation_checkpoint_unsettled = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN conversation_checkpoint_unsettled ELSE 0 END,
+    native_checkpoint_evidence = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN native_checkpoint_evidence ELSE '' END,
+    native_transcript_path = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN native_transcript_path ELSE '' END,
+    agent_session_id = sqlc.arg(provider_conversation_id),
+    agent_session_id_launch_id = '',
+    native_identity_observed_at = sqlc.arg(updated_at),
+    provider_conversation_id = sqlc.arg(provider_conversation_id),
+    controller_generation = sqlc.arg(controller_generation)
+WHERE id = sqlc.arg(id) AND session_mode = 'chat' AND is_terminated = 0;
 
 -- name: CommitSessionControllerEpoch :execrows
 -- Lifecycle Manager owns this controller-epoch fact. The source-mode CAS keeps
@@ -53,51 +129,86 @@ WHERE id = ? AND session_mode = 'chat';
 -- process-specific handle prevents either interface from inheriting the
 -- other's writer identity.
 UPDATE sessions
-SET session_mode = ?,
+SET session_mode = sqlc.arg(target_mode),
     runtime_handle_id = '',
     runtime_launch_id = '',
-    agent_session_id = ?,
-    provider_conversation_id = ?,
+    agent_session_id = sqlc.arg(agent_session_id),
+    agent_session_id_launch_id = '',
+    provider_conversation_id = sqlc.arg(provider_conversation_id),
+    controller_generation = '',
+    latest_user_prompt = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE latest_user_prompt END,
+    latest_assistant_update = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE latest_assistant_update END,
+    conversation_checkpoint_state = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN 'empty' ELSE conversation_checkpoint_state END,
+    conversation_checkpoint_generation = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE conversation_checkpoint_generation END,
+    conversation_checkpoint_native_id = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE conversation_checkpoint_native_id END,
+    conversation_checkpoint_unsettled = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN 0 ELSE conversation_checkpoint_unsettled END,
+    conversation_checkpoint_turn_id = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE conversation_checkpoint_turn_id END,
+    native_checkpoint_evidence = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE native_checkpoint_evidence END,
+    activity_state = 'idle',
+    activity_last_at = sqlc.arg(activity_last_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND session_mode = sqlc.arg(source_mode) AND is_terminated = 0;
+
+-- name: RestoreSessionControllerEpoch :execrows
+-- Rollback owns the same controller/activity facts but retains the source replay
+-- checkpoint: the failed target never accepted it, so a later strict retry must
+-- prove the same checkpoint again.
+UPDATE sessions
+SET session_mode = sqlc.arg(target_mode),
+    runtime_handle_id = '',
+    runtime_launch_id = '',
+    agent_session_id = sqlc.arg(agent_session_id),
+    agent_session_id_launch_id = '',
+    provider_conversation_id = sqlc.arg(provider_conversation_id),
     controller_generation = '',
     activity_state = 'idle',
-    activity_last_at = ?,
-    updated_at = ?
-WHERE id = ? AND session_mode = ? AND is_terminated = 0;
+    activity_last_at = sqlc.arg(activity_last_at),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND session_mode = sqlc.arg(source_mode) AND is_terminated = 0;
 
 -- name: GetSession :one
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions WHERE id = ?;
 
 -- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review
-FROM sessions WHERE project_id = ? ORDER BY num;
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
+FROM sessions WHERE project_id IS ? ORDER BY num;
 
 -- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt,
-    created_at, updated_at, display_name, first_signal_at, preview_url,
+    runtime_handle_id, agent_session_id, agent_session_id_launch_id, native_identity_observed_at, prompt,
+    created_at, updated_at, revision, display_name, first_signal_at, preview_url,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
-    reviewer_harness, is_pinned, pinned_at,
+    reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
     session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
-    latest_user_prompt, latest_assistant_update, native_transcript_path, auto_inject_review
+    latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
+    conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
+    conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, session_permissions
 FROM sessions ORDER BY project_id, num;
 
 
@@ -116,11 +227,17 @@ UPDATE sessions SET terminate_on_pr_merge = ?, updated_at = ? WHERE id = ?;
 -- name: SetSessionAutoInjectReview :execrows
 UPDATE sessions SET auto_inject_review = ?, updated_at = ? WHERE id = ?;
 
+-- name: SetSessionAutoInjectCI :execrows
+UPDATE sessions SET auto_inject_ci = ?, updated_at = ? WHERE id = ?;
+
 -- name: SetSessionPinned :execrows
 UPDATE sessions SET is_pinned = ?, pinned_at = ?, updated_at = ? WHERE id = ?;
 
--- name: SetSessionReviewerHarness :execrows
-UPDATE sessions SET reviewer_harness = ?, updated_at = ? WHERE id = ?;
+-- name: SetSessionReviewerConfig :execrows
+UPDATE sessions SET reviewer_harness = ?, reviewer_agent_config = ?, updated_at = ? WHERE id = ?;
+
+-- name: SetSessionAutoReview :execrows
+UPDATE sessions SET auto_review_enabled = ?, updated_at = ? WHERE id = ?;
 
 -- name: SessionIsSeed :one
 -- SessionIsSeed reports whether the session id matches a row still in seed
@@ -137,6 +254,7 @@ SELECT EXISTS(
       AND agent_session_id = ''
       AND prompt = ''
       AND latest_user_prompt = ''
+      AND latest_user_prompt_at IS NULL
       AND latest_assistant_update = ''
       AND native_transcript_path = ''
 ) AS is_seed;

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -143,19 +144,21 @@ func TestSessionInfo(t *testing.T) {
 	}
 }
 
+func TestActivitySignalCapabilities(t *testing.T) {
+	p := &Plugin{}
+	if !p.EmitsSubmitActivity() {
+		t.Fatal("EmitsSubmitActivity = false, want true")
+	}
+	if p.EmitsBlockedActivity() {
+		t.Fatal("EmitsBlockedActivity = true, want false")
+	}
+}
+
 func TestHooksLifecycle(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agy-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
+	tmpDir := t.TempDir()
 	plugin := &Plugin{}
-	cfg := ports.WorkspaceHookConfig{
-		WorkspacePath: tmpDir,
-	}
+	cfg := ports.WorkspaceHookConfig{WorkspacePath: tmpDir}
 
-	// 1. Initially hooks should not be installed.
 	installed, err := plugin.AreHooksInstalled(context.Background(), tmpDir)
 	if err != nil {
 		t.Fatal(err)
@@ -164,12 +167,9 @@ func TestHooksLifecycle(t *testing.T) {
 		t.Fatal("expected hooks to not be installed initially")
 	}
 
-	// 2. Install hooks.
-	err = plugin.GetAgentHooks(context.Background(), cfg)
-	if err != nil {
+	if err := plugin.GetAgentHooks(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-
 	installed, err = plugin.AreHooksInstalled(context.Background(), tmpDir)
 	if err != nil {
 		t.Fatal(err)
@@ -178,47 +178,55 @@ func TestHooksLifecycle(t *testing.T) {
 		t.Fatal("expected hooks to be installed after GetAgentHooks")
 	}
 
-	// Verify hooks.json structure
-	hooksJSONPath := filepath.Join(tmpDir, ".gemini", "hooks.json")
+	hooksJSONPath := filepath.Join(tmpDir, ".agents", "hooks.json")
 	data, err := os.ReadFile(hooksJSONPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(tmpDir, ".gemini", "hooks.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy .gemini/hooks.json exists or stat failed: %v", err)
+	}
 
-	var hookFile agyHookFile
-	if err := json.Unmarshal(data, &hookFile); err != nil {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
 		t.Fatal(err)
 	}
-
-	if len(hookFile.Hooks) != len(agyManagedHooks) {
-		t.Fatalf("expected %d events in hooks, got %d", len(agyManagedHooks), len(hookFile.Hooks))
+	aoRaw, ok := top[agyManagedHookName]
+	if !ok {
+		t.Fatalf("missing named hook %q", agyManagedHookName)
+	}
+	var ao agyNamedHook
+	if err := json.Unmarshal(aoRaw, &ao); err != nil {
+		t.Fatal(err)
+	}
+	if len(ao.PreInvocation) != 1 || ao.PreInvocation[0].Command != "ao hooks agy pre-invocation" || ao.PreInvocation[0].Timeout != 30 {
+		t.Fatalf("unexpected PreInvocation hooks: %#v", ao.PreInvocation)
+	}
+	if len(ao.PostToolUse) != 1 || ao.PostToolUse[0].Matcher == nil || *ao.PostToolUse[0].Matcher != "*" || len(ao.PostToolUse[0].Hooks) != 1 || ao.PostToolUse[0].Hooks[0].Command != "ao hooks agy post-tool-use" || ao.PostToolUse[0].Hooks[0].Timeout != 30 {
+		t.Fatalf("unexpected PostToolUse hooks: %#v", ao.PostToolUse)
+	}
+	if len(ao.Stop) != 1 || ao.Stop[0].Command != "ao hooks agy stop" || ao.Stop[0].Timeout != 30 {
+		t.Fatalf("unexpected Stop hooks: %#v", ao.Stop)
 	}
 
-	for _, spec := range agyManagedHooks {
-		groups, ok := hookFile.Hooks[spec.Event]
-		if !ok {
-			t.Fatalf("expected event %q in hooks.json", spec.Event)
-		}
-		found := false
-		for _, group := range groups {
-			for _, h := range group.Hooks {
-				if h.Command == spec.Command {
-					found = true
-					break
-				}
-			}
-		}
-		if !found {
-			t.Fatalf("expected command %q for event %q", spec.Command, spec.Event)
-		}
+	if err := plugin.GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatal(err)
 	}
-
-	// 3. Uninstall hooks.
-	err = plugin.UninstallHooks(context.Background(), tmpDir)
+	secondData, err := os.ReadFile(hooksJSONPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var secondTop map[string]json.RawMessage
+	if err := json.Unmarshal(secondData, &secondTop); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(top[agyManagedHookName], secondTop[agyManagedHookName]) {
+		t.Fatal("reinstall changed the managed hook entry")
+	}
 
+	if err := plugin.UninstallHooks(context.Background(), tmpDir); err != nil {
+		t.Fatal(err)
+	}
 	installed, err = plugin.AreHooksInstalled(context.Background(), tmpDir)
 	if err != nil {
 		t.Fatal(err)
@@ -228,15 +236,117 @@ func TestHooksLifecycle(t *testing.T) {
 	}
 }
 
-func TestAuthStatus(t *testing.T) {
-	plugin := &Plugin{resolvedBinary: "agy"}
-
-	status, err := plugin.AuthStatus(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestHooksPreserveUserNamedHooks(t *testing.T) {
+	tmpDir := t.TempDir()
+	hooksPath := filepath.Join(tmpDir, ".agents", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o750); err != nil {
+		t.Fatal(err)
 	}
-	if status != ports.AgentAuthStatusAuthorized {
-		t.Errorf("AuthStatus() = %v, want AgentAuthStatusAuthorized", status)
+	seed := []byte(`{
+  "user-linter": {
+    "enabled": false,
+    "PostToolUse": [{"matcher":"run_command","hooks":[{"command":"./lint.sh"}]}]
+  },
+  "future-field": {"value": 7}
+}`)
+	if err := os.WriteFile(hooksPath, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var before map[string]json.RawMessage
+	if err := json.Unmarshal(seed, &before); err != nil {
+		t.Fatal(err)
+	}
+
+	plugin := &Plugin{}
+	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: tmpDir}); err != nil {
+		t.Fatal(err)
+	}
+	afterInstall := readHookRawMap(t, hooksPath)
+	if _, ok := afterInstall[agyManagedHookName]; !ok {
+		t.Fatalf("missing named hook %q", agyManagedHookName)
+	}
+	assertRawJSONEqual(t, before["user-linter"], afterInstall["user-linter"])
+	assertRawJSONEqual(t, before["future-field"], afterInstall["future-field"])
+
+	if err := plugin.UninstallHooks(context.Background(), tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	afterUninstall := readHookRawMap(t, hooksPath)
+	if _, ok := afterUninstall[agyManagedHookName]; ok {
+		t.Fatalf("named hook %q remains after uninstall", agyManagedHookName)
+	}
+	assertRawJSONEqual(t, before["user-linter"], afterUninstall["user-linter"])
+	assertRawJSONEqual(t, before["future-field"], afterUninstall["future-field"])
+}
+
+func TestHooksRejectMalformedJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	hooksPath := filepath.Join(tmpDir, ".agents", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte(`{not-json`)
+	if err := os.WriteFile(hooksPath, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: tmpDir})
+	if err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("GetAgentHooks error = %v, want parse error", err)
+	}
+	got, readErr := os.ReadFile(hooksPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("malformed file changed: got %q, want %q", got, want)
+	}
+}
+
+func TestAreHooksInstalledRejectsDifferentEntryWithManagedName(t *testing.T) {
+	tmpDir := t.TempDir()
+	hooksPath := filepath.Join(tmpDir, ".agents", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"agent-orchestrator":{"Stop":[{"command":"user-command"}]}}`)
+	if err := os.WriteFile(hooksPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	installed, err := (&Plugin{}).AreHooksInstalled(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed {
+		t.Fatal("different named entry reported as AO-managed hooks")
+	}
+}
+
+func readHookRawMap(t *testing.T, path string) map[string]json.RawMessage {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func assertRawJSONEqual(t *testing.T, want, got json.RawMessage) {
+	t.Helper()
+	var wantValue, gotValue any
+	if err := json.Unmarshal(want, &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("JSON values differ\nwant: %s\n got: %s", want, got)
 	}
 }
 

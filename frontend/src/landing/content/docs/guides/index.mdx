@@ -1,39 +1,17 @@
 ---
 title: Guides
-description: Real scenarios — parallel issues, CI recovery, review loops, multi-project setups.
+description: Current AO workflows for agents, parallel sessions, CI, reviews, projects, Chat, Terminal UI, and mobile.
 ---
 
-These guides are task-shaped: each one covers a single thing you'd actually want AO to do for you, end to end.
+These guides follow the shipped desktop-and-daemon workflow. AO's desktop app is the main control surface; the CLI is a thin client for automation and agent-driven coordination.
 
 <Cards>
-	<Card
-		title="Per-role agents"
-		description="Run a reasoning-heavy orchestrator and a fast worker — globally or per-project."
-		href="/docs/guides/per-role-agents"
-	/>
-	<Card
-		title="Parallel issues"
-		description="Spawn agents on several issues at once without them stepping on each other."
-		href="/docs/guides/parallel-issues"
-	/>
-	<Card
-		title="CI recovery"
-		description="How AO notices red CI and nudges the agent to fix it without you babysitting."
-		href="/docs/guides/ci-recovery"
-	/>
-	<Card
-		title="Review loop"
-		description="When a reviewer asks for changes, AO replays the feedback to the agent."
-		href="/docs/guides/review-loop"
-	/>
-	<Card
-		title="Reaction recipes"
-		description="Watch-only mode, auto-merge opt-in, custom CI messages, bot handling."
-		href="/docs/guides/reactions"
-	/>
-	<Card
-		title="Multi-project"
-		description="Run AO against several repos from one dashboard."
-		href="/docs/guides/multi-project"
-	/>
+	<Card title="Per-role agents" description="Choose different worker and orchestrator harnesses." href="/docs/guides/per-role-agents" />
+	<Card title="Parallel work" description="Run isolated sessions across issues and projects." href="/docs/guides/parallel-issues" />
+	<Card title="CI recovery" description="See how failing checks reach the correct Chat or Terminal UI session." href="/docs/guides/ci-recovery" />
+	<Card title="Review loop" description="Combine GitHub feedback with AO reviewer-agent runs." href="/docs/guides/review-loop" />
+	<Card title="Lifecycle automation" description="Understand built-in deduplication, notifications, and mode-aware delivery." href="/docs/guides/reactions" />
+	<Card title="Multi-project" description="Manage repositories, workspaces, and Scratch from one desktop." href="/docs/guides/multi-project" />
 </Cards>
+
+AO sessions can use structured **Chat** or the agent's native **Terminal UI**. Chat-capable Claude Code and Codex sessions can switch between them while retaining the same AO session and worktree. The native mobile app uses the same session model through the authenticated Connect Mobile listener.

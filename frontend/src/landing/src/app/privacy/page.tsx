@@ -1,10 +1,10 @@
 import { COMPANY } from "@ao/shared/constants";
 import type { Metadata } from "next";
 
-const LAST_UPDATED = "30 July 2026";
+const LAST_UPDATED = "19 August 2026";
 
 const description =
-  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and aoagents.dev: local-first operation, optional analytics, and waitlist email processing.";
+  "How Agent Orchestrator handles data in AO Mobile, the desktop app and CLI, and orchestrator.inc: local-first operation, optional analytics, waitlists, and testimonial submissions.";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    site: "@aoagents",
+    site: "@ao_build",
     title: `Privacy Policy | ${COMPANY.NAME}`,
     description,
     images: [`${COMPANY.MARKETING_URL}/og-image.png`],
@@ -139,9 +139,10 @@ export default function PrivacyPage() {
               sell or rent data to anyone. The desktop app sends{" "}
               <Strong>anonymous, redacted usage telemetry</Strong> so we can tell
               whether releases are stable — you can turn it off. Website analytics
-              stay off until you accept them. If you voluntarily join the
-              Windows/Linux waitlist, we process the email you submit only for
-              that purpose. The mobile app sends <Strong>no telemetry at all</Strong>{" "}
+              stay off until you accept them. If you voluntarily join a
+              waitlist or send us a testimonial, we process the details you
+              submit only for the purpose described on that form. The mobile
+              app sends <Strong>no telemetry at all</Strong>{" "}
               and talks only to the server you point it at.
             </p>
           </div>
@@ -185,7 +186,7 @@ export default function PrivacyPage() {
                 your computer.
               </Bullet>
               <Bullet>
-                <Strong>aoagents.dev</Strong> — this website and the
+                <Strong>orchestrator.inc</Strong> — this website and the
                 documentation hosted on it.
               </Bullet>
             </Bullets>
@@ -328,14 +329,30 @@ export default function PrivacyPage() {
               </Bullet>
             </Bullets>
             <p>
-              Events are sent as <Strong>anonymous</Strong> PostHog events — no
-              person profiles are created and the app never calls{" "}
-              <Code>identify()</Code>. A random install identifier generated on
-              first run and stored at{" "}
+              Events are otherwise <Strong>anonymous</Strong> PostHog events. A
+              random install identifier generated on first run and stored at{" "}
               <Code>~/.ao/data/telemetry_install_id</Code> is used to
-              deduplicate counts. It is not linked to any account, email, or
-              name. Approximate country is derived by PostHog from the
-              connection's IP address; AO itself never sends location data.
+              deduplicate counts. It is not linked to any email or name.
+              Approximate location (country, and where available region and
+              city) is derived by PostHog from the connection's IP address when
+              each event is received, and AO leaves this enabled so it can
+              understand which areas AO is used in. This applies to all installs,
+              is used only in aggregate, and is not tied to your GitHub handle. AO
+              itself never resolves or sends precise location and does not store
+              your IP address. There is no separate switch for it; turning
+              telemetry off stops it with everything else.
+            </p>
+            <p>
+              One exception: AO sends the GitHub username signed in to its GitHub
+              integration on session-start events, both as an event property and
+              as a PostHog person property, so we can see which developers are
+              most active. AO only sends a personal (human) account, never an
+              organization or a bot token, and sends nothing if no GitHub token is
+              available. The handle is part of product telemetry and has no
+              separate switch: turning telemetry off stops it, because the
+              session-start event that carries it is then never sent. Anything
+              already stored in PostHog from earlier events is not deleted
+              retroactively.
             </p>
             <p>
               The desktop app does <Strong>not</Strong> currently send PostHog{" "}
@@ -371,7 +388,7 @@ export default function PrivacyPage() {
 
           <Section id="website" title="This website">
             <p>
-              aoagents.dev is a static site and runs no advertising. It uses
+              orchestrator.inc is a static site and runs no advertising. It uses
               PostHog analytics cookies to understand site usage and improve the
               experience, but analytics collection is disabled by default until
               you select <Strong>Accept</Strong>. Selecting opt-out keeps
@@ -380,13 +397,18 @@ export default function PrivacyPage() {
               recording is disabled on the marketing site.
             </p>
             <p>
-              The optional Windows/Linux waitlist is separate from analytics.
-              When you submit it, the email address and requested platform are
-              sent to PostHog solely to manage that waitlist, even if you opted
-              out of site analytics. The form discloses this before submission,
-              and submitting it does not enable analytics for later browsing.
-              Fonts are self-hosted. Other services involved when you browse
-              are:
+              Optional waitlists and testimonial submissions are separate from
+              analytics. When you submit one, the details requested by that form
+              are sent to the relevant submission endpoint and stored solely to
+              manage that request. Waitlist forms may also send their requested
+              details to PostHog even if you opted out of site analytics;
+              submitting a form does not enable analytics for later browsing.
+              Testimonial submissions include the testimonial, your public
+              LinkedIn profile URL, and any optional public X post URL. We use
+              those details to review and, with the permission granted on the
+              form, publish your testimonial with public attribution on the AO
+              website. Fonts are self-hosted. Other services involved when you
+              browse are:
             </p>
             <Bullets>
               <Bullet>
@@ -425,9 +447,9 @@ export default function PrivacyPage() {
                 API keys, tokens, passwords, or any other credential.
               </Bullet>
               <Bullet>
-                Names or account information. The only email address we collect
-                is one you voluntarily submit through the optional
-                Windows/Linux waitlist.
+                Names or account information. The only email address, company
+                role, or social profile we collect is information you
+                voluntarily submit through an optional waitlist.
               </Bullet>
               <Bullet>Precise location data.</Bullet>
               <Bullet>
@@ -450,7 +472,7 @@ export default function PrivacyPage() {
               <Bullet>
                 <Strong>PostHog</Strong> — product analytics for the desktop
                 app, CLI, and website, plus storage of voluntarily submitted
-                Windows/Linux waitlist emails (
+                waitlist details (
                 <Ext href="https://posthog.com/privacy">privacy policy</Ext>).
               </Bullet>
               <Bullet>
@@ -534,10 +556,16 @@ export default function PrivacyPage() {
                 back to an individual.
               </Bullet>
               <Bullet>
-                <Strong>Waitlist emails.</Strong> Retained in PostHog while
-                needed to notify you about Windows or Linux availability, then
-                deleted. You may request earlier deletion using the private
-                contact address below.
+                <Strong>Waitlist details.</Strong> Retained in PostHog while
+                needed to notify you about the relevant release or AO Cloud
+                access, then deleted. You may request earlier deletion using the
+                private contact address below.
+              </Bullet>
+              <Bullet>
+                <Strong>Testimonial submissions.</Strong> Retained while they
+                are reviewed or displayed on the AO website, including the
+                supplied public LinkedIn and optional X post URLs. You may
+                request deletion using the private contact address below.
               </Bullet>
             </Bullets>
           </Section>

@@ -1,36 +1,15 @@
 ---
-title: Dashboard notifier
-description: Retain AO notifications in the local web dashboard.
+title: Notification center
+description: Persistent notification history and live updates in the desktop app.
 ---
 
-The dashboard notifier records AO notifications in a local JSONL store and streams
-the latest retained records to the web dashboard over the existing local mux
-WebSocket.
+The daemon enriches and stores notification records in SQLite. The desktop reads cursor-paginated history, listens for live updates, and preserves read state across restarts.
 
-```yaml
-notifiers:
-  dashboard:
-    plugin: dashboard
-    limit: 50
+## Available controls
 
-notificationRouting:
-  urgent: [dashboard]
-  action: [dashboard]
-```
+- filter Unread or All notifications;
+- open the related session or pull request;
+- mark individual records as read;
+- catch up through paginated history after the app reconnects.
 
-## Setup
-
-```bash
-ao setup dashboard
-ao setup dashboard --limit 100 --routing-preset all
-ao setup dashboard --status
-```
-
-`limit` controls how many recent notifications are retained for browser reloads
-and dashboard restarts. The default is `50`.
-
-## Test
-
-```bash
-ao notify test --to dashboard --template basic
-```
+Electron app toasts are a presentation of the same durable records while the desktop is running. There is no `ao notify`, `ao setup`, routing preset, JSONL notification store, or external notifier configuration in the current CLI.

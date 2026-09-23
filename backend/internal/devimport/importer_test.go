@@ -345,8 +345,8 @@ func TestRunCopiesWorkspaceChildRepos(t *testing.T) {
 	project := testProject("workspace", "/repos/workspace")
 	project.Kind = domain.ProjectKindWorkspace
 	repos := []domain.WorkspaceRepoRecord{
-		{ProjectID: domain.ProjectID(project.ID), Name: "api", RelativePath: "api", RepoOriginURL: "https://example.com/api.git", RegisteredAt: project.RegisteredAt},
-		{ProjectID: domain.ProjectID(project.ID), Name: "web", RelativePath: "web", RepoOriginURL: "https://example.com/web.git", RegisteredAt: project.RegisteredAt},
+		{ProjectID: domain.ProjectID(project.ID), Name: "api", RelativePath: "api", RepoOriginURL: "https://example.com/api.git", DefaultBranch: "dev", RegisteredAt: project.RegisteredAt},
+		{ProjectID: domain.ProjectID(project.ID), Name: "web", RelativePath: "web", RepoOriginURL: "https://example.com/web.git", DefaultBranch: "main", RegisteredAt: project.RegisteredAt},
 	}
 	if err := source.UpsertWorkspaceProject(ctx, project, repos); err != nil {
 		t.Fatal(err)
@@ -365,6 +365,9 @@ func TestRunCopiesWorkspaceChildRepos(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].Name != "api" || got[1].Name != "web" {
 		t.Fatalf("workspace repos = %#v", got)
+	}
+	if got[0].DefaultBranch != "dev" || got[1].DefaultBranch != "main" {
+		t.Fatalf("workspace repo default branches = %#v", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL } from "../shared/shortcuts";
+import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL } from "../shared/shortcuts";
 import { attachAppShortcuts } from "./app-shortcuts";
+import { toggleAppDevTools } from "./app-devtools";
 
 type InputEvent = {
 	key: string;
@@ -42,6 +43,24 @@ function fakeTarget() {
 }
 
 describe("attachAppShortcuts", () => {
+	it("routes Ctrl+Shift+I to shell DevTools when no Browser view is available", async () => {
+		const source = fakeSource();
+		const target = { ...fakeTarget(), toggleDevTools: vi.fn() };
+		const browserHost = { toggleDevToolsForLastFocused: vi.fn().mockResolvedValue(null) };
+		let toggle: Promise<void> | undefined;
+		attachAppShortcuts(source, false, target, false, () => ({}), () => false, () => true, (id) => {
+			if (id === "toggle-browser-devtools") toggle = toggleAppDevTools(browserHost, () => target);
+		});
+
+		const event = source.emit({ key: "I", control: true, shift: true });
+		source.emit({ key: "I", control: true, shift: true, type: "keyUp" });
+		await toggle;
+
+		expect(event.preventDefault).toHaveBeenCalledOnce();
+		expect(target.toggleDevTools).toHaveBeenCalledOnce();
+		expect(target.send).not.toHaveBeenCalled();
+	});
+
 	it("forwards and prevents default on the main-window chord", () => {
 		const source = fakeSource();
 		const target = fakeTarget();
@@ -127,7 +146,24 @@ describe("attachAppShortcuts", () => {
 		expect(event.preventDefault).toHaveBeenCalledOnce();
 	});
 
-	it("preserves the close chord when no shell terminal is closeable", () => {
+	it("consumes auto-repeat chords without re-firing so held ⌘W cannot reach menu Close", () => {
+		const source = fakeSource();
+		const target = fakeTarget();
+		attachAppShortcuts(source, false, target);
+
+		const handledRepeat = source.emit({ key: "w", control: true, isAutoRepeat: true });
+		expect(handledRepeat.preventDefault).toHaveBeenCalledOnce();
+		expect(target.send).not.toHaveBeenCalled();
+
+		const rejectedSource = fakeSource();
+		const rejectedTarget = fakeTarget();
+		attachAppShortcuts(rejectedSource, false, rejectedTarget, false, () => ({}), () => false, (id) => id !== "close-shell-terminal");
+		const rejectedRepeat = rejectedSource.emit({ key: "w", control: true, isAutoRepeat: true });
+		expect(rejectedRepeat.preventDefault).toHaveBeenCalledOnce();
+		expect(rejectedTarget.send).not.toHaveBeenCalled();
+	});
+
+	it("consumes terminal tab chords when a browser context rejects them", () => {
 		const source = fakeSource();
 		const target = fakeTarget();
 		attachAppShortcuts(source, false, target, false, () => ({}), () => false, (id) => id !== "close-shell-terminal");
@@ -135,7 +171,9 @@ describe("attachAppShortcuts", () => {
 		const event = source.emit({ key: "w", control: true });
 
 		expect(target.send).not.toHaveBeenCalled();
-		expect(event.preventDefault).not.toHaveBeenCalled();
+		// Still preventDefault so a racing listener cannot open/close a terminal,
+		// and so Chromium does not treat the chord as an unhandled accelerator.
+		expect(event.preventDefault).toHaveBeenCalledOnce();
 	});
 
 	it("forwards keyboard-shortcut help on each platform", () => {
@@ -204,5 +242,41 @@ describe("attachAppShortcuts", () => {
 		expect(activeEvent.preventDefault).toHaveBeenCalledTimes(1);
 		expect(target.send).toHaveBeenCalledTimes(1);
 		expect(target.send).toHaveBeenCalledWith(KEYBOARD_SHORTCUTS_HELP_CHANNEL);
+	});
+
+	it.each([
+		["macOS", true, { key: "=", code: "Equal", meta: true }],
+		["Windows/Linux", false, { key: "+", code: "Equal", control: true }],
+	] as const)("routes primary-modifier plus/minus to the focused terminal on %s and preserves app zoom otherwise", (_platform, isMac, input) => {
+		const source = fakeSource();
+		const target = fakeTarget();
+		let terminalFocused = true;
+		attachAppShortcuts(
+			source,
+			isMac,
+			target,
+			false,
+			() => ({}),
+			() => false,
+			() => true,
+			undefined,
+			() => terminalFocused,
+		);
+
+		const focusedEvent = source.emit(input);
+
+		expect(focusedEvent.preventDefault).toHaveBeenCalledOnce();
+		expect(target.send).toHaveBeenCalledWith(TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, 1);
+
+		target.send.mockClear();
+		terminalFocused = false;
+		const appZoomEvent = source.emit(
+			isMac
+				? { key: "-", code: "Minus", meta: true }
+				: { key: "-", code: "Minus", control: true },
+		);
+
+		expect(appZoomEvent.preventDefault).not.toHaveBeenCalled();
+		expect(target.send).not.toHaveBeenCalled();
 	});
 });

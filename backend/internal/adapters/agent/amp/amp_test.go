@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -267,13 +269,124 @@ func TestGetAgentHooksInstallsSystemPromptPlugin(t *testing.T) {
 	for _, want := range []string{
 		ampPluginSentinel,
 		strconv.Quote(promptFile),
+		"session.start",
 		"agent.start",
+		"agent.end",
+		"thread.state.subscribe",
+		`"hooks", "amp", hookName`,
+		`"thread-state"`,
 		"display: false",
 		"readFile(systemPromptFile",
+		"activeThreadID",
+		"unsubscribe()",
+		"sessionID !== activeThreadID",
+		"amp.activeThread.current?.id",
+		"event.thread.id !== amp.activeThread.current?.id",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plugin missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestAmpPluginReportsCurrentActiveThreadAndInjectsPrompt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ao executable fixture uses a Unix shebang")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is required to execute the Amp plugin fixture")
+	}
+
+	fixtureDir := t.TempDir()
+	modulePath := filepath.Join(fixtureDir, "ao-system-prompt.mjs")
+	source := ampSystemPromptPluginSource("AO standing instructions", "")
+	source = strings.NewReplacer(
+		`import type { PluginAPI } from "@ampcode/plugin";`+"\n", "",
+		`const threadSubscriptions = new Map<string, { unsubscribe(): void }>();`, `const threadSubscriptions = new Map();`,
+		`function reportHookFailure(amp: any, hookName: string, detail: string)`, `function reportHookFailure(amp, hookName, detail)`,
+		`function callHookSync(amp: any, hookName: string, payload: Record<string, unknown>)`, `function callHookSync(amp, hookName, payload)`,
+		`function reportThreadState(amp: any, sessionID: string, state: string)`, `function reportThreadState(amp, sessionID, state)`,
+		`function observeThread(amp: any, thread: any)`, `function observeThread(amp, thread)`,
+		`async function loadSystemPrompt(amp: any): Promise<string>`, `async function loadSystemPrompt(amp)`,
+		`export default function (amp: PluginAPI)`, `export default function (amp)`,
+		`error instanceof Error`, `error instanceof Error`,
+		`(error: unknown)`, `(error)`,
+		`(state: string)`, `(state)`,
+	).Replace(source)
+	if err := os.WriteFile(modulePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	capturePath := filepath.Join(fixtureDir, "calls.jsonl")
+	if err := os.WriteFile(filepath.Join(fixtureDir, "ao"), []byte(`#!/usr/bin/env node
+const fs = require("node:fs");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { input += chunk; });
+process.stdin.on("end", () => {
+  fs.appendFileSync(process.env.AO_TEST_CAPTURE, JSON.stringify({args: process.argv.slice(2), input}) + "\n");
+});
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	harnessPath := filepath.Join(fixtureDir, "harness.mjs")
+	if err := os.WriteFile(harnessPath, []byte(`import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+globalThis.Bun = {
+  which(name) { return name === "ao" ? process.env.AO_BIN : undefined; },
+  spawnSync(argv, options) {
+    const result = spawnSync(argv[0], argv.slice(1), { input: options.stdin, encoding: "buffer" });
+    return { success: result.status === 0, stderr: result.stderr, exitCode: result.status };
+  },
+};
+const handlers = new Map();
+const loaded = await import(pathToFileURL(process.argv[2]).href);
+let currentState = "idle";
+const thread = {
+  id: "T-active",
+  state: {
+    subscribe(handler) { handler("running"); return { unsubscribe() { globalThis.unsubscribed = true; } }; },
+    async get() { return currentState; },
+  },
+};
+const amp = {
+  activeThread: { current: thread },
+  logger: { log() {} },
+  on(name, handler) { handlers.set(name, handler); },
+};
+loaded.default(amp);
+await handlers.get("session.start")({ thread }, { thread });
+const injected = await handlers.get("agent.start")({ thread, message: "do work" }, { thread });
+currentState = "idle";
+await handlers.get("agent.end")({ thread, status: "success" }, { thread });
+amp.activeThread.current = { id: "T-other" };
+await handlers.get("agent.start")({ thread, message: "ignored" }, { thread });
+if (injected?.message?.content !== "AO standing instructions" || injected?.message?.display !== false) {
+  throw new Error("system prompt was not injected");
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), node, harnessPath, modulePath)
+	cmd.Env = append(os.Environ(), "PATH="+fixtureDir+string(os.PathListSeparator)+os.Getenv("PATH"), "AO_BIN="+filepath.Join(fixtureDir, "ao"), "AO_TEST_CAPTURE="+capturePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Amp plugin harness failed: %v\n%s", err, output)
+	}
+	data, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{`["hooks","amp","session-start"]`, `["hooks","amp","thread-state"]`, `["hooks","amp","user-prompt-submit"]`, `["hooks","amp","stop"]`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("hook capture missing %s:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "ignored") {
+		t.Fatalf("inactive thread reported hook calls:\n%s", text)
 	}
 }
 
@@ -385,18 +498,18 @@ func TestGetAgentHooksUsesInlineSystemPromptWithoutFile(t *testing.T) {
 	}
 }
 
-func TestSessionInfoNoOp(t *testing.T) {
+func TestSessionInfoReadsHookMetadata(t *testing.T) {
 	info, ok, err := (&Plugin{}).SessionInfo(context.Background(), ports.SessionRef{
 		Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "T-abc123"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok {
-		t.Fatalf("ok=true with info %#v, want no-op false", info)
+	if !ok {
+		t.Fatal("ok=false, want hook-derived session info")
 	}
-	if !reflect.DeepEqual(info, ports.SessionInfo{}) {
-		t.Fatalf("info = %#v, want zero", info)
+	if info.AgentSessionID != "T-abc123" {
+		t.Fatalf("AgentSessionID = %q, want T-abc123", info.AgentSessionID)
 	}
 }
 

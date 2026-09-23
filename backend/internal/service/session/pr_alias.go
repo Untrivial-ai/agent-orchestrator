@@ -54,9 +54,62 @@ func deduplicatePRFacts(prs []domain.PRFacts) []domain.PRFacts {
 	return out
 }
 
+func canonicalizeCurrentHeadReviewRuns(prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) []domain.CurrentHeadReviewRun {
+	if len(prs) == 0 || len(runs) == 0 {
+		return append([]domain.CurrentHeadReviewRun(nil), runs...)
+	}
+
+	canonicalByURL := make(map[string]string, len(prs))
+	mergedByKey := make(map[string]domain.PRFacts, len(prs))
+	urlsByKey := make(map[string][]string, len(prs))
+	for _, pr := range prs {
+		key := pullRequestAliasKey(pr.URL, pr.Number, pr.SourceBranch, pr.TargetBranch, pr.HeadSHA)
+		if key == "" {
+			canonicalByURL[pr.URL] = pr.URL
+			continue
+		}
+		mergedByKey[key] = mergePRFacts(mergedByKey[key], pr)
+		urlsByKey[key] = append(urlsByKey[key], pr.URL)
+	}
+	for key, merged := range mergedByKey {
+		for _, rawURL := range urlsByKey[key] {
+			canonicalByURL[rawURL] = merged.URL
+		}
+	}
+
+	out := make([]domain.CurrentHeadReviewRun, 0, len(runs))
+	byCanonicalAndHarness := make(map[string]int, len(runs))
+	for _, run := range runs {
+		normalized := run
+		if canonicalURL, ok := canonicalByURL[run.PRURL]; ok {
+			normalized.PRURL = canonicalURL
+		}
+		key := normalized.PRURL + "\x00" + string(normalized.Harness)
+		if idx, ok := byCanonicalAndHarness[key]; ok {
+			if currentHeadRunOutranks(normalized, out[idx]) {
+				out[idx] = normalized
+			}
+			continue
+		}
+		byCanonicalAndHarness[key] = len(out)
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func currentHeadRunOutranks(candidate, current domain.CurrentHeadReviewRun) bool {
+	if !candidate.CreatedAt.Equal(current.CreatedAt) {
+		return candidate.CreatedAt.After(current.CreatedAt)
+	}
+	return candidate.ID > current.ID
+}
+
 func mergePRFacts(current, next domain.PRFacts) domain.PRFacts {
 	if next.UpdatedAt.After(current.UpdatedAt) {
 		next.ReviewComments = current.ReviewComments || next.ReviewComments
+		next.ExternalApproved = current.ExternalApproved || next.ExternalApproved
+		next.ExternalChangesRequested = current.ExternalChangesRequested || next.ExternalChangesRequested
+		next.ExternalComments = current.ExternalComments || next.ExternalComments
 		if next.SourceBranch == "" {
 			next.SourceBranch = current.SourceBranch
 		}
@@ -69,6 +122,9 @@ func mergePRFacts(current, next domain.PRFacts) domain.PRFacts {
 		return next
 	}
 	current.ReviewComments = current.ReviewComments || next.ReviewComments
+	current.ExternalApproved = current.ExternalApproved || next.ExternalApproved
+	current.ExternalChangesRequested = current.ExternalChangesRequested || next.ExternalChangesRequested
+	current.ExternalComments = current.ExternalComments || next.ExternalComments
 	if current.SourceBranch == "" {
 		current.SourceBranch = next.SourceBranch
 	}

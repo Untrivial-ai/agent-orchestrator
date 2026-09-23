@@ -1,79 +1,58 @@
 ---
 title: FAQ
-description: The questions people actually ask before adopting AO.
+description: Common questions about the current Agent Orchestrator desktop product.
 ---
 
-
 <Accordions expandAll>
-  <Accordion title="How is this different from running multiple Claude Code / Cursor sessions in terminal tabs?">
-    Tabs are fine for one or two. AO handles the bookkeeping once you have more than that: per-session worktrees, per-session branches, automatic CI/review reactions, one dashboard, cost tracking, and a state machine that knows what each agent is doing.
-  </Accordion>
+	<Accordion title="How is AO different from several agent terminals?">
+		AO adds isolated worktrees, durable session identity, Chat or TUI control, pull-request observation, lifecycle reactions, review runs, notifications, and browser previews around those agents.
+	</Accordion>
 
-<Accordion title="Do I have to use Claude Code?">
-	No. AO supports Claude Code, Codex, Cursor, Aider, and OpenCode today. Set `agent:` per project (or per spawn with
-	`--agent`). See [Agents](/docs/plugins/agents).
-</Accordion>
+	<Accordion title="Do I have to use Claude Code?">
+		No. AO includes adapters for more than twenty harnesses, including Claude Code, Codex, Cursor, Aider, OpenCode, Droid, Kimi Code, and others. Native Chat currently supports installed Codex, Claude Code, OpenCode, and Droid; other harnesses use Terminal UI.
+	</Accordion>
 
-<Accordion title="Does AO auto-merge?">
-	No, intentionally. AO will get a PR to a mergeable state — CI green, approvals satisfied — and stop. The merge is your
-	call.
-</Accordion>
+	<Accordion title="Does AO merge pull requests?">
+		AO provides a merge action, but merging is a deliberate user or workflow decision, not an unconditional default. Review code and repository policy before requesting a merge.
+	</Accordion>
 
-<Accordion title="Does AO need webhooks?">
-	No. AO polls `gh` / `glab` for PR state. Webhooks are an optional latency optimisation for the review loop — wire them
-	up only if you need near-instant reactions.
-</Accordion>
+	<Accordion title="Which source-control systems are supported?">
+		GitHub is the shipped SCM observer in the current Go rewrite. It supplies pull-request, CI, review, and mergeability facts. Historical docs listed broader GitLab and tracker plugins; those integrations are not all active in the current daemon lifecycle.
+	</Accordion>
 
-<Accordion title="Can it use GitHub Enterprise / self-hosted GitLab?">
-	Yes. `gh` and `glab` both support enterprise hosts — configure them via their own tools. For GitLab, also set
-	`trackerConfig.host` / `scmConfig.host` in AO.
-</Accordion>
+	<Accordion title="Does AO need webhooks?">
+		No. The current GitHub SCM observer polls with authentication, ETag guards, and semantic diffing. Live desktop updates come from the daemon's SQLite CDC event stream.
+	</Accordion>
 
-<Accordion title="Does it work on Windows?">
-	Partially — see [Platforms › Windows](/docs/platforms#windows). You need `runtime: process` instead of tmux, and
-	desktop notifications are a no-op. Everything else (spawning, PR flow, review loop, CI recovery) works the same.
-</Accordion>
+	<Accordion title="Does it work on Windows?">
+		Yes. Windows supports the desktop app, Chat, and native Terminal UI through AO's conpty host. tmux and iTerm2-specific behavior applies only to other platforms.
+	</Accordion>
 
-<Accordion title="Where does session state live?">
-	`~/.agent-orchestrator/{hash}-{projectId}/`. No database. Everything is flat files you can inspect.
-</Accordion>
+	<Accordion title="Where does AO store data?">
+		Under `~/.ao` by default. Durable daemon state is SQLite under `~/.ao/data`; the same AO home also contains the run file, managed worktrees and metadata, Electron data, and mobile configuration. Advanced daemon paths can be overridden with `AO_DATA_DIR` and `AO_RUN_FILE`.
+	</Accordion>
 
-<Accordion title="Can I run AO on a remote server?">
-	Yes. The dashboard is a plain Next.js app — port-forward or put it behind your reverse proxy. AO has no built-in auth,
-	so use your usual SSO / basic-auth layer. Use `runtime: process` in containers.
-</Accordion>
+	<Accordion title="Can I expose AO on a remote server?">
+		Do not expose the primary daemon listener. It is unauthenticated and fixed to `127.0.0.1`. Connect Mobile is the only built-in LAN path: it is opt-in, password-protected, plaintext, and intended only for a trusted home network.
+	</Accordion>
 
-<Accordion title="How much does it cost?">
-	AO itself is MIT-licensed and free. Agents cost whatever their underlying API costs (Anthropic, OpenAI, etc.) — AO
-	shows per-session cost on the dashboard for agents that report it (Claude Code today).
-</Accordion>
+	<Accordion title="What does AO cost?">
+		AO is Apache-2.0 licensed. Agent usage is billed according to the provider account or subscription used by each installed harness. Chat records usage data when the provider reports it.
+	</Accordion>
 
-<Accordion title="What happens to my code?">
-	Your code stays in your worktrees on your machine. AO doesn't upload anything — it just coordinates local processes
-	and makes GitHub API calls through your authenticated CLIs.
-</Accordion>
+	<Accordion title="Does AO upload my source code?">
+		AO coordinates local worktrees and invokes your installed agents and GitHub tooling. Those tools follow their own provider data policies. AO's Electron renderer also sends anonymous usage events to PostHog in standard builds; session recording is disabled by default, and local paths and URLs are redacted if a time-boxed investigation enables it.
+	</Accordion>
 
-  <Accordion title="Can I write my own plugin?">
-    Yes. `ao plugin create --slot <slot> --name <name>` scaffolds a starter. Plugins are tiny Node packages exporting a manifest + `create()` function.
-  </Accordion>
+	<Accordion title="Can I still install AO from npm?">
+		The legacy `@aoagents/ao` package remains available, but `0.10.0` is its final release and it will not receive updates. Prefer the [desktop download](/docs/installation). Existing npm users can run `ao start` to fetch and open the desktop build.
+	</Accordion>
 
-<Accordion title="Why is everything a plugin?">
-	Because the answer to "should AO support Linear?" (or Discord, or Codex, or …) is always yes, but bundling every
-	integration into core makes the CLI heavy. Plugins let you pick what you need.
-</Accordion>
+	<Accordion title="Can Chat and Terminal UI run at the same time for one session?">
+		No. A session commits to one controller at a time. Compatible Claude Code and Codex sessions can hand off between interfaces, but AO drains or interrupts the old controller before activating the new one.
+	</Accordion>
 
-<Accordion title="Does AO modify my repo's files?">
-	The agent modifies the worktree — that's the whole point. AO itself doesn't touch `main`, doesn't force-push, and
-	doesn't merge. The session works on its own branch.
-</Accordion>
-
-<Accordion title="Can I still install AO via npm?">
-	Yes, npm still works, but it is no longer recommended. `0.10.0` is the final version published to npm, and the
-	`@aoagents/ao` package is frozen and will not receive further updates. Prefer the [desktop
-	download](/docs/installation). Existing CLI users can run `ao start` to fetch and open the desktop build.
-</Accordion>
-
-  <Accordion title="How do I completely uninstall?">
-    `npm uninstall -g @aoagents/ao`, then `rm -rf ~/.agent-orchestrator` if you want to wipe all session history.
-  </Accordion>
+	<Accordion title="How do I uninstall AO?">
+		Remove the desktop application using your operating system's normal process. If you also remove `~/.ao`, you permanently delete AO's database, session history, managed state, Electron data, and mobile pairing configuration. Inspect and preserve any work you need first. Legacy CLI users can separately run `npm uninstall -g @aoagents/ao`.
+	</Accordion>
 </Accordions>

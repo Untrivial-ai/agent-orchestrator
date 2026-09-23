@@ -88,12 +88,12 @@ func museAuthJSONStatus(path string) (ports.AgentAuthStatus, bool, error) {
 		if strings.TrimSpace(meta.AccessToken) != "" {
 			return ports.AgentAuthStatusAuthorized, true, nil
 		}
-		return ports.AgentAuthStatusUnauthorized, true, nil
+		return ports.AgentAuthStatusUnknown, false, nil
 	case "api_key", "api-key", "apikey":
 		if strings.TrimSpace(meta.APIKey) != "" {
 			return ports.AgentAuthStatusAuthorized, true, nil
 		}
-		return ports.AgentAuthStatusUnauthorized, true, nil
+		return ports.AgentAuthStatusUnknown, false, nil
 	}
 	return ports.AgentAuthStatusUnknown, false, nil
 }

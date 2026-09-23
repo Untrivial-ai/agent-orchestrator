@@ -37,6 +37,18 @@ func openConversation(t *testing.T) (*conversation, *scriptedServer) {
 	return conv.(*conversation), srv
 }
 
+func TestReadHistoryIgnoresEmptyCompletedTurnError(t *testing.T) {
+	conv, srv := openProviderFailureConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[{"id":"turn-a","status":"completed","error":{}}]}}`)
+	events, err := conv.ReadHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].Kind != ports.ChatEventTurnCompleted || events[1].Err != nil || events[1].TurnState != "completed" {
+		t.Fatalf("empty error changed history: %#v", events)
+	}
+}
+
 func TestReadHistoryReconstructsNativeTurnsForTheChatTimeline(t *testing.T) {
 	conv, srv := openConversation(t)
 	srv.reply("thread/read", threadWithRenderedHistory)
@@ -82,6 +94,24 @@ func TestReadHistoryReconstructsNativeTurnsForTheChatTimeline(t *testing.T) {
 	}
 }
 
+func TestReadHistoryPreservesStructuredProviderFailure(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"failed","items":[],"error":{"message":"Usage limit reached","additionalDetails":"Resets tomorrow."}}`+
+		`]}}`)
+
+	events, err := conv.ReadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(events) != 2 || events[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[1].Err == nil || events[1].Err.Error() != "Usage limit reached\n\nResets tomorrow." {
+		t.Fatalf("completion error = %#v", events[1].Err)
+	}
+}
+
 func TestReadHistoryMakesMissingItemIDsUniqueAcrossTurns(t *testing.T) {
 	conv, srv := openConversation(t)
 	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
@@ -101,6 +131,57 @@ func TestReadHistoryMakesMissingItemIDsUniqueAcrossTurns(t *testing.T) {
 	}
 	if len(itemIDs) != 2 || itemIDs[0] == "" || itemIDs[0] == itemIDs[1] {
 		t.Fatalf("provider item ids = %#v, want two conversation-wide identities", itemIDs)
+	}
+}
+
+func TestReadHistoryRejectsAnUnsettledNativeTurnInsteadOfOmittingIt(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"completed","items":[{"type":"agentMessage","text":"settled"}]},`+
+		`{"id":"turn-b","status":"inProgress","items":[{"type":"agentMessage","text":"partial"}]}`+
+		`]}}`)
+
+	events, err := conv.ReadHistory(context.Background())
+	if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+		t.Fatalf("ReadHistory error = %v, want ErrChatHistoryUnsettled", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("ReadHistory returned %d partial events with an unsettled turn", len(events))
+	}
+}
+
+func TestRefreshHistoryPerformsANewThreadRead(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"inProgress"}`+
+		`]}}`)
+
+	if _, err := conv.ReadHistory(context.Background()); !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+		t.Fatalf("ReadHistory error = %v, want ErrChatHistoryUnsettled", err)
+	}
+
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"completed"}`+
+		`]}}`)
+	events, err := conv.RefreshHistory(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshHistory: %v", err)
+	}
+	if len(events) != 2 || events[0].Kind != ports.ChatEventTurnStarted ||
+		events[1].Kind != ports.ChatEventTurnCompleted || events[1].TurnState != "completed" {
+		t.Fatalf("refreshed events = %#v, want settled turn replay", events)
+	}
+
+	srv.mu.Lock()
+	reads := 0
+	for _, seen := range srv.seen {
+		if seen.Method == "thread/read" {
+			reads++
+		}
+	}
+	srv.mu.Unlock()
+	if reads != 2 {
+		t.Fatalf("thread/read requests = %d, want one initial read and one refresh", reads)
 	}
 }
 
@@ -224,7 +305,7 @@ func TestForkReturnsTheNewThreadIDAndInheritsTheWorkingDirectory(t *testing.T) {
 	conv, srv := openConversation(t)
 	srv.reply("thread/fork", `{"thread":{"id":"thread-2","forkedFromId":"thread-1"},"cwd":"/tmp/ws"}`)
 
-	forked, err := conv.Fork(context.Background())
+	forked, err := conv.Fork(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
@@ -252,11 +333,36 @@ func TestForkReturnsTheNewThreadIDAndInheritsTheWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestForkThroughTurnSendsLastTurnID(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/fork", `{"thread":{"id":"thread-2"},"cwd":"/tmp/ws"}`)
+	anchor := "turn-before-edit"
+
+	forked, err := conv.Fork(context.Background(), &anchor)
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if forked != "thread-2" {
+		t.Fatalf("forked thread = %q, want thread-2", forked)
+	}
+	frame := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/fork" })
+	var params map[string]any
+	if err := json.Unmarshal(frame.Params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if params["lastTurnId"] != anchor {
+		t.Fatalf("lastTurnId = %#v, want %q", params["lastTurnId"], anchor)
+	}
+	if _, present := params["cwd"]; present {
+		t.Fatal("fork must inherit the source cwd")
+	}
+}
+
 func TestForkRejectsAResponseWithNoThreadID(t *testing.T) {
 	conv, srv := openConversation(t)
 	srv.reply("thread/fork", `{"thread":{}}`)
 
-	if _, err := conv.Fork(context.Background()); err == nil {
+	if _, err := conv.Fork(context.Background(), nil); err == nil {
 		t.Fatal("Fork accepted a response carrying no thread id")
 	}
 }

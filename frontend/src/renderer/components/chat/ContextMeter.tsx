@@ -148,7 +148,7 @@ export function ContextMeter({
 		// Scoped provider, as IntakeFields does: this component is rendered in surfaces
 		// that do not all sit under the route-level one, and a tooltip with no provider
 		// throws rather than degrading.
-		<TooltipProvider delayDuration={200}>
+		<TooltipProvider>
 			<div className={cn("flex shrink-0 items-center gap-2", className)}>
 				{usage ? <ContextReadout usage={usage} /> : null}
 				{showQuota && quota ? <QuotaWarning quota={quota} limits={rateLimits} /> : null}

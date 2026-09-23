@@ -318,17 +318,22 @@ func (b *Broker) write(ctx context.Context, conn net.Conn, msg wireMessage) erro
 	_ = conn.SetWriteDeadline(time.Time{})
 	// Once the complete frame reached the runtime, let Execute observe a
 	// simultaneous cancellation and send the matching cancel frame. Returning
-	// ctx.Err here would make the delivered command impossible to cancel.
+	// ctx.Err here would make the delivered command impossible to cancel —
+	// Execute would bail out of the error path without writing the cancel
+	// frame, hanging any test/client waiting to read it.
 	if writeComplete {
 		return nil
 	}
+	// The write failed. Surface a context error when applicable rather than
+	// a raw i/o timeout. The write deadline (derived from the context
+	// deadline) and the context's own timer are independent — the write
+	// deadline can fire microseconds before the context timer, so ctx.Err()
+	// may still be nil when we reach here.
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if err != nil {
-		if requested, ok := ctx.Deadline(); ok && !time.Now().Before(requested) {
-			return context.DeadlineExceeded
-		}
+	if requested, ok := ctx.Deadline(); ok && !time.Now().Before(requested) {
+		return context.DeadlineExceeded
 	}
 	return err
 }

@@ -8,6 +8,8 @@ import {
 import { ANALYTICS_CONSENT_KEY } from "@/lib/constants";
 import { applyMarketingConsent } from "@/lib/analytics/marketing-consent";
 import { campaignProperties } from "@/lib/analytics/campaign";
+import { launchContextFromBrowser } from "@/lib/analytics/launch/context";
+import { launchSuperProperties } from "@/lib/analytics/launch/registration";
 
 // NEXT_PUBLIC_* is inlined at build time. Until the deploy workflow passed this
 // through, it was undefined on the deployed site and init was skipped entirely,
@@ -23,6 +25,7 @@ if (POSTHOG_KEY) {
     // properties here, before the opt-in, keeps those first events tagged with
     // app_name=marketing rather than leaking untagged into the shared project.
     loaded: (posthog) => {
+      registerLaunchContext(posthog);
       applyMarketingConsent(
         posthog,
         localStorage.getItem(ANALYTICS_CONSENT_KEY),
@@ -39,3 +42,29 @@ if (POSTHOG_KEY) {
 }
 
 export const onRouterTransitionStart = () => {};
+
+/**
+ * Registers the launch attribution (normalized source, the visit's own
+ * utm_campaign, device class) as super-properties.
+ *
+ * Must run before `applyMarketingConsent`: for an already-consented visitor,
+ * `opt_in_capturing()` emits the initial pageview synchronously inside `loaded`,
+ * so registering from a later React effect would send that first pageview — the
+ * landing event of the whole launch funnel — unattributed. Same lesson as the
+ * `app_name` registration in `marketing-consent.ts`.
+ *
+ * UTMs come from campaign.ts (capture-once, persisted for the tab session), so
+ * a visitor who arrived tagged keeps their attribution across an untagged
+ * reload. `campaign` is registered only when the visit carried one and is
+ * actively unregistered otherwise (registered super-properties persist in the
+ * PostHog cookie), so a stale `launch_day` cannot ride along on later direct
+ * visits either. The register/unregister decision is `launchSuperProperties`
+ * (pure, unit-tested).
+ */
+function registerLaunchContext(posthog: import("posthog-js").PostHog): void {
+  const { register, unregister } = launchSuperProperties(
+    launchContextFromBrowser(),
+  );
+  for (const key of unregister) posthog.unregister(key);
+  posthog.register(register);
+}

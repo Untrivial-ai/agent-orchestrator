@@ -97,3 +97,27 @@ func TestSetConfigOptionRequiresExactlyOneValueShape(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigOptionsPermissionModeWire(t *testing.T) {
+	svc := &fakeConversationService{configOptions: []ports.ChatConfigOption{{ID: "mode", Type: ports.ChatConfigOptionSelect, Current: ports.ChatConfigOptionValue{Select: "auto"}, Choices: []ports.ChatConfigOptionChoice{{Value: "auto", PermissionMode: ports.PermissionModeAuto}}}}}
+	for _, method := range []string{http.MethodGet, http.MethodPatch} {
+		r := chi.NewRouter()
+		(&controllers.ConversationsController{Svc: svc}).Register(r)
+		path := "/sessions/p1-1/conversation/config-options"
+		if method == http.MethodPatch {
+			path += "/mode"
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(method, path, bytes.NewBufferString(`{"value":"auto"}`)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", method, rec.Code, rec.Body.String())
+		}
+		var got controllers.ConversationConfigOptionsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Options) != 1 || len(got.Options[0].Choices) != 1 || got.Options[0].Choices[0].PermissionMode != ports.PermissionModeAuto {
+			t.Fatalf("%s: %#v", method, got)
+		}
+	}
+}

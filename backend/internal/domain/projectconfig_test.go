@@ -39,11 +39,10 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"good opencode reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerOpenCode}}}, false},
 		{"good kiro reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerKiro}}}, false},
 		{"good pi reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerPi}}}, false},
-		{"good experimental qwen reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerQwen}}}, false},
 		{"good experimental agy reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerAgy}}}, false},
-		{"good experimental continue reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerContinue}}}, false},
-		{"good experimental goose reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerGoose}}}, false},
-		{"good experimental vibe reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerVibe}}}, false},
+		{"unsupported continue reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: "continue"}}}, true},
+		{"unsupported goose reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: "goose"}}}, true},
+		{"unsupported vibe reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: "vibe"}}}, true},
 		{"good experimental Devin reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerDevin}}}, false},
 		{"good experimental Droid reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerDroid}}}, false},
 		{"good experimental Kimi reviewer", ProjectConfig{Reviewers: []ReviewerConfig{{Harness: ReviewerKimi}}}, false},
@@ -63,6 +62,8 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"tracker intake unknown provider", ProjectConfig{TrackerIntake: TrackerIntakeConfig{Enabled: true, Provider: "linear", Assignee: "alice"}}, true},
 		{"tracker intake repo with whitespace", ProjectConfig{TrackerIntake: TrackerIntakeConfig{Enabled: true, Repo: " acme/demo", Assignee: "alice"}}, true},
 		{"tracker intake assignee with whitespace", ProjectConfig{TrackerIntake: TrackerIntakeConfig{Enabled: true, Assignee: " alice"}}, true},
+		{"auto review enabled", ProjectConfig{AutoReview: true}, false},
+		{"auto review disabled", ProjectConfig{AutoReview: false}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,8 +78,8 @@ func TestDefaultProjectConfig(t *testing.T) {
 	def := DefaultProjectConfig()
 
 	// The one documented non-empty default.
-	if def.DefaultBranch != "main" {
-		t.Fatalf("default DefaultBranch = %q, want main", def.DefaultBranch)
+	if def.DefaultBranch != DefaultBranchAuto {
+		t.Fatalf("default DefaultBranch = %q, want %q", def.DefaultBranch, DefaultBranchAuto)
 	}
 
 	// Every other field defaults to its zero value: clearing the documented
@@ -92,8 +93,8 @@ func TestDefaultProjectConfig(t *testing.T) {
 func TestProjectConfigWithDefaults(t *testing.T) {
 	// An unset config gets the documented defaults.
 	got := (ProjectConfig{}).WithDefaults()
-	if got.DefaultBranch != DefaultBranchName {
-		t.Fatalf("WithDefaults = %#v, want branch=main", got)
+	if got.DefaultBranch != DefaultBranchAuto {
+		t.Fatalf("WithDefaults = %#v, want branch=%s", got, DefaultBranchAuto)
 	}
 
 	// Set fields are preserved, not overwritten.
@@ -107,15 +108,53 @@ func TestProjectConfigWithDefaults(t *testing.T) {
 	if got.AgentConfig.Model != "m" {
 		t.Fatalf("WithDefaults dropped a set field: %#v", got.AgentConfig)
 	}
+	if got.WorktreeBaseBranch() != "develop" {
+		t.Fatalf("WorktreeBaseBranch = %q, want develop", got.WorktreeBaseBranch())
+	}
+	if got := (ProjectConfig{}).WorktreeBaseBranch(); got != "" {
+		t.Fatalf("automatic WorktreeBaseBranch = %q, want empty for adapter inference", got)
+	}
+	if got := (ProjectConfig{DefaultBranch: DefaultBranchAuto}).WorktreeBaseBranch(); got != "" {
+		t.Fatalf("explicit auto WorktreeBaseBranch = %q, want empty for adapter inference", got)
+	}
 
 	got = (ProjectConfig{TrackerIntake: TrackerIntakeConfig{Enabled: true, Assignee: "alice"}}).WithDefaults()
-	if got.TrackerIntake.Provider != TrackerProviderGitHub {
-		t.Fatalf("TrackerIntake.Provider = %q, want %q", got.TrackerIntake.Provider, TrackerProviderGitHub)
+	if got.TrackerIntake.Provider != "" {
+		t.Fatalf("TrackerIntake.Provider = %q, want empty (inferred at use time)", got.TrackerIntake.Provider)
 	}
 
 	got = (ProjectConfig{}).WithDefaults()
 	if got.TrackerIntake.Provider != "" {
 		t.Fatalf("disabled TrackerIntake.Provider = %q, want empty", got.TrackerIntake.Provider)
+	}
+}
+
+func TestInferTrackerProvider(t *testing.T) {
+	tests := []struct {
+		name    string
+		repoURL string
+		want    TrackerProvider
+	}{
+		{"empty", "", TrackerProviderGitHub},
+		{"https github", "https://github.com/acme/demo.git", TrackerProviderGitHub},
+		{"ssh github", "git@github.com:acme/demo.git", TrackerProviderGitHub},
+		{"ghe host", "https://ghe.corp.ghe.io/acme/demo.git", TrackerProviderGitHub},
+		{"github with port", "https://github.com:443/org/repo.git", TrackerProviderGitHub},
+		{"ssh github with port", "ssh://git@github.com:2222/org/repo.git", TrackerProviderGitHub},
+		{"https gitlab.com", "https://gitlab.com/group/repo.git", TrackerProviderGitLab},
+		{"ssh gitlab.com", "git@gitlab.com:group/repo.git", TrackerProviderGitLab},
+		{"self-managed gitlab", "https://gitlab.internal/group/repo.git", TrackerProviderGitLab},
+		{"ssh self-managed", "git@gitlab.internal:group/repo.git", TrackerProviderGitLab},
+		{"self-managed with port", "https://gitlab.local:8443/group/repo.git", TrackerProviderGitLab},
+		{"non-gitlab custom host", "https://dev.company.com/group/repo.git", TrackerProviderGitLab},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := InferTrackerProvider(tt.repoURL)
+			if got != tt.want {
+				t.Errorf("InferTrackerProvider(%q) = %q, want %q", tt.repoURL, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -170,5 +209,8 @@ func TestProjectConfigIsZero(t *testing.T) {
 	}
 	if (ProjectConfig{Env: map[string]string{"A": "b"}}).IsZero() {
 		t.Fatal("config with env should not be zero")
+	}
+	if (ProjectConfig{AutoReview: true}).IsZero() {
+		t.Fatal("config with autoReview enabled should not be zero")
 	}
 }

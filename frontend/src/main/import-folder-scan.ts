@@ -13,8 +13,11 @@ export type GitRepoScanResult = {
 	branch: string;
 	remote: string;
 	hasRemote: boolean;
+	isRepo: boolean;
+	hasCommit: boolean;
 	status: "ok" | "error";
 	reason?: string;
+	needsGitInit?: boolean;
 };
 
 export type ImportFolderScanResult = {
@@ -112,15 +115,21 @@ async function resolveDefaultBranch(repoPath: string, options: ScanOptions = {})
 		const ref = await gitOutput(repoPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], options);
 		if (ref) return ref.replace(/^origin\//, "");
 	} catch {
-		// Fall back to the checked-out branch when origin/HEAD is unavailable.
+		// The current checkout may be temporary and is not a repository default.
 	}
+	return "auto";
+}
+
+export async function resolveCheckedOutBranch(repoPath: string, options: ScanOptions = {}): Promise<string | undefined> {
 	try {
-		const branch = await gitOutput(repoPath, ["branch", "--show-current"], options);
-		if (branch) return branch;
+		// Git walks up to an ancestor repository for plain nested folders. AO
+		// initializes those workspace roots separately, so do not inherit its branch.
+		if (await gitOutput(repoPath, ["rev-parse", "--show-prefix"], options)) return undefined;
+		const branch = await gitOutput(repoPath, ["symbolic-ref", "--short", "HEAD"], options);
+		return branch || undefined;
 	} catch {
-		// Detached or unreadable HEAD is represented below.
+		return undefined;
 	}
-	return "HEAD";
 }
 
 async function scanGitRepo(
@@ -137,11 +146,13 @@ async function scanGitRepo(
 				name,
 				path: repoPath,
 				relativePath,
-				branch: "HEAD",
+				branch: "",
 				remote: "",
 				hasRemote: false,
-				status: "error",
-				reason: "Linked worktree children cannot be imported.",
+				isRepo: false,
+				hasCommit: false,
+				status: "ok",
+				needsGitInit: true,
 			};
 		}
 	} catch {
@@ -154,53 +165,54 @@ async function scanGitRepo(
 					branch: "HEAD",
 					remote: "",
 					hasRemote: false,
+					isRepo: true,
+					hasCommit: false,
 					status: "error",
 					reason: "Bare repositories cannot be imported.",
 				};
 			}
 		} catch {
-			// Not a git repository.
+			// Not a git repository — surface as needs-init.
 		}
-		return null;
+		return {
+			name,
+			path: repoPath,
+			relativePath,
+			branch: "",
+			remote: "",
+			hasRemote: false,
+			isRepo: false,
+			hasCommit: false,
+			status: "ok",
+			needsGitInit: true,
+		};
 	}
 	if (!(await isGitRepo(repoPath, options))) return null;
-	const [branchResult, remoteResult, bareResult, headResult] = await Promise.allSettled([
+	const [branchResult, remoteResult, headResult] = await Promise.allSettled([
 		resolveDefaultBranch(repoPath, options),
 		gitOutput(repoPath, ["remote", "get-url", "origin"], options),
-		gitOutput(repoPath, ["rev-parse", "--is-bare-repository"], options),
 		gitOutput(repoPath, ["rev-parse", "--verify", "HEAD"], options),
 	]);
-	const validationReason = scanRepoValidationReason(
-		name,
-		branchResult.status === "fulfilled" && branchResult.value ? branchResult.value : "HEAD",
-		remoteResult.status === "fulfilled" && remoteResult.value.length > 0,
-		bareResult.status === "fulfilled" && bareResult.value === "true",
-		headResult.status === "fulfilled",
-	);
+	const hasHead = headResult.status === "fulfilled";
+	const hasRemote = remoteResult.status === "fulfilled" && remoteResult.value.length > 0;
+	const validationReason = scanRepoValidationReason(name);
 	return {
 		name,
 		path: repoPath,
 		relativePath,
 		branch: branchResult.status === "fulfilled" && branchResult.value ? branchResult.value : "HEAD",
 		remote: remoteResult.status === "fulfilled" ? remoteResult.value : "",
-		hasRemote: remoteResult.status === "fulfilled" && remoteResult.value.length > 0,
+		hasRemote,
+		isRepo: true,
+		hasCommit: hasHead,
 		status: validationReason ? "error" : "ok",
 		reason: validationReason,
+		needsGitInit: false,
 	};
 }
 
-function scanRepoValidationReason(
-	name: string,
-	branch: string,
-	hasRemote: boolean,
-	isBare: boolean,
-	hasHead: boolean,
-): string | undefined {
+function scanRepoValidationReason(name: string): string | undefined {
 	if (name === "__root__") return "Repository name is reserved by AO.";
-	if (isBare) return "Bare repositories cannot be imported.";
-	if (!hasHead) return "Repository must have at least one commit.";
-	if (branch === "HEAD") return "Repository must have a checked-out branch.";
-	if (!hasRemote) return "Origin remote is required.";
 	return undefined;
 }
 
@@ -234,22 +246,25 @@ export async function scanImportFolder(
 						name: path.basename(rootPath),
 						path: rootPath,
 						relativePath: ".",
-						branch: "HEAD",
-						remote: "",
-						hasRemote: false,
-						status: "error",
+							branch: "HEAD",
+							remote: "",
+							hasRemote: false,
+							isRepo: false,
+							hasCommit: false,
+							status: "error",
 						reason: safetyReason,
 					},
 				],
 			};
 		}
-		const repo = await scanGitRepo(rootPath, rootPath, options);
-		if (repo) return { path: rootPath, repos: [repo] };
-		return {
-			path: rootPath,
-			repos: [],
-			setupWarning: await ancestorRepositorySetupWarning(rootPath, options),
-		};
+	const repo = await scanGitRepo(rootPath, rootPath, options);
+	if (repo && !repo.needsGitInit) return { path: rootPath, repos: [repo] };
+	const setupWarning = await ancestorRepositorySetupWarning(rootPath, options);
+	return {
+		path: rootPath,
+		repos: repo ? [repo] : [],
+		...(setupWarning ? { setupWarning } : {}),
+	};
 	}
 
 	const [entries, ancestorWarning] = await Promise.all([

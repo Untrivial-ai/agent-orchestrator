@@ -1,34 +1,32 @@
 package httpd
 
 import (
+	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/presence"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
 )
 
-// The synchronous switch budget covers one 60s optional source handoff, a
-// separate 2m human permission-decision window, target process/readiness checks,
-// composer confirmation retries, and the final 150s generation acknowledgement,
-// with headroom for teardown and durable writes.
-const minimumSwitchAgentRequestTimeout = 6 * time.Minute
-
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
 	Agents             controllers.AgentCatalog
+	CodexAccounts      controllers.CodexAccountService
 	Projects           projectsvc.Manager
 	Sessions           controllers.SessionService
+	DesktopWorkspaces  controllers.DesktopWorkspaceService
 	Activity           controllers.ActivityRecorder
 	UsageHooks         controllers.UsageHookRecorder
 	UsageSummary       controllers.UsageSummaryService
@@ -38,6 +36,7 @@ type APIDeps struct {
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
+	Directories        controllers.DirectoryBrowserService
 	ShellTerminals     controllers.ShellTerminalService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
@@ -52,26 +51,88 @@ type APIDeps struct {
 	Browser             controllers.BrowserService
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
+	SystemChecks        controllers.SystemChecker
+	// HostID is this machine's stable, machine-bound identity, served by the
+	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
+	// machine answered before presenting a credential.
+	HostID string
+	// Endpoints reports how this daemon can currently be reached, for the
+	// phone's endpoint-refresh route.
+	Endpoints controllers.EndpointSource
+	Installer controllers.Installer
+	AgentAuth controllers.AgentAuthService
+	// GitHub is the local GitHub PAT + repos surface.
+	GitHub            controllers.GitHubPATService
+	AgentSwitchPolicy AgentSwitchPolicyControl
+	// LinkPreview unfurls external URLs for the renderer's hover cards; nil
+	// leaves the route answering 501.
+	LinkPreview controllers.LinkPreviewService
+
+	// Presence tracks which mobile devices are currently running the app.
+	// Nil disables presence tracking (the roster then reports every device offline).
+	Presence *presence.Tracker
+
+	// DeviceRoster and DeviceLive back the desktop-only mobile device roster.
+	DeviceRoster controllers.DeviceRoster
+	DeviceLive   controllers.LiveSet
+}
+
+// normalizeAPIDeps closes the Presence/DeviceLive duplication trap structurally.
+// Liveness enters APIDeps twice — Presence drives the heartbeat middleware that
+// touches it, DeviceLive is what the device roster reads — and nothing enforces
+// they stay the same tracker. If a future edit set Presence but left DeviceLive
+// nil (or re-split them), the roster would silently and permanently report
+// every device offline: no error, no log, no test failure short of a live
+// phone. Defaulting DeviceLive to Presence here, at the one place APIDeps is
+// consumed to build the API, makes that trap unreachable rather than merely
+// currently avoided by careful call-site wiring.
+//
+// A nil Presence on its own is not an error: the roster must keep listing and
+// managing devices with every device simply reporting offline (see
+// MobileDevicesController.List's own nil-Presence fallback) — that decision
+// stands. What IS a real mis-wiring is a live DeviceRoster with no liveness
+// source at all after the fallback above; that gets exactly one startup
+// warning, because a silent-forever-offline roster is precisely what a
+// startup log is for.
+func normalizeAPIDeps(deps APIDeps, log *slog.Logger) APIDeps {
+	if deps.DeviceLive == nil && deps.Presence != nil {
+		deps.DeviceLive = deps.Presence
+	}
+	if deps.DeviceRoster != nil && deps.DeviceLive == nil {
+		log.Warn("mobile device roster has no liveness tracker wired; every device will report offline")
+	}
+	return deps
 }
 
 // API owns one controller per resource and is the single Register call the
 // router invokes to mount the /api/v1 surface.
 type API struct {
 	cfg           config.Config
+	deps          APIDeps
 	agents        *controllers.AgentsController
+	codexAccounts *controllers.CodexAccountsController
 	projects      *controllers.ProjectsController
 	sessions      *controllers.SessionsController
+	desktop       *controllers.DesktopWorkspaceController
 	usage         *controllers.UsageController
 	prs           *controllers.PRsController
 	reviews       *controllers.ReviewsController
 	notifications *controllers.NotificationsController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
+	fs            *controllers.FSController
 	shellTerms    *controllers.ShellTerminalsController
 	conversations *controllers.ConversationsController
 	settings      *controllers.SettingsController
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
+	system        *controllers.SystemController
+	identity      *controllers.IdentityController
+	endpoints     *controllers.EndpointsController
+	systemInstall *controllers.SystemInstallController
+	agentAuth     *controllers.AgentAuthController
+	linkPreview   *controllers.LinkPreviewController
+	github        *controllers.GitHubController
 	events        *EventsController
 }
 
@@ -80,10 +141,12 @@ type API struct {
 // environment.
 func NewAPI(cfg config.Config, deps APIDeps) *API {
 	return &API{
-		cfg: cfg,
+		cfg:  cfg,
+		deps: deps,
 		agents: &controllers.AgentsController{
 			Catalog: deps.Agents,
 		},
+		codexAccounts: &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -91,20 +154,30 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 			Svc:           deps.Sessions,
 			Activity:      deps.Activity,
 			Usage:         deps.UsageHooks,
+			Attachments:   attachmentstore.New(cfg.DataDir),
 			PreviewServer: deps.PreviewServer,
 			Capabilities:  deps.SessionCapabilities,
 		},
+		desktop:       &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
 		usage:         &controllers.UsageController{Svc: deps.UsageSummary},
 		prs:           &controllers.PRsController{Svc: deps.PRs},
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
+		fs:            &controllers.FSController{Svc: deps.Directories},
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
+		system:        &controllers.SystemController{Checks: deps.SystemChecks},
+		identity:      &controllers.IdentityController{HostID: deps.HostID},
+		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
+		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
+		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
+		linkPreview:   &controllers.LinkPreviewController{Svc: deps.LinkPreview},
+		github:        &controllers.GitHubController{Svc: deps.GitHub},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -116,42 +189,42 @@ func (a *API) Register(root chi.Router) {
 	if timeout <= 0 {
 		timeout = config.DefaultRequestTimeout
 	}
-	switchAgentTimeout := timeout
-	if switchAgentTimeout < minimumSwitchAgentRequestTimeout {
-		switchAgentTimeout = minimumSwitchAgentRequestTimeout
-	}
-
 	root.Route("/api/v1", func(r chi.Router) {
 		// Serve the OpenAPI document from the same origin as the routes it describes.
 		r.Get("/openapi.yaml", apispec.ServeYAML)
 
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Timeout(timeout))
+			r.Use(presenceMiddleware(a.deps.Presence))
 			a.agents.Register(r)
+			a.codexAccounts.Register(r)
 			a.projects.Register(r)
 			a.sessions.Register(r)
+			a.desktop.Register(r)
 			a.usage.Register(r)
 			a.prs.Register(r)
 			a.reviews.Register(r)
 			a.notifications.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
+			a.fs.Register(r)
 			a.shellTerms.Register(r)
 			a.conversations.Register(r)
 			a.settings.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
+			a.system.Register(r)
+			a.identity.Register(r)
+			a.endpoints.Register(r)
+			a.systemInstall.Register(r)
+			a.agentAuth.Register(r)
+			a.linkPreview.Register(r)
+			a.github.Register(r)
 			// Sibling REST controllers plug in here.
-		})
-		// Agent switching synchronously collects a handoff, starts the target,
-		// waits for provider readiness, and confirms delivery. Give that bounded
-		// workflow enough time to complete without extending every REST route.
-		r.Group(func(r chi.Router) {
-			r.Use(middleware.Timeout(switchAgentTimeout))
-			a.sessions.RegisterSwitchAgent(r)
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
 		a.notifications.RegisterStream(r)
+		a.codexAccounts.RegisterStreams(r)
 		a.sessions.RegisterStreams(r)
 		a.events.Register(r)
 	})

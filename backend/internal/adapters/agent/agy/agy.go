@@ -45,6 +45,16 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.SubmitActivitySignaler = (*Plugin)(nil)
+var _ ports.BlockedActivitySignaler = (*Plugin)(nil)
+
+// EmitsSubmitActivity reports that PreInvocation proves submitted work has
+// reached AGY's execution loop.
+func (p *Plugin) EmitsSubmitActivity() bool { return true }
+
+// EmitsBlockedActivity is false because current AGY hooks do not expose a
+// permission-wait event that AO can safely correlate with a session.
+func (p *Plugin) EmitsBlockedActivity() bool { return false }
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {

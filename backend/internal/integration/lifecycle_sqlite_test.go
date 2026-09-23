@@ -1,14 +1,27 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
+	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
+	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -42,6 +55,16 @@ func (s *stubRuntime) IsAlive(_ context.Context, h ports.RuntimeHandle) (bool, e
 		}
 	}
 	return true, nil
+}
+func (s *stubRuntime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
+	alive, err := s.IsAlive(ctx, ref.Handle)
+	if err != nil {
+		return ports.FencedProbeResult{Liveness: ports.FencedUnknown, Reason: ports.FencedReasonProbeFailed}
+	}
+	if alive {
+		return ports.FencedProbeResult{Liveness: ports.FencedAlive, Reason: ports.FencedReasonExactMatch}
+	}
+	return ports.FencedProbeResult{Liveness: ports.FencedDead, Reason: ports.FencedReasonExactAbsent}
 }
 func (s *stubRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, _ int) (string, error) {
 	return "", nil
@@ -115,6 +138,41 @@ func (c *captureMessenger) Send(_ context.Context, _ domain.SessionID, msg strin
 	return nil
 }
 
+type retryingCodexAccountFactory struct{ opens atomic.Int32 }
+
+func (f *retryingCodexAccountFactory) Open(context.Context, ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+	if f.opens.Add(1) == 1 {
+		return nil, errors.New("secret credential /private/path")
+	}
+	return stubCodexAccountClient{}, nil
+}
+
+func (*retryingCodexAccountFactory) Capabilities(context.Context) domain.CodexAccountCapabilities {
+	return domain.CodexAccountCapabilities{}
+}
+
+type stubCodexAccountClient struct{}
+
+func (stubCodexAccountClient) Read(context.Context, bool) (ports.CodexAccountObservation, error) {
+	return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationUnauthorized}, nil
+}
+func (stubCodexAccountClient) Logout(context.Context) error { return nil }
+func (stubCodexAccountClient) ReadCapacity(context.Context) (ports.CodexCapacityObservation, error) {
+	return ports.CodexCapacityObservation{}, nil
+}
+func (stubCodexAccountClient) ReadUsage(context.Context) (ports.CodexUsageObservation, error) {
+	return ports.CodexUsageObservation{}, nil
+}
+func (stubCodexAccountClient) ConsumeResetCredit(context.Context, string) (domain.CodexResetCreditOutcome, error) {
+	return "", nil
+}
+func (stubCodexAccountClient) Events() <-chan ports.CodexAccountEvent {
+	events := make(chan ports.CodexAccountEvent)
+	close(events)
+	return events
+}
+func (stubCodexAccountClient) Close() error { return nil }
+
 type stack struct {
 	store *sqlite.Store
 	sm    *sessionsvc.Service
@@ -154,6 +212,103 @@ func newStack(t *testing.T) *stack {
 	lcm.SetCompletionTerminator(mgr)
 	sm := sessionsvc.New(mgr, store)
 	return &stack{store: store, sm: sm, mgr: mgr, lcm: lcm, prm: prm, rt: rt, ws: ws, msg: msg}
+}
+
+func TestDelegateEndpointDoesNotDependOnCodexDeviceReconciliation(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := sqlitetest.Open(filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "mer", Path: "/repo/mer", RegisteredAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	var now atomic.Int64
+	now.Store(100)
+	factory := &retryingCodexAccountFactory{}
+	gate := codexops.NewGate()
+	globalHome := filepath.Join(root, "global")
+	if err := os.MkdirAll(globalHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalHome, "auth.json"), []byte(`{"tokens":{"access_token":"test-only"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agents := agentsvc.NewWithDeps(agentsvc.Deps{
+		Context:                ctx,
+		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+		CodexAccountRoot:       filepath.Join(root, "accounts"),
+		CodexPendingRoot:       filepath.Join(root, "pending"),
+		CodexSwitchStagingRoot: filepath.Join(root, "staging"),
+		CodexGlobalHome:        globalHome,
+		CodexAccounts:          factory,
+		CodexOperationGate:     gate,
+		Clock:                  func() time.Time { return time.Unix(now.Load(), 0) },
+	})
+	runtime := &stubRuntime{}
+	workspace := &stubWorkspace{}
+	lcm := lifecycle.New(store, &captureMessenger{})
+	manager := sessionmanager.New(sessionmanager.Deps{
+		Runtime: runtime, Agents: stubAgents{}, Workspace: workspace, Store: store,
+		Lifecycle: lcm, LookPath: func(string) (string, error) { return "/usr/bin/true", nil },
+		CodexOperationGate: gate,
+	})
+	manager.SetAgentReadiness(agents)
+	lcm.SetCompletionTerminator(manager)
+	sessions := sessionsvc.New(manager, store)
+	router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Sessions: sessions}, httpd.ControlDeps{})
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+
+	delegate := func() (int, []byte) {
+		t.Helper()
+		request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/orchestrators/delegate", bytes.NewBufferString(`{"projectId":"mer","brief":"Fix it","agent":"codex","mode":"tui"}`))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, requestErr := server.Client().Do(request)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		defer response.Body.Close()
+		body, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return response.StatusCode, body
+	}
+
+	status, body := delegate()
+	if status != http.StatusAccepted {
+		t.Fatalf("delegate = %d, want 202 while device reconciliation is unavailable; body=%s", status, body)
+	}
+	if runtime.created != 1 {
+		t.Fatalf("runtime Create calls = %d, want 1", runtime.created)
+	}
+	if factory.opens.Load() != 0 {
+		t.Fatalf("ordinary launch opened account-management client %d times", factory.opens.Load())
+	}
+
+	if err := agents.EnsureCodexDeviceAccountReconciled(ctx); err != nil {
+		t.Fatalf("local device reconciliation: %v", err)
+	}
+	if factory.opens.Load() != 0 {
+		t.Fatalf("local reconciliation opened account-management client %d times", factory.opens.Load())
+	}
+	accounts, err := agents.CachedCodexAccounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accounts.ActiveAccountID == "" || !accounts.DeviceReconciliation.ActiveAccountVerified {
+		t.Fatalf("locally imported device account was not active: %#v", accounts)
+	}
+	if runtime.created != 1 {
+		t.Fatalf("reconciliation restarted sessions: runtime Create calls=%d", runtime.created)
+	}
 }
 
 func TestMergedPRUsesSessionManagerOnlyWhenOptedIn(t *testing.T) {
@@ -252,16 +407,16 @@ func TestRestoreRoundTripPreservesMetadata(t *testing.T) {
 	}
 }
 
-// TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux exercises
+// TestReconcile_PreservesFailedLiveSessionAndReapsLeakedTmux exercises
 // Manager.Reconcile against a real sqlite.Store:
 //
 //   - Session A: is_terminated=0 but its runtime is GONE and it is a promptless
-//     KindWorker. reconcileLive marks it terminated. RestoreAll does NOT relaunch it
-//     (ErrNotResumable: no prompt, no session id, not an orchestrator). End state:
-//     is_terminated=true, runtime.Create count stays 0.
+//     KindWorker. Its blank relaunch is not resumable, so reconcileLive preserves
+//     the live record and worktree with exited activity. End state:
+//     is_terminated=false, runtime.Create count stays 0.
 //   - Session B: is_terminated=1 but its runtime is still ALIVE (leaked teardown)
 //     => Reconcile must call Destroy on its handle.
-func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
+func TestReconcile_PreservesFailedLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	ctx := context.Background()
 	st := newStack(t)
 
@@ -323,10 +478,9 @@ func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	// Session A is a promptless KindWorker: reconcileLive captured its work and
-	// marked it terminated. RestoreAll skips it (ErrNotResumable: no prompt, no
-	// AgentSessionID, not an orchestrator). End state: is_terminated=true, no fresh
-	// runtime.Create (a blank relaunch would silently lose its task).
+	// Session A is a promptless KindWorker: reconcileLive cannot safely launch it
+	// blank, but must not treat that restart-time failure as a durable termination.
+	// It remains available for explicit recovery with its worktree intact.
 	gotA, ok, err := st.store.GetSession(ctx, recA.ID)
 	if err != nil {
 		t.Fatalf("get session A: %v", err)
@@ -334,8 +488,14 @@ func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	if !ok {
 		t.Fatalf("session A: not found after Reconcile")
 	}
-	if !gotA.IsTerminated {
-		t.Fatalf("session A: want terminated (is_terminated=true) after crash recovery of promptless worker, got live")
+	if gotA.IsTerminated {
+		t.Fatalf("session A: restart-time relaunch failure terminated a recoverable session: %+v", gotA)
+	}
+	if gotA.Activity.State != domain.ActivityExited {
+		t.Fatalf("session A: activity = %q, want %q", gotA.Activity.State, domain.ActivityExited)
+	}
+	if gotA.Metadata.WorkspacePath != recA.Metadata.WorkspacePath || gotA.Metadata.Branch != recA.Metadata.Branch {
+		t.Fatalf("session A: workspace identity changed: got %+v, want %+v", gotA.Metadata, recA.Metadata)
 	}
 	// No runtime.Create: a promptless worker must not be blank-relaunched.
 	if st.rt.created != 0 {

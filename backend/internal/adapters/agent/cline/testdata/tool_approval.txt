@@ -1,0 +1,13 @@
+I'll run the focused adapter tests.
+
+Approve tool call?
+
+run_commands
+
+  $ go test ./internal/adapters/agent/cline
+
+[y] approve  [n] deny
+
+Claude Opus 5 (medium) █████ (8,711) $0.05                 ○ Plan ● Act (Tab)
+agent-orchestrator-133 (ao/agent-orchestrator-133/root)
+⏵⏵ Auto-approve all disabled (Shift+Tab)

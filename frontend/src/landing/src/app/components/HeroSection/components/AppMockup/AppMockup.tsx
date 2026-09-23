@@ -1920,6 +1920,7 @@ export function AppMockup() {
 	// Keep the board at the design size and scale the whole chrome to the shell.
 	// Shrinking the layout box itself reflows columns and clips Mergeable / Merge.
 	// Shell resize is aspect-locked, so width/BASE_WIDTH fills both axes with no gaps.
+	// Keep the SSR canvas hidden until this scale is applied to avoid a full-size mobile flash.
 	useLayoutEffect(() => {
 		const outer = windowRef.current;
 		const content = contentRef.current;
@@ -1929,6 +1930,7 @@ export function AppMockup() {
 			const width = outer.clientWidth;
 			if (width <= 0) return;
 			content.style.transform = `scale(${width / BASE_WIDTH})`;
+			content.style.visibility = "visible";
 		};
 
 		syncScale();
@@ -2069,7 +2071,7 @@ export function AppMockup() {
 			<div className="relative h-full w-full overflow-hidden">
 				<div
 					ref={contentRef}
-					className="h-(--mockup-design-h) w-(--mockup-design-w) origin-top-left"
+					className="invisible h-(--mockup-design-h) w-(--mockup-design-w) origin-top-left"
 				>
 					<div className="flex h-full min-h-0">
 						<Sidebar cards={cards} />

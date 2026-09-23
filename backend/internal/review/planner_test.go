@@ -16,7 +16,7 @@ func TestPlanStatuses(t *testing.T) {
 		want StateStatus
 	}{
 		{name: "open needs review", pr: planPR("pr1", 1, "sha1"), want: ReviewStateNeedsReview},
-		{name: "draft ineligible", pr: withDraft(planPR("pr1", 1, "sha1")), want: ReviewStateIneligible},
+		{name: "draft needs review", pr: withDraft(planPR("pr1", 1, "sha1")), want: ReviewStateNeedsReview},
 		{name: "merged ineligible", pr: withMerged(planPR("pr1", 1, "sha1")), want: ReviewStateIneligible},
 		{name: "closed ineligible", pr: withClosed(planPR("pr1", 1, "sha1")), want: ReviewStateIneligible},
 		{name: "approved current sha up to date", pr: planPR("pr1", 1, "sha1"), runs: []domain.ReviewRun{

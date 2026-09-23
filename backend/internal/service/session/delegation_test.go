@@ -16,15 +16,20 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 		name      string
 		agent     domain.AgentHarness
 		model     string
+		effort    string
 		mode      domain.SessionMode
 		wantAgent domain.AgentHarness
 	}{
 		{name: "project default"},
-		{name: "requested agent model and mode", agent: domain.HarnessCursor, model: "  sonnet-custom  ", mode: domain.SessionModeChat, wantAgent: domain.HarnessCursor},
+		{name: "requested agent model and mode", agent: domain.HarnessCursor, model: "  sonnet-custom  ", effort: " high ", mode: domain.SessionModeChat, wantAgent: domain.HarnessCursor},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var effort *string
+			if tt.effort != "" {
+				effort = &tt.effort
+			}
 			st := newFakeStore()
 			st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
 			now := time.Now().UTC()
@@ -38,7 +43,7 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 
 			brief := "  Fix the renderer\nwithout changing the API.  "
 			out, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
-				ProjectID: "ao", Brief: brief, RequestedAgent: tt.agent, Model: tt.model, RequestedMode: tt.mode,
+				ProjectID: "ao", Brief: brief, RequestedAgent: tt.agent, Model: tt.model, Effort: effort, RequestedMode: tt.mode,
 			})
 			if err != nil {
 				t.Fatalf("DelegateTask: %v", err)
@@ -46,11 +51,17 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 			if out.WorkerID != "mer-9" || out.OrchestratorID != "" {
 				t.Fatalf("out = %#v, want worker mer-9 with asynchronous title handoff", out)
 			}
-			if !cmd.spawned || cmd.spawnedCfg.ProjectID != "ao" || cmd.spawnedCfg.Kind != domain.KindWorker || cmd.spawnedCfg.Harness != tt.wantAgent || cmd.spawnedCfg.Prompt != brief || cmd.spawnedCfg.DisplayName != "Fix the renderer wit" {
+			if !cmd.spawned || cmd.spawnedCfg.ProjectID != "ao" || cmd.spawnedCfg.Kind != domain.KindWorker || cmd.spawnedCfg.Harness != tt.wantAgent || cmd.spawnedCfg.Prompt != brief || cmd.spawnedCfg.DisplayName != "Fix the renderer without changing the API." {
 				t.Fatalf("spawn cfg = %#v", cmd.spawnedCfg)
 			}
 			if cmd.spawnedCfg.AgentConfig.Model != strings.TrimSpace(tt.model) {
 				t.Fatalf("spawn model = %q, want %q", cmd.spawnedCfg.AgentConfig.Model, strings.TrimSpace(tt.model))
+			}
+			if cmd.spawnedCfg.AgentConfig.Effort != strings.TrimSpace(tt.effort) {
+				t.Fatalf("spawn tuning = %#v", cmd.spawnedCfg.AgentConfig)
+			}
+			if cmd.spawnedCfg.EffortOverride != (effort != nil) {
+				t.Fatalf("spawn tuning presence = %#v", cmd.spawnedCfg)
 			}
 			if cmd.spawnedCfg.RequestedMode != tt.mode {
 				t.Fatalf("spawn mode = %q, want %q", cmd.spawnedCfg.RequestedMode, tt.mode)
@@ -64,7 +75,7 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 			for _, want := range []string{
 				"AO TASK TITLE UPDATE",
 				"Do not spawn another worker or orchestrator",
-				`ao session rename mer-9 "<title, max 20 chars>"`,
+				`ao session rename mer-9 "<title, max 100 chars>"`,
 				"Worker session id: mer-9",
 				brief,
 			} {
@@ -87,8 +98,9 @@ func TestDelegatedTaskDisplayName(t *testing.T) {
 	}{
 		{name: "empty", brief: " \n\t ", want: "Untitled task"},
 		{name: "short", brief: "  tell me a joke  ", want: "tell me a joke"},
-		{name: "whitespace", brief: "Fix the renderer\nwithout changing the API", want: "Fix the renderer wit"},
-		{name: "unicode rune limit", brief: "一二三四五六七八九十一二三四五六七八九十一", want: "一二三四五六七八九十一二三四五六七八九十"},
+		{name: "whitespace", brief: "Fix the renderer\nwithout changing the API", want: "Fix the renderer without changing the API"},
+		{name: "unicode rune limit", brief: strings.Repeat("一", 101), want: strings.Repeat("一", 100)},
+		{name: "truncates past the rune limit", brief: strings.Repeat(" long", 21), want: strings.TrimSpace(strings.Repeat(" long", 21)[:100])},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := delegatedTaskDisplayName(tt.brief); got != tt.want {

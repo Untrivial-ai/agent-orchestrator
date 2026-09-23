@@ -1,60 +1,101 @@
 ---
 title: Migration
-description: Breaking changes between AO versions and how to upgrade cleanly.
+description: Move from the frozen npm CLI and older AO architecture to the desktop app.
 ---
 
+## Move To The Desktop App
 
-<Callout type="info">
-	AO is in active development and follows semver pre-1.0. Breaking changes are called out here with migration steps.
-</Callout>
+The desktop application is the current, supported distribution. It owns the Go daemon and checks for updates automatically.
 
-## npm is frozen and no longer recommended
+The npm package `@aoagents/ao` is frozen at `0.10.0`. It remains available for existing users but will not receive new features or fixes. Do not use npm for a new AO installation.
 
-npm still works, but it is no longer the recommended way to install AO. `0.10.0` is the final version published to npm, and the `@aoagents/ao` package is frozen and will not receive further updates. Move to the [desktop app](https://aoagents.dev/docs/installation), which auto-updates and owns the daemon. Existing CLI users can run `ao start` to fetch and open the desktop build; the npm `ao` command stays available as that one-time bridge.
+<Steps>
+<Step>
 
-## From `@composio/agent-orchestrator` to `@aoagents/ao`
+### Preserve active work
 
-The npm scope moved to `@aoagents/ao`. If you installed under the old name:
+Before changing installs, inspect any active sessions and worktrees. Commit, push, or otherwise preserve changes you need. AO will not force-delete dirty registered worktrees, but you should not rely on cleanup as a backup strategy.
+
+</Step>
+<Step>
+
+### Open the desktop build
+
+Download the current desktop application from [Installation](/docs/installation). Existing npm users may also run:
+
+```bash
+ao start
+```
+
+The frozen CLI uses this as a bridge to fetch and open the desktop build. It no longer represents the primary product distribution.
+
+</Step>
+<Step>
+
+### Add or import projects
+
+Open the desktop app and add each local repository you want AO to manage. If your installation exposes a legacy import flow, review the projects it finds before accepting them. Do not copy old flat-file session directories over the current database by hand.
+
+</Step>
+<Step>
+
+### Verify your tools
+
+Confirm GitHub and at least one agent harness are still authenticated:
+
+```bash
+gh auth status
+```
+
+Run the agent harness once outside AO if its sign-in expired, then restart the desktop app.
+
+</Step>
+</Steps>
+
+## What Changed Since The npm Product
+
+| Older documentation | Current product |
+| --- | --- |
+| Node.js/Next.js orchestrator | Long-running Go daemon with Electron/React desktop UI |
+| Global CLI as the main entry point | Desktop app is canonical; CLI is optional and thin |
+| Flat files under `~/.agent-orchestrator` | SQLite and all app state under `~/.ao` |
+| Stored lifecycle status | Status derived at read time from durable facts |
+| Runtime plugin matrix and YAML-first setup | Daemon adapters and project settings through the app/API |
+| Browser dashboard on port 3000 | Packaged desktop interface over a loopback daemon |
+| Terminal-only sessions | One committed Chat or Terminal UI controller per session |
+
+Old `agent-orchestrator.yaml` examples and Node plugin packages are not authoritative for the Go rewrite. Reconfigure projects through the desktop app instead of copying unsupported legacy fields.
+
+## Data Locations
+
+Current AO state defaults to `~/.ao`:
+
+- `~/.ao/data` contains durable daemon database files.
+- `~/.ao/running.json` advertises the supervised daemon process and port.
+- Managed worktrees and AO metadata remain under the AO home.
+- `~/.ao/electron` contains the desktop app's Chromium data.
+- `~/.ao/mobile/config.json` contains mobile-listener configuration with a hashed password.
+
+Do not delete the old or new data directories until you have inspected and preserved active worktrees.
+
+## Updates
+
+Installed desktop builds check for updates on launch and periodically while running. If an update is unavailable through the app, download the latest desktop artifact directly. Running a package-manager update cannot move the frozen npm package beyond `0.10.0`.
+
+## Historical Package Names
+
+Some very old installations used `@composio/agent-orchestrator`. Removing that global package is safe once you have moved to the desktop app:
 
 ```bash
 npm uninstall -g @composio/agent-orchestrator
-npm install -g @aoagents/ao
 ```
 
-Your config and data directory (`~/.agent-orchestrator`) don't change — no data migration needed. Use the current GitHub repo URL (`Untrivial-ai/agent-orchestrator`) for docs, releases, and issue links.
+Installing `@aoagents/ao` is only useful when you intentionally need the frozen legacy bridge.
 
-## `ao spawn <project> <issue>` → `ao spawn <issue>`
+## Next
 
-The old two-argument form is rejected with an error. Pick the project via `-p` or by running from inside its worktree:
-
-```bash
-# old
-ao spawn myproject 42
-
-# new
-ao spawn 42 -p myproject
-# or, from inside the project's worktree:
-ao spawn 42
-```
-
-## `ao init` → `ao start`
-
-`ao init` has been removed. Use `ao start` instead; it auto-creates `agent-orchestrator.yaml` on first run and opens the dashboard in one step.
-
-## Upgrading
-
-Preferred:
-
-```bash
-ao update
-```
-
-The command detects your install method (`npm-global`, `pnpm-global`, git, or unknown) and picks the right upgrade path. Override behaviour with `--skip-smoke` or `--smoke-only` for git installs.
-
-## Before major upgrades
-
-1. `ao status` — see what's running.
-2. `ao session cleanup` — archive finished sessions.
-3. `ao stop --all` — halt every AO instance.
-4. Upgrade.
-5. `ao doctor` on the new version.
+<Cards>
+	<Card title="Installation" href="/docs/installation" description="Install the current desktop build." />
+	<Card title="Architecture" href="/docs/architecture" description="Understand the current Go/Electron design." />
+	<Card title="Troubleshooting" href="/docs/troubleshooting" description="Resolve migration and startup problems." />
+</Cards>

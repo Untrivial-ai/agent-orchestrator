@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -422,6 +423,22 @@ func TestAuthStatusAuthorizedFromEnv(t *testing.T) {
 	}
 }
 
+func TestCopilotClassicPATIsNotAnAuthorizationSignal(t *testing.T) {
+	clearCopilotAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GH_TOKEN", "ghp_classic_token")
+
+	status, ok, err := copilotLocalAuthStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestCopilotConfigAuthStatusAuthorizedWithPlainTextToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configPath, []byte(`{"authToken":"token"}`), 0o600); err != nil {
@@ -437,7 +454,7 @@ func TestCopilotConfigAuthStatusAuthorizedWithPlainTextToken(t *testing.T) {
 	}
 }
 
-func TestCopilotConfigAuthStatusUnauthorizedWithEmptyConfig(t *testing.T) {
+func TestCopilotConfigAuthStatusUnknownWithEmptyConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configPath, []byte(" \n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -447,27 +464,23 @@ func TestCopilotConfigAuthStatusUnauthorizedWithEmptyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 
-func TestCopilotSessionStateAuthStatusAuthorizedWithModelEvent(t *testing.T) {
-	dir := t.TempDir()
-	sessionDir := filepath.Join(dir, "session-1")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sessionDir, "events.jsonl"), []byte(`{"type":"tool.execution_complete","data":{"model":"claude-sonnet-4.5"}}`), 0o600); err != nil {
+func TestCopilotConfigAuthStatusDoesNotTreatAuthModeAsCredential(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"authMode":"github"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	status, ok, err := copilotSessionStateAuthStatus(context.Background(), dir)
+	status, ok, err := copilotConfigAuthStatus(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 
@@ -721,7 +734,7 @@ func TestInstallAgentProfileInstallsSessionCopilotAgent(t *testing.T) {
 		t.Fatalf("agent profile must start with YAML frontmatter for Copilot discovery:\n%s", agentText)
 	}
 	for _, want := range []string{
-		copilotAgentSentinel,
+		hookutil.CopilotAgentProfileSentinel,
 		"name: ao-sess-1",
 		"target: github-copilot",
 		"orchestrator must spawn workers",

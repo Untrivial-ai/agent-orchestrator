@@ -28,11 +28,25 @@ function bestEffort(handler) {
   };
 }
 
+function nativeSessionId(context) {
+  const getSessionId = context.sessionManager?.getSessionId;
+  if (typeof getSessionId !== "function") {
+    return "";
+  }
+  const sessionId = getSessionId.call(context.sessionManager);
+  return typeof sessionId === "string" ? sessionId : "";
+}
+
 export default function aoActivityExtension(prime) {
   let pendingPrompt = "";
 
   prime.on("session_start", bestEffort((event, context) => {
-    report("session-start", { reason: event.reason ?? "" }, context.cwd);
+    const payload = { reason: event.reason ?? "" };
+    const sessionId = nativeSessionId(context);
+    if (sessionId !== "") {
+      payload.session_id = sessionId;
+    }
+    report("session-start", payload, context.cwd);
   }));
 
   prime.on("before_agent_start", bestEffort((event) => {

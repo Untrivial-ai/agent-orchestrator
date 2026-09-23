@@ -432,11 +432,58 @@ describe("agent-browser structured output", () => {
 		expect(result._boundary).toBeUndefined();
 		expect(result.untrustedExternalContent).toBe(true);
 	});
+
+	it("keeps non-stale native command failures on the generic recovery code", () => {
+		let thrown: unknown;
+		try {
+			parseAgentBrowserJSON(
+				JSON.stringify({ success: false, error: { code: "TAB_NOT_FOUND", message: "Tab t2 not found" } }),
+			);
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toMatchObject({ code: "AGENT_BROWSER_COMMAND_FAILED", message: "Tab t2 not found" });
+	});
+
+	it("preserves the stale-reference code used by act retry", () => {
+		let thrown: unknown;
+		try {
+			parseAgentBrowserJSON(
+				JSON.stringify({ success: false, error: { code: "STALE_REFERENCE", message: "Reference expired" } }),
+			);
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toMatchObject({ code: "STALE_REFERENCE", message: "Reference expired" });
+	});
+
+	it.each([
+		"Unknown ref: e99",
+		"Could not locate element with role=button name=Sign In",
+	])("maps the native string error %j to the stale-reference retry code", (message) => {
+		let thrown: unknown;
+		try {
+			parseAgentBrowserJSON(JSON.stringify({ success: false, data: null, error: message }));
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toMatchObject({ code: "STALE_REFERENCE", message });
+	});
+
+	it("keeps unrelated native string errors on the generic recovery code", () => {
+		let thrown: unknown;
+		try {
+			parseAgentBrowserJSON(JSON.stringify({ success: false, data: null, error: "Tab t2 not found" }));
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toMatchObject({ code: "AGENT_BROWSER_COMMAND_FAILED", message: "Tab t2 not found" });
+	});
 });
 
 const nativeBinary = process.env.AO_AGENT_BROWSER_TEST_BINARY;
 describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
-	it("connects the pinned native daemon through AO's scoped CDP bridge", async () => {
+	it("connects the pinned native daemon and keeps native tab lifecycle commands aligned", async () => {
 		class DebuggerFixture extends EventEmitter {
 			attached = false;
 			attach() {
@@ -461,21 +508,31 @@ describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
 				return {};
 			}
 		}
-		const debug = new DebuggerFixture();
+		const targets = [
+			{
+				id: "t1",
+				url: "http://localhost:5173/",
+				title: "Fixture",
+				debugger: new DebuggerFixture(),
+			},
+		];
 		const provider = {
-			listTargets: () => [
-				{
-					id: "t1",
-					url: "http://localhost:5173/",
-					title: "Fixture",
-					debugger: debug,
-				},
-			],
-			createTarget: async () => {
-				throw new Error("unexpected target creation");
+			listTargets: () => targets,
+			createTarget: async (url: string) => {
+				const target = {
+					id: `t${targets.length + 1}`,
+					url,
+					title: "New tab",
+					debugger: new DebuggerFixture(),
+				};
+				targets.push(target);
+				return target;
 			},
 			activateTarget: () => undefined,
-			closeTarget: () => undefined,
+			closeTarget: (targetId: string) => {
+				const index = targets.findIndex((target) => target.id === targetId);
+				if (index >= 0) targets.splice(index, 1);
+			},
 		};
 		const runtime = new AgentBrowserRuntime({
 			binaryPath: nativeBinary!,
@@ -484,6 +541,11 @@ describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
 		try {
 			const result = await runtime.runAction("native-fixture", "get", { property: "url" }, provider);
 			expect(result.url).toBe("http://localhost:5173/");
+			const created = await runtime.runAction("native-fixture", "tab-new", {}, provider);
+			expect(created.tabId).toBe("t2");
+			expect(targets.map((target) => target.id)).toEqual(["t1", "t2"]);
+			await runtime.runAction("native-fixture", "tab-close", { tabId: "t2" }, provider);
+			expect(targets.map((target) => target.id)).toEqual(["t1"]);
 			const screenshot = await runtime.screenshot("native-fixture", provider);
 			expect(screenshot).toMatchObject({ width: 1, height: 1 });
 		} finally {

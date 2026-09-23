@@ -4,6 +4,7 @@
 package conpty
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,24 @@ const (
 // dialHost opens a TCP connection to addr with a deadline. Callers close it.
 func dialHost(addr string, timeout time.Duration) (net.Conn, error) {
 	return net.DialTimeout("tcp", addr, timeout)
+}
+
+func dialHostContext(ctx context.Context, addr string, timeout time.Duration) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: timeout}
+	return dialer.DialContext(ctx, "tcp", addr)
+}
+
+// armClientDeadline bounds host I/O by both the client's transport timeout and
+// its caller context. AfterFunc also interrupts an in-flight Read immediately
+// when a context without an earlier deadline is cancelled.
+func armClientDeadline(ctx context.Context, conn net.Conn, timeout time.Duration) func() {
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	return func() { _ = stop() }
 }
 
 // clientSendMessage chunks message by 512 runes and sends each as a
@@ -93,24 +112,38 @@ func clientSendInput(addr, input string) error {
 // clientGetOutput sends MsgGetOutputReq and reads frames until MsgGetOutputRes.
 // Returns "" on timeout or connection failure (no error), matching the TS.
 // lines <= 0 is handled by the caller (runtime.go rejects it before calling).
-func clientGetOutput(addr string, lines int) (string, error) {
-	conn, err := dialHost(addr, getOutputTimeout)
+func clientGetOutput(ctx context.Context, addr string, lines int) (string, error) {
+	return clientReadOutput(ctx, addr, lines, MsgGetOutputReq, MsgGetOutputRes)
+}
+
+func clientGetStyledOutput(ctx context.Context, addr string, lines int) (string, error) {
+	return clientReadOutput(ctx, addr, lines, MsgGetStyledOutputReq, MsgGetStyledOutputRes)
+}
+
+func clientReadOutput(ctx context.Context, addr string, lines int, requestType, responseType byte) (string, error) {
+	conn, err := dialHostContext(ctx, addr, getOutputTimeout)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", nil // ponytail: connect failure -> "" like the TS
 	}
 	defer func() { _ = conn.Close() }()
-
-	_ = conn.SetDeadline(time.Now().Add(getOutputTimeout))
+	stopCancellation := armClientDeadline(ctx, conn, getOutputTimeout)
+	defer stopCancellation()
 
 	req, _ := json.Marshal(GetOutputReq{Lines: lines})
-	reqFrame, _ := EncodeMessage(MsgGetOutputReq, req) // req is small JSON, never overflows uint32
+	reqFrame, _ := EncodeMessage(requestType, req) // req is small JSON, never overflows uint32
 	if _, err := conn.Write(reqFrame); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", nil
 	}
 
 	resultC := make(chan string, 1)
 	parser := NewMessageParser(func(msgType byte, payload []byte) {
-		if msgType == MsgGetOutputRes {
+		if msgType == responseType {
 			select {
 			case resultC <- string(payload):
 			default:
@@ -130,6 +163,9 @@ func clientGetOutput(addr string, lines int) (string, error) {
 		default:
 		}
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", ctxErr
+			}
 			break
 		}
 	}
@@ -164,8 +200,15 @@ func clientIsAlive(addr string) (alive bool, transientErr error) {
 // process managed by that host. A reachable host remains the runtime after its
 // child exits.
 func clientStatus(addr string) (status StatusPayload, hostAlive bool, transientErr error) {
-	conn, err := dialHost(addr, isAliveTimeout)
+	return clientStatusContext(context.Background(), addr)
+}
+
+func clientStatusContext(ctx context.Context, addr string) (status StatusPayload, hostAlive bool, transientErr error) {
+	conn, err := dialHostContext(ctx, addr, isAliveTimeout)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return StatusPayload{}, false, ctxErr
+		}
 		// A dial timeout is transient (the loopback hiccupped). A refused
 		// connection means nothing is listening -> definitively gone. Any
 		// other dial failure is treated as transient ("when unsure, retry").
@@ -178,11 +221,14 @@ func clientStatus(addr string) (status StatusPayload, hostAlive bool, transientE
 		return StatusPayload{}, false, err
 	}
 	defer func() { _ = conn.Close() }()
-
-	_ = conn.SetDeadline(time.Now().Add(isAliveTimeout))
+	stopCancellation := armClientDeadline(ctx, conn, isAliveTimeout)
+	defer stopCancellation()
 
 	statusReqFrame, _ := EncodeMessage(MsgStatusReq, nil) // nil payload, never overflows
 	if _, err := conn.Write(statusReqFrame); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return StatusPayload{}, false, ctxErr
+		}
 		// We connected, then the write failed: connected-then-failed I/O is
 		// transient (the host may still be up; the conn was disrupted).
 		return StatusPayload{}, false, err
@@ -220,6 +266,9 @@ func clientStatus(addr string) (status StatusPayload, hostAlive bool, transientE
 		default:
 		}
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return StatusPayload{}, false, ctxErr
+			}
 			lastErr = err
 			break
 		}

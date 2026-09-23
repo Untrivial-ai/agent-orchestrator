@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	acpsdk "github.com/coder/acp-go-sdk"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -31,6 +29,10 @@ func (c *conversation) Steer(
 	if strings.TrimSpace(msg.Text) == "" {
 		return ports.ChatTurnRef{}, errors.New("steer message text is empty")
 	}
+	prompt, err := c.promptContent(msg)
+	if err != nil {
+		return ports.ChatTurnRef{}, fmt.Errorf("%w: %w", ports.ErrChatSteerContentUnsupported, err)
+	}
 
 	c.mu.Lock()
 	activeTurn := c.activeTurn
@@ -49,7 +51,7 @@ func (c *conversation) Steer(
 
 	raw, err := c.conn.CallExtension(ctx, steeringMethod, map[string]any{
 		"sessionId": sessionID,
-		"prompt":    []acpsdk.ContentBlock{acpsdk.TextBlock(msg.Text)},
+		"prompt":    prompt,
 		"_meta": map[string]any{
 			"steering": map[string]any{"idleBehavior": "promptRequired"},
 		},

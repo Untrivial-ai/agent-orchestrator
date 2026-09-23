@@ -25,9 +25,33 @@ type AgentSwitchRequestFingerprint string
 const agentSwitchRequestFingerprintPrefix = "v1:"
 
 // ComputeAgentSwitchRequestFingerprint deterministically binds an idempotency
-// key to the stable request tuple. Note whitespace is normalized in the same
-// way as the switch entry point before it is hashed.
-func ComputeAgentSwitchRequestFingerprint(sessionID SessionID, targetHarness AgentHarness, note string) AgentSwitchRequestFingerprint {
+// key to the stable request tuple. The retired note slot remains empty in the
+// encoded payload so retries of existing note-free requests keep matching.
+func ComputeAgentSwitchRequestFingerprint(sessionID SessionID, targetHarness AgentHarness, model string) AgentSwitchRequestFingerprint {
+	payload, _ := json.Marshal(struct {
+		SessionID     SessionID    `json:"sessionId"`
+		TargetHarness AgentHarness `json:"targetHarness"`
+		Note          string       `json:"note"`
+		Model         string       `json:"model"`
+	}{
+		SessionID:     sessionID,
+		TargetHarness: targetHarness,
+		Note:          "",
+		Model:         strings.TrimSpace(model),
+	})
+	sum := sha256.Sum256(payload)
+	return AgentSwitchRequestFingerprint(agentSwitchRequestFingerprintPrefix + hex.EncodeToString(sum[:]))
+}
+
+// MatchesRequest preserves idempotent note-free retries created before model
+// selection became part of the switch request.
+func (f AgentSwitchRequestFingerprint) MatchesRequest(sessionID SessionID, targetHarness AgentHarness, model string) bool {
+	if f == ComputeAgentSwitchRequestFingerprint(sessionID, targetHarness, model) {
+		return true
+	}
+	if strings.TrimSpace(model) != "" {
+		return false
+	}
 	payload, _ := json.Marshal(struct {
 		SessionID     SessionID    `json:"sessionId"`
 		TargetHarness AgentHarness `json:"targetHarness"`
@@ -35,10 +59,10 @@ func ComputeAgentSwitchRequestFingerprint(sessionID SessionID, targetHarness Age
 	}{
 		SessionID:     sessionID,
 		TargetHarness: targetHarness,
-		Note:          strings.TrimSpace(note),
+		Note:          "",
 	})
 	sum := sha256.Sum256(payload)
-	return AgentSwitchRequestFingerprint(agentSwitchRequestFingerprintPrefix + hex.EncodeToString(sum[:]))
+	return f == AgentSwitchRequestFingerprint(agentSwitchRequestFingerprintPrefix+hex.EncodeToString(sum[:]))
 }
 
 // Valid reports whether a persisted fingerprint uses AO's current canonical
@@ -259,6 +283,7 @@ const (
 	AgentSwitchErrorTargetBinaryMissing              AgentSwitchErrorCode = "target_binary_missing"
 	AgentSwitchErrorTargetAgentUnauthorized          AgentSwitchErrorCode = "target_agent_unauthorized"
 	AgentSwitchErrorTargetStartUnconfirmed           AgentSwitchErrorCode = "target_start_unconfirmed"
+	AgentSwitchErrorSourceRestoreUnconfirmed         AgentSwitchErrorCode = "source_restore_unconfirmed"
 	AgentSwitchErrorRequestCancelled                 AgentSwitchErrorCode = "request_cancelled"
 	AgentSwitchErrorSourceBlocked                    AgentSwitchErrorCode = "source_blocked"
 	AgentSwitchErrorFailedPreStop                    AgentSwitchErrorCode = "failed_pre_stop"
@@ -276,9 +301,25 @@ func (c AgentSwitchErrorCode) Valid() bool {
 		AgentSwitchErrorDeliveryUnconfirmed, AgentSwitchErrorSourceSessionTerminated,
 		AgentSwitchErrorSourceStopUnconfirmed, AgentSwitchErrorTargetBinaryMissing,
 		AgentSwitchErrorTargetAgentUnauthorized, AgentSwitchErrorTargetStartUnconfirmed,
+		AgentSwitchErrorSourceRestoreUnconfirmed,
 		AgentSwitchErrorRequestCancelled,
 		AgentSwitchErrorSourceBlocked, AgentSwitchErrorFailedPreStop, AgentSwitchErrorFailedPostStop,
 		AgentSwitchErrorTargetReadyFailed, AgentSwitchErrorDeliveryFailed, AgentSwitchErrorSwitchFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// RetainedRecoveryMarker reports whether this code belongs only to a
+// nonterminal ownership boundary. Such markers must never be stored on failed
+// rows because doing so would release the operation gate while ownership is
+// still unresolved.
+func (c AgentSwitchErrorCode) RetainedRecoveryMarker() bool {
+	switch c {
+	case AgentSwitchErrorSourceStopUnconfirmed,
+		AgentSwitchErrorTargetStartUnconfirmed,
+		AgentSwitchErrorSourceRestoreUnconfirmed:
 		return true
 	default:
 		return false
@@ -312,17 +353,42 @@ type AgentSwitch struct {
 	TargetRuntimeHandleID   string                            `json:"-"`
 	TargetAcknowledgedAt    *time.Time                        `json:"targetAcknowledgedAt,omitempty"`
 	ErrorCode               AgentSwitchErrorCode              `json:"errorCode,omitempty"`
+	FailurePoint            AgentSwitchFailurePoint           `json:"-"`
 	RequestedAt             time.Time                         `json:"requestedAt"`
 	UpdatedAt               time.Time                         `json:"updatedAt"`
 }
 
-// RequiresRecovery reports the one nonterminal condition currently exposed to
-// clients: target creation may have started, but AO received no durable handle
-// with which to prove or clean up ownership.
+// RequiresRecovery reports whether a nonterminal switch needs an explicit,
+// ownership-safe recovery action before terminal input can reopen.
 func (s AgentSwitch) RequiresRecovery() bool {
+	return s.RequiresTargetStartRecovery() || s.RequiresSourceRecovery()
+}
+
+// RequiresTargetStartRecovery reports the ambiguous target-start boundary.
+func (s AgentSwitch) RequiresTargetStartRecovery() bool {
 	return s.State == AgentSwitchStartingTarget &&
-		s.TargetRuntimeHandleID == "" &&
 		s.ErrorCode == AgentSwitchErrorTargetStartUnconfirmed
+}
+
+// RequiresSourceRecovery reports a retained source-side boundary that can be
+// reconciled without starting the target agent.
+func (s AgentSwitch) RequiresSourceRecovery() bool {
+	return s.RequiresSourceStopRecovery() || s.RequiresSourceRestore()
+}
+
+// RequiresSourceStopRecovery reports that source teardown started, but AO
+// could not prove whether the source runtime stopped.
+func (s AgentSwitch) RequiresSourceStopRecovery() bool {
+	return s.State == AgentSwitchStoppingSource &&
+		s.ErrorCode == AgentSwitchErrorSourceStopUnconfirmed
+}
+
+// RequiresSourceRestore reports that no target owns the session, but AO could
+// not relaunch the conclusively stopped source. Retrying this compensation is
+// safe because durable ownership still points at the source provider.
+func (s AgentSwitch) RequiresSourceRestore() bool {
+	return (s.State == AgentSwitchSourceStopped || s.State == AgentSwitchStartingTarget) &&
+		s.ErrorCode == AgentSwitchErrorSourceRestoreUnconfirmed
 }
 
 // AgentSwitchTargetActivation is the narrow command that transfers durable
@@ -344,18 +410,38 @@ type AgentSwitchTargetActivation struct {
 	ActivatedAt                   time.Time
 }
 
-// AgentSwitchSourceStopConfirmation records the conclusive source-process
+// AgentSwitchSourceStopConfirmation records the conclusive source-controller
 // boundary without transferring ownership. The sessions row remains bound to
-// SourceHarness and ExpectedSourceRuntimeLaunchID, but its activity becomes
-// exited in the same transaction that advances the switch saga.
+// SourceHarness and the source mode's generation fence (runtime launch for TUI,
+// controller generation for Chat), but its activity becomes exited in the same
+// transaction that advances the switch saga.
 type AgentSwitchSourceStopConfirmation struct {
-	SwitchID                      AgentSwitchID
-	SessionID                     SessionID
-	SourceHarness                 AgentHarness
-	SourceGenerationID            AgentGenerationID
-	ExpectedSourceRuntimeLaunchID string
-	TargetGenerationID            AgentGenerationID
-	StoppedAt                     time.Time
+	SwitchID                           AgentSwitchID
+	SessionID                          SessionID
+	SourceMode                         SessionMode
+	SourceHarness                      AgentHarness
+	SourceGenerationID                 AgentGenerationID
+	ExpectedSourceRuntimeLaunchID      string
+	ExpectedSourceControllerGeneration string
+	TargetGenerationID                 AgentGenerationID
+	StoppedAt                          time.Time
+}
+
+// AgentSwitchChatTargetActivation transfers a stopped Chat session to a fresh
+// structured controller. The stopped source controller generation remains the
+// durable owner until this command atomically commits the target generation.
+type AgentSwitchChatTargetActivation struct {
+	SwitchID                           AgentSwitchID
+	SessionID                          SessionID
+	SourceHarness                      AgentHarness
+	SourceGenerationID                 AgentGenerationID
+	ExpectedSourceControllerGeneration string
+	TargetHarness                      AgentHarness
+	TargetNativeSessionRef             AgentNativeSessionID
+	TargetGenerationID                 AgentGenerationID
+	ProviderConversationID             string
+	ControllerGeneration               string
+	ActivatedAt                        time.Time
 }
 
 var (

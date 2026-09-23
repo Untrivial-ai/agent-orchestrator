@@ -1,0 +1,591 @@
+package workertransport
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+)
+
+const (
+	maxWorkspaceFile = 1 << 20
+	maxDiffOutput    = 2 << 20
+)
+
+var errUnsafePath = errors.New("path is outside the workspace")
+
+type workspace struct {
+	path        string
+	root        *os.Root
+	compareBase string
+}
+
+func openWorkspace(path string) (*workspace, error) {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	return &workspace{path: path, root: root}, nil
+}
+
+func (w *workspace) Close() error {
+	return w.root.Close()
+}
+
+func (w *workspace) List(input worker.WorkspaceListRequest) (worker.WorkspaceEntryPage, error) {
+	path, err := cleanWorkspacePath(input.Path, true)
+	if err != nil {
+		return worker.WorkspaceEntryPage{}, err
+	}
+	if input.Limit < 1 || input.Limit > 100 {
+		return worker.WorkspaceEntryPage{}, errors.New("limit must be between 1 and 100")
+	}
+	directory, err := w.root.Open(path)
+	if err != nil {
+		return worker.WorkspaceEntryPage{}, err
+	}
+	defer directory.Close()
+	info, err := directory.Stat()
+	if err != nil {
+		return worker.WorkspaceEntryPage{}, err
+	}
+	if !info.IsDir() {
+		return worker.WorkspaceEntryPage{}, errors.New("workspace path is not a directory")
+	}
+	items, err := directory.ReadDir(-1)
+	if err != nil {
+		return worker.WorkspaceEntryPage{}, err
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name() < items[j].Name() })
+
+	after := ""
+	if input.Cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(input.Cursor)
+		if err != nil {
+			return worker.WorkspaceEntryPage{}, errors.New("invalid workspace cursor")
+		}
+		after = string(decoded)
+	}
+	page := worker.WorkspaceEntryPage{Path: wirePath(path), Items: []worker.WorkspaceEntry{}}
+	for _, entry := range items {
+		if entry.Name() <= after {
+			continue
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return worker.WorkspaceEntryPage{}, err
+		}
+		entryPath := entry.Name()
+		if path != "." {
+			entryPath = filepath.Join(path, entry.Name())
+		}
+		page.Items = append(page.Items, worker.WorkspaceEntry{
+			Name: entry.Name(), Path: wirePath(entryPath), IsDir: entryInfo.IsDir(),
+			Size: entryInfo.Size(), Mode: entryInfo.Mode().String(), ModTime: entryInfo.ModTime().UTC(),
+		})
+		if len(page.Items) == input.Limit {
+			break
+		}
+	}
+	if len(page.Items) == input.Limit {
+		last := page.Items[len(page.Items)-1].Name
+		for _, entry := range items {
+			if entry.Name() > last {
+				page.HasMore = true
+				page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(last))
+				break
+			}
+		}
+	}
+	return page, nil
+}
+
+func (w *workspace) Read(input worker.WorkspaceReadRequest) (worker.WorkspaceFile, error) {
+	path, err := cleanWorkspacePath(input.Path, false)
+	if err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	file, err := w.root.Open(path)
+	if err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return worker.WorkspaceFile{}, errors.New("workspace path is not a regular file")
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxWorkspaceFile+1))
+	if err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	if len(content) > maxWorkspaceFile {
+		return worker.WorkspaceFile{}, errors.New("workspace file exceeds 1 MiB")
+	}
+	if !utf8.Valid(content) {
+		return worker.WorkspaceFile{}, errors.New("workspace file is not UTF-8 text")
+	}
+	return worker.WorkspaceFile{
+		Path: wirePath(path), Content: string(content), Size: int64(len(content)),
+	}, nil
+}
+
+// DiffFile returns the selected workspace file and its combined (compare base
+// to worktree) patch. This is the Cloud equivalent of the local daemon's
+// file-detail read model: deleted and binary files are still reviewable even
+// when no text content can be returned, untracked text gets a synthetic patch,
+// and every payload remains bounded.
+func (w *workspace) DiffFile(ctx context.Context, input worker.WorkspaceDiffFileRequest) (worker.WorkspaceDiffFile, error) {
+	path, err := cleanWorkspacePath(input.Path, false)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+
+	baseRef, base := w.comparisonBase(ctx)
+	// Compare against the merge-base SHA, not the symbolic branch tip (see Diff):
+	// diffing against the tip surfaces spurious upstream changes after a fetch and
+	// disagrees with the review.summary view.
+	diffBase := base
+	if diffBase == "" {
+		diffBase = baseRef
+	}
+	status, err := w.fileStatus(ctx, path, diffBase)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+	file := worker.WorkspaceDiffFile{Path: wirePath(path), Status: status}
+	file.Deleted = status == "deleted"
+
+	if !file.Deleted {
+		content, size, binary, truncated, readErr := w.diffFileContent(path)
+		if readErr != nil {
+			return worker.WorkspaceDiffFile{}, readErr
+		}
+		file.Content, file.Size = content, size
+		file.Binary, file.ContentTruncated = binary, truncated
+	}
+
+	if status == "unmodified" {
+		return file, nil
+	}
+	if status == "untracked" {
+		if !file.Binary && !file.ContentTruncated {
+			file.Diff, file.DiffTruncated = truncateDiff(syntheticAddedFileDiff(file.Path, file.Content), maxDiffOutput)
+		}
+		return file, nil
+	}
+
+	numstat, _, err := w.git(ctx, "diff", "--numstat", diffBase, "--", path)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+	file.Additions, file.Deletions, file.Binary = diffNumstat(numstat, file.Binary)
+	diff, truncated, err := w.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", diffBase, "--", path)
+	if err != nil {
+		return worker.WorkspaceDiffFile{}, err
+	}
+	file.Diff, file.DiffTruncated = diff, truncated
+	return file, nil
+}
+
+func (w *workspace) diffFileContent(path string) (string, int64, bool, bool, error) {
+	file, err := w.root.Open(path)
+	if err != nil {
+		return "", 0, false, false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", 0, false, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, false, false, errors.New("workspace path is not a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxWorkspaceFile+1))
+	if err != nil {
+		return "", 0, false, false, err
+	}
+	if len(data) > maxWorkspaceFile {
+		return "", info.Size(), false, true, nil
+	}
+	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+		return "", info.Size(), true, false, nil
+	}
+	return string(data), info.Size(), false, false, nil
+}
+
+func (w *workspace) fileStatus(ctx context.Context, path, baseRef string) (string, error) {
+	output, _, err := w.git(ctx, "status", "--porcelain=v1", "--untracked-files=all", "--", path)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(strings.SplitN(output, "\n", 2)[0])
+	if len(line) >= 2 {
+		return gitStatus(line[:2]), nil
+	}
+	changes, _, err := w.git(ctx, "diff", "--name-status", "--find-renames", baseRef, "--", path)
+	if err != nil {
+		return "", err
+	}
+	for _, status := range changedFileStatuses(changes) {
+		return status, nil
+	}
+	return "unmodified", nil
+}
+
+func diffNumstat(output string, binary bool) (int, int, bool) {
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) < 2 {
+		return 0, 0, binary
+	}
+	if fields[0] == "-" || fields[1] == "-" {
+		return 0, 0, true
+	}
+	var additions, deletions int
+	_, _ = fmt.Sscanf(fields[0], "%d", &additions)
+	_, _ = fmt.Sscanf(fields[1], "%d", &deletions)
+	return additions, deletions, binary
+}
+
+func syntheticAddedFileDiff(path, content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
+	}
+	var result strings.Builder
+	fmt.Fprintf(&result, "diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, path, path, len(lines))
+	for _, line := range lines {
+		result.WriteByte('+')
+		result.WriteString(line)
+		if !strings.HasSuffix(line, "\n") {
+			result.WriteByte('\n')
+		}
+	}
+	return result.String()
+}
+
+func truncateDiff(value string, limit int) (string, bool) {
+	if len(value) <= limit {
+		return value, false
+	}
+	end := limit
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end], true
+}
+
+func (w *workspace) Write(input worker.WorkspaceWriteRequest) (worker.WorkspaceFile, error) {
+	path, err := cleanWorkspacePath(input.Path, false)
+	if err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	if len(input.Content) > maxWorkspaceFile || !utf8.ValidString(input.Content) {
+		return worker.WorkspaceFile{}, errors.New("workspace content must be UTF-8 and at most 1 MiB")
+	}
+	if info, err := w.root.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return worker.WorkspaceFile{}, errors.New("workspace write target must be a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return worker.WorkspaceFile{}, err
+	}
+	parent := filepath.Dir(path)
+	if info, err := w.root.Stat(parent); err != nil || !info.IsDir() {
+		return worker.WorkspaceFile{}, errors.New("workspace file parent does not exist")
+	}
+	random, err := randomName()
+	if err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	temp := filepath.Join(parent, ".ao-write-"+random)
+	file, err := w.root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	cleanup := true
+	defer func() {
+		_ = file.Close()
+		if cleanup {
+			_ = w.root.Remove(temp)
+		}
+	}()
+	if _, err := io.WriteString(file, input.Content); err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	if err := file.Sync(); err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	if err := file.Close(); err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	if err := w.root.Rename(temp, path); err != nil {
+		return worker.WorkspaceFile{}, err
+	}
+	cleanup = false
+	return worker.WorkspaceFile{
+		Path: wirePath(path), Content: input.Content, Size: int64(len(input.Content)),
+	}, nil
+}
+
+func (w *workspace) Diff(ctx context.Context) (map[string]any, error) {
+	status, statusTruncated, err := w.git(ctx, "status", "--short", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	baseRef, base := w.comparisonBase(ctx)
+	// Diff against the merge-base SHA, not the symbolic ref (branch tip). Once a
+	// fetch advances origin/<defaultBranch> past this session's fork point,
+	// diffing against the tip renders upstream commits as spurious deletions and
+	// disagrees with both the reported diffBaseSha (the merge-base) and the
+	// review.summary view. Comparing against the merge-base shows only this
+	// session's own changes.
+	diffBase := base
+	if diffBase == "" {
+		diffBase = baseRef
+	}
+	baseStatus, baseStatusTruncated, err := w.git(ctx, "diff", "--name-status", "--find-renames", diffBase, "--")
+	if err != nil {
+		return nil, err
+	}
+	combined, combinedTruncated, err := w.git(ctx, "diff", "--no-ext-diff", diffBase, "--")
+	if err != nil {
+		return nil, err
+	}
+	numstat, numstatTruncated, err := w.git(ctx, "diff", "--numstat", diffBase, "--")
+	if err != nil {
+		return nil, err
+	}
+	stats := diffNumstats(numstat)
+	statuses := changedFileStatuses(baseStatus)
+	files := make([]map[string]any, 0, len(statuses))
+	untracked := make([]string, 0)
+	paths := make([]string, 0, len(statuses))
+	for path := range statuses {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		fileStatus := statuses[path]
+		additions, deletions, binary := 0, 0, false
+		if stat, found := stats[path]; found {
+			additions, deletions, binary = stat.additions, stat.deletions, stat.binary
+		}
+		files = append(files, map[string]any{
+			"path": path, "status": fileStatus, "additions": additions,
+			"deletions": deletions, "binary": binary,
+		})
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(status, "\n"), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		code := line[:2]
+		path := strings.TrimSpace(line[3:])
+		fileStatus := gitStatus(code)
+		if fileStatus == "untracked" {
+			untracked = append(untracked, path)
+		}
+		if fileStatus != "untracked" {
+			continue
+		}
+		if _, alreadyChanged := statuses[path]; alreadyChanged {
+			continue
+		}
+		additions, deletions, binary := 0, 0, false
+		if fileStatus == "untracked" {
+			content, _, isBinary, truncated, readErr := w.diffFileContent(filepath.FromSlash(path))
+			if readErr == nil {
+				binary = isBinary
+				if !binary && !truncated {
+					additions = lineCount(content)
+				}
+			}
+			// On a read error (dangling symlink, FIFO/socket, or a file removed
+			// between git status and the read), still list the untracked file
+			// rather than failing the entire diff view.
+		}
+		files = append(files, map[string]any{
+			"path": path, "status": fileStatus, "additions": additions,
+			"deletions": deletions, "binary": binary,
+		})
+	}
+	return map[string]any{
+		"status": status, "unstaged": "", "staged": "",
+		"combined": combined, "diffBaseRef": baseRef,
+		"diffBaseSha": base, "files": files,
+		"untrackedFiles": untracked,
+		"truncated": map[string]bool{
+			"combined": combinedTruncated,
+			"stats":    statusTruncated || baseStatusTruncated || numstatTruncated,
+		},
+	}, nil
+}
+
+func (w *workspace) comparisonBase(ctx context.Context) (string, string) {
+	ref := strings.TrimSpace(w.compareBase)
+	if ref == "" {
+		ref = "HEAD"
+	}
+	base, _, err := w.git(ctx, "merge-base", ref, "HEAD")
+	if err != nil {
+		base, _, err = w.git(ctx, "rev-parse", "HEAD")
+		if err != nil {
+			return "HEAD", ""
+		}
+		return "HEAD", strings.TrimSpace(base)
+	}
+	return ref, strings.TrimSpace(base)
+}
+
+func changedFileStatuses(output string) map[string]string {
+	statuses := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		code := strings.TrimRight(parts[0], "0123456789")
+		path := parts[len(parts)-1]
+		if path != "" {
+			statuses[path] = gitStatus(code)
+		}
+	}
+	return statuses
+}
+
+type diffStat struct {
+	additions int
+	deletions int
+	binary    bool
+}
+
+func diffNumstats(output string) map[string]diffStat {
+	stats := make(map[string]diffStat)
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 || parts[2] == "" {
+			continue
+		}
+		additions, deletions, binary := diffNumstat(strings.Join(parts[:2], "\t"), false)
+		stats[parts[2]] = diffStat{additions: additions, deletions: deletions, binary: binary}
+	}
+	return stats
+}
+
+func lineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	return strings.Count(content, "\n") + boolToInt(!strings.HasSuffix(content, "\n"))
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func (w *workspace) git(ctx context.Context, args ...string) (string, bool, error) {
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(runCtx, "git", append([]string{"-C", w.path}, args...)...)
+	var output bytes.Buffer
+	command.Stdout = &limitedWriter{writer: &output, remaining: maxDiffOutput}
+	command.Stderr = &limitedWriter{writer: &output, remaining: maxDiffOutput}
+	err := command.Run()
+	if runCtx.Err() != nil {
+		return "", false, errors.New("git operation timed out")
+	}
+	truncated := output.Len() >= maxDiffOutput
+	if err != nil {
+		return "", truncated, fmt.Errorf("git %s: %w: %s", args[0], err, output.String())
+	}
+	return output.String(), truncated, nil
+}
+
+type limitedWriter struct {
+	writer    io.Writer
+	remaining int
+}
+
+func (w *limitedWriter) Write(data []byte) (int, error) {
+	original := len(data)
+	if len(data) > w.remaining {
+		data = data[:w.remaining]
+	}
+	if len(data) > 0 {
+		if _, err := w.writer.Write(data); err != nil {
+			return 0, err
+		}
+		w.remaining -= len(data)
+	}
+	return original, nil
+}
+
+func cleanWorkspacePath(value string, allowRoot bool) (string, error) {
+	if strings.ContainsRune(value, '\x00') || filepath.IsAbs(value) {
+		return "", errUnsafePath
+	}
+	path := filepath.Clean(filepath.FromSlash(value))
+	if path == "." {
+		if allowRoot {
+			return path, nil
+		}
+		return "", errUnsafePath
+	}
+	if path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+		return "", errUnsafePath
+	}
+	return path, nil
+}
+
+func wirePath(path string) string {
+	if path == "." {
+		return ""
+	}
+	return filepath.ToSlash(path)
+}
+
+func randomName() (string, error) {
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func gitStatus(code string) string {
+	switch {
+	case code == "??":
+		return "untracked"
+	case strings.Contains(code, "A"):
+		return "added"
+	case strings.Contains(code, "D"):
+		return "deleted"
+	case strings.Contains(code, "R"):
+		return "renamed"
+	case strings.Contains(code, "C"):
+		return "copied"
+	case strings.Contains(code, "M"):
+		return "modified"
+	default:
+		return "changed"
+	}
+}

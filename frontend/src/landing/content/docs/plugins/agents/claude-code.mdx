@@ -1,67 +1,20 @@
 ---
 title: Claude Code
-description: Anthropic's CLI coding agent. The default agent in AO.
+description: Built-in Terminal UI and structured Chat support for the user's Claude Code installation.
 ---
 
-
-<div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0 1.25rem" }}>
-	<Logo name="claude-code" size={28} />
-	<span style={{ fontSize: "0.8125rem", color: "var(--color-fd-muted-foreground)" }}>
-		Slot: <code>agent</code> · Name: <code>claude-code</code> · Binary: <code>claude</code>
-	</span>
-</div>
-
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's CLI coding agent. It's AO's default because it has first-class session resume, rich JSONL event logs, and a native hook system AO can register against.
-
-<PlatformSupport macos="full" linux="full" windows="full" />
-
-## Install
+AO resolves the `claude` executable from your machine and reuses its existing authentication. Install and sign in with Claude Code before refreshing the AO catalog.
 
 ```bash
-npm install -g @anthropic-ai/claude-code
+ao agent ls --refresh
+ao spawn --project my-app --name claude-task --agent claude-code --mode chat
 ```
 
-Then sign in once:
+## Interfaces
 
-```bash
-claude
-```
+- **Terminal UI:** runs the native Claude Code CLI in the session worktree.
+- **Chat:** uses AO's ACP transport with `claude-agent-acp`, pointed at your Claude executable.
 
-## Use
+Claude Code is one of the harnesses that can move between Chat and Terminal UI without changing the AO session or worktree. Idle sessions can switch directly; a busy Chat turn requires an explicit drain or interrupt policy in the desktop UI.
 
-```yaml title="agent-orchestrator.yaml"
-agent: claude-code
-```
-
-That's it — there are no plugin-level config keys.
-
-## How it works
-
-- **Launch:** `claude` runs inside the worktree. AO sets `CLAUDECODE=""`, `AO_SESSION_ID`, and `AO_ISSUE_ID` in the environment.
-- **Activity tracking:** AO registers a PostToolUse hook in `.claude/settings.json` on workspace setup. The hook writes an AO activity entry each time Claude calls a tool, so the dashboard's `active/ready/idle` states stay accurate.
-- **Session resume:** `claude --resume <sessionId>` rehydrates the previous chat. AO maps its session ID to Claude's via the JSONL at `~/.claude/projects/<project>/...jsonl`.
-- **Cost reporting:** AO reads Claude's per-message cost field from the JSONL — visible on the dashboard card.
-
-## Environment variables
-
-| Variable        | Set by AO                      | Purpose                                             |
-| --------------- | ------------------------------ | --------------------------------------------------- |
-| `AO_SESSION_ID` | ✓                              | Unique AO session identifier                        |
-| `AO_ISSUE_ID`   | ✓ (when spawned from an issue) | Issue identifier                                    |
-| `CLAUDECODE`    | ✓                              | Signals to Claude that it's running under a harness |
-
-Your Anthropic API key comes from wherever `claude` normally reads it — `~/.claude/`, env, etc. AO doesn't touch it.
-
-## Troubleshooting
-
-<Accordions>
-  <Accordion title="`claude` not found">
-    `npm install -g @anthropic-ai/claude-code`, then reopen your terminal so the PATH picks it up.
-  </Accordion>
-  <Accordion title="Dashboard shows no activity state">
-    AO registers the PostToolUse hook in `.claude/settings.json` on spawn. If the hook got removed, run `ao spawn` again — AO re-installs it idempotently.
-  </Accordion>
-  <Accordion title="Session won't resume">
-    Claude's session JSONL lives at `~/.claude/projects/<project-slug>/<sessionId>.jsonl`. If that file is gone (cleaned up, moved), resume won't work — spawn fresh.
-  </Accordion>
-</Accordions>
+AO installs its supported activity hook during workspace setup. Use `ao agent ls --refresh --json` for install/auth diagnostics rather than editing a plugin block.

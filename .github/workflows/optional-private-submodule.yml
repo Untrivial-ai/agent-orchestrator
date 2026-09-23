@@ -1,0 +1,31 @@
+name: Optional private submodule
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".gitmodules"
+      - "private/ao-cloud"
+      - "test/submodule/**"
+      - ".github/workflows/optional-private-submodule.yml"
+  pull_request:
+    paths:
+      - ".gitmodules"
+      - "private/ao-cloud"
+      - "test/submodule/**"
+      - ".github/workflows/optional-private-submodule.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unauthenticated-recursive-clone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify recursive clone skips private repository
+        run: ./test/submodule/optional-private-checkout.sh

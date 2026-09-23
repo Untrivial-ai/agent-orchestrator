@@ -4,6 +4,7 @@ import { PRBadge } from "../PRBadge";
 export const changelogMdxComponents = {
 	...mdxComponents,
 	PRBadge,
+	hr: () => null,
 	ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
 		<ul className="list-disc list-outside pl-5 space-y-1" {...props}>
 			{children}

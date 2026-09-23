@@ -1,6 +1,6 @@
 // host_main.go is the RunHost entrypoint for the "ao pty-host" subcommand.
 // It is cross-platform: the loopback TCP bind and signal wiring work on all
-// OSes; only the ConPTY creation (newConPTY) is OS-gated via build tags.
+// OSes; native PTY creation is OS-gated via build tags.
 package conpty
 
 import (
@@ -16,7 +16,7 @@ import (
 // RunHost is the "ao pty-host" entrypoint. argv is everything after the
 // subcommand name: <sessionId> <cwd> <shellCmd> [shellArg...]
 //
-// It binds 127.0.0.1:0 (OS assigns the port), creates the ConPTY, prints
+// It binds 127.0.0.1:0 (OS assigns the port), creates the native PTY, prints
 // "READY:<pid> <port>\n" to stdout (the parent process reads this to learn the
 // port), installs SIGTERM/SIGINT handlers, then runs Serve. Returns a process
 // exit code.

@@ -70,6 +70,40 @@ export function agentSheetRoute(opts: { selected: string; onSelect: (id: string)
 	};
 }
 
+export function modelSheetRoute(opts: { agentId: string; projectId: string; selected: string; onSelect: (id: string) => void }) {
+	return {
+		pathname: "/sheets/model" as const,
+		params: {
+			resultKey: parkSheetResult(opts.onSelect),
+			agentId: opts.agentId,
+			projectId: opts.projectId,
+			selected: opts.selected,
+		},
+	};
+}
+
 export function connectSheetRoute(onConnected: () => void) {
 	return { pathname: "/sheets/connect" as const, params: { resultKey: parkSheetResult(onConnected) } };
+}
+
+/**
+ * Route + params for the store-update nudge. One parked callback carries both
+ * outcomes: taking the update, or dismissing it (which is what the snooze
+ * counter counts, so the opener has to hear about it).
+ */
+export function storeUpdateSheetRoute(opts: {
+	version?: string;
+	storeConfirmed: boolean;
+	onAction: (action: "update" | "dismiss") => void;
+}) {
+	return {
+		pathname: "/sheets/store-update" as const,
+		params: {
+			resultKey: parkSheetResult(opts.onAction),
+			// Route params are strings, so the flag is encoded here rather than at
+			// the call site — same reason as projectSheetRoute's "0"/"1".
+			storeConfirmed: opts.storeConfirmed ? "1" : "0",
+			...(opts.version ? { version: opts.version } : {}),
+		},
+	};
 }

@@ -1,39 +1,17 @@
 ---
-title: SCM overview
-description: PRs, reviews, CI status. The tracker watches issues; the SCM plugin watches code review.
+title: Source control and pull requests
+description: GitHub PR, CI, review, and mergeability support built into AO.
 ---
 
-The **SCM** plugin is everything to do with the pull/merge-request side: opening PRs, reading their review state, and polling CI checks. Two ship.
+AO's current SCM provider is GitHub. It observes pull requests associated with active sessions and feeds concise facts into the lifecycle engine and desktop UI.
 
-<PluginGrid>
-	<PluginCard
-		name="GitHub"
-		logo="github"
-		href="/docs/plugins/scm/github"
-		description="PRs, reviews, and CI status via gh."
-	/>
-	<PluginCard
-		name="GitLab"
-		logo="gitlab"
-		href="/docs/plugins/scm/gitlab"
-		description="MRs, discussions, pipelines via glab."
-	/>
-</PluginGrid>
+The provider tracks:
 
-## Why separate from the tracker
+- pull request identity and state;
+- check status and failing check names;
+- mergeability and merge-conflict reasons;
+- review decisions and unresolved human-review comment counts.
 
-You might host code on GitHub but track issues in Linear. Or your company migrated from GitLab to GitHub but kept the tracker elsewhere. SCM and tracker are independent knobs:
+GitLab merge requests are not supported by the Go rewrite.
 
-```yaml
-scm: github
-tracker: linear
-```
-
-## What the SCM plugin polls
-
-- **PR state** — open / closed / merged
-- **Review decisions** — approved / changes_requested / commented
-- **Inline comments** — unresolved threads feed the [review loop](/docs/guides/review-loop)
-- **CI checks** — pass / fail / in-progress, required vs optional, feed the [CI recovery loop](/docs/guides/ci-recovery)
-
-Polling interval defaults to a few seconds and is tuned per-endpoint to stay well under rate limits.
+See [GitHub SCM](/docs/plugins/scm/github) for authentication and the current action surface.

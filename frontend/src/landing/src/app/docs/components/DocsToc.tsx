@@ -9,6 +9,16 @@ export function DocsToc({ toc }: { toc: TocItem[] }) {
   useEffect(() => {
     const ids = toc.map((t) => t.id);
     const update = () => {
+      // If scrolled to the bottom of the document, activate the last heading
+      const isAtBottom =
+        window.innerHeight + Math.ceil(window.scrollY) >=
+        document.documentElement.scrollHeight - 60;
+
+      if (isAtBottom && ids.length > 0) {
+        setActive(ids[ids.length - 1]);
+        return;
+      }
+
       let current = ids[0] ?? "";
       for (const id of ids) {
         const el = document.getElementById(id);

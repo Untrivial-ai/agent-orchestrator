@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { isValidElement, type ReactNode } from "react";
-import { DownloadButton } from "@/app/components/DownloadButton";
+import { FaApple, FaLinux, FaWindows } from "react-icons/fa";
 import { slugify } from "@/lib/content-utils";
+import { getPlatformDownloads, getReleases } from "@/lib/releases";
 import { Tab, Tabs } from "./DocsTabs";
 
 // Text of a heading's children, so ids match the TOC's slugify(headingText).
@@ -173,18 +174,21 @@ export function PluginCard({
 
 type Status = "full" | "partial" | "none";
 const STATUS_LABEL: Record<Status, string> = { full: "Supported", partial: "Limited", none: "Not supported" };
-const STATUS_DOT: Record<Status, string> = { full: "bg-green-400", partial: "bg-amber-400", none: "bg-muted-foreground" };
+const PLATFORM_ICONS = {
+  macOS: FaApple,
+  Windows: FaWindows,
+  Linux: FaLinux,
+} as const;
 
 function PlatformCell({ platform, status }: { platform: "macos" | "linux" | "windows"; status: Status }) {
-  const logoName = platform === "macos" ? "apple" : platform;
   const title = platform === "macos" ? "macOS" : platform === "linux" ? "Linux" : "Windows";
+  const Icon = PLATFORM_ICONS[title];
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
-      <Logo name={logoName} size={18} />
+    <div className="flex min-w-0 flex-1 items-center gap-3 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+      <Icon className="size-[18px] shrink-0" aria-hidden="true" />
       <div className="flex min-w-0 flex-col">
         <span className="text-[0.8125rem] font-semibold text-foreground">{title}</span>
         <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className={`inline-block size-1.5 rounded-full ${STATUS_DOT[status]}`} />
           {STATUS_LABEL[status]}
         </span>
       </div>
@@ -216,19 +220,60 @@ export function PlatformSupport({
 }
 
 const RELEASES_URL = "https://github.com/Untrivial-ai/agent-orchestrator/releases";
+const CHANNELS = ["Stable", "Nightly"] as const;
 
-export function InstallDownloads() {
+export async function InstallDownloads() {
+  const releases = await getReleases();
+  const platformDownloads = getPlatformDownloads(releases);
+
   return (
-    <div className="my-6 rounded-xl border border-border bg-muted/30 p-5">
+    <div className="my-6">
       <div className="mb-3 flex items-center justify-between">
         <div className="text-sm font-semibold text-foreground">Get Agent Orchestrator</div>
-        <a href={RELEASES_URL} className="text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <a
+          href={RELEASES_URL}
+          className="inline-flex min-h-10 items-center rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground !no-underline transition-[background-color,border-color,transform] duration-150 hover:border-foreground/30 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-[0.96] motion-reduce:transition-none"
+        >
           View releases →
         </a>
       </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <DownloadButton size="md" className="rounded-xl" />
-        <span className="text-sm text-muted-foreground">macOS · Linux · Windows</span>
+      <div className="grid gap-6 sm:grid-cols-3">
+        {platformDownloads.map((platform) => (
+          <div key={platform.name}>
+            <div className="text-sm font-semibold text-foreground">{platform.name}</div>
+            {CHANNELS.map((channel) => {
+              const builds = platform.builds.filter((item) => item.channel === channel);
+              if (builds.length === 0) return null;
+              return (
+                <div key={channel} className="mt-3">
+                  <div className="text-xs font-medium text-muted-foreground">{channel}</div>
+                  <div className="mt-2 space-y-2">
+                    {builds.map((downloadBuild) => (
+                      <div key={downloadBuild.label}>
+                        <a
+                          href={downloadBuild.href}
+                          download
+                          className="flex w-full items-center gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm font-medium text-foreground !no-underline transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        >
+                          {(() => {
+                            const Icon =
+                              PLATFORM_ICONS[
+                                platform.name as keyof typeof PLATFORM_ICONS
+                              ];
+                            return Icon ? (
+                              <Icon className="mr-2 size-4 shrink-0" aria-hidden="true" />
+                            ) : null;
+                          })()}
+                          {downloadBuild.label}
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </div>
   );

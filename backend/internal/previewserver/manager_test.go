@@ -14,14 +14,62 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 func TestPreviewServerHelper(t *testing.T) {
-	if os.Getenv("AO_PREVIEW_TEST_HELPER") != "1" {
+	if os.Getenv("AO_PREVIEW_CRASH_HELPER") == "1" {
+		serveUntilFirstRequestThenExit(t)
 		return
 	}
+	if os.Getenv("AO_PREVIEW_TEST_HELPER") == "1" {
+		servePreviewHelper(t)
+		return
+	}
+}
+
+// serveUntilFirstRequestThenExit binds the loopback port passed via PORT,
+// answers HTTP requests until AO_PREVIEW_CRASH_AFTER_MS milliseconds have
+// passed (default 200ms), then exits with a non-zero status. That window is
+// long enough for the manager's readiness probe to flip the run to
+// StateReady, and short enough that the subsequent waitForExit goroutine
+// observes a crash rather than a user-initiated stop (issue #4500).
+func serveUntilFirstRequestThenExit(t *testing.T) {
+	t.Helper()
+	port, err := strconv.Atoi(os.Getenv("PORT"))
+	if err != nil || port <= 0 {
+		t.Fatalf("invalid helper PORT %q", os.Getenv("PORT"))
+	}
+	delay := 2 * time.Second
+	if raw := os.Getenv("AO_PREVIEW_CRASH_AFTER_MS"); raw != "" {
+		if n, errConv := strconv.Atoi(raw); errConv == nil && n > 0 {
+			delay = time.Duration(n) * time.Millisecond
+		}
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(os.Stderr, "crash helper listening")
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><title>crash helper</title>")
+	})}
+	go func() {
+		time.Sleep(delay)
+		_ = srv.Close()
+		fmt.Fprintln(os.Stderr, "crash helper exiting")
+		os.Exit(7)
+	}()
+	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+		t.Fatal(err)
+	}
+}
+
+func servePreviewHelper(t *testing.T) {
+	t.Helper()
 	port, err := strconv.Atoi(os.Getenv("PORT"))
 	if err != nil || port <= 0 {
 		t.Fatalf("invalid helper PORT %q", os.Getenv("PORT"))
@@ -91,6 +139,82 @@ func TestManagerKeepsConcurrentSessionServersIsolated(t *testing.T) {
 	}
 	if manager.Status("ao-1").State != StateReady || manager.Status("ao-2").State != StateReady {
 		t.Fatalf("both session servers should remain ready")
+	}
+}
+
+func TestManagerFiresOnExitWhenServerCrashesAfterLaunch(t *testing.T) {
+	workspace := writeLaunchFile(t, []Configuration{crashConfiguration("crashy", TargetApp)})
+	manager := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(manager.Close)
+
+	gotStatus := make(chan Status, 1)
+	// Register OnExit BEFORE Start so the readiness-to-crash window cannot
+	// outrun the registration. The daemon wires the same way, after building
+	// the preview manager but before any user request can reach Start.
+	manager.SetOnExit(func(_ context.Context, _ domain.SessionID, s Status) {
+		gotStatus <- s
+	})
+
+	status, err := manager.Start(context.Background(), domain.SessionID("ao-1"), workspace, "")
+	if err != nil {
+		t.Fatalf("Start: %v\nstatus=%+v", err, status)
+	}
+	if status.State != StateReady {
+		t.Fatalf("status = %+v, want ready", status)
+	}
+
+	// Wait for the process to die on its own. The crash helper exits with a
+	// non-zero code a few hundred ms after starting; waitForExit then flips
+	// the run to StateFailed and fires the OnExit callback.
+	select {
+	case s := <-gotStatus:
+		if s.State != StateFailed {
+			t.Fatalf("onExit state = %q, want %q", s.State, StateFailed)
+		}
+		if s.Error == "" {
+			t.Fatalf("onExit error is empty, want a non-empty message")
+		}
+		if s.URL != status.URL {
+			t.Fatalf("onExit URL = %q, want %q", s.URL, status.URL)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnExit callback never fired; manager did not notice the server crashed")
+	}
+
+	// Status must reflect the crash immediately, before the
+	// failedStatusRetention window expires (issue #4500).
+	post := manager.Status("ao-1")
+	if post.State != StateFailed {
+		t.Fatalf("post-crash state = %q, want %q", post.State, StateFailed)
+	}
+	if post.Error == "" {
+		t.Fatalf("post-crash error is empty")
+	}
+}
+
+func TestManagerDoesNotFireOnExitWhenStoppedByUser(t *testing.T) {
+	workspace := writeLaunchFile(t, []Configuration{helperConfiguration("web", TargetApp)})
+	manager := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(manager.Close)
+
+	status, err := manager.Start(context.Background(), domain.SessionID("ao-1"), workspace, "")
+	if err != nil {
+		t.Fatalf("Start: %v\nstatus=%+v", err, status)
+	}
+
+	gotStatus := make(chan Status, 1)
+	manager.SetOnExit(func(_ context.Context, _ domain.SessionID, s Status) {
+		gotStatus <- s
+	})
+
+	if _, err := manager.Stop(context.Background(), "ao-1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case s := <-gotStatus:
+		t.Fatalf("OnExit fired for a user-initiated stop: state=%q error=%q", s.State, s.Error)
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
@@ -200,6 +324,27 @@ func helperConfiguration(name string, kind TargetKind) Configuration {
 		TargetKind:         kind,
 		Env:                map[string]string{"AO_PREVIEW_TEST_HELPER": "1"},
 		ReadyTimeoutMillis: 5000,
+	}
+}
+
+// crashConfiguration returns a configuration whose process boots the
+// readiness probe on the same loopback port and then exits on its own with a
+// non-zero status. The manager should treat this as StateFailed and fire
+// OnExit (issue #4500).
+func crashConfiguration(name string, kind TargetKind) Configuration {
+	return Configuration{
+		Name:               name,
+		RuntimeExecutable:  os.Args[0],
+		RuntimeArgs:        []string{"-test.run=^TestPreviewServerHelper$"},
+		Port:               0,
+		AutoPort:           true,
+		URL:                "http://127.0.0.1:${PORT}/",
+		TargetKind:         kind,
+		ReadyTimeoutMillis: 5000,
+		Env: map[string]string{
+			"AO_PREVIEW_CRASH_HELPER": "1",
+			"AO_PREVIEW_TEST_HELPER":  "1",
+		},
 	}
 }
 

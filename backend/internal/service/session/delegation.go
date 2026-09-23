@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	delegatedTaskTitleLimit             = 20
+	delegatedTaskTitleLimit             = maxDisplayNameLen
 	delegatedTaskUntitledName           = "Untitled task"
 	delegatedTaskTitleRefinementTimeout = time.Minute
 )
@@ -28,6 +28,8 @@ type DelegateTaskInput struct {
 	Brief          string
 	RequestedAgent domain.AgentHarness
 	Model          string
+	Effort         *string
+	ApprovalMode   domain.PermissionMode
 	RequestedMode  domain.SessionMode
 	Attachments    []ports.SpawnAttachment
 }
@@ -59,18 +61,24 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		prompt = ""
 	}
 
+	effort, effortOverride := optionalTuningValue(in.Effort)
 	worker, _, _, err := s.manager.Spawn(ctx, ports.SpawnConfig{
-		ProjectID:     in.ProjectID,
-		Kind:          domain.KindWorker,
-		Harness:       in.RequestedAgent,
-		Prompt:        prompt,
-		DisplayName:   delegatedTaskDisplayName(in.Brief),
-		AgentConfig:   ports.AgentConfig{Model: strings.TrimSpace(in.Model)},
-		RequestedMode: in.RequestedMode,
-		Attachments:   in.Attachments,
+		ProjectID:   in.ProjectID,
+		Kind:        domain.KindWorker,
+		Harness:     in.RequestedAgent,
+		Prompt:      prompt,
+		DisplayName: delegatedTaskDisplayName(in.Brief),
+		AgentConfig: ports.AgentConfig{
+			Model:       strings.TrimSpace(in.Model),
+			Effort:      effort,
+			Permissions: in.ApprovalMode,
+		},
+		EffortOverride: effortOverride,
+		RequestedMode:  in.RequestedMode,
+		Attachments:    in.Attachments,
 	})
 	if err != nil {
-		return DelegateTaskOutcome{}, toAPIError(err)
+		return DelegateTaskOutcome{}, toSpawnAPIError(err)
 	}
 
 	// The worker spawn is the commit point. Coordinator startup and title
@@ -80,6 +88,13 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		s.refineDelegatedTaskTitleInBackground(worker.ID, in)
 	}
 	return DelegateTaskOutcome{WorkerID: worker.ID}, nil
+}
+
+func optionalTuningValue(value *string) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	return strings.TrimSpace(*value), true
 }
 
 func (s *Service) refineDelegatedTaskTitleInBackground(workerID domain.SessionID, in DelegateTaskInput) {
@@ -150,7 +165,7 @@ func (s *Service) taskTitleOrchestrator(ctx context.Context, projectID domain.Pr
 	}
 	unlock()
 
-	orchestrator, err := s.SpawnOrchestrator(ctx, projectID, false, "")
+	orchestrator, err := s.SpawnOrchestrator(ctx, projectID, false, "", "")
 	if err != nil {
 		return "", fmt.Errorf("start project orchestrator: %w", err)
 	}
@@ -175,7 +190,7 @@ func taskTitleDelegationMessage(workerID domain.SessionID, in DelegateTaskInput)
 	b.WriteString("Choose a concise task title from the brief and run:\n\n")
 	b.WriteString("ao session rename ")
 	b.WriteString(string(workerID))
-	b.WriteString(" \"<title, max 20 chars>\"\n\n")
+	b.WriteString(" \"<title, max 100 chars>\"\n\n")
 	b.WriteString("Worker session id: ")
 	b.WriteString(string(workerID))
 	b.WriteString("\nTask brief:\n")

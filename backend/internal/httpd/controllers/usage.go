@@ -40,8 +40,14 @@ func (c *UsageController) listSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]CompactSessionUsageResponse, 0, len(items))
 	for _, item := range items {
+		var totalTokens int64
+		if item.ProcessedTokens != nil {
+			totalTokens = *item.ProcessedTokens
+		}
 		out = append(out, CompactSessionUsageResponse{
-			SessionID: item.SessionID, TotalTokens: item.TotalTokens, Incomplete: item.Incomplete,
+			SessionID: item.SessionID, ProcessedTokens: item.ProcessedTokens,
+			TotalTokens: totalTokens, Incomplete: item.Incomplete,
+			EstimatedCost: estimatedCostResponse(item.EstimatedCost),
 		})
 	}
 	envelope.WriteJSON(w, http.StatusOK, ListCompactSessionUsageResponse{Sessions: out})
@@ -81,8 +87,22 @@ func sessionUsageResponse(summary domain.SessionUsageSummary) SessionUsageRespon
 
 func usageTotalsResponse(totals domain.UsageMetricTotals) UsageTotalsResponse {
 	return UsageTotalsResponse{
-		InputTokens: totals.InputTokens, UncachedInputTokens: totals.UncachedInputTokens,
-		CacheReadTokens: totals.CacheReadTokens, CacheWriteTokens: totals.CacheWriteTokens,
-		OutputTokens: totals.OutputTokens, ReasoningTokens: totals.ReasoningTokens,
+		InputTokens: totals.InputTokens, CachedInputTokens: totals.CachedInputTokens,
+		UncachedInputTokens: totals.UncachedInputTokens,
+		OutputTokens:        totals.OutputTokens, ProcessedTokens: totals.ProcessedTokens,
+		CacheReadTokens: totals.CachedInputTokens,
+		EstimatedCost:   estimatedCostResponse(totals.EstimatedCost),
+	}
+}
+
+func estimatedCostResponse(cost *domain.EstimatedCost) *EstimatedCostResponse {
+	if cost == nil {
+		return nil
+	}
+	return &EstimatedCostResponse{
+		TotalNanos: cost.TotalNanos, InputNanos: cost.InputNanos,
+		CachedInputNanos: cost.CachedInputNanos, OutputNanos: cost.OutputNanos,
+		Coverage:            string(cost.Coverage),
+		ProviderAttribution: string(cost.ProviderAttribution),
 	}
 }

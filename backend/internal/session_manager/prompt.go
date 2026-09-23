@@ -31,6 +31,7 @@ type taskPromptConfig struct {
 
 type systemPromptConfig struct {
 	Role                  sessionPromptRole
+	Standalone            bool
 	Project               promptProject
 	OrchestratorSessionID string
 	ProjectRules          string
@@ -76,6 +77,10 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 			sections = append(sections, "## Project-Specific Orchestrator Rules\n"+rules)
 		}
 	case sessionPromptRoleWorker:
+		if cfg.Standalone {
+			sections = append(sections, standaloneWorkerSystemPrompt(), workerContainerLabelPrompt())
+			break
+		}
 		orchestratorID := strings.TrimSpace(cfg.OrchestratorSessionID)
 		sections = append(sections, workerSystemPrompt(cfg.Project, orchestratorID != ""))
 		if orchestratorID != "" {
@@ -88,13 +93,32 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 	default:
 		return ""
 	}
-	sections = append(sections, systemPromptGuard())
+	sections = append(sections, publishingScopePrompt(), systemPromptGuard())
 	for _, section := range cfg.AdditionalSections {
 		if section := strings.TrimSpace(section); section != "" {
 			sections = append(sections, section)
 		}
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+// publishingScopePrompt clarifies authority without replacing the established
+// issue-to-PR, opt-in intake, or PR maintenance workflows.
+func publishingScopePrompt() string {
+	return `## Publishing Scope
+
+- Keep the task-source workflows above for provider-backed issues, explicitly enabled issue intake, and user-requested PR/MR continuation. Do not request fresh approval for each push or PR/MR update within an already authorized workflow.
+- For freeform work, publish only when the user requests it or explicitly configured project rules require it. Available credentials, a configured remote, auto/bypass tool permissions, or an associated PR/MR alone do not authorize publishing.
+- Explicit user restrictions such as local-only, review-only, or do-not-publish take precedence over workflow defaults, including issue-task prompts and CI/review follow-up instructions. Complete the permitted local work and report the result without publishing.
+- Preserve the user's publishing scope and restrictions when spawning or redirecting workers. Do not add publishing to a freeform implementation task unless the user or explicitly configured project rules authorize it.`
+}
+
+func standaloneWorkerSystemPrompt() string {
+	return `## AO Standalone Agent
+
+You are a standalone Agent Orchestrator worker. This session is not attached to a project, repository, branch, issue tracker, orchestrator, PR/MR workflow, CI integration, or review automation.
+
+Work only from the user's requests and the files in this AO-managed workspace. Do not invent project context or create repository, branch, issue, PR/MR, CI, or review requirements. You may create and edit ordinary files in the workspace, run relevant commands, and use AO session capabilities such as the terminal, browser, attachments, and chat. Keep work focused, verify it when appropriate, and report blockers clearly.`
 }
 
 // systemPromptGuard is appended to every agent system prompt. The role,
@@ -189,11 +213,13 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 - `+"`ao session get <worker-session-id>`"+` - inspect a worker session's details.
 - `+"`ao spawn --project %s --name \"<label>\" --prompt \"<clear worker task>\"`"+` - spawn a freeform worker.
 - `+"`ao spawn --project %s --name \"<label>\" --issue <issue-id>`"+` - spawn a worker for an issue.
-- `+"`--name`"+` is required: a deliberate sidebar label so the user can see what each worker is working on at a glance; labels must be 20 characters or fewer.
-- Before running `+"`ao spawn`"+`, count the `+"`--name`"+` label yourself. It must be 20 characters or fewer. If your first label is longer, shorten it before executing the command.
+- `+"`--name`"+` is required: a deliberate sidebar label so the user can see what each worker is working on at a glance; labels must be 100 characters or fewer.
+- Before running `+"`ao spawn`"+`, count the `+"`--name`"+` label yourself. It must be 100 characters or fewer. If your first label is longer, shorten it before executing the command.
 - Add `+"`--agent <name>`"+` when a worker must use a specific agent.
+- Add `+"`--model <id>`"+` when the human or task explicitly requests a specific model.
+- Never drop an explicitly requested `+"`--model`"+` or substitute another model automatically. If `+"`ao spawn --model ...`"+` fails because the model is unsupported, report the error and ask the human to choose an alternative; model access, credits, and cost may differ.
 - `+"`ao send --session <session-id> --message \"<message>\"`"+` - message a worker.
-- `+"`ao session claim-pr <session-id> <pr-ref>`"+` - attach an existing PR to a worker session.
+- `+"`ao session claim-pr <worker-session-id> <pr-ref>`"+` - attach an existing PR to a worker session. Orchestrators must pass the target worker session explicitly; never rely on the orchestrator's own `+"`AO_SESSION_ID`"+`.
 - `+"`ao session kill <session-id>`"+` - terminate a session when appropriate.
 
 ## Coordination Workflow
@@ -220,8 +246,8 @@ func workerSystemPrompt(project promptProject, hasOrchestrator bool) string {
 
 - Treat the explicit task description, provider issue context, or claimed PR/MR context as the source of truth for this session.
 - If the task is backed by a provider issue from GitHub, GitLab, or another tracker/SCM, implement the task, run verification, and create or update a PR/MR when the project has a configured remote/provider and the change is ready. Link the provider issue in the PR/MR body.
-- If the task is a freeform task, new-task button task, or orchestrator-requested feature without a provider issue, implement and verify the task; do not invent issue, PR, or MR requirements. Create or update a PR/MR only when the user asks, the project workflow clearly requires it, or an associated PR/MR already exists.
-- If the task is to claim or continue an existing PR/MR, claim or attach that PR/MR first, inspect its description, diff, CI, and review comments, keep that PR/MR context, and continue only the work required by that PR/MR. Do not create a replacement PR/MR unless explicitly asked.
+- If the task is a freeform task, new-task button task, or orchestrator-requested feature without a provider issue, implement and verify the task; do not invent issue, PR, or MR requirements. Create or update a PR/MR only when the user asks for that action or explicitly configured project rules require it. An associated PR/MR alone does not authorize publishing; a user request to continue that PR/MR does authorize its normal follow-up workflow.
+- If the task is to claim or continue an existing PR/MR, attach it to this worker first with ` + "`ao session claim-pr <pr-ref>`" + `; AO resolves this session from ` + "`AO_SESSION_ID`" + `. Then inspect its description, diff, CI, and review comments, keep that PR/MR context, and continue only the work required by that PR/MR. Do not create a replacement PR/MR unless explicitly asked.
 - If no remote or SCM provider is available, work locally, verify the result, and report changed files, tests, and risks instead of inventing issue, PR, or MR requirements.`
 
 	repoRules := `## Git and PR/MR Rules
@@ -255,7 +281,7 @@ Your job is to complete the assigned task in this workspace. Inspect the relevan
 
 - Focus on the assigned task only.
 - Do not take unrelated work or perform broad refactors.
-- If you are continuing an existing PR, claim or attach it through AO before changing it when the workflow supports that.
+- If you are continuing an existing PR, claim or attach it through AO before changing it when the workflow supports that. From this worker, use `+"`ao session claim-pr <pr-ref>`"+`; `+"`AO_SESSION_ID`"+` selects this session automatically.
 - If CI fails, fix the failures and push again.
 - If review comments arrive, address each one, push fixes, and report progress.
 - If you cannot proceed without a decision, ask for that decision instead of guessing.
@@ -293,8 +319,9 @@ func workerMultiPRPrompt() string {
 AO attributes PRs to this session when the source branch is this session branch or lives under this session namespace.
 
 - If your current branch ends in ` + "`/root`" + `, create independent PR branches as siblings under the same namespace, for example ` + "`<namespace>/<topic>`" + ` from ` + "`<namespace>/root`" + `. Do not create ` + "`<namespace>/root/<topic>`" + `.
+- For a workspace project whose recorded session branch is ` + "`ao/<session-id>`" + ` or a collision variant such as ` + "`ao/<session-id>-2`" + `, use hyphen siblings such as ` + "`<session-branch>-<topic>`" + ` in each registered repository. The bare session ref prevents Git from creating slash children. Keep the full collision suffix. Claim a child-repository PR explicitly with ` + "`ao session claim-pr <full-pr-url>`" + ` when needed.
 - Otherwise, create each source branch as a child of this session branch, for example ` + "`<current-branch>/<topic>`" + `.
-- To stack a PR on top of another, create the child branch from the parent branch and name it ` + "`<parent-branch>/<topic>`" + `, then target the parent branch in the PR.
+- To stack a PR on top of another, create the new branch from the parent branch and target the parent branch in the PR. Use ` + "`<parent-branch>/<topic>`" + ` when Git permits slash children, or another ` + "`<session-branch>-<topic>`" + ` for bare workspace refs.
 
 Keep branch names inside this session namespace so AO can track every PR you open.`
 }

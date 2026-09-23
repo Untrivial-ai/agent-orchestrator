@@ -1,134 +1,61 @@
 ---
-title: Reaction recipes
-description: Practical reaction configurations — watch-only mode, auto-merge, custom CI messages, and bot handling.
+title: Lifecycle automation
+description: Practical guidance for AO's built-in CI, review, conflict, and notification behavior.
 ---
 
-Reactions are configured under `reactions:` (global) or `projects.*.reactions:` (per-project). Every recipe here uses the correct schema field names; see the [Reactions reference](/docs/configuration/reactions) for the full list of keys and their defaults.
+Current AO ships lifecycle policy rather than a configurable reaction recipe engine. Do not add `reactions:` to project configuration: unknown fields are rejected, and legacy keys such as `auto`, `retries`, `escalateAfter`, `threshold`, and `auto-merge` have no current consumer.
 
-## Recipe: Watch-only mode
+## Let AO route repository feedback
 
-Disable all automated agent messages while keeping notifications active. Useful during onboarding or in sensitive projects where you want to observe before letting AO act:
+Claim the pull request to the worker that should respond:
 
-```yaml
-reactions:
-  ci-failed:
-    auto: false
-  changes-requested:
-    auto: false
-  bugbot-comments:
-    auto: false
-  agent-idle:
-    auto: false
+```bash
+ao session claim-pr <pr-number-or-url>
+# From outside the worker, target it explicitly:
+ao session claim-pr <session-id> <pr-number-or-url>
 ```
 
-`auto: false` suppresses the `send-to-agent` action but does not silence notifiers. Reactions whose default action is `notify` (like `agent-stuck`, `agent-exited`, and `all-complete`) continue to fire their notifications regardless of this flag.
+The one-argument form uses `AO_SESSION_ID` and is preferred inside a worker session.
 
-## Recipe: Enable auto-merge
+AO then routes failing checks, requested changes, unresolved comments, and eligible merge conflicts to that session. Delivery is mode-aware, so the same workflow works for structured Chat and Terminal UI.
 
-`approved-and-green` defaults to `auto: false` (notify-only). Opt in explicitly:
+## Avoid duplicate nudges
 
-```yaml
-reactions:
-  approved-and-green:
-    auto: true
-    action: auto-merge
+AO stores or remembers signatures for observed feedback. It sends again when the meaningful content changes, not merely because another poll happened. This keeps long-lived agent sessions from receiving the same CI failure or review body repeatedly.
+
+## Know what requires a human
+
+The notification center provides durable read/unread history for:
+
+- a session waiting for input;
+- a pull request ready to merge;
+- a merged pull request;
+- a pull request closed without merging.
+
+Click a notification to open its session or PR context. Desktop toasts supplement the durable history while the app is running.
+
+## Intervene manually
+
+Send a focused instruction to a session from its Chat composer or Terminal UI. The CLI equivalent is:
+
+```bash
+ao send --help
 ```
 
-<Callout type="warning">
-	The `auto-merge` action currently calls `notifyHuman()` internally — it does not perform a real merge. Actual merging
-	still depends on your repository's branch protection rules and the "Allow auto-merge" setting on GitHub. AO does not
-	bypass these gates. Treat `auto-merge` as an opt-in signal for when the SCM plugin adds real merge support.
+Use the help output for the current target and message flags. For an independent code review, use `ao review trigger <worker-session-id>`.
+
+Merge is always an explicit action:
+
+```bash
+ao pr merge <pr-number>
+```
+
+## Switch interfaces when useful
+
+For compatible Claude Code and Codex sessions, use **Open Chat** or **Open Terminal UI**. AO preserves the session and worktree, drains or interrupts active work according to your choice, and commits only one controller at a time.
+
+<Callout type="info">
+	A first Terminal UI → Chat switch preserves provider-native context where supported, but it does not convert old terminal screen output into structured Chat cards.
 </Callout>
 
-## Recipe: Custom CI failure message
-
-Override the default `message` to give the agent more precise recovery instructions:
-
-```yaml
-reactions:
-  ci-failed:
-    message: |
-      CI is failing. Run `pnpm test` locally and fix the failing tests before pushing again. Prioritise type errors first.
-```
-
-The two-pass CI behavior still applies: AO sends your custom `message` on the first pass (transition), then follows up in the next poll cycle with a second message listing every failing check by name and URL. Your `message` override affects only the first pass — the structured check list fires regardless.
-
-## Recipe: Aggressive escalation
-
-Tighten the retry and escalation windows for urgent projects where you want fast human handoff:
-
-```yaml
-reactions:
-  ci-failed:
-    retries: 1
-    escalateAfter: "5m"
-  changes-requested:
-    retries: 1
-    escalateAfter: "5m"
-```
-
-With `retries: 1` and `escalateAfter: "5m"`, AO will escalate after one failed recovery attempt or five minutes — whichever comes first.
-
-## Recipe: Ignore bugbot noise
-
-Keep human `changes-requested` reactions fully active but silence automated bot review nudges:
-
-```yaml
-reactions:
-  bugbot-comments:
-    auto: false
-```
-
-AO identifies bot comments by author login. The current hardcoded bot list in `scm-github` includes `cursor[bot]`, `github-actions[bot]`, `codecov[bot]`, and `sonarcloud[bot]`. Any review comment from these accounts triggers `bugbot-comments` rather than `changes-requested`. Setting `auto: false` here stops AO from nudging the agent about bot feedback while leaving human review comments fully active.
-
-## Recipe: Per-project overrides
-
-Suppress a noisy notification for one project while leaving everything default for others:
-
-```yaml
-reactions:
-  all-complete:
-    auto: true
-    action: notify
-
-projects:
-  myapp:
-    repo: org/myapp
-    path: ~/code/myapp
-    reactions:
-      all-complete:
-        auto: false # suppress the "all sessions done" notification for this project
-
-  otherproj:
-    repo: org/otherproj
-    path: ~/code/otherproj
-    # inherits global defaults — all-complete notification fires as normal
-```
-
-Per-project reaction blocks are merged with the global config; the project value wins for every field that is specified.
-
-## Recipe: Stuck session threshold
-
-Extend the `agent-stuck` threshold for projects with long-running builds where `10m` of inactivity is normal:
-
-```yaml
-reactions:
-  agent-stuck:
-    threshold: "30m"
-```
-
-The `threshold` field is used exclusively by `agent-stuck`. A session must be continuously idle for longer than `threshold` before the reaction fires and the session status transitions to `stuck`.
-
-## Where to go next
-
-<Cards>
-	<Card title="Reactions reference" href="/docs/configuration/reactions">
-		Full schema, default values, escalation semantics, and the two-pass CI design.
-	</Card>
-	<Card title="CI recovery guide" href="/docs/guides/ci-recovery">
-		Step-by-step walkthrough of AO's CI failure recovery loop.
-	</Card>
-	<Card title="Review loop guide" href="/docs/guides/review-loop">
-		How AO handles review comments and the changes-requested reaction.
-	</Card>
-</Cards>
+See [Lifecycle automation configuration](/docs/configuration/lifecycle-automation) for the current event and notification reference.

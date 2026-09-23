@@ -1,86 +1,123 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Repeat2, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import {
-	findActiveAgentSwitch,
-	findRecoveryRequiredAgentSwitch,
-	useAgentSwitches,
-} from "../hooks/useAgentSwitches";
-import { clearSwitchAgentState, useSwitchAgentState } from "../hooks/useSwitchAgent";
-import { agentLabel } from "../lib/agent-options";
+import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
+import type { AgentSwitchPresentation } from "../lib/agent-switch-presentation";
 import { cn } from "../lib/utils";
-import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
+import { sessionIsActive, type AgentSwitchSummary, type WorkspaceSession } from "../types/workspace";
 import { canSwitchAgentHarness, SwitchAgentDialog } from "./SwitchAgentDialog";
+import { TopbarButton } from "./TopbarButton";
+import { DropdownMenuItem } from "./ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type TerminalSwitchAgentButtonProps = {
+	agentSwitch?: AgentSwitchSummary;
+	container?: HTMLElement | null;
+	disabled?: boolean;
+	onOpenChange: ((open: boolean) => void) | undefined;
+	open: boolean;
+	presentation?: AgentSwitchPresentation;
 	session: WorkspaceSession;
+	switchError: string | null;
+	variant?: "icon" | "menu-item";
 };
 
-export function TerminalSwitchAgentButton({ session }: TerminalSwitchAgentButtonProps) {
+export function TerminalSwitchAgentButton({
+	agentSwitch,
+	container,
+	disabled,
+	onOpenChange,
+	open,
+	presentation,
+	session,
+	switchError,
+	variant = "icon",
+}: TerminalSwitchAgentButtonProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const [open, setOpen] = useState(false);
-	const switches = useAgentSwitches(session.id).data ?? [];
-	const activeSwitch = findActiveAgentSwitch(switches);
-	const recoverySwitch = findRecoveryRequiredAgentSwitch(switches);
-	const switchMutation = useSwitchAgentState(session.id);
-	const targetHarness = activeSwitch?.targetHarness ?? switchMutation.input?.targetHarness;
-	const switching = Boolean(!recoverySwitch && (activeSwitch || (switchMutation.isPending && targetHarness)));
+	const controlPresentation = presentation?.outcome === "success" ? undefined : presentation;
+	const switching = controlPresentation?.outcome === "in_progress";
+	const warning = controlPresentation?.outcome === "failure" || controlPresentation?.outcome === "recovery";
+	const blocksNewSwitch = switching || disabled;
 
 	useEffect(() => {
-		if (switchMutation.error) setOpen(true);
-	}, [switchMutation.error]);
+		if (switchError) onOpenChange?.(true);
+	}, [onOpenChange, switchError]);
 
 	if (
 		session.kind !== "worker" ||
 		session.isTerminated ||
 		!canSwitchAgentHarness(session.provider) ||
-		(!recoverySwitch && !switching && !sessionIsActive(session))
+		(!controlPresentation && !sessionIsActive(session))
 	) {
 		return null;
 	}
 
-	const label = recoverySwitch
-		? t("switchAgent.recovery.action")
-		: switching && targetHarness
-			? t("switchAgent.inProgress", { target: agentLabel(targetHarness) })
-			: t("switchAgent.action");
+	const label = controlPresentation
+		? t(controlPresentation.compactLabelKey, controlPresentation.values)
+		: t("switchAgent.action");
 	const handleOpenChange = (nextOpen: boolean) => {
-		setOpen(nextOpen);
-		if (!nextOpen && switchMutation.error) {
+		onOpenChange?.(nextOpen);
+		if (!nextOpen && switchError) {
 			clearSwitchAgentState(queryClient, session.id);
 		}
 	};
 
+	const icon = warning ? (
+		<TriangleAlert aria-hidden="true" className="size-icon-sm" />
+	) : switching ? (
+		<LoaderCircle aria-hidden="true" className="agent-switch-toolbar-spinner size-icon-sm animate-spin" />
+	) : (
+		<Repeat2 aria-hidden="true" className="size-4 stroke-[1.8]" />
+	);
+
 	return (
 		<>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<button
-						aria-busy={switching ? true : undefined}
-						aria-label={label}
-						className={cn(
-							"ml-1 grid size-6 shrink-0 place-items-center rounded-full border border-border/70 bg-background/45 text-muted-foreground transition-colors hover:border-border-strong hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50",
-							recoverySwitch && "border-warning/50 text-warning hover:border-warning/70 hover:text-warning",
-						)}
-						onClick={() => setOpen(true)}
-						type="button"
-					>
-						{recoverySwitch ? (
-							<TriangleAlert aria-hidden="true" className="size-icon-sm" />
-						) : switching ? (
-							<LoaderCircle aria-hidden="true" className="size-icon-sm animate-spin" />
-						) : (
-							<Repeat2 aria-hidden="true" className="size-4 stroke-[1.8]" />
-						)}
-					</button>
-				</TooltipTrigger>
-				<TooltipContent>{label}</TooltipContent>
-			</Tooltip>
-			{open ? (
-				<SwitchAgentDialog onOpenChange={handleOpenChange} open session={session} />
+			{variant === "menu-item" ? (
+				<DropdownMenuItem
+					className={cn(warning && "text-warning focus:text-warning [&_svg]:text-warning")}
+					disabled={blocksNewSwitch}
+					onSelect={() => handleOpenChange(true)}
+				>
+					{icon}
+					{label}
+				</DropdownMenuItem>
+			) : (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<TopbarButton
+							aria-busy={switching && controlPresentation?.animate ? true : undefined}
+							aria-label={label}
+							className={cn(
+								warning && "text-warning hover:bg-warning/10 hover:text-warning",
+							)}
+							disabled={blocksNewSwitch}
+							onClick={() => {
+								if (!open) handleOpenChange(true);
+							}}
+							onPointerDown={(event) => {
+								if (!open) return;
+								event.preventDefault();
+								event.stopPropagation();
+							}}
+							type="button"
+							variant="icon"
+						>
+							{icon}
+						</TopbarButton>
+					</TooltipTrigger>
+					<TooltipContent>{label}</TooltipContent>
+				</Tooltip>
+			)}
+			{open && container && variant !== "menu-item" ? (
+				<SwitchAgentDialog
+					agentSwitch={agentSwitch}
+					container={container}
+					onOpenChange={handleOpenChange}
+					open
+					session={session}
+				/>
 			) : null}
 		</>
 	);

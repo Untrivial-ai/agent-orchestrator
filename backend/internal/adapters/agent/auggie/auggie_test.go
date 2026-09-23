@@ -2,11 +2,18 @@ package auggie
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -227,24 +234,132 @@ func TestGetRestoreCommandNoID(t *testing.T) {
 	}
 }
 
-func TestGetAgentHooksNoOp(t *testing.T) {
-	if err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: t.TempDir()}); err != nil {
-		t.Fatalf("GetAgentHooks err = %v, want nil", err)
+func TestGetAgentHooksInstallsExecutableAuggieHooks(t *testing.T) {
+	workspace := t.TempDir()
+	if err := (&Plugin{}).GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+		t.Fatalf("GetAgentHooks err = %v", err)
+	}
+
+	settingsPath := filepath.Join(workspace, ".augment", "settings.local.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read Auggie settings: %v", err)
+	}
+	var settings struct {
+		Hooks map[string][]hooksjson.MatcherGroup `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("parse Auggie settings: %v", err)
+	}
+
+	wantEvents := map[string]string{
+		"SessionStart": "session-start",
+		"PreToolUse":   "pre-tool-use",
+		"PostToolUse":  "post-tool-use",
+		"Stop":         "stop",
+		"SessionEnd":   "session-end",
+	}
+	for nativeEvent, aoEvent := range wantEvents {
+		groups := settings.Hooks[nativeEvent]
+		if len(groups) != 1 || len(groups[0].Hooks) != 1 {
+			t.Fatalf("%s hooks = %#v, want one AO hook", nativeEvent, groups)
+		}
+		hook := groups[0].Hooks[0]
+		if hook.Type != "command" || hook.Timeout != 5000 {
+			t.Fatalf("%s hook = %#v, want command timeout 5000", nativeEvent, hook)
+		}
+		if !hookutil.IsExecutableFile(hook.Command) {
+			t.Fatalf("%s command %q is not an executable file", nativeEvent, hook.Command)
+		}
+		script, err := os.ReadFile(hook.Command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(script), "hooks auggie "+aoEvent) {
+			t.Fatalf("%s script does not dispatch %s:\n%s", nativeEvent, aoEvent, script)
+		}
+		if runtime.GOOS == "windows" && filepath.Ext(hook.Command) != ".cmd" {
+			t.Fatalf("Windows hook command = %q, want .cmd", hook.Command)
+		}
+		if runtime.GOOS != "windows" && filepath.Ext(hook.Command) != ".sh" {
+			t.Fatalf("Unix hook command = %q, want .sh", hook.Command)
+		}
 	}
 }
 
-func TestSessionInfoNoOp(t *testing.T) {
+func TestGetAgentHooksPreservesUserSettingsAndIsIdempotent(t *testing.T) {
+	workspace := t.TempDir()
+	settingsPath := filepath.Join(workspace, ".augment", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	original := `{
+  "theme": "dark",
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command", "command": "/usr/local/bin/user-stop.sh", "timeout": 1234}]}]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plugin := &Plugin{}
+	cfg := ports.WorkspaceHookConfig{WorkspacePath: workspace}
+	if err := plugin.GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	var theme string
+	if err := json.Unmarshal(settings["theme"], &theme); err != nil || theme != "dark" {
+		t.Fatalf("theme = %q, err = %v; want preserved dark", theme, err)
+	}
+	var hooks map[string][]hooksjson.MatcherGroup
+	if err := json.Unmarshal(settings["hooks"], &hooks); err != nil {
+		t.Fatal(err)
+	}
+	stopCommands := map[string]int{}
+	for _, group := range hooks["Stop"] {
+		for _, hook := range group.Hooks {
+			stopCommands[hook.Command]++
+		}
+	}
+	if stopCommands["/usr/local/bin/user-stop.sh"] != 1 {
+		t.Fatalf("user Stop hook count = %d, want 1", stopCommands["/usr/local/bin/user-stop.sh"])
+	}
+	managed := 0
+	for command, count := range stopCommands {
+		if strings.Contains(command, filepath.Join(".augment", "ao-hooks")) {
+			managed += count
+		}
+	}
+	if managed != 1 {
+		t.Fatalf("managed Stop hook count = %d, want 1; commands = %#v", managed, stopCommands)
+	}
+}
+
+func TestSessionInfoReadsHookMetadata(t *testing.T) {
 	info, ok, err := (&Plugin{}).SessionInfo(context.Background(), ports.SessionRef{
 		Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "sess-abc123"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok {
-		t.Fatalf("ok=true with info %#v, want no-op false", info)
+	if !ok {
+		t.Fatal("ok=false, want hook-derived session info")
 	}
-	if !reflect.DeepEqual(info, ports.SessionInfo{}) {
-		t.Fatalf("info = %#v, want zero", info)
+	if info.AgentSessionID != "sess-abc123" {
+		t.Fatalf("AgentSessionID = %q, want sess-abc123", info.AgentSessionID)
 	}
 }
 

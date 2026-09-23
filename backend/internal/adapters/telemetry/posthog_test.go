@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,12 @@ func TestPostHogSinkCapturesEvent(t *testing.T) {
 		}
 		if props["$process_person_profile"] != false {
 			t.Fatalf("properties.$process_person_profile = %#v, want false", props["$process_person_profile"])
+		}
+		if props["$geoip_disable"] != false {
+			t.Fatalf("properties.$geoip_disable = %#v, want false so PostHog derives coarse location", props["$geoip_disable"])
+		}
+		if _, ok := props["$set"]; ok {
+			t.Fatalf("$set should be absent for an anonymous event: %#v", props["$set"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("PostHog sink did not send request")
@@ -264,5 +271,113 @@ func TestPostHogSinkStampsAppVersionWhenSupplied(t *testing.T) {
 	}
 	if _, ok := props["ao_version"]; ok {
 		t.Fatalf("ao_version present without the option: %#v", props["ao_version"])
+	}
+}
+
+// An event name missing from remotePayloadAllowlist exports with no properties
+// at all rather than failing loudly, so a key added at an emit site and not
+// here ships silently stripped. These assertions are what a review-funnel
+// dashboard actually reads: a renamed key is a broken chart, not a build
+// failure, and nothing ties the emit sites to this map at compile time.
+func TestReviewPayloadAllowlistCoversTheReviewFunnel(t *testing.T) {
+	want := map[string][]string{
+		"ao.review.triggered":      {"harness", "created_runs", "reused", "trigger"},
+		"ao.review.trigger_failed": {"error_kind", "trigger"},
+		"ao.review.submitted":      {"harness", "verdict", "duration_ms", "posted_to_provider", "trigger", "body_bytes", "auto_inject"},
+		"ao.review.cancelled":      {"cancelled_runs"},
+	}
+	for name, keys := range want {
+		allowed, ok := remotePayloadAllowlist[name]
+		if !ok {
+			t.Errorf("%s has no allowlist entry, so it would export with no properties", name)
+			continue
+		}
+		for _, key := range keys {
+			if _, ok := allowed[key]; !ok {
+				t.Errorf("%s is missing allowlisted key %q", name, key)
+			}
+		}
+		if len(allowed) != len(keys) {
+			t.Errorf("%s allowlist has %d keys, want exactly %d (%v)", name, len(allowed), len(keys), keys)
+		}
+	}
+}
+
+// Review payloads carry counts, enums, and booleans. The review body is
+// reviewer prose about someone's code; the PR URL and SHA identify the
+// repository. None of them may survive into an exported property.
+func TestReviewPayloadAllowlistRejectsIdentifyingKeys(t *testing.T) {
+	forbidden := []string{"body", "pr_url", "url", "target_sha", "head_sha", "branch", "repo", "title", "review_body"}
+	for name, allowed := range remotePayloadAllowlist {
+		if !strings.HasPrefix(name, "ao.review.") {
+			continue
+		}
+		for _, key := range forbidden {
+			if _, ok := allowed[key]; ok {
+				t.Errorf("%s allowlists identifying key %q", name, key)
+			}
+		}
+	}
+}
+
+// properties is pure, so the person-property derivation is exercised directly
+// rather than through the HTTP fixture. When the sanitized payload carries the
+// operator's GitHub handle, the sink mirrors it into $set and flips this one
+// event to identified so a breakdown by github_actor is possible.
+func TestPropertiesDerivesPersonSetFromGithubActor(t *testing.T) {
+	sink := &PostHogSink{}
+	props := sink.properties(ports.TelemetryEvent{
+		Name:    "ao.session.spawned",
+		Source:  "session_service",
+		Payload: map[string]any{"kind": "worker", "github_actor": "octocat"},
+	})
+	if props["github_actor"] != "octocat" {
+		t.Fatalf("properties.github_actor = %#v, want octocat", props["github_actor"])
+	}
+	if props["$process_person_profile"] != true {
+		t.Fatalf("properties.$process_person_profile = %#v, want true", props["$process_person_profile"])
+	}
+	set, ok := props["$set"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties.$set type = %T, want map[string]any", props["$set"])
+	}
+	if set["github_actor"] != "octocat" {
+		t.Fatalf("$set.github_actor = %#v, want octocat", set["github_actor"])
+	}
+
+	// The handle is stable, so a second spawn keeps the event property but does
+	// not resend the identified person $set: only the first event per process
+	// pays the identified rate.
+	next := sink.properties(ports.TelemetryEvent{
+		Name:    "ao.session.spawned",
+		Source:  "session_service",
+		Payload: map[string]any{"kind": "worker", "github_actor": "octocat"},
+	})
+	if next["github_actor"] != "octocat" {
+		t.Fatalf("second properties.github_actor = %#v, want octocat", next["github_actor"])
+	}
+	if _, ok := next["$set"]; ok {
+		t.Fatalf("second event set a person profile again: %#v", next["$set"])
+	}
+	if next["$process_person_profile"] != false {
+		t.Fatalf("second properties.$process_person_profile = %#v, want false", next["$process_person_profile"])
+	}
+}
+
+func TestSanitizeRemotePayloadDropsUnlistedReviewKeys(t *testing.T) {
+	got := sanitizeRemotePayload("ao.review.submitted", map[string]any{
+		"verdict": "changes_requested",
+		"trigger": "auto",
+		"body":    "leaks credentials in src/config/prod.ts",
+		"pr_url":  "https://github.com/acme/secret-repo/pull/7",
+	})
+	if got["verdict"] != "changes_requested" || got["trigger"] != "auto" {
+		t.Fatalf("allowlisted keys were dropped: %#v", got)
+	}
+	if _, ok := got["body"]; ok {
+		t.Fatalf("body survived sanitization: %#v", got)
+	}
+	if _, ok := got["pr_url"]; ok {
+		t.Fatalf("pr_url survived sanitization: %#v", got)
 	}
 }

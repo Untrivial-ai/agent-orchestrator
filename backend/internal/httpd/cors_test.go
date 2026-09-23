@@ -3,6 +3,7 @@ package httpd
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -142,6 +143,71 @@ func TestCORS(t *testing.T) {
 			}
 			if tt.headers["Origin"] != "" && resp.Header.Get("Vary") == "" {
 				t.Error("Vary header missing for request with Origin")
+			}
+		})
+	}
+}
+
+func TestCodexAccountOriginBoundaryBlocksPreviewAndAllowsRenderers(t *testing.T) {
+	cfg := config.Config{AllowedOrigins: []string{"app://renderer", "http://localhost:5173"}}
+	router := newTestRouter(cfg, discardLogger(), nil)
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		origin     string
+		wantStatus int
+		wantACAO   string
+	}{
+		{
+			name:       "preview cannot delete an account",
+			method:     http.MethodDelete,
+			path:       "/api/v1/agents/codex/accounts/account-1",
+			origin:     "http://ao-preview.hostile.localhost:5181",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "packaged renderer can read accounts",
+			method:     http.MethodGet,
+			path:       "/api/v1/agents/codex/accounts",
+			origin:     "app://renderer",
+			wantStatus: http.StatusNotImplemented,
+			wantACAO:   "app://renderer",
+		},
+		{
+			name:       "configured development renderer can mutate accounts",
+			method:     http.MethodDelete,
+			path:       "/api/v1/agents/codex/accounts/account-1",
+			origin:     "http://localhost:5173",
+			wantStatus: http.StatusNotImplemented,
+			wantACAO:   "http://localhost:5173",
+		},
+		{
+			name:       "native caller without origin can mutate accounts",
+			method:     http.MethodDelete,
+			path:       "/api/v1/agents/codex/accounts/account-1",
+			wantStatus: http.StatusNotImplemented,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			body := response.Body.String()
+			if response.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, tt.wantStatus, body)
+			}
+			if got := response.Header().Get("Access-Control-Allow-Origin"); got != tt.wantACAO {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, tt.wantACAO)
+			}
+			if tt.wantStatus == http.StatusForbidden && !strings.Contains(body, `"code":"ORIGIN_FORBIDDEN"`) {
+				t.Errorf("forbidden response = %s, want ORIGIN_FORBIDDEN", body)
 			}
 		})
 	}

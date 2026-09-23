@@ -10,6 +10,14 @@ func revParseVerifyArgs(repo, ref string) []string {
 	return []string{"-C", repo, "rev-parse", "--verify", "--quiet", ref}
 }
 
+func remoteListArgs(repo string) []string {
+	return []string{"-C", repo, "remote"}
+}
+
+func fetchBranchArgs(repo, remote, branch string) []string {
+	return []string{"-C", repo, "fetch", remote, "+refs/heads/" + branch + ":refs/remotes/" + remote + "/" + branch}
+}
+
 // worktreeAddForce is git's documented override for "<path> is a missing but
 // already registered worktree" (git's own hint for that failure is "use
 // 'add -f' to override"). It re-registers a path whose registration outlived
@@ -128,17 +136,14 @@ func ignoredCountArgs(worktree string) []string {
 	return []string{"-C", worktree, "status", "--ignored", "--porcelain"}
 }
 
-func baseRefCandidates(branch, defaultBranch string) []string {
-	candidates := []string{"origin/" + branch}
+func configuredBaseRefCandidates(defaultBranch string) []string {
 	if strings.Contains(defaultBranch, "/") {
 		// A qualified default ("upstream/main") is used verbatim; git's refname
 		// disambiguation already falls back to refs/heads/<defaultBranch>.
-		candidates = append(candidates, defaultBranch)
-	} else {
-		// The local head comes after origin/<defaultBranch> so remote-tracking
-		// still wins when present, but a remoteless repo can base new branches
-		// on its local default branch instead of failing BRANCH_NOT_FETCHED.
-		candidates = append(candidates, "origin/"+defaultBranch, "refs/heads/"+defaultBranch)
+		return []string{defaultBranch}
 	}
-	return append(candidates, branch)
+	// The local head comes after origin/<defaultBranch> so remote-tracking
+	// still wins when present, but a remoteless repo can base new branches
+	// on its local default branch instead of failing BRANCH_NOT_FETCHED.
+	return []string{"origin/" + defaultBranch, "refs/heads/" + defaultBranch}
 }

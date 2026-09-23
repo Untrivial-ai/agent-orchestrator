@@ -2,6 +2,7 @@ package codexappserver
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -37,13 +38,71 @@ func normalizeNone(t *testing.T, method, params string) {
 
 func TestNormalizeTurnLifecycle(t *testing.T) {
 	started := normalizeOne(t, "turn/started", `{"threadId":"th1","turn":{"id":"tu1","status":"inProgress","items":[]}}`)
-	if started.Kind != ports.ChatEventTurnStarted || started.ProviderTurnID != "tu1" {
+	if started.Kind != ports.ChatEventTurnStarted || started.ProviderTurnID != "tu1" ||
+		started.ProviderConversationID != "th1" {
 		t.Fatalf("turn/started -> %+v", started)
 	}
 
 	done := normalizeOne(t, "turn/completed", `{"threadId":"th1","turn":{"id":"tu1","status":"completed","items":[]}}`)
-	if done.Kind != ports.ChatEventTurnCompleted || done.TurnState != domain.TurnStateCompleted {
+	if done.Kind != ports.ChatEventTurnCompleted || done.TurnState != domain.TurnStateCompleted ||
+		done.ProviderConversationID != "th1" {
 		t.Fatalf("turn/completed -> %+v", done)
+	}
+}
+
+func TestNormalizeCompletedTurnIgnoresEmptyError(t *testing.T) {
+	for _, payload := range []string{`{}`, `{"message":""}`, `{"message":" \t ","additionalDetails":"\n"}`} {
+		event := normalizeOne(t, "turn/completed", `{"threadId":"th1","turn":{"id":"tu1","status":"completed","error":`+payload+`}}`)
+		if event.TurnState != domain.TurnStateCompleted || event.Err != nil {
+			t.Fatalf("empty error %s changed completion: %#v", payload, event)
+		}
+	}
+}
+
+func TestNormalizeCodexFailuresUseSharedProviderCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, params string
+		wantKind             ports.ChatEventKind
+	}{
+		{
+			name:     "terminal turn",
+			method:   "turn/completed",
+			params:   `{"threadId":"th1","turn":{"id":"tu1","status":"failed","items":[],"error":{"message":"Request failed","additionalDetails":"See https://example.com/help","codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":500}}}}}`,
+			wantKind: ports.ChatEventTurnCompleted,
+		},
+		{
+			name:     "standalone notification",
+			method:   "error",
+			params:   `{"threadId":"th1","turnId":"tu1","willRetry":false,"error":{"message":"Request failed","additionalDetails":"See https://example.com/help"}}`,
+			wantKind: ports.ChatEventError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := normalizeOne(t, tc.method, tc.params)
+			if event.Kind != tc.wantKind || event.ProviderConversationID != "th1" || event.ProviderTurnID != "tu1" {
+				t.Fatalf("event = %#v", event)
+			}
+			if event.Err == nil || event.Err.Error() != "Request failed\n\nSee https://example.com/help" {
+				t.Fatalf("failure = %#v", event.Err)
+			}
+		})
+	}
+}
+
+func TestCodexAuthRecoveryRequiresNativeSignal(t *testing.T) {
+	for _, tc := range []struct {
+		info string
+		auth bool
+	}{
+		{`"unauthorized"`, true},
+		{`"usageLimitExceeded"`, false},
+		{`{"httpConnectionFailed":{"httpStatusCode":401}}`, false},
+		{`null`, false},
+	} {
+		event := normalizeOne(t, "error", `{"threadId":"th1","turnId":"tu1","error":{"message":"Login expired or credits exhausted","codexErrorInfo":`+tc.info+`}}`)
+		if errors.Is(event.Err, ports.ErrChatAuthRequired) != tc.auth {
+			t.Fatalf("info=%s: auth=%v, want %v", tc.info, errors.Is(event.Err, ports.ErrChatAuthRequired), tc.auth)
+		}
 	}
 }
 
@@ -356,21 +415,6 @@ func TestNormalizeToleratesMalformedParams(t *testing.T) {
 		"account/rateLimits/updated",
 	} {
 		normalizeNone(t, method, `"not an object"`)
-	}
-}
-
-func TestUnwrapShellLeavesPlainCommands(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"date -u", "date -u"},
-		{"/bin/sh -c 'ls -la'", "ls -la"},
-		{`/bin/bash -lc "git status"`, "git status"},
-		{"ao spawn --project p --name w", "ao spawn --project p --name w"},
-		// A non-shell binary that happens to take -c must not be unwrapped.
-		{"python -c print(1)", "python -c print(1)"},
-	} {
-		if got := unwrapShell(tc.in); got != tc.want {
-			t.Errorf("unwrapShell(%q) = %q, want %q", tc.in, got, tc.want)
-		}
 	}
 }
 

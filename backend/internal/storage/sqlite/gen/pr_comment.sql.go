@@ -34,8 +34,8 @@ func (q *Queries) DeletePRComment(ctx context.Context, arg DeletePRCommentParams
 }
 
 const insertLegacyPRComment = `-- name: InsertLegacyPRComment :exec
-INSERT OR IGNORE INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT OR IGNORE INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertLegacyPRCommentParams struct {
@@ -48,6 +48,7 @@ type InsertLegacyPRCommentParams struct {
 	Resolved  bool
 	CreatedAt time.Time
 	ThreadID  string
+	ReviewID  string
 	URL       string
 	IsBot     int64
 }
@@ -63,6 +64,7 @@ func (q *Queries) InsertLegacyPRComment(ctx context.Context, arg InsertLegacyPRC
 		arg.Resolved,
 		arg.CreatedAt,
 		arg.ThreadID,
+		arg.ReviewID,
 		arg.URL,
 		arg.IsBot,
 	)
@@ -70,7 +72,7 @@ func (q *Queries) InsertLegacyPRComment(ctx context.Context, arg InsertLegacyPRC
 }
 
 const listPRComments = `-- name: ListPRComments :many
-SELECT pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot, auto_inject_review
+SELECT pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot, auto_inject_review, review_id
 FROM pr_comment WHERE pr_url = ? ORDER BY created_at, comment_id
 `
 
@@ -96,6 +98,7 @@ func (q *Queries) ListPRComments(ctx context.Context, prUrl string) ([]PRComment
 			&i.URL,
 			&i.IsBot,
 			&i.AutoInjectReview,
+			&i.ReviewID,
 		); err != nil {
 			return nil, err
 		}
@@ -110,9 +113,45 @@ func (q *Queries) ListPRComments(ctx context.Context, prUrl string) ([]PRComment
 	return items, nil
 }
 
+const markPRCommentResolved = `-- name: MarkPRCommentResolved :execrows
+UPDATE pr_comment SET resolved = TRUE WHERE pr_url = ? AND comment_id = ?
+`
+
+type MarkPRCommentResolvedParams struct {
+	PRURL     string
+	CommentID string
+}
+
+func (q *Queries) MarkPRCommentResolved(ctx context.Context, arg MarkPRCommentResolvedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markPRCommentResolved, arg.PRURL, arg.CommentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markPRCommentsResolvedForThread = `-- name: MarkPRCommentsResolvedForThread :execrows
+UPDATE pr_comment
+SET resolved = TRUE
+WHERE pr_url = ? AND thread_id = ? AND resolved = FALSE
+`
+
+type MarkPRCommentsResolvedForThreadParams struct {
+	PRURL    string
+	ThreadID string
+}
+
+func (q *Queries) MarkPRCommentsResolvedForThread(ctx context.Context, arg MarkPRCommentsResolvedForThreadParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markPRCommentsResolvedForThread, arg.PRURL, arg.ThreadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const upsertPRComment = `-- name: UpsertPRComment :exec
-INSERT INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, url, is_bot, auto_inject_review)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pr_comment (pr_url, comment_id, author, file, line, body, resolved, created_at, thread_id, review_id, url, is_bot, auto_inject_review)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (pr_url, comment_id) DO UPDATE SET
     author = excluded.author,
     file = excluded.file,
@@ -121,6 +160,7 @@ ON CONFLICT (pr_url, comment_id) DO UPDATE SET
     resolved = excluded.resolved,
     created_at = excluded.created_at,
     thread_id = excluded.thread_id,
+    review_id = excluded.review_id,
     url = excluded.url,
     is_bot = excluded.is_bot
 `
@@ -135,6 +175,7 @@ type UpsertPRCommentParams struct {
 	Resolved         bool
 	CreatedAt        time.Time
 	ThreadID         string
+	ReviewID         string
 	URL              string
 	IsBot            int64
 	AutoInjectReview bool
@@ -151,6 +192,7 @@ func (q *Queries) UpsertPRComment(ctx context.Context, arg UpsertPRCommentParams
 		arg.Resolved,
 		arg.CreatedAt,
 		arg.ThreadID,
+		arg.ReviewID,
 		arg.URL,
 		arg.IsBot,
 		arg.AutoInjectReview,

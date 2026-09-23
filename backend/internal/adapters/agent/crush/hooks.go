@@ -146,7 +146,7 @@ func applyCrushModelOverride(workspacePath, modelOverride string) error {
 }
 
 // AreHooksInstalled reports whether AO's Crush system-prompt context file is
-// present. Crush still lacks activity hooks; this reports only the prompt
+// present. Crush activity is terminal-derived, so this reports only the prompt
 // injection hook surface AO manages for Crush.
 func (p *Plugin) AreHooksInstalled(ctx context.Context, workspacePath string) (bool, error) {
 	if err := ctx.Err(); err != nil {

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
@@ -12,13 +14,15 @@ import (
 )
 
 const interfaceTransitionPath = "/api/v1/sessions/{sessionId}/interface-transition"
+const interfaceTransitionNoticeAcknowledgementPath = "/api/v1/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement"
 
 // sessionInterfaceTransitionService is optional so unrelated controller fakes
 // keep implementing the stable SessionService surface.
 type sessionInterfaceTransitionService interface {
 	InterfaceTransitionStatus(context.Context, domain.SessionID) (sessionsvc.InterfaceTransitionStatus, error)
-	StartInterfaceTransition(context.Context, domain.SessionID, domain.SessionMode, domain.SessionInterfaceTransitionPolicy) (domain.SessionInterfaceTransition, error)
+	StartInterfaceTransition(context.Context, domain.SessionID, domain.SessionMode, domain.SessionInterfaceTransitionPolicy, domain.SessionInterfaceTransitionHistoryPolicy) (domain.SessionInterfaceTransition, error)
 	CancelInterfaceTransition(context.Context, domain.SessionID) error
+	AcknowledgeInterfaceTransitionNotice(context.Context, domain.SessionID, string) (domain.SessionInterfaceTransition, error)
 }
 
 func (c *SessionsController) interfaceTransitionService() (sessionInterfaceTransitionService, bool) {
@@ -59,7 +63,11 @@ func (c *SessionsController) startInterfaceTransition(w http.ResponseWriter, r *
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	transition, err := service.StartInterfaceTransition(r.Context(), sessionID(r), in.TargetMode, in.Policy)
+	historyPolicy := in.HistoryPolicy
+	if historyPolicy == "" {
+		historyPolicy = domain.SessionInterfaceTransitionHistoryStrict
+	}
+	transition, err := service.StartInterfaceTransition(r.Context(), sessionID(r), in.TargetMode, in.Policy, historyPolicy)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -84,18 +92,44 @@ func (c *SessionsController) cancelInterfaceTransition(w http.ResponseWriter, r 
 	})
 }
 
+func (c *SessionsController) acknowledgeInterfaceTransitionNotice(w http.ResponseWriter, r *http.Request) {
+	service, ok := c.interfaceTransitionService()
+	if !ok {
+		apispec.NotImplemented(w, r, http.MethodPut, interfaceTransitionNoticeAcknowledgementPath)
+		return
+	}
+	transition, err := service.AcknowledgeInterfaceTransitionNotice(
+		r.Context(), sessionID(r), chi.URLParam(r, "transitionId"),
+	)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, InterfaceTransitionNoticeAckResponse{
+		OK: true, SessionID: sessionID(r), Transition: sessionInterfaceTransitionView(transition),
+	})
+}
+
 func sessionInterfaceTransitionView(transition domain.SessionInterfaceTransition) SessionInterfaceTransitionView {
+	if transition.HistoryPolicy == "" {
+		transition.HistoryPolicy = domain.SessionInterfaceTransitionHistoryStrict
+	}
 	var completedAt *time.Time
 	if !transition.CompletedAt.IsZero() {
 		value := transition.CompletedAt
 		completedAt = &value
 	}
+	var noticeAcknowledgedAt *time.Time
+	if !transition.NoticeAcknowledgedAt.IsZero() {
+		value := transition.NoticeAcknowledgedAt
+		noticeAcknowledgedAt = &value
+	}
 	return SessionInterfaceTransitionView{
 		ID: transition.ID, SessionID: transition.SessionID,
 		SourceMode: transition.SourceMode, TargetMode: transition.TargetMode,
-		Policy: transition.Policy, Phase: transition.Phase,
+		Policy: transition.Policy, HistoryPolicy: transition.HistoryPolicy, Phase: transition.Phase,
 		ErrorCode: transition.ErrorCode, ErrorDetail: transition.ErrorDetail,
 		CreatedAt: transition.CreatedAt, UpdatedAt: transition.UpdatedAt,
-		CompletedAt: completedAt,
+		CompletedAt: completedAt, NoticeAcknowledgedAt: noticeAcknowledgedAt,
 	}
 }

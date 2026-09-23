@@ -1,276 +1,127 @@
 ---
 title: Examples
-description: Five annotated starter configurations covering GitHub, Linear, multi-project, auto-merge, and Codex setups.
+description: Practical workflows for desktop sessions, Chat and TUI, pull requests, reviews, previews, and mobile.
 ---
 
-All examples live in the [`examples/` directory](https://github.com/Untrivial-ai/agent-orchestrator/tree/main/examples) of the AO repository. Pick the one closest to your setup, copy it to your project root as `agent-orchestrator.yaml`, fill in your repo path and any API keys, and you're ready to spawn agents.
+These examples use capabilities shipped in the current Go daemon and Electron desktop app. They do not rely on the retired TypeScript plugin configuration or an `examples/` directory.
+
+## Start A Focused Chat Worker
+
+1. Add a local GitHub repository in the desktop app.
+2. Create a task named **Fix settings validation**.
+3. Select an installed Chat-capable harness such as Codex or Claude Code.
+4. Choose **Chat** and use a bounded prompt:
+
+```text
+Reproduce the invalid settings error, add a regression test, and make the smallest fix.
+Run the focused tests and summarize changed behavior. Do not refactor unrelated settings code.
+```
+
+Watch provider activities and changed files in Chat. If an approval or structured question appears, answer it in the timeline.
+
+## Use A Native Terminal UI
+
+Create another task and choose **Terminal UI**. AO creates the worktree and launches the harness's native interface through tmux on macOS/Linux or conpty on Windows.
+
+Use the desktop terminal for native interactive commands. Send normal follow-up guidance through AO's message controls:
+
+```text
+The failing case is on Windows path normalization. Keep the Unix behavior unchanged.
+```
+
+## Switch Claude Code Or Codex To Chat
+
+For a compatible idle TUI session, choose **Open Chat**. AO stops the old controller, resumes the provider conversation through the native Chat driver, and keeps the same session and worktree.
+
+If the session is busy, choose deliberately:
+
+- **Finish and drain** waits for accepted work to finish before switching.
+- **Stop and interrupt** cancels the active turn before switching.
+
+Switching preserves provider context, but a first TUI-to-Chat switch does not reconstruct old terminal screen output as structured Chat cards.
+
+## Claim An Existing Pull Request
+
+The optional CLI can start a worker and associate an existing pull request:
 
 ```bash
-cp examples/simple-github.yaml agent-orchestrator.yaml
+ao spawn --project my-project --agent codex --name "Finish PR 142" --claim-pr 142
 ```
 
----
+Or attach a pull request to an existing session:
 
-## Simple GitHub
-
-For solo devs on a single GitHub repo with GitHub Issues.
-
-```yaml title="simple-github.yaml"
-# Minimal setup for a single GitHub repo with GitHub Issues
-# Perfect for getting started quickly
-
-dataDir: ~/.agent-orchestrator
-worktreeDir: ~/.worktrees
-
-projects:
-  my-app:
-    repo: owner/my-app
-    path: ~/my-app
-    defaultBranch: main
+```bash
+ao session claim-pr 142
+# From outside the worker, target it explicitly:
+ao session claim-pr <session-id> 142
 ```
 
-**Notable settings:**
+The shorter form reads the current worker from `AO_SESSION_ID`.
 
-- Uses the default GitHub tracker — requires `GITHUB_TOKEN` (set automatically by the `gh` CLI).
-- No `defaults:` block needed — AO's built-in defaults (`tmux` runtime, `claude-code` agent, `worktree` workspace) apply automatically.
-- Replace `owner/my-app` and `~/my-app` with your actual GitHub slug and local checkout path.
+AO then observes the GitHub pull request and displays CI, review, and mergeability facts with the session.
 
-[View raw file on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/examples/simple-github.yaml)
+## Run A Reviewer
 
----
+Open a session with a linked pull request, go to **Reviews**, select a configured reviewer harness, and start a review. Reviewer runs are separate from worker harness configuration. Current reviewer harnesses include Claude Code, Codex, and OpenCode.
 
-## Linear Team
+Inspect the result, then send actionable findings to the worker. Keep human review in the loop before merging.
 
-For teams that track work in Linear rather than GitHub Issues.
+## Preview A Web App
 
-```yaml title="linear-team.yaml"
-# Linear integration with custom team
-# Requires LINEAR_API_KEY environment variable
+Start the development server in the session worktree, then select it explicitly:
 
-dataDir: ~/.agent-orchestrator
-worktreeDir: ~/.worktrees
-
-projects:
-  my-app:
-    repo: owner/my-app
-    path: ~/my-app
-    defaultBranch: main
-
-    # Linear tracker integration
-    tracker:
-      plugin: linear
-      teamId: "2a6e9b1b-19cd-4e30-b5bd-7b34dc491c7e"
-
-    # Custom rules for agents
-    agentRules: |
-      Always link Linear tickets in commit messages.
-      Run tests before pushing.
-      Use conventional commits (feat:, fix:, chore:).
+```bash
+ao preview http://127.0.0.1:5173
 ```
 
-**Notable settings:**
+For a repository with `.ao/launch.json`:
 
-- `tracker.plugin: linear` swaps out the default GitHub tracker for the Linear plugin.
-- `tracker.teamId` is your Linear team UUID — find it in Linear → Settings → Team → General.
-- Requires a `LINEAR_API_KEY` environment variable (set it in your shell profile or CI secrets).
-- `agentRules` injects project-specific instructions into every agent's prompt — useful for enforcing commit conventions or test requirements.
-
-[View raw file on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/examples/linear-team.yaml)
-
----
-
-## Multi-Project
-
-For managing multiple repositories from a single config, with mixed trackers and Slack notifications.
-
-```yaml title="multi-project.yaml"
-# Managing multiple projects with different trackers
-# Shows how to configure multiple repos with different settings
-
-dataDir: ~/.agent-orchestrator
-worktreeDir: ~/.worktrees
-
-defaults:
-  runtime: tmux
-  agent: claude-code
-  workspace: worktree
-  notifiers: [desktop, slack]
-
-projects:
-  frontend:
-    name: Frontend
-    repo: org/frontend
-    path: ~/frontend
-    defaultBranch: main
-    sessionPrefix: fe
-
-    tracker:
-      plugin: github
-
-    agentRules: |
-      Use TypeScript strict mode.
-      Follow React best practices.
-      Always run `pnpm test` before pushing.
-
-  backend:
-    name: Backend API
-    repo: org/backend
-    path: ~/backend
-    defaultBranch: main
-    sessionPrefix: api
-
-    tracker:
-      plugin: linear
-      teamId: "your-team-id"
-
-    agentRules: |
-      All endpoints require auth middleware.
-      Add OpenAPI docs for new routes.
-      Run `pnpm test` and `pnpm lint` before pushing.
-
-# Slack notifications (requires SLACK_WEBHOOK_URL)
-notifiers:
-  slack:
-    plugin: slack
-    webhook: ${SLACK_WEBHOOK_URL}
-    channel: "#agent-updates"
-
-# Route notifications by priority
-notificationRouting:
-  urgent: [desktop, slack]
-  action: [desktop, slack]
-  warning: [slack]
-  info: [slack]
+```bash
+ao preview start
+ao preview status
 ```
 
-**Notable settings:**
+Open the Browser tab in the session inspector. Preview targets are session-scoped; AO does not auto-discover one when a worker starts.
 
-- `defaults:` sets the runtime, agent, workspace, and notifier list for all projects — individual projects can override any of these.
-- `sessionPrefix` keeps session IDs readable (`fe-123`, `api-456`) when multiple projects run simultaneously.
-- Each project can use a different tracker — `frontend` uses GitHub Issues, `backend` uses Linear.
-- `notifiers.slack.webhook: ${SLACK_WEBHOOK_URL}` reads the webhook URL from an environment variable — never hardcode secrets in config files.
-- `notificationRouting` routes urgent and actionable events to both desktop and Slack, while lower-priority events go to Slack only.
+## Use Browser Controls From An Agent
 
-[View raw file on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/examples/multi-project.yaml)
+When the Browser tab is attached to the session, the optional CLI exposes commands such as:
 
----
-
-## Auto-Merge
-
-For teams that want maximum automation — PRs merge automatically when approved and CI is green, with auto-retry for failures.
-
-```yaml title="auto-merge.yaml"
-# Aggressive automation with auto-merge
-# Automatically merges approved PRs with passing CI
-
-dataDir: ~/.agent-orchestrator
-worktreeDir: ~/.worktrees
-
-projects:
-  my-app:
-    repo: owner/my-app
-    path: ~/my-app
-    defaultBranch: main
-
-    # Enable auto-merge for this project
-    reactions:
-      approved-and-green:
-        auto: true # Automatically merge when PR is approved and CI passes
-        action: auto-merge
-
-# Global reactions
-reactions:
-  # Auto-retry CI failures up to 3 times
-  ci-failed:
-    auto: true
-    action: send-to-agent
-    retries: 3
-
-  # Auto-address review comments
-  changes-requested:
-    auto: true
-    action: send-to-agent
-    escalateAfter: 1h # Notify human if not resolved in 1 hour
-
-  # Notify when agent is stuck
-  agent-stuck:
-    threshold: 10m
-    action: notify
-    priority: urgent
+```bash
+ao browser snapshot
+ao browser click <ref>
+ao browser fill <ref> "hello"
+ao browser screenshot
 ```
 
-**Notable settings:**
+Temporary network-metadata capture must be started explicitly and expires automatically. It omits request and response bodies plus sensitive values.
 
-- `reactions.approved-and-green.auto: true` with `action: auto-merge` enables hands-free merging — no human click required once the PR is approved and CI passes.
-- The project-level `reactions` block overrides global reactions for that project only; global `reactions` apply to all projects unless overridden.
-- `ci-failed.retries: 3` lets AO send the agent back to fix CI up to three times before escalating.
-- `changes-requested.escalateAfter: 1h` ensures a human is notified if an agent can't resolve review comments within an hour.
-- `agent-stuck.threshold: 10m` triggers an urgent desktop notification if an agent goes silent for 10 minutes.
+## Pair The Mobile App
 
-[View raw file on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/examples/auto-merge.yaml)
+1. Open desktop settings and choose **Connect Mobile**.
+2. Scan the pairing QR from the mobile app.
+3. Type the connection password shown separately on the desktop.
+4. Create or open a session from the phone.
 
----
+Use this only on a trusted home network. Turning Connect Mobile off closes the LAN listener.
 
-## Codex Integration
+## Useful CLI Checks
 
-For teams that prefer GPT-4/Codex over Claude Code.
+The CLI talks to the already-running daemon:
 
-```yaml title="codex-integration.yaml"
-# Using Codex instead of Claude Code
-# Demonstrates using a different AI agent
-
-dataDir: ~/.agent-orchestrator
-worktreeDir: ~/.worktrees
-
-defaults:
-  agent: codex # Use Codex instead of Claude Code
-  runtime: tmux
-  workspace: worktree
-
-projects:
-  my-app:
-    repo: owner/my-app
-    path: ~/my-app
-    defaultBranch: main
-
-    # Codex-specific configuration
-    agentConfig:
-      model: gpt-4
-      permissions: default
-
-    agentRules: |
-      Write clean, well-documented code.
-      Follow project conventions.
-      Run tests before pushing.
+```bash
+ao status
+ao session ls
+ao session get <session-id>
+ao send --session <session-id> --message "Run the targeted test and report the result."
 ```
 
-**Notable settings:**
+The desktop app remains the recommended control surface.
 
-- `defaults.agent: codex` changes the agent for all projects — no need to set it per project.
-- `agentConfig.model: gpt-4` is passed directly to the Codex plugin; valid values depend on your OpenAI subscription and which models the Codex plugin supports.
-- `agentConfig.permissions: default` uses the plugin's built-in permission set — change to `full` to allow broader file access, or `readonly` to restrict writes.
-- Requires an `OPENAI_API_KEY` environment variable.
-
-[View raw file on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/examples/codex-integration.yaml)
-
----
-
-## Next Steps
+## Next
 
 <Cards>
-	<Card
-		title="Configuration Reference"
-		href="/docs/configuration"
-		description="Full reference for every field in agent-orchestrator.yaml."
-	/>
-	<Card
-		title="Plugins"
-		href="/docs/plugins"
-		description="Browse available runtime, agent, tracker, SCM, notifier, and terminal plugins."
-	/>
-	<Card
-		title="Guides"
-		href="/docs/guides"
-		description="Step-by-step workflows for common setups and automation patterns."
-	/>
+	<Card title="Quickstart" href="/docs/quickstart" description="Run the first desktop workflow." />
+	<Card title="Dashboard" href="/docs/dashboard" description="Understand each desktop surface used above." />
+	<Card title="Troubleshooting" href="/docs/troubleshooting" description="Recover when a workflow does not behave as expected." />
 </Cards>

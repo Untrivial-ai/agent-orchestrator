@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	scmmulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/multi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	scmobserve "github.com/aoagents/agent-orchestrator/backend/internal/observe/scm"
@@ -103,7 +104,7 @@ func (p *cannedSCMProvider) RepoPRListGuard(_ context.Context, _ ports.SCMRepo, 
 	return ports.SCMGuardResult{ETag: "repo-etag"}, nil
 }
 
-func (p *cannedSCMProvider) ListOpenPRsByRepo(_ context.Context, _ ports.SCMRepo) ([]ports.SCMPRObservation, error) {
+func (p *cannedSCMProvider) ListPRsByRepo(_ context.Context, _ ports.SCMRepo, _ time.Time) ([]ports.SCMPRObservation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := make([]ports.SCMPRObservation, 0, len(p.detected))
@@ -120,10 +121,10 @@ func (p *cannedSCMProvider) CommitChecksGuard(_ context.Context, _ ports.SCMRepo
 func (p *cannedSCMProvider) FetchPullRequests(_ context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]ports.SCMObservation, 0, len(refs))
-	for _, ref := range refs {
+	out := make([]ports.SCMObservation, len(refs))
+	for i, ref := range refs {
 		if obs, ok := p.observations[ref.Number]; ok {
-			out = append(out, obs)
+			out[i] = obs
 		}
 	}
 	return out, nil
@@ -141,6 +142,14 @@ func (p *cannedSCMProvider) FetchReviewThreads(_ context.Context, ref ports.SCMP
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.reviews[ref.Number], nil
+}
+
+func (p *cannedSCMProvider) AuthenticatedIdentity(context.Context) (ports.SCMIdentity, error) {
+	return ports.SCMIdentity{Login: "octocat", Human: true}, nil
+}
+
+func (p *cannedSCMProvider) SCMCredentialsAvailable(context.Context) (bool, error) {
+	return true, nil
 }
 
 // scmFixture bundles the live collaborators a single SCM observer scenario
@@ -198,11 +207,12 @@ func newSCMFixture(t *testing.T, branch string) *scmFixture {
 		t.Fatalf("UpsertProject: %v", err)
 	}
 	sess, err := store.CreateSession(ctx, domain.SessionRecord{
-		ProjectID: "octo",
-		Kind:      domain.KindWorker,
-		Metadata:  domain.SessionMetadata{Branch: branch, WorkspacePath: "/ws/octo"},
-		CreatedAt: now,
-		UpdatedAt: now,
+		ProjectID:    "octo",
+		Kind:         domain.KindWorker,
+		Metadata:     domain.SessionMetadata{Branch: branch, WorkspacePath: "/ws/octo"},
+		AutoInjectCI: true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -212,10 +222,12 @@ func newSCMFixture(t *testing.T, branch string) *scmFixture {
 	lcm := lifecycle.New(store, spy)
 	lcm.SetCompletionTerminator(lifecycleMarkTerminator{lcm: lcm})
 	provider := newCannedSCMProvider()
-	observer := scmobserve.New(provider, store, lcm, scmobserve.Config{
-		Tick:   time.Hour,
-		Clock:  func() time.Time { return now },
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	multi := scmmulti.New(scmmulti.NamedProvider{Key: "github", Provider: provider})
+	observer := scmobserve.New(multi, store, lcm, scmobserve.Config{
+		Tick:                   time.Hour,
+		Clock:                  func() time.Time { return now },
+		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ScopedIdentityResolver: multi,
 	})
 	return &scmFixture{
 		store:    store,
@@ -257,6 +269,7 @@ func failingSCMObservation(prURL string, num int, headSHA, logTail string) ports
 			SourceBranch: "feat/x",
 			TargetBranch: "main",
 			HeadSHA:      headSHA,
+			Author:       "octocat",
 			Title:        "Found a bug",
 		},
 		CI: ports.SCMCIObservation{
@@ -307,7 +320,7 @@ func TestSCMObserverEndToEnd(t *testing.T) {
 			logTail = "setup\nsetup\nFAILED: build broke\n"
 		)
 		f.provider.detected["feat/x"] = ports.SCMPRObservation{
-			URL: prURL, Number: 42, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA,
+			URL: prURL, Number: 42, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA, Author: "octocat",
 		}
 		f.provider.observations[42] = failingSCMObservation(prURL, 42, headSHA, logTail)
 
@@ -408,7 +421,7 @@ func TestSCMObserverEndToEnd(t *testing.T) {
 			headSHA = "cafef00d"
 		)
 		f.provider.detected["feat/x"] = ports.SCMPRObservation{
-			URL: prURL, Number: 77, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA, Merged: true,
+			URL: prURL, Number: 77, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: headSHA, Author: "octocat", Merged: true,
 		}
 		f.provider.observations[77] = mergedSCMObservation(prURL, 77, headSHA)
 
@@ -436,7 +449,7 @@ func TestSCMObserverEndToEnd(t *testing.T) {
 		f.lcm.SetCompletionTerminator(terminator)
 		const prURL = "https://github.com/octocat/hello/pull/78"
 		f.provider.detected["feat/x"] = ports.SCMPRObservation{
-			URL: prURL, Number: 78, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: "deadbeef", Merged: true,
+			URL: prURL, Number: 78, SourceBranch: "feat/x", HeadRepo: scmTestRepo.Repo, TargetBranch: "main", HeadSHA: "deadbeef", Author: "octocat", Merged: true,
 		}
 		f.provider.observations[78] = mergedSCMObservation(prURL, 78, "deadbeef")
 
@@ -526,7 +539,7 @@ func mergedSCMObservationBranches(prURL string, num int, headSHA, src, tgt strin
 // listed PR to a session by source-branch prefix, so only identity + branches
 // matter here.
 func detectedPR(prURL string, num int, src, tgt, headSHA string) ports.SCMPRObservation {
-	return ports.SCMPRObservation{URL: prURL, HTMLURL: prURL, Number: num, SourceBranch: src, HeadRepo: scmTestRepo.Repo, TargetBranch: tgt, HeadSHA: headSHA}
+	return ports.SCMPRObservation{URL: prURL, HTMLURL: prURL, Number: num, SourceBranch: src, HeadRepo: scmTestRepo.Repo, TargetBranch: tgt, HeadSHA: headSHA, Author: "octocat"}
 }
 
 // TestSCMObserverMultiPREndToEnd is the functional regression guard for the

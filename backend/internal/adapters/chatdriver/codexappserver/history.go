@@ -45,10 +45,11 @@ import (
 // feature-detects each interface, and a missing method would read as "the provider
 // cannot do this" with nothing anywhere to notice.
 var (
-	_ ports.ChatRollbacker    = (*conversation)(nil)
-	_ ports.ChatForker        = (*conversation)(nil)
-	_ ports.ChatRenamer       = (*conversation)(nil)
-	_ ports.ChatHistoryReader = (*conversation)(nil)
+	_ ports.ChatRollbacker       = (*conversation)(nil)
+	_ ports.ChatForker           = (*conversation)(nil)
+	_ ports.ChatRenamer          = (*conversation)(nil)
+	_ ports.ChatHistoryReader    = (*conversation)(nil)
+	_ ports.ChatHistoryRefresher = (*conversation)(nil)
 )
 
 // providerRefusal marks a request the provider rejected on its own terms, as
@@ -112,16 +113,23 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 	}, &resp); err != nil {
 		return nil, asRefusal(fmt.Errorf("thread/read history: %w", err))
 	}
+	if resp.Thread.ID != c.threadID {
+		return nil, fmt.Errorf("thread/read returned %q, requested %q", resp.Thread.ID, c.threadID)
+	}
+	c.mu.Lock()
+	c.historyParentID = deref(resp.Thread.ForkedFromID)
+	c.mu.Unlock()
+	for _, turn := range resp.Thread.Turns {
+		state := turnStateFrom(string(turn.Status))
+		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
+			return nil, fmt.Errorf("%w: Codex turn %s is %s",
+				ports.ErrChatHistoryUnsettled, turn.ID, turn.Status)
+		}
+	}
 
 	events := make([]ports.ChatEvent, 0, len(resp.Thread.Turns)*4)
 	for _, turn := range resp.Thread.Turns {
 		state := turnStateFrom(string(turn.Status))
-		// A history replay is a set of settled facts. If another native client still
-		// has a turn in progress, its partial items must not be projected as a
-		// completed transcript; live notifications remain the authority for it.
-		if state == domain.TurnStateRunning || state == domain.TurnStateQueued {
-			continue
-		}
 
 		events = append(events, ports.ChatEvent{
 			Kind:            ports.ChatEventTurnStarted,
@@ -184,12 +192,58 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 			ProviderTurnID:  turn.ID,
 			TurnState:       state,
 		}
-		if turn.Error != nil && turn.Error.Message != "" {
-			completed.Err = errors.New(turn.Error.Message)
+		if turn.Error != nil {
+			completed.Err = codexProviderFailure(*turn.Error)
 		}
 		events = append(events, completed)
 	}
+	for i := range events {
+		events[i] = c.scopedEvent(events[i])
+	}
 	return events, nil
+}
+
+// RefreshHistory performs another authoritative thread/read. Codex exposes a
+// repeatable native read rather than a replay captured during resume, so bounded
+// settle polling can observe provider progress here.
+func (c *conversation) RefreshHistory(ctx context.Context) ([]ports.ChatEvent, error) {
+	return c.ReadHistory(ctx)
+}
+
+// InheritedHistory only translates IDs after Codex proves the parent chain.
+// A missing/archived ancestor leaves the replay independent and fully visible.
+func (c *conversation) InheritedHistory(ctx context.Context, ancestor domain.ConversationBranch, events []ports.ChatEvent) ([]ports.ChatEvent, error) {
+	c.mu.Lock()
+	parent := c.historyParentID
+	c.mu.Unlock()
+	seen := map[string]bool{c.threadID: true}
+	for parent != "" && parent != ancestor.ProviderConversationID {
+		if seen[parent] || len(seen) >= 64 {
+			return nil, nil
+		}
+		seen[parent] = true
+		var response codexproto.ThreadReadResponse
+		if err := c.conn.request(ctx, codexproto.MethodThreadRead, codexproto.ThreadReadParams{ThreadID: parent}, &response); err != nil {
+			return nil, ctx.Err()
+		}
+		if response.Thread.ID != parent {
+			return nil, nil
+		}
+		parent = deref(response.Thread.ForkedFromID)
+	}
+	if parent == "" {
+		return nil, nil
+	}
+	previous := conversation{}
+	if ancestor.ProviderIDsScoped {
+		previous.providerScopeID = ancestor.ProviderScopeID
+	}
+	mapped := append([]ports.ChatEvent(nil), events...)
+	for i := range mapped {
+		mapped[i].ProviderTurnID = previous.scopedID(c.nativeID(mapped[i].ProviderTurnID))
+		mapped[i].ProviderItemID = previous.scopedID(c.nativeID(mapped[i].ProviderItemID))
+	}
+	return mapped, nil
 }
 
 func historyEventID(parts ...string) string {
@@ -245,6 +299,7 @@ func historicalUserText(item codexproto.ThreadItem) string {
 // It changes what the agent remembers. AO's rows have to follow, and that is the
 // caller's job — see the Chat controller.
 func (c *conversation) Rollback(ctx context.Context, providerTurnID string) error {
+	providerTurnID = c.nativeID(providerTurnID)
 	if strings.TrimSpace(providerTurnID) == "" {
 		return errors.New("rollback needs a provider turn id")
 	}
@@ -307,23 +362,25 @@ func (c *conversation) readTurns(ctx context.Context) ([]providerTurn, error) {
 // Fork branches this conversation into a second provider conversation, so an
 // alternative approach can be tried without destroying the original.
 //
-// The whole history is copied: ChatForker names no turn, and a fork that silently
-// truncated would be a rollback wearing the wrong name.
-func (c *conversation) Fork(ctx context.Context) (string, error) {
+// A nil anchor copies the whole history; a provider turn id copies through that
+// turn inclusively. In both cases, the original thread remains unchanged.
+func (c *conversation) Fork(ctx context.Context, lastProviderTurnID *string) (string, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
-	var resp struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
+	params := codexproto.ThreadForkParams{ThreadID: c.threadID}
+	if lastProviderTurnID != nil {
+		anchor := c.nativeID(strings.TrimSpace(*lastProviderTurnID))
+		if anchor == "" {
+			return "", errors.New("fork anchor must not be blank")
+		}
+		params.LastTurnID = &anchor
 	}
 	// cwd is deliberately absent so the fork inherits the source thread's working
 	// directory. A fork pointed at a different tree would remember editing files
 	// that are not there.
-	if err := c.conn.request(ctx, "thread/fork", map[string]any{
-		"threadId": c.threadID,
-	}, &resp); err != nil {
+	var resp codexproto.ThreadForkResponse
+	if err := c.conn.request(ctx, codexproto.MethodThreadFork, params, &resp); err != nil {
 		return "", asRefusal(fmt.Errorf("thread/fork: %w", err))
 	}
 	if resp.Thread.ID == "" {

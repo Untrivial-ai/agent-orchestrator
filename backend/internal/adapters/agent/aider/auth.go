@@ -73,6 +73,7 @@ func aiderConfigPaths() []string {
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		paths = append(paths,
+			filepath.Join(home, ".aider", "oauth-keys.env"),
 			filepath.Join(home, ".env"),
 			filepath.Join(home, ".aider.conf.yml"),
 			filepath.Join(home, ".aider.conf.yaml"),
@@ -106,7 +107,8 @@ func fileContainsAPIKey(text string) bool {
 			continue
 		}
 		lower := strings.ToLower(line)
-		if !strings.Contains(lower, "api") || !strings.Contains(lower, "key") {
+		listEntry := strings.HasPrefix(line, "-") && strings.Contains(line, "=")
+		if !listEntry && (!strings.Contains(lower, "api") || !strings.Contains(lower, "key")) {
 			continue
 		}
 		if valueAfterAssignment(line) != "" {
@@ -125,6 +127,18 @@ func valueAfterAssignment(line string) string {
 		value := strings.Trim(strings.TrimSpace(after), `"'`)
 		if value != "" && !strings.EqualFold(value, "null") && !strings.EqualFold(value, "none") {
 			return value
+		}
+	}
+	// Aider's documented `api-key` YAML option is a list of provider=value
+	// entries (for example `- gemini=...`), so it does not have the word
+	// "key" on the left side of the assignment.
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "-") {
+		if _, after, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(trimmed, "-")), "="); ok {
+			value := strings.Trim(strings.TrimSpace(after), `"'`)
+			if value != "" && !strings.EqualFold(value, "null") && !strings.EqualFold(value, "none") {
+				return value
+			}
 		}
 	}
 	return ""

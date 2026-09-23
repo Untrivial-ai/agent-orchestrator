@@ -4,55 +4,116 @@ import {
 	BOARD_ZONES,
 	boardZoneOf,
 	groupSessions,
+	kanbanColumnOf,
+	workerStatusGlyph,
 	isArchived,
 	prLine,
 	showBranch,
 	trackerIssueId,
+	workerRowPresentation,
 	zoneMeta,
 } from "./agentsView";
 import { darkTheme, lightTheme } from "./theme";
 
-const session = (over: Partial<DashboardSession> = {}): DashboardSession =>
+type SortableSession = Partial<DashboardSession> & { isPinned?: boolean; pinnedAt?: string | null };
+
+const session = (over: SortableSession = {}): DashboardSession =>
 	({ id: "proj-1", projectId: "proj", status: null, lastActivityAt: "", ...over }) as DashboardSession;
 
 const pr = (over: Partial<DashboardPR> = {}): DashboardPR => ({ number: 1, url: "", state: "open", ...over });
 
+describe("kanbanColumnOf", () => {
+	// The daemon derives the column from facts the client cannot see — whether
+	// AO's review pass is mid-run, whether auto-inject is configured — so its
+	// placement wins over anything re-derived here.
+	it("trusts the daemon's column over the local fallback", () => {
+		expect(kanbanColumnOf(session({ status: "working", kanbanColumn: "needs_review" }))).toBe("needs_review");
+		expect(kanbanColumnOf(session({ status: "mergeable", kanbanColumn: "validating" }))).toBe("validating");
+	});
+
+	// Only for a daemon too old to send the field.
+	it("falls back to deriving from status", () => {
+		expect(kanbanColumnOf(session({ status: "mergeable" }))).toBe("ready");
+		expect(kanbanColumnOf(session({ status: "pr_open" }))).toBe("validating");
+		expect(kanbanColumnOf(session({ status: "ci_failed" }))).toBe("needs_review");
+		expect(kanbanColumnOf(session({ status: "working" }))).toBe("building");
+		expect(kanbanColumnOf(session({ status: null }))).toBe("building");
+	});
+});
+
 describe("boardZoneOf", () => {
-	it("uses desktop's four columns in its order", () => {
-		expect(BOARD_ZONES).toEqual(["working", "action", "pending", "merge"]);
+	it("puts the sections a person owns ahead of the ones a machine owns", () => {
+		expect(BOARD_ZONES).toEqual(["needs_you", "needs_review", "ready", "building", "validating"]);
 	});
 
-	// Desktop files ci_failed and changes_requested under "Needs you" rather than
-	// giving review its own column; mobile used to split them.
-	it("folds review and respond into Needs you", () => {
-		expect(boardZoneOf(session({ status: "needs_input" }))).toBe("action");
-		expect(boardZoneOf(session({ status: "stuck" }))).toBe("action");
-		expect(boardZoneOf(session({ status: "ci_failed" }))).toBe("action");
-		expect(boardZoneOf(session({ status: "changes_requested" }))).toBe("action");
+	// The one deliberate deviation from desktop. A worker blocked on a reply has
+	// no PR, so desktop files it under Building with every other running agent.
+	// That is right for a pipeline and wrong for a phone.
+	it("lifts an agent blocked on a person above its delivery column", () => {
+		expect(boardZoneOf(session({ status: "needs_input", kanbanColumn: "building" }))).toBe("needs_you");
+		expect(boardZoneOf(session({ status: "stuck" }))).toBe("needs_you");
+		expect(boardZoneOf(session({ status: "errored" }))).toBe("needs_you");
+		expect(boardZoneOf(session({ status: "exited" }))).toBe("needs_you");
+		expect(boardZoneOf(session({ status: "working", displayStatus: "Blocked" }))).toBe("needs_you");
 	});
 
-	it("maps the remaining zones straight through", () => {
-		expect(boardZoneOf(session({ status: "mergeable" }))).toBe("merge");
-		expect(boardZoneOf(session({ status: "approved" }))).toBe("merge");
-		expect(boardZoneOf(session({ status: "pr_open" }))).toBe("pending");
-		expect(boardZoneOf(session({ status: "review_pending" }))).toBe("pending");
-		expect(boardZoneOf(session({ status: "working" }))).toBe("working");
-		expect(boardZoneOf(session({ status: "idle" }))).toBe("working");
+	// PR facts stay where the daemon put them: it already decided whether AO or a
+	// person owns the next turn, and splitting one PR's lifecycle across two
+	// sections would second-guess that.
+	it("leaves PR-level states in their daemon column", () => {
+		expect(boardZoneOf(session({ status: "ci_failed", kanbanColumn: "validating" }))).toBe("validating");
+		expect(boardZoneOf(session({ status: "changes_requested", kanbanColumn: "needs_review" }))).toBe("needs_review");
+		expect(boardZoneOf(session({ status: "mergeable", kanbanColumn: "ready" }))).toBe("ready");
+	});
+
+	// Terminated runtimes are routed to the archive strip before grouping, so the
+	// column never has to render as a section.
+	it("never yields an archive section", () => {
+		expect(boardZoneOf(session({ status: "working", kanbanColumn: "archive" }))).toBe("building");
+	});
+});
+
+describe("workerStatusGlyph", () => {
+	// The row tints its status label by colour alone, which a colour-blind reader
+	// cannot use. The glyph is a second channel for the same fact.
+	it("gives distinct shapes to the states a person acts on", () => {
+		expect(workerStatusGlyph("needs_input")).toBe("message-square");
+		expect(workerStatusGlyph("ci_failed")).toBe("x-octagon");
+		expect(workerStatusGlyph("stuck")).toBe("alert-circle");
+		expect(workerStatusGlyph("mergeable")).toBe("check-circle");
+	});
+
+	it("separates blocked-on-you from broken", () => {
+		expect(workerStatusGlyph("needs_input")).not.toBe(workerStatusGlyph("errored"));
+	});
+
+	it("marks quiet and busy states differently", () => {
+		expect(workerStatusGlyph("working")).toBe("loader");
+		expect(workerStatusGlyph("idle")).toBe("moon");
+	});
+
+	// A generic glyph on an unknown status is noise pretending to be signal.
+	it("returns nothing when the status says nothing specific", () => {
+		expect(workerStatusGlyph(null)).toBeNull();
+		expect(workerStatusGlyph(undefined)).toBeNull();
+		expect(workerStatusGlyph("unknown")).toBeNull();
+		expect(workerStatusGlyph("no_signal")).toBeNull();
 	});
 });
 
 describe("zoneMeta", () => {
-	it("uses desktop's labels", () => {
+	it("uses mobile's order with desktop's column labels", () => {
 		expect(BOARD_ZONES.map((z) => zoneMeta(darkTheme, z).label)).toEqual([
-			"Working",
 			"Needs you",
 			"In review",
-			"Ready to merge",
+			"Ready",
+			"Building",
+			"Validating",
 		]);
 	});
 
 	it("takes its colours from the passed theme", () => {
-		expect(zoneMeta(lightTheme, "merge").color).not.toBe(zoneMeta(darkTheme, "merge").color);
+		expect(zoneMeta(lightTheme, "ready").color).not.toBe(zoneMeta(darkTheme, "ready").color);
 	});
 });
 
@@ -78,30 +139,75 @@ describe("isArchived", () => {
 });
 
 describe("groupSessions", () => {
+	it("lifts pinned live workers into a dedicated top section without duplicating them", () => {
+		const { pinned, sections } = groupSessions(darkTheme, [
+			session({ id: "pinned", status: "working", isPinned: true }),
+			session({ id: "working", status: "working" }),
+		]);
+		expect(pinned.map((item) => item.id)).toEqual(["pinned"]);
+		expect(sections.flatMap((section) => section.data).map((item) => item.id)).toEqual(["working"]);
+	});
+
 	it("splits the board from the archive", () => {
 		const { sections, archived } = groupSessions(darkTheme, [
 			session({ id: "a", status: "working" }),
 			session({ id: "b", status: "needs_input" }),
 			session({ id: "z", isTerminated: true }),
 		]);
-		expect(sections.map((s) => s.zone)).toEqual(["working", "action"]);
+		expect(sections.map((s) => s.zone)).toEqual(["needs_you", "building"]);
 		expect(archived.map((s) => s.id)).toEqual(["z"]);
 	});
 
 	// A run of empty section titles is most of a phone screen.
 	it("drops empty zones rather than rendering empty headers", () => {
-		const { sections } = groupSessions(darkTheme, [session({ status: "working" })]);
+		const { sections } = groupSessions(darkTheme, [session({ status: "idle" })]);
 		expect(sections).toHaveLength(1);
-		expect(sections[0].label).toBe("Working");
+		// Desktop folds idle and working into one lane; the distinction survives on
+		// the row's own status text rather than as a section of its own.
+		expect(sections[0].label).toBe("Building");
 	});
 
-	it("keeps sections in desktop's order regardless of input order", () => {
+	it("keeps sections in board order regardless of input order", () => {
 		const { sections } = groupSessions(darkTheme, [
 			session({ id: "m", status: "mergeable" }),
 			session({ id: "w", status: "working" }),
 			session({ id: "p", status: "pr_open" }),
 		]);
-		expect(sections.map((s) => s.zone)).toEqual(["working", "pending", "merge"]);
+		expect(sections.map((s) => s.zone)).toEqual(["ready", "building", "validating"]);
+	});
+
+	it("separates pinned sessions from their normal section", () => {
+		const { pinned, sections } = groupSessions(darkTheme, [
+			session({ id: "recent", status: "working", lastActivityAt: "2026-08-09T10:00:00Z" }),
+			session({ id: "pinned", status: "working", isPinned: true, lastActivityAt: "2026-01-01T00:00:00Z" }),
+		]);
+		expect(pinned.map((s) => s.id)).toEqual(["pinned"]);
+		expect(sections[0].data.map((s) => s.id)).toEqual(["recent"]);
+	});
+
+	// Sections a person owns read oldest-first, so whatever has waited longest is
+	// at the top. Sections a machine is turning read newest-first, because there
+	// the interesting one is whatever just moved.
+	it.each([
+		["Needs you", "needs_input", ["old", "new"]],
+		["Ready", "mergeable", ["old", "new"]],
+		["Building", "working", ["new", "old"]],
+		["Validating", "pr_open", ["new", "old"]],
+		["Building (idle)", "idle", ["new", "old"]],
+	] as const)("orders %s sessions by the useful activity direction", (_label, status, expected) => {
+		const { sections } = groupSessions(darkTheme, [
+			session({ id: "new", status, lastActivityAt: "2026-08-09T10:00:00Z" }),
+			session({ id: "old", status, lastActivityAt: "2026-01-01T00:00:00Z" }),
+		]);
+		expect(sections[0].data.map((s) => s.id)).toEqual(expected);
+	});
+
+	it("preserves daemon session-number order when priority and activity tie", () => {
+		const { sections } = groupSessions(darkTheme, [
+			session({ id: "worker-2", status: "working", lastActivityAt: "2026-08-09T10:00:00Z" }),
+			session({ id: "worker-10", status: "working", lastActivityAt: "2026-08-09T10:00:00Z" }),
+		]);
+		expect(sections[0].data.map((s) => s.id)).toEqual(["worker-2", "worker-10"]);
 	});
 
 	it("sorts the archive newest first", () => {
@@ -112,8 +218,79 @@ describe("groupSessions", () => {
 		expect(archived.map((s) => s.id)).toEqual(["new", "old"]);
 	});
 
+	it("puts pinned archive sessions before newer unpinned history", () => {
+		const { archived } = groupSessions(darkTheme, [
+			session({ id: "new", isTerminated: true, lastActivityAt: "2026-07-01T00:00:00Z" }),
+			session({ id: "pinned", isTerminated: true, isPinned: true, lastActivityAt: "2026-01-01T00:00:00Z" }),
+		]);
+		expect(archived.map((s) => s.id)).toEqual(["pinned", "new"]);
+	});
+
 	it("returns nothing for an empty board", () => {
-		expect(groupSessions(darkTheme, [])).toEqual({ sections: [], archived: [] });
+		expect(groupSessions(darkTheme, [])).toEqual({ pinned: [], sections: [], archived: [] });
+	});
+});
+
+describe("workerRowPresentation", () => {
+	it("uses a live status for active work and keeps branch and project metadata compact", () => {
+		const row = workerRowPresentation(
+			darkTheme,
+			session({
+				id: "worker-7",
+				status: "working",
+				displayName: "Make remote coding feel local",
+				branch: "feat/remote-command-center",
+				lastActivityAt: "2026-09-02T10:55:00Z",
+			}),
+			"Moonbase Terminal",
+			Date.parse("2026-09-02T11:00:00Z"),
+		);
+
+		expect(row).toEqual({
+			title: "Make remote coding feel local",
+			project: "Moonbase Terminal",
+			branch: "feat/remote-command-center",
+			trailing: "Working",
+			trailingKind: "status",
+		});
+	});
+
+	// A standalone agent session omits projectId on the wire. The missing value
+	// reached `.length` inside render and crashed the entire board, so this is a
+	// regression guard, not a cosmetic assertion.
+	it("labels a session with no project rather than throwing", () => {
+		const row = workerRowPresentation(
+			darkTheme,
+			session({ id: "worker-9", projectId: "", status: "working", displayName: "No project here" }),
+			undefined,
+			Date.parse("2026-09-02T11:00:00Z"),
+		);
+
+		expect(row.project).toBe("Standalone");
+	});
+
+	it("uses elapsed time for an idle worker and falls back to the compact project id", () => {
+		const row = workerRowPresentation(
+			darkTheme,
+			session({
+				id: "worker-8",
+				projectId: "agent-orchestrator-mobile_98d163a851",
+				status: "idle",
+				displayName: "Polish the handoff",
+				branch: null,
+				lastActivityAt: "2026-09-02T10:18:00Z",
+			}),
+			undefined,
+			Date.parse("2026-09-02T11:00:00Z"),
+		);
+
+		expect(row).toEqual({
+			title: "Polish the handoff",
+			project: "agent-orch…8d163a851",
+			branch: null,
+			trailing: "42m",
+			trailingKind: "time",
+		});
 	});
 });
 

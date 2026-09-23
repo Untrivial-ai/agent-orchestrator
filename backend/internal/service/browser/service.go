@@ -12,7 +12,7 @@ import (
 )
 
 var actions = map[string]struct{}{
-	"open": {}, "snapshot": {}, "click": {}, "dblclick": {}, "focus": {}, "fill": {}, "type": {}, "press": {},
+	"open": {}, "snapshot": {}, "act": {}, "click": {}, "dblclick": {}, "focus": {}, "fill": {}, "type": {}, "press": {},
 	"hover": {}, "highlight": {}, "unhighlight": {}, "scrollintoview": {}, "drag": {}, "tabs": {}, "tab-new": {},
 	"tab-select": {}, "tab-close": {}, "scroll": {}, "select": {}, "check": {},
 	"uncheck": {}, "get": {}, "wait": {}, "screenshot": {}, "network-start": {},

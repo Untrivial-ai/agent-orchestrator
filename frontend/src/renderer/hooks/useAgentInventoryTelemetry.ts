@@ -2,19 +2,19 @@ import { useEffect, useRef } from "react";
 
 import { buildAgentInventory } from "../lib/agent-inventory-telemetry";
 import { captureRendererEvent } from "../lib/telemetry";
-import { useAgentsQuery } from "./useAgentsQuery";
+import { useAgentReadinessQuery } from "./useAgentReadinessQuery";
 
 /**
  * Reports the install's agent inventory once per app launch.
  *
  * Mounted from the shell so it runs once, and reads the cached agents query, so
  * it adds no request of its own. Reported a single time per launch because the
- * inventory only changes when someone installs or authorizes an agent, and the
- * query refetches on focus and after a refresh mutation, which would otherwise
- * make this a repeating stream.
+ * inventory only changes when someone installs or authorizes an agent. Surface
+ * and focus ensures update the display copy, which would otherwise make this a
+ * repeating stream.
  */
 export function useAgentInventoryTelemetry(): void {
-  const { data } = useAgentsQuery();
+  const { data } = useAgentReadinessQuery();
   const reported = useRef(false);
 
   useEffect(() => {

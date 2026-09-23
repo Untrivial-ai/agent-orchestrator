@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	extensionDirName  = "agent-runtime"
-	extensionFileName = "ao-activity.ts"
+	extensionDirName            = "agent-runtime"
+	extensionFileName           = "ao-activity.ts"
+	primeAgentCodingAgentDirEnv = "PRIME_AGENT_CODING_AGENT_DIR"
+	sessionDirName              = "sessions"
 )
 
 //go:embed assets/ao-activity.ts
@@ -69,4 +71,20 @@ func extensionPath(dataDir string) (string, error) {
 		return "", errors.New("prime-agent: DataDir is required for the managed extension")
 	}
 	return filepath.Join(dataDir, extensionDirName, adapterID, extensionFileName), nil
+}
+
+func primeDataDir(dataDir string) (string, error) {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" {
+		return "", errors.New("prime-agent: DataDir is required for Prime state")
+	}
+	return filepath.Join(dataDir, extensionDirName, adapterID), nil
+}
+
+func sessionDir(dataDir string) (string, error) {
+	dir, err := primeDataDir(dataDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sessionDirName), nil
 }

@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { cn } from "../lib/utils";
 
 type SessionTopbarContextValue = {
 	host: HTMLDivElement | null;
@@ -15,12 +16,13 @@ export function SessionTopbarProvider({ children }: { children: ReactNode }) {
 	return <SessionTopbarContext.Provider value={value}>{children}</SessionTopbarContext.Provider>;
 }
 
-export function SessionTopbarHost({ ref, ...props }: ComponentProps<"div">) {
+export function SessionTopbarHost({ className, ref, ...props }: ComponentProps<"div">) {
 	const context = useContext(SessionTopbarContext);
 	if (!context) throw new Error("SessionTopbarHost must be used within SessionTopbarProvider");
 
 	return (
 		<div
+			className={cn("workspace-topbar-container", className)}
 			ref={(element) => {
 				context.setHost(element);
 				if (typeof ref === "function") ref(element);
