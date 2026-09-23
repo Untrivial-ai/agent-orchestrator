@@ -1,0 +1,62 @@
+---
+title: "Agent Orchestrator vs cmux"
+description: "Honest Sept 2026 comparison of AO and cmux: orchestration and PR loops versus a native macOS agent terminal primitive."
+date: "2026-09-18"
+lastUpdated: "2026-09-18"
+type: "1v1"
+competitors:
+  - "Agent Orchestrator"
+  - "cmux"
+keywords:
+  - "Agent Orchestrator vs cmux"
+  - "cmux alternative"
+  - "Ghostty agent terminal"
+  - "parallel coding agents"
+---
+
+## Short answer
+
+Choose **Agent Orchestrator (AO)** when you want an opinionated orchestration product: project orchestrator, worktree sessions, PR/CI/review routing, and desktop-plus-mobile supervision. Choose **cmux** when you want a native macOS terminal built on libghostty that explicitly calls itself **“a primitive, not a solution”**—tabs, splits, notifications, SSH, and a scriptable browser without locking you into an orchestrator.
+
+These products solve different layers. [cmux](https://github.com/manaflow-ai/cmux) is a GPU-accelerated Swift terminal. [AO](https://orchestrator.inc/docs/) is a supervisor above agent CLIs and Git delivery.
+
+## What AO uniquely has
+
+- **Project orchestrator** and worker lifecycle across ~25 harnesses.
+- **CI and review-comment routing** after a PR is open.
+- **macOS, Windows, Linux** plus **iOS and Android**.
+- **Apache-2.0** delivery board with GitHub/GitLab facts and an isolated browser per worker.
+
+## Where cmux is stronger
+
+- **Native Swift + AppKit** performance on libghostty (not Electron).
+- Terminal-first UX: vertical tabs, notification rings, splits, SSH, and a **scriptable in-app browser**.
+- Deliberately **no orchestrator and no PR loop**—you compose your own workflow.
+- **GPL** openness for users who prefer that license family on macOS.
+
+## At a glance
+
+| Area | Agent Orchestrator | cmux |
+| --- | --- | --- |
+| Product stance | Orchestration solution | Primitive, not a solution |
+| Platforms | macOS, Windows, Linux; iOS and Android | macOS only |
+| License | Apache-2.0 | GPL-3.0-or-later |
+| Orchestrator | Yes | No |
+| PR / CI loop | Yes | No |
+| Terminal | Embedded xterm / mux over the daemon | Native libghostty terminal |
+| Browser | Isolated profile per worker | Scriptable embedded browser |
+| SSH | Not the product center | First-class |
+
+## Frequently Asked Questions
+
+### Can I use AO and cmux together?
+
+Yes. Some people run agents inside cmux while using AO for board state, orchestrator planning, and PR/CI routing—or pick one layer and skip the other.
+
+### Is cmux an AO alternative?
+
+Only if your bottleneck is the terminal multiplexer experience on a Mac. It is not a substitute for AO's orchestrator, worktree session model, or review automation.
+
+### Why does cmux say it is not a solution?
+
+Because it refuses to own task breakdown, tracker sync, or merge workflows. That honesty is useful: buy cmux for primitives, buy AO for the delivery loop.

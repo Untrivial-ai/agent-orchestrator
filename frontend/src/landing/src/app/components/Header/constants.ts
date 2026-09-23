@@ -27,6 +27,11 @@ export const RESOURCE_LINKS: NavLink[] = [
     description: "Guides, references, and integrations.",
   },
   {
+    href: "/compare",
+    label: "Compare",
+    description: "AO versus Superset, Conductor, Paseo, and peers.",
+  },
+  {
     href: COMPANY.GITHUB_URL,
     label: "GitHub",
     description: "Open source under Apache 2.0.",

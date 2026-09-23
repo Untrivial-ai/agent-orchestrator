@@ -1,0 +1,80 @@
+---
+title: "What changed since Composio"
+description: "AO started at Composio and now lives under Untrivial. What that means for ownership, desktop and mobile apps, and current install paths as of September 2026."
+date: "2026-09-18"
+lastUpdated: "2026-09-18"
+type: "tutorial"
+competitors:
+  - "Agent Orchestrator"
+keywords:
+  - "Agent Orchestrator Composio"
+  - "Untrivial Agent Orchestrator"
+  - "AO install"
+  - "Agent Orchestrator desktop"
+  - "Agent Orchestrator mobile"
+  - "ao npm deprecated"
+---
+
+## Short answer
+
+Agent Orchestrator began as an internal Composio side project, was open-sourced, and later transferred to the creator's line of ownership now associated with **Untrivial** (`Untrivial-ai/agent-orchestrator` on GitHub). It is **not** a Composio product offering. Tutorials that still say “install the Composio AO npm CLI and you are done,” or that describe AO as a dashboard-only local toy without desktop/mobile apps, are stale.
+
+As of September 2026 the product you want is the **desktop app** (macOS, Windows, Linux), with optional **iOS and Android** companions, and a thin `ao` CLI that talks to the desktop-owned daemon.
+
+## Ownership transfer
+
+- **Origin:** built inside Composio to run parallel coding agents on real repositories.
+- **Open source:** released publicly; community adoption outgrew the internal-tool framing.
+- **Transfer:** the repository moved off the ComposioHQ org to the creator's accounts and is now maintained as an independent effort under **Untrivial** / `Untrivial-ai`.
+- **Positioning:** pure open-source product (Apache-2.0), not a Composio commercial SKU and not an MCP-infrastructure offering from Composio.
+
+If a guide still links only to `ComposioHQ/agent-orchestrator`, prefer the current GitHub org and [orchestrator.inc](https://orchestrator.inc/) docs.
+
+## What shipped after the handoff
+
+### Desktop app
+
+The canonical install is the **Electron desktop application**. It starts and supervises the local Go daemon, owns auto-update, and is the supported day-to-day UI for projects, sessions, Chat/Terminal, PRs, and the browser inspector.
+
+### Mobile apps
+
+**iOS and Android** companions connect through **Connect Mobile**: an opt-in LAN listener on the desktop daemon, protected by a connection password, intended for a trusted home network. This is the multi-device story missing from older “AO is local-only” writeups.
+
+### Delivery features competitors still mis-state
+
+- Project **orchestrator** agent plus workers.
+- **CI-failure and review-comment routing** to the owning session.
+- **GitHub and GitLab** integration in the current product; **Linear** and an **MCP server** are in progress—say “in progress,” not “shipped.”
+- **~25 harnesses**, isolated browser per worker, Apache-2.0.
+
+## Current install paths
+
+| Path | Status (Sept 2026) | Use when |
+| --- | --- | --- |
+| [Desktop download](https://orchestrator.inc/download/) (macOS / Windows / Linux) | **Recommended** | Normal install; owns the daemon and updates |
+| Desktop-bundled `ao` CLI | Supported thin client | Scripting against the running desktop daemon |
+| iOS / Android apps | Supported companion | Check sessions from your phone on the LAN |
+| npm `@aoagents/ao` (`0.10.0`) | **Frozen / not recommended** | Legacy bridge only; `ao start` fetches the desktop build |
+
+Do not treat the frozen npm package as the product. Do not expose the loopback daemon on the public internet; Connect Mobile is the only built-in off-device listener and remains home-network scoped.
+
+## How to update old tutorials
+
+1. Replace ComposioHQ-only clone URLs with `https://github.com/Untrivial-ai/agent-orchestrator`.
+2. Replace “npm install -g and run the dashboard” with “download the desktop app.”
+3. Mention mobile only with Connect Mobile caveats (LAN, password, plaintext).
+4. Drop claims that AO has no multi-device story, that the CLI is fully gone, or that MCP/Linear already ship.
+
+## Frequently Asked Questions
+
+### Is AO still related to Composio?
+
+Historically yes; commercially and operationally no. Development continues as an independent Untrivial open-source product.
+
+### Is the CLI dead?
+
+No. The **npm distribution** is frozen. The **CLI that ships with the desktop app** remains the supported automation surface over HTTP to the local daemon.
+
+### Where should new users start?
+
+[Download the desktop app](https://orchestrator.inc/download/), then follow [Installation](https://orchestrator.inc/docs/installation/) and [Quickstart](https://orchestrator.inc/docs/quickstart/).

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
+import { ContentIndexHeader } from "@/app/components/ContentIndexHeader";
 import { getBlogPosts } from "@/lib/blog";
 import { BlogCard } from "./components/BlogCard";
-import { GridCross } from "./components/GridCross";
 
 export const metadata: Metadata = {
   title: "Blog",
@@ -44,27 +44,11 @@ export default async function BlogPage() {
         }}
       />
 
-      {/* Header section */}
-      <header className="relative border-b border-border">
-        <div className="max-w-3xl mx-auto px-6 pt-16 pb-10 md:pt-20 md:pb-12 relative">
-          <GridCross className="top-0 left-0" />
-          <GridCross className="top-0 right-0" />
-
-          <span className="text-sm font-mono text-muted-foreground tracking-[0.5px]">
-            Blog
-          </span>
-          <h1 className="text-3xl md:text-4xl font-medium tracking-[-0.5px] text-foreground mt-4">
-            News & Updates
-          </h1>
-          <p className="text-muted-foreground mt-3 max-w-lg">
-            Insights from the Agent Orchestrator team about coding agent orchestration and
-            developer productivity.
-          </p>
-
-          <GridCross className="bottom-0 left-0" />
-          <GridCross className="bottom-0 right-0" />
-        </div>
-      </header>
+      <ContentIndexHeader
+        eyebrow="Blog"
+        title="News & Updates"
+        description="Insights from the Agent Orchestrator team about coding agent orchestration and developer productivity."
+      />
 
       {/* Posts section */}
       <div className="relative max-w-3xl mx-auto px-6 py-12">

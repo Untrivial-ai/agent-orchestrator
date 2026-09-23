@@ -1,0 +1,1 @@
+export { ContentIndexHeader } from "./ContentIndexHeader";

@@ -1,8 +1,8 @@
 ---
 title: "Agent Orchestrator vs Conductor"
-description: "Compare AO and Conductor for running parallel coding agents in isolated Git worktrees."
+description: "Honest Sept 2026 comparison of AO and Conductor for parallel agents, worktrees, cloud workspaces, pricing, and review automation."
 date: "2026-08-01"
-lastUpdated: "2026-08-01"
+lastUpdated: "2026-09-18"
 type: "1v1"
 competitors:
   - "Agent Orchestrator"
@@ -16,26 +16,39 @@ keywords:
 
 ## Short answer
 
-Choose **Agent Orchestrator (AO)** when you want agents tracked from issue assignment through pull request, CI, review, and merge. Choose **Conductor** when you want a polished Mac workspace centered on starting local agent sessions, chatting, and reviewing their changes.
+Choose **Agent Orchestrator (AO)** when you want Apache-2.0 software that keeps tracker, session, PR, CI, and review state connected across desktop and mobile, without a seat fee. Choose **Conductor** when you want a polished closed-source Mac workspace with cloud workspaces, MCP, and funded product velocity after a $22M Series A.
 
-Both products isolate work with Git worktrees. [Conductor documents a separate branch and working tree for each workspace](https://www.conductor.build/docs/concepts/parallel-agents); [AO tracks each isolated session until it becomes a pull request](https://orchestrator.inc/docs/).
+Both isolate agents with Git worktrees. [Conductor](https://www.conductor.build/docs/concepts/parallel-agents) centers interactive workspaces; [AO](https://orchestrator.inc/docs/) centers the issue-to-merge loop with automatic feedback routing.
+
+## What AO uniquely has
+
+- **Project orchestrator** plus workers, with **CI and review-comment routing** to the owning session.
+- **macOS, Windows, and Linux** desktop plus **iOS and Android** companions.
+- **~25 harnesses**, GitHub and GitLab, isolated browser per worker.
+- **Apache-2.0 and free**—no Pro seat required for core orchestration.
+- Open source you can audit, fork, and self-run under OSI terms.
+
+## Where Conductor is stronger
+
+- **Mac-native polish** for starting chats, reviewing diffs, and living in the workspace UI.
+- **Cloud workspaces** so agents keep running when the laptop sleeps (Pro / Teams).
+- **MCP** and a funded roadmap ($22M Series A, March 2026).
+- Tight focus on a small set of agents (about four) with a highly refined experience.
+- Paid tiers (Free / $50 Pro / $60 per seat Teams) that include collaboration and cloud features AO does not ship as a hosted product.
 
 ## At a glance
 
 | Area | Agent Orchestrator | Conductor |
 | --- | --- | --- |
-| Primary workflow | Issue → agent → PR → CI/review loop → merge | Workspace → agent chat → diff/review |
-| Agent isolation | Worktree or clone workspace plugins | Git worktree per workspace |
-| Feedback automation | Routes CI failures and review comments back to the owning agent | Focused on interactive workspace and review flows |
-| Integrations | Replaceable tracker, SCM, runtime, workspace, notifier, and terminal plugins | Integrated desktop workflow |
-| Platforms | macOS, Windows, and Linux | Mac-focused desktop app |
-| API usage | Uses your installed agent CLIs and credentials directly | Uses configured agent credentials directly |
-
-## Why choose Agent Orchestrator
-
-AO treats the pull request lifecycle as part of orchestration, not as an activity after the agent stops. It derives session attention from durable agent, PR, CI, and review facts, then can wake the session that owns a branch when checks fail or reviewers request changes.
-
-That makes AO a stronger fit when you have a backlog of independent issues and want the system to keep work moving without manually copying feedback between GitHub and agent chats. Its plugin boundaries also let one workflow span different agent CLIs, trackers, SCM providers, runtimes, workspaces, terminals, and notification channels.
+| Primary workflow | Issue → orchestrator/workers → PR → CI/review loop | Workspace → agent chat → diff/review |
+| Source model | Apache-2.0 | Closed source |
+| Platforms | macOS, Windows, Linux; iOS and Android | macOS desktop |
+| Agents | ~25 harnesses | About 4 agents |
+| Feedback automation | Routes CI failures and review comments to the owning agent | Interactive workspace and review flows |
+| Cloud | Local daemon; optional Connect Mobile on LAN | Cloud workspaces on paid plans |
+| MCP | No MCP server yet (in progress) | MCP supported |
+| Pricing | Free | Free / $50 Pro / $60 per seat Teams |
+| Funding | Independent open-source product | $22M Series A |
 
 ## Frequently Asked Questions
 
@@ -45,4 +58,8 @@ Yes. Both use separate Git worktrees and branches so concurrently running agents
 
 ### What is AO's main advantage over Conductor?
 
-AO's main advantage is lifecycle automation: tracker context, pull-request state, CI failures, and review feedback remain attached to the session that owns the work.
+Lifecycle automation without a seat tax: tracker context, pull-request state, CI failures, and review feedback stay attached to the session that owns the work, on an open-source stack that also runs on Windows, Linux, and phones.
+
+### When should I pick Conductor instead?
+
+Pick Conductor for Mac-first polish, cloud workspaces, MCP today, and a commercial product with dedicated team collaboration features. AO's MCP server and Linear integration are still in progress.

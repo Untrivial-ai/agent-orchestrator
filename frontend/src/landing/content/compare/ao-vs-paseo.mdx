@@ -1,0 +1,63 @@
+---
+title: "Agent Orchestrator vs Paseo"
+description: "Honest Sept 2026 comparison of AO and Paseo for multi-device agent UIs, orchestrators, PR/CI loops, and licensing."
+date: "2026-09-18"
+lastUpdated: "2026-09-18"
+type: "1v1"
+competitors:
+  - "Agent Orchestrator"
+  - "Paseo"
+keywords:
+  - "Agent Orchestrator vs Paseo"
+  - "Paseo alternative"
+  - "Paseo vs Agent Orchestrator"
+  - "mobile coding agents"
+  - "parallel coding agents"
+---
+
+## Short answer
+
+Choose **Agent Orchestrator (AO)** when you need a project orchestrator and an automatic PR/CI/review loop under Apache-2.0. Choose **Paseo** when you want a solo-maintained multi-surface client (desktop, iOS, Android, web, CLI, TypeScript SDK) to drive agents on your machines and you do not need an orchestrator agent or a built-in PR/CI feedback loop.
+
+Paseo's alternatives pages omit AO; this page exists so the comparison is explicit and current. [Paseo](https://paseo.sh/) is a self-hosted interface for several coding agents. [AO](https://orchestrator.inc/docs/) is a delivery-oriented orchestrator around those agents.
+
+## What AO uniquely has
+
+- A **project orchestrator** that plans, spawns, and redirects workers.
+- **CI-failure and review-comment routing** tied to the owning session and branch.
+- **GitHub and GitLab** delivery facts in the same board as the agent (Linear still in progress).
+- **Apache-2.0** license and ~25 harnesses with an isolated browser per worker.
+
+## Where Paseo is stronger
+
+- **Client surface breadth**: desktop, iOS, Android, web, CLI, and a TypeScript SDK, including an optional end-to-end encrypted relay for remote pairing.
+- **Voice control** and a privacy posture that advertises no telemetry or forced logins.
+- A lighter product if you only want one UI over Claude Code, Codex, Copilot, OpenCode, and Pi—without AO's orchestrator or PR loop opinions.
+- Free with a **custom license** (not Apache); verify terms for your use case.
+
+## At a glance
+
+| Area | Agent Orchestrator | Paseo |
+| --- | --- | --- |
+| Maintainer model | Untrivial / community | Solo maintainer |
+| Clients | Desktop; iOS and Android companions | Desktop, iOS, Android, web, CLI, TypeScript SDK |
+| Orchestrator agent | Yes | No |
+| PR / CI loop | Routes CI failures and review comments to the owning agent | No built-in PR/CI orchestration loop |
+| Harnesses | ~25 | Focused multi-provider set (Claude Code, Codex, Copilot, OpenCode, Pi, …) |
+| License | Apache-2.0 | Custom license |
+| Pricing | Free | Free |
+| MCP | No MCP server yet (in progress) | Daemon documents an MCP server surface |
+
+## Frequently Asked Questions
+
+### Are AO and Paseo both multi-device?
+
+Yes, with different trust models. AO's phone apps pair to your desktop daemon over an opt-in LAN listener (home-network plaintext by design). Paseo also ships mobile/web/CLI clients and can pair through a relay when you enable it.
+
+### Why isn't AO on Paseo's alternatives list?
+
+Product directories drift. This page is AO's current, verifiable comparison so buyers are not left comparing against stale third-party copy.
+
+### When is Paseo the better fit?
+
+When you want the widest client matrix and SDK today, and you will own orchestration/PR process yourself. Pick AO when the orchestrator and CI/review routing are the reason you are shopping.

@@ -1,8 +1,8 @@
 ---
 title: "Agent Orchestrator vs Emdash"
-description: "Compare AO and Emdash for parallel coding agents, worktree isolation, task tracking, and review automation."
+description: "Honest Sept 2026 comparison of AO and Emdash for parallel agents, orchestrators, trackers, remote SSH, and mobile."
 date: "2026-08-01"
-lastUpdated: "2026-08-01"
+lastUpdated: "2026-09-18"
 type: "1v1"
 competitors:
   - "Agent Orchestrator"
@@ -16,26 +16,37 @@ keywords:
 
 ## Short answer
 
-Choose **Agent Orchestrator (AO)** when you want a configurable orchestration layer that keeps tracker, agent, pull-request, CI, and review state connected. Choose **Emdash** when you want an agentic development environment with local and remote workspaces, previews, and environment provisioning.
+Choose **Agent Orchestrator (AO)** when you want a project orchestrator, automatic CI/review routing, and desktop-plus-mobile supervision under Apache-2.0. Choose **Emdash** when you want a YC-backed agentic development environment with broad issue-tracker coverage and first-class SSH remote projects—and you do not need an orchestrator agent or a phone app.
 
-Both products create isolated branches and worktrees per task. [Emdash documents its task and worktree lifecycle](https://emdash.ai/docs/tasks); [AO documents an issue-to-merge workflow with automated CI and review loops](https://orchestrator.inc/docs/).
+Both create isolated branches and worktrees per task. [Emdash](https://emdash.com/docs/tasks) is an ADE by design; [AO](https://orchestrator.inc/docs/) is an orchestration layer around the delivery loop.
+
+## What AO uniquely has
+
+- A **project orchestrator** that plans and delegates (Emdash is deliberately not an orchestrator product).
+- **CI-failure and review-comment routing** to the owning worker after a PR opens.
+- **iOS and Android** companions via Connect Mobile.
+- The same Apache-2.0 license family, with a focus on durable session → PR → merge state across ~25 harnesses.
+
+## Where Emdash is stronger
+
+- **Issue-tracker breadth**: Linear, Jira, Asana, Monday, Trello, and more (nine-plus trackers). AO has GitHub and GitLab today; **Linear is in progress**, not shipped.
+- **SSH remote projects** so the UI stays local while agents run on another machine.
+- Auto-detection across **25+ agents** in a desktop ADE that also covers macOS, Windows, and Linux.
+- A clear “no orchestrator by design” posture if you want humans (not a planner agent) to own task breakdown.
 
 ## At a glance
 
 | Area | Agent Orchestrator | Emdash |
 | --- | --- | --- |
-| Primary workflow | Tracker issue → session → PR lifecycle | Task → agent workspace → review and merge |
-| Isolation | Worktree or clone plugins | Worktree per task, with an opt-out |
-| External feedback | Reactions route CI failures and review comments to the owning session | PR checks and review tools in the development environment |
-| Remote execution | Runtime and workspace adapters | Remote SSH and provisioned environments |
-| Configuration | Per-project YAML and replaceable plugin slots | App-centered project and task configuration |
-| Platforms | macOS, Windows, and Linux | macOS, Windows, and Linux |
-
-## Why choose Agent Orchestrator
-
-AO is strongest when you want one operational model across projects and providers. Trackers, SCMs, agents, runtimes, workspaces, terminals, and notifiers are separate plugin slots, so teams can change one integration without replacing the whole orchestration workflow.
-
-AO also keeps attention on what happens after code generation. A failed check or requested change is associated with the correct branch and session, allowing the responsible agent to resume with the relevant feedback.
+| Primary workflow | Tracker issue → orchestrator/workers → PR lifecycle | Task → agent workspace → review and merge |
+| Team | Untrivial / community | 2 founders (YC W26) |
+| License | Apache-2.0 | Apache-2.0 |
+| Platforms | macOS, Windows, Linux; iOS and Android | macOS, Windows, Linux; no mobile |
+| Agents | ~25 harnesses | 25+ agents, auto-detected |
+| Orchestrator agent | Yes | No, by design |
+| Trackers | GitHub and GitLab (Linear in progress) | 9+ issue trackers |
+| Remote execution | Local daemon; Connect Mobile on LAN | SSH / SFTP remote projects |
+| Feedback loop | CI and review reactions to the owning session | PR checks and review tools in the ADE |
 
 ## Frequently Asked Questions
 
@@ -45,4 +56,8 @@ Yes. Both isolate concurrent tasks with separate Git branches and worktrees by d
 
 ### What is AO's main advantage over Emdash?
 
-AO provides a more explicitly modular orchestration boundary and centers durable tracker-to-PR automation, including automatic CI and review feedback routing.
+AO ships a project orchestrator and keeps CI/review feedback attached to the owning session, including on phones. Emdash is stronger when tracker coverage and SSH remotes matter more than an orchestrator agent.
+
+### Does Emdash replace AO's mobile apps?
+
+No. Emdash has no mobile companion. AO's iOS and Android apps talk to your desktop daemon over an opt-in LAN listener.

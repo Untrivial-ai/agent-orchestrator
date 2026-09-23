@@ -49,7 +49,7 @@ export function Footer() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 sm:gap-8">
+          <div className="grid grid-cols-2 gap-6 sm:grid-cols-4 sm:gap-8">
             <FooterColumn
               title="Product"
               links={[
@@ -64,6 +64,20 @@ export function Footer() {
                   label: "Cloud Waitlist",
                   external: true,
                 },
+              ]}
+            />
+
+            <FooterColumn
+              title="Compare"
+              links={[
+                { href: "/compare", label: "All comparisons" },
+                { href: "/compare/ao-vs-superset", label: "vs Superset" },
+                { href: "/compare/ao-vs-conductor", label: "vs Conductor" },
+                { href: "/compare/ao-vs-paseo", label: "vs Paseo" },
+                { href: "/compare/ao-vs-emdash", label: "vs Emdash" },
+                { href: "/compare/ao-vs-cmux", label: "vs cmux" },
+                { href: "/compare/ao-vs-agentsmesh", label: "vs AgentsMesh" },
+                { href: "/compare/what-changed-since-composio", label: "Since Composio" },
               ]}
             />
 
@@ -103,7 +117,7 @@ interface FooterLink {
   external?: boolean;
 }
 
-const FOOTER_ROW_COUNT = 7;
+const FOOTER_ROW_COUNT = 8;
 
 function FooterColumn({
   title,
