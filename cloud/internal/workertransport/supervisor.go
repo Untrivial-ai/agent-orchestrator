@@ -36,9 +36,30 @@ type Control interface {
 // worker degrades to a slow poll rather than a tight spin.
 const workWaitFallback = 2 * time.Second
 
+// Fallback PTY geometry when an open request carries no client dimensions. The
+// agent terminal is spawned at worker boot (StartAgent), autonomously, long
+// before any human attaches — so there is no viewer width to honor yet, and the
+// coding agent draws its full-screen intro (the welcome box, "What's new") once,
+// committing that fixed-layout box art to scrollback. Committed scrollback never
+// reflows: a viewer whose pane is NARROWER than the boot width sees every line
+// overflow and wrap, garbling the banner permanently (the live region still
+// repaints correctly on the client's resize — only history is stuck).
+//
+// So the fallback must be a width the viewer is essentially always at least as
+// wide as. 80 is the canonical terminal width every agent TUI is designed to
+// render at, and every realistic AO viewer pane is >= 80 columns, so the banner
+// renders cleanly (under-filling at worst, never overflowing). The client's
+// authoritative resize immediately expands the live UI to the full pane width.
+// A client-provided size, when present, always wins over these.
+const (
+	fallbackTerminalColumns = 80
+	fallbackTerminalRows    = 24
+)
+
 type Supervisor struct {
 	Control         Control
 	Workspace       string
+	CompareBase     string
 	Shell           string
 	AgentCommand    workerexec.Command
 	AgentTerminalID string
@@ -54,12 +75,14 @@ type Supervisor struct {
 	terminals                map[string]*terminalProcess
 	holdAgentInput           bool
 	workspaceReady           bool
+	agentStarting            bool
+	agentStarted             bool
 	pendingAgentTerminalData [][]byte
+	pendingAgentTerminalSize *worker.TerminalCommand
 }
 
-// HoldAgentInputUntilWorkspaceReady permits the agent PTY to start while the
-// checkout runs, but preserves user input and durable turns until the checkout
-// has completed. Call this before Run.
+// HoldAgentInputUntilWorkspaceReady preserves user input and durable turns
+// until the checkout has completed. Call this before Run.
 func (s *Supervisor) HoldAgentInputUntilWorkspaceReady() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -67,24 +90,14 @@ func (s *Supervisor) HoldAgentInputUntilWorkspaceReady() {
 	s.workspaceReady = false
 }
 
-// MarkWorkspaceReady releases prompts collected while the agent was booting
-// against an empty workspace.
+// MarkWorkspaceReady releases prompts collected while the agent was waiting for
+// its checkout. If the agent PTY has not started yet, the prompts remain queued
+// until StartAgent makes the terminal live.
 func (s *Supervisor) MarkWorkspaceReady() {
 	s.mu.Lock()
 	s.workspaceReady = true
-	pending := s.pendingAgentTerminalData
-	s.pendingAgentTerminalData = nil
-	terminal := s.terminals[s.AgentTerminalID]
 	s.mu.Unlock()
-	if terminal == nil {
-		return
-	}
-	for _, data := range pending {
-		if _, err := terminal.pty.Write(data); err != nil {
-			s.Logger.Warn("flush queued agent terminal input", "error", err)
-			return
-		}
-	}
+	s.flushReadyAgentTerminal()
 }
 
 type terminalProcess struct {
@@ -116,6 +129,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	workspace.compareBase = s.CompareBase
 	defer workspace.Close()
 	defer s.closeAllTerminals()
 	if s.AgentTerminalID != "" {
@@ -141,10 +155,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			}
 			s.Logger.Warn("claim worker transport request", "error", err)
 		} else if request != nil {
-			// A page usually loads several resources at once. Keep those fetches
-			// from blocking shell input while still relying on the durable command
-			// queue for the per-session concurrency ceiling.
-			if request.Kind == "browser.fetch" {
+			// Read-only workspace/review requests and browser fetches run off the
+			// serial loop so a large-repo review (which reads every file and spawns
+			// many git procs per call) or a burst of page resources cannot wedge
+			// shell input and turn forwarding. Writes (workspace.write /
+			// workspace.review.write) and terminal control stay serial, so the
+			// review write-guard's read-check-write keeps its serialization against
+			// other writes. See isConcurrentlyHandledKind.
+			if isConcurrentlyHandledKind(request.Kind) {
 				go s.handle(ctx, workspace, request)
 				continue
 			}
@@ -180,29 +198,77 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
+// ConfigureAgent reserves an agent terminal before its PTY may be started. A
+// browser can attach during checkout, so keeping this identity lets the worker
+// buffer its early input and latest viewport instead of acknowledging requests
+// that no process can handle yet.
+func (s *Supervisor) ConfigureAgent(command workerexec.Command, terminalID string) error {
+	if terminalID == "" {
+		return errors.New("agent terminal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.AgentTerminalID != "" || s.agentStarting || s.agentStarted {
+		return errors.New("interactive agent terminal is already configured")
+	}
+	s.AgentCommand = command
+	s.AgentTerminalID = terminalID
+	s.agentStarting = true
+	return nil
+}
+
+// DiscardConfiguredAgent releases the command cleanup when checkout fails
+// before the reserved agent terminal could start.
+func (s *Supervisor) DiscardConfiguredAgent(terminalID string) {
+	s.mu.Lock()
+	if !s.agentStarting || s.agentStarted || s.AgentTerminalID != terminalID {
+		s.mu.Unlock()
+		return
+	}
+	cleanup := s.AgentCommand.Cleanup
+	s.AgentCommand = workerexec.Command{}
+	s.AgentTerminalID = ""
+	s.agentStarting = false
+	s.pendingAgentTerminalData = nil
+	s.pendingAgentTerminalSize = nil
+	s.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+}
+
 // StartAgent adds the coding-agent PTY after the workspace transport is already
-// serving. This lets a browser attach to a usable workspace shell while a
-// repository checkout and agent credential setup continue in the background.
+// serving. ConfigureAgent may have reserved its identity while checkout ran;
+// otherwise this method keeps the original one-step setup behavior.
 func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command, terminalID string) error {
 	if terminalID == "" {
 		return errors.New("agent terminal id is required")
 	}
 	s.mu.Lock()
-	if s.AgentTerminalID != "" {
+	if s.AgentTerminalID == "" {
+		s.AgentCommand = command
+		s.AgentTerminalID = terminalID
+		s.agentStarting = true
+	} else if s.AgentTerminalID != terminalID || !s.agentStarting || s.agentStarted {
 		s.mu.Unlock()
 		return errors.New("interactive agent terminal is already configured")
 	}
-	s.AgentCommand = command
 	s.mu.Unlock()
 	if err := s.openTerminal(ctx, worker.TerminalCommand{TerminalID: terminalID, Kind: "agent"}); err != nil {
 		s.mu.Lock()
 		s.AgentCommand = workerexec.Command{}
+		s.AgentTerminalID = ""
+		s.agentStarting = false
+		s.pendingAgentTerminalData = nil
+		s.pendingAgentTerminalSize = nil
 		s.mu.Unlock()
 		return err
 	}
 	s.mu.Lock()
-	s.AgentTerminalID = terminalID
+	s.agentStarting = false
+	s.agentStarted = true
 	s.mu.Unlock()
+	s.flushReadyAgentTerminal()
 	return nil
 }
 
@@ -213,8 +279,9 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	agentTerminalID := s.AgentTerminalID
 	workspaceReady := !s.holdAgentInput || s.workspaceReady
+	agentStarted := s.agentStarted
 	s.mu.Unlock()
-	if agentTerminalID == "" || !workspaceReady {
+	if agentTerminalID == "" || !agentStarted || !workspaceReady {
 		return false, nil
 	}
 	turn, err := s.Control.ClaimTurn(ctx)
@@ -238,6 +305,27 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, false)
 }
 
+// isConcurrentlyHandledKind reports whether a transport request is a read-only
+// workspace/review request or a browser fetch that may run off the serial loop.
+// Offloading these keeps an expensive review (ReviewSummary reads every tracked
+// file and spawns hundreds of git procs) from blocking terminal input and turn
+// forwarding. It is safe: the workspace struct is immutable after construction,
+// file writes are atomic (write-temp + rename) so a concurrent read never sees a
+// torn file, and every mutating kind (workspace.write, workspace.review.write)
+// plus terminal control stays on the serial loop, so writes remain serialized
+// against each other and the review write-guard keeps its TOCTOU-free property.
+func isConcurrentlyHandledKind(kind string) bool {
+	switch kind {
+	case "browser.fetch",
+		"workspace.list", "workspace.read", "workspace.diff", "workspace.diff-file",
+		"workspace.review.summary", "workspace.review.tree", "workspace.review.search",
+		"workspace.review.file", "workspace.review.diffs", "workspace.review.revision":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Supervisor) handle(
 	ctx context.Context,
 	workspace *workspace,
@@ -258,6 +346,20 @@ func (s *Supervisor) handle(
 		if err == nil {
 			response, err = workspace.Read(input)
 		}
+	case "workspace.diff-file":
+		var input worker.WorkspaceDiffFileRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			s.Logger.Info("workspace diff-file request started", "request_id", request.ID, "path", input.Path)
+			response, err = workspace.DiffFile(ctx, input)
+			if err != nil {
+				failureCode, _ := transportError(err)
+				s.Logger.Warn("workspace diff-file request failed", "request_id", request.ID, "path", input.Path, "failure_code", failureCode)
+			} else {
+				file := response.(worker.WorkspaceDiffFile)
+				s.Logger.Info("workspace diff-file request completed", "request_id", request.ID, "path", file.Path, "size", file.Size, "binary", file.Binary, "deleted", file.Deleted, "diff_truncated", file.DiffTruncated)
+			}
+		}
 	case "workspace.write":
 		var input worker.WorkspaceWriteRequest
 		err = decodePayload(request.Payload, &input)
@@ -266,6 +368,44 @@ func (s *Supervisor) handle(
 		}
 	case "workspace.diff":
 		response, err = workspace.Diff(ctx)
+	case "workspace.review.summary":
+		response, err = workspace.ReviewSummary(ctx)
+	case "workspace.review.tree":
+		var input worker.WorkspaceReviewTreeRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewTree(ctx, input)
+		}
+	case "workspace.review.search":
+		var input worker.WorkspaceReviewSearchRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewSearch(ctx, input)
+		}
+	case "workspace.review.file":
+		var input worker.WorkspaceReviewFileRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewFile(ctx, input)
+		}
+	case "workspace.review.diffs":
+		var input worker.WorkspaceReviewDiffsRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewDiffs(ctx, input)
+		}
+	case "workspace.review.revision":
+		var input worker.WorkspaceReviewRevisionRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewRevision(ctx, input)
+		}
+	case "workspace.review.write":
+		var input worker.WorkspaceReviewWriteRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = workspace.ReviewWrite(ctx, input)
+		}
 	case "browser.fetch":
 		var input worker.BrowserFetchRequest
 		err = decodePayload(request.Payload, &input)
@@ -342,10 +482,10 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 	}
 	columns, rows := input.Columns, input.Rows
 	if columns == 0 {
-		columns = 120
+		columns = fallbackTerminalColumns
 	}
 	if rows == 0 {
-		rows = 40
+		rows = fallbackTerminalRows
 	}
 	terminalPTY, err := pty.StartWithSize(command, &pty.Winsize{
 		Cols: columns,
@@ -480,7 +620,7 @@ func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
 		return errors.New("invalid terminal input request")
 	}
 	s.mu.Lock()
-	if s.holdAgentInput && !s.workspaceReady && input.TerminalID == s.AgentTerminalID {
+	if s.agentStarting && input.TerminalID == s.AgentTerminalID {
 		s.pendingAgentTerminalData = append(s.pendingAgentTerminalData, append([]byte(nil), input.Data...))
 		s.mu.Unlock()
 		return nil
@@ -499,6 +639,12 @@ func (s *Supervisor) resizeTerminal(input worker.TerminalCommand) error {
 		return errors.New("invalid terminal resize request")
 	}
 	s.mu.Lock()
+	if s.agentStarting && input.TerminalID == s.AgentTerminalID {
+		pending := input
+		s.pendingAgentTerminalSize = &pending
+		s.mu.Unlock()
+		return nil
+	}
 	terminal := s.terminals[input.TerminalID]
 	s.mu.Unlock()
 	if terminal == nil {
@@ -508,6 +654,42 @@ func (s *Supervisor) resizeTerminal(input worker.TerminalCommand) error {
 		Cols: input.Columns,
 		Rows: input.Rows,
 	})
+}
+
+// flushReadyAgentTerminal delivers the input and viewport collected while the
+// agent terminal was reserved but its checkout/PTY was not ready. Keep only the
+// newest size: intermediate resizes are stale by definition and sending them
+// would needlessly redraw the TUI before its first prompt.
+func (s *Supervisor) flushReadyAgentTerminal() {
+	s.mu.Lock()
+	if !s.workspaceReady || !s.agentStarted {
+		s.mu.Unlock()
+		return
+	}
+	terminal := s.terminals[s.AgentTerminalID]
+	if terminal == nil {
+		s.mu.Unlock()
+		return
+	}
+	pendingSize := s.pendingAgentTerminalSize
+	pendingData := s.pendingAgentTerminalData
+	s.pendingAgentTerminalSize = nil
+	s.pendingAgentTerminalData = nil
+	s.mu.Unlock()
+	if pendingSize != nil {
+		if err := pty.Setsize(terminal.pty, &pty.Winsize{
+			Cols: pendingSize.Columns,
+			Rows: pendingSize.Rows,
+		}); err != nil {
+			s.Logger.Warn("flush queued agent terminal resize", "error", err)
+		}
+	}
+	for _, data := range pendingData {
+		if _, err := terminal.pty.Write(data); err != nil {
+			s.Logger.Warn("flush queued agent terminal input", "error", err)
+			return
+		}
+	}
 }
 
 func (s *Supervisor) closeTerminal(id string) {
@@ -544,6 +726,12 @@ func decodePayload(payload any, target any) error {
 
 func transportError(err error) (string, string) {
 	switch {
+	case errors.Is(err, ErrWorkspaceSnapshotStale):
+		return "WORKSPACE_SNAPSHOT_STALE", "The workspace changed while it was being reviewed."
+	case errors.Is(err, ErrWorkspaceFingerprintStale):
+		return "WORKSPACE_FILE_STALE", "The file changed after it was opened."
+	case errors.Is(err, ErrWorkspaceCommitNotFound):
+		return "WORKSPACE_COMMIT_NOT_FOUND", "The requested commit is outside the workspace review range."
 	case errors.Is(err, errUnsafePath):
 		return "INVALID_WORKSPACE_PATH", "The requested path is outside the workspace."
 	case errors.Is(err, os.ErrNotExist):

@@ -186,6 +186,131 @@ func TestListWorkspaceTreeScratchUsesFilesystem(t *testing.T) {
 	}
 }
 
+func TestListWorkspaceTreeHidesDirectoriesContainingOnlyAOManagedFiles(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, ".kimi/.gitignore", aoManagedGitignoreSentinel+"\n/.gitignore\n/AGENTS.md\n")
+	writeWorkspaceFile(t, root, ".kimi/AGENTS.md", "AO instructions\n")
+
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: root},
+	}
+
+	tree, err := (&Service{store: st}).ListWorkspaceTree(context.Background(), "standalone-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Entries) != 0 {
+		t.Fatalf("standalone root entries = %#v, want AO-managed files hidden", tree.Entries)
+	}
+}
+
+func TestListWorkspaceTreeHidesAOManagedSymlink(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, ".kimi/.gitignore", aoManagedGitignoreSentinel+"\n/.gitignore\n/AGENTS.md\n")
+	writeWorkspaceFile(t, root, "notes.txt", "user work\n")
+	if err := os.Symlink(filepath.Join("..", "notes.txt"), filepath.Join(root, ".kimi", "AGENTS.md")); err != nil {
+		t.Skipf("creating managed symlink: %v", err)
+	}
+
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: root},
+	}
+
+	tree, err := (&Service{store: st}).ListWorkspaceTree(context.Background(), "standalone-1", ".kimi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Entries) != 0 {
+		t.Fatalf("standalone .kimi entries = %#v, want managed symlink hidden", tree.Entries)
+	}
+}
+
+func TestListWorkspaceTreeHidesAOManagedCopilotProfileDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, ".github/agents/ao-standalone-4.agent.md", "---\nname: ao-standalone-4\ntarget: github-copilot\n---\n\n"+aoManagedCopilotProfileSentinel+"\n\nAO instructions\n")
+
+	st := newFakeStore()
+	st.sessions["standalone-4"] = domain.SessionRecord{
+		ID:       "standalone-4",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: root},
+	}
+
+	tree, err := (&Service{store: st}).ListWorkspaceTree(context.Background(), "standalone-4", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Entries) != 0 {
+		t.Fatalf("standalone root entries = %#v, want AO-managed Copilot profile hidden", tree.Entries)
+	}
+}
+
+func TestListWorkspaceTreeKeepsAgentDirectoryContainingUserWork(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, ".kimi/.gitignore", aoManagedGitignoreSentinel+"\n/.gitignore\n/AGENTS.md\n")
+	writeWorkspaceFile(t, root, ".kimi/AGENTS.md", "AO instructions\n")
+	writeWorkspaceFile(t, root, ".kimi/draft.md", "agent-created work\n")
+
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: root},
+	}
+	svc := &Service{store: st}
+
+	rootTree, err := svc.ListWorkspaceTree(context.Background(), "standalone-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootTree.Entries) != 1 || rootTree.Entries[0].Path != ".kimi" {
+		t.Fatalf("standalone root entries = %#v, want visible .kimi work directory", rootTree.Entries)
+	}
+
+	kimiTree, err := svc.ListWorkspaceTree(context.Background(), "standalone-1", ".kimi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kimiTree.Entries) != 1 || kimiTree.Entries[0].Path != ".kimi/draft.md" {
+		t.Fatalf("standalone .kimi entries = %#v, want only agent-created draft", kimiTree.Entries)
+	}
+}
+
+func TestListWorkspaceTreeReadableDirectoryIgnoresUnreadableSiblingMarker(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "visible/notes.txt", "visible work\n")
+	writeWorkspaceFile(t, root, "locked/.gitignore", aoManagedGitignoreSentinel+"\n/.gitignore\n/AGENTS.md\n")
+	marker := filepath.Join(root, "locked", ".gitignore")
+	if err := os.Chmod(marker, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(marker, 0o600) })
+	if _, err := os.ReadFile(marker); err == nil {
+		t.Skip("filesystem does not enforce unreadable file permissions for this user")
+	}
+
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: root},
+	}
+
+	tree, err := (&Service{store: st}).ListWorkspaceTree(context.Background(), "standalone-1", "visible")
+	if err != nil {
+		t.Fatalf("list readable directory with unreadable sibling marker: %v", err)
+	}
+	if len(tree.Entries) != 1 || tree.Entries[0].Path != "visible/notes.txt" {
+		t.Fatalf("visible entries = %#v, want notes.txt", tree.Entries)
+	}
+}
+
 func TestListWorkspaceTreeGlobalCapNotPerDirectory(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	for i := 0; i < maxWorkspaceFiles+50; i++ {

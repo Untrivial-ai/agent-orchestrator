@@ -20,6 +20,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
+// errRunSuperseded marks a run that became terminal before its result arrived.
+// SubmitMany treats it as stale input so it cannot strand valid sibling results
+// in the same reviewer submission.
+var errRunSuperseded = errors.New("review: run is no longer running")
+
 // ErrInvalid and ErrNotFound re-export the engine sentinels so the HTTP
 // controller maps service failures to 422/404 without importing the core.
 var (
@@ -52,6 +57,7 @@ func reviewErrorKind(err error) string {
 
 // Manager is the reviews surface the HTTP controller depends on.
 type Manager interface {
+	RecoverChatReviewers(ctx context.Context) error
 	Trigger(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.TriggerResult, error)
 	RequestRereview(ctx context.Context, workerID domain.SessionID, prURL, reviewer string) error
 	ResolveReviewComment(ctx context.Context, workerID domain.SessionID, prURL, commentURL string) error
@@ -84,6 +90,13 @@ type Service struct {
 }
 
 var _ Manager = (*Service)(nil)
+
+// RecoverChatReviewers restores durable reviewer-owned Chat controllers after
+// daemon startup. It is intentionally part of the required manager contract so
+// startup wiring cannot silently omit it.
+func (s *Service) RecoverChatReviewers(ctx context.Context) error {
+	return s.engine.RecoverChatReviewers(ctx)
+}
 
 // Store is the review_run persistence surface owned by the service submit path.
 type Store interface {
@@ -608,12 +621,26 @@ func (s *Service) SubmitMany(ctx context.Context, workerID domain.SessionID, rev
 		return nil, fmt.Errorf("review service store is not configured")
 	}
 	runs := make([]domain.ReviewRun, 0, len(reviews))
+	var supersededRunIDs []string
 	for _, review := range reviews {
 		run, err := s.submitOne(ctx, workerID, review)
 		if err != nil {
+			// A newer trigger or lifecycle cancellation may have made one queued
+			// run terminal while the reviewer was working. That run is no longer
+			// submittable, but it must not prevent valid siblings from delivery.
+			if errors.Is(err, errRunSuperseded) {
+				supersededRunIDs = append(supersededRunIDs, review.RunID)
+				continue
+			}
 			return nil, err
 		}
 		runs = append(runs, run)
+	}
+	if len(runs) == 0 {
+		if len(supersededRunIDs) > 0 {
+			return nil, fmt.Errorf("%w: no submittable review runs in submission (superseded: %s)", ErrInvalid, strings.Join(supersededRunIDs, ", "))
+		}
+		return nil, fmt.Errorf("%w: no submittable review runs in submission", ErrInvalid)
 	}
 	if s.lifecycle == nil {
 		return runs, nil
@@ -673,7 +700,7 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 			return domain.ReviewRun{}, err
 		}
 		if !updated {
-			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", ErrInvalid, runID)
+			return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", errRunSuperseded, runID)
 		}
 		run.Status = domain.ReviewRunComplete
 		run.Verdict = verdict
@@ -713,7 +740,7 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 	case domain.ReviewRunDelivered:
 		return run, nil
 	default:
-		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", ErrInvalid, runID)
+		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q is not running", errRunSuperseded, runID)
 	}
 	return run, nil
 }

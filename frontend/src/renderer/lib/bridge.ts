@@ -216,6 +216,8 @@ export const aoBridge: AoBridge =
 			setBadge: async () => undefined,
 			devBounce: async () => undefined,
 			onClick: () => () => undefined,
+			onPlaySound: () => () => undefined,
+			reportSoundFailure: () => undefined,
 		},
 		tray: {
 			setAttentionState: () => undefined,
@@ -226,8 +228,9 @@ export const aoBridge: AoBridge =
 			setMigration: async () => undefined,
 		},
 		updateSettings: {
-			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
+			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false }),
 			set: async () => undefined,
+			setMacDifferentialUpdates: async () => undefined,
 		},
 		uiSettings: {
 			get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -245,6 +248,7 @@ export const aoBridge: AoBridge =
 			download: async () => undefined,
 			install: async () => undefined,
 			isPostUpdateRelaunch: async () => false,
+			relaunch: async () => undefined,
 			onStatus: () => () => undefined,
 			onTelemetry: () => () => undefined,
 		},
@@ -252,10 +256,25 @@ export const aoBridge: AoBridge =
 			list: async () => [],
 			getActive: async () => null,
 		},
+		// The daemon-served web build has no Electron bridge and so no access to
+		// ~/.ao/remotes.json. Reporting no hosts leaves the UI showing local only,
+		// which is the truth there.
+		remotes: {
+			list: async () => [],
+			add: async () => "offline" as const,
+			update: async () => "offline" as const,
+			remove: async () => undefined,
+			probe: async () => "offline" as const,
+			request: async () => ({ status: 0, body: null }),
+		},
 		cloud: {
 			getSession: async () => null,
 			signIn: async () => undefined,
 			signOut: async () => undefined,
+			cancelProviderAuth: async () => undefined,
+			connectProviderAuth: async () => {
+				throw new Error("Cloud provider sign-in requires the desktop app.");
+			},
 			localAuthAvailable: async () => false,
 			localRegister: async () => {
 				throw new Error("AO Cloud sign-in requires the desktop app.");

@@ -356,7 +356,7 @@ describe("FileContentPane", () => {
 		expect(composer.closest(".absolute.top-full")?.parentElement).toHaveClass("sticky", "top-0");
 	});
 
-	it("loads the before revision when opening the complete view of a deleted file", async () => {
+	it("loads the PR before revision when opening the complete view of a deleted file", async () => {
 		getMock.mockImplementation(async (path: string) => path.endsWith("/revision") ? {
 			data: {
 				sessionId: "sess-1",
@@ -387,12 +387,50 @@ describe("FileContentPane", () => {
 			},
 		});
 
-		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="removed.txt" sessionId="sess-1" split={false} />);
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="removed.txt" sessionId="sess-1" source={{ kind: "pull_request", number: 42, url: "https://example.test/acme/repo/pull/42", label: "PR #42 · files" }} split={false} />);
 		await userEvent.click(await screen.findByRole("tab", { name: "File" }));
 
 		expect(await screen.findByText("removed text")).toBeInTheDocument();
-		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/file/revision", expect.objectContaining({
-			params: expect.objectContaining({ query: expect.objectContaining({ path: "removed.txt", side: "before" }) }),
+		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision", expect.objectContaining({
+			params: expect.objectContaining({ path: { sessionId: "sess-1", prNumber: 42 }, query: expect.objectContaining({ path: "removed.txt", side: "before", sourceUrl: "https://example.test/acme/repo/pull/42" }) }),
+		}));
+	});
+
+	it("loads the PR after revision for a truncated file", async () => {
+		getMock.mockImplementation(async (path: string) => path.endsWith("/revision") ? {
+			data: {
+				sessionId: "sess-1",
+				path: "large.txt",
+				side: "after",
+				revision: "head-1",
+				size: 2000000,
+				exists: true,
+				binary: false,
+				truncated: false,
+				content: "complete pull request content\n",
+			},
+		} : {
+			data: {
+				sessionId: "sess-1",
+				path: "large.txt",
+				status: "modified",
+				additions: 1,
+				deletions: 1,
+				size: 2000000,
+				binary: false,
+				deleted: false,
+				content: "",
+				contentTruncated: true,
+				diff: "@@ -1 +1 @@\n-old\n+new\n",
+				diffTruncated: false,
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} initialMode="file" path="large.txt" sessionId="sess-1" source={{ kind: "pull_request", number: 42, url: "https://example.test/acme/repo/pull/42", label: "PR #42 · files" }} split={false} />);
+
+		expect(await screen.findByText("complete pull request content")).toBeInTheDocument();
+		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision", expect.objectContaining({
+			params: expect.objectContaining({ query: expect.objectContaining({ path: "large.txt", side: "after", sourceUrl: "https://example.test/acme/repo/pull/42" }) }),
 		}));
 	});
 

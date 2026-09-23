@@ -143,6 +143,73 @@ func TestSessionPlanForProviderOverridesDefault(t *testing.T) {
 	}
 }
 
+func TestSessionPlanForProviderWithCoderOptions(t *testing.T) {
+	t.Parallel()
+	const (
+		defaultTemplate = "2a2e262c-b31c-4202-946d-a19ad45d1fd2"
+		chosenTemplate  = "2a2e262c-b31c-4202-946d-a19ad45d1fd3"
+	)
+	defaults := ProvisioningDefaults{
+		Provider: ProviderCoder,
+		Coder: CoderConfig{
+			BaseURL: "https://coder.example.com", Owner: "owner", TemplateID: defaultTemplate,
+			AgentName: "dev", DurableRoot: "/persistent/ao", WorkerTokenTTL: time.Minute,
+		},
+	}
+
+	// nil options => default template, no size/startup params (unchanged behavior).
+	plan, err := defaults.SessionPlanForProviderWithCoder("codex", ProviderCoder, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := DecodeCoderSessionProfile(plan.ResourceProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TemplateID != defaultTemplate {
+		t.Fatalf("default template = %q, want %q", profile.TemplateID, defaultTemplate)
+	}
+	if _, ok := profile.Parameters["size"]; ok {
+		t.Fatalf("default plan should carry no size parameter: %+v", profile.Parameters)
+	}
+
+	// A chosen template with size + startup overrides the template and layers the
+	// rich parameters on.
+	plan, err = defaults.SessionPlanForProviderWithCoder("codex", ProviderCoder, &CoderSessionOptions{
+		TemplateID: chosenTemplate, Size: "large", StartupScript: "make dev",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = DecodeCoderSessionProfile(plan.ResourceProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TemplateID != chosenTemplate {
+		t.Fatalf("chosen template = %q, want %q", profile.TemplateID, chosenTemplate)
+	}
+	if profile.Parameters["size"] != "large" || profile.Parameters["startup_script"] != "make dev" {
+		t.Fatalf("chosen plan parameters = %+v", profile.Parameters)
+	}
+
+	// Size without a chosen template is ignored: the default template does not
+	// declare it, so we must not send it (Coder would reject the build).
+	plan, err = defaults.SessionPlanForProviderWithCoder("codex", ProviderCoder, &CoderSessionOptions{Size: "large"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = DecodeCoderSessionProfile(plan.ResourceProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TemplateID != defaultTemplate {
+		t.Fatalf("size-only options must keep the default template, got %q", profile.TemplateID)
+	}
+	if _, ok := profile.Parameters["size"]; ok {
+		t.Fatalf("size without a chosen template must be ignored: %+v", profile.Parameters)
+	}
+}
+
 func TestDecodeCoderSessionProfileRejectsIncompleteContract(t *testing.T) {
 	t.Parallel()
 	profiles := []json.RawMessage{

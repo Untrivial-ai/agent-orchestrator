@@ -68,9 +68,10 @@ final class ProgressController: NSObject, NSApplicationDelegate, NSWindowDelegat
         refresh()
         // READY is what the parent waits for before letting Squirrel quit AO.
         // It is the process handshake (this stdout line), not any visible UI, so
-        // the window can stay hidden here and still hand off safely. The window
-        // is presented once the swap actually begins (the .closing/.installing
-        // stages in refresh), and immediately on the stall/failure paths.
+        // the window can stay hidden here and still hand off safely. On the
+        // healthy close-and-reopen path the window is never presented; it comes
+        // up only on the stall/failure paths (the .recovery/.reopened stages in
+        // refresh) that actually need the user's attention.
         DispatchQueue.main.async {
             FileHandle.standardOutput.write(Data("READY\n".utf8))
         }
@@ -102,9 +103,9 @@ final class ProgressController: NSObject, NSApplicationDelegate, NSWindowDelegat
                                     finishedLaunching: app.isFinishedLaunching, visibleWindow: visible)
     }
 
-    // Bring the window on screen. Shown on the normal close-and-reopen path too
-    // so "Closing AO" / "Installing and reopening AO" is visible during the
-    // bundle swap, and on the stall/failure paths that need attention. This is
+    // Bring the window on screen. Called only on the stall/failure paths
+    // (.recovery/.reopened) that need attention, never on the normal
+    // close-and-reopen path, so a routine update stays silent. This is
     // presentation only: it does not touch the READY handshake or termination,
     // which still key off complete.json / the parent PID (see refresh/cleanup).
     func presentWindow() {
@@ -130,28 +131,33 @@ final class ProgressController: NSObject, NSApplicationDelegate, NSWindowDelegat
         guard next != displayedStage else { return }
         displayedStage = next
         recovery.arrangedSubviews.forEach { $0.isHidden = false }
+        // Single seam for whether this stage is user-facing. The healthy
+        // close-and-reopen stages return false and stay silent; only the
+        // stall/failure stages present. Keeping the decision on the stage means
+        // StateTests can assert it without driving AppKit.
+        if next.presentsWindow { presentWindow() }
         switch next {
         case .closing:
-            presentWindow()
+            // Healthy path: stay an accessory with no window. The close and
+            // reopen happen silently. The title/detail are still primed in case
+            // the stage later escalates to .recovery and the window comes up.
             title.stringValue = "Closing AO"
             detail.stringValue = "Preparing to install your update. This window will stay open while AO restarts."
             recovery.isHidden = true
             spinner.startAnimation(nil)
         case .installing:
-            presentWindow()
+            // Healthy path: also silent, no window. See .closing above.
             title.stringValue = "Installing and reopening AO"
             detail.stringValue = "macOS is installing the update. AO will reopen automatically when it is ready."
             recovery.isHidden = true
             spinner.startAnimation(nil)
         case .recovery(let message):
-            presentWindow()
             window.setContentSize(NSSize(width: 500, height: 340))
             title.stringValue = "Still waiting for AO"
             detail.stringValue = String(message.prefix(260))
             recovery.isHidden = false
             spinner.stopAnimation(nil)
         case .reopened:
-            presentWindow()
             title.stringValue = "AO has reopened"
             detail.stringValue = "This version of AO cannot confirm when its window is ready. You can close this progress window."
             recovery.isHidden = false

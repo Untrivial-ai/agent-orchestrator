@@ -9,6 +9,57 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+func TestCreateReviewConversationClaimsChatMode(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	review := domain.Review{
+		ID: "rev-chat", SessionID: rec.ID, ProjectID: rec.ProjectID,
+		Harness: domain.ReviewerCodex, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.UpsertReview(ctx, review); err != nil {
+		t.Fatalf("upsert review: %v", err)
+	}
+
+	conversation, err := s.CreateReviewConversation(ctx, "conv-review", review.ID, rec.ProjectID, rec.ID, now)
+	if err != nil {
+		t.Fatalf("create reviewer conversation: %v", err)
+	}
+	if conversation.ReviewID != review.ID || conversation.SessionID != rec.ID {
+		t.Fatalf("reviewer conversation = %+v", conversation)
+	}
+
+	got, ok, err := s.GetReviewByID(ctx, review.ID)
+	if err != nil || !ok {
+		t.Fatalf("get review after chat claim: ok=%v err=%v", ok, err)
+	}
+	if got.InterfaceMode != domain.ReviewerInterfaceChat {
+		t.Fatalf("interface mode = %q, want chat", got.InterfaceMode)
+	}
+
+	// Engine refreshes omit the mode; they must not demote an established Chat
+	// reviewer back to the legacy TUI surface.
+	review.UpdatedAt = now.Add(time.Second)
+	if err := s.UpsertReview(ctx, review); err != nil {
+		t.Fatalf("refresh review: %v", err)
+	}
+	got, _, err = s.GetReviewByID(ctx, review.ID)
+	if err != nil {
+		t.Fatalf("get refreshed review: %v", err)
+	}
+	if got.InterfaceMode != domain.ReviewerInterfaceChat {
+		t.Fatalf("refreshed interface mode = %q, want chat", got.InterfaceMode)
+	}
+	if claimed, err := s.ClaimReviewChatController(ctx, review.ID, "provider-1", "generation-1", now.Add(2*time.Second)); err != nil || !claimed {
+		t.Fatalf("claim reviewer controller: claimed=%v err=%v", claimed, err)
+	}
+}
+
 func TestInsertReviewRunDuplicatePRSHAMapsToSentinel(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

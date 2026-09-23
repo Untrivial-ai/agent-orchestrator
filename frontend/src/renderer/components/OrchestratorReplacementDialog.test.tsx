@@ -6,12 +6,13 @@ import type { OrchestratorReplacementFailure } from "../stores/ui-store";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { OrchestratorReplacementDialog } from "./OrchestratorReplacementDialog";
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, canBypassMock } = vi.hoisted(() => ({ spawnMock: vi.fn(), canBypassMock: vi.fn() }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("../lib/spawn-orchestrator", () => ({
 	spawnOrchestrator: spawnMock,
 	OrchestratorSpawnError: class extends Error {},
 	isChatPreflightCode: () => false,
+	canBypassOrchestratorApprovals: (...args: unknown[]) => canBypassMock(...args),
 }));
 
 describe("replacement retry focus", () => {
@@ -26,7 +27,7 @@ describe("replacement retry focus", () => {
 			const [error, setError] = useState<OrchestratorReplacementFailure | undefined>({ message: "Restart failed" });
 			const [pending, setPending] = useState(false);
 			return <OrchestratorReplacementDialog projectId="proj-1" error={error} pending={pending} workspaces={[]}
-				onOpenChange={() => setError(undefined)} onRetryAsTui={vi.fn()}
+				onOpenChange={() => setError(undefined)} onRetryAsTui={vi.fn()} onRetryWithoutApprovals={vi.fn()}
 				onRetry={() => void restartProjectOrchestrator({ projectId: "proj-1", queryClient, navigate,
 					setProjectRestarting: (_, value) => setPending(value),
 					setOrchestratorReplacementError: (_, value) => setError(value ?? undefined),
@@ -54,5 +55,41 @@ describe("replacement retry focus", () => {
 			expect(retry).toHaveAttribute("aria-disabled", "false");
 			expect(navigate).not.toHaveBeenCalled();
 		}
+	});
+});
+
+describe("approvals fallback", () => {
+	it("offers Start without approvals only when the daemon allows bypass", async () => {
+		canBypassMock.mockReturnValue(true);
+		const onRetryWithoutApprovals = vi.fn();
+		render(
+			<OrchestratorReplacementDialog
+				projectId="proj-1"
+				error={{ message: "chat needs approvals", code: "SESSION_MODE_UNSUPPORTED" }}
+				workspaces={[]}
+				onOpenChange={vi.fn()}
+				onRetry={vi.fn()}
+				onRetryAsTui={vi.fn()}
+				onRetryWithoutApprovals={onRetryWithoutApprovals}
+			/>,
+		);
+		const bypass = screen.getByRole("button", { name: /start without approvals/i });
+		expect(canBypassMock).toHaveBeenCalledWith("SESSION_MODE_UNSUPPORTED", undefined);
+		fireEvent.click(bypass);
+		expect(onRetryWithoutApprovals).toHaveBeenCalledWith("proj-1");
+
+		canBypassMock.mockReset().mockReturnValue(false);
+		render(
+			<OrchestratorReplacementDialog
+				projectId="proj-2"
+				error={{ message: "auth required", code: "CHAT_AUTH_REQUIRED" }}
+				workspaces={[]}
+				onOpenChange={vi.fn()}
+				onRetry={vi.fn()}
+				onRetryAsTui={vi.fn()}
+				onRetryWithoutApprovals={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByRole("button", { name: /start without approvals/i })).not.toBeInTheDocument();
 	});
 });

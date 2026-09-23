@@ -250,11 +250,23 @@ All resource routes use `/api/cloud/v1`. Project and session creation require an
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/files` | List worker-workspace entries |
 | `GET/PUT` | `/orgs/{orgId}/sessions/{sessionId}/workspace/file` | Read or write a bounded UTF-8 workspace file |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/diff` | Read a bounded worker-workspace git diff |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review` | List all tracked files, categorized working changes, and commits since the immutable session baseline |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/tree` | Browse a lazy directory level, including change status |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/search` | Search workspace paths and bounded text content |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/file` | Read a scoped working-tree or committed file with its fingerprint and diff |
+| `POST` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/diffs` | Batch-load scoped committed, staged, unstaged, untracked, or combined patches |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/revision` | Read the complete before or after revision for an expandable diff |
+| `PUT` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/file` | Write an editable file when its expected fingerprint still matches |
 | `POST` | `/orgs/{orgId}/sessions/{sessionId}/terminal-ticket` | Create a short-lived workspace-terminal ticket |
 | `GET` | `/terminal` | Upgrade a single-use ticket to the durable terminal WebSocket |
 
 WorkOS access tokens and local development tokens both use
 `Authorization: Bearer <token>`.
+
+The workspace review routes are provider-neutral. Docker, NodeOps, and Coder
+workers all execute the same Git/file review protocol through the durable
+worker-request transport; the control-plane API and desktop UI do not branch
+on the sandbox provider.
 
 GitHub App setup uses random, hashed, expiring state. The setup callback rotates
 that state into a separate OAuth PKCE challenge; the encrypted verifier is

@@ -11,6 +11,10 @@ MIGRATION_FAMILY="${AO_CLOUD_MIGRATION_TASK_FAMILY:-ao-cloud-staging-migrate}"
 ROLLBACK_ALARM="${AO_CLOUD_ROLLBACK_ALARM:-ao-cloud-staging-target-5xx}"
 RUNTIME_DATABASE_USER="${AO_CLOUD_RUNTIME_DATABASE_USER:-ao_cloud_app}"
 SANDBOX_PROVIDER="${AO_CLOUD_SANDBOX_PROVIDER:-nodeops}"
+# Every sandbox provider this control plane serves. Defaults to the single
+# primary; a multi-provider CP (for example nodeops,coder) plumbs and preserves
+# all their secrets so a deploy never drops an inactive provider's credentials.
+PROVIDERS="${AO_CLOUD_SANDBOX_PROVIDERS:-$SANDBOX_PROVIDER}"
 NODEOPS_SECRET_ID="${AO_CLOUD_NODEOPS_SECRET_ID:-ao-cloud/staging/nodeops}"
 CODER_SECRET_ID="${AO_CLOUD_CODER_SECRET_ID:-ao-cloud/staging/coder}"
 WORKER_SECRET_ID="${AO_CLOUD_WORKER_SECRET_ID:-ao-cloud/staging/worker}"
@@ -19,14 +23,20 @@ RELEASE="${1:-$HEAD_SHA}"
 IMAGE_TAG="${RELEASE//+/-}-linux-amd64"
 
 # CVE allowlist shared with promote-production.sh. These CRITICAL/HIGH findings
-# are unpatched 2026 CVEs in base OS packages (perl, libssh2, expat, openssl, util-linux) that git
+# are unpatched 2026 CVEs in base OS packages (perl, libssh2, expat, openssl, util-linux, curl, zlib) that git
 # pulls into the worker image; no fix exists in Debian 12 or 13 yet. The worker
 # runs inside an ephemeral, single-tenant, isolated provider workspace that
 # already executes untrusted agent code. Keep this list in sync with production
 # promote. Remove entries as Debian ships fixes; the worker stage's apt-get
 # upgrade then clears them on rebuild. CVE-2026-14456 is a scanner false
 # positive for Debian's OpenSSL 3.0: its QUIC listener was introduced in 3.5.
-SCAN_CVE_ALLOWLIST="${AO_CLOUD_SCAN_CVE_ALLOWLIST:-CVE-2026-57432 CVE-2026-45186 CVE-2026-12087 CVE-2025-15661 CVE-2026-58051 CVE-2026-7017 CVE-2026-48962 CVE-2026-57433 CVE-2026-66032 CVE-2026-48961 CVE-2026-48959 CVE-2026-66034 CVE-2026-58050 CVE-2026-13221 CVE-2026-14456 CVE-2026-66046 CVE-2026-63076 CVE-2026-53615 CVE-2026-54874 CVE-2026-63072}"
+# The curl (CVE-2026-8927 cross-proxy Digest leak, CVE-2026-8924 trailing-dot
+# super cookie, CVE-2026-8286 STARTTLS reuse) and zlib (CVE-2026-85091 non-blocking
+# gzwrite overflow) findings are base OS packages with no Debian fix yet, and the
+# worker does not exercise their vulnerable paths (no proxy/cookie/STARTTLS curl
+# use; git uses zlib inflate/deflate, not the gz file API). CVE-2026-8286 and
+# CVE-2026-85091 are fixed upstream, pending a Debian backport.
+SCAN_CVE_ALLOWLIST="${AO_CLOUD_SCAN_CVE_ALLOWLIST:-CVE-2026-57432 CVE-2026-45186 CVE-2026-12087 CVE-2025-15661 CVE-2026-58051 CVE-2026-7017 CVE-2026-48962 CVE-2026-57433 CVE-2026-66032 CVE-2026-48961 CVE-2026-48959 CVE-2026-66034 CVE-2026-58050 CVE-2026-13221 CVE-2026-14456 CVE-2026-66046 CVE-2026-63076 CVE-2026-53615 CVE-2026-54874 CVE-2026-63072 CVE-2026-8927 CVE-2026-8924 CVE-2026-8286 CVE-2026-85091}"
 
 AWS_OPTIONS=(--region "$REGION")
 if [[ -n "${AWS_PROFILE:-}" ]]; then
@@ -35,6 +45,11 @@ fi
 
 aws_cli() {
 	aws "${AWS_OPTIONS[@]}" "$@"
+}
+
+# providers_has reports whether $1 is one of the comma-separated PROVIDERS.
+providers_has() {
+	[[ ",${PROVIDERS}," == *",$1,"* ]]
 }
 
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -47,6 +62,17 @@ if [[ ! "$RELEASE" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$ ]]; then
 fi
 if [[ "$SANDBOX_PROVIDER" != "nodeops" && "$SANDBOX_PROVIDER" != "coder" ]]; then
 	echo "AO_CLOUD_SANDBOX_PROVIDER must be nodeops or coder." >&2
+	exit 1
+fi
+IFS=',' read -ra _providers_list <<<"$PROVIDERS"
+for _provider in "${_providers_list[@]}"; do
+	if [[ "$_provider" != "nodeops" && "$_provider" != "coder" ]]; then
+		echo "AO_CLOUD_SANDBOX_PROVIDERS entries must each be nodeops or coder, got: $_provider" >&2
+		exit 1
+	fi
+done
+if ! providers_has "$SANDBOX_PROVIDER"; then
+	echo "AO_CLOUD_SANDBOX_PROVIDER ($SANDBOX_PROVIDER) must be one of AO_CLOUD_SANDBOX_PROVIDERS ($PROVIDERS)." >&2
 	exit 1
 fi
 if ! resolved_release="$(git rev-parse "${RELEASE}^{commit}" 2>/dev/null)" ||
@@ -69,38 +95,47 @@ secret_arn() {
 }
 
 provider_secret_arn="$(secret_arn "${AO_CLOUD_PROVIDER_SECRET_ID:-ao-cloud/staging/provider-secret-key}")"
-nodeops_secret_arn="$(secret_arn "$NODEOPS_SECRET_ID")"
 worker_secret_arn="$(secret_arn "$WORKER_SECRET_ID")"
 broker_secret_arn="$(secret_arn "${AO_CLOUD_REPOSITORY_BROKER_SECRET_ID:-ao-cloud/repository-broker}")"
-if [[ "$SANDBOX_PROVIDER" == "coder" ]]; then
-	sandbox_secret_id="$CODER_SECRET_ID"
-	provider_validation_flag="--coder"
-else
-	sandbox_secret_id="$NODEOPS_SECRET_ID"
-	provider_validation_flag="--nodeops"
-fi
-sandbox_secret_arn="$(secret_arn "$sandbox_secret_id")"
-sandbox_settings="$(
-	aws_cli secretsmanager get-secret-value \
-		--secret-id "$sandbox_secret_id" \
-		--query SecretString \
-		--output text
-)"
 worker_settings="$(
 	aws_cli secretsmanager get-secret-value \
 		--secret-id "$WORKER_SECRET_ID" \
 		--query SecretString \
 		--output text
 )"
-./scripts/validate-hosted-settings.py \
-	"$provider_validation_flag" <(printf '%s' "$sandbox_settings") \
-	--worker <(printf '%s' "$worker_settings")
-if [[ "$SANDBOX_PROVIDER" == "nodeops" ]]; then
+# Resolve, validate, and later plumb the secrets for every provider this control
+# plane serves. A multi-provider deploy (nodeops,coder) keeps both providers'
+# secrets instead of pruning the inactive one.
+if providers_has nodeops; then
+	nodeops_secret_arn="$(secret_arn "$NODEOPS_SECRET_ID")"
+	nodeops_settings="$(
+		aws_cli secretsmanager get-secret-value \
+			--secret-id "$NODEOPS_SECRET_ID" \
+			--query SecretString \
+			--output text
+	)"
+	./scripts/validate-hosted-settings.py \
+		--nodeops <(printf '%s' "$nodeops_settings") \
+		--worker <(printf '%s' "$worker_settings")
 	# Optional per-harness template mapping. It remains plaintext so a missing
 	# optional JSON key cannot prevent the ECS container from starting.
-	rootfs_by_harness="$(jq -r '.rootfs_by_harness // "{}"' <<<"$sandbox_settings")"
+	rootfs_by_harness="$(jq -r '.rootfs_by_harness // "{}"' <<<"$nodeops_settings")"
+	unset nodeops_settings
 fi
-unset sandbox_settings worker_settings
+if providers_has coder; then
+	coder_secret_arn="$(secret_arn "$CODER_SECRET_ID")"
+	coder_settings="$(
+		aws_cli secretsmanager get-secret-value \
+			--secret-id "$CODER_SECRET_ID" \
+			--query SecretString \
+			--output text
+	)"
+	./scripts/validate-hosted-settings.py \
+		--coder <(printf '%s' "$coder_settings") \
+		--worker <(printf '%s' "$worker_settings")
+	unset coder_settings
+fi
+unset worker_settings
 
 publish_image() {
 	local repository="$1"
@@ -199,6 +234,21 @@ docker pull "$worker_image" >/dev/null
 scan_image "$CONTROL_REPOSITORY" "$control_image_digest"
 scan_image "$WORKER_REPOSITORY" "$worker_image_digest"
 
+# Coder bakes ao-worker into its workspace image, so a release that changes the
+# worker must rebake that image or every spawn and resume falls back to the slow
+# PTY upload (internal/sandbox/coder/client.go preinstalledCheck). Rebuild and
+# publish it here, before the rollout, from the exact control-plane digest so the
+# baked binaries are byte-identical to what the reconciler advertises
+# (AO_WORKER_EXPECTED_SHA256). The nodeops path is unaffected: its template is
+# published out of band by scripts/publish-nodeops-template.sh.
+if providers_has coder; then
+	AWS_REGION="$REGION" \
+		AO_CLOUD_CP_IMAGE="$control_image" \
+		AO_CLOUD_CODER_SECRET_ID="$CODER_SECRET_ID" \
+		AO_CLOUD_CODER_WORKSPACE_IMAGE_TAG="${IMAGE_TAG}" \
+		./scripts/publish-coder-workspace.sh
+fi
+
 register_task_definition() {
 	local family="$1"
 	local container_name="$2"
@@ -213,12 +263,14 @@ register_task_definition() {
 		--log-group /ao-cloud/staging/control-plane
 		--region "$REGION"
 		--sandbox-provider "$SANDBOX_PROVIDER"
+		--sandbox-providers "$PROVIDERS"
 	)
 	if [[ "$container_name" == "control-plane" ]]; then
 		render_args+=(
 			--worker-image "$worker_image"
 			--set-environment "AO_CLOUD_PUBLIC_URL=${AO_CLOUD_PUBLIC_URL:-https://staging-api.aoagents.dev}"
-			--set-environment "AO_CLOUD_TERMINAL_STREAM=${AO_CLOUD_TERMINAL_STREAM:-}"
+			--set-environment AO_CLOUD_TERMINAL_STREAM=1
+			--set-environment AO_CLOUD_TERMINAL_RELAY=1
 			--set-environment AO_CLOUD_REPOSITORY_BROKER_URL=https://api.aoagents.dev
 			--set-environment AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT=true
 			--set-secret "AO_CLOUD_PROVIDER_SECRET_KEY=${provider_secret_arn}"
@@ -230,28 +282,29 @@ register_task_definition() {
 			--set-secret "AO_CLOUD_SANDBOX_STARTUP_TIMEOUT=${worker_secret_arn}:sandbox_startup_timeout::"
 			--set-secret "AO_CLOUD_WORKER_HEARTBEAT_TIMEOUT=${worker_secret_arn}:worker_heartbeat_timeout::"
 		)
-		if [[ "$SANDBOX_PROVIDER" == "coder" ]]; then
+		if providers_has coder; then
 			render_args+=(
-				--set-secret "AO_CLOUD_CODER_URL=${sandbox_secret_arn}:url::"
-				--set-secret "AO_CLOUD_CODER_TOKEN=${sandbox_secret_arn}:token::"
-				--set-secret "AO_CLOUD_CODER_OWNER=${sandbox_secret_arn}:owner::"
-				--set-secret "AO_CLOUD_CODER_TEMPLATE_ID=${sandbox_secret_arn}:template_id::"
-				--set-secret "AO_CLOUD_CODER_AGENT_NAME=${sandbox_secret_arn}:agent_name::"
-				--set-secret "AO_CLOUD_CODER_PARAMETERS_JSON=${sandbox_secret_arn}:parameters_json::"
-				--set-secret "AO_CLOUD_CODER_DURABLE_ROOT=${sandbox_secret_arn}:durable_root::"
-				--set-secret "AO_CLOUD_CODER_WORKER_TOKEN_TTL=${sandbox_secret_arn}:worker_token_ttl::"
+				--set-secret "AO_CLOUD_CODER_URL=${coder_secret_arn}:url::"
+				--set-secret "AO_CLOUD_CODER_TOKEN=${coder_secret_arn}:token::"
+				--set-secret "AO_CLOUD_CODER_OWNER=${coder_secret_arn}:owner::"
+				--set-secret "AO_CLOUD_CODER_TEMPLATE_ID=${coder_secret_arn}:template_id::"
+				--set-secret "AO_CLOUD_CODER_AGENT_NAME=${coder_secret_arn}:agent_name::"
+				--set-secret "AO_CLOUD_CODER_PARAMETERS_JSON=${coder_secret_arn}:parameters_json::"
+				--set-secret "AO_CLOUD_CODER_DURABLE_ROOT=${coder_secret_arn}:durable_root::"
+				--set-secret "AO_CLOUD_CODER_WORKER_TOKEN_TTL=${coder_secret_arn}:worker_token_ttl::"
 			)
-		else
+		fi
+		if providers_has nodeops; then
 			render_args+=(
 				--set-environment "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS=${rootfs_by_harness}"
-				--set-secret "AO_CLOUD_NODEOPS_BASE_URL=${sandbox_secret_arn}:base_url::"
-				--set-secret "AO_CLOUD_NODEOPS_API_KEY=${sandbox_secret_arn}:api_key::"
-				--set-secret "AO_CLOUD_NODEOPS_DEFAULT_SHAPE=${sandbox_secret_arn}:default_shape::"
-				--set-secret "AO_CLOUD_NODEOPS_DEFAULT_ROOTFS=${sandbox_secret_arn}:default_rootfs::"
-				--set-secret "AO_CLOUD_NODEOPS_INGRESS=${sandbox_secret_arn}:ingress::"
-				--set-secret "AO_CLOUD_NODEOPS_SSH_KEY_PATH=${sandbox_secret_arn}:ssh_key_path::"
-				--set-secret "AO_CLOUD_NODEOPS_REGION=${sandbox_secret_arn}:region::"
-				--set-secret "AO_CLOUD_NODEOPS_WORKER_TOKEN_TTL=${sandbox_secret_arn}:worker_token_ttl::"
+				--set-secret "AO_CLOUD_NODEOPS_BASE_URL=${nodeops_secret_arn}:base_url::"
+				--set-secret "AO_CLOUD_NODEOPS_API_KEY=${nodeops_secret_arn}:api_key::"
+				--set-secret "AO_CLOUD_NODEOPS_DEFAULT_SHAPE=${nodeops_secret_arn}:default_shape::"
+				--set-secret "AO_CLOUD_NODEOPS_DEFAULT_ROOTFS=${nodeops_secret_arn}:default_rootfs::"
+				--set-secret "AO_CLOUD_NODEOPS_INGRESS=${nodeops_secret_arn}:ingress::"
+				--set-secret "AO_CLOUD_NODEOPS_SSH_KEY_PATH=${nodeops_secret_arn}:ssh_key_path::"
+				--set-secret "AO_CLOUD_NODEOPS_REGION=${nodeops_secret_arn}:region::"
+				--set-secret "AO_CLOUD_NODEOPS_WORKER_TOKEN_TTL=${nodeops_secret_arn}:worker_token_ttl::"
 			)
 		fi
 	else
@@ -330,10 +383,10 @@ aws_cli ecs update-service \
 	--cluster "$CLUSTER" \
 	--service "$SERVICE" \
 	--task-definition "$api_task" \
-	--desired-count 2 \
+	--desired-count 1 \
 	--health-check-grace-period-seconds 60 \
 	--deployment-configuration \
-	"{\"maximumPercent\":200,\"minimumHealthyPercent\":100,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${ROLLBACK_ALARM}\"],\"enable\":true,\"rollback\":true}}" \
+	"{\"maximumPercent\":100,\"minimumHealthyPercent\":0,\"deploymentCircuitBreaker\":{\"enable\":true,\"rollback\":true},\"alarms\":{\"alarmNames\":[\"${ROLLBACK_ALARM}\"],\"enable\":true,\"rollback\":true}}" \
 	>/dev/null
 aws_cli ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
 

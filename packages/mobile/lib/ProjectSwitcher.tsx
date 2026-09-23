@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { Theme } from "./theme";
@@ -7,6 +7,7 @@ import { activeProjectLabel } from "./projectFilter";
 import { projectSheetRoute } from "./sheetResult";
 import { useApp } from "./store";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
+import { iconSize, space, type } from "./tokens";
 
 // Scopes the board to one project (or All). A header row — label, current
 // scope, overflow button — rather than the horizontal pill row it replaced: the
@@ -42,12 +43,12 @@ export function ProjectSwitcher() {
 					accessibilityRole="button"
 					accessibilityLabel="Change active project"
 				>
-					<Text style={[styles.value, active && { color: t.blue }]} numberOfLines={1}>
+					<Text style={[styles.value, active && { color: t.accent }]} numberOfLines={1}>
 						{activeProjectLabel(activeProjectId, projects, projectsKnown)}
 					</Text>
 					{/* A chevron, not an overflow "…": this changes a value rather than
 					    revealing a menu of actions. */}
-					<Feather name="chevron-down" size={16} color={active ? t.blue : t.textTertiary} />
+					<Feather name="chevron-down" size={iconSize.sm} color={active ? t.accent : t.textTertiary} />
 				</Pressable>
 			</View>
 
@@ -60,27 +61,27 @@ const makeStyles = (t: Theme) =>
 	row: {
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 12,
-		paddingHorizontal: 16,
-		paddingBottom: 4,
+		gap: space.md,
+		paddingHorizontal: space.lg,
+		paddingBottom: space.xxs,
 	},
-	label: {
+	label: { fontFamily: "Geist_600SemiBold",
 		color: t.textSecondary,
-		fontSize: 13,
+		fontSize: type.footnote.fontSize,
 		letterSpacing: 0.8,
-		fontWeight: "700",
+		fontWeight: "600",
 		flex: 1,
 	},
 	trigger: {
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 7,
+		gap: space.xs,
 		maxWidth: "70%",
-		paddingVertical: 4,
-		paddingHorizontal: 8,
+		paddingVertical: space.xxs,
+		paddingHorizontal: space.sm,
 		marginRight: -8,
-		borderRadius: 8,
+		borderRadius: 8, borderCurve: "continuous",
 	},
 	triggerPressed: { backgroundColor: t.bgElevated },
-	value: { color: t.textTertiary, fontSize: 13, fontWeight: "600", flexShrink: 1 },
+	value: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.footnote.fontSize, fontWeight: "600", flexShrink: 1 },
 });

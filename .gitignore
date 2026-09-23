@@ -104,3 +104,6 @@ e2e-artifacts/
 
 # Local pnpm artifacts
 pnpm-lock.yaml
+
+# Serena MCP local project config
+.serena/

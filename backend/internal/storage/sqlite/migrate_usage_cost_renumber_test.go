@@ -11,7 +11,6 @@ import (
 )
 
 func TestMigrateRepairsRenumberedUsageCostHistory(t *testing.T) {
-	fixture := migrationFixture(t, 108)
 	tests := []struct {
 		name          string
 		firstVersion  int64
@@ -23,13 +22,7 @@ func TestMigrateRepairsRenumberedUsageCostHistory(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, err := sql.Open("sqlite", databaseURI(fixture(t))+pragmas)
-			if err != nil {
-				t.Fatalf("open sqlite: %v", err)
-			}
-			db.SetMaxOpenConns(1)
-			t.Cleanup(func() { _ = db.Close() })
-			upTo(t, db, tt.firstVersion-1)
+			db := openMigratedDatabaseCopy(t, tt.firstVersion-1)
 			applyLegacyUsageCostMigrations(t, db, tt.firstVersion, tt.legacyApplied)
 
 			if err := migrate(db); err != nil {

@@ -52,6 +52,9 @@ import {
 import { buildTerminalThemes } from "../lib/terminal-themes";
 import { useUiStore, type Theme, type ThemeStyle } from "../stores/ui-store";
 import { TerminalSearch } from "./TerminalSearch";
+import { useLinkPreview } from "../hooks/useLinkPreview";
+import { LinkPreviewCard, LinkPreviewCardLoading } from "./LinkPreviewCard";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -128,6 +131,10 @@ function loadRenderer(term: Terminal): void {
 const SUPPRESS_NATIVE_PASTE_MS = 100;
 /** Long enough to notice, short enough that a second copy reads as a second copy. */
 const COPY_TOAST_MS = 1400;
+/** Hover dwell before the link preview card opens, matching ui/hover-card. */
+const LINK_PREVIEW_OPEN_MS = 300;
+/** Grace period to move the pointer from the link into the preview card. */
+const LINK_PREVIEW_CLOSE_MS = 300;
 const AUTOFOCUS_RETRY_FRAMES = 2;
 const COLOR_SCHEME_UPDATE_MODE = 2031;
 const COLOR_SCHEME_QUERY = 996;
@@ -252,10 +259,12 @@ function canAutoFocusTerminal(host: HTMLElement): boolean {
 	if (!(activeElement instanceof HTMLElement) || activeElement === document.body || !activeElement.isConnected) return true;
 	if (host.contains(activeElement)) return true;
 	// Selecting a session in the sidebar deliberately leaves its navigation
-	// button focused. Terminal tabs are the same intentional handoff within the
-	// pane. Every other focused control remains authoritative.
+	// button focused. Terminal tabs and controls that launch an inline PTY are
+	// the same intentional handoff. Every other focused control remains
+	// authoritative.
 	return (
 		activeElement.matches("button[aria-current='page']") ||
+		activeElement.matches("button[data-terminal-focus-handoff='true']") ||
 		(activeElement.matches("button[role='tab'][aria-current]") &&
 			activeElement.closest('[data-testid="session-workspace-topbar"]') !== null)
 	);
@@ -397,6 +406,17 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	// hover/leave callbacks so the right-click menu can offer "Open in system
 	// browser" for it.
 	const hoveredLinkRef = useRef<string | null>(null);
+	// Link preview card anchored at the hover position. The trigger is a
+	// zero-size fixed element, mirroring the context menu below; open/close
+	// delays are manual because the card is controlled (no real anchor hover).
+	const [linkPreview, setLinkPreview] = useState<{ url: string; x: number; y: number } | null>(null);
+	const linkPreviewTimerRef = useRef<number | undefined>(undefined);
+	const linkPreviewControlsRef = useRef<{
+		show: (url: string, x: number, y: number) => void;
+		hide: (immediately?: boolean) => void;
+		cancelHide: () => void;
+	}>({ show: () => undefined, hide: () => undefined, cancelHide: () => undefined });
+	const linkPreviewQuery = useLinkPreview(linkPreview?.url ?? "", linkPreview !== null);
 	// Latest callbacks in a ref so the mount effect stays dependency-free — we
 	// never tear down and recreate the terminal because a handler identity
 	// changed between renders.
@@ -461,10 +481,40 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			copiedToastTimerRef.current = undefined;
 		}, COPY_TOAST_MS);
 	};
+	linkPreviewControlsRef.current = {
+		show: (url, x, y) => {
+			// Same overlay rule as the copy toast: hidden retained terminals show nothing.
+			if (callbacksRef.current.isVisible === false) return;
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
+			linkPreviewTimerRef.current = window.setTimeout(() => {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview({ url, x, y });
+			}, LINK_PREVIEW_OPEN_MS);
+		},
+		hide: (immediately = false) => {
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
+			if (immediately) {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview(null);
+				return;
+			}
+			linkPreviewTimerRef.current = window.setTimeout(() => {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview(null);
+			}, LINK_PREVIEW_CLOSE_MS);
+		},
+		cancelHide: () => {
+			if (linkPreviewTimerRef.current !== undefined) {
+				window.clearTimeout(linkPreviewTimerRef.current);
+				linkPreviewTimerRef.current = undefined;
+			}
+		},
+	};
 
 	useEffect(
 		() => () => {
 			if (copiedToastTimerRef.current !== undefined) window.clearTimeout(copiedToastTimerRef.current);
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
 		},
 		[],
 	);
@@ -537,11 +587,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}
 			window.open(uri, "_blank", "noopener");
 		};
-		const trackHover = (_event: MouseEvent, uri: string) => {
-			hoveredLinkRef.current = isWebLink(uri) ? uri : null;
+		const trackHover = (event: MouseEvent, uri: string) => {
+			const webUri = isWebLink(uri) ? uri : null;
+			hoveredLinkRef.current = webUri;
+			if (webUri) linkPreviewControlsRef.current.show(webUri, event.clientX, event.clientY);
+			else linkPreviewControlsRef.current.hide(true);
 		};
 		const clearHover = () => {
 			hoveredLinkRef.current = null;
+			linkPreviewControlsRef.current.hide();
 		};
 
 		let term: Terminal;
@@ -1334,10 +1388,6 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
 			prepareForActivation,
-			// Live buffer discriminator for predictive local echo on cloud panes:
-			// predictions run only while the NORMAL buffer is active (alt-screen
-			// TUIs repaint too aggressively to predict into).
-			bufferType: () => term.buffer.active.type,
 			notifyCursorColorScheme: () => {
 				if (callbacksRef.current.supportsCursorColorScheme) {
 					notifyCursorScheme(callbacksRef.current.theme, false, true);
@@ -1632,6 +1682,45 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					) : null}
 				</DropdownMenuContent>
 			</DropdownMenu>
+			<HoverCard
+				open={linkPreview !== null}
+				onOpenChange={(open) => {
+					if (!open) linkPreviewControlsRef.current.hide(true);
+				}}
+			>
+				<HoverCardTrigger asChild>
+					<button
+						type="button"
+						aria-hidden="true"
+						tabIndex={-1}
+						style={{
+							border: 0,
+							height: 0,
+							left: linkPreview?.x ?? 0,
+							opacity: 0,
+							padding: 0,
+							pointerEvents: "none",
+							position: "fixed",
+							top: linkPreview?.y ?? 0,
+							width: 0,
+						}}
+					/>
+				</HoverCardTrigger>
+				{linkPreview && !linkPreviewQuery.isError ? (
+					<HoverCardContent
+						collisionPadding={8}
+						portalContainer={contextMenuPortalContainer}
+						onPointerEnter={() => linkPreviewControlsRef.current.cancelHide()}
+						onPointerLeave={() => linkPreviewControlsRef.current.hide()}
+					>
+						{linkPreviewQuery.data ? (
+							<LinkPreviewCard url={linkPreview.url} preview={linkPreviewQuery.data} />
+						) : (
+							<LinkPreviewCardLoading />
+						)}
+					</HoverCardContent>
+				) : null}
+			</HoverCard>
 		</>
 	);
 }

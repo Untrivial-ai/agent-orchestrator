@@ -3,6 +3,7 @@ import {
 	compareVersions,
 	DAYS_FOR_FLEXIBLE_UPDATE,
 	describePrompt,
+	describeSoftwareUpdateRow,
 	floorSignal,
 	floorTarget,
 	describeStoreRow,
@@ -240,6 +241,40 @@ describe("describeStoreRow", () => {
 
 	it("invites a first check before anything has run", () => {
 		expect(describeStoreRow(idle)).toEqual({ value: "Check now", tone: "default", busy: false, action: "check" });
+	});
+});
+
+describe("describeSoftwareUpdateRow", () => {
+	const ota = { value: "Check now", tone: "default" as const, busy: false, action: "check" as const };
+	const store = { value: "Check now", tone: "default" as const, busy: false, action: "check" as const };
+
+	it("prioritizes a native store update over a downloaded OTA", () => {
+		expect(describeSoftwareUpdateRow({
+			ota: { ...ota, value: "Ready — tap to restart", tone: "good", action: "restart" },
+			store: { ...store, value: "Update available", tone: "good", action: "open" },
+		})).toEqual({ value: "Store update available", tone: "good", busy: false, action: "store" });
+	});
+
+	it("applies a downloaded OTA directly without presenting the store sheet", () => {
+		expect(describeSoftwareUpdateRow({
+			ota: { ...ota, value: "Ready — tap to restart", tone: "good", action: "restart" },
+			store,
+		})).toEqual({ value: "Ready to restart", tone: "good", busy: false, action: "restart" });
+	});
+
+	it("checks silently until both update sources are current", () => {
+		expect(describeSoftwareUpdateRow({ ota: { ...ota, busy: true, action: null }, store })).toEqual({ value: "Checking…", tone: "default", busy: true, action: null });
+		expect(describeSoftwareUpdateRow({
+			ota: { ...ota, value: "Up to date", tone: "good", action: "check" },
+			store: { ...store, value: "Up to date", tone: "good", action: "check" },
+		})).toEqual({ value: "Up to date", tone: "good", busy: false, action: "check" });
+	});
+
+	it("does not claim everything is current when either check fails", () => {
+		expect(describeSoftwareUpdateRow({
+			ota: { ...ota, value: "Up to date", tone: "good", action: "check" },
+			store: { ...store, value: "Couldn't check", tone: "bad", action: "check" },
+		})).toEqual({ value: "Couldn't check", tone: "bad", busy: false, action: "check" });
 	});
 });
 

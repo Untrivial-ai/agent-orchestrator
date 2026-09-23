@@ -45,6 +45,8 @@ type fakeReviewService struct {
 	resolveErr        error
 }
 
+func (*fakeReviewService) RecoverChatReviewers(context.Context) error { return nil }
+
 func (f *fakeReviewService) Trigger(
 	_ context.Context,
 	_ domain.SessionID,

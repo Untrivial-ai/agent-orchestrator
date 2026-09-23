@@ -298,17 +298,12 @@ type subject struct {
 	hasPR   bool
 }
 
-// sessionRepo pairs a live session with a repo to scan and its branch for
-// per-repo branch-prefix discovery of new (including stacked) pull requests.
-// A session is scanned against its push origin plus every other remote in the
-// project checkout, so repo is the repo whose open-PR list is listed while
-// headRepo is the repo the session's head branch actually lives in (the push
-// origin). For same-repo PRs repo == headRepo; for a cross-fork PR (fork head,
-// upstream base) repo is the upstream base and headRepo is the fork origin.
+// Head names are scoped to repo's provider and host. Each base has a separate
+// set because overlapping workspace checkouts can have different push targets.
 type sessionRepo struct {
 	session   domain.SessionRecord
 	repo      ports.SCMRepo
-	headRepo  ports.SCMRepo
+	headNames map[string]struct{}
 	branch    string
 	workspace bool
 }
@@ -721,7 +716,6 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		return nil, nil, err
 	}
 	projects := map[domain.ProjectID]domain.ProjectRecord{}
-	originRepos := map[domain.ProjectID]ports.SCMRepo{}
 	scanRepos := map[domain.ProjectID][]ports.SCMRepo{}
 	out := map[string]*subject{}
 	var sessionRepos []sessionRepo
@@ -753,17 +747,11 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 			projects[sess.ProjectID] = p
 			proj = p
 			if origin, ok := o.provider.ParseRepository(p.RepoOriginURL); ok {
-				originRepos[sess.ProjectID] = origin
-				scanRepos[sess.ProjectID] = o.resolveScanRepos(p, origin)
+				scanRepos[sess.ProjectID] = o.resolveScanRepos(ctx, p, origin)
 			}
 		}
-		repos := make([]ports.SCMRepo, 0, len(scanRepos[sess.ProjectID]))
-		if origin, ok := originRepos[sess.ProjectID]; ok {
-			for _, repo := range scanRepos[sess.ProjectID] {
-				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch, workspace: proj.Kind.WithDefault() == domain.ProjectKindWorkspace})
-				repos = append(repos, repo)
-			}
-		}
+		repos := append([]ports.SCMRepo(nil), scanRepos[sess.ProjectID]...)
+		sessionRepos = append(sessionRepos, checkoutSessionRepos(sess, branch, proj.Kind.WithDefault() == domain.ProjectKindWorkspace, repos)...)
 		childRepos, err := o.workspaceSCMSessionRepos(ctx, proj, sess, branch)
 		if err != nil {
 			return nil, nil, err
@@ -800,28 +788,19 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 	return out, sessionRepos, nil
 }
 
-// resolveScanRepos returns the deduped set of repos whose open-PR lists should be
-// scanned to attribute PRs to this project's sessions: the push origin plus every
-// other GitHub remote configured in the project checkout (upstreams, mirrors).
-// Attribution still requires a PR's head branch to live in the origin, so scanning
-// extra remotes only surfaces cross-fork PRs (fork head, upstream base) and can
-// never misattribute a stranger's PR.
-//
-// ponytail: remotes are read once per project per process (memoized by the
-// caller); a remote added after the daemon started is picked up on restart. Move
-// to a git-config watch if that latency ever matters.
-func (o *Observer) resolveScanRepos(proj domain.ProjectRecord, origin ports.SCMRepo) []ports.SCMRepo {
+// The stored origin remains usable when the checkout is temporarily unavailable.
+func (o *Observer) resolveScanRepos(ctx context.Context, proj domain.ProjectRecord, origin ports.SCMRepo) []ports.SCMRepo {
 	repos := []ports.SCMRepo{origin}
 	if strings.TrimSpace(proj.Path) == "" {
 		return repos
 	}
-	seen := map[string]bool{prKey(origin, 0): true}
-	for _, url := range gitRemoteURLsFunc(proj.Path) {
+	seen := map[string]bool{strings.ToLower(prKey(origin, 0)): true}
+	for _, url := range gitRemoteURLsFunc(ctx, proj.Path) {
 		repo, ok := o.provider.ParseRepository(url)
 		if !ok {
 			continue
 		}
-		key := prKey(repo, 0)
+		key := strings.ToLower(prKey(repo, 0))
 		if seen[key] {
 			continue
 		}
@@ -829,6 +808,32 @@ func (o *Observer) resolveScanRepos(proj domain.ProjectRecord, origin ports.SCMR
 		repos = append(repos, repo)
 	}
 	return repos
+}
+
+func checkoutSessionRepos(sess domain.SessionRecord, branch string, workspace bool, checkouts ...[]ports.SCMRepo) []sessionRepo {
+	var result []sessionRepo
+	byBase := make(map[string]int)
+	for _, checkout := range checkouts {
+		for _, base := range checkout {
+			key := strings.ToLower(prKey(base, 0))
+			position, exists := byBase[key]
+			if !exists {
+				position = len(result)
+				byBase[key] = position
+				result = append(result, sessionRepo{
+					session: sess, repo: base, branch: branch, workspace: workspace,
+					headNames: make(map[string]struct{}),
+				})
+			}
+			for _, destination := range checkout {
+				if !strings.EqualFold(base.Provider, destination.Provider) || !strings.EqualFold(base.Host, destination.Host) {
+					continue
+				}
+				result[position].headNames[strings.ToLower(repoFullName(destination))] = struct{}{}
+			}
+		}
+	}
+	return result
 }
 
 func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.ProjectRecord, sess domain.SessionRecord, branch string) ([]sessionRepo, error) {
@@ -839,8 +844,7 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 	if err != nil {
 		return nil, err
 	}
-	repos := make([]sessionRepo, 0, len(childRepos))
-	seen := map[string]bool{}
+	var checkouts [][]ports.SCMRepo
 	for _, child := range childRepos {
 		if strings.TrimSpace(child.RepoOriginURL) == "" {
 			continue
@@ -851,16 +855,9 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 			continue
 		}
 		childPath := filepath.Join(proj.Path, filepath.FromSlash(child.RelativePath))
-		for _, scanRepo := range o.resolveScanRepos(domain.ProjectRecord{Path: childPath}, repo) {
-			key := prKey(scanRepo, 0)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			repos = append(repos, sessionRepo{session: sess, repo: scanRepo, headRepo: repo, branch: branch, workspace: true})
-		}
+		checkouts = append(checkouts, o.resolveScanRepos(ctx, domain.ProjectRecord{Path: childPath}, repo))
 	}
-	return repos, nil
+	return checkoutSessionRepos(sess, branch, true, checkouts...), nil
 }
 
 func repoForTrackedPR(pr domain.PullRequest, repos []ports.SCMRepo) (ports.SCMRepo, bool) {
@@ -1081,13 +1078,9 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 					continue
 				}
 			}
-			// Branch-prefix attribution must only claim PRs whose head branch
-			// lives in a session's push origin. A same-repo PR has head == origin
-			// == this scanned repo; a cross-fork PR (fork head, upstream base) has
-			// head == origin while this scanned repo is the upstream base. A
-			// stranger's fork PR carries a head repo no session owns and is
-			// dropped (as is an empty head repo from a deleted fork), preserving
-			// the no-misattribution guarantee.
+			// Head eligibility includes the registered origin and every configured
+			// fetch and push URL, limited to the scanned base's provider and host.
+			// Reject unconfigured or deleted heads before matching branch ownership.
 			eligible := candidatesForHeadRepo(byRepo[repoKey], pr.HeadRepo)
 			sr, ok := matchSession(eligible, pr.SourceBranch)
 			if !ok {
@@ -1161,18 +1154,14 @@ func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []session
 	return identities
 }
 
-// candidatesForHeadRepo narrows the scanned repo's session candidates to those
-// whose head branch lives in headRepo (the PR's head repository full name). This
-// is the fork guard: a PR is only attributable when its head repo equals a
-// session's push origin, whether the PR was found on the origin itself or on a
-// scanned upstream base repo.
 func candidatesForHeadRepo(candidates []sessionRepo, headRepo string) []sessionRepo {
-	if strings.TrimSpace(headRepo) == "" {
+	name := strings.ToLower(strings.TrimSpace(headRepo))
+	if name == "" {
 		return nil
 	}
 	var out []sessionRepo
 	for _, sr := range candidates {
-		if strings.EqualFold(repoFullName(sr.headRepo), headRepo) {
+		if _, configured := sr.headNames[name]; configured {
 			out = append(out, sr)
 		}
 	}
@@ -1827,7 +1816,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	for _, th := range obs.Review.Threads {
 		threads = append(threads, domain.PullRequestReviewThread{ThreadID: th.ID, Path: th.Path, Line: th.Line, Resolved: th.Resolved, IsBot: th.IsBot, SemanticHash: threadSemanticHash(th), UpdatedAt: now})
 		for _, c := range th.Comments {
-			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
+			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
 		}
 	}
 	return pr, checks, reviews, threads, comments
@@ -1950,6 +1939,15 @@ func mergeabilityFromProviderFacts(providerMergeable, providerMergeState, ci, re
 		out.State = string(domain.MergeBlocked)
 		addBlocker("blocked_by_provider")
 	}
+	// UNSTABLE outranks draft / CI / review (doc.go rule 3, and the
+	// mergeabilityFromGraphQL sibling): GitHub reports UNSTABLE when the PR
+	// *is* mergeable but a non-required check failed or is pending. Such a PR
+	// also has a FAILURE rollup (-> ci == failing), so leaving this below the
+	// blockers downgraded every genuinely-mergeable UNSTABLE PR to blocked.
+	if state == "UNSTABLE" {
+		out.State = string(domain.MergeUnstable)
+		return out
+	}
 	if draft {
 		out.State = string(domain.MergeBlocked)
 		addBlocker("draft")
@@ -1967,10 +1965,6 @@ func mergeabilityFromProviderFacts(providerMergeable, providerMergeState, ci, re
 		addBlocker("review_required")
 	}
 	if out.State == string(domain.MergeBlocked) {
-		return out
-	}
-	if state == "UNSTABLE" {
-		out.State = string(domain.MergeUnstable)
 		return out
 	}
 	if mergeable == "MERGEABLE" && (state == "CLEAN" || state == "HAS_HOOKS" || state == "") &&
@@ -2133,22 +2127,28 @@ func resolveGitOriginURL(path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// gitRemoteURLs lists the fetch URL of every git remote configured at path. It
-// returns nil on any error (missing repo, no git, no remotes). The observer uses
-// it to scan upstream/mirror remotes for cross-fork PRs in addition to origin.
-func gitRemoteURLs(path string) []string {
-	out, err := aoprocess.Command("git", "-C", path, "remote").Output()
+func gitRemoteURLs(ctx context.Context, path string) []string {
+	out, err := aoprocess.CommandContext(ctx, "git", "-C", path, "remote").Output()
 	if err != nil {
 		return nil
 	}
 	var urls []string
+	seen := make(map[string]bool)
 	for _, name := range strings.Fields(string(out)) {
-		u, err := aoprocess.Command("git", "-C", path, "remote", "get-url", name).Output()
-		if err != nil {
-			continue
-		}
-		if s := strings.TrimSpace(string(u)); s != "" {
-			urls = append(urls, s)
+		for _, options := range [][]string{{"--all"}, {"--push", "--all"}} {
+			args := append([]string{"-C", path, "remote", "get-url"}, options...)
+			args = append(args, name)
+			output, err := aoprocess.CommandContext(ctx, "git", args...).Output()
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(output), "\n") {
+				address := strings.TrimSpace(line)
+				if address != "" && !seen[address] {
+					seen[address] = true
+					urls = append(urls, address)
+				}
+			}
 		}
 	}
 	return urls
