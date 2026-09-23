@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DashboardSession, PRReviewState, ReviewRun } from "./api";
-import { reviewBatchAction, reviewerDestination, reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewRouteForSession, reviewStatusLabel, reviewStatusVisual, reviewVerdictLabel, shortCommit } from "./reviewView";
+import { latestAutoReviewFailure, reviewBatchAction, reviewerDestination, reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewRouteForSession, reviewStatusLabel, reviewStatusVisual, reviewVerdictLabel, shortCommit } from "./reviewView";
 
 const run = (over: Partial<ReviewRun> = {}): ReviewRun => ({
 	id: "run-1", reviewId: "review-1", sessionId: "worker-1", batchId: "", harness: "codex",
@@ -69,6 +69,20 @@ describe("mobile review presentation", () => {
 	it("prioritizes cancelling an active session batch over starting another", () => {
 		const selected = state({ status: "needs_review" });
 		expect(reviewBatchAction(selected, [selected, state({ prUrl: "other", status: "running" })])).toBe("cancel");
+	});
+
+	it("surfaces only the newest written automatic-review failure while automation is enabled", () => {
+		const oldFailure = run({ id: "old", triggerSource: "auto", status: "failed", body: "old failure", createdAt: "2026-09-21T00:00:00Z" });
+		const newestFailure = run({ id: "new", triggerSource: "auto", status: "failed", body: "reviewer crashed", createdAt: "2026-09-23T00:00:00Z" });
+		const reviews = [state({ latestRun: oldFailure }), state({ prUrl: "other", latestRun: newestFailure })];
+		expect(latestAutoReviewFailure(reviews, true)).toBe(newestFailure);
+		expect(latestAutoReviewFailure(reviews, false)).toBeUndefined();
+	});
+
+	it("does not elevate manual, successful, or empty automatic-review results as failures", () => {
+		expect(latestAutoReviewFailure([state({ latestRun: run({ status: "failed", triggerSource: "manual" }) })], true)).toBeUndefined();
+		expect(latestAutoReviewFailure([state({ latestRun: run({ status: "complete", triggerSource: "auto" }) })], true)).toBeUndefined();
+		expect(latestAutoReviewFailure([state({ latestRun: run({ status: "failed", triggerSource: "auto", body: "  " }) })], true)).toBeUndefined();
 	});
 
 	it("routes each reviewer surface to its native mobile experience", () => {

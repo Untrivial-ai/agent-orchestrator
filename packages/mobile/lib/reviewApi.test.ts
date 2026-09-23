@@ -4,7 +4,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({ default: { getItem
 vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(), setItemAsync: vi.fn(), deleteItemAsync: vi.fn() }));
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
 
-import { ApiError, getSessionPR, requestSessionRereview, resolveSessionReviewComment, switchSessionReviewer } from "./api";
+import { ApiError, getSessionPR, killSessionReviewer, requestSessionRereview, resolveSessionReviewComment, switchSessionReviewer, triggerSessionReview } from "./api";
 import type { ServerConfig } from "./config";
 
 const cfg: ServerConfig = { host: "ao.test", httpPort: "3011", muxPort: "3011", secure: false, password: "secret12" };
@@ -37,6 +37,27 @@ describe("mobile review action API", () => {
 		await switchSessionReviewer(cfg, "worker-1");
 
 		expect(requests()[0]?.[2]).toBe("{}");
+	});
+
+	it("reports when the daemon reused an already-reviewed commit", async () => {
+		vi.mocked(fetch).mockResolvedValue(response({ created: false, reviewerHandleId: "review-2", reviews: [], runs: [] }));
+
+		const result = await triggerSessionReview(cfg, "worker/1");
+
+		expect(result).toMatchObject({ created: false, reviewerHandleId: "review-2" });
+	});
+
+	it("kills the persistent reviewer and returns the authoritative state", async () => {
+		vi.mocked(fetch).mockResolvedValue(response({ reviewerHandleId: "", reviewerHarness: "codex", reviews: [], runs: [] }));
+
+		const result = await killSessionReviewer(cfg, "worker/1");
+
+		expect(result).toMatchObject({ reviewerHandleId: "", reviewerHarness: "codex" });
+		expect(requests()).toEqual([[
+			"http://ao.test:3011/api/v1/sessions/worker%2F1/reviews/kill",
+			"POST",
+			undefined,
+		]]);
 	});
 
 	it("requests another external review for the selected pull request", async () => {

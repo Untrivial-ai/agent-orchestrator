@@ -67,6 +67,8 @@ export type DashboardSession = {
 	// Which agent CLI drives this session (claude-code, codex, …). Parsed off the
 	// wire but discarded until the orchestrator tab needed it for brand marks.
 	harness?: string | null;
+	reviewerHarness?: string | null;
+	reviewerConfig?: ReviewerAgentConfig;
 	/** Controller currently committed for this AO session. */
 	mode: SessionMode;
 	branch: string | null;
@@ -91,6 +93,12 @@ export type DashboardSession = {
 	isTerminated?: boolean;
 	isPinned?: boolean;
 	pinnedAt?: string | null;
+	/** Automatically review each new pull-request head. */
+	autoReviewEnabled?: boolean;
+	/** Automatically deliver completed review feedback to the worker. */
+	autoInjectReview?: boolean;
+	/** Automatically deliver failing CI checks to the worker. */
+	autoInjectCI?: boolean;
 };
 
 export type OrchestratorLink = {
@@ -174,6 +182,8 @@ type WireSession = {
 	issueId?: string;
 	kind?: string; // worker | orchestrator
 	harness?: string;
+	reviewerHarness?: string;
+	reviewerConfig?: ReviewerAgentConfig;
 	mode?: SessionMode;
 	displayName?: string;
 	activity?: unknown;
@@ -187,6 +197,9 @@ type WireSession = {
 	previewUrl?: string;
 	isPinned?: boolean;
 	pinnedAt?: string | null;
+	autoReviewEnabled?: boolean;
+	autoInjectReview?: boolean;
+	autoInjectCI?: boolean;
 	prs?: WirePR[];
 };
 
@@ -258,6 +271,8 @@ function mapSession(s: WireSession): DashboardSession {
 		displayStatus: s.displayStatus?.trim() || null,
 		activity: activityString(s.activity),
 		harness: s.harness ?? null,
+		reviewerHarness: s.reviewerHarness ?? null,
+		reviewerConfig: s.reviewerConfig,
 		mode: s.mode === "chat" ? "chat" : "tui",
 		branch: s.branch ?? null,
 		issueId: s.issueId ?? null,
@@ -273,6 +288,9 @@ function mapSession(s: WireSession): DashboardSession {
 		isTerminated: !!s.isTerminated,
 		isPinned: !!s.isPinned,
 		pinnedAt: s.pinnedAt ?? null,
+		autoReviewEnabled: !!s.autoReviewEnabled,
+		autoInjectReview: s.autoInjectReview ?? true,
+		autoInjectCI: s.autoInjectCI ?? true,
 	};
 }
 
@@ -825,8 +843,10 @@ export async function getSessionReviews(cfg: ServerConfig, sessionId: string): P
 	};
 }
 
-export async function triggerSessionReview(cfg: ServerConfig, sessionId: string): Promise<void> {
-	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/trigger`, { method: "POST" });
+export async function triggerSessionReview(cfg: ServerConfig, sessionId: string): Promise<SessionReviews & { created: boolean }> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/trigger`, { method: "POST" });
+	const data = await res.json();
+	return { ...mapSessionReviews(data), created: data?.created === true };
 }
 
 export async function cancelSessionReview(cfg: ServerConfig, sessionId: string): Promise<void> {
@@ -835,6 +855,11 @@ export async function cancelSessionReview(cfg: ServerConfig, sessionId: string):
 
 export async function restoreSessionReviewer(cfg: ServerConfig, sessionId: string): Promise<void> {
 	await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/restore`, { method: "POST" });
+}
+
+export async function killSessionReviewer(cfg: ServerConfig, sessionId: string): Promise<SessionReviews> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/kill`, { method: "POST" });
+	return mapSessionReviews(await res.json());
 }
 
 export async function switchSessionReviewer(
@@ -850,7 +875,10 @@ export async function switchSessionReviewer(
 			...(agentConfig ? { agentConfig } : {}),
 		}),
 	});
-	const data = await res.json();
+	return mapSessionReviews(await res.json());
+}
+
+function mapSessionReviews(data: any): SessionReviews {
 	return {
 		reviewerHandleId: typeof data?.reviewerHandleId === "string" ? data.reviewerHandleId : "",
 		reviewerHarness: typeof data?.reviewerHarness === "string" ? data.reviewerHarness : undefined,
@@ -905,6 +933,36 @@ export async function pinSession(cfg: ServerConfig, id: string): Promise<void> {
 
 export async function unpinSession(cfg: ServerConfig, id: string): Promise<void> {
 	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/pin`, { method: "DELETE" });
+}
+
+/** Automatically launch a review whenever this session's PR head changes. */
+export async function setSessionAutoReview(cfg: ServerConfig, id: string, enabled: boolean): Promise<DashboardSession> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/auto-review`, {
+		method: "PUT",
+		body: JSON.stringify({ enabled }),
+	});
+	const data = await res.json();
+	return mapSession(data?.session ?? data);
+}
+
+/** Automatically send completed AO and GitHub review feedback to the worker. */
+export async function setSessionAutoInjectReview(cfg: ServerConfig, id: string, autoInjectReview: boolean): Promise<DashboardSession> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/auto-inject-review`, {
+		method: "PATCH",
+		body: JSON.stringify({ autoInjectReview }),
+	});
+	const data = await res.json();
+	return mapSession(data?.session ?? data);
+}
+
+/** Automatically send failing CI checks to the worker. */
+export async function setSessionAutoInjectCI(cfg: ServerConfig, id: string, autoInjectCI: boolean): Promise<DashboardSession> {
+	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/auto-inject-ci`, {
+		method: "PATCH",
+		body: JSON.stringify({ autoInjectCI }),
+	});
+	const data = await res.json();
+	return mapSession(data?.session ?? data);
 }
 
 export async function restoreSession(cfg: ServerConfig, id: string): Promise<void> {

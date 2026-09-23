@@ -88,7 +88,7 @@ export const ChatTimeline = memo(function ChatTimeline({
 	inputPending: boolean;
 	onDecide(requestId: string, decisionId: string): Promise<void>;
 	onResolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
-	onRollback(turnId: string): Promise<number>;
+	onRollback?(turnId: string): Promise<number>;
 	jumpToSequence?: number;
 	onJumpHandled?(): void;
 	/**
@@ -197,7 +197,7 @@ function ConversationTurnGroup({ group, snapshot, approvalPending, inputPending,
 	inputPending: boolean;
 	onDecide(requestId: string, decisionId: string): Promise<void>;
 	onResolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
-	onRollback(turnId: string): Promise<number>;
+	onRollback?(turnId: string): Promise<number>;
 	answeredBelow?: number;
 }) {
 	// A provider failure arrives twice: as an error activity, and again as the

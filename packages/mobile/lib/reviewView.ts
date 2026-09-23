@@ -71,6 +71,15 @@ export function reviewBatchAction(review: PRReviewState, reviews: PRReviewState[
 	return reviewPrimaryAction(review);
 }
 
+/** The newest actionable automatic-review failure across every PR in a session. */
+export function latestAutoReviewFailure(reviews: PRReviewState[], autoReviewEnabled: boolean): ReviewRun | undefined {
+	if (!autoReviewEnabled) return undefined;
+	return reviews
+		.map((review) => review.latestRun)
+		.filter((run): run is ReviewRun => run?.triggerSource === "auto" && run.status === "failed" && Boolean(run.body.trim()))
+		.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
 export function reviewerDestination(data: SessionReviews, review: PRReviewState, sessionId: string) {
 	const surface = data.reviewerSurface;
 	if (!surface) return undefined;
