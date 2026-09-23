@@ -22,6 +22,7 @@ import {
 	type SessionPRSummary,
 	type SessionReviews,
 } from "../../lib/api";
+import { AgentLogo } from "../../lib/AgentLogo";
 import { haptics } from "../../lib/haptics";
 import { openGitHub } from "../../lib/openGitHub";
 import { formatExternalReviewMessage, formatInlineReviewCommentMessage } from "../../lib/reviewFeedback";
@@ -227,7 +228,7 @@ export default function ReviewActionsSheet() {
 		</Section>
 		<Section title="AO REVIEWER" subtitle="Choose who runs the next AO review.">
 			<ActionRow icon="users" title="Project default" selected={!reviewerOverride} loading={busy?.kind === "reviewer" && !busy.id} disabled={Boolean(busy)} onPress={() => chooseReviewer("")} />
-			{agents.map((agent) => <ActionRow key={agent.id} icon="user" title={agent.label || agent.id} subtitle={[agent.id, agent.status].filter(Boolean).join(" · ")} selected={reviewerOverride === agent.id} loading={busy?.kind === "reviewer" && busy.id === agent.id} disabled={Boolean(busy) || !agent.selectable} onPress={() => chooseReviewer(agent.id)} />)}
+			{agents.map((agent) => <ActionRow key={agent.id} icon="user" harness={agent.id} title={agent.label || agent.id} subtitle={[agent.id, agent.status].filter(Boolean).join(" · ")} selected={reviewerOverride === agent.id} loading={busy?.kind === "reviewer" && busy.id === agent.id} disabled={Boolean(busy) || !agent.selectable} onPress={() => chooseReviewer(agent.id)} />)}
 			{!agents.length ? <Text style={styles.empty}>No reviewer agents were found.</Text> : null}
 		</Section>
 		{models?.models.length && effectiveReviewer ? <Section title={models.selectionMode === "mode" ? "REVIEWER MODE" : "REVIEWER MODEL"} subtitle="Applied to this worker's future review runs.">
@@ -299,11 +300,11 @@ function Section({ title, subtitle, children }: { title: string; subtitle: strin
 	return <View style={styles.section}><Text style={styles.sectionTitle}>{title}</Text><Text style={styles.sectionSubtitle}>{subtitle}</Text><View style={styles.rows}>{children}</View></View>;
 }
 
-function ActionRow({ icon, title, subtitle, selected, loading, disabled, onPress }: { icon: keyof typeof Feather.glyphMap; title: string; subtitle?: string; selected?: boolean; loading?: boolean; disabled?: boolean; onPress: () => void }) {
+function ActionRow({ icon, harness, title, subtitle, selected, loading, disabled, onPress }: { icon: keyof typeof Feather.glyphMap; harness?: string; title: string; subtitle?: string; selected?: boolean; loading?: boolean; disabled?: boolean; onPress: () => void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	return <Pressable accessibilityRole="button" accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.row, pressed && styles.pressed, disabled && styles.disabled]}>
-		<Feather name={icon} size={17} color={selected ? t.blue : t.textTertiary} />
+		{harness ? <AgentLogo harness={harness} size={22} /> : <Feather name={icon} size={17} color={selected ? t.blue : t.textTertiary} />}
 		<View style={styles.rowCopy}><Text style={[styles.rowTitle, selected && { color: t.blue }]}>{title}</Text>{subtitle ? <Text numberOfLines={2} style={styles.rowSubtitle}>{subtitle}</Text> : null}</View>
 		{loading ? <ActivityIndicator size="small" color={t.blue} /> : selected ? <Feather name="check" size={17} color={t.blue} /> : <Feather name="chevron-right" size={16} color={t.textFaint} />}
 	</Pressable>;

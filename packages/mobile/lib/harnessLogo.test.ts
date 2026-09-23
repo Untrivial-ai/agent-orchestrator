@@ -12,8 +12,7 @@ const ALL_HARNESSES = [
 ];
 
 // The fake harness exists only for tests and intentionally has no brand asset.
-// prime-agent ships a mark on desktop but it has not been ported to mobile yet.
-const NO_ASSET = ["fake", "prime-agent"];
+const NO_ASSET = ["fake"];
 
 describe("logo registry", () => {
 	it("has a mark for every harness that ships one", () => {
@@ -67,7 +66,7 @@ describe("backdropFor", () => {
 	// The symmetric case, which is the one that is easy to miss: goose and
 	// kilocode are pure black and vanish on the dark card.
 	it("puts a light chip behind marks that vanish on a dark card", () => {
-		for (const h of ["kilocode", "goose", "devin", "droid", "pi", "kimi"]) {
+		for (const h of ["kilocode", "goose", "devin", "droid", "pi", "kimi", "prime-agent"]) {
 			expect(backdropFor(h), h).toBe("needs-light");
 		}
 	});
@@ -81,7 +80,7 @@ describe("backdropFor", () => {
 
 	it("never assigns two polarities to one mark", () => {
 		const dark = ["opencode", "cursor", "cline", "continue", "grok", "copilot"];
-		const light = ["kilocode", "goose", "devin", "droid", "pi", "kimi"];
+		const light = ["kilocode", "goose", "devin", "droid", "pi", "kimi", "prime-agent"];
 		expect(dark.filter((h) => light.includes(h))).toEqual([]);
 	});
 

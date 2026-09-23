@@ -30,6 +30,7 @@ const LOGOS: Record<string, number> = {
 	muse: require("../assets/agents/muse.png"),
 	opencode: require("../assets/agents/opencode.png"),
 	pi: require("../assets/agents/pi.png"),
+	"prime-agent": require("../assets/agents/prime-agent.png"),
 	qwen: require("../assets/agents/qwen.png"),
 	vibe: require("../assets/agents/vibe.png"),
 };

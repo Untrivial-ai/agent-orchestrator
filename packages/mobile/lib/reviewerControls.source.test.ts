@@ -16,6 +16,12 @@ describe("reviewer control integration", () => {
 		expect(actions).toContain("request === modelRequest.current");
 	});
 
+	it("renders every reviewer through the shared harness logo registry", () => {
+		expect(actions).toContain('import { AgentLogo } from "../../lib/AgentLogo"');
+		expect(actions).toContain("harness={agent.id}");
+		expect(actions).toContain("<AgentLogo harness={harness}");
+	});
+
 	it("does not let auto review lose its persistent reviewer", () => {
 		expect(detail).toContain("!data.reviewerHandleId || autoReviewEnabled");
 		expect(detail).toContain("disabled={Boolean(mutation) || autoReviewEnabled}");
