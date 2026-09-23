@@ -233,28 +233,19 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	if agentID == "codex" {
 		return base, errors.New("codex model discovery requires app-server")
 	}
+	if agentID == "omp" {
+		return discoverOMPCatalog(ctx, binary, workingDir, env)
+	}
 	if hasConfigDiscoverySource(agentID) {
 		return discoverConfigCatalog(agentID, workingDir, env)
 	}
-	spec, ok := commandSpecs[agentID]
-	if !ok {
+	if _, ok := commandSpecs[agentID]; !ok {
 		return base, nil
 	}
-	if strings.TrimSpace(binary) == "" {
-		return base, errors.New("agent binary is not installed")
-	}
-	runCtx, cancel := context.WithTimeout(ctx, commandTimeout)
-	defer cancel()
-	cmd := modelCommand(runCtx, binary, spec.args, workingDir, env)
-	output, err := cmd.CombinedOutput()
+	base, models, err := runModelCommand(ctx, agentID, binary, workingDir, env)
 	if err != nil {
-		return base, modelDiscoveryError(runCtx, agentID, err)
+		return base, err
 	}
-	models, err := spec.parser(output)
-	if err != nil {
-		return base, fmt.Errorf("%s model discovery: %w", agentID, err)
-	}
-	models = normalize(models)
 	if len(models) == 0 {
 		return base, fmt.Errorf("%s model discovery returned no models", agentID)
 	}
@@ -262,6 +253,32 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	base.Source = "cli"
 	base.FetchedAt = time.Now().UTC()
 	return base, nil
+}
+
+// runModelCommand executes the agent's model-list command and parses its
+// output. The caller decides what reaches the catalog: OMP filters the parsed
+// models against its configured providers before publishing them.
+func runModelCommand(ctx context.Context, agentID, binary, workingDir string, env map[string]string) (ports.AgentModelCatalog, []ports.AgentModelInfo, error) {
+	base := Base(agentID)
+	spec, ok := commandSpecs[agentID]
+	if !ok {
+		return base, nil, fmt.Errorf("%s has no discovery command", agentID)
+	}
+	if strings.TrimSpace(binary) == "" {
+		return base, nil, errors.New("agent binary is not installed")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	cmd := modelCommand(runCtx, binary, spec.args, workingDir, env)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return base, nil, modelDiscoveryError(runCtx, agentID, err)
+	}
+	models, err := spec.parser(output)
+	if err != nil {
+		return base, nil, fmt.Errorf("%s model discovery: %w", agentID, err)
+	}
+	return base, normalize(models), nil
 }
 
 func discoverCodexCatalog(ctx context.Context, request ports.AgentModelDiscoveryRequest, list CodexModelListFunc) (ports.AgentModelCatalog, error) {
@@ -507,6 +524,11 @@ func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string,
 func discoveryConfigInputs(agentID, workingDir string, env map[string]string) string {
 	if agentID == "claude-code" {
 		return "model=" + claudeCodeResolvedModel(workingDir, env)
+	}
+	if agentID == "omp" {
+		if providers := ompProvidersFingerprint(env); providers != "" {
+			return "providers=" + providers
+		}
 	}
 	if config := configDiscoveryFingerprint(agentID, workingDir, env); config != "" {
 		return "config=" + config
