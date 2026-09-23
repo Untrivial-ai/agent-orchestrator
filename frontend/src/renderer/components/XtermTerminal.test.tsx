@@ -1172,14 +1172,42 @@ describe("XtermTerminal", () => {
 		expect(window.ao!.clipboard.writeText).not.toHaveBeenCalled();
 	});
 
+	it("copies on the left release even when a right-button release happened mid-drag", async () => {
+		const { container } = render(<XtermTerminal theme="dark" />);
+		const host = container.querySelector(".terminal-xterm-host")!;
+		state.lastTerminal!.selection = "kept armed";
+
+		fireEvent.pointerDown(host, { button: 0 });
+		fireEvent.pointerUp(document, { button: 2 });
+		fireEvent.pointerUp(document, { button: 0 });
+
+		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("kept armed"));
+	});
+
+	it.each([
+		["pointercancel", () => fireEvent.pointerCancel(document)],
+		["window blur", () => window.dispatchEvent(new Event("blur"))],
+	])("disarms the pending selection on %s so a later release does not copy", async (_name, cancel) => {
+		const { container } = render(<XtermTerminal theme="dark" />);
+		state.lastTerminal!.selection = "stale selection";
+
+		fireEvent.pointerDown(container.querySelector(".terminal-xterm-host")!, { button: 0 });
+		cancel();
+		fireEvent.pointerUp(document, { button: 0 });
+		await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+		expect(window.ao!.clipboard.writeText).not.toHaveBeenCalled();
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
 	it("joins selected TUI rows that fill the whole grid width when copying", () => {
 		render(<XtermTerminal theme="dark" />);
 		const terminal = state.lastTerminal!;
 		terminal.cols = 5;
 		terminal.bufferLines = [
-			{ isWrapped: false, translateToString: () => "hello" },
-			{ isWrapped: false, translateToString: () => "wo" },
-			{ isWrapped: false, translateToString: () => "next" },
+			{ isWrapped: false, translateToString: (t) => (t ? "hello" : "hello") },
+			{ isWrapped: false, translateToString: (t) => (t ? "wo" : "wo   ") },
+			{ isWrapped: false, translateToString: (t) => (t ? "next" : "next") },
 		];
 		terminal.selectionRange = { start: { x: 0, y: 0 }, end: { x: 3, y: 2 } };
 		terminal.selection = "hello\nwo\nnext";
@@ -1194,6 +1222,31 @@ describe("XtermTerminal", () => {
 		} as unknown as KeyboardEvent);
 
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("hellowo\nnext");
+	});
+
+	it("joins full-width rows of wide characters by cell coverage, not string length", () => {
+		render(<XtermTerminal theme="dark" />);
+		const terminal = state.lastTerminal!;
+		// "你好你" occupies all 6 grid cells (3 wide chars) but is only 3 UTF-16
+		// code units long — fullness must not compare string length to cols.
+		terminal.cols = 6;
+		terminal.bufferLines = [
+			{ isWrapped: false, translateToString: (t) => (t ? "你好你" : "你好你") },
+			{ isWrapped: false, translateToString: (t) => (t ? "ab" : "ab    ") },
+		];
+		terminal.selectionRange = { start: { x: 0, y: 0 }, end: { x: 0, y: 1 } };
+		terminal.selection = "你好你\nab";
+
+		terminal.keyHandler!({
+			key: "c",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent);
+
+		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("你好你ab");
 	});
 
 	it("keeps xterm-wrapped rows merged instead of re-splitting them", () => {

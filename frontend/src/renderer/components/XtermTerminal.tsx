@@ -153,8 +153,8 @@ function bracketPastedText(text: string, bracketedPasteMode: boolean): string {
 // hard newline exactly at the window edge (issue #5785). Walk the selected
 // buffer range and drop the newline between adjacent selected rows when the
 // upper row fills every column of the grid — a full-width TUI row has no line
-// end of its own. Rows xterm already merged are skipped, and a row trimmed
-// shorter than the grid keeps its newline.
+// end of its own. Rows xterm already merged are skipped, and a row with a
+// visible end keeps its newline.
 // ponytail: "fills the grid" is a heuristic — a genuine paragraph line that
 // happens to end at the last column joins too; buffer-level precision (what
 // getSelectionPosition gives us here) is already applied, the rest has no
@@ -172,7 +172,11 @@ function joinVisuallyContinuousLines(term: Terminal, selection: string): string 
 		const text = lines[++index];
 		if (text === undefined) break;
 		const previous = buffer.getLine(row - 1);
-		const continuous = !!previous && previous.translateToString(true).length === term.cols;
+		// Full grid = content in the last cell. Read the composed cell text (null
+		// cells compose to spaces, a wide char skips its continuation cell), not a
+		// UTF-16 length: a row packed with wide (CJK) characters is full while its
+		// string stays shorter than the grid.
+		const continuous = !!previous && !/\s$/.test(previous.translateToString(false));
 		joined += `${continuous ? "" : "\n"}${text}`;
 	}
 	return joined;
@@ -1034,21 +1038,30 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// copying here cannot race the TUI repaint that later drops the highlight.
 		// Arming on pointerdown inside the terminal (left button only) keeps
 		// releases elsewhere in the app — context menu items, the scrollbar — from
-		// re-copying a lingering selection.
+		// re-copying a lingering selection. Only a left-button release consumes
+		// the armed flag (an in-between right-button release must not eat the
+		// drag), and pointercancel or window blur disarms it: those never deliver
+		// the pointerup, and a stale armed flag would copy on the next unrelated
+		// click anywhere in the app.
 		let pointerSelectionArmed = false;
+		const disarmPointerSelection = () => {
+			pointerSelectionArmed = false;
+		};
 		const pointerDown = (event: PointerEvent) => {
 			if (event.button !== 0) return;
 			pointerSelectionArmed = true;
 		};
 		const pointerUp = (event: PointerEvent) => {
+			if (event.button !== 0) return;
 			if (!pointerSelectionArmed) return;
 			pointerSelectionArmed = false;
-			if (event.button !== 0) return;
 			if (!useUiStore.getState().terminalCopyOnSelect) return;
 			copySelection();
 		};
 		host.addEventListener("pointerdown", pointerDown);
 		document.addEventListener("pointerup", pointerUp);
+		document.addEventListener("pointercancel", disarmPointerSelection);
+		window.addEventListener("blur", disarmPointerSelection);
 
 		const fitTerminal = () => {
 			// Parked terminals keep their last measured box and continue parsing
@@ -1487,6 +1500,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			window.removeEventListener("keydown", copyShortcut, true);
 			host.removeEventListener("pointerdown", pointerDown);
 			document.removeEventListener("pointerup", pointerUp);
+			document.removeEventListener("pointercancel", disarmPointerSelection);
+			window.removeEventListener("blur", disarmPointerSelection);
 			shell.removeEventListener("contextmenu", openContextMenu);
 			shell.removeEventListener("paste", pasteInput, true);
 			shell.removeEventListener("compositionend", compositionInput, true);
