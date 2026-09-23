@@ -1,0 +1,87 @@
+---
+title: "Cost estimates, editable chat, and full workspace files"
+description: "AO added estimated usage cost, editable Claude conversations, and a full workspace file browser beside changed files."
+date: "2026-08-30"
+rangeStart: "2026-08-24"
+rangeEnd: "2026-08-30"
+historical: true
+---
+
+
+## Estimated model costs alongside token usage <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4168" />
+
+Token usage now includes estimated cost, making model and session tradeoffs easier to understand.
+
+## Edit Claude Code chat messages <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/3858" />
+
+Claude Code chat messages can be edited and continued on a conversation branch without losing the original path.
+
+## Browse the full workspace from Files <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4252" />
+
+The Files view can browse the full workspace tree alongside the focused changed-files diff.
+
+## Improvements
+
+### Agents
+
+- **Derive a Kanban column &amp; display status per session** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4249" />
+
+### Cloud
+
+- **Integrate the AO cloud offering into the monorepo (AWS/NodeOps, flag-gated)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4434" />
+
+### Terminal
+
+- **Add native macOS PTY host** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4473" />
+- **Unify session actions, terminal tabs, and naming** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4572" />
+
+### Mobile
+
+- **Restructure settings and mobile pairing** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4322" />
+- **Over-the-air JS updates via EAS Update** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4474" />
+
+### Chat
+
+- **Retry a failed turn without retyping the prompt** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4256" />
+- **Add queued message dock with cancel and edit** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4649" />
+- **Improve composer performance and inline mentions** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4331" />
+
+### Pull requests
+
+- **Render .md files GitHub-style in the Files tab** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4251" />
+
+
+---
+
+## Bug fixes
+
+### Agents
+
+- **Preserve sessions across failed restart recovery** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4553" />
+
+### Chat
+
+- **Require consent before interrupting busy work** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4457" />
+- **Hand off Codex edit forks safely** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4588" />
+- **Smooth chat streaming without extra UI chrome** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4332" />
+- **Surface Claude retry status and backoff** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4611" />
+
+### Browser
+
+- **Issue browser capabilities to structured chat sessions** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4486" />
+- **Keep adaptive sidebar compaction scoped to Browser** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4409" />
+- **Correctness follow-ups for the markdown Preview tab** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4301" />
+
+### Terminal
+
+- **Keep terminal colors in sync with AO theme** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4682" />
+
+### Pull requests
+
+- **GitLab intake observer — nested group repo paths + multi-tracker wiring** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/4644" />
+
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

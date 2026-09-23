@@ -70,6 +70,25 @@ func (q *Queries) ListPRReviewThreads(ctx context.Context, prUrl string) ([]PRRe
 	return items, nil
 }
 
+const markPRReviewThreadResolved = `-- name: MarkPRReviewThreadResolved :execrows
+UPDATE pr_review_threads
+SET resolved = 1
+WHERE pr_url = ? AND thread_id = ? AND resolved = 0
+`
+
+type MarkPRReviewThreadResolvedParams struct {
+	PRURL    string
+	ThreadID string
+}
+
+func (q *Queries) MarkPRReviewThreadResolved(ctx context.Context, arg MarkPRReviewThreadResolvedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markPRReviewThreadResolved, arg.PRURL, arg.ThreadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const upsertPRReviewThread = `-- name: UpsertPRReviewThread :exec
 INSERT INTO pr_review_threads (pr_url, thread_id, path, line, resolved, is_bot, semantic_hash, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)

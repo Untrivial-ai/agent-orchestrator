@@ -48,7 +48,9 @@ jobs:
           - os: windows-latest
             platform: win32-x64
             artifact: win
-          - os: ubuntu-latest
+          # Linux tmux links glibc dynamically (#4616). Build on the oldest
+          # supported glibc baseline so the bundle also runs on Ubuntu 22.04.
+          - os: ubuntu-22.04
             platform: linux-x64
             artifact: linux
     runs-on: ${{ matrix.os }}
@@ -182,7 +184,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       # Same story for the rpm maker (Fedora/RHEL/openSUSE, issue #3405). It
-      # already runs here (ubuntu-latest ships rpmbuild), its output was just
+      # already runs here (ubuntu-22.04 ships rpmbuild), its output was just
       # never collected. Own dir for the same reason as the deb: keep it out of
       # the `linux` artifact's agent-orchestrator-linux-x64.* glob.
       - name: Collect Linux .rpm and compute digest

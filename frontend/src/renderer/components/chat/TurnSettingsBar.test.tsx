@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ChatConfigOption } from "../../types/conversation";
-import { TurnSettingsBar } from "./TurnSettingsBar";
+import { hasProviderPermissionMode, TurnSettingsBar } from "./TurnSettingsBar";
 
 const OPTIONS: ChatConfigOption[] = [
 	{
@@ -1141,5 +1141,109 @@ describe("Cursor's live Agent/Plan/Ask mode catalog", () => {
 		expect(screen.getAllByRole("button", { name: "Model mode for the next turn" })).toHaveLength(1);
 		expect(screen.queryByRole("button", { name: "Mode" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("switch", { name: "Plan Mode" })).not.toBeInTheDocument();
+	});
+});
+
+describe("OpenCode's live permission tiers", () => {
+	// What the daemon publishes for OpenCode: AO's tiers (relabelled from the
+	// injected agents) alongside OpenCode's own build and plan agents.
+	const OPENCODE_MODES: ChatConfigOption = {
+		id: "mode",
+		name: "Session Mode",
+		category: "mode",
+		type: "select",
+		currentValue: "ao-default",
+		choices: [
+			{ value: "ao-default", name: "Default approvals", permissionMode: "default" },
+			{ value: "ao-accept-edits", name: "Accept edits", permissionMode: "accept-edits" },
+			{ value: "ao-auto", name: "Auto-approve", permissionMode: "auto" },
+			{ value: "ao-bypass", name: "Bypass permissions", permissionMode: "bypass-permissions" },
+			{ value: "build", name: "build" },
+			{ value: "plan", name: "plan" },
+		],
+	};
+
+	it("returns from Plan Mode to the approval mode, not the bare agent mode", async () => {
+		const user = userEvent.setup();
+		const onChangeConfigOption = vi.fn();
+		render(
+			<TurnSettingsBar
+				harness="opencode"
+				models={[]}
+				settings={{ approvalMode: "auto" }}
+				configOptions={[{ ...OPENCODE_MODES, currentValue: "plan" }]}
+				onChangeConfigOption={onChangeConfigOption}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		await user.click(screen.getByRole("switch", { name: "Plan Mode" }));
+		expect(onChangeConfigOption).toHaveBeenCalledWith("mode", { value: "ao-auto" });
+	});
+
+	it("splits the catalog into a plan toggle and an approvals picker", async () => {
+		const user = userEvent.setup();
+		const onChangeConfigOption = vi.fn();
+		render(
+			<TurnSettingsBar
+				harness="opencode"
+				models={[]}
+				settings={{}}
+				configOptions={[OPENCODE_MODES]}
+				onChangeConfigOption={onChangeConfigOption}
+			/>,
+		);
+
+		expect(hasProviderPermissionMode([OPENCODE_MODES])).toBe(true);
+		const approvals = screen.getByRole("button", { name: "Session Mode" });
+		expect(approvals).toHaveTextContent("Default approvals");
+		await user.click(approvals);
+		await user.click(screen.getByRole("menuitemradio", { name: "Bypass permissions" }));
+		expect(onChangeConfigOption).toHaveBeenCalledWith("mode", { value: "ao-bypass" });
+
+		// build is OpenCode's agent mode, so the toggle must not invent a second one.
+		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
+		expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Agent Mode" })).not.toBeInTheDocument();
+	});
+});
+
+describe("OpenCode-style execution modes", () => {
+	const OPENCODE_MODES: ChatConfigOption = {
+		id: "mode",
+		name: "Mode",
+		category: "mode",
+		type: "select",
+		currentValue: "build",
+		choices: [
+			{ value: "build", name: "build" },
+			{ value: "plan", name: "plan" },
+		],
+	};
+
+	it("does not treat build/plan as the provider's approval catalog", () => {
+		expect(hasProviderPermissionMode([OPENCODE_MODES])).toBe(false);
+		expect(hasProviderPermissionMode(OPTIONS)).toBe(true);
+	});
+
+	it("keeps AO's approval picker beside the plan toggle", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		render(
+			<TurnSettingsBar
+				harness="opencode"
+				models={[]}
+				settings={{ approvalMode: "default" }}
+				configOptions={[OPENCODE_MODES]}
+				onChange={onChange}
+				onChangeConfigOption={vi.fn()}
+			/>,
+		);
+
+		const approvals = screen.getByRole("button", { name: "Approval policy for the next turn" });
+		expect(approvals).toHaveTextContent("Default approvals");
+		await user.click(approvals);
+		await user.click(screen.getByRole("menuitemradio", { name: "Bypass permissions" }));
+		expect(onChange).toHaveBeenCalledWith({ approvalMode: "bypass-permissions" });
 	});
 });

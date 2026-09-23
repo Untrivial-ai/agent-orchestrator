@@ -84,6 +84,14 @@ type AgentBinaryResolver interface {
 	ResolveBinary(ctx context.Context) (path string, err error)
 }
 
+// AgentBinaryResolutionInvalidator is an optional capability for adapters that
+// cache the executable path. Install and reinstall flows use it to make the
+// next readiness, model-discovery, or launch operation resolve the current
+// local installation again.
+type AgentBinaryResolutionInvalidator interface {
+	InvalidateBinaryResolution()
+}
+
 // AgentBinaryPresenceResolver is an optional startup-only refinement for an
 // adapter whose normal binary resolution performs additional validation. It
 // must only inspect local executable paths; it must not start the agent CLI.
@@ -185,11 +193,21 @@ type AgentModelCatalog struct {
 	// AllowCustom is retained for compatibility and is true only for direct entry.
 	AllowCustom bool   `json:"allowCustom"`
 	Source      string `json:"source"`
+	// Metadata describes the non-sensitive installed adapter inputs used for
+	// discovery (for example the resolved binary and adapter source kind).
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// InputFingerprint changes whenever an upgrade, auth/config input, or
+	// project scope could produce a different catalog.
+	InputFingerprint string `json:"inputFingerprint,omitempty"`
 	// BinaryVersion is the legacy wire name for AO's non-sensitive executable
 	// and configuration metadata fingerprint.
-	BinaryVersion string    `json:"binaryVersion,omitempty"`
-	FetchedAt     time.Time `json:"fetchedAt"`
-	ValidatedAt   time.Time `json:"validatedAt,omitempty"`
+	BinaryVersion string     `json:"binaryVersion,omitempty"`
+	FetchedAt     time.Time  `json:"fetchedAt"`
+	ValidatedAt   time.Time  `json:"validatedAt,omitempty"`
+	LastSuccessAt *time.Time `json:"lastSuccessAt,omitempty"`
+	RefreshState  string     `json:"refreshState,omitempty" enum:"idle,queued,refreshing,error"`
+	RefreshError  string     `json:"refreshError,omitempty"`
+	RetryAt       *time.Time `json:"retryAt,omitempty"`
 	// RefreshRecommended tells cache-first clients to revalidate in the
 	// background while continuing to display the cached catalog.
 	RefreshRecommended bool   `json:"refreshRecommended,omitempty"`
@@ -200,20 +218,35 @@ type AgentModelCatalog struct {
 // CachedAgentModelCatalog is the persistence record used by the model-catalog
 // service. CatalogJSON contains a serialized AgentModelCatalog.
 type CachedAgentModelCatalog struct {
-	AgentID       string
-	ProjectID     string
-	BinaryVersion string // Legacy field name for the discovery-input metadata fingerprint.
-	CatalogJSON   string
-	Source        string
-	FetchedAt     time.Time
+	AgentID          string
+	ProjectID        string
+	BinaryVersion    string // Legacy field name for the discovery-input metadata fingerprint.
+	CatalogJSON      string
+	Source           string
+	FetchedAt        time.Time
+	MetadataJSON     string
+	InputFingerprint string
+	LastSuccessAt    time.Time
+	RefreshState     string
+	RefreshError     string
+	RetryCount       int64
+	RetryAt          time.Time
+	Generation       int64
 }
 
 // AgentModelCatalogCache persists normalized model catalogs across daemon
-// restarts. Implementations must treat agent+project as the logical key.
+// restarts. Global catalogs use the empty project scope; BinaryVersion tracks
+// the installed agent/config fingerprint used for invalidation.
 type AgentModelCatalogCache interface {
 	GetAgentModelCatalog(ctx context.Context, agentID, projectID string) (CachedAgentModelCatalog, bool, error)
 	ListAgentModelCatalogsByAgent(ctx context.Context, agentID string) ([]CachedAgentModelCatalog, error)
 	UpsertAgentModelCatalog(ctx context.Context, record CachedAgentModelCatalog) error
+}
+
+// AgentModelCatalogScopeCache supports daemon-wide startup prefetch while
+// keeping the smaller cache contract easy to fake at focused boundaries.
+type AgentModelCatalogScopeCache interface {
+	ListAgentModelCatalogs(ctx context.Context) ([]CachedAgentModelCatalog, error)
 }
 
 // AgentModelDiscoveryRequest describes one bounded, adapter-defined model

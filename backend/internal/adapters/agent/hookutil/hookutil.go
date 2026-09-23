@@ -17,6 +17,11 @@ import (
 // touching a user- or repo-provided .gitignore at the same path.
 const GitignoreSentinel = "# managed by agent-orchestrator: AO hook files stay out of git status"
 
+// CopilotAgentProfileSentinel marks a Copilot custom-agent profile as
+// AO-managed so writers and scratch-workspace readers share one ownership
+// marker.
+const CopilotAgentProfileSentinel = "<!-- managed by agent-orchestrator: copilot agent profile -->"
+
 // EnsureWorkspaceGitignore writes a self-ignoring .gitignore into dir covering
 // the named AO-installed files. Hook files land in fresh session worktrees as
 // untracked files, and `git worktree remove` (without --force) refuses on ANY

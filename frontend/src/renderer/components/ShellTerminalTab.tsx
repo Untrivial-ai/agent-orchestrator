@@ -30,7 +30,7 @@ type ShellTerminalTabProps = {
 // and an empty or unchanged name is discarded. The close control is a sibling
 // button, not nested inside the tab button - nesting interactive elements is
 // invalid HTML and breaks keyboard traversal. Connected session-strip tabs hug
-// the title and cross-fade the terminal glyph into that sibling on hover.
+// the title and reveal that sibling in the terminal glyph's slot on hover.
 export function ShellTerminalTab({
 	shell,
 	isActive,
@@ -156,8 +156,8 @@ export function ShellTerminalTab({
 		return (
 		<TerminalTabFrame
 			action={closeAction}
-			actionLayout="inline"
-			actionPosition="trailing"
+			actionLayout="overlay"
+			actionPosition="leading"
 			active={isActive}
 				buttonProps={{
 					"aria-current": isActive,
@@ -178,7 +178,10 @@ export function ShellTerminalTab({
 			>
 				<SquareTerminal
 					aria-hidden="true"
-					className="size-icon-sm shrink-0"
+					className={cn(
+						"size-icon-sm shrink-0",
+						closeAction && "group-hover:opacity-0 group-focus-within:opacity-0",
+					)}
 				/>
 				<span className="truncate">{title}</span>
 			</TerminalTabFrame>

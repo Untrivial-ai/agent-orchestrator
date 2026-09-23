@@ -151,21 +151,8 @@ export function sessionInterfaceTransitionQueryKey(sessionId: string) {
 	return ["session-interface-transition", sessionId] as const;
 }
 
-/**
- * One bounded durable row drives every client. Polling is intentionally only
- * eager while a handoff is active; idle sessions do not create background
- * traffic and the existing session CDC stream still refreshes the committed
- * mode in the workspace model.
- */
-export function useSessionInterfaceTransition(sessionId: string | undefined) {
-	const queryClient = useQueryClient();
-	const settledRef = useRef<string>("");
-	const refreshAttemptRef = useRef(0);
-	const [refreshingTransition, setRefreshingTransition] = useState<{
-		attempt: number;
-		key: string;
-	}>();
-	const query = useQuery({
+function useSessionInterfaceTransitionStatusQuery(sessionId: string | undefined) {
+	return useQuery({
 		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
 		enabled: Boolean(sessionId && hasTrustedApiBaseUrl()),
 		queryFn: async () => {
@@ -191,6 +178,33 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		},
 		retry: 1,
 	});
+}
+
+export function useSessionInterfaceTransitionStatus(sessionId: string | undefined) {
+	const query = useSessionInterfaceTransitionStatusQuery(sessionId);
+	return {
+		status: query.data,
+		transition: query.data?.transition,
+		isLoading: query.isLoading,
+		statusError: query.error ? apiErrorMessage(query.error) : undefined,
+	};
+}
+
+/**
+ * One bounded durable row drives every client. Polling is intentionally only
+ * eager while a handoff is active; idle sessions do not create background
+ * traffic and the existing session CDC stream still refreshes the committed
+ * mode in the workspace model.
+ */
+export function useSessionInterfaceTransition(sessionId: string | undefined) {
+	const queryClient = useQueryClient();
+	const settledRef = useRef<string>("");
+	const refreshAttemptRef = useRef(0);
+	const [refreshingTransition, setRefreshingTransition] = useState<{
+		attempt: number;
+		key: string;
+	}>();
+	const query = useSessionInterfaceTransitionStatusQuery(sessionId);
 
 	const start = useMutation({
 		mutationKey: startInterfaceTransitionMutationKey,

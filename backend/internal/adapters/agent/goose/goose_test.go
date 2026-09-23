@@ -942,18 +942,36 @@ func testGooseBinaryPath() string {
 }
 
 func TestResolveGooseBinaryFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PATH", filepath.Join(home, "bin"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("ProgramFiles", filepath.Join(home, "ProgramFiles"))
+	t.Setenv("ProgramFiles(x86)", filepath.Join(home, "ProgramFilesX86"))
+	t.Setenv("ProgramData", filepath.Join(home, "ProgramData"))
+	t.Setenv("PROGRAMDATA", filepath.Join(home, "ProgramData"))
+	t.Setenv("VOLTA_HOME", filepath.Join(home, ".volta"))
+	t.Setenv("FNM_DIR", filepath.Join(home, ".fnm"))
+	t.Setenv("NVM_SYMLINK", filepath.Join(home, "nvm"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	previousCommand := gooseIdentityCommand
+	gooseIdentityCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() { gooseIdentityCommand = previousCommand })
+
 	// When the binary is not on PATH or any well-known location, the resolver
 	// MUST surface ports.ErrAgentBinaryNotFound rather than a silent string
 	// fallback that lets a missing CLI launch into an empty tmux pane.
 	bin, err := ResolveGooseBinary(context.Background())
-	if err != nil {
-		if !errors.Is(err, ports.ErrAgentBinaryNotFound) {
-			t.Fatalf("err = %v, want ports.ErrAgentBinaryNotFound", err)
-		}
-		return
+	if !errors.Is(err, ports.ErrAgentBinaryNotFound) {
+		t.Fatalf("err = %v, want ports.ErrAgentBinaryNotFound", err)
 	}
-	if bin == "" {
-		t.Fatal("ResolveGooseBinary returned empty path with no error")
+	if bin != "" {
+		t.Fatalf("ResolveGooseBinary returned %q with not-found error", bin)
 	}
 }
 

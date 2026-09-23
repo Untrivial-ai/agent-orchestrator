@@ -539,7 +539,7 @@ func (s *Service) PrepareCodexAccountForSwitch(ctx context.Context, switchID, ac
 		return notPrepared(apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The selected Codex credential could not be staged"))
 	}
 
-	globalCredential, globalState, globalErr := readCodexFileState(s.codexAccounts.globalCredentialPath(), true)
+	globalCredential, globalState, globalErr := readCodexDeviceFileState(s.codexAccounts.globalCredentialPath(), true)
 	if globalErr != nil {
 		_ = os.RemoveAll(stagingDir)
 		return notPrepared(apierr.NotImplemented("CODEX_GLOBAL_CREDENTIAL_STORE_UNSUPPORTED", "Device-global Codex account switching requires file-backed credentials"))
@@ -558,7 +558,7 @@ func (s *Service) PrepareCodexAccountForSwitch(ctx context.Context, switchID, ac
 			return notPrepared(apierr.Unavailable("CODEX_ACCOUNT_SWITCH_ACTIVATION_UNCONFIRMED", "The current Codex credential could not be checkpointed"))
 		}
 	}
-	finalGlobal, finalState, finalErr := readCodexFileState(s.codexAccounts.globalCredentialPath(), true)
+	finalGlobal, finalState, finalErr := readCodexDeviceFileState(s.codexAccounts.globalCredentialPath(), true)
 	if finalErr != nil || !sameCodexFileState(globalState, finalState) || !bytes.Equal(globalCredential, finalGlobal) {
 		_ = os.RemoveAll(stagingDir)
 		return notPrepared(ports.ErrCodexGlobalAccountChanged)
@@ -585,11 +585,11 @@ func (s *Service) InspectCodexAccountSwitch(ctx context.Context, switchID string
 		return "", apierr.NotImplemented("CODEX_GLOBAL_CREDENTIAL_STORE_UNSUPPORTED", "Device-global Codex account switching requires file-backed credentials")
 	}
 	globalPath := s.codexAccounts.globalCredentialPath()
-	globalCredential, admitted, credentialErr := readCodexFileState(globalPath, true)
+	globalCredential, admitted, credentialErr := readCodexDeviceFileState(globalPath, true)
 	if credentialErr != nil {
 		return "", credentialErr
 	}
-	latestCredential, latest, latestErr := readCodexFileState(globalPath, true)
+	latestCredential, latest, latestErr := readCodexDeviceFileState(globalPath, true)
 	if latestErr != nil || !sameCodexFileState(admitted, latest) || !bytes.Equal(globalCredential, latestCredential) {
 		return "", errors.Join(ports.ErrCodexGlobalAccountChanged, latestErr)
 	}

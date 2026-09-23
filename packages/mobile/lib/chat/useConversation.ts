@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { ServerConfig } from "../config";
 import {
+	cancelQueuedConversationTurn,
 	compactConversation,
 	getConversationConfigOptions,
 	getConversationModels,
@@ -19,6 +20,7 @@ import {
 	stageConversationAttachments,
 	steerConversation,
 	interruptConversation,
+	promoteQueuedConversationTurn,
 	type ConversationPage,
 } from "./api";
 import type { ChatConfigOption, ChatImage, ChatModel, ChatResource, ChatSkill, ConversationSnapshot, TurnSettings } from "./types";
@@ -47,6 +49,7 @@ export type PendingSend = {
 
 export type ConversationAction =
 	| "steer"
+	| "queue"
 	| "interrupt"
 	| "approval"
 	| "input"
@@ -80,6 +83,8 @@ export type MobileConversation = {
 	retrySend(id: string): Promise<void>;
 	discardSend(id: string): void;
 	steer(text: string): Promise<void>;
+	promoteQueuedTurn(turnId: string): Promise<void>;
+	cancelQueuedTurn(turnId: string): Promise<void>;
 	interrupt(): Promise<void>;
 	resolveApproval(requestId: string, decisionId: string): Promise<void>;
 	resolveInput(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>): Promise<void>;
@@ -314,6 +319,14 @@ export function useMobileConversation(
 		(text: string) => runAction("steer", () => requireConfig(cfg, (c) => steerConversation(c, sessionId, text, clientMessageId()))),
 		[cfg, runAction, sessionId],
 	);
+	const cancelQueuedTurn = useCallback(
+		(turnId: string) => runAction("queue", () => requireConfig(cfg, (c) => cancelQueuedConversationTurn(c, sessionId, turnId))),
+		[cfg, runAction, sessionId],
+	);
+	const promoteQueuedTurn = useCallback(
+		(turnId: string) => runAction("queue", () => requireConfig(cfg, (c) => promoteQueuedConversationTurn(c, sessionId, turnId))),
+		[cfg, runAction, sessionId],
+	);
 	const interrupt = useCallback(
 		() => runAction("interrupt", () => requireConfig(cfg, (c) => interruptConversation(c, sessionId))),
 		[cfg, runAction, sessionId],
@@ -386,6 +399,8 @@ export function useMobileConversation(
 		retrySend,
 		discardSend,
 		steer,
+		promoteQueuedTurn,
+		cancelQueuedTurn,
 		interrupt,
 		resolveApproval: resolveApprovalAction,
 		resolveInput: resolveInputAction,

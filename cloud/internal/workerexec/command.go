@@ -38,6 +38,38 @@ type HarnessBuilder struct {
 	CodexLogin func(binary, home, credentialType, secret string) error
 }
 
+// extraReposPromptNote describes the additional repositories the worker checked
+// out beside the primary workspace, so the agent knows they exist and where to
+// find them. Paths mirror worker.ExtraRepoPath (siblings of the primary
+// checkout), so what the agent is told matches what is on disk.
+func extraReposPromptNote(workspace string, repos []worker.RepoRef) string {
+	if len(repos) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Additional repositories\n\n")
+	b.WriteString("This session was set up with extra repositories checked out alongside your primary repository. Your working directory is the primary repository; the others are sibling directories you can read and edit directly:\n\n")
+	wrote := false
+	for _, repo := range repos {
+		if strings.TrimSpace(repo.URL) == "" {
+			continue
+		}
+		abs := worker.ExtraRepoPath(workspace, repo.URL)
+		name := filepath.Base(abs)
+		branch := ""
+		if strings.TrimSpace(repo.Branch) != "" {
+			branch = fmt.Sprintf(" (branch %s)", repo.Branch)
+		}
+		fmt.Fprintf(&b, "- %s%s: %s (relative to your working directory: ../%s)\n", name, branch, abs, name)
+		wrote = true
+	}
+	if !wrote {
+		return ""
+	}
+	b.WriteString("\nMake changes, commit, and open pull requests per repository as appropriate. If one is missing it could not be cloned (for example it is outside this session's GitHub access); continue with the primary repository.")
+	return b.String()
+}
+
 // BuildInteractive prepares the provider's native TUI command. Unlike Build,
 // it deliberately omits headless print/JSON flags so the browser terminal is
 // the conversation surface.
@@ -74,50 +106,65 @@ func (b HarnessBuilder) BuildInteractive(
 	if launch.Kind == "orchestrator" {
 		systemPrompt = orchestratorSystemPrompt(skillDir)
 	}
-	if launch.Harness == "cursor" {
-		// The cursor launch builder drops SystemPrompt entirely (see
-		// agentruntime.buildCursorLaunch); the installed skill on disk is the
-		// only guidance a cursor agent gets. Known limitation.
-		systemPrompt = ""
+	if projectPrompt := strings.TrimSpace(launch.SystemPrompt); projectPrompt != "" {
+		systemPrompt += "\n\n" + projectPrompt
+	}
+	// Multi-repo dev kit: tell the agent about the additional repositories the
+	// worker checked out beside the primary repo, and where to find them. Without
+	// this the agent has no way to know they exist. Orchestrators coordinate and
+	// have no workspace checkout, so they never get this note.
+	if launch.Kind != "orchestrator" {
+		if note := extraReposPromptNote(workspace, launch.ExtraRepos); note != "" {
+			systemPrompt += "\n\n" + note
+		}
+	}
+	systemPromptFile, err := b.writeSystemPromptFile(launch.SessionID, systemPrompt)
+	if err != nil {
+		return Command{}, err
 	}
 	var providerArgs []string
 	switch launch.Harness {
 	case "codex":
-		providerArgs = codexActivityHookArgs()
+		providerArgs = codexActivityHookArgs(hookHelperPath(b.DataDir))
 	case "cursor":
-		providerArgs = []string{"--trust"}
+		pluginDir, err := b.writeCursorPromptPlugin(launch.SessionID, systemPrompt)
+		if err != nil {
+			return Command{}, err
+		}
+		providerArgs = []string{"--trust", "--plugin-dir", pluginDir}
 	}
 	harness := agentruntime.Harness(launch.Harness)
 	permission := agentruntime.PermissionPolicyForMode(
 		agentruntime.SessionMode(launch.Mode),
 	)
 	var argv []string
-	var err error
 	if identity := b.interactiveRestoreIdentity(launch); identity != "" {
 		var ok bool
 		argv, ok, err = agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
-			Harness:       harness,
-			Binary:        binary,
-			SessionID:     launch.SessionID,
-			Metadata:      map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
-			WorkspacePath: workspace,
-			SystemPrompt:  systemPrompt,
-			ProviderArgs:  providerArgs,
-			Permission:    permission,
+			Harness:          harness,
+			Binary:           binary,
+			SessionID:        launch.SessionID,
+			Metadata:         map[string]string{agentruntime.MetadataKeyAgentSessionID: identity},
+			WorkspacePath:    workspace,
+			SystemPrompt:     systemPrompt,
+			SystemPromptFile: systemPromptFile,
+			ProviderArgs:     providerArgs,
+			Permission:       permission,
 		})
 		if err == nil && !ok {
 			err = errors.New("coding-agent conversation cannot be restored")
 		}
 	} else {
 		argv, err = agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
-			Harness:       harness,
-			Binary:        binary,
-			SessionID:     launch.SessionID,
-			WorkspacePath: workspace,
-			Prompt:        launch.Prompt,
-			SystemPrompt:  systemPrompt,
-			ProviderArgs:  providerArgs,
-			Permission:    permission,
+			Harness:          harness,
+			Binary:           binary,
+			SessionID:        launch.SessionID,
+			WorkspacePath:    workspace,
+			Prompt:           launch.Prompt,
+			SystemPrompt:     systemPrompt,
+			SystemPromptFile: systemPromptFile,
+			ProviderArgs:     providerArgs,
+			Permission:       permission,
 		})
 	}
 	if err != nil {
@@ -144,7 +191,7 @@ func (b HarnessBuilder) BuildInteractive(
 		}
 	}
 	if launch.Harness == "cursor" {
-		if err := installCursorActivityHooks(workspace); err != nil {
+		if err := installCursorActivityHooks(hookHelperPath(b.DataDir), workspace); err != nil {
 			if command.Cleanup != nil {
 				command.Cleanup()
 			}
@@ -262,7 +309,7 @@ func (b HarnessBuilder) configureCredential(
 		}
 	case "codex":
 		switch credential.CredentialType {
-		case "api_key", "access_token":
+		case "api_key", "access_token", "auth_json":
 			return b.configureCodexCredential(command, credential)
 		default:
 			return errors.New("unsupported Codex credential type")
@@ -330,9 +377,10 @@ func (b HarnessBuilder) prepareClaudeCloudExperience(command *Command, workspace
 	}); err != nil {
 		return fmt.Errorf("prepare Claude settings: %w", err)
 	}
+	helperBinary := hookHelperPath(b.DataDir)
 	if err := updateJSONFile(
 		filepath.Join(workspace, ".claude", "settings.local.json"),
-		installClaudeActivityHooks,
+		func(settings map[string]any) { installClaudeActivityHooks(helperBinary, settings) },
 	); err != nil {
 		return fmt.Errorf("install Claude activity hooks: %w", err)
 	}
@@ -463,6 +511,31 @@ func (b HarnessBuilder) configureCodexCredential(
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("create Codex home: %w", err)
 	}
+	if credential.CredentialType == "auth_json" {
+		path := filepath.Join(home, "auth.json")
+		tmp, err := os.CreateTemp(home, ".ao-codex-auth-*")
+		if err != nil {
+			return fmt.Errorf("create temporary Codex authentication: %w", err)
+		}
+		tmpPath := tmp.Name()
+		defer func() { _ = os.Remove(tmpPath) }()
+		if err := tmp.Chmod(0o600); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("secure temporary Codex authentication: %w", err)
+		}
+		if _, err := tmp.Write([]byte(credential.Secret)); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("write temporary Codex authentication: %w", err)
+		}
+		if err := tmp.Close(); err != nil {
+			return fmt.Errorf("close temporary Codex authentication: %w", err)
+		}
+		if err := os.Rename(tmpPath, path); err != nil {
+			return fmt.Errorf("replace Codex authentication: %w", err)
+		}
+		command.Env["CODEX_HOME"] = home
+		return nil
+	}
 	login := b.CodexLogin
 	if login == nil {
 		login = loginCodex
@@ -498,7 +571,11 @@ func loginCodex(binary, home, credentialType, secret string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "login", option)
-	command.Env = append(os.Environ(), "CODEX_HOME="+home)
+	command.Env = []string{
+		"CODEX_HOME=" + home,
+		"HOME=" + os.Getenv("HOME"),
+		"PATH=" + os.Getenv("PATH"),
+	}
 	command.Stdin = strings.NewReader(secret)
 	if err := command.Run(); err != nil {
 		return err

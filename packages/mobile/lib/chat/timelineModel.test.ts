@@ -83,6 +83,22 @@ describe("mobile Chat timeline model", () => {
 		expect(readableConversationItems(value).slice(-1)[0]).toMatchObject({ activityKind: "system" });
 	});
 
+	it("docks queued human messages instead of rendering them as sent timeline turns", () => {
+		const value = snapshot();
+		value.turns[1].state = "queued";
+		value.items = value.items.filter((item) => item.id !== "a2");
+		const queuedMessages = (
+			timelineModel as unknown as {
+				queuedConversationMessages?: (snapshot: ConversationSnapshot) => Array<{ turnId: string; message: { text: string } }>;
+			}
+		).queuedConversationMessages;
+
+		expect(queuedMessages?.(value)).toMatchObject([
+			{ turnId: "t2", message: { text: "Queued task" } },
+		]);
+		expect(readableConversationItems(value).map((item) => item.id)).not.toContain("u2");
+	});
+
 	it("gates rollback on the daemon capability, accepted history and idle state", () => {
 		const value = snapshot();
 		expect(canRollbackTurn(value, value.turns[0])).toBe(true);

@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -253,6 +256,7 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 
 	const secret = "TOP_SECRET_WORKER_TOKEN"
 	archiveResult := make(chan map[string]string, 1)
+	preinstalledChecks := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.URL.Path == "/api/v2/workspaces/"+testWorkspaceID:
@@ -268,6 +272,19 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 				t.Errorf("PTY backend_type = %q, want buffered", got)
 			}
 			command := request.URL.Query().Get("command")
+			if strings.Contains(command, preinstalledMiss) {
+				connection, err := websocket.Accept(writer, request, nil)
+				if err != nil {
+					t.Errorf("accept preinstalled probe websocket: %v", err)
+					return
+				}
+				defer connection.CloseNow()
+				output := websocket.NetConn(context.Background(), connection, websocket.MessageBinary)
+				defer output.Close()
+				preinstalledChecks <- struct{}{}
+				_, _ = io.WriteString(output, preinstalledMiss+"\r\n")
+				return
+			}
 			for _, expected := range []string{
 				"/mnt/ao/repository",
 				"/mnt/ao/.ao/worker",
@@ -370,6 +387,11 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 	if files["ao-worker"] != "worker-binary" || files["ao"] != "helper-binary" {
 		t.Fatalf("unexpected binaries in archive: %+v", files)
 	}
+	select {
+	case <-preinstalledChecks:
+	default:
+		t.Fatal("bootstrap did not probe the preinstalled worker before uploading binaries")
+	}
 	if !strings.Contains(files["worker.env"], secret) {
 		t.Fatalf("worker environment missing from archive")
 	}
@@ -379,6 +401,203 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 	if err := <-bootstrapResult; err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
+}
+
+func TestPreinstalledBootstrapUsesExactHashesAndLaunchOnlyArchive(t *testing.T) {
+	t.Parallel()
+	bootstrap := sandbox.WorkerBootstrap{
+		Binary: []byte("worker-binary"), Destination: "/usr/local/bin/ao-worker",
+		HelperBinary: []byte("helper-binary"), HelperDestination: "/usr/local/bin/ao",
+		User: "ao-worker", Environment: map[string]string{"AO_WORKER_TOKEN": "secret"},
+		DurableRoot: "/mnt/ao", DurableIdentity: "session-1",
+	}
+	archive, err := bootstrapLaunchArchive(bootstrap)
+	if err != nil {
+		t.Fatalf("build launch archive: %v", err)
+	}
+	files := readArchive(t, archive)
+	if _, ok := files["ao-worker"]; ok {
+		t.Fatal("launch-only archive unexpectedly contains ao-worker")
+	}
+	if _, ok := files["ao"]; ok {
+		t.Fatal("launch-only archive unexpectedly contains ao helper")
+	}
+	if !strings.Contains(files["worker.env"], "secret") || files["launch.sh"] == "" {
+		t.Fatalf("launch-only archive is missing launch configuration: %+v", files)
+	}
+
+	command := bootstrapCommandForArchive(bootstrap, len(base64.StdEncoding.EncodeToString(archive)), true)
+	workerHash := sha256.Sum256(bootstrap.Binary)
+	helperHash := sha256.Sum256(bootstrap.HelperBinary)
+	for _, expected := range []string{
+		preinstalledMiss,
+		hex.EncodeToString(workerHash[:]),
+		hex.EncodeToString(helperHash[:]),
+		"/usr/local/bin/ao-worker",
+		"/usr/local/bin/ao",
+	} {
+		if !strings.Contains(command, expected) {
+			t.Errorf("preinstalled bootstrap command missing %q", expected)
+		}
+	}
+	if strings.Contains(command, `install -m 0755 "$stage/ao-worker"`) {
+		t.Fatal("preinstalled bootstrap command unexpectedly reinstalls the worker binary")
+	}
+}
+
+func TestPreinstalledBootstrapCommandWiresHTTPSelfHeal(t *testing.T) {
+	t.Parallel()
+	bootstrap := sandbox.WorkerBootstrap{
+		Binary: []byte("worker-binary"), Destination: "/usr/local/bin/ao-worker",
+		HelperBinary: []byte("helper-binary"), HelperDestination: "/usr/local/bin/ao",
+		User:        "ao-worker",
+		Environment: map[string]string{"AO_CLOUD_PUBLIC_URL": "https://cp.example.com/"},
+		DurableRoot: "/mnt/ao", DurableIdentity: "session-1",
+	}
+	workerHash := sha256.Sum256(bootstrap.Binary)
+	helperHash := sha256.Sum256(bootstrap.HelperBinary)
+
+	// Assert the raw heal shell: bootstrapCommandForArchive re-quotes the whole
+	// script into `sh -lc '...'`, so single-quoted literals only survive verbatim
+	// in preinstalledHealScript's own output.
+	script := preinstalledHealScript(bootstrap, "/usr/local/bin/ao-worker")
+	for _, expected := range []string{
+		"ao_http_heal",
+		// The control-plane origin is embedded here with a trailing slash trimmed,
+		// because worker.env is not sourced yet at the preinstalled-check stage.
+		"ao_public_url='https://cp.example.com'",
+		"/api/cloud/v1/worker/binary/",
+		"curl -fsSL",
+		"wget -qO",
+		`sha256sum "$ao_tmp"`,
+		`sudo -n install -m 0755 "$ao_tmp"`,
+		"ao_http_heal '/usr/local/bin/ao-worker'",
+		"ao_http_heal '/usr/local/bin/ao'",
+		hex.EncodeToString(workerHash[:]),
+		hex.EncodeToString(helperHash[:]),
+		// The slow PTY-upload fallback must remain the last resort.
+		preinstalledMiss,
+	} {
+		if !strings.Contains(script, expected) {
+			t.Errorf("preinstalled heal script missing %q", expected)
+		}
+	}
+	// The HTTP heal must be attempted before the miss marker triggers the PTY
+	// upload fallback.
+	healIdx := strings.Index(script, "ao_http_heal '/usr/local/bin/ao-worker'")
+	missIdx := strings.Index(script, "echo "+preinstalledMiss)
+	if healIdx < 0 || missIdx < 0 || healIdx > missIdx {
+		t.Fatalf("HTTP heal must precede the PTY-upload fallback: heal=%d miss=%d", healIdx, missIdx)
+	}
+
+	// The heal shell must be embedded in the real bootstrap command, and the
+	// launch-only fast path must not reinstall a staged binary.
+	command := bootstrapCommandForArchive(bootstrap, 128, true)
+	if !strings.Contains(command, "/api/cloud/v1/worker/binary/") || !strings.Contains(command, preinstalledMiss) {
+		t.Fatal("bootstrap command does not embed the HTTP self-heal and PTY fallback")
+	}
+	if strings.Contains(command, `install -m 0755 "$stage/ao-worker"`) {
+		t.Fatal("preinstalled bootstrap command unexpectedly reinstalls the staged worker binary")
+	}
+}
+
+func TestPreinstalledBootstrapHealsWorkerOverHTTP(t *testing.T) {
+	t.Parallel()
+	requireDownloader(t)
+
+	workerBinary := []byte("healed-worker-binary-contents")
+	sum := sha256.Sum256(workerBinary)
+	wantHex := hex.EncodeToString(sum[:])
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/cloud/v1/worker/binary/"+wantHex {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(workerBinary)
+			return
+		}
+		http.Error(w, "unexpected route", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	dest := dir + "/ao-worker" // absent, so the guard reports a preinstalled miss
+	bootstrap := sandbox.WorkerBootstrap{
+		Binary: workerBinary, Destination: dest, User: "ao-worker",
+		Environment: map[string]string{"AO_CLOUD_PUBLIC_URL": server.URL},
+		DurableRoot: "/mnt/ao", DurableIdentity: "session-1",
+	}
+	// Shim sudo so the unprivileged test process can run the guarded install.
+	script := "sudo() { shift; \"$@\"; }\n" + preinstalledHealScript(bootstrap, dest) + "echo __AO_HEAL_OK__\n"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("heal script failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), preinstalledMiss) {
+		t.Fatalf("HTTP heal unexpectedly reported a preinstalled miss:\n%s", output)
+	}
+	if !strings.Contains(string(output), "__AO_HEAL_OK__") {
+		t.Fatalf("heal script did not continue past the guard:\n%s", output)
+	}
+	installed, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read healed binary: %v", err)
+	}
+	if string(installed) != string(workerBinary) {
+		t.Fatalf("healed binary contents mismatch: got %q", installed)
+	}
+}
+
+func TestPreinstalledBootstrapFallsBackWhenHTTPHealFails(t *testing.T) {
+	t.Parallel()
+	requireDownloader(t)
+
+	workerBinary := []byte("expected-worker-binary")
+	// The control plane serves corrupted bytes, so the sha256 verification fails
+	// and the heal must abort without installing anything.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("corrupted-different-bytes"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	dest := dir + "/ao-worker"
+	bootstrap := sandbox.WorkerBootstrap{
+		Binary: workerBinary, Destination: dest, User: "ao-worker",
+		Environment: map[string]string{"AO_CLOUD_PUBLIC_URL": server.URL},
+		DurableRoot: "/mnt/ao", DurableIdentity: "session-1",
+	}
+	script := "sudo() { shift; \"$@\"; }\n" + preinstalledHealScript(bootstrap, dest) + "echo __AO_AFTER_GUARD__\n"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("script errored: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), preinstalledMiss) {
+		t.Fatalf("expected a preinstalled miss fallback after a failed HTTP heal:\n%s", output)
+	}
+	if strings.Contains(string(output), "__AO_AFTER_GUARD__") {
+		t.Fatalf("script continued past the miss instead of exiting for PTY upload:\n%s", output)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("destination must not be installed on a failed heal: err=%v", err)
+	}
+}
+
+// requireDownloader skips a shell-executing heal test when the environment lacks
+// both curl and wget, which the heal script needs to pull the binary.
+func requireDownloader(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("curl"); err == nil {
+		return
+	}
+	if _, err := exec.LookPath("wget"); err == nil {
+		return
+	}
+	t.Skip("neither curl nor wget is available to exercise the HTTP self-heal")
 }
 
 func TestBootstrapCommandRunsThroughUploadWithPipedInput(t *testing.T) {

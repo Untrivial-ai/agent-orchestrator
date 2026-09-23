@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
@@ -192,6 +194,10 @@ type sessionLifecycle interface {
 	// SetHarnessUseGate prevents lifecycle operations from racing a harness
 	// executable replacement.
 	SetHarnessUseGate(gate sessionmanager.HarnessUseGate)
+	// PersistChatModel records the model the user picked in ChatUI onto the
+	// session's durable metadata before the next prompt routes. A later TUI
+	// rebuild reads it back so ChatUI model changes survive the handoff.
+	PersistChatModel(ctx context.Context, id domain.SessionID, model string) error
 }
 
 // sessionLifecycleMessenger adapts sessionLifecycle to ports.AgentMessenger so
@@ -205,6 +211,19 @@ type sessionLifecycleMessenger struct {
 
 func (m sessionLifecycleMessenger) Send(ctx context.Context, id domain.SessionID, message string) error {
 	return m.sessionLifecycle.Send(ctx, id, message, nil)
+}
+
+// telemetryEmitsSpawned reports whether the ao.session.spawned carrier event can
+// reach a sink under this config: product telemetry on and the event not on the
+// kill switch. When it cannot, session wiring leaves the GitHub identity resolver
+// nil so a spawn never makes a GitHub call whose only purpose is a dropped event.
+// This mirrors newTelemetrySink, which returns a NoopSink under the same off
+// condition, so the non-nil NoopSink never reaches an unnecessary resolve.
+func telemetryEmitsSpawned(cfg config.Config) bool {
+	if !cfg.Telemetry.Events {
+		return false
+	}
+	return !slices.Contains(cfg.Telemetry.DisabledEvents, "ao.session.spawned")
 }
 
 // startSession builds the controller-facing session service: a session manager
@@ -263,6 +282,14 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)
+	// Attach the operator's GitHub login to product telemetry only when its carrier
+	// event can actually be sent, and guard the typed nil from newMultiSCMProvider
+	// so the interface stays nil (degrading to anonymous) rather than wrapping a
+	// nil pointer.
+	var githubIdentity ports.ScopedIdentityResolver
+	if scmProvider != nil && telemetryEmitsSpawned(cfg) {
+		githubIdentity = scmProvider
+	}
 	sessionSvc := sessionsvc.NewWithDeps(sessionsvc.Deps{
 		Manager:           mgr,
 		Store:             store,
@@ -274,6 +301,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Logger:            log,
 		BackgroundContext: ctx,
 		AgentReadiness:    agentReadiness,
+		GithubIdentity:    githubIdentity,
 		// no_signal only makes sense for harnesses with complete lifecycle signal
 		// coverage; partial callbacks cannot prove that silence is abnormal.
 		SignalCapable: activitydispatch.FullySupportsHarness,
@@ -286,6 +314,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
 	}
+	reviewerChat, _ := chat.(reviewcore.ReviewerChatController)
 	reviewEngine := reviewcore.New(reviewcore.Deps{
 		Store:    store,
 		Sessions: store,
@@ -293,7 +322,8 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Projects: store,
 		Launcher: reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir,
 			reviewcore.WithRunFilePath(cfg.RunFilePath),
-			reviewcore.WithAgentAuth(reviewerAgentAuth{readiness: agentReadiness})),
+			reviewcore.WithAgentAuth(reviewerAgentAuth{readiness: agentReadiness}),
+			reviewcore.WithReviewerChat(reviewerChat)),
 	})
 	reviewOpts := []reviewsvc.Option{
 		reviewsvc.WithLifecycleReducer(lcm),
@@ -500,6 +530,7 @@ type chatLauncher struct{ svc *chatsvc.Service }
 
 var _ sessionmanager.ChatLauncher = chatLauncher{}
 var _ interface {
+	RunBackgroundTask(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
 	ArmChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	PrepareChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	AbortChatHandoff(domain.SessionID)
@@ -517,8 +548,65 @@ func (c chatLauncher) PreflightChat(
 	return c.svc.PreflightChat(ctx, harness, permissions)
 }
 
+func (c chatLauncher) SupportsReviewChat(harness domain.AgentHarness) bool {
+	return c.svc.SupportsChat(harness)
+}
+
+func (c chatLauncher) PreflightReviewChat(ctx context.Context, harness domain.AgentHarness) error {
+	return c.svc.PreflightChat(ctx, harness, ports.PermissionModeAuto)
+}
+
+func (c chatLauncher) StartReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (string, error) {
+	return c.startReviewChat(ctx, cfg, true)
+}
+
+func (c chatLauncher) RestoreReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (string, error) {
+	return c.startReviewChat(ctx, cfg, false)
+}
+
+func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart, sendPrompt bool) (string, error) {
+	owner := domain.ReviewConversationOwner(cfg.ReviewID)
+	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
+	if err != nil {
+		return "", err
+	}
+	if !sendPrompt {
+		return started.ProviderConversationID, nil
+	}
+	if _, err := c.svc.SendForOwner(ctx, owner, ports.ChatUserMessage{Text: cfg.Prompt, Origin: domain.MessageOriginHuman}); err != nil {
+		_ = c.svc.StopForOwner(context.Background(), owner)
+		return "", err
+	}
+	return started.ProviderConversationID, nil
+}
+
+func (c chatLauncher) SendReviewChat(ctx context.Context, reviewID, message string) error {
+	_, err := c.svc.SendForOwner(ctx, domain.ReviewConversationOwner(reviewID), ports.ChatUserMessage{Text: message, Origin: domain.MessageOriginDaemon})
+	return err
+}
+
+func (c chatLauncher) ReviewChatAlive(reviewID string) bool {
+	return c.svc.HasLiveControllerForOwner(domain.ReviewConversationOwner(reviewID))
+}
+
+func (c chatLauncher) InterruptReviewChat(ctx context.Context, reviewID string) error {
+	err := c.svc.InterruptForOwner(ctx, domain.ReviewConversationOwner(reviewID))
+	if errors.Is(err, chatsvc.ErrNoActiveTurn) || errors.Is(err, ports.ErrChatNoActiveTurn) {
+		return nil
+	}
+	return err
+}
+
+func (c chatLauncher) StopReviewChat(ctx context.Context, reviewID string) error {
+	return c.svc.StopForOwner(ctx, domain.ReviewConversationOwner(reviewID))
+}
+
 func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStart) (sessionmanager.ChatStarted, error) {
 	return c.svc.StartChat(ctx, cfg)
+}
+
+func (c chatLauncher) RunBackgroundTask(ctx context.Context, harness domain.AgentHarness, cfg ports.ChatStartConfig, prompt string) (string, error) {
+	return c.svc.RunBackgroundTask(ctx, harness, cfg, prompt)
 }
 
 func (c chatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {

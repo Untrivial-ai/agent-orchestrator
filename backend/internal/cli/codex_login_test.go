@@ -77,6 +77,39 @@ func TestCodexLoginRunsSelectedNativeLoginMethod(t *testing.T) {
 	}
 }
 
+func TestCodexLoginUsesExplicitResolvedExecutable(t *testing.T) {
+	var gotName string
+	var gotArgs []string
+	deps := Deps{
+		In:  strings.NewReader("2\n"),
+		Out: io.Discard,
+		Err: io.Discard,
+		LookPath: func(string) (string, error) {
+			return "", errors.New("not on PATH")
+		},
+		RunInteractiveCommand: func(_ context.Context, name string, args []string, _ io.Reader, _, _ io.Writer) error {
+			gotName = name
+			gotArgs = append([]string(nil), args...)
+			return nil
+		},
+	}
+
+	cmd := newCodexLoginCommand(&commandContext{deps: deps.withDefaults()})
+	cmd.SetArgs([]string{"--executable", "/managed/bin/codex", "--use-default-credential-store"})
+	cmd.SetIn(deps.In)
+	cmd.SetOut(deps.Out)
+	cmd.SetErr(deps.Err)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotName != "/managed/bin/codex" {
+		t.Fatalf("executable = %q, want adapter-resolved Codex", gotName)
+	}
+	if want := []string{"login", "--device-auth"}; !slices.Equal(gotArgs, want) {
+		t.Fatalf("args = %q, want default credential store args %q", gotArgs, want)
+	}
+}
+
 func TestCodexLoginMenuListsEverySupportedMethod(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := writeCodexLoginMenu(&stdout, codexLoginStyle{}); err != nil {

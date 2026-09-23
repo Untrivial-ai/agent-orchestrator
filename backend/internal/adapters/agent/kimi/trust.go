@@ -55,6 +55,28 @@ func (p *Plugin) PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error {
 	return ensureKimiWorkspaceTrusted(kimiCodeHomeDir(cfg.DataDir), cfg.WorkspacePath)
 }
 
+// EnsureWorkspaceTrusted seeds Kimi's workspace trust record for
+// workspacePath in the Kimi home the current process environment points at
+// (KIMI_CODE_HOME, else ~/.kimi-code) rather than AO's isolated home. The
+// daemon-owned authentication terminal deliberately runs Kimi against that
+// real home so login credentials land where the user's own Kimi — and AO's
+// session credential seeding — read them; pre-recording trust there keeps the
+// interactive "Trust this folder?" dialog from swallowing the login flow in
+// AO's private auth workspace.
+func EnsureWorkspaceTrusted(ctx context.Context, workspacePath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(workspacePath) == "" {
+		return nil
+	}
+	home, ok := kimiCodeHome()
+	if !ok {
+		return nil
+	}
+	return ensureKimiWorkspaceTrusted(home, workspacePath)
+}
+
 // kimiWorkspaceTrust is the on-disk shape Kimi writes when a user trusts a
 // folder. AO writes the same shape so Kimi cannot distinguish seeded trust
 // from a user's own decision.
