@@ -177,7 +177,9 @@ type Conversation struct {
 	Scope                      domain.ConversationScope
 	ProjectID                  *domain.ProjectID
 	SessionID                  *domain.SessionID
+	ReviewID                   sql.NullString
 	CurrentSessionID           *domain.SessionID
+	CurrentReviewID            sql.NullString
 	LatestSequence             int64
 	CreatedAt                  time.Time
 	UpdatedAt                  time.Time
@@ -245,6 +247,7 @@ type ConversationBranch struct {
 	ReplayTruncated        int64
 	ProviderScopeID        string
 	ProviderIdsScoped      int64
+	ReviewID               sql.NullString
 }
 
 type ConversationEditDelivery struct {
@@ -293,6 +296,7 @@ type ConversationProviderEvent struct {
 	PayloadJson     string
 	ReceivedAt      time.Time
 	BranchID        string
+	ReviewID        sql.NullString
 }
 
 type ConversationQueuedEditDelivery struct {
@@ -333,6 +337,7 @@ type ConversationTurn struct {
 	PromotionStartedAt   sql.NullTime
 	PromotedToTurnID     sql.NullString
 	RetryOfTurnID        sql.NullString
+	HandledByReviewID    sql.NullString
 }
 
 type ModelUsageEvent struct {
@@ -488,17 +493,21 @@ type Project struct {
 }
 
 type Review struct {
-	ID                    string
-	SessionID             domain.SessionID
-	ProjectID             domain.ProjectID
-	Harness               domain.ReviewerHarness
-	PRURL                 string
-	ReviewerHandleID      string
-	AgentSessionID        string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
-	ReviewerActivityState string
-	ReviewerLaunchID      string
+	ID                     string
+	SessionID              domain.SessionID
+	ProjectID              domain.ProjectID
+	Harness                domain.ReviewerHarness
+	PRURL                  string
+	ReviewerHandleID       string
+	AgentSessionID         string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ReviewerActivityState  string
+	ReviewerLaunchID       string
+	InterfaceMode          string
+	ProviderConversationID string
+	ControllerGeneration   string
+	ControllerError        string
 }
 
 type ReviewRun struct {

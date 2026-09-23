@@ -168,6 +168,7 @@ import {
 import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
+import { registerRemotesIpc, remotesFilePath } from "./main/remotes-main";
 import { AGENT_SWITCH_VISIBILITY_IPC_CHANNEL } from "./shared/agent-switch-observability";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
@@ -2169,6 +2170,13 @@ async function chooseDirectory(title: string, defaultPath?: string): Promise<str
 	if (result.canceled) return null;
 	return result.filePaths[0] ?? null;
 }
+
+registerRemotesIpc(ipcMain, {
+	file: remotesFilePath(),
+	// No host is ever connected yet; the proxy registry that owns live
+	// connections lands in the next change and replaces this.
+	disconnect: async () => undefined,
+});
 
 ipcMain.handle("app:chooseDirectory", async (_event, input?: string | { title?: string; defaultPath?: string }) => {
 	const title = typeof input === "string"
