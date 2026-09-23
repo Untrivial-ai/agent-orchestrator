@@ -1312,7 +1312,7 @@ describe("TaskComposer", () => {
 					},
 				};
 			}
-			return { data: { status: "ok", project: { config: {} } } };
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
 		});
 
 		render(
