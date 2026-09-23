@@ -3799,7 +3799,12 @@ describe("browser human pointer and annotated screenshots", () => {
 	it("forwards the human pointer option for clicks and drags only when asked", async () => {
 		const { host, runtime, invoke, emit } = setupPointerHost();
 		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
-		emit("browser:setBounds", 1, { viewId: ensure.viewId, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: true });
+		emit("browser:setBounds", 1, {
+			viewId: ensure.viewId,
+			revision: 1,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: true,
+		});
 		const nativeArgs = () =>
 			(runtime.runAction as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call: unknown[]) => call[2]);
 
@@ -3819,7 +3824,12 @@ describe("browser human pointer and annotated screenshots", () => {
 	it("fails fast for a human pointer action while the Browser panel is hidden", async () => {
 		const { host, invoke, emit } = setupPointerHost();
 		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
-		emit("browser:setBounds", 1, { viewId: ensure.viewId, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: false });
+		emit("browser:setBounds", 1, {
+			viewId: ensure.viewId,
+			revision: 1,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: false,
+		});
 
 		await expect(host.execute("sess-1", "click", { ref: "e1", human: true })).rejects.toMatchObject({
 			code: "BROWSER_PANEL_HIDDEN",
