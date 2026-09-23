@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/google/uuid"
@@ -307,11 +308,10 @@ func (c *Coordinator) retryOrFail(
 		return err
 	}
 	delete(c.retries, transition.ID)
-	// A pending command that already committed the session to the target
-	// interface must recover (never leave a session without a controller);
-	// pre-commit commands fail closed.
-	if transition.Phase == domain.SessionInterfaceTransitionTargetStarting ||
-		transition.Phase == domain.SessionInterfaceTransitionActivating {
+	// Once source stopping has begun, a remote command failure cannot prove
+	// which controller is alive. The shared state table therefore requires
+	// recovery rather than releasing held prompts from a possibly dead source.
+	if interfacehandoff.FailureOutcome(transition.Phase) == domain.SessionInterfaceTransitionRecovery {
 		return c.recover(transition, errorCode, fmt.Errorf(
 			"worker never completed the interface command after %d attempts: %w",
 			c.options.MaxPendingRetries, err,
@@ -370,6 +370,9 @@ func (c *Coordinator) advance(
 	to domain.SessionInterfaceTransitionPhase,
 	nativeID, detail string,
 ) error {
+	if !interfacehandoff.CanAdvance(transition.Phase, to) {
+		return fmt.Errorf("invalid interface transition phase edge %q -> %q", transition.Phase, to)
+	}
 	stepCtx, cancel := context.WithTimeout(ctx, c.options.StepTimeout)
 	defer cancel()
 	err := c.store.AdvanceCoordinatedInterfaceTransition(
@@ -398,7 +401,7 @@ func (c *Coordinator) fail(
 	errorCode string,
 	cause error,
 ) error {
-	if transition.Phase == domain.SessionInterfaceTransitionTargetStarting {
+	if interfacehandoff.FailureOutcome(transition.Phase) == domain.SessionInterfaceTransitionRecovery {
 		return c.recover(transition, errorCode, cause)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.options.StepTimeout)

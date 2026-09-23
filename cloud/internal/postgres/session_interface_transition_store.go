@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/jackc/pgx/v5"
 )
@@ -27,6 +28,8 @@ var (
 	// ErrTransitionStale fences a phase advance from a coordinator that lost
 	// ownership to a newer replica's single-owner claim.
 	ErrTransitionStale = errors.New("interface transition was claimed by another coordinator")
+	// ErrInvalidTransition reports invalid input at the storage boundary.
+	ErrInvalidTransition = errors.New("invalid interface transition")
 )
 
 const renewCoordinatedInterfaceClaimSQL = `UPDATE ao_interface_transitions
@@ -71,6 +74,9 @@ func (s *Store) StartSessionInterfaceTransition(
 	policy domain.SessionInterfaceTransitionPolicy,
 	nativeConversationID string,
 ) (domain.SessionInterfaceTransition, error) {
+	if !policy.Valid() {
+		return domain.SessionInterfaceTransition{}, fmt.Errorf("%w: policy %q", ErrInvalidTransition, policy)
+	}
 	var transition domain.SessionInterfaceTransition
 	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
 		var active bool
@@ -243,7 +249,7 @@ func (s *Store) AdvanceSessionInterfaceTransition(
 			}
 			return err
 		}
-		if to.Terminal() {
+		if interfacehandoff.MayReleaseHeldMessages(from, to) {
 			if err := deliverInterfaceTransitionMessages(ctx, tx, orgID, sessionID, transitionID); err != nil {
 				return err
 			}
@@ -352,9 +358,9 @@ func (s *Store) CompleteCoordinatedInterfaceTransition(ctx context.Context, owne
 }
 
 // deliverInterfaceTransitionMessages turns every prompt held by one handoff
-// into regular worker work. It is called while the transition row is locked,
-// including every terminal outcome, so an accepted message is never stranded
-// when a handoff is cancelled, fails, or needs recovery.
+// into regular worker work. It is called while the transition row is locked
+// only after the state table proves a controller is usable. Failed and recovery
+// outcomes remain fenced until their adapter has restored a controller.
 func deliverInterfaceTransitionMessages(ctx context.Context, tx pgx.Tx, orgID, sessionID, transitionID string) error {
 	rows, err := tx.Query(ctx, `SELECT id, turn_id, user_message_sequence, mode_cap, denied_commands
 		FROM ao_interface_transition_messages
@@ -526,11 +532,6 @@ func (s *Store) AdvanceCoordinatedInterfaceTransition(
 		}
 		if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, orgID); err != nil {
 			return err
-		}
-		if to.Terminal() {
-			if err := deliverInterfaceTransitionMessages(ctx, tx, orgID, sessionID, transitionID); err != nil {
-				return err
-			}
 		}
 		tag, err := tx.Exec(ctx,
 			`UPDATE ao_interface_transitions

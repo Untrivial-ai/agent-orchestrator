@@ -11,6 +11,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
 )
 
 const (
@@ -1302,6 +1303,9 @@ func (m *Manager) moveInterfaceTransitionWithNativeID(
 		}
 		if current.Phase.Terminal() {
 			return fmt.Errorf("transition %s is already %s", id, current.Phase)
+		}
+		if !interfacehandoff.CanAdvance(current.Phase, next) {
+			return fmt.Errorf("transition %s cannot advance from %s to %s", id, current.Phase, next)
 		}
 		if nativeConversationID == "" {
 			nativeConversationID = current.NativeConversationID

@@ -1,24 +1,19 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
+)
 
 // SessionInterfaceTransitionPolicy decides what AO does with work already in
 // flight when moving a live session between its terminal and Chat controllers.
-type SessionInterfaceTransitionPolicy string
+type SessionInterfaceTransitionPolicy = interfacehandoff.Policy
 
 const (
-	// SessionInterfaceTransitionDrain stops accepting new source-controller work
-	// and waits for the current turn (and already queued Chat turns) to finish.
-	SessionInterfaceTransitionDrain SessionInterfaceTransitionPolicy = "drain"
-	// SessionInterfaceTransitionInterrupt explicitly cancels the current turn and
-	// queued Chat turns before the source controller is stopped.
-	SessionInterfaceTransitionInterrupt SessionInterfaceTransitionPolicy = "interrupt"
+	SessionInterfaceTransitionDrain     = interfacehandoff.PolicyDrain
+	SessionInterfaceTransitionInterrupt = interfacehandoff.PolicyInterrupt
 )
-
-// Valid reports whether the policy is one the transition coordinator knows.
-func (p SessionInterfaceTransitionPolicy) Valid() bool {
-	return p == SessionInterfaceTransitionDrain || p == SessionInterfaceTransitionInterrupt
-}
 
 // SessionInterfaceTransitionHistoryPolicy scopes an explicit recovery choice.
 // Provider history may replace only legacy/untrusted hook text; it never waives
@@ -39,49 +34,23 @@ func (p SessionInterfaceTransitionHistoryPolicy) Valid() bool {
 }
 
 // SessionInterfaceTransitionPhase is the durable checkpoint of one controller
-// handoff. External process work cannot share a SQLite transaction, so these
-// phases make the operation recoverable and visible to every client.
-type SessionInterfaceTransitionPhase string
+// handoff. Its shared state table lives in pkg/interfacehandoff so local and
+// Cloud adapters accept the same durable edges and terminal semantics.
+type SessionInterfaceTransitionPhase = interfacehandoff.Phase
 
 const (
-	// SessionInterfaceTransitionRequested is the durable row before work starts.
-	SessionInterfaceTransitionRequested SessionInterfaceTransitionPhase = "requested"
-	// SessionInterfaceTransitionPreflighting validates source and target controllers.
-	SessionInterfaceTransitionPreflighting SessionInterfaceTransitionPhase = "preflighting"
-	// SessionInterfaceTransitionDraining waits for source-side in-flight work.
-	SessionInterfaceTransitionDraining SessionInterfaceTransitionPhase = "draining"
-	// SessionInterfaceTransitionSourceStopping records that the source controller is stopping.
-	SessionInterfaceTransitionSourceStopping SessionInterfaceTransitionPhase = "source_stopping"
-	// SessionInterfaceTransitionSourceStopped records that the source controller stopped.
-	SessionInterfaceTransitionSourceStopped SessionInterfaceTransitionPhase = "source_stopped"
-	// SessionInterfaceTransitionTargetStarting records that the target controller is starting.
-	SessionInterfaceTransitionTargetStarting SessionInterfaceTransitionPhase = "target_starting"
-	// SessionInterfaceTransitionActivating commits the target controller as active.
-	SessionInterfaceTransitionActivating SessionInterfaceTransitionPhase = "activating"
-	// SessionInterfaceTransitionCompleted is a successful terminal transition state.
-	SessionInterfaceTransitionCompleted SessionInterfaceTransitionPhase = "completed"
-	// SessionInterfaceTransitionFailed is a failed terminal transition state.
-	SessionInterfaceTransitionFailed SessionInterfaceTransitionPhase = "failed"
-	// SessionInterfaceTransitionCancelled is a user-cancelled terminal transition state.
-	SessionInterfaceTransitionCancelled SessionInterfaceTransitionPhase = "cancelled"
-	// SessionInterfaceTransitionRecovery marks a transition that either needs
-	// reconciliation or was closed during daemon-start reconciliation. ErrorCode
-	// distinguishes those outcomes; the terminal row remains durable diagnostics.
-	SessionInterfaceTransitionRecovery SessionInterfaceTransitionPhase = "recovery_required"
+	SessionInterfaceTransitionRequested      = interfacehandoff.PhaseRequested
+	SessionInterfaceTransitionPreflighting   = interfacehandoff.PhasePreflighting
+	SessionInterfaceTransitionDraining       = interfacehandoff.PhaseDraining
+	SessionInterfaceTransitionSourceStopping = interfacehandoff.PhaseSourceStopping
+	SessionInterfaceTransitionSourceStopped  = interfacehandoff.PhaseSourceStopped
+	SessionInterfaceTransitionTargetStarting = interfacehandoff.PhaseTargetStarting
+	SessionInterfaceTransitionActivating     = interfacehandoff.PhaseActivating
+	SessionInterfaceTransitionCompleted      = interfacehandoff.PhaseCompleted
+	SessionInterfaceTransitionFailed         = interfacehandoff.PhaseFailed
+	SessionInterfaceTransitionCancelled      = interfacehandoff.PhaseCancelled
+	SessionInterfaceTransitionRecovery       = interfacehandoff.PhaseRecovery
 )
-
-// Terminal reports whether no transition worker may continue this row.
-func (p SessionInterfaceTransitionPhase) Terminal() bool {
-	switch p {
-	case SessionInterfaceTransitionCompleted,
-		SessionInterfaceTransitionFailed,
-		SessionInterfaceTransitionCancelled,
-		SessionInterfaceTransitionRecovery:
-		return true
-	default:
-		return false
-	}
-}
 
 // SessionInterfaceTransition is the durable controller-handoff record. The
 // session row remains the authority for the currently committed mode; this row

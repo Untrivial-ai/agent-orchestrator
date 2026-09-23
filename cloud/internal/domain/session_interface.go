@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
+)
 
 // SessionInterface is the conversation controller currently committed for a
 // session. Cloud sessions run a single controller at a time, and the interface
@@ -42,50 +46,31 @@ func (i SessionInterface) Opposite() SessionInterface {
 
 // SessionInterfaceTransitionPolicy decides what AO does with work already in
 // flight when moving a live session between its terminal and Chat controllers.
-type SessionInterfaceTransitionPolicy string
+type SessionInterfaceTransitionPolicy = interfacehandoff.Policy
 
 const (
-	SessionInterfaceTransitionDrain     SessionInterfaceTransitionPolicy = "drain"
-	SessionInterfaceTransitionInterrupt SessionInterfaceTransitionPolicy = "interrupt"
+	SessionInterfaceTransitionDrain     = interfacehandoff.PolicyDrain
+	SessionInterfaceTransitionInterrupt = interfacehandoff.PolicyInterrupt
 )
-
-func (p SessionInterfaceTransitionPolicy) Valid() bool {
-	return p == SessionInterfaceTransitionDrain || p == SessionInterfaceTransitionInterrupt
-}
 
 // SessionInterfaceTransitionPhase is the durable checkpoint of one controller
-// handoff. External process work cannot share a Postgres transaction, so these
-// phases make the operation recoverable and visible to every client against a
-// multi-replica, stateless control plane.
-type SessionInterfaceTransitionPhase string
+// handoff. Its shared state table lives in backend/pkg/interfacehandoff so the
+// Cloud and local adapters use the same durable edges and terminal semantics.
+type SessionInterfaceTransitionPhase = interfacehandoff.Phase
 
 const (
-	SessionInterfaceTransitionRequested      SessionInterfaceTransitionPhase = "requested"
-	SessionInterfaceTransitionPreflighting   SessionInterfaceTransitionPhase = "preflighting"
-	SessionInterfaceTransitionDraining       SessionInterfaceTransitionPhase = "draining"
-	SessionInterfaceTransitionSourceStopping SessionInterfaceTransitionPhase = "source_stopping"
-	SessionInterfaceTransitionSourceStopped  SessionInterfaceTransitionPhase = "source_stopped"
-	SessionInterfaceTransitionTargetStarting SessionInterfaceTransitionPhase = "target_starting"
-	SessionInterfaceTransitionActivating     SessionInterfaceTransitionPhase = "activating"
-	SessionInterfaceTransitionCompleted      SessionInterfaceTransitionPhase = "completed"
-	SessionInterfaceTransitionFailed         SessionInterfaceTransitionPhase = "failed"
-	SessionInterfaceTransitionCancelled      SessionInterfaceTransitionPhase = "cancelled"
-	SessionInterfaceTransitionRecovery       SessionInterfaceTransitionPhase = "recovery_required"
+	SessionInterfaceTransitionRequested      = interfacehandoff.PhaseRequested
+	SessionInterfaceTransitionPreflighting   = interfacehandoff.PhasePreflighting
+	SessionInterfaceTransitionDraining       = interfacehandoff.PhaseDraining
+	SessionInterfaceTransitionSourceStopping = interfacehandoff.PhaseSourceStopping
+	SessionInterfaceTransitionSourceStopped  = interfacehandoff.PhaseSourceStopped
+	SessionInterfaceTransitionTargetStarting = interfacehandoff.PhaseTargetStarting
+	SessionInterfaceTransitionActivating     = interfacehandoff.PhaseActivating
+	SessionInterfaceTransitionCompleted      = interfacehandoff.PhaseCompleted
+	SessionInterfaceTransitionFailed         = interfacehandoff.PhaseFailed
+	SessionInterfaceTransitionCancelled      = interfacehandoff.PhaseCancelled
+	SessionInterfaceTransitionRecovery       = interfacehandoff.PhaseRecovery
 )
-
-func (p SessionInterfaceTransitionPhase) Terminal() bool {
-	switch p {
-	case SessionInterfaceTransitionCompleted,
-		SessionInterfaceTransitionFailed,
-		SessionInterfaceTransitionCancelled,
-		SessionInterfaceTransitionRecovery:
-		return true
-	default:
-		return false
-	}
-}
-
-func (p SessionInterfaceTransitionPhase) Active() bool { return !p.Terminal() }
 
 // SessionInterfaceTransition is the durable controller-handoff record. The
 // session row remains the authority for the currently committed interface; this

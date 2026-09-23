@@ -380,15 +380,17 @@ func TestReconcilePendingWorkerCommandRecovers(t *testing.T) {
 	for attempt := 0; attempt < defaultMaxRetries+2; attempt++ {
 		_ = coordinator.ReconcileOnce(context.Background())
 	}
-	// The pending command is resolved before the session interface is committed,
-	// so no commit happens; the transition fails closed after retry exhaustion.
+	// The pending command is resolved after the source has stopped but before the
+	// session interface is committed. The shared failure policy therefore keeps
+	// the transition fenced for recovery rather than claiming the source failed
+	// cleanly.
 	if store.committed != "" {
 		t.Fatalf("expected no commit while native id is pending, got %q", store.committed)
 	}
 	for _, phase := range store.advances {
-		if phase == domain.SessionInterfaceTransitionFailed {
+		if phase == domain.SessionInterfaceTransitionRecovery {
 			return
 		}
 	}
-	t.Fatalf("expected terminal phase failed after pending retries, got %v", store.advances)
+	t.Fatalf("expected terminal phase recovery_required after pending retries, got %v", store.advances)
 }
