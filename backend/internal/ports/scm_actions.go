@@ -17,6 +17,12 @@ var ErrSCMNotMergeable = errors.New("scm: pull request not mergeable")
 // the requested mutation.
 var ErrSCMUnsupported = errors.New("scm: unsupported operation")
 
+// ErrSCMNoCredentials indicates that identity resolution failed because no
+// credential was configured at all (as opposed to a transient failure or a
+// token that resolves to a non-human account). Callers use it to decide whether
+// a non-authenticated best-effort fallback is warranted.
+var ErrSCMNoCredentials = errors.New("scm: no credentials configured")
+
 // SCMMergeMethod identifies the provider merge strategy.
 type SCMMergeMethod string
 

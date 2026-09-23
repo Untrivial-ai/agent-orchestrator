@@ -108,6 +108,23 @@ func newProviderForTest(t *testing.T, f *fakeGH) *Provider {
 
 func ctx() context.Context { return context.Background() }
 
+func TestAuthenticatedIdentityMapsNoTokenToNoCredentials(t *testing.T) {
+	// An empty FallbackTokenSource yields ErrNoToken; AuthenticatedIdentity must
+	// surface it as ports.ErrSCMNoCredentials so callers can distinguish "no
+	// credential configured" from a transient failure or a non-human account.
+	p, err := NewProvider(ProviderOptions{
+		Token:              FallbackTokenSource{},
+		SkipTokenPreflight: true,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	_, err = p.AuthenticatedIdentity(ctx())
+	if !errors.Is(err, ports.ErrSCMNoCredentials) {
+		t.Fatalf("err = %v, want ports.ErrSCMNoCredentials", err)
+	}
+}
+
 func TestAuthenticatedIdentityCachesHumanUser(t *testing.T) {
 	f := newFakeGH(t)
 	f.on(http.MethodGet, "/user", func(w http.ResponseWriter, _ *http.Request) {

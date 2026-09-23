@@ -35,6 +35,10 @@ type ProviderOptions struct {
 	GraphQLURL         string
 	UserAgent          string
 	Logger             *slog.Logger
+	// BestEffort resolves a probable login from local machine signals for
+	// telemetry when no token is available. Nil means a default resolver
+	// (real SSH/git probes) is created; tests inject a fake.
+	BestEffort *BestEffortLoginResolver
 }
 
 // Provider observes one GitHub pull request and returns a normalized
@@ -47,6 +51,7 @@ type Provider struct {
 	identityMu       sync.Mutex
 	identity         ports.SCMIdentity
 	identityResolved bool
+	bestEffort       *BestEffortLoginResolver
 }
 
 // NewProvider returns a Provider. If opts.Client is supplied it is used
@@ -75,7 +80,22 @@ func NewProvider(opts ProviderOptions) (*Provider, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Provider{client: c, logger: logger}, nil
+	bestEffort := opts.BestEffort
+	if bestEffort == nil {
+		bestEffort = &BestEffortLoginResolver{}
+	}
+	return &Provider{client: c, logger: logger, bestEffort: bestEffort}, nil
+}
+
+// BestEffortLogin resolves a probable GitHub login from local machine signals
+// (SSH greeting, git noreply email) without an authenticated API call. It is
+// telemetry-only and NOT authoritative; see BestEffortLoginResolver. Returns
+// ("", nil) when nothing could be resolved.
+func (p *Provider) BestEffortLogin(ctx context.Context) (string, error) {
+	if p.bestEffort == nil {
+		return "", nil
+	}
+	return p.bestEffort.BestEffortLogin(ctx)
 }
 
 // SCMCredentialsAvailable checks whether this provider can obtain a token. The
@@ -105,6 +125,12 @@ func (p *Provider) AuthenticatedIdentity(ctx context.Context) (ports.SCMIdentity
 	}
 	resp, err := p.client.doREST(ctx, http.MethodGet, "/user", nil, nil)
 	if err != nil {
+		// Distinguish "no credential configured at all" from transient or
+		// non-human outcomes so callers can decide whether a best-effort,
+		// non-authenticated fallback is warranted.
+		if errors.Is(err, ErrNoToken) {
+			return ports.SCMIdentity{}, fmt.Errorf("%w: %w", ports.ErrSCMNoCredentials, err)
+		}
 		return ports.SCMIdentity{}, err
 	}
 	var user struct {

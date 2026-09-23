@@ -248,6 +248,14 @@ type hostScopedIdentityResolver interface {
 	AuthenticatedIdentityForHost(ctx context.Context, host string) (ports.SCMIdentity, error)
 }
 
+// bestEffortIdentityResolver is the type assertion used by
+// BestEffortLoginForProvider to delegate to a sub-provider's best-effort,
+// non-authenticated login probe. Sub-providers that cannot resolve a login
+// this way simply do not implement it.
+type bestEffortIdentityResolver interface {
+	BestEffortLogin(ctx context.Context) (string, error)
+}
+
 // SCMCredentialsAvailable returns true if ANY sub-provider has usable credentials.
 // When no provider reports usable credentials, the first real error (if any)
 // is returned so CheckCredentialsOnce retries on the next poll rather than
@@ -309,4 +317,20 @@ func (m *Provider) AuthenticatedIdentityForProvider(ctx context.Context, provide
 		return ports.SCMIdentity{}, fmt.Errorf("scm multi: provider %q does not implement AuthenticatedIdentity", provider)
 	}
 	return resolver.AuthenticatedIdentity(ctx)
+}
+
+// BestEffortLoginForProvider resolves a probable login for the sub-provider
+// matching the given provider key from local machine signals, for telemetry
+// only. Sub-providers that do not support best-effort resolution yield ("",
+// nil). It satisfies ports.ScopedBestEffortIdentityResolver.
+func (m *Provider) BestEffortLoginForProvider(ctx context.Context, provider, host string) (string, error) {
+	p, err := m.resolve(provider)
+	if err != nil {
+		return "", err
+	}
+	be, ok := p.(bestEffortIdentityResolver)
+	if !ok {
+		return "", nil
+	}
+	return be.BestEffortLogin(ctx)
 }

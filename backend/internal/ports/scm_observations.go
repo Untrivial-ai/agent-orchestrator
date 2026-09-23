@@ -113,6 +113,17 @@ type ScopedIdentityResolver interface {
 	AuthenticatedIdentityForProvider(ctx context.Context, provider, host string) (SCMIdentity, error)
 }
 
+// ScopedBestEffortIdentityResolver resolves a probable login for a provider from
+// local machine signals (the SSH auth greeting, the git noreply commit email)
+// WITHOUT an authenticated API call. It is telemetry-only and NOT authoritative:
+// the login is not API-verified, may be stale after a rename, and the account
+// type (human vs bot/org) is unknown. Never use it for access or attribution
+// decisions; the authenticated ScopedIdentityResolver is the source of truth for
+// those. A provider that cannot resolve anything returns ("", nil).
+type ScopedBestEffortIdentityResolver interface {
+	BestEffortLoginForProvider(ctx context.Context, provider, host string) (string, error)
+}
+
 // SCMPRObservation carries provider-neutral PR metadata.
 type SCMPRObservation struct {
 	// ProviderID is the provider-owned immutable identifier for this PR/MR.

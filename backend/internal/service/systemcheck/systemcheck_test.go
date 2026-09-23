@@ -542,3 +542,66 @@ func TestCheckGitHubAuth_EmptyHostsIsSignedOut(t *testing.T) {
 		t.Fatalf("unexpected token fallback: %v", runner.argvLog)
 	}
 }
+
+type fakeConnectedNotifier struct{ calls int }
+
+func (f *fakeConnectedNotifier) GitHubConnected(context.Context) { f.calls++ }
+
+// Only an observed signed-out to signed-in flip counts as connecting. Being
+// signed in on the first check, or staying signed in, must not notify.
+func TestCheckGitHubAuth_NotifiesOnlyOnSignInTransition(t *testing.T) {
+	signedIn := `{"hosts":{"github.com":[{"active":true,"state":"success"}]}}`
+	cases := []struct {
+		name      string
+		sequence  []bool
+		wantCalls int
+	}{
+		{name: "signed out then signed in", sequence: []bool{false, true}, wantCalls: 1},
+		{name: "already signed in at start", sequence: []bool{true, true, true}, wantCalls: 0},
+		{name: "never signs in", sequence: []bool{false, false}, wantCalls: 0},
+		{name: "signs in, out, and in again", sequence: []bool{false, true, false, true}, wantCalls: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeCommandRunner{}
+			svc := NewWithCommandRunner(&fakeHarnessCatalog{}, executableFinderFunc(lookPathFound(map[string]string{"gh": "/usr/bin/gh"})), runner)
+			notifier := &fakeConnectedNotifier{}
+			svc.SetGitHubConnectedNotifier(notifier)
+			for _, in := range tc.sequence {
+				if in {
+					runner.stdout, runner.err = signedIn, nil
+				} else {
+					runner.stdout, runner.err = "", errors.New("not logged in")
+				}
+				if _, err := svc.CheckGitHubAuth(context.Background()); err != nil {
+					t.Fatalf("CheckGitHubAuth() error = %v", err)
+				}
+			}
+			if notifier.calls != tc.wantCalls {
+				t.Fatalf("GitHubConnected calls = %d, want %d", notifier.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// A check whose request was cancelled reports signed out without knowing, so it
+// must not be recorded; otherwise the next real check reads as a fresh connect.
+func TestCheckGitHubAuth_CancelledCheckIsNotRecorded(t *testing.T) {
+	runner := &fakeCommandRunner{stdout: `{"hosts":{"github.com":[{"active":true,"state":"success"}]}}`}
+	svc := NewWithCommandRunner(&fakeHarnessCatalog{}, executableFinderFunc(lookPathFound(map[string]string{"gh": "/usr/bin/gh"})), runner)
+	notifier := &fakeConnectedNotifier{}
+	svc.SetGitHubConnectedNotifier(notifier)
+
+	if _, err := svc.CheckGitHubAuth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	svc.observeGitHubAuth(cancelled, Requirement{ID: "github-auth"})
+	if _, err := svc.CheckGitHubAuth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if notifier.calls != 0 {
+		t.Fatalf("GitHubConnected calls = %d, want 0 for a user who stayed signed in", notifier.calls)
+	}
+}

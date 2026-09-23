@@ -202,6 +202,7 @@ type Service struct {
 	// account so the handle rides along with product telemetry. Nil disables it
 	// and the emitter degrades to anonymous.
 	githubIdentity         ports.ScopedIdentityResolver
+	githubActorEvents      map[string]bool
 	titleRefinementSlots   chan struct{}
 	titleRefinementMu      sync.Mutex
 	titleRefinementCancels map[domain.SessionID]context.CancelFunc
@@ -244,6 +245,9 @@ type Deps struct {
 	// GithubIdentity resolves the operator's authenticated GitHub account so the
 	// handle rides along with product telemetry.
 	GithubIdentity ports.ScopedIdentityResolver
+	// GithubActorEvents names the handle-carrying events allowed to resolve and
+	// send it. Nil allows every such event, which keeps focused tests small.
+	GithubActorEvents map[string]bool
 }
 
 // NewWithDeps wires a session service with optional PR-claim dependencies.
@@ -252,7 +256,7 @@ func NewWithDeps(d Deps) *Service {
 	if backgroundContext == nil {
 		backgroundContext = context.Background()
 	}
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity, titleRefinementSlots: make(chan struct{}, delegatedTaskTitleConcurrency), titleRefinementCancels: map[domain.SessionID]context.CancelFunc{}}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity, githubActorEvents: d.GithubActorEvents, titleRefinementSlots: make(chan struct{}, delegatedTaskTitleConcurrency), titleRefinementCancels: map[domain.SessionID]context.CancelFunc{}}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -401,8 +405,10 @@ func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, dur
 		"harness":     string(rec.Harness),
 		"duration_ms": durationMs,
 	}
-	if actor, ok := s.githubActor(ctx); ok {
-		payload["github_actor"] = actor
+	if s.githubActorEventEnabled("ao.session.spawned") {
+		if actor, ok := s.githubActor(ctx); ok {
+			payload["github_actor"] = actor
+		}
 	}
 	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
 		Name:       "ao.session.spawned",
@@ -416,20 +422,87 @@ func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, dur
 	})
 }
 
-// githubActor returns the operator's GitHub login when the authenticated
-// account resolves to a human, and ("", false) for every failure mode (resolver
-// unset, no token, GET /user failure, offline, org or bot account, empty login)
-// so the event stays anonymous. Host is left empty because GitHub identity is
-// not host-scoped.
+// GitHubConnected emits ao.github.connected with the operator's handle right
+// after they connect GitHub inside AO, so users who never start a session are
+// still identified. The lookup can reach the GitHub API, so it runs on the
+// daemon's background context rather than the triggering request, which has
+// usually returned by the time it finishes. A login that does not resolve
+// sends nothing.
+func (s *Service) GitHubConnected(ctx context.Context) {
+	if s.telemetry == nil || s.githubIdentity == nil || !s.githubActorEventEnabled("ao.github.connected") {
+		return
+	}
+	s.emitGitHubConnectedInBackground(reqid.FromContext(ctx))
+}
+
+func (s *Service) githubActorEventEnabled(name string) bool {
+	return s.githubActorEvents == nil || s.githubActorEvents[name]
+}
+
+func (s *Service) emitGitHubConnectedInBackground(requestID string) {
+	work := func() {
+		actor, ok := s.githubActor(s.backgroundContext)
+		if !ok {
+			return
+		}
+		s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
+			Name:       "ao.github.connected",
+			Source:     "session_service",
+			OccurredAt: s.now(),
+			Level:      ports.TelemetryLevelInfo,
+			RequestID:  requestID,
+			Payload:    map[string]any{"github_actor": actor},
+		})
+	}
+	if s.runBackground != nil {
+		s.runBackground(work)
+		return
+	}
+	go work()
+}
+
+// githubActor returns the operator's GitHub login for telemetry, resolving in
+// two tiers. First the authenticated, API-verified identity (a real GET /user
+// behind an env/gh/credential-helper token); when that yields a human login it
+// wins. The best-effort, non-authenticated probe of local machine signals (SSH
+// auth greeting, git noreply commit email) runs only when NO credential is
+// configured at all, covering operators who never set up a token. A configured
+// token that resolves to an org or bot account, and any transient resolution
+// failure, both stay anonymous rather than substituting a local signal, so the
+// authenticated identity is never overridden. Every other failure mode (resolver
+// unset, no signal, empty login) also stays anonymous. Host is left empty
+// because GitHub identity is not host-scoped.
 func (s *Service) githubActor(ctx context.Context) (string, bool) {
 	if s.githubIdentity == nil {
 		return "", false
 	}
 	identity, err := s.githubIdentity.AuthenticatedIdentityForProvider(ctx, "github", "")
-	if err != nil || !identity.Human || identity.Login == "" {
+	if err == nil {
+		if identity.Human && identity.Login != "" {
+			return identity.Login, true
+		}
+		// A token is configured but resolves to an org or bot account: respect
+		// that configured identity and stay anonymous rather than substituting
+		// the local SSH-key owner's personal handle.
 		return "", false
 	}
-	return identity.Login, true
+	// Only fall back when there is genuinely no credential configured. A
+	// transient GET /user failure (token present) must not be attributed to
+	// whatever account happens to own the local SSH key or git email.
+	if !errors.Is(err, ports.ErrSCMNoCredentials) {
+		return "", false
+	}
+	// Best-effort fallback for operators with no configured credential. The login
+	// is not API-verified (see ports.ScopedBestEffortIdentityResolver); acceptable
+	// for telemetry, never used for access or attribution.
+	if be, ok := s.githubIdentity.(ports.ScopedBestEffortIdentityResolver); ok {
+		if login, beErr := be.BestEffortLoginForProvider(ctx, "github", ""); beErr == nil {
+			if login = strings.TrimSpace(login); login != "" {
+				return login, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (s *Service) emitFirstSessionSpawned(ctx context.Context, rec domain.SessionRecord, project domain.ProjectRecord) {

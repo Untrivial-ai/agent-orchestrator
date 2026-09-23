@@ -149,6 +149,9 @@ var remotePayloadAllowlist = map[string]map[string]struct{}{
 		"window_start":  {},
 		"window_end":    {},
 	},
+	"ao.github.connected": {
+		"github_actor": {},
+	},
 	"ao.onboarding.first_project_added": {
 		"has_git_remote": {},
 		"kind":           {},

@@ -45,9 +45,15 @@ func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.M
 }
 
 func newGitHubSCMProvider(logger *slog.Logger) (*scmgithub.Provider, error) {
+	// Order matters: gh is tried before the HTTPS credential helper so a stale
+	// stored PAT cannot permanently shadow a valid `gh auth token` (the helper
+	// re-returns the same stale token on invalidation, which would never
+	// recover). The credential helper is a last resort for machines with an
+	// HTTPS credential but no env token and no gh.
 	tokens := scmgithub.FallbackTokenSource{
 		scmgithub.EnvTokenSource{EnvVars: []string{"AO_GITHUB_TOKEN"}},
 		&scmgithub.GHTokenSource{},
+		&scmgithub.CredentialHelperTokenSource{},
 	}
 	return scmgithub.NewProvider(scmgithub.ProviderOptions{Token: tokens, SkipTokenPreflight: true, Logger: logger})
 }

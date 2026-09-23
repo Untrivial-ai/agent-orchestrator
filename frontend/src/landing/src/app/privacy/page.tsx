@@ -344,13 +344,14 @@ export default function PrivacyPage() {
             </p>
             <p>
               One exception: AO sends the GitHub username signed in to its GitHub
-              integration on session-start events, both as an event property and
+              integration on session-start events and once when you connect
+              GitHub inside AO, both as an event property and
               as a PostHog person property, so we can see which developers are
               most active. AO only sends a personal (human) account, never an
               organization or a bot token, and sends nothing if no GitHub token is
               available. The handle is part of product telemetry and has no
               separate switch: turning telemetry off stops it, because the
-              session-start event that carries it is then never sent. Anything
+              events that carry it are then never sent. Anything
               already stored in PostHog from earlier events is not deleted
               retroactively.
             </p>

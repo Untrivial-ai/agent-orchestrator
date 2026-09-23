@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -51,18 +52,55 @@ type GitHubAuthTerminalOpener interface {
 	OpenCommandTerminal(context.Context, shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error)
 }
 
+// GitHubConnectedNotifier is told when GitHub auth flips from signed out to
+// signed in while the daemon is running, i.e. the operator just connected.
+type GitHubConnectedNotifier interface {
+	GitHubConnected(ctx context.Context)
+}
+
 // Service runs the startup requirements gate.
 type Service struct {
 	harnesses   HarnessCatalog
 	executables ports.ExecutableFinder
 	commands    ports.CommandRunner
 	terminals   GitHubAuthTerminalOpener
+
+	authMu      sync.Mutex
+	authSeen    bool
+	authLast    bool
+	onConnected GitHubConnectedNotifier
 }
 
 // SetGitHubAuthTerminalOpener late-binds the shell terminal service, which is
 // created after startup checks during daemon assembly.
 func (s *Service) SetGitHubAuthTerminalOpener(terminals GitHubAuthTerminalOpener) {
 	s.terminals = terminals
+}
+
+// SetGitHubConnectedNotifier late-binds the receiver of sign-in transitions.
+func (s *Service) SetGitHubConnectedNotifier(n GitHubConnectedNotifier) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	s.onConnected = n
+}
+
+// observeGitHubAuth notifies only on an observed signed-out to signed-in
+// transition. The first observation just records state, so an operator who
+// was already signed in before AO started does not count as connecting.
+func (s *Service) observeGitHubAuth(ctx context.Context, req Requirement) {
+	// A check cut short by a closed request reports signed out without knowing;
+	// recording it would turn the next check into a false "just connected".
+	if ctx.Err() != nil {
+		return
+	}
+	s.authMu.Lock()
+	connected := s.authSeen && !s.authLast && req.Satisfied
+	s.authSeen, s.authLast = true, req.Satisfied
+	n := s.onConnected
+	s.authMu.Unlock()
+	if connected && n != nil {
+		n.GitHubConnected(ctx)
+	}
 }
 
 // New returns a Service backed by the supplied host executable adapter and
@@ -109,7 +147,9 @@ func (s *Service) CheckGitHubAuth(ctx context.Context) (Requirement, error) {
 	if err := ctx.Err(); err != nil {
 		return Requirement{}, err
 	}
-	return s.checkGitHubAuth(ctx), nil
+	req := s.checkGitHubAuth(ctx)
+	s.observeGitHubAuth(ctx, req)
+	return req, nil
 }
 
 // OpenGitHubAuthTerminal starts the fixed GitHub CLI login flow. Executable
@@ -143,12 +183,14 @@ func (s *Service) Check(ctx context.Context) (Report, error) {
 		return Report{}, err
 	}
 
+	auth := s.checkGitHubAuth(ctx)
+	s.observeGitHubAuth(ctx, auth)
 	requirements := []Requirement{
 		s.checkGit(),
 		s.checkTmux(),
 		s.checkHarness(ctx),
 		s.checkGH(),
-		s.checkGitHubAuth(ctx),
+		auth,
 	}
 
 	return reportFor(requirements), nil

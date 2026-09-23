@@ -562,6 +562,53 @@ func TestAuthenticatedIdentityForProvider_UnknownProviderReturnsError(t *testing
 	}
 }
 
+// bestEffortFake wraps fakeProvider (so it satisfies the full observer Provider
+// interface) and adds a best-effort login probe.
+type bestEffortFake struct {
+	*fakeProvider
+	login string
+	err   error
+}
+
+func (f *bestEffortFake) BestEffortLogin(_ context.Context) (string, error) {
+	return f.login, f.err
+}
+
+func TestBestEffortLoginForProvider_DelegatesToSubProvider(t *testing.T) {
+	gh := &bestEffortFake{fakeProvider: &fakeProvider{key: "github", parseOK: true}, login: "Pulkit7070"}
+	m := New(NamedProvider{Key: "github", Provider: gh})
+
+	got, err := m.BestEffortLoginForProvider(context.Background(), "github", "")
+	if err != nil {
+		t.Fatalf("BestEffortLoginForProvider: %v", err)
+	}
+	if got != "Pulkit7070" {
+		t.Fatalf("login = %q, want Pulkit7070", got)
+	}
+}
+
+func TestBestEffortLoginForProvider_UnsupportedProviderYieldsEmpty(t *testing.T) {
+	// fakeProvider does not implement BestEffortLogin, so the multi provider
+	// must degrade to ("", nil) rather than error.
+	gl := &fakeProvider{key: "gitlab"}
+	m := New(NamedProvider{Key: "gitlab", Provider: gl})
+
+	got, err := m.BestEffortLoginForProvider(context.Background(), "gitlab", "")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got != "" {
+		t.Fatalf("login = %q, want empty", got)
+	}
+}
+
+func TestBestEffortLoginForProvider_UnknownProviderReturnsError(t *testing.T) {
+	m := New(NamedProvider{Key: "github", Provider: &fakeProvider{key: "github"}})
+	if _, err := m.BestEffortLoginForProvider(context.Background(), "bitbucket", ""); err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+}
+
 // TestFetchPullRequests_FailedPlaceholderCarriesHostAndRepo verifies that
 // Fetched=false placeholders created by the multi provider retain the Host
 // and Repo context of the ref they represent.

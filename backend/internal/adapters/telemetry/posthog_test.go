@@ -364,6 +364,23 @@ func TestPropertiesDerivesPersonSetFromGithubActor(t *testing.T) {
 	}
 }
 
+// ao.github.connected is the other event that carries the handle; without its
+// allowlist entry the handle would be stripped and the person never labelled.
+func TestPropertiesKeepsGithubActorOnConnect(t *testing.T) {
+	props := (&PostHogSink{}).properties(ports.TelemetryEvent{
+		Name:    "ao.github.connected",
+		Source:  "session_service",
+		Payload: map[string]any{"github_actor": "octocat"},
+	})
+	if props["github_actor"] != "octocat" {
+		t.Fatalf("properties.github_actor = %#v, want octocat", props["github_actor"])
+	}
+	set, ok := props["$set"].(map[string]any)
+	if !ok || set["github_actor"] != "octocat" {
+		t.Fatalf("properties.$set = %#v, want github_actor octocat", props["$set"])
+	}
+}
+
 func TestSanitizeRemotePayloadDropsUnlistedReviewKeys(t *testing.T) {
 	got := sanitizeRemotePayload("ao.review.submitted", map[string]any{
 		"verdict": "changes_requested",
