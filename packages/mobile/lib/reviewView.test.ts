@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { DashboardSession, PRReviewState, ReviewRun } from "./api";
-import { latestAutoReviewFailure, reviewBatchAction, reviewerDestination, reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewRouteForSession, reviewStatusLabel, reviewStatusVisual, reviewVerdictLabel, shortCommit } from "./reviewView";
+import type { DashboardSession, PRReviewState, ReviewRun, SessionPRSummary } from "./api";
+import { latestAutoReviewFailure, pullRequestSummaryForURL, reviewBatchAction, reviewerDestination, reviewForPullRequest, reviewPrimaryAction, reviewPrimaryActionLabel, reviewRouteForSession, reviewStatusLabel, reviewStatusVisual, reviewVerdictLabel, shortCommit } from "./reviewView";
 
 const run = (over: Partial<ReviewRun> = {}): ReviewRun => ({
 	id: "run-1", reviewId: "review-1", sessionId: "worker-1", batchId: "", harness: "codex",
@@ -36,6 +36,16 @@ describe("mobile review presentation", () => {
 	it("matches the exact PR URL before falling back to its number", () => {
 		const reviews = [state({ prUrl: "other", prNumber: 12 }), state()];
 		expect(reviewForPullRequest(reviews, state().prUrl, 12)?.prUrl).toBe(state().prUrl);
+	});
+
+	it("does not select another PR when a review URL is absent from merged summaries", () => {
+		const prs = [
+			{ url: "https://github.com/acme/repo/pull/12", htmlUrl: "https://github.com/acme/repo/pull/12", number: 12 },
+			{ url: "https://github.com/acme/repo/pull/13", htmlUrl: "https://github.com/acme/repo/pull/13", number: 13 },
+		] as SessionPRSummary[];
+
+		expect(pullRequestSummaryForURL(prs, prs[1].url)).toBe(prs[1]);
+		expect(pullRequestSummaryForURL(prs, "https://github.com/acme/old-repo/pull/12")).toBeUndefined();
 	});
 
 	it("keeps an earlier verdict in previousRun instead of treating it as current", () => {

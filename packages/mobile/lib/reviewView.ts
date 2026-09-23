@@ -1,4 +1,4 @@
-import type { DashboardSession, PRReviewState, ReviewRun, SessionReviews } from "./api";
+import type { DashboardSession, PRReviewState, ReviewRun, SessionPRSummary, SessionReviews } from "./api";
 
 export function reviewRouteForSession(session: DashboardSession) {
 	const pr = session.prs?.[0] ?? session.pr;
@@ -19,6 +19,13 @@ export function reviewForPullRequest(
 		if (exact) return exact;
 	}
 	return prNumber ? reviews.find((review) => review.prNumber === prNumber) : undefined;
+}
+
+export function pullRequestSummaryForURL(
+	prs: SessionPRSummary[],
+	prUrl: string,
+): SessionPRSummary | undefined {
+	return prs.find((pr) => pr.url === prUrl || pr.htmlUrl === prUrl);
 }
 
 export function reviewStatusLabel(status: PRReviewState["status"]): string {

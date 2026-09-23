@@ -27,6 +27,7 @@ import { haptics } from "../../lib/haptics";
 import { openGitHub } from "../../lib/openGitHub";
 import { formatExternalReviewMessage, formatInlineReviewCommentMessage } from "../../lib/reviewFeedback";
 import { reviewerChoices, reviewerSwitchSelection, reviewerSwitchWarning } from "../../lib/reviewerControls";
+import { pullRequestSummaryForURL } from "../../lib/reviewView";
 import { useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
@@ -46,6 +47,7 @@ export default function ReviewActionsSheet() {
 	const [models, setModels] = useState<AgentModelCatalog>();
 	const [reviewerConfig, setReviewerConfig] = useState<ReviewerAgentConfig>({});
 	const [pr, setPR] = useState<SessionPRSummary>();
+	const [prMissing, setPRMissing] = useState(false);
 	const [reviews, setReviews] = useState<SessionReviews>();
 	const [reviewerOverride, setReviewerOverride] = useState("");
 	const [effectiveReviewer, setEffectiveReviewer] = useState(reviewer);
@@ -63,7 +65,9 @@ export default function ReviewActionsSheet() {
 			setReviewerOverride(session.reviewerHarness || "");
 			setEffectiveReviewer(reviewState.reviewerHarness || reviewer);
 			setReviewerConfig(session.reviewerConfig ?? {});
-			setPR(prs.find((item) => item.url === prUrl || item.htmlUrl === prUrl) ?? prs[0]);
+			const matchedPR = pullRequestSummaryForURL(prs, prUrl);
+			setPR(matchedPR);
+			setPRMissing(!matchedPR);
 			setReviews(reviewState);
 			setPolicies({
 				autoReviewEnabled: session.autoReviewEnabled ?? false,
@@ -200,6 +204,7 @@ export default function ReviewActionsSheet() {
 	return <ScrollView style={styles.screen} contentContainerStyle={SHEET_SCROLL_CONTENT}>
 		<SheetHeader title="Review actions" subtitle={pr ? `PR #${pr.number} · ${pr.title}` : "Reviewer and GitHub feedback"} />
 		{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+		{prMissing ? <Text accessibilityRole="alert" style={styles.error}>Pull request not found. Its URL may have changed; reopen review details from the current pull request.</Text> : null}
 		<Section title="AUTOMATION" subtitle="Keep review and delivery behavior in sync with the desktop app.">
 			<PolicyRow
 				title="Automatically review new commits"
@@ -247,7 +252,7 @@ export default function ReviewActionsSheet() {
 		{resolvedComments.length ? <Section title="RESOLVED COMMENTS" subtitle="Previously addressed AO and GitHub feedback.">
 			{resolvedComments.map((item) => <FeedbackCard key={item.comment.url || `${item.reviewerId}:${item.comment.file}`} item={item} resolved aoOwned={Boolean(item.comment.reviewId && aoReviewIds.has(item.comment.reviewId))} busy={busy} disabled={Boolean(busy)} onOpen={() => item.comment.url && void openGitHub(item.comment.url)} onSend={() => void send(item.comment.url || `${item.reviewerId}:${item.comment.file}`, formatInlineReviewCommentMessage(item.comment, item.reviewerId))} onResolve={() => undefined} />)}
 		</Section> : null}
-		{!pr && !error ? <Text style={styles.empty}>No GitHub feedback is available for this pull request yet.</Text> : null}
+		{!pr && !error && !prMissing ? <Text style={styles.empty}>No GitHub feedback is available for this pull request yet.</Text> : null}
 	</ScrollView>;
 }
 
