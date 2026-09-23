@@ -33,11 +33,14 @@ export const BREATHE_MS = 1200;
 /**
  * One full turn of a progress spinner.
  *
- * Slow enough to read as motion rather than a flicker, fast enough that a lap
- * never looks like a stall. Linear, because an eased turn appears to hitch at
- * every pass.
+ * 1000ms linear, because that is what the desktop's spinner is: it draws the
+ * same glyph with Tailwind's `animate-spin`, which is `spin 1s linear infinite`
+ * (HarnessSettingsSection and the Codex account rows are the reference). A
+ * spinner is a promise that something is still happening, so matching the
+ * renderer's cadence matters more here than matching its own duration ladder —
+ * and anything eased appears to hitch once per turn.
  */
-export const SPIN_MS = 900;
+export const SPIN_MS = 1000;
 
 /**
  * The sidebar drawer's spring.

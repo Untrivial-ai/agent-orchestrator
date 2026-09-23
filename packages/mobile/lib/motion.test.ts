@@ -7,6 +7,7 @@ import {
 	shouldAnimateLayout,
 	shouldBreathe,
 	shouldSpin,
+	SPIN_MS,
 } from "./motion";
 
 describe("motionDurations", () => {
@@ -58,6 +59,13 @@ describe("reduce-motion decisions", () => {
 		expect(shouldSpin(true, true)).toBe(false);
 		expect(shouldSpin(false, false)).toBe(false);
 		expect(shouldSpin(true, false)).toBe(false);
+	});
+
+	// The desktop draws the same glyph with Tailwind's `animate-spin`, which is
+	// `spin 1s linear infinite`. A different period would make the two apps look
+	// like they are reporting different things.
+	it("turns at the desktop's spinner cadence", () => {
+		expect(SPIN_MS).toBe(1000);
 	});
 });
 
