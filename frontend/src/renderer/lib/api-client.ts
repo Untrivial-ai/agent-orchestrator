@@ -80,7 +80,7 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/agents/codex/accounts/login-operations/{operationId}/verify",
 	"/api/v1/agents/codex/accounts/login-operations/{operationId}/cancel",
 	"/api/v1/agents/codex/account-switches",
-	"/api/v1/agents/codex/account-switches/{switchId}/recover",
+	"/api/v1/agents/codex/account-switches/{switchId}",
 	"/api/v1/agents/{agent}/models",
 	"/api/v1/agents/{agent}/models/refresh",
 	"/api/v1/agents/{agent}/probe",
@@ -97,7 +97,9 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/orchestrators",
 	"/api/v1/orchestrators/{id}",
 	"/api/v1/projects",
-	"/api/v1/projects/clone",
+"/api/v1/projects/clone",
+	"/api/v1/projects/clone/prepare",
+	"/api/v1/projects/clone/cleanup",
 	"/api/v1/projects/initialize",
 	"/api/v1/projects/{id}",
 	"/api/v1/projects/{id}/config",
@@ -338,6 +340,15 @@ export function apiErrorCode(error: unknown): string | undefined {
 	return undefined;
 }
 
+/** Structured recovery metadata from the daemon's stable error envelope. */
+export function apiErrorDetails(error: unknown): Record<string, unknown> | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const details = (error as { details?: unknown }).details;
+	return typeof details === "object" && details !== null && !Array.isArray(details)
+		? (details as Record<string, unknown>)
+		: undefined;
+}
+
 /** Correlation id from the daemon's stable error envelope. */
 export function apiErrorRequestId(error: unknown): string | undefined {
 	if (typeof error === "object" && error !== null) {
@@ -355,9 +366,8 @@ export function apiErrorMessage(error: unknown, fallback = "Request failed"): st
 		if (typeof body.error === "object" && body.error !== null) {
 			return apiErrorMessage(body.error, fallback);
 		}
-		const code = typeof body.code === "string" && body.code !== "" ? body.code : "";
 		if (typeof body.message === "string" && body.message !== "") {
-			return code && !body.message.includes(code) ? `${body.message} (${code})` : body.message;
+			return body.message;
 		}
 		if (typeof body.error === "string" && body.error !== "") return body.error;
 	}

@@ -102,6 +102,18 @@ describe("telemetry sanitizers", () => {
 		expect(bogus.phase).toBeUndefined();
 	});
 
+	it("retains bounded update transfer observations and drops untrusted values", async () => {
+		const observation = {
+			differential_eligible: true, transfer_mode: "differential", fallback: true,
+			transferred_bytes: 12345, target_bytes: 99999,
+		};
+		expect(await sanitizeRendererProperties("ao.renderer.update_downloaded", observation)).toEqual(observation);
+		expect(await sanitizeRendererProperties("ao.renderer.update_failed", {
+			differential_eligible: "true", transfer_mode: "https://secret", fallback: 1,
+			transferred_bytes: -1, target_bytes: Infinity, url: "https://secret",
+		})).toEqual({});
+	});
+
 	it("reports a support submission with only the destination and outcome", async () => {
 		const safe = await sanitizeRendererProperties("ao.renderer.support_submitted", {
 			destination: "discord",

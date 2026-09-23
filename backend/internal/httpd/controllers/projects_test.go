@@ -223,7 +223,7 @@ func TestProjectsAPI_UpdateSettings(t *testing.T) {
 	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/legacy-project", `{"displayName":"  ","config":{}}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_REQUIRED")
 
-	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/legacy-project", `{"displayName":"`+strings.Repeat("x", 21)+`","config":{}}`)
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/legacy-project", `{"displayName":"`+strings.Repeat("x", 101)+`","config":{}}`)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "DISPLAY_NAME_TOO_LONG")
 
 	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/projects/missing", `{"displayName":"Missing","config":{}}`)
@@ -672,4 +672,23 @@ func assertErrorCode(t *testing.T, body []byte, status, wantStatus int, wantCode
 
 	}
 
+}
+
+func TestProjectsAPI_SetPermissions(t *testing.T) {
+	srv := newTestServer(t)
+	repo := gitRepo(t, "remember")
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/projects", `{"path":`+quote(repo)+`,"projectId":"remember"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("create %d %s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/remember/permissions", `{"permissions":"auto"}`)
+	if status != http.StatusOK || !strings.Contains(string(body), `"permissions":"auto"`) {
+		t.Fatalf("save %d %s", status, body)
+	}
+	for _, tc := range []struct{ body, code string }{{`{}`, "INVALID_PERMISSIONS"}, {`{"permissions":"yolo"}`, "INVALID_PERMISSIONS"}, {`{"permissions":"auto","extra":true}`, "INVALID_JSON"}, {`{`, "INVALID_JSON"}} {
+		body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/remember/permissions", tc.body)
+		assertErrorCode(t, body, status, http.StatusBadRequest, tc.code)
+	}
+	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/missing/permissions", `{"permissions":"auto"}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "PROJECT_NOT_FOUND")
 }

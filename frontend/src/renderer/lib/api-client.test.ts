@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	apiClient,
+	apiErrorDetails,
 	apiErrorMessage,
 	getApiBaseUrl,
 	hasTrustedApiBaseUrl,
@@ -214,9 +215,6 @@ describe("normalizeApiOperation", () => {
 		expect(normalizeApiOperation("POST", "/api/v1/agents/codex/accounts/login-operations/72d4db6e-da2c-414c-a6a9-fdbd09a006b6/verify")).toBe(
 			"POST /api/v1/agents/codex/accounts/login-operations/:id/verify",
 		);
-		expect(normalizeApiOperation("POST", "/api/v1/agents/codex/account-switches/switch-1/recover")).toBe(
-			"POST /api/v1/agents/codex/account-switches/:id/recover",
-		);
 	});
 
 	it("leaves collection and non-resource paths untouched", () => {
@@ -314,7 +312,7 @@ describe("api error telemetry", () => {
 
 		expect(captureMock).toHaveBeenCalledTimes(1);
 		expect(sentryCaptureMock).not.toHaveBeenCalled();
-		expect(apiErrorMessage(error)).toBe("Agent switch failed (AGENT_SWITCH_FAILED)");
+	expect(apiErrorMessage(error)).toBe("Agent switch failed");
 	});
 
 	it("suppresses saga-owned 4xx responses without changing presentation", async () => {
@@ -335,7 +333,7 @@ describe("api error telemetry", () => {
 
 		expect(sentryCaptureMock).not.toHaveBeenCalled();
 		expect(apiErrorMessage(error)).toBe(
-			"The target agent accepted an unconfirmed continuation (AGENT_SWITCH_DELIVERY_UNCONFIRMED)",
+		"The target agent accepted an unconfirmed continuation",
 		);
 	});
 
@@ -440,13 +438,13 @@ describe("api error telemetry", () => {
 });
 
 describe("apiErrorMessage", () => {
-	it("preserves daemon error codes next to human messages", () => {
+	it("shows the human daemon message without technical error codes", () => {
 		expect(apiErrorMessage({ code: "AGENT_BINARY_NOT_FOUND", message: "agent binary not found on PATH" })).toBe(
-			"agent binary not found on PATH (AGENT_BINARY_NOT_FOUND)",
+			"agent binary not found on PATH",
 		);
 	});
 
-	it("does not duplicate a code that is already present in the message", () => {
+	it("preserves the message when it contains parenthetical detail", () => {
 		expect(
 			apiErrorMessage({
 				code: "RUNTIME_PREREQUISITE_MISSING",
@@ -460,6 +458,20 @@ describe("apiErrorMessage", () => {
 			apiErrorMessage({
 				error: { code: "REVIEWER_NOT_FOUND", message: "reviewer has not reviewed this PR" },
 			}),
-		).toBe("reviewer has not reviewed this PR (REVIEWER_NOT_FOUND)");
+		).toBe("reviewer has not reviewed this PR");
 	});
+});
+
+
+describe("apiErrorDetails", () => {
+	it("preserves structured daemon recovery metadata", () => {
+		const details = { existingProjectId: "registered-project", suggestedProjectId: "another-project" };
+		expect(apiErrorDetails({ code: "PATH_ALREADY_REGISTERED", details })).toEqual(details);
+	});
+
+	it.each([undefined, null, "error", {}, { details: null }, { details: "project" }, { details: ["project"] }])(
+		"ignores malformed metadata: %j", (error) => {
+			expect(apiErrorDetails(error)).toBeUndefined();
+		},
+	);
 });

@@ -60,6 +60,14 @@ UPDATE sessions SET
     runtime_handle_id = '',
     runtime_launch_id = '',
     agent_session_id_launch_id = '',
+    conversation_checkpoint_state = 'empty',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
+    native_checkpoint_evidence = '',
+    conversation_checkpoint_unsettled = 0,
+    latest_user_prompt = '',
+    latest_assistant_update = '',
     native_transcript_path = '',
     updated_at = ?5
 WHERE id = ?6
@@ -109,6 +117,14 @@ UPDATE sessions SET
     runtime_launch_id = ?4,
     agent_session_id = ?5,
     agent_session_id_launch_id = ?4,
+    conversation_checkpoint_state = 'empty',
+    conversation_checkpoint_generation = '',
+    conversation_checkpoint_native_id = '',
+    conversation_checkpoint_turn_id = '',
+    native_checkpoint_evidence = '',
+    conversation_checkpoint_unsettled = 0,
+    latest_user_prompt = '',
+    latest_assistant_update = '',
     native_transcript_path = ?6,
     updated_at = ?2
 WHERE id = ?7
@@ -298,9 +314,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
   AND state NOT IN ('completed', 'failed')
@@ -329,11 +345,11 @@ func (q *Queries) GetActiveAgentSwitch(ctx context.Context, sessionID domain.Ses
 		&i.TargetRuntimeHandleID,
 		&i.TargetAcknowledgedAt,
 		&i.ErrorCode,
-		&i.FailurePoint,
 		&i.RequestedAt,
 		&i.UpdatedAt,
 		&i.FinalHandoffPath,
 		&i.FinalHandoffHash,
+		&i.FailurePoint,
 	)
 	return i, err
 }
@@ -370,9 +386,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE id = ?
 `
@@ -400,11 +416,11 @@ func (q *Queries) GetAgentSwitch(ctx context.Context, id domain.AgentSwitchID) (
 		&i.TargetRuntimeHandleID,
 		&i.TargetAcknowledgedAt,
 		&i.ErrorCode,
-		&i.FailurePoint,
 		&i.RequestedAt,
 		&i.UpdatedAt,
 		&i.FinalHandoffPath,
 		&i.FinalHandoffHash,
+		&i.FailurePoint,
 	)
 	return i, err
 }
@@ -416,9 +432,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ? AND idempotency_key = ?
 `
@@ -451,11 +467,11 @@ func (q *Queries) GetAgentSwitchByIdempotencyKey(ctx context.Context, arg GetAge
 		&i.TargetRuntimeHandleID,
 		&i.TargetAcknowledgedAt,
 		&i.ErrorCode,
-		&i.FailurePoint,
 		&i.RequestedAt,
 		&i.UpdatedAt,
 		&i.FinalHandoffPath,
 		&i.FinalHandoffHash,
+		&i.FailurePoint,
 	)
 	return i, err
 }
@@ -507,9 +523,9 @@ INSERT INTO agent_switches (
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
@@ -536,11 +552,11 @@ type InsertAgentSwitchParams struct {
 	TargetRuntimeHandleID   string
 	TargetAcknowledgedAt    sql.NullTime
 	ErrorCode               string
-	FailurePoint            string
 	RequestedAt             time.Time
 	UpdatedAt               time.Time
 	FinalHandoffPath        string
 	FinalHandoffHash        string
+	FailurePoint            string
 }
 
 func (q *Queries) InsertAgentSwitch(ctx context.Context, arg InsertAgentSwitchParams) (int64, error) {
@@ -564,11 +580,11 @@ func (q *Queries) InsertAgentSwitch(ctx context.Context, arg InsertAgentSwitchPa
 		arg.TargetRuntimeHandleID,
 		arg.TargetAcknowledgedAt,
 		arg.ErrorCode,
-		arg.FailurePoint,
 		arg.RequestedAt,
 		arg.UpdatedAt,
 		arg.FinalHandoffPath,
 		arg.FinalHandoffHash,
+		arg.FailurePoint,
 	)
 	if err != nil {
 		return 0, err
@@ -585,8 +601,8 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
        agent_handoff_path, agent_handoff_hash,
        source_generation_id, target_generation_id,
        target_runtime_handle_id, target_acknowledged_at,
-       error_code, failure_point, requested_at, updated_at,
-       final_handoff_path, final_handoff_hash
+       error_code, requested_at, updated_at,
+       final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE state NOT IN ('completed', 'failed')
 `
@@ -620,11 +636,11 @@ func (q *Queries) ListActiveAgentSwitches(ctx context.Context) ([]AgentSwitch, e
 			&i.TargetRuntimeHandleID,
 			&i.TargetAcknowledgedAt,
 			&i.ErrorCode,
-			&i.FailurePoint,
 			&i.RequestedAt,
 			&i.UpdatedAt,
 			&i.FinalHandoffPath,
 			&i.FinalHandoffHash,
+			&i.FailurePoint,
 		); err != nil {
 			return nil, err
 		}
@@ -688,9 +704,9 @@ SELECT id, session_id, idempotency_key, request_fingerprint,
     state, agent_handoff_status, source_transcript_status, semantic_handoff_included,
     agent_handoff_path, agent_handoff_hash,
     source_generation_id, target_generation_id, target_runtime_handle_id,
-    target_acknowledged_at, error_code, failure_point,
+    target_acknowledged_at, error_code,
     requested_at, updated_at,
-    final_handoff_path, final_handoff_hash
+    final_handoff_path, final_handoff_hash, failure_point
 FROM agent_switches
 WHERE session_id = ?
 ORDER BY requested_at DESC, id DESC
@@ -725,11 +741,11 @@ func (q *Queries) ListAgentSwitches(ctx context.Context, sessionID domain.Sessio
 			&i.TargetRuntimeHandleID,
 			&i.TargetAcknowledgedAt,
 			&i.ErrorCode,
-			&i.FailurePoint,
 			&i.RequestedAt,
 			&i.UpdatedAt,
 			&i.FinalHandoffPath,
 			&i.FinalHandoffHash,
+			&i.FailurePoint,
 		); err != nil {
 			return nil, err
 		}
@@ -1118,24 +1134,33 @@ UPDATE sessions SET
     first_signal_at = ?3,
     agent_session_id = ?4,
     agent_session_id_launch_id = ?5,
-    latest_user_prompt = ?6,
-    latest_user_prompt_at = ?7,
-    latest_assistant_update = ?8,
-    native_transcript_path = ?9,
-    updated_at = ?10
-WHERE sessions.id = ?11
+    native_identity_observed_at = ?6,
+    latest_user_prompt = ?7,
+    latest_user_prompt_at = ?8,
+    latest_assistant_update = ?9,
+    latest_assistant_update_at = ?10,
+    conversation_checkpoint_state = ?11,
+    conversation_checkpoint_generation = ?12,
+    conversation_checkpoint_native_id = ?13,
+    conversation_checkpoint_unsettled = ?14,
+    conversation_checkpoint_turn_id = ?15,
+    native_checkpoint_evidence = ?16,
+    native_transcript_path = ?17,
+    updated_at = ?18
+WHERE sessions.id = ?19
+  AND sessions.revision = ?20
   AND sessions.is_terminated = 0
-  AND sessions.harness = ?12
-  AND sessions.session_mode = ?13
+  AND sessions.harness = ?21
+  AND sessions.session_mode = ?22
   AND (
       (
-          ?13 <> 'chat'
-          AND sessions.runtime_launch_id = ?14
+          ?22 <> 'chat'
+          AND sessions.runtime_launch_id = ?23
       )
       OR
       (
-          ?13 = 'chat'
-          AND sessions.controller_generation = ?15
+          ?22 = 'chat'
+          AND sessions.controller_generation = ?24
       )
   )
   AND NOT EXISTS (
@@ -1150,21 +1175,30 @@ WHERE sessions.id = ?11
 `
 
 type UpdateSessionFromActivitySignalParams struct {
-	ActivityState                domain.ActivityState
-	ActivityLastAt               time.Time
-	FirstSignalAt                sql.NullTime
-	AgentSessionID               string
-	AgentSessionIDLaunchID       string
-	LatestUserPrompt             string
-	LatestUserPromptAt           sql.NullTime
-	LatestAssistantUpdate        string
-	NativeTranscriptPath         string
-	UpdatedAt                    time.Time
-	ID                           domain.SessionID
-	ExpectedHarness              domain.AgentHarness
-	ExpectedSessionMode          domain.SessionMode
-	ExpectedRuntimeLaunchID      string
-	ExpectedControllerGeneration string
+	ActivityState                    domain.ActivityState
+	ActivityLastAt                   time.Time
+	FirstSignalAt                    sql.NullTime
+	AgentSessionID                   string
+	AgentSessionIDLaunchID           string
+	NativeIdentityObservedAt         sql.NullTime
+	LatestUserPrompt                 string
+	LatestUserPromptAt               sql.NullTime
+	LatestAssistantUpdate            string
+	LatestAssistantUpdateAt          sql.NullTime
+	ConversationCheckpointState      domain.ConversationCheckpointState
+	ConversationCheckpointGeneration string
+	ConversationCheckpointNativeID   string
+	ConversationCheckpointUnsettled  bool
+	ConversationCheckpointTurnID     string
+	NativeCheckpointEvidence         string
+	NativeTranscriptPath             string
+	UpdatedAt                        time.Time
+	ID                               domain.SessionID
+	ExpectedRevision                 int64
+	ExpectedHarness                  domain.AgentHarness
+	ExpectedSessionMode              domain.SessionMode
+	ExpectedRuntimeLaunchID          string
+	ExpectedControllerGeneration     string
 }
 
 // Lifecycle reads the session before reducing a hook. Fence the resulting
@@ -1179,12 +1213,21 @@ func (q *Queries) UpdateSessionFromActivitySignal(ctx context.Context, arg Updat
 		arg.FirstSignalAt,
 		arg.AgentSessionID,
 		arg.AgentSessionIDLaunchID,
+		arg.NativeIdentityObservedAt,
 		arg.LatestUserPrompt,
 		arg.LatestUserPromptAt,
 		arg.LatestAssistantUpdate,
+		arg.LatestAssistantUpdateAt,
+		arg.ConversationCheckpointState,
+		arg.ConversationCheckpointGeneration,
+		arg.ConversationCheckpointNativeID,
+		arg.ConversationCheckpointUnsettled,
+		arg.ConversationCheckpointTurnID,
+		arg.NativeCheckpointEvidence,
 		arg.NativeTranscriptPath,
 		arg.UpdatedAt,
 		arg.ID,
+		arg.ExpectedRevision,
 		arg.ExpectedHarness,
 		arg.ExpectedSessionMode,
 		arg.ExpectedRuntimeLaunchID,

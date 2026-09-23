@@ -47,6 +47,15 @@ export function isActiveInstallJob(job: InstallJob | undefined): boolean {
 	return job?.status === "running" || job?.status === "installing" || job?.status === "verifying";
 }
 
+// Startup requirements are read through a process-free GET. An explicit user
+// request to check again first forces the daemon's normal agent refresh so
+// identity-sensitive adapters can perform their bounded validation probe.
+export async function checkRequirementsAgain(onRefetchRequirements: () => Promise<unknown> | void): Promise<void> {
+	const { error } = await apiClient.POST("/api/v1/agents/refresh");
+	if (error) throw new Error(apiErrorMessage(error, "Could not refresh agent inventory."));
+	await onRefetchRequirements();
+}
+
 /** Sequential single-target install job runner: POST to start, GET on an
  *  interval while running. One target is ever in flight at a time — this
  *  gate only ever needs one, and serializing keeps the UI unambiguous about
@@ -145,6 +154,7 @@ export function InstallDependencyDialog({
 	const [selectedAgent, setSelectedAgent] = useState<AgentInstallTarget | null>(null);
 	const [ghDismissed, setGhDismissed] = useState(false);
 	const [isCheckingAgain, setIsCheckingAgain] = useState(false);
+	const [checkAgainError, setCheckAgainError] = useState<string | undefined>();
 	const install = useInstallRunner(() => void onRefetchRequirements());
 
 	const byId = new Map(requirements.map((requirement) => [requirement.id, requirement]));
@@ -171,8 +181,13 @@ export function InstallDependencyDialog({
 
 	const checkAgain = async () => {
 		setIsCheckingAgain(true);
+		setCheckAgainError(undefined);
 		try {
-			await onRefetchRequirements();
+			await checkRequirementsAgain(onRefetchRequirements);
+		} catch (error) {
+			setCheckAgainError(
+				error instanceof Error && error.message ? error.message : "Could not refresh agent inventory.",
+			);
 		} finally {
 			setIsCheckingAgain(false);
 		}
@@ -289,6 +304,11 @@ export function InstallDependencyDialog({
 				</div>
 
 				<div className={settingsDialogFooterClass}>
+					{checkAgainError ? (
+						<p role="alert" className="basis-full text-caption leading-4 text-error">
+							{checkAgainError}
+						</p>
+					) : null}
 					<button
 						type="button"
 						className="settings-footer-button"

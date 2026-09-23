@@ -4,11 +4,13 @@
 // must not invalidate session state when they come and go.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { markTerminalHandleFresh } from "../lib/fresh-terminal-handles";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { mockShellTerminals } from "../lib/mock-data";
 import { isWindowsPlatform } from "../lib/platform";
 import { terminalShellRequestValue, useTerminalShellStore } from "../stores/terminal-shell-store";
+import { useCloudCp } from "./useCloudCp";
 
 export type ShellTerminal = {
 	/** Runtime handle the terminal mux attaches to, exactly like a session pane's. */
@@ -19,6 +21,8 @@ export type ShellTerminal = {
 	workingDir: string;
 	title: string;
 	createdAt: string;
+	/** Present when the shell lives in a control-plane sandbox, not the local daemon. */
+	cloud?: { orgId: string };
 	/**
 	 * Exists only in the renderer while the daemon is creating the PTY. It lets
 	 * the tab strip respond to the click immediately without ever attempting to
@@ -55,6 +59,10 @@ function toShellTerminal(t: components["schemas"]["ShellTerminalResponse"]): She
 // suite drives.
 let previewShellTerminals: ShellTerminal[] = [...mockShellTerminals];
 let previewShellSeq = 0;
+// Cloud workspace shells are connection-scoped rather than daemon-owned. Keep
+// their tab metadata for this Electron renderer lifetime; the terminal itself
+// is created when its ticketed control-plane WebSocket connects.
+let cloudShellTerminals: ShellTerminal[] = [];
 
 async function fetchShellTerminals(): Promise<ShellTerminal[]> {
 	if (usePreviewData) {
@@ -65,7 +73,7 @@ async function fetchShellTerminals(): Promise<ShellTerminal[]> {
 	}
 	const { data, error } = await apiClient.GET("/api/v1/shell-terminals");
 	if (error) throw error;
-	return (data?.shellTerminals ?? []).map(toShellTerminal);
+	return [...(data?.shellTerminals ?? []).map(toShellTerminal), ...cloudShellTerminals];
 }
 
 // No refetchInterval: shell terminals only change when this client opens or
@@ -81,7 +89,18 @@ export function useShellTerminals() {
 	return useQuery(shellTerminalsQueryOptions);
 }
 
-export type OpenShellTerminalInput = { projectId?: string; sessionId?: string; shell?: string };
+export type OpenShellTerminalInput = {
+	projectId?: string;
+	sessionId?: string;
+	shell?: string;
+	cloud?: { orgId: string };
+};
+
+function nextCloudShellTitle(terminals: ShellTerminal[], sessionId: string): string {
+	const count = terminals.filter((terminal) => terminal.cloud && terminal.sessionId === sessionId).length;
+	return `Terminal ${count + 1}`;
+}
+
 type OpenShellTerminalMutationInput = OpenShellTerminalInput & { optimisticShell?: ShellTerminal };
 type OpenShellTerminalCallbacks = { onSuccess?: (shell: ShellTerminal) => void };
 
@@ -127,8 +146,15 @@ function addOptimisticShell(queryClient: ReturnType<typeof useQueryClient>, shel
  */
 export function useOpenShellTerminal() {
 	const queryClient = useQueryClient();
+	const { client: cloudCpClient } = useCloudCp();
 	const mutation = useMutation({
-		mutationFn: async ({ projectId, sessionId, shell, optimisticShell }: OpenShellTerminalMutationInput = {}): Promise<ShellTerminal> => {
+		mutationFn: async ({
+			projectId,
+			sessionId,
+			shell,
+			cloud,
+			optimisticShell,
+		}: OpenShellTerminalMutationInput = {}): Promise<ShellTerminal> => {
 			if (usePreviewData) {
 				previewShellSeq += 1;
 				const shell: ShellTerminal = {
@@ -142,6 +168,24 @@ export function useOpenShellTerminal() {
 				previewShellTerminals = [...previewShellTerminals, shell];
 				return shell;
 			}
+			if (cloud) {
+				if (!sessionId) throw new Error("A cloud shell terminal must belong to a session");
+				// Explicitly resume the cloud session before opening its shell, so a
+				// paused sandbox is woken rather than the shell attaching to nothing.
+				await cloudCpClient.resumeSession(cloud.orgId, sessionId);
+				const current = queryClient.getQueryData<ShellTerminal[]>(shellTerminalsQueryKey) ?? [];
+				const shell: ShellTerminal = {
+					handleId: `cloud-shell-${crypto.randomUUID()}`,
+					projectId,
+					sessionId,
+					workingDir: "/workspace/repository",
+					title: nextCloudShellTitle(current, sessionId),
+					createdAt: new Date().toISOString(),
+					cloud,
+				};
+				cloudShellTerminals = [...cloudShellTerminals, shell];
+				return shell;
+			}
 			const body: OpenShellTerminalInput = {};
 			if (projectId) body.projectId = projectId;
 			if (sessionId) body.sessionId = sessionId;
@@ -152,6 +196,7 @@ export function useOpenShellTerminal() {
 			const { data, error } = await apiClient.POST("/api/v1/shell-terminals", { body });
 			if (error) throw error;
 			if (!data) throw new Error("Daemon returned no shell terminal");
+			markTerminalHandleFresh(data.shellTerminal.handleId);
 			return toShellTerminal(data.shellTerminal);
 		},
 		onMutate: (input) => {
@@ -171,7 +216,7 @@ export function useOpenShellTerminal() {
 				if (index < 0) return [...(current ?? []), shell];
 				return current?.map((candidate, candidateIndex) => (candidateIndex === index ? shell : candidate)) ?? [shell];
 			});
-			void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
+			if (!shell.cloud) void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
 		},
 		onError: (error, _input, context) => {
 			queryClient.setQueryData<ShellTerminal[]>(shellTerminalsQueryKey, (current) =>
@@ -182,8 +227,8 @@ export function useOpenShellTerminal() {
 				void useTerminalShellStore.getState().setPreference({ kind: "auto" });
 			}
 		},
-		onSettled: () => {
-			void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
+		onSettled: (_data, _error, input) => {
+			if (!input?.cloud) void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
 		},
 	});
 
@@ -220,9 +265,20 @@ export async function closeShellTerminal(handleId: string): Promise<void> {
 export function useCloseShellTerminal() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: closeShellTerminal,
+		mutationFn: async (handleId: string): Promise<void> => {
+			if (usePreviewData) {
+				previewShellTerminals = previewShellTerminals.filter((s) => s.handleId !== handleId);
+				return;
+			}
+			if (cloudShellTerminals.some((shell) => shell.handleId === handleId)) {
+				cloudShellTerminals = cloudShellTerminals.filter((shell) => shell.handleId !== handleId);
+				return;
+			}
+			await closeShellTerminal(handleId);
+		},
 		onMutate: async (handleId) => {
 			const previous = queryClient.getQueryData<ShellTerminal[]>(shellTerminalsQueryKey);
+			const isCloud = Boolean(previous?.find((shell) => shell.handleId === handleId)?.cloud);
 			const removeClosedShell = () => {
 				queryClient.setQueryData<ShellTerminal[]>(shellTerminalsQueryKey, (current) =>
 					current?.filter((shell) => shell.handleId !== handleId),
@@ -235,7 +291,7 @@ export function useCloseShellTerminal() {
 			// A request that resolved while cancellation was being scheduled may have
 			// restored its stale snapshot; make the optimistic state authoritative.
 			removeClosedShell();
-			return { previous };
+			return { previous, isCloud };
 		},
 		onError: (error, _handleId, context) => {
 			// A 404 means the daemon has already removed the shell, so restoring its
@@ -247,8 +303,8 @@ export function useCloseShellTerminal() {
 		},
 		// Settled, not success: a close that 404s means the daemon already lost
 		// the shell, and the stale tab still needs to disappear.
-		onSettled: () => {
-			void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
+		onSettled: (_data, _error, _handleId, context) => {
+			if (!context?.isCloud) void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
 		},
 	});
 }
@@ -264,6 +320,14 @@ export function useRenameShellTerminal() {
 				previewShellTerminals = previewShellTerminals.map((s) => (s.handleId === handleId ? { ...s, title } : s));
 				const shell = previewShellTerminals.find((s) => s.handleId === handleId);
 				if (!shell) throw new Error("No such shell terminal");
+				return shell;
+			}
+			const cloudIndex = cloudShellTerminals.findIndex((shell) => shell.handleId === handleId);
+			if (cloudIndex >= 0) {
+				const shell = { ...cloudShellTerminals[cloudIndex], title };
+				cloudShellTerminals = cloudShellTerminals.map((candidate, index) =>
+					index === cloudIndex ? shell : candidate,
+				);
 				return shell;
 			}
 			const { data, error } = await apiClient.PATCH("/api/v1/shell-terminals/{handleId}", {
@@ -289,7 +353,7 @@ export function useRenameShellTerminal() {
 			queryClient.setQueryData<ShellTerminal[]>(shellTerminalsQueryKey, (current) =>
 				current?.map((candidate) => (candidate.handleId === shell.handleId ? shell : candidate)),
 			);
-			void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
+			if (!shell.cloud) void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
 		},
 	});
 }

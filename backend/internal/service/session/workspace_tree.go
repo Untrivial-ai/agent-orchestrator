@@ -69,6 +69,9 @@ func (s *Service) ListWorkspaceTree(ctx context.Context, id domain.SessionID, ra
 		return WorkspaceTree{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
+	if isStandaloneScratchWorkspace(rec) {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectOK {
 		projectKind = project.Kind.WithDefault()
 	}
@@ -352,6 +355,7 @@ func scratchWorkspaceTreeChildren(root, dir string) ([]WorkspaceTreeEntry, bool,
 		}
 		return nil, false, err
 	}
+	managed := scratchAOManagedNamesIn(targetResolved)
 	entries := make([]WorkspaceTreeEntry, 0, len(dirEntries))
 	truncated := false
 	for _, entry := range dirEntries {
@@ -368,6 +372,9 @@ func scratchWorkspaceTreeChildren(root, dir string) ([]WorkspaceTreeEntry, bool,
 			rel = dir + "/" + name
 		}
 		fullPath := filepath.Join(targetResolved, name)
+		if _, hidden := managed[name]; hidden {
+			continue
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			targetInfo, ok := statScratchFileTarget(fullPath)
 			if !ok {
@@ -388,7 +395,13 @@ func scratchWorkspaceTreeChildren(root, dir string) ([]WorkspaceTreeEntry, bool,
 			continue
 		}
 		if entry.IsDir() {
+			if scratchDirectoryOnlyAOManaged(rootResolved, rel) {
+				continue
+			}
 			entries = append(entries, WorkspaceTreeEntry{Name: name, Path: rel, Type: WorkspaceTreeDir, HasChanges: true})
+			continue
+		}
+		if scratchAOManagedCopilotProfile(dir, name, fullPath) {
 			continue
 		}
 		info, err := entry.Info()

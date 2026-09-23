@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
+	MAX_PROJECT_DISPLAY_NAME_LEN,
 	ProjectAgentsSettingsView,
 	ProjectGeneralSettingsView,
 	ProjectSettingsFormView,
@@ -55,14 +56,11 @@ type SettingsSaveResult = {
 };
 
 export type ProjectSettingsSection = "general" | "agents" | "workflow" | "intake";
-export interface ProjectSettingsSaveState {
-	isPending: boolean;
-	showSaving: boolean;
-	validationError: string | null;
-	mutationError: string | null;
-	saved: boolean;
-	replacementError: string | null;
-}
+export type ProjectSettingsSaveState = {
+	phase: "idle" | "pending" | "saving" | "saved" | "failed";
+	error?: string;
+	replacementError?: string;
+};
 
 export function ProjectSettingsForm({
 	projectId,
@@ -145,13 +143,18 @@ function SettingsBody({
 		workerAgent: config.worker?.agent ?? "",
 		orchestratorAgent: config.orchestrator?.agent ?? "",
 		workerModel: config.worker?.agentConfig?.model ?? config.agentConfig?.model ?? "",
+		workerEffort: config.worker?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
+		workerPermissions: config.worker?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		orchestratorModel: config.orchestrator?.agentConfig?.model ?? config.agentConfig?.model ?? "",
+		orchestratorEffort: config.orchestrator?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
+		orchestratorPermissions: config.orchestrator?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		workerMode: config.worker?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		orchestratorMode: config.orchestrator?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
-		permissions: config.agentConfig?.permissions ?? "",
 		reviewerHarness: config.reviewers?.[0]?.harness ?? "",
-		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? "",
-		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? "",
+		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? config.agentConfig?.model ?? "",
+		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
+		reviewerEffort: config.reviewers?.[0]?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
+		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		autoReview: config.autoReview ?? false,
 		intakeEnabled: intake.enabled ?? false,
 		intakeRepo: intake.repo ?? "",
@@ -161,6 +164,7 @@ function SettingsBody({
 	const [showSaving, setShowSaving] = useState(false);
 	const [replacementError, setReplacementError] = useState<string | null>(null);
 	const [validationError, setValidationError] = useState<string | null>(null);
+	const [tuningValidity, setTuningValidity] = useState({ worker: true, orchestrator: true, reviewer: true });
 	const initialOrchestratorAgent = config.orchestrator?.agent ?? "";
 	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
 	const agentsQuery = useAgentReadinessQuery();
@@ -192,6 +196,8 @@ function SettingsBody({
 			const {
 				model: _legacyModel,
 				mode: _legacyMode,
+				effort: _legacyEffort,
+				permissions: _legacyPermissions,
 				...sharedAgentConfig
 			} = config.agentConfig ?? {};
 			const existingReviewer = config.reviewers?.[0];
@@ -203,7 +209,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "codex" ? form.workerEffort : "", form.workerPermissions),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -212,11 +218,13 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
+								form.orchestratorAgent === "codex" ? form.orchestratorEffort : "",
+								form.orchestratorPermissions,
 							),
 						},
 						agentConfig: blankToUndefined({
 							...sharedAgentConfig,
-							permissions: form.permissions || undefined,
+							permissions: undefined,
 						}),
 					}
 				: {
@@ -229,7 +237,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "codex" ? form.workerEffort : "", form.workerPermissions),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -238,21 +246,21 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
+								form.orchestratorAgent === "codex" ? form.orchestratorEffort : "",
+								form.orchestratorPermissions,
 							),
 						},
 						agentConfig: blankToUndefined({
 							...sharedAgentConfig,
-							permissions: form.permissions || undefined,
+							permissions: undefined,
 						}),
 						reviewers: form.reviewerHarness
-							? [
-									{
-										harness: form.reviewerHarness,
-										agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode),
-									},
-								]
+							? [{
+									harness: form.reviewerHarness,
+									agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode, form.reviewerHarness === "codex" ? form.reviewerEffort : "", form.reviewerPermissions),
+								}]
 							: undefined,
-						trackerIntake: buildIntake(intakeForm),
+						trackerIntake: buildIntake(intakeForm, config.trackerIntake),
 						autoReview: form.autoReview,
 					};
 			const { error } = await apiClient.PUT("/api/v1/projects/{id}", {
@@ -277,7 +285,7 @@ function SettingsBody({
 						message:
 							error instanceof Error ? error.message : t("settings.project.replaceOrchestratorFailed"),
 						...(error instanceof OrchestratorSpawnError
-							? { code: error.code, requestId: error.requestId }
+							? { code: error.code, requestId: error.requestId, details: error.details }
 							: {}),
 					};
 					return {
@@ -336,18 +344,23 @@ function SettingsBody({
 	}, [mutation.isPending]);
 
 	useEffect(() => {
+		const mutationError = mutation.isError
+			? mutation.error instanceof Error
+				? mutation.error.message
+				: t("settings.project.saveFailed")
+			: undefined;
 		onSaveState?.({
-			isPending: mutation.isPending,
-			showSaving,
-			validationError,
-			mutationError: mutation.isError
-				? mutation.error instanceof Error
-					? mutation.error.message
-					: t("settings.project.saveFailed")
-				: null,
-			saved: savedAt !== null && !mutation.isPending && !mutation.isError,
-			replacementError:
-				replacementError && !mutation.isPending && !mutation.isError ? replacementError : null,
+			phase: validationError || mutationError
+				? "failed"
+				: mutation.isPending
+					? showSaving
+						? "saving"
+						: "pending"
+					: savedAt !== null
+						? "saved"
+						: "idle",
+			error: validationError ?? mutationError,
+			replacementError: !mutation.isPending && !mutation.isError ? replacementError ?? undefined : undefined,
 		});
 	}, [
 		mutation.error,
@@ -370,18 +383,27 @@ function SettingsBody({
 	return (
 		<ProjectSettingsFormView
 			id="project-settings-form"
-			onSubmit={() => {
+				onSubmit={() => {
 				setSavedAt(null);
 				setReplacementError(null);
-				const validation = validateProjectSettings(form, { validateIntake: !isScratchProject });
+				const validation = validateProjectSettings(form, {
+					validateIntake: !isScratchProject,
+					originalDisplayName: project.name,
+				});
 				if (validation) {
 					setValidationError(
 						validation === "agents_required"
 							? t("settings.project.agentsRequired")
 							: validation === "name_required"
 								? t("settings.project.nameRequired")
-								: t("settings.project.intakeAssigneeRequired"),
+								: validation === "name_too_long"
+									? t("settings.project.nameTooLong", { max: MAX_PROJECT_DISPLAY_NAME_LEN })
+									: t("settings.project.intakeAssigneeRequired"),
 					);
+					return;
+				}
+				if (!tuningValidity.worker || !tuningValidity.orchestrator || !tuningValidity.reviewer) {
+					setValidationError(t("settings.project.tuningInvalid"));
 					return;
 				}
 				setValidationError(null);
@@ -436,7 +458,7 @@ function SettingsBody({
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								invalid={validationError !== null && form.workerAgent === ""}
 								onChange={(v) =>
-									setForm((f) => ({ ...f, workerAgent: v, workerModel: "", workerMode: "" }))
+									setForm((f) => ({ ...f, workerAgent: v, workerModel: "", workerMode: "", workerEffort: "" }))
 								}
 							/>
 						}
@@ -447,8 +469,11 @@ function SettingsBody({
 								projectId={projectId}
 								model={form.workerModel}
 								mode={form.workerMode}
+								effort={form.workerEffort}
 								onModelChange={(workerModel) => setForm((f) => ({ ...f, workerModel }))}
 								onModeChange={(workerMode) => setForm((f) => ({ ...f, workerMode }))}
+								onEffortChange={(workerEffort) => setForm((f) => ({ ...f, workerEffort }))}
+								onValidityChange={(valid) => setTuningValidity((value) => ({ ...value, worker: valid }))}
 							/>
 						}
 						orchestratorArea={
@@ -467,6 +492,7 @@ function SettingsBody({
 										orchestratorAgent: v,
 										orchestratorModel: "",
 										orchestratorMode: "",
+										orchestratorEffort: "",
 									}))
 								}
 							/>
@@ -478,18 +504,26 @@ function SettingsBody({
 								projectId={projectId}
 								model={form.orchestratorModel}
 								mode={form.orchestratorMode}
+								effort={form.orchestratorEffort}
 								onModelChange={(orchestratorModel) => setForm((f) => ({ ...f, orchestratorModel }))}
 								onModeChange={(orchestratorMode) => setForm((f) => ({ ...f, orchestratorMode }))}
+								onEffortChange={(orchestratorEffort) => setForm((f) => ({ ...f, orchestratorEffort }))}
+								onValidityChange={(valid) => setTuningValidity((value) => ({ ...value, orchestrator: valid }))}
 							/>
 						}
 						permissions={{
 							control: (
 								<PermissionModeSelect
-									value={form.permissions}
-									onChange={(v) => setForm((f) => ({ ...f, permissions: v }))}
+									ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.workerRole") })}
+									value={form.workerPermissions}
+									onChange={(v) => setForm((f) => ({ ...f, workerPermissions: v }))}
 								/>
 							),
-							label: t("settings.project.permissionMode"),
+							label: t("settings.project.roleApproval", { role: t("settings.models.workerRole") }),
+						}}
+						orchestratorPermissions={{
+							control: <PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") })} value={form.orchestratorPermissions} onChange={(v) => setForm((f) => ({ ...f, orchestratorPermissions: v }))} />,
+							label: t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") }),
 						}}
 						missingRequiredMessage={
 							missingRequiredAgent ? t("settings.project.agentsRequired") : null
@@ -500,28 +534,50 @@ function SettingsBody({
 						<SettingsRow label={t("settings.project.defaultReviewer")}>
 							<ReviewerSelect
 								value={form.reviewerHarness}
-								onChange={(v) =>
-									setForm((f) => ({
-										...f,
-										reviewerHarness: v,
-										...(v !== f.reviewerHarness ? { reviewerModel: "", reviewerMode: "" } : {}),
-									}))
-								}
-								onConfigChange={(_harness, agentConfig) =>
-									setForm((f) => ({
-										...f,
-										reviewerModel: agentConfig.model ?? "",
-										reviewerMode: agentConfig.mode ?? "",
-									}))
-								}
 								model={form.reviewerModel}
 								mode={form.reviewerMode}
 								projectId={projectId}
+								onConfigChange={(_harness, config) => setForm((f) => ({
+									...f,
+									reviewerModel: config.model ?? "",
+									reviewerMode: config.mode ?? "",
+								}))}
+								onChange={(v) =>
+								setForm((f) => ({
+									...f,
+									reviewerHarness: v,
+									...(v !== f.reviewerHarness ? {
+										reviewerModel: "", reviewerMode: "", reviewerEffort: "",
+										reviewerPermissions: "",
+									} : {}),
+									}))
+								}
 								ariaLabel={t("settings.project.defaultReviewer")}
 								agents={agentCatalog?.agents}
 								defaultOptionLabel={t("settings.project.default")}
 								defaultTriggerLabel={t("settings.project.default")}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
+							/>
+						</SettingsRow>
+						{form.reviewerHarness ? (
+							<AgentModelField
+								role="reviewer"
+								agentId={form.reviewerHarness}
+								projectId={projectId}
+								model={form.reviewerModel}
+								mode={form.reviewerMode}
+								effort={form.reviewerEffort}
+								onModelChange={(reviewerModel) => setForm((f) => ({ ...f, reviewerModel }))}
+								onModeChange={(reviewerMode) => setForm((f) => ({ ...f, reviewerMode }))}
+								onEffortChange={(reviewerEffort) => setForm((f) => ({ ...f, reviewerEffort }))}
+								onValidityChange={(valid) => setTuningValidity((value) => ({ ...value, reviewer: valid }))}
+							/>
+						) : null}
+						<SettingsRow label={t("settings.project.roleApproval", { role: t("settings.models.reviewerRole") })}>
+							<PermissionModeSelect
+								ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.reviewerRole") })}
+								value={form.reviewerPermissions}
+								onChange={(reviewerPermissions) => setForm((f) => ({ ...f, reviewerPermissions }))}
 							/>
 						</SettingsRow>
 						{reviewerWarning && (
@@ -622,16 +678,22 @@ function AgentModelField({
 	projectId,
 	model,
 	mode,
+	effort,
 	onModelChange,
 	onModeChange,
+	onEffortChange,
+	onValidityChange,
 }: {
-	role: "worker" | "orchestrator";
+	role: "worker" | "orchestrator" | "reviewer";
 	agentId: string;
 	projectId: string;
 	model: string;
 	mode: string;
+	effort: string;
 	onModelChange: (value: string) => void;
 	onModeChange: (value: string) => void;
+	onEffortChange: (value: string) => void;
+	onValidityChange: (valid: boolean) => void;
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
@@ -721,10 +783,21 @@ function AgentModelField({
 						customModelEntry={customModelEntry}
 						agentLabel={agentId}
 						onRefresh={refreshCatalog}
-						disabled={query.isFetching || agentId === ""}
+						refreshing={catalog?.refreshState === "queued" || catalog?.refreshState === "refreshing"}
+						lastSuccessAt={catalog?.lastSuccessAt}
+						refreshError={catalog?.refreshError}
+						retryAt={catalog?.retryAt}
+						disabled={(query.isFetching && !catalog) || agentId === ""}
 						onChange={selectCatalogModel}
 						onCustom={selectCustomModel}
 						triggerClassName="justify-end"
+						compact={agentId === "codex"}
+						tuning={agentId === "codex" ? {
+							effort,
+							onEffortChange,
+							onValidityChange,
+							roleLabel: t(`settings.models.${role}Role`),
+						} : undefined}
 					/>
 				</div>
 			</SettingsRow>
@@ -733,10 +806,10 @@ function AgentModelField({
 	);
 }
 
-function PermissionModeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function PermissionModeSelect({ ariaLabel, value, onChange }: { ariaLabel: string; value: string; onChange: (value: string) => void }) {
 	const { t } = useTranslation();
 	const options = [
-		{ value: "__default__", label: t("settings.project.default") },
+		{ value: "__default__", label: `${t("settings.project.permissionAuto")} (${t("settings.project.default")})` },
 		...PERMISSION_MODE_VALUES.map((value) => ({
 			value,
 			label:
@@ -752,7 +825,7 @@ function PermissionModeSelect({ value, onChange }: { value: string; onChange: (v
 
 	return (
 		<SettingsOptionMenu
-			aria-label={t("settings.project.permissionMode")}
+			aria-label={ariaLabel}
 			value={value || "__default__"}
 			options={options}
 			onChange={(v) => onChange(v === "__default__" ? "" : v)}
@@ -809,11 +882,17 @@ function buildRoleAgentConfig(
 	existing: components["schemas"]["AgentConfig"] | undefined,
 	model: string,
 	mode: string,
+	effort: string,
+	permissions: string,
 ): components["schemas"]["AgentConfig"] | undefined {
 	const next = { ...existing };
 	if (model) next.model = model;
 	else delete next.model;
 	if (mode) next.mode = mode;
 	else delete next.mode;
+	if (effort) next.effort = effort;
+	else delete next.effort;
+	if (permissions) next.permissions = permissions as components["schemas"]["AgentConfig"]["permissions"];
+	else delete next.permissions;
 	return Object.keys(next).length > 0 ? next : undefined;
 }

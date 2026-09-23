@@ -6,8 +6,7 @@ import (
 )
 
 func TestMigration0107PreservesTurnsAndAllowsRecoveredHistory(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 106)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 106)
 	now := time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)
 
 	mustExec(t, db, `

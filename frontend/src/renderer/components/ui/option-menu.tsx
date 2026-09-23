@@ -103,10 +103,14 @@ export function OptionMenuLabel({
 export function OptionMenuItem({
 	className,
 	active,
+	radio,
 	...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & { active?: boolean }) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & { active?: boolean; radio?: boolean }) {
 	return (
 		<DropdownMenuPrimitive.Item
+			{...(radio === undefined
+				? {}
+				: { role: "menuitemradio" as const, "aria-checked": active })}
 			data-active={active || undefined}
 			className={cn(ROW, className)}
 			{...props}
@@ -125,6 +129,7 @@ export function OptionMenuSubTrigger({
 	label,
 	value,
 	children,
+	onClick,
 	...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubTrigger> & {
 	label?: string;
@@ -136,7 +141,10 @@ export function OptionMenuSubTrigger({
 			// Stop the click reaching the composer's click-to-focus handler without
 			// calling preventDefault, which Radix's composeEventHandlers reads as a
 			// signal to skip its own open/close handling.
-			onClick={(e) => e.stopPropagation()}
+			onClick={(e) => {
+				e.stopPropagation();
+				onClick?.(e);
+			}}
 			{...props}
 		>
 			{children ?? (

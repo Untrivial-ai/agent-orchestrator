@@ -236,7 +236,7 @@ func TestCommandBuilders(t *testing.T) {
 		t.Fatalf("newSessionArgs = %#v, want %#v", got, want)
 	}
 	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi"),
-		[]string{"respawn-pane", "-k", "-t", "sess-1:0.0", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
+		[]string{"respawn-pane", "-k", "-t", "sess-1", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("respawnPaneArgs = %#v, want %#v", got, want)
 	}
 	// set-option uses pane-targeting (no = prefix).
@@ -252,6 +252,16 @@ func TestCommandBuilders(t *testing.T) {
 	if got, want := setMouseOnArgs("sess-1"), []string{"set-option", "-t", "sess-1", "mouse", "on"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("setMouseOnArgs = %#v, want %#v", got, want)
 	}
+	// set-option uses the exact-match target `=<id>:`, unlike the plain targets
+	// above: this call can run long after creation, when the session may
+	// already be gone, and a plain target then risks silently re-targeting an
+	// unrelated session sharing the name prefix (see setDetachOnDestroyOnArgs).
+	if got, want := setDetachOnDestroyOnArgs("sess-1"), []string{"set-option", "-t", "=sess-1:", "detach-on-destroy", "on"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("setDetachOnDestroyOnArgs = %#v, want %#v", got, want)
+	}
+	if got, want := showDetachOnDestroyArgs("sess-1"), []string{"show-options", "-t", "=sess-1:", "-v", "detach-on-destroy"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("showDetachOnDestroyArgs = %#v, want %#v", got, want)
+	}
 	// kill-session and has-session use exact-match prefix =.
 	if got, want := killSessionArgs("sess-1"), []string{"kill-session", "-t", "=sess-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("killSessionArgs = %#v, want %#v", got, want)
@@ -259,7 +269,7 @@ func TestCommandBuilders(t *testing.T) {
 	if got, want := hasSessionArgs("sess-1"), []string{"has-session", "-t", "=sess-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("hasSessionArgs = %#v, want %#v", got, want)
 	}
-	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1:0.0", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
+	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
@@ -343,7 +353,7 @@ func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 	// new-session, display-message cwd verification, set-option status,
 	// set-option mouse, set-option window-size, has-session (exit 0 = alive)
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil, nil}
 
 	h, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID:     "sess-1",
@@ -357,10 +367,11 @@ func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 	if h.ID != "sess-1" {
 		t.Fatalf("handle ID = %q, want sess-1", h.ID)
 	}
-	// Expect 6 calls: new-session, display-message cwd verification,
-	// set-option status, set-option mouse, set-option window-size, has-session.
-	if len(fr.calls) != 6 {
-		t.Fatalf("calls = %d, want 6", len(fr.calls))
+	// Expect 7 calls: new-session, display-message cwd verification,
+	// set-option status, set-option mouse, set-option window-size,
+	// set-option detach-on-destroy, has-session.
+	if len(fr.calls) != 7 {
+		t.Fatalf("calls = %d, want 7", len(fr.calls))
 	}
 
 	// Call 0: new-session
@@ -401,15 +412,21 @@ func TestCreateIssuesNewSessionAndStatusOff(t *testing.T) {
 		t.Fatalf("call[4] = %#v, want %#v", got, want)
 	}
 
-	// Call 5: has-session (IsAlive, uses exact-match target =sess-1).
-	if got, want := fr.calls[5].args, hasSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
+	// Call 5: set-option detach-on-destroy on (attach client exits on destroy
+	// even under a user `detach-on-destroy off`, see setDetachOnDestroyOnArgs).
+	if got, want := fr.calls[5].args, setDetachOnDestroyOnArgs("sess-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("call[5] = %#v, want %#v", got, want)
+	}
+
+	// Call 6: has-session (IsAlive, uses exact-match target =sess-1).
+	if got, want := fr.calls[6].args, hasSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("call[6] = %#v, want %#v", got, want)
 	}
 }
 
 func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil, nil}
 
 	_, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID:     "sess-1",
@@ -435,7 +452,7 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 
 func TestCreateCommandTerminalExitsWhenCommandCompletes(t *testing.T) {
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil, nil}
 
 	_, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID:               "command-1",
@@ -467,7 +484,7 @@ func TestCreateLaunchCommandExportsEnvVars(t *testing.T) {
 	defer func() { getenv = oldGetenv }()
 
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil}
+	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil, nil}
 
 	_, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID:     "sess-1",
@@ -579,7 +596,7 @@ func TestVerifyPaneWorkingDirectoryKeepsMismatchErrorAfterLaterProbeFailure(t *t
 func TestVerifyPaneWorkingDirectoryRetriesUntilMatch(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	// new-session, then a stale sample, then a matching sample.
-	fr.outputs = [][]byte{nil, []byte("/deleted/shipit\n"), []byte("/tmp/ws\n"), nil, nil, nil}
+	fr.outputs = [][]byte{nil, []byte("/deleted/shipit\n"), []byte("/tmp/ws\n"), nil, nil, nil, nil}
 
 	h, err := r.Create(context.Background(), ports.RuntimeConfig{
 		SessionID:     "sess-1",
@@ -733,7 +750,7 @@ func TestRestartRespawnsExistingPaneAndPreservesHandle(t *testing.T) {
 	if len(fr.calls) != 2 {
 		t.Fatalf("calls = %d, want respawn + liveness probe", len(fr.calls))
 	}
-	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1:0.0" || args[5] != "/tmp/ws" {
+	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1" || args[5] != "/tmp/ws" {
 		t.Fatalf("respawn args = %#v", args)
 	}
 	if args := fr.calls[1].args; !reflect.DeepEqual(args, hasSessionArgs("sess-1")) {
@@ -765,9 +782,11 @@ func TestIsAliveAdoptsSessionFromLegacyDefaultSocket(t *testing.T) {
 	})
 	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
 		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
-		{}, // legacy default-socket discovery
-		{}, // first has-session call after discovery
-		{}, // cached second has-session call
+		{},                    // legacy default-socket discovery
+		{},                    // enforceDetachOnDestroy: set-option
+		{out: []byte("on\n")}, // enforceDetachOnDestroy: show-options verify
+		{},                    // first has-session call after discovery
+		{},                    // cached second has-session call
 	}}
 	r.runner = fr
 	handle := ports.RuntimeHandle{ID: "sess-1"}
@@ -781,11 +800,15 @@ func TestIsAliveAdoptsSessionFromLegacyDefaultSocket(t *testing.T) {
 	want := [][]string{
 		append([]string{"-L", "ao"}, hasSessionArgs("sess-1")...),
 		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, setDetachOnDestroyOnArgs("sess-1")...),
+		append([]string{"-L", "default"}, showDetachOnDestroyArgs("sess-1")...),
 		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
 		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
 	}
 	wantBinaries := []string{
 		"bundled-tmux-test",
+		"system-tmux-test",
+		"system-tmux-test",
 		"system-tmux-test",
 		"system-tmux-test",
 		"system-tmux-test",
@@ -815,8 +838,10 @@ func TestIsAliveAdoptsLegacyDefaultSessionWhenNamedSocketDoesNotExist(t *testing
 			out: []byte("error connecting to /private/tmp/tmux-501/ao (No such file or directory)"),
 			err: &exec.ExitError{},
 		},
-		{}, // legacy default-socket discovery
-		{}, // has-session on the adopted legacy socket
+		{},                    // legacy default-socket discovery
+		{},                    // enforceDetachOnDestroy: set-option
+		{out: []byte("on\n")}, // enforceDetachOnDestroy: show-options verify
+		{},                    // has-session on the adopted legacy socket
 	}}
 	r.runner = fr
 
@@ -827,9 +852,11 @@ func TestIsAliveAdoptsLegacyDefaultSessionWhenNamedSocketDoesNotExist(t *testing
 	want := [][]string{
 		append([]string{"-L", "ao"}, hasSessionArgs("sess-1")...),
 		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, setDetachOnDestroyOnArgs("sess-1")...),
+		append([]string{"-L", "default"}, showDetachOnDestroyArgs("sess-1")...),
 		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
 	}
-	wantBinaries := []string{"bundled-tmux-test", "system-tmux-test", "system-tmux-test"}
+	wantBinaries := []string{"bundled-tmux-test", "system-tmux-test", "system-tmux-test", "system-tmux-test", "system-tmux-test"}
 	if len(fr.calls) != len(want) {
 		t.Fatalf("calls = %d, want %d: %+v", len(fr.calls), len(want), fr.calls)
 	}
@@ -954,22 +981,24 @@ func TestIsAliveReportsTransientLegacyConnectionAsProbeInconclusive(t *testing.T
 
 func TestDestroyIsIdempotentWhenSessionMissing(t *testing.T) {
 	r, fr := newTestRuntime(0)
-	// First output feeds list-panes (which also errors here → no sids); the
-	// missing-session marker must land on the kill-session call.
-	fr.outputs = [][]byte{nil, []byte("can't find session: sess-1")}
+	// First output feeds list-panes (which also errors here → no sids); fr.err
+	// applies to every call, so the missing-session marker must also cover the
+	// detach-on-destroy set-option, not just kill-session (both must be
+	// tolerated as idempotent, see the fail-closed change in Destroy).
+	fr.outputs = [][]byte{nil, []byte("can't find session: sess-1"), []byte("can't find session: sess-1")}
 	fr.err = &exec.ExitError{}
 
 	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
-	if len(fr.calls) != 2 || fr.calls[0].args[0] != "list-panes" || fr.calls[1].args[0] != "kill-session" {
-		t.Fatalf("calls = %#v, want list-panes then kill-session", fr.calls)
+	if len(fr.calls) != 3 || fr.calls[0].args[0] != "list-panes" || fr.calls[1].args[0] != "set-option" || fr.calls[2].args[0] != "kill-session" {
+		t.Fatalf("calls = %#v, want list-panes, set-option, then kill-session", fr.calls)
 	}
 }
 
 func TestDestroyIsIdempotentWhenNoServer(t *testing.T) {
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("no server running on /tmp/tmux-1000/default")}
+	fr.outputs = [][]byte{nil, []byte("no server running on /tmp/tmux-1000/default"), []byte("no server running on /tmp/tmux-1000/default")}
 	fr.err = &exec.ExitError{}
 
 	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
@@ -977,9 +1006,59 @@ func TestDestroyIsIdempotentWhenNoServer(t *testing.T) {
 	}
 }
 
+// Same teardown generosity for the tmux ≥ 3.4 absent-server wording.
+func TestDestroyIsIdempotentWhenSocketAbsent(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)"),
+		[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)"),
+	}
+	fr.err = &exec.ExitError{}
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy socket-absent: %v", err)
+	}
+}
+
+// The migration-deployment reboot case: every probe on both sockets hits the
+// absent-socket text, and kill-session still resolves to "nothing to kill"
+// instead of surfacing the probe failure.
+func TestDestroyIsIdempotentWhenBothMigrationSocketsAbsent(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	absent := fakeRunnerResult{
+		out: []byte("error connecting to /tmp/tmux-1000/missing (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent}} // repeated for every call
+	r.runner = fr
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	sawKill := false
+	for _, c := range fr.calls {
+		// Socket-qualified argv carries the "-L <name>" prefix, so scan for the
+		// subcommand instead of expecting it at args[0].
+		for _, a := range c.args {
+			if a == "kill-session" {
+				sawKill = true
+			}
+		}
+	}
+	if !sawKill {
+		t.Fatal("Destroy never reached kill-session")
+	}
+}
+
 func TestDestroyReportsUnexpectedFailures(t *testing.T) {
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("permission denied")}
+	fr.outputs = [][]byte{nil, nil, []byte("permission denied")}
 	fr.err = &exec.ExitError{}
 
 	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err == nil {
@@ -989,18 +1068,154 @@ func TestDestroyReportsUnexpectedFailures(t *testing.T) {
 
 func TestDestroyArgs(t *testing.T) {
 	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, nil}
+	fr.outputs = [][]byte{nil, nil, nil}
 
 	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
-	// list-panes discovers pane sessions; kill-session (exact-match target
-	// =<id>) tears the session down.
+	// list-panes discovers pane sessions; set-option re-asserts detach-on-destroy
+	// (see setDetachOnDestroyOnArgs) for handles Create never ran on; kill-session
+	// (exact-match target =<id>) tears the session down.
 	if got, want := fr.calls[0].args, listPanePIDsArgs("sess-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("list-panes args = %#v, want %#v", got, want)
 	}
-	if got, want := fr.calls[1].args, killSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
+	if got, want := fr.calls[1].args, setDetachOnDestroyOnArgs("sess-1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("set-option args = %#v, want %#v", got, want)
+	}
+	if got, want := fr.calls[2].args, killSessionArgs("sess-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("destroy args = %#v, want %#v", got, want)
+	}
+}
+
+// TestDestroyPreservesErrorAndRetryPathOnTransientKillSessionFailure pins
+// "treat only confirmed absence as idempotent" for kill-session's own result,
+// not just the pre-kill guard. A transient kill-session failure (connection
+// refused here) does not prove the session actually died — the kill may not
+// have run at all. Destroy must return that error rather than swallow it,
+// because a caller reading nil as success could mark the session terminated
+// and delete its worktree while the session, and its detach-on-destroy
+// guard's target, might still be alive. It must also leave the cached socket
+// mapping alone: this test runs Destroy on a legacy-adopted handle (so the
+// socket is cached after the first call, see socketForSession) and confirms
+// a second Destroy call goes straight back through the cached socket instead
+// of re-running discovery from scratch, proving the retry path survived.
+func TestDestroyPreservesErrorAndRetryPathOnTransientKillSessionFailure(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}}, // private probe: missing
+		{},                    // legacy discovery: found
+		{},                    // enforceDetachOnDestroy: set-option
+		{out: []byte("on\n")}, // enforceDetachOnDestroy: verify
+		{},                    // list-panes (first Destroy call)
+		{},                    // pre-kill set-option (first Destroy call)
+		{out: []byte("error connecting to /tmp/tmux-1000/default (Connection refused)"), err: &exec.ExitError{}}, // kill-session: transient
+		{}, // list-panes (second Destroy call)
+		{}, // pre-kill set-option (second Destroy call)
+		{}, // kill-session (second Destroy call): succeeds
+	}}
+	r.runner = fr
+	handle := ports.RuntimeHandle{ID: "sess-1"}
+
+	err := r.Destroy(context.Background(), handle)
+	if err == nil {
+		t.Fatal("Destroy: got nil, want error on a transient kill-session failure")
+	}
+	if !strings.Contains(err.Error(), "sess-1") {
+		t.Fatalf("Destroy err = %v, want it to name the session", err)
+	}
+
+	if err := r.Destroy(context.Background(), handle); err != nil {
+		t.Fatalf("retry Destroy: %v, want nil (socket mapping must have survived the first failure)", err)
+	}
+
+	if len(fr.calls) != 10 {
+		t.Fatalf("calls = %d, want 10 (4 discovery/enforcement calls once, plus 3 Destroy calls per attempt): %+v", len(fr.calls), fr.calls)
+	}
+	// The retry's three calls (list-panes, set-option, kill-session) must be
+	// exactly that — no interleaved has-session probe, which would mean the
+	// socket mapping was forgotten and adoption ran again from scratch.
+	// Legacy-socket calls carry a "-L default" prefix (see runOnSocket), so the
+	// subcommand is the third arg, not the first.
+	retrySubcommands := []string{fr.calls[7].args[2], fr.calls[8].args[2], fr.calls[9].args[2]}
+	want := []string{"list-panes", "set-option", "kill-session"}
+	if !reflect.DeepEqual(retrySubcommands, want) {
+		t.Fatalf("retry call subcommands = %#v, want %#v (socket mapping was not preserved)", retrySubcommands, want)
+	}
+}
+
+// TestDestroyFailsClosedWhenDetachOnDestroySettingFails pins the fail-closed
+// requirement: if the detach-on-destroy guard cannot be confirmed for an
+// unexpected reason (anything other than the session/server already being
+// gone), Destroy must not reach kill-session. A session that dies with the
+// guard still off can hand AO's terminal, and its input, to one of the user's
+// own tmux sessions (issue #4223) — proceeding on an unconfirmed guard would
+// reopen exactly that gap. kill-session is configured here to succeed if
+// called, so the assertion only passes if Destroy actually stopped short of
+// it.
+func TestDestroyFailsClosedWhenDetachOnDestroySettingFails(t *testing.T) {
+	r, _ := newTestRuntime(0)
+	fr := &fakeRunnerSelectiveErr{exitErrOn: "set-option", errOutput: []byte("permission denied")}
+	r.runner = fr
+
+	err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if err == nil {
+		t.Fatal("Destroy: got nil, want error when the detach-on-destroy set-option fails unexpectedly")
+	}
+	for _, c := range fr.calls {
+		if len(c.args) > 0 && c.args[0] == "kill-session" {
+			t.Fatal("Destroy reached kill-session despite an unconfirmed detach-on-destroy guard")
+		}
+	}
+}
+
+// TestDestroyFailsClosedWhenDetachOnDestroySettingConnectionRefused pins the
+// narrower half of the fail-closed guard: "connection refused" (and the other
+// transient wording in transientServerFailureOutput's protocol-mismatch /
+// unexpected-exit cases) means the probe was inconclusive, not that the
+// session or server is confirmed gone (see confirmedAbsentOutput). Treating
+// it as safe would let a merely flaky set-option wave kill-session through
+// with the guard unconfirmed, reopening the same terminal/input transfer
+// risk.
+func TestDestroyFailsClosedWhenDetachOnDestroySettingConnectionRefused(t *testing.T) {
+	r, _ := newTestRuntime(0)
+	fr := &fakeRunnerSelectiveErr{
+		exitErrOn: "set-option",
+		errOutput: []byte("error connecting to /tmp/tmux-1000/default (Connection refused)"),
+	}
+	r.runner = fr
+
+	err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if err == nil {
+		t.Fatal("Destroy: got nil, want error when the detach-on-destroy set-option hits a transient connection failure")
+	}
+	for _, c := range fr.calls {
+		if len(c.args) > 0 && c.args[0] == "kill-session" {
+			t.Fatal("Destroy reached kill-session despite an unconfirmed detach-on-destroy guard (connection refused is not confirmed absence)")
+		}
+	}
+}
+
+// TestDestroyIsIdempotentWhenDetachOnDestroySettingReportsSessionMissing
+// covers the other half of the fail-closed change: a set-option failure that
+// definitively means the session is already gone (the same idempotent case
+// kill-session itself tolerates) must not block teardown.
+func TestDestroyIsIdempotentWhenDetachOnDestroySettingReportsSessionMissing(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	// list-panes: no session, no panes. set-option: session missing. kill-session:
+	// session missing too (the ordinary double-kill case).
+	fr.outputs = [][]byte{nil, []byte("can't find session: sess-1"), []byte("can't find session: sess-1")}
+	fr.err = &exec.ExitError{}
+
+	if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "sess-1"}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if len(fr.calls) != 3 || fr.calls[2].args[0] != "kill-session" {
+		t.Fatalf("calls = %#v, want kill-session still attempted after a missing-session set-option", fr.calls)
 	}
 }
 
@@ -1241,8 +1456,8 @@ func TestIsSupervisedProcessAliveRejectsInvalidPanePID(t *testing.T) {
 func TestDestroyReapsDiscoveredPaneSessions(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	// list-panes lists two pane pids (one per line, plus noise the parser must
-	// drop); kill-session then succeeds.
-	fr.outputs = [][]byte{[]byte("4242\n4243\n\n1\n"), nil}
+	// drop); the best-effort set-option and kill-session then succeed.
+	fr.outputs = [][]byte{[]byte("4242\n4243\n\n1\n"), nil, nil}
 	reaper := &recordingReaper{}
 	r.reapSessions = reaper.reap
 
@@ -1311,17 +1526,60 @@ func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
 	}
 }
 
-func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
+// tmux ≥ 3.4 words an absent server "error connecting … (No such file or
+// directory)" instead of "no server running". The socket file does not exist,
+// so no server can be listening: this is the same conclusive server absence,
+// and the recovery paths (boot reconcile, restore, restart) key off
+// ErrRuntimeUnavailable.
+func TestIsAliveReportsAbsentSocketAsRuntimeUnavailable(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
 	fr.err = &exec.ExitError{}
 
 	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
-	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
-		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
 	}
 	if alive {
 		t.Fatal("alive = true, want false")
+	}
+}
+
+// After a reboot both the private and the legacy server are gone. The session
+// must come back as ErrRuntimeUnavailable, not ErrRuntimeProbeInconclusive:
+// an inconclusive probe dead-ends boot reconciliation ("a failed probe is not
+// proof of death: leave the session as-is") and leaves the session live-looking
+// but unrecoverable — kill 500s, restore refuses. Connection refused (socket
+// exists, no listener yet) stays inconclusive; see
+// TestIsAliveKeepsAmbiguousNamedSocketFailureInNamedNamespace.
+func TestIsAliveReportsUnavailableWhenBothSocketsAbsent(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	absent := fakeRunnerResult{
+		out: []byte("error connecting to /tmp/tmux-1000/missing (No such file or directory)"),
+		err: &exec.ExitError{},
+	}
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{absent, absent, absent}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false")
+	}
+	if len(fr.calls) != 3 {
+		t.Fatalf("calls = %d, want private probe, legacy probe, resolved private probe", len(fr.calls))
+	}
+	for i, wantBinary := range []string{"bundled-tmux-test", "system-tmux-test", "bundled-tmux-test"} {
+		if fr.calls[i].name != wantBinary {
+			t.Fatalf("call %d binary = %q, want %q", i, fr.calls[i].name, wantBinary)
+		}
 	}
 }
 
@@ -1338,6 +1596,74 @@ func TestIsAliveReportsOtherExitFailuresAsProbeErrors(t *testing.T) {
 	}
 	if alive {
 		t.Fatal("alive = true on probe failure")
+	}
+}
+
+func TestIsChildAliveServerAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		wantErr      bool
+	}{
+		{name: "absent server", output: "no server running on /tmp/tmux-1000/default"},
+		{name: "missing socket is conclusive absence", output: "error connecting to /tmp/tmux-1000/default (No such file or directory)"},
+		{name: "connection refused", output: "error connecting to /tmp/tmux-1000/default (Connection refused)", wantErr: true},
+		{name: "protocol failure", output: "protocol version mismatch", wantErr: true},
+		{name: "unexpected exit", output: "server exited unexpectedly", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(0)
+			fr.outputs = [][]byte{[]byte(tc.output)}
+			fr.err = &exec.ExitError{}
+			alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+			if alive || (err != nil) != tc.wantErr {
+				t.Fatalf("IsChildAlive = %v, %v; want false, error=%v", alive, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestIsChildAliveUsesPaneStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  string
+		alive   bool
+		wantErr bool
+	}{
+		{name: "running", status: "0\n", alive: true},
+		{name: "retained exit", status: "1\n"},
+		{name: "another pane running", status: "1\n0\n", alive: true},
+		{name: "all panes exited", status: "1\n1\n"},
+		{name: "missing status", wantErr: true},
+		{name: "invalid status", status: "unknown", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fr := newTestRuntime(0)
+			fr.outputs = [][]byte{nil, []byte(tc.status)}
+			alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+			if alive != tc.alive || (err != nil) != tc.wantErr {
+				t.Fatalf("child status %q = %v, %v; want alive %v, error %v", tc.status, alive, err, tc.alive, tc.wantErr)
+			}
+			if len(fr.calls) != 2 || !reflect.DeepEqual(fr.calls[1].args, []string{"list-panes", "-s", "-t", "=shell", "-F", "#{pane_dead}"}) {
+				t.Fatalf("child probe calls = %v", fr.calls)
+			}
+		})
+	}
+}
+
+func TestIsChildAlivePreservesProbeFailures(t *testing.T) {
+	for _, failedCall := range []int{1, 2} {
+		r, fr := newTestRuntime(0)
+		probeErr := errors.New("runtime probe failed")
+		fr.hook = func(_ context.Context, call int) error {
+			if call == failedCall {
+				return probeErr
+			}
+			return nil
+		}
+		alive, err := r.IsChildAlive(context.Background(), ports.RuntimeHandle{ID: "shell"})
+		if alive || !errors.Is(err, probeErr) {
+			t.Fatalf("probe failure at call %d = %v, %v; want original error", failedCall, alive, err)
+		}
 	}
 }
 
@@ -1620,7 +1946,7 @@ func TestAttachCommandReturnsExpectedArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AttachCommand: %v", err)
 	}
-	want := []string{"/usr/bin/tmux", "-u", "-T", "RGB", "attach-session", "-t", "sess-1"}
+	want := []string{"/usr/bin/tmux", "-u", "-T", "RGB", "attach-session", "-t", "=sess-1"}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}
@@ -1632,7 +1958,7 @@ func TestAttachCommandUsesAppOwnedSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AttachCommand: %v", err)
 	}
-	want := []string{"/opt/ao/resources/tmux/bin/tmux", "-L", "ao", "-u", "-T", "RGB", "attach-session", "-t", "sess-1"}
+	want := []string{"/opt/ao/resources/tmux/bin/tmux", "-L", "ao", "-u", "-T", "RGB", "attach-session", "-t", "=sess-1"}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}
@@ -1646,7 +1972,7 @@ func TestAttachCommandUsesSystemTmuxForLegacyDefaultSocket(t *testing.T) {
 		Timeout:      time.Second,
 	})
 	argv := r.attachCommandForSocket("sess-1", "")
-	want := []string{"/opt/homebrew/bin/tmux", "-L", "default", "-u", "-T", "RGB", "attach-session", "-t", "sess-1"}
+	want := []string{"/opt/homebrew/bin/tmux", "-L", "default", "-u", "-T", "RGB", "attach-session", "-t", "=sess-1"}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}

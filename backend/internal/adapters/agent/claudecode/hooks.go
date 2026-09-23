@@ -34,8 +34,11 @@ var claudeSessionStartMatcher = "startup|resume|clear|compact|fork"
 // approved tool finishes — the daemon-side precedence rule is what makes these
 // signals safe against parallel-subagent traffic (the naive mapping without it
 // was reverted in PR #5's review). PermissionRequest fires when a permission
-// dialog appears and carries the blocking tool_name; `ao hooks` writes nothing
-// to stdout, so installing it never injects a permission decision.
+// dialog appears and carries the blocking tool_name; for worker sessions
+// `ao hooks` writes nothing to stdout, so installing it never injects a
+// permission decision. Headless reviewer sessions (AO_REVIEW_SESSION_ID set)
+// are the one exception: nobody can answer the dialog there, so the hook
+// replies with an allow/deny decision (see cli.reviewerPermissionDecision, #4810).
 var claudeManagedHooks = []hooksjson.HookSpec{
 	{Event: "SessionStart", Matcher: &claudeSessionStartMatcher, Command: claudeHookCommandPrefix + "session-start"},
 	{Event: "UserPromptSubmit", Command: claudeHookCommandPrefix + "user-prompt-submit"},

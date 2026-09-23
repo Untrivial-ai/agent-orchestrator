@@ -1,3 +1,4 @@
+import { AppLink } from "./AppLink";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useParams } from "@tanstack/react-router";
@@ -14,19 +15,25 @@ import {
 	LoaderCircle,
 	MessageSquareDot,
 	RotateCcw,
+	X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useMarkAllNotificationsReadMutation, useNotificationsQuery } from "../hooks/useNotificationsQuery";
+import {
+	useClearAllNotificationsMutation,
+	useClearNotificationMutation,
+	useMarkAllNotificationsReadMutation,
+	useNotificationsQuery,
+} from "../hooks/useNotificationsQuery";
 import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import type { WorkspaceSummary } from "../types/workspace";
 import { aoBridge } from "../lib/bridge";
-import { openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { formatTimeCompact } from "../lib/format-time";
 import {
 	createNotificationsTransport,
 	getCachedNotifications,
 	getCachedUnreadCount,
+	isNotificationsCacheFromClear,
 	keepLatestNotificationsPage,
 	type NotificationDTO,
 	type NotificationsCache,
@@ -200,13 +207,17 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	// Opening marks unread as read, which would drop the highlight under the
 	// cursor. Keep the open-time unread ids highlighted until the panel closes.
 	const [highlightedIds, setHighlightedIds] = useState<Set<string>>(() => new Set());
+	const [clearingNotificationIds, setClearingNotificationIds] = useState<Set<string>>(() => new Set());
 	const [restoringSessionId, setRestoringSessionId] = useState<string | undefined>();
 	const unreadQuery = useNotificationsQuery("unread");
 	const allQuery = useNotificationsQuery("all", open);
 	const markAllRead = useMarkAllNotificationsReadMutation();
+	const clearAll = useClearAllNotificationsMutation();
+	const clearOne = useClearNotificationMutation();
 	const restoreSession = useRestoreSession();
 	const notifications = useMemo(() => getCachedNotifications(allQuery.data), [allQuery.data]);
 	const unreadCount = getCachedUnreadCount(unreadQuery.data);
+	const confirmedClearSnapshot = isNotificationsCacheFromClear(queryClient);
 	const { openSession } = useNotificationTargetNavigation();
 	const markAllMutate = markAllRead.mutateAsync;
 
@@ -299,6 +310,30 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 		}
 	}, [openSession, restoreSession, restoringSessionId, setPanelOpen, t]);
 
+	const handleClearAll = useCallback(() => {
+		setActionError(null);
+		void clearAll.mutateAsync().catch((error: unknown) => {
+			setActionError(error instanceof Error ? error.message : t("notify.couldNotClearAll"));
+		});
+	}, [clearAll, t]);
+
+	const handleClear = useCallback((notification: NotificationDTO) => {
+		setActionError(null);
+		setClearingNotificationIds((current) => new Set(current).add(notification.id));
+		void clearOne
+			.mutateAsync(notification)
+			.catch((error: unknown) => {
+				setActionError(error instanceof Error ? error.message : t("notify.couldNotClearOne"));
+			})
+			.finally(() => {
+				setClearingNotificationIds((current) => {
+					const next = new Set(current);
+					next.delete(notification.id);
+					return next;
+				});
+			});
+	}, [clearOne, t]);
+
 	const loadEarlierOnScroll = (event: React.UIEvent<HTMLDivElement>) => {
 		const list = event.currentTarget;
 		const remaining = list.scrollHeight - list.scrollTop - list.clientHeight;
@@ -335,8 +370,16 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 				className="w-notification-width max-w-[calc(100vw-1rem)] overflow-hidden rounded-panel border-border-strong p-0 shadow-xl"
 				sideOffset={8}
 			>
-				<div className="border-b border-border bg-[var(--color-overlay-subtle)] px-4 py-3.5">
+				<div className="flex items-center justify-between gap-2 border-b border-border bg-[var(--color-overlay-subtle)] px-4 py-3.5">
 					<p className="text-subtitle font-semibold tracking-tight text-foreground">{t("notify.title")}</p>
+					<button
+						className="shrink-0 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+						disabled={isEmpty || clearAll.isPending}
+						onClick={handleClearAll}
+						type="button"
+					>
+						{t("notify.clearAll")}
+					</button>
 				</div>
 				<NotificationWorkspaceState>
 					{({ retryWorkspace, sessionMeta, sessionsReady, terminatedIds, workspaceError }) => (
@@ -374,7 +417,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 						</button>
 					</div>
 				) : null}
-				{allQuery.isError && isEmpty ? (
+				{allQuery.isError && isEmpty && !confirmedClearSnapshot ? (
 					<NotificationEmpty icon={CircleAlert} message={t("notify.loadFailed")} />
 				) : allQuery.isLoading && isEmpty ? (
 					<NotificationEmpty icon={Inbox} message={t("notify.loading")} />
@@ -404,6 +447,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 									notification={notification}
 									onOpenSession={openSessionAndDismiss}
 									onRestore={restoreAndOpen}
+									onClear={handleClear}
+									clearing={clearingNotificationIds.has(notification.id)}
+									clearDisabled={clearingNotificationIds.has(notification.id) || clearAll.isPending}
 									restoring={restoringSessionId === sessionId}
 									restoreDisabled={restoringSessionId !== undefined}
 									projectName={meta?.projectName}
@@ -449,13 +495,11 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 
 function NotificationEmpty({ icon: Icon, message }: { icon: typeof Bell; message: string }) {
 	return (
-		<div className="grid min-h-40 place-items-center px-4 py-10 text-center">
-			<div>
-				<div className="mx-auto grid size-control-xl place-items-center rounded-full border border-border bg-surface text-passive">
-					<Icon className={cn("size-icon-base", Icon === LoaderCircle && "animate-spin")} aria-hidden="true" />
-				</div>
-				<p className="mt-2.5 text-control text-muted-foreground">{message}</p>
+		<div className="flex flex-col items-center gap-2.5 px-4 py-5 text-center">
+			<div className="grid size-control-xl place-items-center rounded-full border border-border bg-surface text-passive">
+				<Icon className={cn("size-icon-base", Icon === LoaderCircle && "animate-spin")} aria-hidden="true" />
 			</div>
+			<p className="text-control text-muted-foreground">{message}</p>
 		</div>
 	);
 }
@@ -474,7 +518,10 @@ const NotificationItem = memo(function NotificationItem({
 	offerRestore,
 	onOpenSession,
 	onRestore,
+	onClear,
 	projectName,
+	clearing,
+	clearDisabled,
 	restoring,
 	restoreDisabled,
 	sessionName,
@@ -486,7 +533,10 @@ const NotificationItem = memo(function NotificationItem({
 	offerRestore: boolean;
 	onOpenSession: (notification: NotificationDTO) => void;
 	onRestore: (notification: NotificationDTO) => void;
+	onClear: (notification: NotificationDTO) => void;
 	projectName?: string;
+	clearing: boolean;
+	clearDisabled: boolean;
 	restoring: boolean;
 	restoreDisabled: boolean;
 	sessionName?: string;
@@ -546,22 +596,20 @@ const NotificationItem = memo(function NotificationItem({
 							{titleLink ? (
 								<>
 									{titleLink.before}
-									<a
+									<AppLink
 										aria-label={t("inspector.openPR", { number: titleLink.number })}
 										className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 										href={titleLink.url}
 										onClick={(event) => {
-											event.preventDefault();
 											event.stopPropagation();
 											void captureRendererEvent("ao.renderer.notification_opened", { target: "pr" });
-											void openLinkInSystemBrowser(titleLink.url);
 										}}
 										rel="noopener noreferrer"
 										target="_blank"
 									>
 										{titleLink.label}
 										<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" strokeWidth={2} />
-									</a>
+									</AppLink>
 									{titleLink.after}
 								</>
 							) : (
@@ -584,7 +632,7 @@ const NotificationItem = memo(function NotificationItem({
 						</p>
 					) : null}
 				</div>
-				{/* Time + restore share the same icon-height band so they stay level. */}
+				{/* Time and row actions share the same icon-height band. */}
 				<div className="flex h-notification-icon shrink-0 items-center gap-1">
 					<time className="shrink-0 font-mono text-[9px] leading-none text-passive" dateTime={notification.createdAt}>
 						{formatTimeCompact(notification.createdAt)}
@@ -610,6 +658,28 @@ const NotificationItem = memo(function NotificationItem({
 							</TooltipContent>
 						</Tooltip>
 					) : null}
+					<Tooltip delayDuration={0}>
+						<TooltipTrigger asChild>
+							<button
+								aria-label={t("notify.clearOne", { title: copy.title })}
+								className="grid size-notification-icon place-items-center rounded-md text-passive transition-colors hover:bg-interactive-active hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+								disabled={clearDisabled}
+								onClick={(event) => {
+									event.stopPropagation();
+									onClear(notification);
+								}}
+								onKeyDown={(event) => event.stopPropagation()}
+								type="button"
+							>
+								{clearing ? (
+									<LoaderCircle className="size-icon-sm animate-spin" aria-hidden="true" />
+								) : (
+									<X className="size-icon-sm" aria-hidden="true" />
+								)}
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="top">{t("notify.clearOneShort")}</TooltipContent>
+					</Tooltip>
 				</div>
 			</div>
 		</div>

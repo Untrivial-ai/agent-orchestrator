@@ -159,7 +159,8 @@ vi.mock("../hooks/useDaemonStatus", () => ({
 	useDaemonStatus: () => shellMocks.state.daemonStatus,
 }));
 
-vi.mock("../lib/api-client", () => ({
+vi.mock("../lib/api-client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/api-client")>()),
 	apiClient: { POST: vi.fn(), DELETE: vi.fn() },
 	apiErrorCode: (error: { code?: string } | undefined) => error?.code,
 	apiErrorMessage: (error: { message?: string } | undefined) => error?.message ?? "request failed",
@@ -175,6 +176,10 @@ vi.mock("../lib/daemon-status", () => ({
 // settings/query path out of the provider-free harness.
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({ client: {}, ready: false, baseUrl: "" }),
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: undefined, isLoading: false, error: undefined, ready: false }),
 }));
 
 // The shell layout opens standalone terminals; this suite only covers the
@@ -402,6 +407,57 @@ describe("shell workspace startup", () => {
 		expect(screen.getByTestId("global-toast")).toHaveTextContent("Project already added");
 	});
 
+	it("uses the daemon project identity when an imported path is an alias", async () => {
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+		vi.mocked(apiClient.POST).mockResolvedValueOnce({ error: {
+			code: "PATH_ALREADY_REGISTERED", message: "Already registered", details: { existingProjectId: "proj-1" },
+		} });
+		await renderShell();
+		await expect(shellMocks.state.shellValue?.createProject?.({
+			path: "/alias/one", workerAgent: "codex", orchestratorAgent: "codex",
+		})).resolves.toBeUndefined();
+		expect(shellMocks.navigate).toHaveBeenCalledWith({
+			to: "/projects/$projectId", params: { projectId: "proj-1" },
+		});
+	});
+
+	it("refreshes a stale project list before opening the daemon's registered identity", async () => {
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+		vi.mocked(apiClient.POST).mockResolvedValueOnce({ error: {
+			code: "PATH_ALREADY_REGISTERED", message: "Already registered", details: { existingProjectId: "new-registration" },
+		} });
+		await renderShell();
+		shellMocks.queryClient.fetchQuery.mockResolvedValueOnce([{ ...workspaces[0], id: "new-registration", path: "/canonical" }]);
+		await expect(shellMocks.state.shellValue?.createProject?.({ path: "/alias", workerAgent: "codex", orchestratorAgent: "codex" })).resolves.toBeUndefined();
+		expect(shellMocks.queryClient.fetchQuery).toHaveBeenCalledWith(expect.objectContaining({ staleTime: 0, retry: false }));
+		expect(shellMocks.navigate).toHaveBeenCalledWith({ to: "/projects/$projectId", params: { projectId: "new-registration" } });
+	});
+
+	it.each([undefined, null, 123, [], "", "missing", "../outside"])(
+		"does not navigate to an unverified conflict identity: %j", async (existingProjectId) => {
+			shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+			vi.mocked(apiClient.POST).mockResolvedValueOnce({ error: {
+				code: "PATH_ALREADY_REGISTERED", message: "Already registered", requestId: "request-4403", details: { existingProjectId },
+			} });
+			await renderShell();
+			await expect(shellMocks.state.shellValue?.createProject?.({ path: "/unknown", workerAgent: "codex", orchestratorAgent: "codex" })).rejects.toMatchObject({
+				code: "PATH_ALREADY_REGISTERED", requestId: "request-4403", details: { existingProjectId },
+			});
+			expect(shellMocks.navigate).not.toHaveBeenCalled();
+		},
+	);
+
+	it("preserves the original conflict when refreshing registered projects fails", async () => {
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+		vi.mocked(apiClient.POST).mockResolvedValueOnce({ error: {
+			code: "PATH_ALREADY_REGISTERED", message: "Already registered", details: { existingProjectId: "not-cached" },
+		} });
+		await renderShell();
+		shellMocks.queryClient.fetchQuery.mockRejectedValueOnce(new Error("refresh failed"));
+		await expect(shellMocks.state.shellValue?.createProject?.({ path: "/unknown", workerAgent: "codex", orchestratorAgent: "codex" })).rejects.toMatchObject({ code: "PATH_ALREADY_REGISTERED", message: "Already registered" });
+		expect(shellMocks.navigate).not.toHaveBeenCalled();
+	});
+
 	it("forwards an explicit default branch when creating a local project", async () => {
 		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
 		vi.mocked(apiClient.POST).mockResolvedValueOnce({
@@ -448,6 +504,20 @@ describe("shell workspace startup", () => {
 		// inside the terminal panel so the inspector header can occupy this row too.
 		expect(sidebar).not.toHaveAttribute("data-topbar-offset", "session");
 		expect(document.querySelector(".center-panel-shell--session > .center-panel-surface")).toBeInTheDocument();
+	});
+
+	it("reveals the shell while session recovery remains pending", async () => {
+		const checking: WorkspaceSummary[] = workspaces.map((workspace) => ({ ...workspace,
+			sessions: workspace.sessions.map((session) => ({ ...session, statusReadiness: "checking" })),
+		}));
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777 };
+		shellMocks.state.workspaceQuery = { data: checking, dataUpdatedAt: 100, isError: false, isSuccess: true };
+		shellMocks.queryClient.getQueryState.mockReturnValue({ dataUpdatedAt: 100 });
+		shellMocks.queryClient.fetchQuery.mockResolvedValueOnce(checking);
+		await renderShell();
+		await waitFor(() => expect(shellMocks.state.shellValue?.workspaceStartupState).toBe("ready"));
+		expect(screen.queryByTestId("daemon-startup-loader")).not.toBeInTheDocument();
+		expect(screen.getByTestId("sidebar-provider")).toBeInTheDocument();
 	});
 
 	it("forces a confirmed fetch and preserves a collapsed sidebar preference", async () => {
@@ -621,6 +691,25 @@ describe("shell new-shell-terminal shortcut subscription", () => {
 		);
 	});
 
+	it("preserves the cloud identity for a session-scoped terminal", async () => {
+		const session = workspaces[0]!.sessions[0]!;
+		session.cloud = { orgId: "cloud-org" };
+		shellMocks.state.routeParams = { sessionId: "sess-1" };
+		await renderShell();
+
+		pressNewShellTerminal();
+
+		expect(shellMocks.openShellTerminal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				sessionId: "sess-1",
+				cloud: { orgId: "cloud-org" },
+			}),
+			expect.anything(),
+		);
+		delete session.cloud;
+	});
+
 	// Session terminals always belong to the session on screen — there is no
 	// longer an "owner" session whose worktree could be borrowed here (#3208).
 	it("scopes the terminal to the session on screen, not the route's project alone", async () => {
@@ -679,13 +768,13 @@ describe("shell new-session shortcut subscription", () => {
 		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "proj-1");
 	});
 
-	it("opens the create-project flow when no project is in scope", async () => {
+	it("opens the standalone new-task flow when no project is in scope", async () => {
 		await renderShell();
 
 		emitShortcut();
 
-		expect(screen.getByTestId("create-project-flow")).toBeInTheDocument();
-		expect(screen.queryByTestId("new-task-flow")).not.toBeInTheDocument();
+		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "__standalone__");
+		expect(screen.queryByTestId("create-project-flow")).not.toBeInTheDocument();
 	});
 });
 
@@ -720,6 +809,35 @@ describe("shell application shortcut subscriptions", () => {
 		expect(shellMocks.navigate).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "sess-3" },
+		});
+	});
+
+	it("moves between standalone sessions without constructing a project route", async () => {
+		const standalone = {
+			id: "__standalone__",
+			name: "Standalone agents",
+			kind: "standalone",
+			path: "",
+			sessions: [
+				{ id: "standalone-1", workspaceId: "", status: "working" },
+				{ id: "standalone-2", workspaceId: "", status: "idle" },
+			],
+		} as unknown as WorkspaceSummary;
+		shellMocks.state.routeParams = { sessionId: "standalone-1" };
+		shellMocks.state.workspaces = [...workspaces, standalone];
+		shellMocks.state.workspaceQuery = {
+			data: shellMocks.state.workspaces,
+			dataUpdatedAt: 0,
+			isError: false,
+			isSuccess: true,
+		};
+		await renderShell();
+
+		act(() => shellMocks.state.nextSessionListener?.());
+
+		expect(shellMocks.navigate).toHaveBeenCalledWith({
+			to: "/sessions/$sessionId",
+			params: { sessionId: "standalone-2" },
 		});
 	});
 

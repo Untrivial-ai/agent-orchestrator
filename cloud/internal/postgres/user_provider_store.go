@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -151,4 +152,31 @@ func (s *Store) UserAgentCredentialAvailable(
 		).Scan(&available)
 	})
 	return available, err
+}
+
+// UserProviderConnectionSecret retrieves the encrypted secret and nonce for a
+// user's provider connection.
+func (s *Store) UserProviderConnectionSecret(
+	ctx context.Context,
+	principal domain.Principal,
+	provider, label string,
+) ([]byte, []byte, error) {
+	var encryptedSecret, nonce []byte
+	err := s.withUser(ctx, principal.UserID, func(tx pgx.Tx) error {
+		err := tx.QueryRow(
+			ctx,
+			`SELECT encrypted_secret, secret_nonce
+			FROM ao_user_provider_connections
+			WHERE user_id = $1 AND provider = $2 AND label = $3`,
+			principal.UserID, provider, label,
+		).Scan(&encryptedSecret, &nonce)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		return nil
+	})
+	return encryptedSecret, nonce, err
 }

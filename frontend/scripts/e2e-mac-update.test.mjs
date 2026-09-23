@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSentinelCapable, launchEnv, parseArgs, removeRunFile, seedUpdateSettings } from "./e2e-mac-update.mjs";
@@ -168,5 +168,33 @@ describe("e2e-mac-update assertSentinelCapable", () => {
 
 	it("fails when the path is not a packaged bundle at all", () => {
 		expect(() => assertSentinelCapable(bundle("Unpackaged", null))).toThrow(/packaged build/);
+	});
+});
+
+// assertSentinelCapable is a substring scan of a BUILT app.asar, so it can only
+// fail after a release is cut — and it fails by refusing to run, which reads as
+// "old baseline" rather than "the app stopped emitting the signal". That is
+// exactly how the listener stayed missing from #3012 until #4254: five weeks in
+// which no build could satisfy the harness and the macOS update-hop job could
+// never run against any baseline.
+//
+// This asserts the coupling at its source instead, so deleting the listener
+// fails a unit test in the same commit rather than silently disabling a job.
+describe("update-hop coverage is wired to the app", () => {
+	it("keeps the sentinel listener the harness scans for in auto-updater.ts", () => {
+		// Resolved from the runner's cwd rather than import.meta.url: the test
+		// transform rewrites import.meta.url to a non-file scheme. Both
+		// candidates are listed so this works whether vitest is invoked from
+		// frontend/ (the npm script) or from the repo root.
+		const sourcePath = ["src/main/auto-updater.ts", "frontend/src/main/auto-updater.ts"]
+			.map((rel) => join(process.cwd(), rel))
+			.find((candidate) => existsSync(candidate));
+		expect(sourcePath, "could not locate auto-updater.ts from " + process.cwd()).toBeDefined();
+		const source = readFileSync(sourcePath, "utf8");
+		expect(source).toContain('E2E_UPDATE_SENTINEL_ENV = "AO_E2E_UPDATE_SENTINEL"');
+		// The native updater is the only signal that means "staged, will swap on
+		// quit"; electron-updater's own update-downloaded fires before Squirrel
+		// has fetched anything, so hanging the sentinel there stages nothing.
+		expect(source).toMatch(/nativeAutoUpdater\.on\("update-downloaded"/);
 	});
 });

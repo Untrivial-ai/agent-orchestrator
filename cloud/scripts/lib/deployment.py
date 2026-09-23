@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import posixpath
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -35,6 +37,16 @@ NODEOPS_SECRET_ENV = {
     "AO_CLOUD_NODEOPS_REGION": "region",
     "AO_CLOUD_NODEOPS_WORKER_TOKEN_TTL": "worker_token_ttl",
 }
+CODER_SECRET_ENV = {
+    "AO_CLOUD_CODER_URL": "url",
+    "AO_CLOUD_CODER_TOKEN": "token",
+    "AO_CLOUD_CODER_OWNER": "owner",
+    "AO_CLOUD_CODER_TEMPLATE_ID": "template_id",
+    "AO_CLOUD_CODER_AGENT_NAME": "agent_name",
+    "AO_CLOUD_CODER_PARAMETERS_JSON": "parameters_json",
+    "AO_CLOUD_CODER_DURABLE_ROOT": "durable_root",
+    "AO_CLOUD_CODER_WORKER_TOKEN_TTL": "worker_token_ttl",
+}
 WORKER_SECRET_ENV = {
     "AO_CLOUD_WORKER_SIGNING_KEY": "signing_key",
     "AO_CLOUD_MAX_ACTIVE_SANDBOXES_PER_ORG": "max_active_sandboxes_per_org",
@@ -42,12 +54,67 @@ WORKER_SECRET_ENV = {
     "AO_CLOUD_SANDBOX_STARTUP_TIMEOUT": "sandbox_startup_timeout",
     "AO_CLOUD_WORKER_HEARTBEAT_TIMEOUT": "worker_heartbeat_timeout",
 }
-HOSTED_SECRET_ENV = NODEOPS_SECRET_ENV | WORKER_SECRET_ENV
+PROVIDER_SECRET_ENV = {
+    "nodeops": NODEOPS_SECRET_ENV,
+    "coder": CODER_SECRET_ENV,
+}
+PROVIDER_ENV_NAMES = set(NODEOPS_SECRET_ENV) | set(CODER_SECRET_ENV) | {
+    "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS",
+}
 PROVIDER_AUTO_PAUSE_ENV = "AO_CLOUD_NODEOPS_AUTO_PAUSE_MINUTES"
+NODEOPS_PLAINTEXT_ENV = {"AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS"}
 WORKER_BINARY_PATH = "/ao-worker"
 WORKER_HELPER_BINARY_PATH = "/ao"
 _DIGEST_IMAGE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 _DURATION_PART = re.compile(r"(\d+)(ms|s|m|h)")
+
+
+def resolve_sandbox_providers(
+    sandbox_provider: str, sandbox_providers: list[str] | None
+) -> list[str]:
+    """The full set of sandbox providers a control-plane task serves.
+
+    A single-provider deployment passes sandbox_providers=None and gets exactly
+    [sandbox_provider], preserving the historical behavior. A multi-provider
+    deployment (for example nodeops,coder) passes every provider it offers so
+    all of their secrets are plumbed and preserved, and the primary
+    (sandbox_provider) must be one of them.
+    """
+    providers = list(sandbox_providers) if sandbox_providers else [sandbox_provider]
+    seen: list[str] = []
+    for provider in providers:
+        if provider not in PROVIDER_SECRET_ENV:
+            raise ValueError(f"unsupported hosted sandbox provider: {provider}")
+        if provider not in seen:
+            seen.append(provider)
+    if sandbox_provider not in seen:
+        raise ValueError(
+            "primary sandbox provider "
+            f"{sandbox_provider!r} must be one of the available providers "
+            f"{seen}"
+        )
+    return seen
+
+
+def _inactive_provider_env_names(providers: list[str]) -> set[str]:
+    """Provider env/secret names to prune: those of providers NOT in the set.
+
+    Names belonging to an available provider are kept so a multi-provider task
+    retains, for example, its coder secrets during a nodeops-primary deploy.
+    """
+    keep: set[str] = set()
+    for provider in providers:
+        keep |= set(PROVIDER_SECRET_ENV[provider])
+    if "nodeops" in providers:
+        keep |= NODEOPS_PLAINTEXT_ENV
+    return PROVIDER_ENV_NAMES - keep
+
+
+def _required_provider_secrets(providers: list[str]) -> set[str]:
+    required: set[str] = set()
+    for provider in providers:
+        required |= set(PROVIDER_SECRET_ENV[provider])
+    return required
 
 
 def secret_environment(secret_arn: str, fields: dict[str, str]) -> dict[str, str]:
@@ -60,24 +127,18 @@ def secret_environment(secret_arn: str, fields: dict[str, str]) -> dict[str, str
 
 
 def validate_hosted_settings(
-    nodeops: dict[str, Any], worker: dict[str, Any]
+    provider_settings: dict[str, Any],
+    worker: dict[str, Any],
+    *,
+    provider: str = "nodeops",
 ) -> None:
-    _require_secret_strings("NodeOps", nodeops, NODEOPS_SECRET_ENV.values())
+    if provider not in PROVIDER_SECRET_ENV:
+        raise ValueError(f"unsupported hosted sandbox provider: {provider}")
+    if provider == "nodeops":
+        _validate_nodeops_settings(provider_settings)
+    else:
+        _validate_coder_settings(provider_settings)
     _require_secret_strings("worker", worker, WORKER_SECRET_ENV.values())
-    if "auto_pause_minutes" in nodeops:
-        raise ValueError("NodeOps settings must not configure provider auto-pause")
-
-    base_url = urlparse(nodeops["base_url"])
-    if base_url.scheme != "https" or not base_url.netloc:
-        raise ValueError("NodeOps base_url must be an absolute HTTPS URL")
-    for key in ("api_key", "default_shape", "default_rootfs"):
-        if not nodeops[key].strip():
-            raise ValueError(f"NodeOps {key} must not be empty")
-    if nodeops["ingress"].strip().lower() not in ("", "enabled", "disabled"):
-        raise ValueError("NodeOps ingress must be enabled, disabled, or empty")
-    if _duration_seconds(nodeops["worker_token_ttl"]) <= 0:
-        raise ValueError("NodeOps worker_token_ttl must be positive")
-
     if len(worker["signing_key"].strip()) < 32:
         raise ValueError("worker signing_key must contain at least 32 characters")
     try:
@@ -94,6 +155,60 @@ def validate_hosted_settings(
         raise ValueError("worker sandbox_startup_timeout must be at least 30s")
     if _duration_seconds(worker["worker_heartbeat_timeout"]) < 30:
         raise ValueError("worker worker_heartbeat_timeout must be at least 30s")
+
+
+def _validate_nodeops_settings(nodeops: dict[str, Any]) -> None:
+    _require_secret_strings("NodeOps", nodeops, NODEOPS_SECRET_ENV.values())
+    if "auto_pause_minutes" in nodeops:
+        raise ValueError("NodeOps settings must not configure provider auto-pause")
+
+    base_url = urlparse(nodeops["base_url"])
+    if base_url.scheme != "https" or not base_url.netloc:
+        raise ValueError("NodeOps base_url must be an absolute HTTPS URL")
+    for key in ("api_key", "default_shape", "default_rootfs"):
+        if not nodeops[key].strip():
+            raise ValueError(f"NodeOps {key} must not be empty")
+    if nodeops["ingress"].strip().lower() not in ("", "enabled", "disabled"):
+        raise ValueError("NodeOps ingress must be enabled, disabled, or empty")
+    if _duration_seconds(nodeops["worker_token_ttl"]) <= 0:
+        raise ValueError("NodeOps worker_token_ttl must be positive")
+
+
+def _validate_coder_settings(coder: dict[str, Any]) -> None:
+    _require_secret_strings("Coder", coder, CODER_SECRET_ENV.values())
+    base_url = urlparse(coder["url"])
+    if (
+        base_url.scheme != "https"
+        or not base_url.netloc
+        or base_url.username is not None
+        or base_url.path not in ("", "/")
+        or base_url.query
+        or base_url.fragment
+    ):
+        raise ValueError("Coder url must be an absolute HTTPS origin")
+    for key in ("token", "owner", "template_id", "durable_root"):
+        if not coder[key].strip():
+            raise ValueError(f"Coder {key} must not be empty")
+    durable_root = coder["durable_root"]
+    if (
+        len(durable_root) > 1024
+        or not durable_root.startswith("/")
+        or durable_root == "/"
+        or posixpath.normpath(durable_root) != durable_root
+        or any(ord(character) < 32 or ord(character) == 127 for character in durable_root)
+    ):
+        raise ValueError("Coder durable_root must be a safe absolute non-root path")
+    try:
+        parameters = json.loads(coder["parameters_json"])
+    except json.JSONDecodeError as error:
+        raise ValueError("Coder parameters_json must be valid JSON") from error
+    if not isinstance(parameters, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in parameters.items()
+    ):
+        raise ValueError("Coder parameters_json must be an object of string values")
+    if _duration_seconds(coder["worker_token_ttl"]) <= 0:
+        raise ValueError("Coder worker_token_ttl must be positive")
 
 
 def _require_secret_strings(
@@ -138,6 +253,8 @@ def build_task_definition(
     region: str,
     runtime_database_user: str = "",
     worker_image: str = "",
+    sandbox_provider: str = "nodeops",
+    sandbox_providers: list[str] | None = None,
     environment_overrides: dict[str, str] | None = None,
     secret_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -164,6 +281,13 @@ def build_task_definition(
 
     environment_overrides = environment_overrides or {}
     secret_overrides = secret_overrides or {}
+    if sandbox_provider not in PROVIDER_SECRET_ENV:
+        raise ValueError(f"unsupported hosted sandbox provider: {sandbox_provider}")
+    providers = resolve_sandbox_providers(sandbox_provider, sandbox_providers)
+    # Prune only the env/secret names of providers this task does NOT serve, so a
+    # multi-provider task keeps every available provider's secrets (a
+    # nodeops-primary deploy must not drop coder credentials, and vice versa).
+    prune_names = _inactive_provider_env_names(providers)
     if (
         PROVIDER_AUTO_PAUSE_ENV in environment_overrides
         or PROVIDER_AUTO_PAUSE_ENV in secret_overrides
@@ -173,6 +297,7 @@ def build_task_definition(
         item["name"]: item["value"]
         for item in container.get("environment", [])
         if item["name"] != PROVIDER_AUTO_PAUSE_ENV
+        and item["name"] not in prune_names
     }
     values["AO_CLOUD_RELEASE"] = release
     if container_name == "control-plane":
@@ -183,7 +308,10 @@ def build_task_definition(
                 "AO_CLOUD_HTTP_ADDRESS": ":8080",
                 "AO_CLOUD_LOCAL_AUTH": "false",
                 "AO_CLOUD_MIGRATE_ON_STARTUP": "false",
-                "AO_CLOUD_SANDBOX_PROVIDER": "nodeops",
+                "AO_CLOUD_SANDBOX_PROVIDER": sandbox_provider,
+                "AO_CLOUD_SANDBOX_PROVIDERS": ",".join(providers),
+                "AO_CLOUD_TERMINAL_STREAM": "1",
+                "AO_CLOUD_TERMINAL_RELAY": "1",
                 "AO_CLOUD_WORKER_BINARY_PATH": WORKER_BINARY_PATH,
                 "AO_CLOUD_WORKER_HELPER_BINARY_PATH": WORKER_HELPER_BINARY_PATH,
             }
@@ -199,16 +327,20 @@ def build_task_definition(
         item["name"]: item["valueFrom"]
         for item in container.get("secrets", [])
         if item["name"] != PROVIDER_AUTO_PAUSE_ENV
+        and item["name"] not in prune_names
     }
     secrets.update(secret_overrides)
     if container_name == "control-plane":
-        missing = sorted(set(HOSTED_SECRET_ENV) - secrets.keys())
+        required_secrets = set(WORKER_SECRET_ENV) | _required_provider_secrets(
+            providers
+        )
+        missing = sorted(required_secrets - secrets.keys())
         if missing:
             raise ValueError(
                 "control-plane task is missing hosted secrets: "
                 + ", ".join(missing)
             )
-        plaintext = sorted(set(HOSTED_SECRET_ENV) & values.keys())
+        plaintext = sorted(required_secrets & values.keys())
         if plaintext:
             raise ValueError(
                 "hosted settings must not be plaintext environment values: "
@@ -268,13 +400,50 @@ def validate_task_artifacts(
         raise ValueError("task definition does not use packaged /ao helper")
     if PROVIDER_AUTO_PAUSE_ENV in environment:
         raise ValueError("task definition configures provider auto-pause")
+    if environment.get("AO_CLOUD_TERMINAL_STREAM") != "1":
+        raise ValueError("task definition does not enable terminal streaming")
+    if environment.get("AO_CLOUD_TERMINAL_RELAY") != "1":
+        raise ValueError("task definition does not enable terminal relay")
+    sandbox_provider = environment.get("AO_CLOUD_SANDBOX_PROVIDER", "")
+    if sandbox_provider not in PROVIDER_SECRET_ENV:
+        raise ValueError("task definition uses an unsupported sandbox provider")
+    # The task may serve more than one provider; require every available
+    # provider's secrets and reject only providers it does not serve.
+    providers_env = environment.get("AO_CLOUD_SANDBOX_PROVIDERS", "")
+    providers = [
+        provider.strip()
+        for provider in providers_env.split(",")
+        if provider.strip()
+    ] or [sandbox_provider]
+    for provider in providers:
+        if provider not in PROVIDER_SECRET_ENV:
+            raise ValueError("task definition uses an unsupported sandbox provider")
+    if sandbox_provider not in providers:
+        raise ValueError(
+            "task definition primary provider is not in its available providers"
+        )
     secrets = {
         item["name"]: item["valueFrom"] for item in container.get("secrets", [])
     }
-    missing = sorted(set(HOSTED_SECRET_ENV) - secrets.keys())
+    required_secrets = set(WORKER_SECRET_ENV) | _required_provider_secrets(providers)
+    missing = sorted(required_secrets - secrets.keys())
     if missing:
         raise ValueError(
             "task definition is missing hosted secrets: " + ", ".join(missing)
+        )
+    other_provider_secrets = set().union(
+        *(
+            set(fields)
+            for provider, fields in PROVIDER_SECRET_ENV.items()
+            if provider not in providers
+        ),
+        set(),
+    )
+    retained = sorted(other_provider_secrets & secrets.keys())
+    if retained:
+        raise ValueError(
+            "task definition retains inactive provider secrets: "
+            + ", ".join(retained)
         )
     if PROVIDER_AUTO_PAUSE_ENV in secrets:
         raise ValueError("task definition loads provider auto-pause from a secret")
@@ -319,8 +488,8 @@ def validate_service(
     expected_task_definition: str | None = None,
 ) -> None:
     desired = service.get("desiredCount", 0)
-    if desired < 2:
-        raise ValueError(f"desired task count is {desired}, expected at least 2")
+    if desired != 1:
+        raise ValueError(f"desired task count is {desired}, expected exactly 1")
     if service.get("pendingCount") != 0:
         raise ValueError("service has pending tasks")
     if service.get("runningCount") != desired:

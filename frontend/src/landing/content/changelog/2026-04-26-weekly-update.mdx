@@ -1,0 +1,64 @@
+---
+title: "Task-based session names and automatic cleanup after merge"
+description: "Sessions became easier to identify and completed pull-request work could close itself without cluttering the active view."
+date: "2026-04-26"
+rangeStart: "2026-04-20"
+rangeEnd: "2026-04-26"
+historical: true
+---
+
+
+## Session names that reflect the task <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1224" />
+
+Session names now come from the task context, making parallel work easier to distinguish in lists and cards.
+
+## Automatic cleanup after a pull request merges <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1311" />
+
+A session can terminate automatically after its pull request merges, keeping completed work out of the active queue.
+
+## Resolve merge conflicts from the session card <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1318" />
+
+Pull-request cards now provide a direct conflict comparison and an easy way to copy the working branch.
+
+## Improvements
+
+### Agents
+
+- **Add $schema support to agent-orchestrator.yaml** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1373" />
+- **Filter terminated sessions from ao session ls / ao status by default** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1340" />
+- **Cache sessionManager.list() to fix slow dashboard after prolonged running** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1113" />
+
+### Terminal
+
+- **Hide terminal sessions in `ao session ls` by default** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1319" />
+- **Enable tmux status bar in web terminal** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1470" />
+
+---
+
+## Bug fixes
+
+### Agents
+
+- **Resolve tmux sessions when storageKey is wrapped (&#123;hash&#125;-&#123;projectName&#125;)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1488" />
+- **Fail ao send when killed session delivery is not confirmed** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1236" />
+
+### Product
+
+- **Surface dashboard SSR load failures** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1316" />
+- **Resolve dashboard issue URLs from tracker** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1353" />
+- **Refresh worker branch metadata after branch changes** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1368" />
+- **Restore dead orchestrators on ao start** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1308" />
+
+### Terminal
+
+- **Restore terminal cell metrics after xterm v6 upgrade** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1352" />
+
+### CLI
+
+- **Avoid missing repo scripts on global installs** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1277" />
+
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

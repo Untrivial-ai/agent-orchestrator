@@ -10,12 +10,13 @@ function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
-const { getMock, putMock, postMock, navigateMock, closeSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
+const { getMock, putMock, postMock, navigateMock, closeSettingsMock, openGlobalSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
 	getMock: vi.fn(),
 	putMock: vi.fn(),
 	postMock: vi.fn(),
 	navigateMock: vi.fn(),
 	closeSettingsMock: vi.fn(),
+	openGlobalSettingsMock: vi.fn(),
 	setOrchestratorReplacementErrorMock: vi.fn(),
 	captureOrchestratorReplacementFailureMock: vi.fn(),
 	ensureAgentReadinessMock: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("../stores/ui-store", () => ({
 	useUiStore: (selector: (state: Record<string, unknown>) => unknown) =>
 		selector({
 			closeSettings: closeSettingsMock,
+			openGlobalSettings: openGlobalSettingsMock,
 			setOrchestratorReplacementError: setOrchestratorReplacementErrorMock,
 		}),
 }));
@@ -59,6 +61,10 @@ vi.mock("../lib/api-client", () => ({
 	apiErrorRequestId: (error: unknown) =>
 		typeof error === "object" && error !== null && "requestId" in error
 			? String((error as { requestId: unknown }).requestId)
+			: undefined,
+	apiErrorDetails: (error: unknown) =>
+		typeof error === "object" && error !== null && "details" in error
+			? (error as { details: Record<string, unknown> }).details
 			: undefined,
 	apiErrorMessage: (error: unknown) => {
 		if (error instanceof Error) return error.message;
@@ -86,19 +92,13 @@ function TestProjectSettings({
 	section?: ProjectSettingsSection;
 }) {
 	const [saveState, setSaveState] = useState<ProjectSettingsSaveState>({
-		isPending: false,
-		showSaving: false,
-		validationError: null,
-		mutationError: null,
-		saved: false,
-		replacementError: null,
+		phase: "idle",
 	});
 	return (
 		<>
 			<ProjectSettingsForm projectId={projectId} section={section} onSaveState={setSaveState} />
-			{saveState.validationError && <span>{saveState.validationError}</span>}
-			{saveState.mutationError && <span>{saveState.mutationError}</span>}
-			{saveState.saved && <span>{"Saved"}</span>}
+			{saveState.error && <span>{saveState.error}</span>}
+			{saveState.phase === "saved" && <span>{"Saved"}</span>}
 			{saveState.replacementError && <span>{`Orchestrator restart failed: ${saveState.replacementError}`}</span>}
 		</>
 	);
@@ -165,9 +165,9 @@ const agentCatalogResponse = {
 	error: undefined,
 };
 
-function mockProject(project: Record<string, unknown>) {
+function mockProject(project: Record<string, unknown>, agentResponse = agentCatalogResponse) {
 	getMock.mockImplementation(async (path: string) => {
-		if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+		if (path === "/api/v1/agents/readiness") return agentResponse;
 		if (path === "/api/v1/agents/{agent}/models") {
 			return {
 				data: {
@@ -198,6 +198,7 @@ beforeEach(() => {
 	postMock.mockReset();
 	navigateMock.mockReset();
 	closeSettingsMock.mockReset();
+	openGlobalSettingsMock.mockReset();
 	setOrchestratorReplacementErrorMock.mockReset();
 	captureOrchestratorReplacementFailureMock.mockReset();
 	ensureAgentReadinessMock.mockReset();
@@ -210,6 +211,50 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
+	it.each([
+		{ field: "Default worker agent", selectedAgent: "codex", selectedLabel: "Codex" },
+		{ field: "Default orchestrator agent", selectedAgent: "claude-code", selectedLabel: "Claude Code" },
+	])("shows the New Task agent list and opens management from $field", async ({ field, selectedAgent, selectedLabel }) => {
+		const project = {
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "",
+			defaultBranch: "main",
+			config: {
+				worker: { agent: "codex" },
+				orchestrator: { agent: "claude-code" },
+				reviewers: [{ harness: "codex" }],
+			},
+		};
+		mockProject(project, {
+			data: {
+				agents: [
+					agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" }),
+					agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+					agentReadiness("cursor", "Cursor"),
+					agentReadiness("opencode", "OpenCode"),
+				],
+			},
+			error: undefined,
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+		const trigger = await screen.findByRole("button", { name: field });
+		await userEvent.click(trigger);
+		expect((await screen.findAllByRole("menuitem")).map((option) => option.textContent)).toEqual([
+			"Cursor",
+			"OpenCode",
+			"Manage agents…",
+		]);
+		await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+		await waitFor(() => expect(openGlobalSettingsMock).toHaveBeenCalled());
+
+		expect(openGlobalSettingsMock).toHaveBeenCalledWith("harness", { focusAgentId: selectedAgent, preserveProject: true });
+		expect(trigger).toHaveTextContent(selectedLabel);
+	});
+
 	it("ensures agent readiness in the background without manual refresh buttons", async () => {
 		mockProject({
 			id: "proj-1",
@@ -235,6 +280,7 @@ describe("ProjectSettingsForm", () => {
 			),
 		);
 		expect(ensureAgentReadinessMock).toHaveBeenCalledWith();
+		expect(screen.getByRole("button", { name: "Worker approval" })).toHaveTextContent("Auto (Project default)");
 		expect(screen.queryByRole("button", { name: "Refresh agents" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Refresh worker model list" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Refresh orchestrator model list" })).not.toBeInTheDocument();
@@ -404,6 +450,36 @@ describe("ProjectSettingsForm", () => {
 		expect(repoLink).toHaveAttribute("href", "https://github.com/acme/project-one");
 	});
 
+	it("saves Codex effort from the combined default model picker", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents") return agentCatalogResponse;
+			if (path === "/api/v1/agents/{agent}/models") return { data: {
+				agent: "codex", selectionMode: "catalog", allowCustom: false,
+				models: [{ id: "gpt-test", label: "GPT Test", isDefault: true, efforts: ["low", "high"] }],
+			} };
+			return { data: { status: "ok", project: {
+				id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one",
+				repo: "", defaultBranch: "main", config: {
+					worker: { agent: "codex", agentConfig: { model: "gpt-test", effort: "high" } },
+					orchestrator: { agent: "claude-code" },
+				},
+			} } };
+		});
+		renderSettings("proj-1", undefined, "agents");
+		const picker = await screen.findByRole("button", { name: "Worker model" });
+		expect(picker).toHaveTextContent("GPT Test · High");
+		expect(screen.queryByRole("button", { name: "Worker Effort" })).not.toBeInTheDocument();
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+		expect(picker).toHaveTextContent("GPT Test · Low");
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig).toEqual(
+			expect.objectContaining({ model: "gpt-test", effort: "low" }),
+		);
+	});
+
 	it("loads agents fields and saves without dropping hidden workflow config", async () => {
 		mockProject({
 			id: "proj-1",
@@ -413,6 +489,7 @@ describe("ProjectSettingsForm", () => {
 			repo: "git@github.com:acme/project-one.git",
 			defaultBranch: "main",
 			config: {
+				canonicalRepoURL: "https://github.com/upstream/project-one",
 				defaultBranch: "develop",
 				sessionPrefix: "po",
 				env: { FOO: "bar" },
@@ -439,7 +516,7 @@ describe("ProjectSettingsForm", () => {
 
 		const workerAgent = screen.getByRole("button", { name: "Default worker agent" });
 		const orchestratorAgent = screen.getByRole("button", { name: "Default orchestrator agent" });
-		const permissionMode = screen.getByRole("button", { name: "Permission mode" });
+		const permissionMode = screen.getByRole("button", { name: "Worker approval" });
 		// The trigger shows the raw harness id until the agent catalog resolves,
 		// then its label ("codex" -> "Codex"). Both prove the configured value;
 		// exactly which one is on screen depends on unrelated query timing.
@@ -463,22 +540,21 @@ describe("ProjectSettingsForm", () => {
 				displayName: "Project One",
 				config: expect.objectContaining({
 					// Hidden workflow config is preserved
+					canonicalRepoURL: "https://github.com/upstream/project-one",
 					defaultBranch: "develop",
 					sessionPrefix: "po",
 					env: { FOO: "bar" },
-					reviewers: [{ harness: "claude-code" }],
+					reviewers: [{ harness: "claude-code", agentConfig: { model: "claude-opus-4-5", permissions: "auto" } }],
 					// Agents changes applied
 					worker: {
 						agent: "opencode",
-						agentConfig: { model: "openai/gpt-5.4" },
+						agentConfig: { model: "openai/gpt-5.4", permissions: "bypass-permissions" },
 					},
 					orchestrator: {
 						agent: "goose",
-						agentConfig: { model: "anthropic/claude-sonnet" },
+						agentConfig: { model: "anthropic/claude-sonnet", permissions: "auto" },
 					},
-					agentConfig: {
-						permissions: "bypass-permissions",
-					},
+					agentConfig: undefined,
 				}),
 			},
 		});
@@ -1035,7 +1111,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.getByRole("button", { name: "Default orchestrator agent" })).toBeDisabled();
 	});
 
-	it("offers both interactive Kiro and Pi reviewers", async () => {
+	it("offers ready Pi reviewers and hides Kiro until authorized", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
@@ -1053,7 +1129,7 @@ describe("ProjectSettingsForm", () => {
 		const reviewer = await screen.findByRole("button", { name: "Default reviewer agent" });
 		await userEvent.click(reviewer);
 		const labels = (await screen.findAllByRole("menuitem")).map((option) => option.textContent);
-		expect(labels).toContain("KiroAuth unknown");
+		expect(labels).not.toContain("KiroAuth unknown");
 		expect(labels).toContain("Pi");
 	});
 
@@ -1127,9 +1203,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(await screen.findByRole("button", { name: "Default reviewer agent" }));
 		const reviewerLabels = (await screen.findAllByRole("menuitem"))
 			.map((option) => option.textContent)
-			.filter(
-				(label) => label !== "Project default" && label !== "Custom model…" && label !== "Enter model ID…",
-			);
+			.filter((label) => label !== "Project default" && label !== "Enter model ID…");
 
 		expect(reviewerLabels).toEqual([
 			"Claude Code",
@@ -1137,10 +1211,9 @@ describe("ProjectSettingsForm", () => {
 			"Cursor",
 			"OpenCode",
 			"GitHub Copilot",
-			"Goose",
 			"Kilo Code",
 			"Pi",
-			"KiroAuth unknown",
+			"Manage agents…",
 		]);
 	});
 
@@ -1152,9 +1225,8 @@ describe("ProjectSettingsForm", () => {
 			path: "/repo/project-one",
 			repo: "",
 			defaultBranch: "main",
-			config: { worker: { agent: "qwen" }, orchestrator: { agent: "claude-code" } },
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } },
 		};
-		const qwen = agentReadiness("qwen", "Qwen Code");
 		const devin = agentReadiness("devin", "Devin");
 		const droid = agentReadiness("droid", "Droid");
 		const kimi = agentReadiness("kimi", "Kimi");
@@ -1165,16 +1237,14 @@ describe("ProjectSettingsForm", () => {
 			agentReadiness("auggie", "Auggie"),
 			agentReadiness("autohand", "Autohand"),
 			agentReadiness("cline", "Cline"),
-			agentReadiness("continue", "Continue"),
 			agentReadiness("crush", "Crush"),
 			agentReadiness("grok", "Grok"),
-			agentReadiness("vibe", "Vibe"),
 		];
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
 					data: {
-						agents: [...agentCatalogResponse.data.agents, qwen, devin, droid, kimi, aider, amp, ...experimental],
+						agents: [...agentCatalogResponse.data.agents, devin, droid, kimi, aider, amp, ...experimental],
 					},
 					error: undefined,
 				};
@@ -1188,11 +1258,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(reviewer);
 		const options = await screen.findAllByRole("menuitem");
 		const labels = options.map((option) => option.textContent);
-		expect(labels).toContain("Qwen Code");
 		expect(labels).toContain("Agy");
-		expect(labels).toContain("Continue");
-		expect(labels).toContain("Goose");
-		expect(labels).toContain("Vibe");
 		expect(labels).toContain("Devin");
 		expect(labels).toContain("Droid");
 		expect(labels).toContain("Kimi");
@@ -1238,7 +1304,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Experimental host-trusted reviewer");
 	});
 
-	it("shows unknown-auth agents as selectable with a warning in project settings", async () => {
+	it("hides unknown-auth agents and offers management in project settings", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
@@ -1266,7 +1332,7 @@ describe("ProjectSettingsForm", () => {
 			"Goose",
 			"Kilo Code",
 			"Pi",
-			"KiroAuth unknown",
+			"Manage agents…",
 		]);
 		expect(options[8]).not.toHaveAttribute("aria-disabled", "true");
 	});
@@ -1305,7 +1371,7 @@ describe("ProjectSettingsForm", () => {
 		);
 	});
 
-	it("disables the Copilot reviewer when its binary is missing", async () => {
+	it("hides the Copilot reviewer when its binary is missing", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
@@ -1341,11 +1407,11 @@ describe("ProjectSettingsForm", () => {
 		const copilot = (await screen.findAllByRole("menuitem")).find((option) =>
 			option.textContent?.includes("GitHub Copilot"),
 		);
-		expect(copilot).toHaveTextContent("Needs install");
-		expect(copilot).toHaveAttribute("aria-disabled", "true");
+		expect(copilot).toBeUndefined();
+		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
 
-	it("shows the standard unknown-auth warning for an installed Copilot reviewer", async () => {
+	it("hides an installed Copilot reviewer until authorization is known", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
 				return {
@@ -1381,8 +1447,8 @@ describe("ProjectSettingsForm", () => {
 		const copilot = (await screen.findAllByRole("menuitem")).find((option) =>
 			option.textContent?.includes("GitHub Copilot"),
 		);
-		expect(copilot).toHaveTextContent("Auth unknown");
-		expect(copilot).not.toHaveAttribute("aria-disabled", "true");
+		expect(copilot).toBeUndefined();
+		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
 
 	it("offers Kilo Code as a configured reviewer", async () => {
@@ -1487,11 +1553,9 @@ describe("ProjectSettingsForm", () => {
 					symlinks: [".env"],
 					postCreate: ["npm install"],
 					agentRules: "keep work small",
-					worker: { agent: "codex", agentConfig: { model: "gpt-5-codex" } },
-					orchestrator: { agent: "claude-code", agentConfig: { model: "gpt-5-codex" } },
-					agentConfig: {
-						permissions: "auto",
-					},
+					worker: { agent: "codex", agentConfig: { model: "gpt-5-codex", permissions: "auto" } },
+					orchestrator: { agent: "claude-code", agentConfig: { model: "gpt-5-codex", permissions: "auto" } },
+					agentConfig: undefined,
 				},
 			},
 		});
@@ -1537,6 +1601,48 @@ describe("ProjectSettingsForm", () => {
 		expect(body.config.trackerIntake).toEqual({
 			enabled: true,
 			assignee: "octocat",
+		});
+	});
+
+	it("preserves explicit provider and unmodeled tracker intake fields on save", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				status: "ok",
+				project: {
+					id: "proj-1",
+					name: "Project One",
+					kind: "single_repo",
+					path: "/repo/project-one",
+					repo: "git@gitlab.example.com:acme/project-one.git",
+					defaultBranch: "main",
+					config: {
+						worker: { agent: "codex" },
+						orchestrator: { agent: "claude-code" },
+						trackerIntake: {
+							enabled: true,
+							provider: "gitlab",
+							repo: "acme/project-one",
+							assignee: "octocat",
+							labels: ["agent-ready"],
+						},
+					},
+				},
+			},
+			error: undefined,
+		});
+
+		renderSettings("proj-1", undefined, "general");
+		await screen.findByRole("button", { name: "Edit Project name" });
+		submitSettings();
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		const body = putMock.mock.calls[0]?.[1]?.body;
+		expect(body.config.trackerIntake).toEqual({
+			enabled: true,
+			provider: "gitlab",
+			repo: "acme/project-one",
+			assignee: "octocat",
+			labels: ["agent-ready"],
 		});
 	});
 
@@ -1614,7 +1720,7 @@ describe("ProjectSettingsForm", () => {
 		], "agents");
 
 		const orchestratorAgent = await screen.findByRole("button", { name: "Default orchestrator agent" });
-		expect(orchestratorAgent).toHaveTextContent("goose");
+		expect(orchestratorAgent).toHaveTextContent("Goose");
 
 		submitSettings();
 

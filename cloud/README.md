@@ -198,10 +198,12 @@ If a production migration fails, promotion stops and the existing production
 API keeps running. Application rollback does not reverse an applied migration,
 so migrations must remain compatible with the previous API release.
 
-Only migration code and the tested application artifacts are promoted. NodeOps
-and worker settings come from the target environment's `nodeops` and `worker`
-Secrets Manager JSON entries; deployment validates every required field before
-registering ECS tasks. No provider auto-pause value is set by deployment.
+Only migration code and the tested application artifacts are promoted. Sandbox
+provider and worker settings come from the target environment's `nodeops` or
+`coder` document and its `worker` Secrets Manager JSON entry; deployment
+validates every required field before registering ECS tasks. Production uses
+the provider verified in staging. No provider auto-pause value is set by
+deployment.
 Staging database rows are never copied to production: users, organizations,
 projects, sessions, events, credentials, and all other data remain isolated in
 their respective databases. The AWS instances are named
@@ -241,17 +243,30 @@ All resource routes use `/api/cloud/v1`. Project and session creation require an
 | `POST` | `/orgs/{orgId}/projects/scratch` | Idempotently create a private repository, project, and orchestrator session |
 | `GET/POST` | `/orgs/{orgId}/sessions` | List or create sessions |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}` | Read a session |
+| `POST` | `/orgs/{orgId}/sessions/{sessionId}/resume` | Record explicit per-session resume intent |
 | `POST` | `/orgs/{orgId}/sessions/{sessionId}/messages` | Durably queue a message |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/chat-events` | Replay committed client events |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/events` | Replay and stream client events over SSE |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/files` | List worker-workspace entries |
 | `GET/PUT` | `/orgs/{orgId}/sessions/{sessionId}/workspace/file` | Read or write a bounded UTF-8 workspace file |
 | `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/diff` | Read a bounded worker-workspace git diff |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review` | List all tracked files, categorized working changes, and commits since the immutable session baseline |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/tree` | Browse a lazy directory level, including change status |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/search` | Search workspace paths and bounded text content |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/file` | Read a scoped working-tree or committed file with its fingerprint and diff |
+| `POST` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/diffs` | Batch-load scoped committed, staged, unstaged, untracked, or combined patches |
+| `GET` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/revision` | Read the complete before or after revision for an expandable diff |
+| `PUT` | `/orgs/{orgId}/sessions/{sessionId}/workspace/review/file` | Write an editable file when its expected fingerprint still matches |
 | `POST` | `/orgs/{orgId}/sessions/{sessionId}/terminal-ticket` | Create a short-lived workspace-terminal ticket |
 | `GET` | `/terminal` | Upgrade a single-use ticket to the durable terminal WebSocket |
 
 WorkOS access tokens and local development tokens both use
 `Authorization: Bearer <token>`.
+
+The workspace review routes are provider-neutral. Docker, NodeOps, and Coder
+workers all execute the same Git/file review protocol through the durable
+worker-request transport; the control-plane API and desktop UI do not branch
+on the sandbox provider.
 
 GitHub App setup uses random, hashed, expiring state. The setup callback rotates
 that state into a separate OAuth PKCE challenge; the encrypted verifier is

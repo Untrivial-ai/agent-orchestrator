@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/commanddetail"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -46,8 +48,11 @@ type conversation struct {
 	proc *process
 	log  *slog.Logger
 
-	threadID string
-	events   chan ports.ChatEvent
+	threadID        string
+	historyParentID string
+	providerScopeID string
+	readOnly        bool
+	events          chan ports.ChatEvent
 	// Effective defaults returned when Codex opened or resumed this thread.
 	threadModel, threadEffort string
 
@@ -78,8 +83,11 @@ type conversation struct {
 	// once.
 	compactedTurn string
 
-	pumpDone  chan struct{}
-	closeOnce sync.Once
+	pumpDone     chan struct{}
+	eventsMu     sync.RWMutex
+	eventsClosed bool
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
@@ -102,13 +110,14 @@ var _ ports.ChatCompactor = (*conversation)(nil)
 // leaves a session with a dead tool server no way back.
 var _ ports.ChatMCPReloader = (*conversation)(nil)
 
-func newConversation(proc *process, log *slog.Logger) *conversation {
+func newConversation(proc *process, log *slog.Logger, providerScopeID string) *conversation {
 	c := &conversation{
-		proc:     proc,
-		log:      log,
-		events:   make(chan ports.ChatEvent, eventBuffer),
-		pending:  make(map[string]*parkedRequest),
-		pumpDone: make(chan struct{}),
+		proc:            proc,
+		log:             log,
+		events:          make(chan ports.ChatEvent, eventBuffer),
+		pending:         make(map[string]*parkedRequest),
+		pumpDone:        make(chan struct{}),
+		providerScopeID: providerScopeID,
 	}
 	c.conn = newConnAt(proc.stdin, proc.stdout, log, c.handleServerRequest, proc.nextRequestID)
 	return c
@@ -145,18 +154,66 @@ func (c *conversation) Events() <-chan ports.ChatEvent { return c.events }
 // connection ends, then reports why and closes the stream.
 func (c *conversation) pump() {
 	defer close(c.pumpDone)
-	defer close(c.events)
+	defer func() {
+		c.eventsMu.Lock()
+		defer c.eventsMu.Unlock()
+		c.eventsClosed = true
+		close(c.events)
+	}()
+	retries := make(map[string]ports.ChatEvent)
 
 	for n := range c.conn.notifs() {
 		// Before normalizing, because a token-usage report is the only place the
 		// context position is stated and a compaction event that arrives in the same
 		// batch has to be able to read it.
 		c.trackContext(n)
+		// Some normalized output events omit their thread ID. Read the native
+		// envelope so child-thread recovery cannot settle the root's retry.
+		var scope struct {
+			ThreadID string `json:"threadId"`
+		}
+		_ = json.Unmarshal(n.Params, &scope)
 
 		// The clock is passed in rather than read inside: a rate-limit reset arrives
 		// as an absolute instant and has to become a remaining duration, and a
 		// normalizer that reads the clock itself cannot be tested deterministically.
 		for _, ev := range normalizeNotification(n, time.Now()) {
+			threadID := ev.ProviderConversationID
+			if threadID == "" {
+				threadID = scope.ThreadID
+			}
+			if threadID == "" {
+				threadID = c.threadID
+			}
+			key := threadID + ":" + ev.ProviderTurnID
+			if ev.Kind == ports.ChatEventError {
+				// Turn settlement will settle the running retry along with the failure.
+				delete(retries, key)
+			}
+			isRetry := ev.Kind == ports.ChatEventActivityStarted && strings.HasPrefix(ev.ProviderItemID, "codex-retry:")
+			if isRetry {
+				if active, ok := retries[key]; ok {
+					ev.ProviderItemID = active.ProviderItemID
+				} else {
+					// Live Codex errors have no item/replay ID. Keep attempts on one
+					// row, but never overwrite a recovered episode later in the turn.
+					ev.ProviderItemID += ":" + uuid.NewString()
+				}
+				retries[key] = ev
+			}
+			completed := ev.Kind == ports.ChatEventTurnCompleted
+			recovered := !isRetry && (ev.Kind == ports.ChatEventMessageDelta || ev.Kind == ports.ChatEventMessageCompleted ||
+				ev.Kind == ports.ChatEventActivityStarted || ev.Kind == ports.ChatEventReasoningDelta || ev.Kind == ports.ChatEventPlanUpdated)
+			if completed || recovered {
+				if retry, ok := retries[key]; ok {
+					retry.Kind = ports.ChatEventActivityCompleted
+					retry.ActivityStatus = domain.ActivityStatusCompleted
+					if !completed || (ev.TurnState != domain.TurnStateFailed && ev.Err == nil) {
+						c.emit(retry)
+					}
+					delete(retries, key)
+				}
+			}
 			rootConversation := ev.ProviderConversationID == "" || ev.ProviderConversationID == c.threadID
 			if ev.Kind == ports.ChatEventTurnStarted && ev.ProviderTurnID != "" && rootConversation {
 				c.mu.Lock()
@@ -188,7 +245,6 @@ func (c *conversation) pump() {
 			c.emit(ev)
 		}
 	}
-
 	// The connection ended. Say so explicitly rather than letting the stream go
 	// quiet: a silent channel close is indistinguishable from an idle agent.
 	state := ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped}
@@ -202,6 +258,12 @@ func (c *conversation) pump() {
 // emit delivers an event, preferring to drop a delta over blocking the reader. A
 // lifecycle event is never dropped silently.
 func (c *conversation) emit(ev ports.ChatEvent) {
+	c.eventsMu.RLock()
+	defer c.eventsMu.RUnlock()
+	if c.eventsClosed {
+		return
+	}
+	ev = c.scopedEvent(ev)
 	select {
 	case c.events <- ev:
 		return
@@ -249,7 +311,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		// must not produce a second turn.
 		params["clientUserMessageId"] = msg.ClientMessageID
 	}
-	applyTurnSettings(params, msg.Settings)
+	applyTurnSettings(params, msg.Settings, c.readOnly)
 
 	var resp struct {
 		Turn struct {
@@ -264,7 +326,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	c.activeTurn = resp.Turn.ID
 	c.mu.Unlock()
 
-	return ports.ChatTurnRef{ProviderTurnID: resp.Turn.ID}, nil
+	return ports.ChatTurnRef{ProviderTurnID: c.scopedID(resp.Turn.ID)}, nil
 }
 
 // applyTurnSettings folds the caller's per-turn choices into a turn/start payload.
@@ -272,7 +334,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 // Only fields the caller actually chose are sent. An omitted field lets the
 // provider fall back to what the thread was started with, which is why a caller
 // that chooses nothing behaves exactly as it did before per-turn settings existed.
-func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
+func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings, readOnly bool) {
 	if settings.Model != "" {
 		params["model"] = settings.Model
 	}
@@ -290,6 +352,11 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings) {
 		params["approvalPolicy"] = policy
 		params["approvalsReviewer"] = approvalReviewer(settings.Approval)
 		params["sandboxPolicy"] = turnSandboxPolicy(sandbox)
+	}
+	if readOnly {
+		params["approvalPolicy"] = "never"
+		params["approvalsReviewer"] = "user"
+		params["sandboxPolicy"] = turnSandboxPolicy("read-only")
 	}
 }
 
@@ -318,9 +385,14 @@ func (c *conversation) ListModels(ctx context.Context) ([]ports.ChatModel, error
 	}
 	// Thread settings include the user's config; model/list only has generic defaults.
 	for i := range models {
+		// An omitted turn model inherits thread/start (including config.toml),
+		// not model/list's generic catalog default. If the configured model is
+		// absent, leave no catalog default rather than advertise another model.
+		if c.threadModel != "" {
+			models[i].Default = models[i].ID == c.threadModel
+		}
 		if models[i].ID == c.threadModel && c.threadEffort != "" {
 			models[i].DefaultEffort = c.threadEffort
-			break
 		}
 	}
 	return models, nil
@@ -378,12 +450,8 @@ func listModels(ctx context.Context, connection *conn) ([]ports.ChatModel, error
 				display = id
 			}
 			models = append(models, ports.ChatModel{
-				ID:            id,
-				DisplayName:   display,
-				Description:   entry.Description,
-				Default:       entry.IsDefault,
-				Efforts:       efforts,
-				DefaultEffort: entry.DefaultEff,
+				ID: id, DisplayName: display, Description: entry.Description,
+				Default: entry.IsDefault, Efforts: efforts, DefaultEffort: entry.DefaultEff,
 			})
 		}
 		if resp.NextCursor == nil || *resp.NextCursor == "" {
@@ -521,6 +589,7 @@ func formatTokens(tokens int64) string {
 
 // Interrupt cancels a turn. An empty turn id targets the active one.
 func (c *conversation) Interrupt(ctx context.Context, providerTurnID string) error {
+	providerTurnID = c.nativeID(providerTurnID)
 	if providerTurnID == "" {
 		c.mu.Lock()
 		providerTurnID = c.activeTurn
@@ -568,6 +637,7 @@ func isNoActiveTurn(err error) bool {
 // consuming the request on a bad one would leave the user's real answer with
 // nothing left to answer while the provider waits out its timeout.
 func (c *conversation) ResolveRequest(ctx context.Context, requestID string, decision ports.ChatDecision) error {
+	requestID = c.nativeID(requestID)
 	c.mu.Lock()
 	parked, ok := c.pending[requestID]
 	closed := c.closed
@@ -824,10 +894,10 @@ func (c *conversation) Close() error {
 			c.failPendingApprovals()
 		}
 		if c.proc.stop != nil {
-			_ = c.proc.stop()
+			c.closeErr = c.proc.stop()
 		}
 	})
-	return nil
+	return c.closeErr
 }
 
 // Terminate destroys the provider host. Close only detaches and is used by
@@ -836,12 +906,12 @@ func (c *conversation) Terminate() error {
 	c.closeOnce.Do(func() {
 		c.failPendingApprovals()
 		if c.proc.terminate != nil {
-			_ = c.proc.terminate()
+			c.closeErr = c.proc.terminate()
 		} else if c.proc.stop != nil {
-			_ = c.proc.stop()
+			c.closeErr = c.proc.stop()
 		}
 	})
-	return nil
+	return c.closeErr
 }
 
 // approvalPayload is the subset of an approval request AO renders.

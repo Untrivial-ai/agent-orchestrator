@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
@@ -62,16 +63,17 @@ type PullRequest struct {
 	// renames or transfers.
 	ProviderID string
 
-	SourceBranch   string
-	TargetBranch   string
-	HeadSHA        string
-	Title          string
-	Additions      int
-	Deletions      int
-	ChangedFiles   int
-	Author         string
-	BaseSHA        string
-	MergeCommitSHA string
+	SourceBranch    string
+	TargetBranch    string
+	HeadSHA         string
+	Title           string
+	Additions       int
+	Deletions       int
+	ChangedFiles    int
+	Author          string
+	AuthorAvatarURL string
+	BaseSHA         string
+	MergeCommitSHA  string
 
 	ProviderState            string
 	ProviderMergeable        string
@@ -90,7 +92,10 @@ type PullRequest struct {
 	ObservedAt       time.Time
 	CIObservedAt     time.Time
 	ReviewObservedAt time.Time
-	AutoInjectCI     bool
+	// ReviewPartial records that the latest review-thread observation hit the
+	// provider's thread-window cap, so stored thread rows are a partial view.
+	ReviewPartial bool
+	AutoInjectCI  bool
 }
 
 // PullRequestCheck is one normalized CI check run for a pull request.
@@ -119,6 +124,17 @@ type PullRequestComment struct {
 	IsBot            bool
 	CreatedAt        time.Time
 	AutoInjectReview bool
+}
+
+// IsActionableReviewComment reports whether a review comment should block
+// ready-to-merge state and be surfaced to the agent. Human comments are always
+// actionable; bot comments need a concrete file and line anchor so status
+// chatter does not become a merge blocker.
+func IsActionableReviewComment(resolved, isBot bool, file string, line int) bool {
+	if resolved {
+		return false
+	}
+	return !isBot || (strings.TrimSpace(file) != "" && line > 0)
 }
 
 // PullRequestReviewThread is one normalized review thread for a pull request.
@@ -243,7 +259,7 @@ func (r MergeReadiness) ReadyToMerge() bool {
 
 // MergeReadinessOf projects stored PR facts into the shared readiness rule.
 // hasUnresolvedComments comes from the pr_comment rows AO keeps for the PR,
-// which only ever hold unresolved human threads.
+// filtered to actionable unresolved comments.
 func MergeReadinessOf(pr PullRequest, hasUnresolvedComments bool) MergeReadiness {
 	return MergeReadiness{
 		Draft:              pr.Draft,

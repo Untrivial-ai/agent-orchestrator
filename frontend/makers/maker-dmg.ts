@@ -132,6 +132,14 @@ function resolveSigningIdentity(env: NodeJS.ProcessEnv): string | undefined {
 	return undefined;
 }
 
+// isSigningConfigured mirrors the same "was this build actually signed"
+// question sealDmg answers for the dmg container, exposed for other artifacts
+// (e.g. the zip maker's output) that need the identical gate: an unsigned
+// local/testing build has nothing a Gatekeeper-facing verifier can check.
+export function isSigningConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+	return resolveSigningIdentity(env) !== undefined;
+}
+
 // resolveNotaryArgs mirrors packagerConfig.osxNotarize's two credential shapes:
 // an AO_NOTARY_PROFILE notarytool keychain profile locally, or the App Store
 // Connect API key trio in CI.
@@ -224,23 +232,42 @@ export async function sealDmg(dmgPath: string, env: NodeJS.ProcessEnv = process.
 const VERIFY_SCRIPT = "scripts/verify-mac-artifact.sh";
 
 /**
- * verifyDmg runs the canonical post-seal gate on a sealed .dmg.
+ * verifyMacArtifact runs the canonical post-seal gate on any signed macOS
+ * artifact (.dmg, .zip, or .app) — verify-mac-artifact.sh dispatches on the
+ * extension itself (rule 4/5 in that script's header).
  *
- * Sealing and proving the seal are different things: sealDmg only proves the
- * three commands exited 0 on this machine, not that the published bytes are
- * something Gatekeeper accepts with a stapled ticket. verify-mac-artifact.sh is
- * the one canonical check (#3288 workstreams 1 and 2) and exists specifically so
- * nobody hand-rolls a variant of it and draws a wrong conclusion.
+ * Producing and proving an artifact are different things: sealing (or the
+ * packager's own osxSign/osxNotarize) only proves the relevant commands exited
+ * 0 on this machine, not that the published bytes are something Gatekeeper
+ * accepts with a stapled ticket, or that a bundled nested executable (the
+ * Intel ACP Node, #3879) actually runs. verify-mac-artifact.sh is the
+ * canonical local check (#3288 workstreams 1 and 2) and exists specifically so
+ * nobody hand-rolls a variant of it and draws a wrong conclusion; the
+ * pre-publication gate for canonical releases is the release conductor's own
+ * verifier (frontend/docs/desktop-release.md).
  *
- * Only meaningful on a sealed dmg, so callers gate on sealDmg's return value.
+ * Only meaningful on a signed artifact, so callers gate accordingly (sealDmg's
+ * return value for the dmg container; isSigningConfigured for the zip, whose
+ * inner .app was already signed/notarized/stapled by packagerConfig before any
+ * maker ran).
  */
-export async function verifyDmg(dmgPath: string, scriptPath: string = path.resolve(VERIFY_SCRIPT)): Promise<void> {
+export async function verifyMacArtifact(
+	artifactPath: string,
+	scriptPath: string = path.resolve(VERIFY_SCRIPT),
+): Promise<void> {
 	if (!existsSync(scriptPath)) {
-		throw new Error(`[dmg] cannot verify ${dmgPath}: ${scriptPath} not found (run electron-forge from frontend/)`);
+		throw new Error(
+			`[dmg] cannot verify ${artifactPath}: ${scriptPath} not found (run electron-forge from frontend/)`,
+		);
 	}
-	console.log(`[dmg] verifying ${dmgPath}`);
-	const { stdout } = await run("bash", [scriptPath, dmgPath], { maxBuffer: 10 * 1024 * 1024 });
+	console.log(`[dmg] verifying ${artifactPath}`);
+	const { stdout } = await run("bash", [scriptPath, artifactPath], { maxBuffer: 10 * 1024 * 1024 });
 	if (stdout) console.log(stdout.trim());
 }
+
+// Kept as a thin, dmg-specific alias: existing callers and the dmg-oriented
+// name/log-message stay unchanged. verifyMacArtifact is the generic entry
+// point new callers (e.g. the zip artifact) should use directly.
+export const verifyDmg = verifyMacArtifact;
 
 export { MakerDMG };

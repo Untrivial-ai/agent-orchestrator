@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,11 +42,6 @@ const (
 	DefaultPRMaxAge = 5 * time.Minute
 	// BatchSize is the maximum number of PRs in one provider batch fetch.
 	BatchSize = 25
-
-	// fallbackIdentityKey is the map key used when the observer falls back
-	// to the single-provider IdentityResolver path. It represents the
-	// unnamed identity that applies when no ScopedIdentityResolver is wired.
-	fallbackIdentityKey = ""
 )
 
 // identityKey builds the cache key for a per-provider, per-host identity.
@@ -166,12 +162,9 @@ type Config struct {
 	Logger *slog.Logger
 	// CacheMax bounds each in-memory ETag/review cache. Zero uses DefaultCacheMax.
 	CacheMax int
-	// IdentityResolver resolves the active SCM account lazily. Nil preserves branch-based discovery.
-	IdentityResolver ports.SCMIdentityResolver
-	// ScopedIdentityResolver resolves the authenticated identity per provider key.
-	// When set, the observer resolves identities for all providers upfront in
-	// each poll and checks PR authors against the matching provider's identity.
-	// When nil, the observer falls back to IdentityResolver (single-provider).
+	// ScopedIdentityResolver resolves the active human account per provider and
+	// host. Without a matching identity, new automatic attachments are disabled;
+	// existing attachments continue to refresh and explicit claims still work.
 	ScopedIdentityResolver ports.ScopedIdentityResolver
 }
 
@@ -244,8 +237,6 @@ type Observer struct {
 	credentialsChecked bool
 	// disabled is set after the credential gate reports unavailable credentials.
 	disabled bool
-	// identityResolver is the explicitly wired source of the active SCM account.
-	identityResolver ports.SCMIdentityResolver
 	// scopedIdentityResolver resolves the authenticated identity per provider key.
 	scopedIdentityResolver ports.ScopedIdentityResolver
 	// rateLimitUntil records, per provider key, the time until which that
@@ -260,7 +251,7 @@ type Observer struct {
 // New constructs an Observer with default cadence/cache settings for zero
 // values in cfg.
 func New(provider Provider, store Store, lifecycle Lifecycle, cfg Config) *Observer {
-	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, identityResolver: cfg.IdentityResolver, scopedIdentityResolver: cfg.ScopedIdentityResolver, Cache: newCache(cfg.CacheMax), rateLimitUntil: map[string]time.Time{}}
+	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, scopedIdentityResolver: cfg.ScopedIdentityResolver, Cache: newCache(cfg.CacheMax), rateLimitUntil: map[string]time.Time{}}
 	if o.tick <= 0 {
 		o.tick = DefaultTickInterval
 	}
@@ -307,18 +298,14 @@ type subject struct {
 	hasPR   bool
 }
 
-// sessionRepo pairs a live session with a repo to scan and its branch for
-// per-repo branch-prefix discovery of new (including stacked) pull requests.
-// A session is scanned against its push origin plus every other remote in the
-// project checkout, so repo is the repo whose open-PR list is listed while
-// headRepo is the repo the session's head branch actually lives in (the push
-// origin). For same-repo PRs repo == headRepo; for a cross-fork PR (fork head,
-// upstream base) repo is the upstream base and headRepo is the fork origin.
+// Head names are scoped to repo's provider and host. Each base has a separate
+// set because overlapping workspace checkouts can have different push targets.
 type sessionRepo struct {
-	session  domain.SessionRecord
-	repo     ports.SCMRepo
-	headRepo ports.SCMRepo
-	branch   string
+	session   domain.SessionRecord
+	repo      ports.SCMRepo
+	headNames map[string]struct{}
+	branch    string
+	workspace bool
 }
 
 type repoGuardState struct {
@@ -389,8 +376,8 @@ func (o *Observer) Poll(ctx context.Context) error {
 			repoRefreshOK[key] = false
 		}
 	}
-	// markRepoListFailed is called only when the PR listing itself fails
-	// (ListPRsByRepo error in discoverNewPRs). It sets repoListFailed so
+	// markRepoListFailed marks incomplete discovery (a failed listing or missing
+	// human identity). It sets repoListFailed so
 	// markRepoRefreshOK cannot clear it within the same poll, and also
 	// marks the repo refresh-incomplete via markRepoRefreshFailed.
 	markRepoListFailed := func(repo ports.SCMRepo) {
@@ -729,7 +716,6 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		return nil, nil, err
 	}
 	projects := map[domain.ProjectID]domain.ProjectRecord{}
-	originRepos := map[domain.ProjectID]ports.SCMRepo{}
 	scanRepos := map[domain.ProjectID][]ports.SCMRepo{}
 	out := map[string]*subject{}
 	var sessionRepos []sessionRepo
@@ -761,17 +747,11 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 			projects[sess.ProjectID] = p
 			proj = p
 			if origin, ok := o.provider.ParseRepository(p.RepoOriginURL); ok {
-				originRepos[sess.ProjectID] = origin
-				scanRepos[sess.ProjectID] = o.resolveScanRepos(p, origin)
+				scanRepos[sess.ProjectID] = o.resolveScanRepos(ctx, p, origin)
 			}
 		}
-		repos := make([]ports.SCMRepo, 0, len(scanRepos[sess.ProjectID]))
-		if origin, ok := originRepos[sess.ProjectID]; ok {
-			for _, repo := range scanRepos[sess.ProjectID] {
-				sessionRepos = append(sessionRepos, sessionRepo{session: sess, repo: repo, headRepo: origin, branch: branch})
-				repos = append(repos, repo)
-			}
-		}
+		repos := append([]ports.SCMRepo(nil), scanRepos[sess.ProjectID]...)
+		sessionRepos = append(sessionRepos, checkoutSessionRepos(sess, branch, proj.Kind.WithDefault() == domain.ProjectKindWorkspace, repos)...)
 		childRepos, err := o.workspaceSCMSessionRepos(ctx, proj, sess, branch)
 		if err != nil {
 			return nil, nil, err
@@ -808,28 +788,19 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 	return out, sessionRepos, nil
 }
 
-// resolveScanRepos returns the deduped set of repos whose open-PR lists should be
-// scanned to attribute PRs to this project's sessions: the push origin plus every
-// other GitHub remote configured in the project checkout (upstreams, mirrors).
-// Attribution still requires a PR's head branch to live in the origin, so scanning
-// extra remotes only surfaces cross-fork PRs (fork head, upstream base) and can
-// never misattribute a stranger's PR.
-//
-// ponytail: remotes are read once per project per process (memoized by the
-// caller); a remote added after the daemon started is picked up on restart. Move
-// to a git-config watch if that latency ever matters.
-func (o *Observer) resolveScanRepos(proj domain.ProjectRecord, origin ports.SCMRepo) []ports.SCMRepo {
+// The stored origin remains usable when the checkout is temporarily unavailable.
+func (o *Observer) resolveScanRepos(ctx context.Context, proj domain.ProjectRecord, origin ports.SCMRepo) []ports.SCMRepo {
 	repos := []ports.SCMRepo{origin}
 	if strings.TrimSpace(proj.Path) == "" {
 		return repos
 	}
-	seen := map[string]bool{prKey(origin, 0): true}
-	for _, url := range gitRemoteURLsFunc(proj.Path) {
+	seen := map[string]bool{strings.ToLower(prKey(origin, 0)): true}
+	for _, url := range gitRemoteURLsFunc(ctx, proj.Path) {
 		repo, ok := o.provider.ParseRepository(url)
 		if !ok {
 			continue
 		}
-		key := prKey(repo, 0)
+		key := strings.ToLower(prKey(repo, 0))
 		if seen[key] {
 			continue
 		}
@@ -837,6 +808,32 @@ func (o *Observer) resolveScanRepos(proj domain.ProjectRecord, origin ports.SCMR
 		repos = append(repos, repo)
 	}
 	return repos
+}
+
+func checkoutSessionRepos(sess domain.SessionRecord, branch string, workspace bool, checkouts ...[]ports.SCMRepo) []sessionRepo {
+	var result []sessionRepo
+	byBase := make(map[string]int)
+	for _, checkout := range checkouts {
+		for _, base := range checkout {
+			key := strings.ToLower(prKey(base, 0))
+			position, exists := byBase[key]
+			if !exists {
+				position = len(result)
+				byBase[key] = position
+				result = append(result, sessionRepo{
+					session: sess, repo: base, branch: branch, workspace: workspace,
+					headNames: make(map[string]struct{}),
+				})
+			}
+			for _, destination := range checkout {
+				if !strings.EqualFold(base.Provider, destination.Provider) || !strings.EqualFold(base.Host, destination.Host) {
+					continue
+				}
+				result[position].headNames[strings.ToLower(repoFullName(destination))] = struct{}{}
+			}
+		}
+	}
+	return result
 }
 
 func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.ProjectRecord, sess domain.SessionRecord, branch string) ([]sessionRepo, error) {
@@ -847,8 +844,7 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 	if err != nil {
 		return nil, err
 	}
-	repos := make([]sessionRepo, 0, len(childRepos))
-	seen := map[string]bool{}
+	var checkouts [][]ports.SCMRepo
 	for _, child := range childRepos {
 		if strings.TrimSpace(child.RepoOriginURL) == "" {
 			continue
@@ -859,16 +855,9 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 			continue
 		}
 		childPath := filepath.Join(proj.Path, filepath.FromSlash(child.RelativePath))
-		for _, scanRepo := range o.resolveScanRepos(domain.ProjectRecord{Path: childPath}, repo) {
-			key := prKey(scanRepo, 0)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			repos = append(repos, sessionRepo{session: sess, repo: scanRepo, headRepo: repo, branch: branch})
-		}
+		checkouts = append(checkouts, o.resolveScanRepos(ctx, domain.ProjectRecord{Path: childPath}, repo))
 	}
-	return repos, nil
+	return checkoutSessionRepos(sess, branch, true, checkouts...), nil
 }
 
 func repoForTrackedPR(pr domain.PullRequest, repos []ports.SCMRepo) (ports.SCMRepo, bool) {
@@ -974,11 +963,7 @@ func pendingRepoRefreshes(guards map[string]repoGuardState) map[string]bool {
 // NotModified against a known ETag are skipped, since nothing new can have
 // appeared since the last poll.
 func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRepo, subjects map[string]*subject, guards map[string]repoGuardState, now time.Time, markRepoFailed func(ports.SCMRepo)) (listedPRs, listedRepos map[string]bool) {
-	// Resolve identities per-provider when a ScopedIdentityResolver is wired.
-	// This ensures GitHub PRs are checked against the GitHub identity and
-	// GitLab PRs against the GitLab identity. Falls back to the single-
-	// provider IdentityResolver path for backward compatibility.
-	identities, identityKnown := o.resolveIdentities(ctx, sessionRepos)
+	identities := o.resolveIdentities(ctx, sessionRepos)
 	byRepo := map[string][]sessionRepo{}
 	repos := map[string]ports.SCMRepo{}
 	for _, sr := range sessionRepos {
@@ -994,6 +979,17 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	listedRepos = map[string]bool{}
 	pullsByRepo := map[string][]ports.SCMPRObservation{}
 	for repoKey, repo := range repos {
+		if _, ok := identities[identityKey(repo.Provider, repo.Host)]; !ok {
+			// Do not acknowledge discoveries we could not attribute. Clear even
+			// an older cursor/ETag so recovery retries a full listing after an
+			// identity outage longer than the incremental overlap window.
+			cacheDelete(o.Cache.RepoPRListETag, &o.Cache.repoOrder, repoKey)
+			delete(o.Cache.LastSyncCursor, repoKey)
+			if markRepoFailed != nil {
+				markRepoFailed(repo)
+			}
+			continue
+		}
 		g := guards[repoKey]
 		if g.err != nil {
 			continue
@@ -1062,14 +1058,9 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 			if pr.Number <= 0 || pr.SourceBranch == "" {
 				continue
 			}
-			if identityKnown {
-				id, ok := identities[identityKey(repo.Provider, repo.Host)]
-				if !ok {
-					id, ok = identities[fallbackIdentityKey] // fallback single-identity
-				}
-				if ok && !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
-					continue
-				}
+			id := identities[identityKey(repo.Provider, repo.Host)]
+			if !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
+				continue
 			}
 			if _, ok := subjects[prKey(repo, pr.Number)]; ok {
 				continue
@@ -1087,13 +1078,9 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 					continue
 				}
 			}
-			// Branch-prefix attribution must only claim PRs whose head branch
-			// lives in a session's push origin. A same-repo PR has head == origin
-			// == this scanned repo; a cross-fork PR (fork head, upstream base) has
-			// head == origin while this scanned repo is the upstream base. A
-			// stranger's fork PR carries a head repo no session owns and is
-			// dropped (as is an empty head repo from a deleted fork), preserving
-			// the no-misattribution guarantee.
+			// Head eligibility includes the registered origin and every configured
+			// fetch and push URL, limited to the scanned base's provider and host.
+			// Reject unconfigured or deleted heads before matching branch ownership.
 			eligible := candidatesForHeadRepo(byRepo[repoKey], pr.HeadRepo)
 			sr, ok := matchSession(eligible, pr.SourceBranch)
 			if !ok {
@@ -1107,6 +1094,7 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 				SourceBranch: pr.SourceBranch,
 				TargetBranch: pr.TargetBranch,
 				HeadSHA:      pr.HeadSHA,
+				Author:       strings.TrimSpace(pr.Author),
 				Provider:     repo.Provider,
 				Host:         repo.Host,
 				Repo:         repoFullName(repo),
@@ -1138,114 +1126,100 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 	return listedPRs, listedRepos
 }
 
-func (o *Observer) authenticatedIdentity(ctx context.Context) (ports.SCMIdentity, bool) {
-	if o.identityResolver == nil {
-		return ports.SCMIdentity{}, false
+// resolveIdentities resolves each provider/host once per poll. Unknown or bot
+// accounts disable discovery only for that scope; other accounts keep working.
+func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []sessionRepo) map[string]ports.SCMIdentity {
+	if o.scopedIdentityResolver == nil {
+		return nil
 	}
-	identity, err := o.identityResolver.AuthenticatedIdentity(ctx)
-	if err != nil {
-		o.logger.Debug("scm observer: authenticated identity unavailable; preserving branch-based discovery", "err", err)
-		return ports.SCMIdentity{}, false
-	}
-	identity.Login = strings.TrimSpace(identity.Login)
-	if !identity.Human || identity.Login == "" {
-		o.logger.Debug("scm observer: authenticated human identity unavailable; preserving branch-based discovery")
-		return ports.SCMIdentity{}, false
-	}
-	return identity, true
-}
-
-// resolveIdentities resolves the authenticated identity for each provider key
-// present in sessionRepos. When a ScopedIdentityResolver is wired, identities
-// are resolved upfront (one call per unique provider+host pair) and cached in
-// a map keyed by identityKey(provider, host). This ensures a self-managed
-// GitLab host gets its own identity, distinct from gitlab.com. If identity
-// resolution fails for one provider+host, PRs from that provider+host fall
-// back to branch-based discovery while other providers continue normally.
-// When no ScopedIdentityResolver is available, it falls back to the
-// single-provider IdentityResolver path.
-func (o *Observer) resolveIdentities(ctx context.Context, sessionRepos []sessionRepo) (map[string]ports.SCMIdentity, bool) {
-	if o.scopedIdentityResolver != nil {
-		seen := map[string]bool{}
-		identities := make(map[string]ports.SCMIdentity)
-		anyKnown := false
-		for _, sr := range sessionRepos {
-			ik := identityKey(sr.repo.Provider, sr.repo.Host)
-			if seen[ik] {
-				continue
-			}
-			seen[ik] = true
-			id, err := o.scopedIdentityResolver.AuthenticatedIdentityForProvider(ctx, sr.repo.Provider, sr.repo.Host)
-			if err != nil {
-				o.logger.Debug("scm observer: per-provider identity unavailable; preserving branch-based discovery for provider", "provider", sr.repo.Provider, "host", sr.repo.Host, "err", err)
-				continue
-			}
-			id.Login = strings.TrimSpace(id.Login)
-			if !id.Human || id.Login == "" {
-				o.logger.Debug("scm observer: per-provider human identity unavailable; preserving branch-based discovery for provider", "provider", sr.repo.Provider, "host", sr.repo.Host)
-				continue
-			}
-			identities[ik] = id
-			anyKnown = true
+	seen := map[string]bool{}
+	identities := map[string]ports.SCMIdentity{}
+	for _, sr := range sessionRepos {
+		ik := identityKey(sr.repo.Provider, sr.repo.Host)
+		if seen[ik] {
+			continue
 		}
-		return identities, anyKnown
+		seen[ik] = true
+		id, err := o.scopedIdentityResolver.AuthenticatedIdentityForProvider(ctx, sr.repo.Provider, sr.repo.Host)
+		if err != nil {
+			o.logger.Debug("scm observer: identity unavailable; automatic discovery disabled for scope", "provider", sr.repo.Provider, "host", sr.repo.Host, "err", err)
+			continue
+		}
+		id.Login = strings.TrimSpace(id.Login)
+		if !id.Human || id.Login == "" {
+			continue
+		}
+		identities[ik] = id
 	}
-	// Fallback: single-provider IdentityResolver path.
-	identity, ok := o.authenticatedIdentity(ctx)
-	if !ok {
-		return nil, false
-	}
-	return map[string]ports.SCMIdentity{fallbackIdentityKey: identity}, true
+	return identities
 }
 
-// matchSession picks the session that owns sourceBranch. A session owns the
-// branch when it is an exact match or a stacked descendant ("branch/..."). The
-// default worker branch is a leaf named "<namespace>/root"; for that shape the
-// session also owns sibling branches under "<namespace>/..." so Git can create
-// child PR branches without colliding with the root ref. When several session
-// branches are prefixes of the same source branch the longest (most specific)
-// one wins, so a child session claims its own stacked PRs rather than the
-// ancestor session.
-// candidatesForHeadRepo narrows the scanned repo's session candidates to those
-// whose head branch lives in headRepo (the PR's head repository full name). This
-// is the fork guard: a PR is only attributable when its head repo equals a
-// session's push origin, whether the PR was found on the origin itself or on a
-// scanned upstream base repo.
 func candidatesForHeadRepo(candidates []sessionRepo, headRepo string) []sessionRepo {
-	if strings.TrimSpace(headRepo) == "" {
+	name := strings.ToLower(strings.TrimSpace(headRepo))
+	if name == "" {
 		return nil
 	}
 	var out []sessionRepo
 	for _, sr := range candidates {
-		if strings.EqualFold(repoFullName(sr.headRepo), headRepo) {
+		if _, configured := sr.headNames[name]; configured {
 			out = append(out, sr)
 		}
 	}
 	return out
 }
 
+// matchSession prefers exact branches, then the longest owned prefix. Root
+// leaves own slash siblings. Legacy workspace branches are bare refs, so they
+// also own hyphen siblings, but only under the validated AO session branch.
+// Equal specificity across different sessions is ambiguous: leave the PR for
+// explicit claiming rather than assigning it according to store iteration order.
 func matchSession(candidates []sessionRepo, sourceBranch string) (sessionRepo, bool) {
-	for _, sr := range candidates {
-		if sr.branch != "" && sr.branch == sourceBranch {
-			return sr, true
-		}
-	}
 	var best sessionRepo
 	bestLen := -1
+	ambiguous := false
+	consider := func(sr sessionRepo, length int) {
+		if length > bestLen {
+			best, bestLen, ambiguous = sr, length, false
+		} else if length == bestLen && best.session.ID != sr.session.ID {
+			ambiguous = true
+		}
+	}
 	for _, sr := range candidates {
 		if sr.branch == "" {
 			continue
 		}
+		if sr.branch == sourceBranch {
+			consider(sr, len(sourceBranch)+1)
+		}
 		for _, prefix := range sessionBranchPrefixes(sr.branch) {
 			if prefix == sourceBranch || strings.HasPrefix(sourceBranch, prefix+"/") {
-				if len(prefix) > bestLen {
-					best = sr
-					bestLen = len(prefix)
-				}
+				consider(sr, len(prefix))
 			}
 		}
+		if workspaceHyphenBranch(sr) && strings.HasPrefix(sourceBranch, sr.branch+"-") && len(sourceBranch) > len(sr.branch)+1 {
+			consider(sr, len(sr.branch))
+		}
 	}
-	return best, bestLen >= 0
+	return best, bestLen >= 0 && !ambiguous
+}
+
+func workspaceHyphenBranch(sr sessionRepo) bool {
+	if !sr.workspace || sr.session.ID == "" {
+		return false
+	}
+	base := "ao/" + string(sr.session.ID)
+	if sr.branch == base {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(sr.branch, base+"-")
+	if !ok {
+		return false
+	}
+	// workspaceProjectBranch appends -2, -3, ... when a ref already exists.
+	// Do not treat arbitrary topics, another session ID, or padded numbers as
+	// a generated branch and broaden their ownership.
+	n, err := strconv.Atoi(suffix)
+	return err == nil && n >= 2 && strconv.Itoa(n) == suffix
 }
 
 func sessionBranchPrefixes(branch string) []string {
@@ -1717,6 +1691,14 @@ func (o *Observer) prepareForPersistence(obs ports.SCMObservation, local domain.
 		CI:       ciHash != local.CIHash,
 		Review:   reviewHash != local.ReviewHash,
 	}
+	// A successful fetch that changes completeness (partial <-> full) must
+	// persist even when the provider content is unchanged: rows upgraded by the
+	// conservative review_partial default start uncertain, and without this a
+	// content-hash match would skip the write and keep the exact count hidden
+	// forever.
+	if opts.reviewFetched && obs.Review.Partial != local.ReviewPartial {
+		obs.Changed.Review = true
+	}
 	obs.PR.State = firstNonEmpty(obs.PR.State, normalizePRState(obs.PR.Draft, obs.PR.Merged, obs.PR.Closed))
 	obs.ObservedAt = firstTime(obs.ObservedAt, now)
 	return obs
@@ -1749,9 +1731,20 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	if obs.Changed.CI || ciObservedAt.IsZero() {
 		ciObservedAt = obs.ObservedAt
 	}
+	// Only a successful review-thread fetch establishes a review observation:
+	// a metadata/CI-only pass (or a failed review fetch in preserve mode) must
+	// not manufacture one, or a never-fetched review storage would look
+	// complete to the summary gate and publish a known-looking zero.
 	reviewObservedAt := local.ReviewObservedAt
-	if opts.reviewFetched || reviewObservedAt.IsZero() {
+	if opts.reviewFetched {
 		reviewObservedAt = obs.ObservedAt
+	}
+	// Partial-ness follows the last fetched review observation; when this pass
+	// did not fetch reviews, keep the local record so the summary layer can
+	// keep treating stored thread rows as a partial view.
+	reviewPartial := local.ReviewPartial
+	if opts.reviewFetched {
+		reviewPartial = obs.Review.Partial
 	}
 	pr := domain.PullRequest{
 		URL:                      firstNonEmpty(obs.PR.URL, obs.PR.HTMLURL),
@@ -1777,6 +1770,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 		Deletions:                obs.PR.Deletions,
 		ChangedFiles:             obs.PR.ChangedFiles,
 		Author:                   obs.PR.Author,
+		AuthorAvatarURL:          obs.PR.AuthorAvatarURL,
 		BaseSHA:                  obs.PR.BaseSHA,
 		MergeCommitSHA:           obs.PR.MergeCommitSHA,
 		ProviderState:            obs.PR.ProviderState,
@@ -1793,6 +1787,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 		ObservedAt:               observedAt,
 		CIObservedAt:             ciObservedAt,
 		ReviewObservedAt:         reviewObservedAt,
+		ReviewPartial:            reviewPartial,
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {
@@ -1821,7 +1816,7 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	for _, th := range obs.Review.Threads {
 		threads = append(threads, domain.PullRequestReviewThread{ThreadID: th.ID, Path: th.Path, Line: th.Line, Resolved: th.Resolved, IsBot: th.IsBot, SemanticHash: threadSemanticHash(th), UpdatedAt: now})
 		for _, c := range th.Comments {
-			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
+			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
 		}
 	}
 	return pr, checks, reviews, threads, comments
@@ -1833,7 +1828,7 @@ func observationFromLocal(repo ports.SCMRepo, pr domain.PullRequest, checks []do
 		Provider:     firstNonEmpty(pr.Provider, repo.Provider),
 		Host:         firstNonEmpty(pr.Host, repo.Host),
 		Repo:         firstNonEmpty(pr.Repo, repoFullName(repo)),
-		PR:           ports.SCMPRObservation{URL: pr.URL, Number: pr.Number, State: normalizePRState(pr.Draft, pr.Merged, pr.Closed), Draft: pr.Draft, Merged: pr.Merged, Closed: pr.Closed, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch, HeadSHA: pr.HeadSHA, Title: pr.Title, Additions: pr.Additions, Deletions: pr.Deletions, ChangedFiles: pr.ChangedFiles, Author: pr.Author, BaseSHA: pr.BaseSHA, MergeCommitSHA: pr.MergeCommitSHA, ProviderState: pr.ProviderState, ProviderMergeable: pr.ProviderMergeable, ProviderMergeStateStatus: pr.ProviderMergeStateStatus, HTMLURL: pr.HTMLURL, CreatedAtProvider: pr.CreatedAtProvider, UpdatedAtProvider: pr.UpdatedAtProvider, MergedAtProvider: pr.MergedAtProvider, ClosedAtProvider: pr.ClosedAtProvider},
+		PR:           ports.SCMPRObservation{URL: pr.URL, Number: pr.Number, State: normalizePRState(pr.Draft, pr.Merged, pr.Closed), Draft: pr.Draft, Merged: pr.Merged, Closed: pr.Closed, SourceBranch: pr.SourceBranch, TargetBranch: pr.TargetBranch, HeadSHA: pr.HeadSHA, Title: pr.Title, Additions: pr.Additions, Deletions: pr.Deletions, ChangedFiles: pr.ChangedFiles, Author: pr.Author, AuthorAvatarURL: pr.AuthorAvatarURL, BaseSHA: pr.BaseSHA, MergeCommitSHA: pr.MergeCommitSHA, ProviderState: pr.ProviderState, ProviderMergeable: pr.ProviderMergeable, ProviderMergeStateStatus: pr.ProviderMergeStateStatus, HTMLURL: pr.HTMLURL, CreatedAtProvider: pr.CreatedAtProvider, UpdatedAtProvider: pr.UpdatedAtProvider, MergedAtProvider: pr.MergedAtProvider, ClosedAtProvider: pr.ClosedAtProvider},
 		CI:           ciObservationFromLocal(pr, checks),
 		Review:       ports.SCMReviewObservation{Decision: string(pr.Review)},
 		Mergeability: mergeabilityObservationFromLocal(pr),
@@ -1944,6 +1939,15 @@ func mergeabilityFromProviderFacts(providerMergeable, providerMergeState, ci, re
 		out.State = string(domain.MergeBlocked)
 		addBlocker("blocked_by_provider")
 	}
+	// UNSTABLE outranks draft / CI / review (doc.go rule 3, and the
+	// mergeabilityFromGraphQL sibling): GitHub reports UNSTABLE when the PR
+	// *is* mergeable but a non-required check failed or is pending. Such a PR
+	// also has a FAILURE rollup (-> ci == failing), so leaving this below the
+	// blockers downgraded every genuinely-mergeable UNSTABLE PR to blocked.
+	if state == "UNSTABLE" {
+		out.State = string(domain.MergeUnstable)
+		return out
+	}
 	if draft {
 		out.State = string(domain.MergeBlocked)
 		addBlocker("draft")
@@ -1961,10 +1965,6 @@ func mergeabilityFromProviderFacts(providerMergeable, providerMergeState, ci, re
 		addBlocker("review_required")
 	}
 	if out.State == string(domain.MergeBlocked) {
-		return out
-	}
-	if state == "UNSTABLE" {
-		out.State = string(domain.MergeUnstable)
 		return out
 	}
 	if mergeable == "MERGEABLE" && (state == "CLEAN" || state == "HAS_HOOKS" || state == "") &&
@@ -2127,22 +2127,28 @@ func resolveGitOriginURL(path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// gitRemoteURLs lists the fetch URL of every git remote configured at path. It
-// returns nil on any error (missing repo, no git, no remotes). The observer uses
-// it to scan upstream/mirror remotes for cross-fork PRs in addition to origin.
-func gitRemoteURLs(path string) []string {
-	out, err := aoprocess.Command("git", "-C", path, "remote").Output()
+func gitRemoteURLs(ctx context.Context, path string) []string {
+	out, err := aoprocess.CommandContext(ctx, "git", "-C", path, "remote").Output()
 	if err != nil {
 		return nil
 	}
 	var urls []string
+	seen := make(map[string]bool)
 	for _, name := range strings.Fields(string(out)) {
-		u, err := aoprocess.Command("git", "-C", path, "remote", "get-url", name).Output()
-		if err != nil {
-			continue
-		}
-		if s := strings.TrimSpace(string(u)); s != "" {
-			urls = append(urls, s)
+		for _, options := range [][]string{{"--all"}, {"--push", "--all"}} {
+			args := append([]string{"-C", path, "remote", "get-url"}, options...)
+			args = append(args, name)
+			output, err := aoprocess.CommandContext(ctx, "git", args...).Output()
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(output), "\n") {
+				address := strings.TrimSpace(line)
+				if address != "" && !seen[address] {
+					seen[address] = true
+					urls = append(urls, address)
+				}
+			}
 		}
 	}
 	return urls

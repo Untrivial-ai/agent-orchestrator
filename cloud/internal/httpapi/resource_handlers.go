@@ -1,23 +1,57 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
+
+// projectOrchestratorStore finds a project's single active orchestrator so a
+// top-level worker can be auto-linked to it as a child. It mirrors the
+// narrow-interface pattern used elsewhere so the concrete store carries the
+// method without widening Store.
+type projectOrchestratorStore interface {
+	ProjectActiveOrchestrator(ctx context.Context, orgID, projectID string) (orchestratorID, provider string, found bool, err error)
+}
 
 type createProjectRequest struct {
 	DisplayName   string         `json:"displayName"`
 	RepositoryURL string         `json:"repositoryUrl"`
 	DefaultBranch string         `json:"defaultBranch"`
 	Config        map[string]any `json:"config,omitempty"`
+	// Coder carries the optional coder dev-kit config chosen at project setup
+	// (template picker + size/startup + extra repos). Stored on the project and
+	// inherited by every coder session of the project. Absent = default template,
+	// single repo (unchanged behavior).
+	Coder *coderConfigInput `json:"coder,omitempty"`
+}
+
+type coderConfigInput struct {
+	// TemplateID is a Coder template UUID from GET /orgs/{orgId}/sandbox/coder/templates.
+	// Empty selects the deployment default template.
+	TemplateID string `json:"templateId,omitempty"`
+	// Size is a t-shirt size ("small"/"medium"/"large"); only meaningful with a
+	// non-default template that declares a `size` parameter.
+	Size string `json:"size,omitempty"`
+	// StartupScript is an optional shell snippet the template runs after checkout;
+	// only meaningful with a template that declares a `startup_script` parameter.
+	StartupScript string `json:"startupScript,omitempty"`
+	// ExtraRepos are additional repositories every session of the project clones
+	// alongside the primary repo.
+	ExtraRepos []createSessionRepo `json:"extraRepos,omitempty"`
 }
 
 type updateProjectRequest struct {
@@ -46,31 +80,103 @@ type createSessionRequest struct {
 	Mode                        string   `json:"mode,omitempty"`
 	DeniedCommands              []string `json:"deniedCommands,omitempty"`
 	SandboxProviderConnectionID string   `json:"sandboxProviderConnectionId,omitempty"`
+	// Provider selects which configured sandbox provider runs this session. It
+	// is optional: an empty value uses the control plane default. When set it
+	// must be one of the providers the deployment offers (see /me).
+	Provider string `json:"provider,omitempty"`
+}
+
+type createSessionRepo struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
 }
 
 type sessionResponse struct {
-	ID               string    `json:"id"`
-	OrgID            string    `json:"orgId"`
-	ProjectID        string    `json:"projectId"`
-	Kind             string    `json:"kind"`
-	Harness          string    `json:"harness"`
-	DisplayName      string    `json:"displayName"`
-	Branch           string    `json:"branch"`
-	Mode             string    `json:"mode"`
-	DeniedCommands   []string  `json:"deniedCommands"`
-	ActivityState    string    `json:"activityState"`
-	Status           string    `json:"status"`
-	RuntimeConnected bool      `json:"runtimeConnected"`
-	RuntimeState     string    `json:"runtimeState,omitempty"`
-	RuntimeError     string    `json:"runtimeError,omitempty"`
-	IsTerminated     bool      `json:"isTerminated"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ID               string   `json:"id"`
+	OrgID            string   `json:"orgId"`
+	ProjectID        string   `json:"projectId"`
+	Kind             string   `json:"kind"`
+	Harness          string   `json:"harness"`
+	DisplayName      string   `json:"displayName"`
+	Branch           string   `json:"branch"`
+	Mode             string   `json:"mode"`
+	DeniedCommands   []string `json:"deniedCommands"`
+	ActivityState    string   `json:"activityState"`
+	Status           string   `json:"status"`
+	RuntimeConnected bool     `json:"runtimeConnected"`
+	SandboxProvider  string   `json:"sandboxProvider,omitempty"`
+	DesiredState     string   `json:"desiredState,omitempty"`
+	ObservedState    string   `json:"observedState,omitempty"`
+	RuntimeState     string   `json:"runtimeState,omitempty"`
+	RuntimeError     string   `json:"runtimeError,omitempty"`
+	IsTerminated     bool     `json:"isTerminated"`
+	// WorkerEpoch advances on every fresh worker connection (resume, restore,
+	// re-provision). Clients key their terminal on it so a resumed session
+	// re-attaches to the live agent instead of the dead epoch's terminal.
+	WorkerEpoch int64     `json:"workerEpoch,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type pageInfo struct {
 	HasMore    bool   `json:"hasMore"`
 	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+// sessionPRFactsResponse is one pull request as rendered on a session's
+// children listing: enough for a human row (number, url, lifecycle) and for an
+// orchestrator to route CI/review feedback without a second lookup.
+type sessionPRFactsResponse struct {
+	URL          string `json:"url"`
+	Number       int    `json:"number"`
+	State        string `json:"state"`
+	CI           string `json:"ci"`
+	Review       string `json:"review"`
+	Mergeability string `json:"mergeability"`
+	// The control plane does not track unresolved review comments yet; the
+	// field exists so the renderer's shared PullRequestFacts shape maps 1:1.
+	ReviewComments bool      `json:"reviewComments"`
+	SourceBranch   string    `json:"sourceBranch,omitempty"`
+	TargetBranch   string    `json:"targetBranch,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// sessionChildResponse is the single wire shape for a child session on both
+// the worker-facing /worker/children listing and the user-facing
+// /orgs/{orgId}/sessions/{sessionId}/children listing. Keep them identical so
+// `ao list --json` and the app's Workers view can never drift apart.
+type sessionChildResponse struct {
+	sessionResponse
+	PRs []sessionPRFactsResponse `json:"prs"`
+}
+
+func toSessionChildResponse(
+	session domain.Session,
+	facts []contract.PRFacts,
+	prs []domain.PullRequest,
+) sessionChildResponse {
+	rendered := make([]sessionPRFactsResponse, 0, len(prs))
+	for _, pr := range prs {
+		state := string(pr.State)
+		if pr.Draft && pr.State == contract.PRStateOpen {
+			state = "draft"
+		}
+		rendered = append(rendered, sessionPRFactsResponse{
+			URL:          pr.URL,
+			Number:       pr.Number,
+			State:        state,
+			CI:           string(pr.CIState),
+			Review:       string(pr.ReviewState),
+			Mergeability: string(pr.Mergeability),
+			SourceBranch: pr.SourceBranch,
+			TargetBranch: pr.TargetBranch,
+			UpdatedAt:    pr.UpdatedAt,
+		})
+	}
+	return sessionChildResponse{
+		sessionResponse: toSessionResponse(session, facts),
+		PRs:             rendered,
+	}
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +210,64 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Project configuration is invalid.")
 		return
 	}
+	// Store the coder dev-kit config (template + size/startup + extra repos)
+	// under the project's config, so every coder session of the project inherits
+	// it. Absent = default template, single repo (unchanged behavior).
+	if request.Coder != nil {
+		coderConfig, verr := parseCoderConfigInput(request.Coder)
+		if verr != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_error", verr.Error())
+			return
+		}
+		// Defense in depth behind the picker's own gating: never persist a rich
+		// parameter the chosen template does not declare, since Coder would reject
+		// every session build for the project. Best-effort — if the template's
+		// parameters cannot be read, store the config as-is rather than block.
+		coderConfig = s.sanitizeCoderConfig(r.Context(), coderConfig, requestID(r))
+		config, err = domain.MergeProjectCoderConfig(config, coderConfig)
+		if err != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Project coder configuration is invalid.")
+			return
+		}
+	}
+	principal := principalFrom(r)
+	userStore, ok := s.store.(userProviderConnectionStore)
+	if !ok {
+		writeError(w, r, http.StatusNotImplemented, "not_implemented", "Provider connections are unavailable.")
+		return
+	}
+	encrypted, nonce, err := userStore.UserProviderConnectionSecret(r.Context(), principal, githubPATProvider, defaultAgentConnectionLabel)
+	if err != nil {
+		s.logger.Error("fetch GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusUnprocessableEntity, "token_missing", "No GitHub personal access token found. Please add one first.")
+		return
+	}
+	if len(encrypted) == 0 {
+		s.logger.Error("fetch GitHub personal access token: token is empty", "request_id", requestID(r))
+		writeError(w, r, http.StatusUnprocessableEntity, "token_missing", "No GitHub personal access token found. Please add one first.")
+		return
+	}
+	secret, err := s.secretCipher.Decrypt(encrypted, nonce, providerSecretAssociatedData("user:"+principal.UserID, githubPATProvider))
+	if err != nil {
+		s.logger.Error("decrypt GitHub personal access token", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Failed to decrypt the GitHub token.")
+		return
+	}
+	defer clear(secret)
+
+	reachable, _, err := s.probeRepositoryAccess(r.Context(), request.RepositoryURL, string(secret))
+	if err != nil {
+		s.logger.Error("probe repository access", "error", err, "request_id", requestID(r))
+		writeError(w, r, http.StatusBadGateway, "provider_unavailable", "GitHub is temporarily unavailable. Please try again later.")
+		return
+	}
+	if !reachable {
+		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "Can't reach this repository — it may be private, or the URL may be wrong.")
+		return
+	}
+	owner, repo, _ := parseGitHubRepo(request.RepositoryURL)
+	canonicalURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+
 	project, err := s.store.CreateProject(
 		r.Context(),
 		principalFrom(r),
@@ -111,7 +275,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		key,
 		domain.CreateProject{
 			DisplayName:   request.DisplayName,
-			RepositoryURL: request.RepositoryURL,
+			RepositoryURL: canonicalURL,
 			DefaultBranch: request.DefaultBranch,
 			Config:        config,
 		},
@@ -244,6 +408,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Mode = strings.TrimSpace(request.Mode)
 	request.SandboxProviderConnectionID = strings.TrimSpace(request.SandboxProviderConnectionID)
+	request.Provider = strings.ToLower(strings.TrimSpace(request.Provider))
 	if request.Mode == "" {
 		request.Mode = "trusted"
 	}
@@ -287,10 +452,81 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A top-level worker created for a project that already has an active
+	// orchestrator is auto-linked to it: the orchestrator then sees, drives, and
+	// receives reports from it exactly as it would a worker it spawned itself,
+	// because ao list, the Workers view, ao send/kill, and the ao report reverse
+	// channel all key on parent_session_id. The worker also inherits the
+	// orchestrator's provider so the project's whole worker tree stays on one
+	// provider, matching ao spawn'ed children. An orchestrator, or a worker
+	// created before any orchestrator exists, stays unlinked.
+	parentSessionID := ""
+	if request.Kind == "worker" {
+		if orchStore, ok := s.store.(projectOrchestratorStore); ok {
+			orchestratorID, orchestratorProvider, found, lookupErr := orchStore.ProjectActiveOrchestrator(
+				r.Context(), orgID, request.ProjectID,
+			)
+			if lookupErr != nil {
+				s.writeStoreError(w, r, lookupErr)
+				return
+			}
+			if found {
+				parentSessionID = orchestratorID
+				request.Provider = orchestratorProvider
+			}
+		}
+	}
+	// Validate the sandbox provider AFTER the auto-link override above: an
+	// auto-linked worker inherits its orchestrator's provider, so the
+	// availability check must run on the final value, not the client-sent one.
+	// Otherwise a UI-created worker whose stale client selection differs from the
+	// orchestrator's provider is rejected before the override can take effect.
+	if request.Provider != "" && !slices.Contains(s.availableSandboxProviders, request.Provider) {
+		writeError(
+			w, r, http.StatusUnprocessableEntity, "provider_unavailable",
+			"The selected sandbox provider is not available on this control plane.",
+		)
+		return
+	}
+	// The active organization must be entitled to the (final, post-override)
+	// provider: coder is gated on a WorkOS org capability. Enforced here so the
+	// gate holds even when a client bypasses the org-filtered list returned by
+	// /me and posts a gated provider directly.
+	if request.Provider != "" && !s.orgAllowsProvider(principalFrom(r), request.Provider) {
+		writeError(
+			w, r, http.StatusForbidden, "provider_forbidden",
+			"Your organization is not enabled for the selected sandbox provider.",
+		)
+		return
+	}
+	// Coder sessions inherit the project's dev-kit config (template + size +
+	// startup), chosen once at project setup and stored on the project. Non-coder
+	// providers, and projects without a coder config, keep the default-template
+	// behavior. (Extra repos also live on the project config; the worker reads
+	// them from the project at launch — see launchContextFrom.)
+	effectiveProvider := request.Provider
+	if effectiveProvider == "" {
+		effectiveProvider = s.sandboxProvider
+	}
+	var coderOpts *sandbox.CoderSessionOptions
+	if effectiveProvider == sandbox.ProviderCoder {
+		project, projectErr := s.store.GetProject(r.Context(), principalFrom(r), orgID, request.ProjectID)
+		if projectErr != nil {
+			s.writeStoreError(w, r, projectErr)
+			return
+		}
+		if cfg, ok := domain.DecodeProjectCoderConfig(project.Config); ok {
+			coderOpts = &sandbox.CoderSessionOptions{
+				TemplateID:    cfg.TemplateID,
+				Size:          cfg.Size,
+				StartupScript: cfg.StartupScript,
+			}
+		}
+	}
 	// The plan is resolved once, here, and stamped onto the sandbox row. The
 	// reconciler reads it back from the row rather than from configuration, so
 	// a later config change cannot disturb a session already in flight.
-	plan, err := s.provisioning.SessionPlan(request.Harness)
+	plan, err := s.provisioning.SessionPlanForProviderWithCoder(request.Harness, request.Provider, coderOpts)
 	if err != nil {
 		s.logger.Error("resolve sandbox provisioning plan", "error", err, "request_id", requestID(r))
 		writeError(
@@ -318,6 +554,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			ResourceProfile:     plan.ResourceProfile,
 			BootstrapContext:    plan.BootstrapContext,
 			Release:             s.release,
+			ParentSessionID:     parentSessionID,
 		},
 	)
 	if err != nil {
@@ -381,6 +618,69 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "page": page})
 }
 
+// resumeSession records one explicit user intent and lets the reconciler own
+// every slow provider/worker transition. The response is the accepted intent,
+// not a claim that the workspace is connected yet.
+func (s *Server) resumeSession(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	lifecycle, err := s.store.ResumeSession(
+		r.Context(), principalFrom(r), orgID, sessionID,
+	)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"session": map[string]any{
+		"id": lifecycle.SessionID, "sandboxProvider": lifecycle.Provider,
+		"desiredState": lifecycle.DesiredState, "observedState": lifecycle.ObservedState,
+	}})
+}
+
+// listSessionChildren lists the sessions an orchestrator spawned, with their
+// pull requests, for the session inspector's Workers view. Same wire shape as
+// the worker-facing /worker/children listing (sessionChildResponse).
+func (s *Server) listSessionChildren(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	limit, err := parseLimit(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	cursor, err := parseCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_cursor", "The pagination cursor is invalid.")
+		return
+	}
+	children, hasMore, err := s.store.ListSessionChildren(
+		r.Context(), principalFrom(r), orgID, sessionID, cursor, limit,
+	)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	items, err := s.childItems(r, orgID, children)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	page := pageInfo{HasMore: hasMore}
+	if hasMore && len(children) > 0 {
+		last := children[len(children)-1]
+		page.NextCursor = encodeCursor(last.UpdatedAt, last.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "page": page})
+}
+
 // wakePausedSessions asks the reconciler to resume this user's idle-paused
 // sandboxes. It intentionally does not wait for NodeOps or a worker heartbeat;
 // callers continue to use the regular session projection for readiness.
@@ -435,19 +735,188 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
 		return
 	}
-	if err := s.store.SetSandboxDesiredState(
+	// Terminate the session AND request its sandbox teardown atomically, so the
+	// board archives it on this request (is_terminated) instead of waiting for
+	// the reconciler — which the idle scanner can race by resetting the sandbox
+	// desired_state, leaving the session active and the card re-appearing. This
+	// makes delete land on the first click, symmetric with restore.
+	if err := s.store.TerminateSession(
 		r.Context(),
 		principalFrom(r),
 		orgID,
 		sessionID,
-		domain.SandboxDesiredDeleted,
 	); err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"session": map[string]any{"id": sessionID, "desiredState": domain.SandboxDesiredDeleted},
+		"session": map[string]any{"id": sessionID, "isTerminated": true, "desiredState": domain.SandboxDesiredDeleted},
 	})
+}
+
+var githubPathRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
+// parseGitHubRepo validates and extracts the owner and repo from a GitHub URL.
+const (
+	maxCoderExtraRepos    = 10
+	maxCoderStartupScript = 64 * 1024
+)
+
+var coderSizes = map[string]bool{"small": true, "medium": true, "large": true}
+
+// parseCoderConfigInput validates the coder dev-kit config chosen at project
+// setup (template + size/startup + extra repos) into a domain.ProjectCoderConfig
+// stored on the project. Size and startup require a chosen (non-default)
+// template, since the default template does not declare those rich parameters.
+// sanitizeCoderConfig drops size/startup from a coder project config when the
+// chosen template does not declare the matching coder_parameter. It is
+// best-effort: the default template (empty ID), a missing template lister, an
+// unreadable template list, or an unknown template all leave the config
+// untouched, so a transient Coder read never blocks creating a project.
+func (s *Server) sanitizeCoderConfig(ctx context.Context, cfg domain.ProjectCoderConfig, reqID string) domain.ProjectCoderConfig {
+	if cfg.TemplateID == "" || s.coderTemplates == nil {
+		return cfg
+	}
+	if cfg.Size == "" && strings.TrimSpace(cfg.StartupScript) == "" {
+		return cfg
+	}
+	templates, err := s.coderTemplates.ListTemplates(ctx)
+	if err != nil {
+		s.logger.Warn("sanitize coder config: list templates", "error", err, "request_id", reqID)
+		return cfg
+	}
+	var params []string
+	found := false
+	for _, t := range templates {
+		if t.ID == cfg.TemplateID {
+			params = t.Parameters
+			found = true
+			break
+		}
+	}
+	if !found {
+		return cfg
+	}
+	if cfg.Size != "" && !slices.Contains(params, "size") {
+		cfg.Size = ""
+	}
+	if strings.TrimSpace(cfg.StartupScript) != "" && !slices.Contains(params, "startup_script") {
+		cfg.StartupScript = ""
+	}
+	return cfg
+}
+
+func parseCoderConfigInput(in *coderConfigInput) (domain.ProjectCoderConfig, error) {
+	cfg := domain.ProjectCoderConfig{}
+	if id := strings.TrimSpace(in.TemplateID); id != "" {
+		if _, err := uuid.Parse(id); err != nil {
+			return domain.ProjectCoderConfig{}, fmt.Errorf("coder template ID must be a UUID")
+		}
+		cfg.TemplateID = id
+	}
+	if size := strings.ToLower(strings.TrimSpace(in.Size)); size != "" {
+		if !coderSizes[size] {
+			return domain.ProjectCoderConfig{}, fmt.Errorf("coder size must be one of small, medium, large")
+		}
+		cfg.Size = size
+	}
+	if len(in.StartupScript) > maxCoderStartupScript {
+		return domain.ProjectCoderConfig{}, fmt.Errorf("coder startup script must be at most 64 KiB")
+	}
+	cfg.StartupScript = in.StartupScript
+	if cfg.TemplateID == "" && (cfg.Size != "" || strings.TrimSpace(cfg.StartupScript) != "") {
+		return domain.ProjectCoderConfig{}, fmt.Errorf("coder size and startup script require choosing a template")
+	}
+	if len(in.ExtraRepos) > maxCoderExtraRepos {
+		return domain.ProjectCoderConfig{}, fmt.Errorf("at most %d extra repositories are allowed", maxCoderExtraRepos)
+	}
+	repos := make([]domain.RepoRef, 0, len(in.ExtraRepos))
+	for _, repo := range in.ExtraRepos {
+		raw := strings.TrimSpace(repo.URL)
+		if raw == "" {
+			continue
+		}
+		owner, name, ok := parseGitHubRepo(raw)
+		if !ok {
+			return domain.ProjectCoderConfig{}, fmt.Errorf("extra repository %q must be an https github.com URL", raw)
+		}
+		repos = append(repos, domain.RepoRef{
+			URL:    fmt.Sprintf("https://github.com/%s/%s", owner, name),
+			Branch: strings.TrimSpace(repo.Branch),
+		})
+	}
+	if len(repos) > 0 {
+		cfg.ExtraRepos = repos
+	}
+	return cfg, nil
+}
+
+func parseGitHubRepo(repoURL string) (owner, repo string, ok bool) {
+	parsed, err := url.ParseRequestURI(repoURL)
+	if err != nil || parsed.Scheme != "https" {
+		return "", "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "github.com" && host != "www.github.com" {
+		return "", "", false
+	}
+
+	path := strings.Trim(parsed.Path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	if !githubPathRegex.MatchString(parts[0]) || !githubPathRegex.MatchString(parts[1]) || parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// probeRepositoryAccess asks the GitHub API whether a repository
+// is reachable with the provided token, and checks for write vs read-only access.
+func (s *Server) probeRepositoryAccess(ctx context.Context, repositoryURL string, token string) (reachable bool, writeAccess bool, err error) {
+	owner, repo, ok := parseGitHubRepo(repositoryURL)
+	if !ok {
+		return false, false, nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, apiURL, http.NoBody)
+	if err != nil {
+		return false, false, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := s.repositoryProbeClient.Do(req)
+	if err != nil {
+		return false, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
+		return false, false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, false, fmt.Errorf("github api returned status %d", resp.StatusCode)
+	}
+
+	var data struct {
+		Permissions struct {
+			Push bool `json:"push"`
+		} `json:"permissions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return false, false, err
+	}
+
+	return true, data.Permissions.Push, nil
 }
 
 func validProjectInput(request createProjectRequest) bool {
@@ -455,8 +924,8 @@ func validProjectInput(request createProjectRequest) bool {
 		len(request.DefaultBranch) < 1 || len(request.DefaultBranch) > 255 {
 		return false
 	}
-	parsed, err := url.ParseRequestURI(request.RepositoryURL)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != ""
+	_, _, ok := parseGitHubRepo(request.RepositoryURL)
+	return ok
 }
 
 func validProjectUpdate(request updateProjectRequest) bool {
@@ -522,9 +991,13 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		ActivityState:    string(session.ActivityState),
 		Status:           string(session.Status(time.Now().UTC(), prs)),
 		RuntimeConnected: session.RuntimeConnected,
+		SandboxProvider:  session.SandboxProvider,
+		DesiredState:     session.DesiredState,
+		ObservedState:    session.ObservedState,
 		RuntimeState:     session.RuntimeState,
 		RuntimeError:     session.RuntimeError,
 		IsTerminated:     session.IsTerminated,
+		WorkerEpoch:      session.WorkerEpoch,
 		CreatedAt:        session.CreatedAt,
 		UpdatedAt:        session.UpdatedAt,
 	}

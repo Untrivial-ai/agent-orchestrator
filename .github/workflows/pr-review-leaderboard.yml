@@ -1,0 +1,34 @@
+name: PR Review Leaderboard
+
+on:
+  # pull_request_target lets the workflow comment on PRs from forks. This job
+  # deliberately does not check out or execute code from the pull request.
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  leaderboard:
+    name: Post trailing 7-day review stats
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted leaderboard code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Test leaderboard calculation
+        run: node --test .github/scripts/pr-review-leaderboard.test.mjs
+
+      - name: Comment review leaderboard
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const modulePath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-review-leaderboard.mjs`;
+            const { run } = await import(modulePath);
+            await run({ github, context });

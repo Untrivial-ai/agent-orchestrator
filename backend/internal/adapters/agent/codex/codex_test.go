@@ -14,6 +14,41 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestResolveCodexBinaryFindsLocalAppDataNPMShimOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows install location")
+	}
+	localAppData := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("USERPROFILE", t.TempDir())
+	want := filepath.Join(localAppData, "npm", "codex.cmd")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("@echo off\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveCodexBinary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ResolveCodexBinary() = %q, want %q", got, want)
+	}
+}
+
+func TestInvalidateBinaryResolutionClearsCachedPath(t *testing.T) {
+	p := &Plugin{resolvedBinary: "old-codex"}
+
+	p.InvalidateBinaryResolution()
+
+	if p.resolvedBinary != "" {
+		t.Fatalf("resolvedBinary = %q, want empty after invalidation", p.resolvedBinary)
+	}
+}
+
 func TestNativeConversationIDRequiresCapturedCodexThreadForTUI(t *testing.T) {
 	p := &Plugin{}
 	if id, ok, err := p.NativeConversationID(context.Background(), ports.SessionRef{
@@ -392,6 +427,24 @@ func TestGetLaunchCommandAppendsConfiguredModel(t *testing.T) {
 	}
 	if containsSubsequence(cmd, []string{"--model", "  gpt-5.4-mini  "}) {
 		t.Fatalf("command %#v used untrimmed model", cmd)
+	}
+}
+
+func TestGetLaunchCommandAppendsConfiguredEffort(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{Effort: "  high  "},
+		Prompt: "review this change",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "model_reasoning_effort='high'"}) {
+		t.Fatalf("command %#v missing trimmed model_reasoning_effort config", cmd)
+	}
+	if containsSubsequence(cmd, []string{"-c", "model_reasoning_effort='  high  '"}) {
+		t.Fatalf("command %#v used untrimmed effort", cmd)
 	}
 }
 
@@ -887,6 +940,23 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 	}
 	if !containsSubsequence(cmd, []string{"--model", "gpt-5.4-mini"}) {
 		t.Fatalf("restore command %#v missing trimmed --model flag", cmd)
+	}
+}
+
+func TestGetRestoreCommandAppendsConfiguredEffort(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Config: ports.AgentConfig{Effort: "high"},
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "thread-123"},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "model_reasoning_effort='high'"}) {
+		t.Fatalf("restore command %#v missing configured effort", cmd)
 	}
 }
 

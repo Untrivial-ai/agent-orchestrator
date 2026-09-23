@@ -34,18 +34,28 @@ func conversationTestServer(t *testing.T, service *fakeConversationService) *htt
 // JSON a client actually parses is what is checked.
 
 type fakeConversationService struct {
-	snapshot       chatsvc.Snapshot
-	skills         []ports.ChatSkill
-	skillErr       error
-	configOptions  []ports.ChatConfigOption
-	configErr      error
-	setConfigID    string
-	setConfigValue ports.ChatConfigOptionValue
-	mcpServers     []domain.ConversationMCPServer
-	reloadErr      error
-	sent           ports.ChatUserMessage
-	inputRequestID string
-	inputResponse  ports.ChatInputResponse
+	snapshot          chatsvc.Snapshot
+	skills            []ports.ChatSkill
+	skillErr          error
+	configOptions     []ports.ChatConfigOption
+	configErr         error
+	setConfigID       string
+	setConfigValue    ports.ChatConfigOptionValue
+	mcpServers        []domain.ConversationMCPServer
+	reloadErr         error
+	sent              ports.ChatUserMessage
+	approvalRequestID string
+	approvalDecision  ports.ChatDecision
+	inputRequestID    string
+	inputResponse     ports.ChatInputResponse
+	reviewSnapshot    chatsvc.Snapshot
+	reviewErr         error
+	reviewID          string
+	reviewBefore      int64
+	reviewLimit       int64
+	reviewOwner       domain.ConversationOwner
+	reviewRequestID   string
+	reviewInterrupted bool
 }
 
 func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID, string, ports.ChatUserMessage) (chatsvc.EditMessageResult, error) {
@@ -65,7 +75,9 @@ func (f *fakeConversationService) Send(_ context.Context, _ domain.SessionID, me
 	return domain.ConversationTurn{ID: "turn-1", State: domain.TurnStateRunning}, nil
 }
 
-func (f *fakeConversationService) Resolve(context.Context, domain.SessionID, string, ports.ChatDecision) error {
+func (f *fakeConversationService) Resolve(_ context.Context, _ domain.SessionID, requestID string, decision ports.ChatDecision) error {
+	f.approvalRequestID = requestID
+	f.approvalDecision = decision
 	return nil
 }
 
@@ -76,6 +88,31 @@ func (f *fakeConversationService) ResolveInput(_ context.Context, _ domain.Sessi
 }
 
 func (f *fakeConversationService) Interrupt(context.Context, domain.SessionID) error { return nil }
+
+func (f *fakeConversationService) SnapshotPageForReview(_ context.Context, reviewID string, before, limit int64) (chatsvc.Snapshot, error) {
+	f.reviewID, f.reviewBefore, f.reviewLimit = reviewID, before, limit
+	return f.reviewSnapshot, f.reviewErr
+}
+
+func (f *fakeConversationService) SendForOwner(_ context.Context, owner domain.ConversationOwner, message ports.ChatUserMessage) (domain.ConversationTurn, error) {
+	f.reviewOwner, f.sent = owner, message
+	return domain.ConversationTurn{ID: "review-turn", State: domain.TurnStateRunning}, f.reviewErr
+}
+
+func (f *fakeConversationService) ResolveForOwner(_ context.Context, owner domain.ConversationOwner, requestID string, decision ports.ChatDecision) error {
+	f.reviewOwner, f.reviewRequestID, f.approvalDecision = owner, requestID, decision
+	return f.reviewErr
+}
+
+func (f *fakeConversationService) ResolveInputForOwner(_ context.Context, owner domain.ConversationOwner, requestID string, response ports.ChatInputResponse) error {
+	f.reviewOwner, f.reviewRequestID, f.inputResponse = owner, requestID, response
+	return f.reviewErr
+}
+
+func (f *fakeConversationService) InterruptForOwner(_ context.Context, owner domain.ConversationOwner) error {
+	f.reviewOwner, f.reviewInterrupted = owner, true
+	return f.reviewErr
+}
 
 func (f *fakeConversationService) Models(context.Context, domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
 	return nil, domain.ConversationSettings{}, nil
@@ -356,6 +393,46 @@ func TestResolveConversationInputCarriesActionAndStructuredContent(t *testing.T)
 	}
 	if service.inputRequestID != "request-7" || service.inputResponse.Action != "accept" || service.inputResponse.Content["choice"] != "native" {
 		t.Fatalf("input = %q %#v", service.inputRequestID, service.inputResponse)
+	}
+}
+
+func TestResolveConversationApprovalDecodesEscapedACPRequestID(t *testing.T) {
+	service := &fakeConversationService{}
+	server := conversationTestServer(t, service)
+	postConversationJSON(t, server,
+		"/api/v1/sessions/p1-1/conversation/approvals/acp-request%3Ahost%3A1/resolve",
+		`{"decisionId":"allow-once"}`, http.StatusNoContent)
+	if service.approvalRequestID != "acp-request:host:1" || service.approvalDecision.ID != "allow-once" {
+		t.Fatalf("approval = %q %#v", service.approvalRequestID, service.approvalDecision)
+	}
+}
+
+func TestResolveConversationInputDecodesEscapedACPRequestID(t *testing.T) {
+	service := &fakeConversationService{}
+	server := conversationTestServer(t, service)
+	postConversationJSON(t, server,
+		"/api/v1/sessions/p1-1/conversation/inputs/acp-request%3Ahost%3A2/resolve",
+		`{"action":"decline"}`, http.StatusNoContent)
+	if service.inputRequestID != "acp-request:host:2" || service.inputResponse.Action != "decline" {
+		t.Fatalf("input = %q %#v", service.inputRequestID, service.inputResponse)
+	}
+}
+
+func postConversationJSON(t *testing.T, server *httptest.Server, path, body string, wantStatus int) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, server.URL+path, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != wantStatus {
+		got, _ := io.ReadAll(response.Body)
+		t.Fatalf("status = %d, body = %s, want %d", response.StatusCode, got, wantStatus)
 	}
 }
 
