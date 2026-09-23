@@ -1,19 +1,12 @@
 package sqlite
 
 import (
-	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestShellTerminalLifetimeMigrationPreservesLegacyShell(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 132)
+	db := openMigratedDatabaseCopy(t, 132)
 	if _, err := db.Exec(`INSERT INTO shell_terminals (handle_id, working_dir, title, app_run_id, created_at) VALUES ('legacy-shell', '/worktree', 'Build', 'previous-launch', ?)`, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}

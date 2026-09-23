@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"database/sql"
 	"fmt"
 	"testing"
 	"testing/fstest"
@@ -30,13 +29,7 @@ func TestMigratePRReviewPartialUpgrade(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dataDir := t.TempDir()
-			db, err := sql.Open("sqlite", databaseURI(dataDir)+pragmas)
-			if err != nil {
-				t.Fatal(err)
-			}
-			db.SetMaxOpenConns(1)
-			t.Cleanup(func() { _ = db.Close() })
-			upTo(t, db, tt.baseVersion)
+			db := openMigratedDatabaseCopyAt(t, dataDir, tt.baseVersion, pragmas)
 			if tt.legacyVersion != 0 {
 				// Reproduce the migration actually shipped in intermediate PR
 				// builds, including its applied Goose version and FALSE default.

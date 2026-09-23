@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -86,6 +87,23 @@ func TestSessionsAPI_ActivityForwardsUsageMetadataWithoutChangingActivity(t *tes
 		usage.gotSignal.ProviderHint != "zai" ||
 		usage.gotSignal.SubagentTranscriptPath != "/tmp/sub.jsonl" {
 		t.Fatalf("usage signal = %+v", usage.gotSignal)
+	}
+}
+
+func TestSessionsAPI_ActivityContentionRemainsRetryableAndRecordsUsage(t *testing.T) {
+	activity := &fakeActivityRecorder{err: ports.ErrActivityProjectionContention}
+	usage := &fakeUsageHookRecorder{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil,
+		httpd.APIDeps{Activity: activity, UsageHooks: usage}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"idle","event":"stop","agentSessionId":"native-1","launchId":"launch-1","usage":{"harness":"claude-code","transcriptPath":"/tmp/main.jsonl"}}`)
+	if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "ACTIVITY_PROJECTION_BUSY") {
+		t.Fatalf("contention should be explicitly retryable: %d %s", status, body)
+	}
+	if usage.calls != 1 || usage.gotSignal.TranscriptPath != "/tmp/main.jsonl" {
+		t.Fatalf("projection contention discarded independent usage signal: %+v", usage)
 	}
 }
 
@@ -283,6 +301,37 @@ func TestSessionsAPI_ActivityThreadsCorrelationFields(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_ActivityThreadsConversationCheckpointOrigin(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"coordination","providerTurnId":"native-turn"}`)
+	if status != http.StatusOK {
+		t.Fatalf("activity = %d, want 200; body=%s", status, body)
+	}
+	if rec.gotSignal.ConversationCheckpointOrigin != domain.ConversationCheckpointOriginCoordination {
+		t.Fatalf("checkpoint origin = %q, want coordination", rec.gotSignal.ConversationCheckpointOrigin)
+	}
+	if rec.gotSignal.ProviderTurnID != "native-turn" {
+		t.Fatalf("provider turn = %q", rec.gotSignal.ProviderTurnID)
+	}
+}
+
+func TestSessionsAPI_ActivityRejectsUnknownConversationCheckpointOrigin(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"active","event":"user-prompt-submit","conversationCheckpointOrigin":"provider"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("activity = %d, want 400; body=%s", status, body)
+	}
+	if !strings.Contains(string(body), `"code":"INVALID_CONVERSATION_CHECKPOINT_ORIGIN"`) {
+		t.Fatalf("body = %s, want stable checkpoint-origin error code", body)
+	}
+}
+
 func TestSessionsAPI_ActivityAcceptsMetadataOnlyAgentSessionID(t *testing.T) {
 	rec := &fakeActivityRecorder{}
 	srv := newActivityTestServer(t, rec)
@@ -303,11 +352,11 @@ func TestSessionsAPI_ActivityThreadsAgentSessionIDWithState(t *testing.T) {
 	srv := newActivityTestServer(t, rec)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
-		`{"state":"idle","event":"stop","agentSessionId":"native-session-1"}`)
+		`{"state":"idle","event":"stop","agentSessionId":"native-session-1","observedAt":"2026-09-13T00:00:00Z"}`)
 	if status != http.StatusOK {
 		t.Fatalf("activity = %d, want 200; body=%s", status, body)
 	}
-	want := ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop", AgentSessionID: "native-session-1"}
+	want := ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "stop", AgentSessionID: "native-session-1", Timestamp: time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)}
 	if rec.gotSignal != want {
 		t.Fatalf("recorder signal = %#v, want %#v", rec.gotSignal, want)
 	}

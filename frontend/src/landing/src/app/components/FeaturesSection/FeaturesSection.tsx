@@ -17,11 +17,11 @@ const DEMO_COMPONENTS = [
 ];
 
 const FEATURE_BACKGROUNDS = [
-	"/optimized/feature3.webp",
-	"/optimized/feature.webp",
-	"/optimized/feature4.webp",
-	"/optimized/feature2.webp",
-	"/optimized/feature3.webp",
+	"feature3",
+	"feature",
+	"feature4",
+	"feature2",
+	"feature3",
 ] as const;
 
 export function FeaturesSection() {
@@ -68,7 +68,6 @@ export function FeaturesSection() {
 										backgroundImage={
 											FEATURE_BACKGROUNDS[index % FEATURE_BACKGROUNDS.length]
 										}
-										preload
 									>
 										{DemoComponent && <DemoComponent />}
 									</FeatureDemo>

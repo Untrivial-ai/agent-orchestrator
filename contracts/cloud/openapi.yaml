@@ -428,6 +428,29 @@ paths:
                 $ref: "#/components/schemas/DeleteSessionResponse"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/children:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: listSessionChildren
+      tags: [Sessions]
+      description: >-
+        Lists the sessions this orchestrator spawned, newest first, with each
+        child's pull requests. Terminated children are included; a session
+        that spawned nothing returns an empty page.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of the orchestrator's child sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionChildrenPage"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/pull-requests:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -673,6 +696,32 @@ paths:
                 $ref: "#/components/schemas/WorkspaceFile"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/file/diff:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: readWorkspaceDiffFile
+      tags: [Workspace]
+      description: Read one cloud workspace file with its bounded unified diff.
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Docker workspace file review details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceDiffFileDetail"
+        "501":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/diff:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -680,6 +729,7 @@ paths:
     get:
       operationId: getWorkspaceDiff
       tags: [Workspace]
+      description: Changed-file summary and line counts relative to the session compare base.
       responses:
         "200":
           description: Workspace changes relative to the session compare base.
@@ -687,6 +737,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkspaceDiff"
+        "501":
+          $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/provider-connections:
@@ -1059,17 +1111,25 @@ paths:
       tags: [Worker Orchestration]
       security:
         - workerAuth: []
-      description: Creates a trusted child by default and passes its required prompt directly to the coding-agent launch command.
+      description: >-
+        Lists this orchestrator's direct child sessions with their pull
+        requests. Terminated children are hidden unless includeTerminated.
       parameters:
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
+        - name: includeTerminated
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: A page of direct child sessions owned by this orchestrator.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionPage"
+                $ref: "#/components/schemas/SessionChildrenPage"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1156,6 +1216,46 @@ paths:
       responses:
         "202":
           description: The message was durably appended to the direct child.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/parent/messages:
+    post:
+      operationId: reportToParent
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      description: >-
+        Delivers a child worker's message into the conversation of the
+        orchestrator that spawned it. Requires the worker:report scope, which
+        is issued only to sessions with an orchestrator parent.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageInput"
+      responses:
+        "202":
+          description: The message was durably appended to the parent orchestrator.
           content:
             application/json:
               schema:
@@ -2402,6 +2502,15 @@ components:
           type: string
           minLength: 1
           maxLength: 4096
+    WorkerWorkspaceDiffFilePayload:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
     WorkerWorkspaceWritePayload:
       $ref: "#/components/schemas/WorkspaceFileWriteInput"
     WorkerWorkspaceEntryPage:
@@ -2566,6 +2675,22 @@ components:
           const: workspace.diff
         payload:
           $ref: "#/components/schemas/EmptyObject"
+    WorkerWorkspaceDiffFileTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: workspace.diff-file
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceDiffFilePayload"
     WorkerTerminalOpenTransport:
       type: object
       additionalProperties: false
@@ -2636,6 +2761,7 @@ components:
         - $ref: "#/components/schemas/WorkerWorkspaceReadTransport"
         - $ref: "#/components/schemas/WorkerWorkspaceWriteTransport"
         - $ref: "#/components/schemas/WorkerWorkspaceDiffTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceDiffFileTransport"
         - $ref: "#/components/schemas/WorkerTerminalOpenTransport"
         - $ref: "#/components/schemas/WorkerTerminalInputTransport"
         - $ref: "#/components/schemas/WorkerTerminalResizeTransport"
@@ -2656,7 +2782,7 @@ components:
       additionalProperties: true
       description: |
         The server accepts any non-null JSON object. Built-in workers return a
-        WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiff,
+        WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiffFileDetail, WorkspaceDiff,
         WorkerTerminalOpenResult, WorkerTerminalInputResult, or
         WorkerTerminalCloseResult appropriate to the claimed command.
     WorkerCompleteTransportInput:
@@ -2844,6 +2970,53 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Session"
+        page:
+          $ref: "#/components/schemas/PageInfo"
+    SessionPullRequestFacts:
+      type: object
+      additionalProperties: false
+      required: [url, number, state, ci, review, mergeability, reviewComments, updatedAt]
+      properties:
+        url:
+          type: string
+        number:
+          type: integer
+        state:
+          $ref: "#/components/schemas/PullRequestState"
+        ci:
+          $ref: "#/components/schemas/CIState"
+        review:
+          $ref: "#/components/schemas/ReviewDecision"
+        mergeability:
+          $ref: "#/components/schemas/MergeabilityState"
+        reviewComments:
+          type: boolean
+        sourceBranch:
+          type: string
+        targetBranch:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    SessionWithPullRequests:
+      allOf:
+        - $ref: "#/components/schemas/Session"
+        - type: object
+          required: [prs]
+          properties:
+            prs:
+              type: array
+              items:
+                $ref: "#/components/schemas/SessionPullRequestFacts"
+    SessionChildrenPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionWithPullRequests"
         page:
           $ref: "#/components/schemas/PageInfo"
     PullRequestState:
@@ -3481,6 +3654,37 @@ components:
           minimum: 0
         binary:
           type: boolean
+    WorkspaceDiffFileDetail:
+      type: object
+      additionalProperties: false
+      required: [path, status, additions, deletions, size, binary, deleted, content, contentTruncated, diff, diffTruncated]
+      properties:
+        path:
+          type: string
+        status:
+          $ref: "#/components/schemas/WorkspaceFileStatus"
+        additions:
+          type: integer
+          minimum: 0
+        deletions:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        binary:
+          type: boolean
+        deleted:
+          type: boolean
+        content:
+          type: string
+        contentTruncated:
+          type: boolean
+        diff:
+          type: string
+        diffTruncated:
+          type: boolean
     WorkspaceDiff:
       type: object
       additionalProperties: false
@@ -3530,7 +3734,7 @@ components:
           enum: [us, eu]
         credentialType:
           type: string
-          enum: [oauth_token, api_key, access_token]
+          enum: [oauth_token, api_key, access_token, auth_json]
     PutAgentProviderConnectionInput:
       type: object
       additionalProperties: false
@@ -3538,7 +3742,7 @@ components:
       properties:
         credentialType:
           type: string
-          enum: [oauth_token, api_key, access_token]
+          enum: [oauth_token, api_key, access_token, auth_json]
         secret:
           type: string
           minLength: 1
@@ -3554,7 +3758,7 @@ components:
           enum: [claude-code, codex, cursor]
         credentialType:
           type: string
-          enum: [oauth_token, api_key, access_token]
+          enum: [oauth_token, api_key, access_token, auth_json]
         secret:
           type: string
           minLength: 1

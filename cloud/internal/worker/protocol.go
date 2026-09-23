@@ -11,18 +11,34 @@ type BootstrapRequest struct {
 
 // LaunchContext is the durable session context handed to a bootstrapped worker.
 type LaunchContext struct {
-	SessionID      string   `json:"sessionId"`
-	ProjectID      string   `json:"projectId"`
-	Kind           string   `json:"kind"`
-	Harness        string   `json:"harness"`
-	DisplayName    string   `json:"displayName"`
-	Branch         string   `json:"branch"`
-	Prompt         string   `json:"prompt,omitempty"`
-	AgentSessionID string   `json:"agentSessionId,omitempty"`
-	Mode           string   `json:"mode"`
-	DeniedCommands []string `json:"deniedCommands"`
-	RepositoryURL  string   `json:"repositoryUrl"`
-	DefaultBranch  string   `json:"defaultBranch"`
+	SessionID      string `json:"sessionId"`
+	ProjectID      string `json:"projectId"`
+	Kind           string `json:"kind"`
+	Harness        string `json:"harness"`
+	DisplayName    string `json:"displayName"`
+	Branch         string `json:"branch"`
+	Prompt         string `json:"prompt,omitempty"`
+	AgentSessionID string `json:"agentSessionId,omitempty"`
+	// ParentSessionID is the orchestrator that spawned this session; empty for
+	// top-level sessions.
+	ParentSessionID string   `json:"parentSessionId,omitempty"`
+	Mode            string   `json:"mode"`
+	DeniedCommands  []string `json:"deniedCommands"`
+	RepositoryURL   string   `json:"repositoryUrl"`
+	DefaultBranch   string   `json:"defaultBranch"`
+	// ExtraRepos are additional repositories the worker clones alongside the
+	// primary repo (multi-repo dev kit). Empty for a single-repo session.
+	ExtraRepos []RepoRef `json:"extraRepos,omitempty"`
+	// SystemPrompt carries control-plane-authored project context and rules. It
+	// remains separate from Prompt, which is the user's visible task input.
+	SystemPrompt string `json:"systemPrompt"`
+}
+
+// RepoRef is one additional repository the worker clones beside the primary
+// repo, optionally at a specific branch.
+type RepoRef struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // BootstrapResponse is the control plane's answer to a valid bootstrap ticket.
@@ -207,6 +223,14 @@ type WorkspaceReadRequest struct {
 	Path string `json:"path"`
 }
 
+// WorkspaceDiffFileRequest asks the worker for one file's current text and
+// its bounded unified patch against HEAD. It is deliberately distinct from
+// WorkspaceReadRequest so providers that have not implemented diff-file
+// support never receive a request they could mistake for an ordinary read.
+type WorkspaceDiffFileRequest struct {
+	Path string `json:"path"`
+}
+
 type WorkspaceWriteRequest struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -256,6 +280,23 @@ type WorkspaceFile struct {
 	Size    int64  `json:"size"`
 }
 
+// WorkspaceDiffFile is the Docker worker's per-file review model. It mirrors
+// the local daemon's useful file-review facts without exposing host paths or
+// provider implementation details.
+type WorkspaceDiffFile struct {
+	Path             string `json:"path"`
+	Status           string `json:"status"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Size             int64  `json:"size"`
+	Binary           bool   `json:"binary"`
+	Deleted          bool   `json:"deleted"`
+	Content          string `json:"content"`
+	ContentTruncated bool   `json:"contentTruncated"`
+	Diff             string `json:"diff"`
+	DiffTruncated    bool   `json:"diffTruncated"`
+}
+
 type TerminalCommand struct {
 	TerminalID string `json:"terminalId"`
 	Kind       string `json:"kind,omitempty"`
@@ -266,8 +307,9 @@ type TerminalCommand struct {
 
 // TerminalStreamFrame is one message on the persistent duplex terminal
 // stream between a worker and the control plane. "output" carries PTY bytes
-// up (acked with the persisted row sequence); "input" pushes user keystrokes
-// down; "error" tells the worker to fall back to the polled transport.
+// up with the terminal-local, gap-free ID used for durable replay; "input"
+// pushes user keystrokes down; "error" tells the worker to fall back to the
+// polled transport.
 type TerminalStreamFrame struct {
 	Type     string `json:"type"`
 	Data     []byte `json:"data,omitempty"`
@@ -277,6 +319,7 @@ type TerminalStreamFrame struct {
 }
 
 type TerminalOutputRequest struct {
+	ID   int64  `json:"id,omitempty"`
 	Data []byte `json:"data"`
 }
 

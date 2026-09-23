@@ -13,14 +13,19 @@ import {
 	killSession,
 	launchOrchestrator as apiLaunchOrchestrator,
 	mergePR as apiMergePR,
+	pinSession as apiPinSession,
+	renameSession as apiRenameSession,
 	restoreSession,
+	resumeSessionAgent,
 	sendMessage,
+	unpinSession as apiUnpinSession,
 	type DashboardPR,
 	type DashboardSession,
 	type DashboardStats,
 	type OrchestratorLink,
 	type ProjectInfo,
 	type SessionMode,
+	type SpawnAttachmentInput,
 } from "./api";
 import { isConfigured, loadConfig, machineIdentity, type ServerConfig } from "./config";
 import { resolveActiveConfig, runtimeResolveDeps } from "./resolveConfig";
@@ -29,8 +34,7 @@ import type { Endpoint } from "./endpoints";
 import { activeHost, loadHosts } from "./hosts";
 import { shouldReRace } from "./reRace";
 import { shouldRaceForUpgrade, UPGRADE_RACE_CHECK_MS } from "./upgradeRace";
-import { sameServerConfig } from "./sameConfig";
-import { keepUnchanged } from "./keepUnchanged";
+import { pollResultIsCurrent, sameServerConfig } from "./sameConfig";
 import { shouldShowLoading } from "./configLoading";
 import { shouldKeepPolling } from "./connectionError";
 import { primeInstallId } from "./installId";
@@ -54,6 +58,7 @@ export type SpawnOptions = {
 	prompt?: string;
 	harness?: string;
 	model?: string;
+	attachments?: SpawnAttachmentInput[];
 	/** Mobile defaults to Chat; TUI remains an explicit compatibility choice. */
 	mode?: SessionMode;
 };
@@ -65,9 +70,7 @@ type AppState = {
 	 *  rotated tunnel hostname apart from being simply out of range. */
 	activeEndpoints: Endpoint[];
 	projects: ProjectInfo[];
-	/** Whether `projects` is a list this machine actually answered with, rather
-	 *  than the empty array that stands in before the first one lands. Callers
-	 *  that judge a project id against the list need it — see resolveActiveProject. */
+	/** Whether the current projects value came from the latest daemon response. */
 	projectsKnown: boolean;
 	sessions: DashboardSession[];
 	orchestrators: OrchestratorLink[];
@@ -81,6 +84,14 @@ type AppState = {
 	error: string | null;
 	// HTTP status behind `error`, or null when the server was never reached.
 	errorStatus: number | null;
+	/**
+	 * When the last successful poll landed, in epoch milliseconds. 0 if none has.
+	 *
+	 * Deliberately a getter rather than a value: a timestamp that changed on every
+	 * successful tick would re-render every consumer of this store once per poll.
+	 * Read it through useStaleness, which owns the clock.
+	 */
+	getLastSyncAt: () => number;
 	// actions
 	reloadConfig: () => Promise<void>;
 	refresh: () => Promise<void>;
@@ -89,7 +100,11 @@ type AppState = {
 	launchConductor: (projectId: string, clean?: boolean, mode?: SessionMode) => Promise<OrchestratorLink>;
 	merge: (pr: DashboardPR) => Promise<void>;
 	kill: (id: string) => Promise<void>;
+	renameWorker: (id: string, displayName: string) => Promise<void>;
+	setWorkerPinned: (id: string, pinned: boolean) => Promise<void>;
 	restore: (id: string) => Promise<void>;
+	/** Restart a stopped agent without restoring a terminated AO session. */
+	resumeAgent: (id: string) => Promise<void>;
 	send: (id: string, message: string) => Promise<void>;
 };
 
@@ -106,7 +121,7 @@ export function useApp(): AppState {
 export function useVisibleSessions(): DashboardSession[] {
 	const { sessions, activeProjectId } = useApp();
 	return useMemo(
-		() => (activeProjectId === ALL_PROJECTS ? sessions : sessions.filter((s) => s.projectId === activeProjectId)),
+		() => (activeProjectId === "all" ? sessions : sessions.filter((s) => s.projectId === activeProjectId)),
 		[sessions, activeProjectId],
 	);
 }
@@ -124,17 +139,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// yet" from "no machine paired" — identical as state, opposite to the user.
 	const [configResolved, setConfigResolved] = useState(false);
 	const [activeEndpoints, setActiveEndpoints] = useState<Endpoint[]>([]);
-	// The last project list a machine answered with, plus whether that answer
-	// ever came. Held together because retainProjects decides all of it from one
-	// tick's result, and split apart they could disagree — see that helper for
-	// why a failed /projects must not read as "this daemon has no projects".
 	const [knownProjects, setKnownProjects] = useState<KnownProjects>(NO_PROJECTS_KNOWN);
 	const [sessions, setSessions] = useState<DashboardSession[]>([]);
 	const [orchestrators, setOrchestrators] = useState<OrchestratorLink[]>([]);
 	const [orchestratorId, setOrchestratorId] = useState<string | null>(null);
 	const [stats, setStats] = useState<DashboardStats>({});
-	// The filter as chosen — from storage at launch, then from the picker. What
-	// consumers see is `activeProjectId` below: this checked against the list.
 	const [chosenProjectId, setChosenProjectId] = useState<string>(ALL_PROJECTS);
 	const [connection, setConnection] = useState<ConnStatus>("closed");
 	const [notificationsUnread, setNotificationsUnread] = useState(0);
@@ -153,6 +162,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// Whether the most recent poll reached the daemon. Distinct from openRef,
 	// which latches on first connect and never clears.
 	const lastTickOkRef = useRef(false);
+	// When the last successful poll landed, for the stale-data banner. 0 means
+	// "never synced".
+	//
+	// A ref rather than state, and read through a stable getter below, because a
+	// fresh timestamp in the context value on every successful tick would
+	// re-render every consumer of this store once per poll — which is precisely
+	// what "re-render the board on a change, not on the poll tick" removed. Only
+	// the banner subscribes to the passage of time; the board does not.
+	const lastSyncAtRef = useRef(0);
 	// Whether the last failure had no HTTP status — nothing answered at all,
 	// which is what leaving a network looks like.
 	const lastFailUnreachableRef = useRef(false);
@@ -233,8 +251,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// Read alongside the config so a failure can be explained: a stored
 			// tunnel that no longer answers is a rotated hostname, not a machine
 			// that is merely out of range.
-			const endpoints = (await activeHost())?.endpoints ?? [];
-			setActiveEndpoints((current) => keepUnchanged(current, endpoints));
+			setActiveEndpoints((await activeHost())?.endpoints ?? []);
 		} finally {
 			setConfigResolved(true);
 		}
@@ -304,36 +321,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// getSessions returns projects, so don't fetch /projects again alongside
 			// it — that duplicate doubled the auth attempts spent per failing tick.
 			const sess = await getSessions(c, "all");
-			// Most ticks bring back the fleet exactly as it was; keep the previous
-			// value so React bails out of the render — see keepUnchanged.
-			//
-			// Keyed on which machine answered AND checked against the machine the
-			// app is on now: fetchAll has no staleness guard, so a request already
-			// in flight when the user re-pairs still lands here, and folding it in
-			// would displace the list the current machine had just given us. Only
-			// the project write is guarded, deliberately — guarding every write in
-			// this function would also swallow the connection and loading state on
-			// a re-pair, which is a different change. retainProjects holds identity
-			// when it keeps what it has, but a successful tick builds a fresh
-			// object, so it goes through keepUnchanged like everything else.
-			setKnownProjects((prev) =>
-				keepUnchanged(
-					prev,
-					retainProjects(
-						prev,
-						{ machine: machineIdentity(c), projects: sess.projects },
-						machineIdentity(cfgRef.current ?? c),
-					),
-				),
-			);
-			setSessions((prev) => keepUnchanged(prev, sess.sessions));
-			setOrchestrators((prev) => keepUnchanged(prev, sess.orchestrators));
+			// A poll that started against the previous pairing must not publish any
+			// of its board state after the user has moved to another machine.
+			if (!pollResultIsCurrent(c, cfgRef.current)) return false;
+			setKnownProjects((prev) => retainProjects(
+				prev,
+				{ machine: machineIdentity(c), projects: sess.projects },
+				machineIdentity(c),
+			));
+			setSessions(sess.sessions);
+			setOrchestrators(sess.orchestrators);
 			setOrchestratorId(sess.orchestratorId);
-			setStats((prev) => keepUnchanged(prev, sess.stats));
+			setStats(sess.stats);
 			setError(null);
 			setErrorStatus(null);
 			setConnection("open");
 			lastTickOkRef.current = true;
+			lastSyncAtRef.current = Date.now();
 			if (!openRef.current) {
 				openRef.current = true;
 				const trigger = everConnectedRef.current ? "reconnect" : "launch";
@@ -346,15 +350,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// The app may have gone to the background while the sessions request was
 			// in flight. Stop here rather than spending another request that would
 			// re-mark this device live after the user left.
-			if (!pollActiveRef.current) return true;
+			if (!pollActiveRef.current || !pollResultIsCurrent(c, cfgRef.current)) return false;
 			try {
 				const page = await getNotifications(c, { status: "unread", limit: 1 });
+				if (!pollResultIsCurrent(c, cfgRef.current)) return false;
 				setNotificationsUnread(page.unreadCount);
 			} catch {
+				if (!pollResultIsCurrent(c, cfgRef.current)) return false;
 				setNotificationsUnread(0);
 			}
 			return true;
 		} catch (e) {
+			if (!pollResultIsCurrent(c, cfgRef.current)) return false;
 			lastTickOkRef.current = false;
 			const msg = e instanceof Error ? e.message : "Failed to load";
 			setError(msg);
@@ -374,7 +381,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// Decided from the status, not the message text: see shouldKeepPolling.
 			return shouldKeepPolling(status);
 		} finally {
-			setLoading(false);
+			if (pollResultIsCurrent(c, cfgRef.current)) setLoading(false);
 		}
 	}, []);
 
@@ -448,20 +455,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		AsyncStorage.setItem(ACTIVE_PROJECT_KEY, id).catch(() => {});
 	}, []);
 
-	// Only this machine's answers are visible as this machine's projects; see
-	// projectsForMachine for the re-pair window that makes the read side its own
-	// guard rather than a consequence of the write side.
+	// During a re-pair, the previous machine's retained list is not evidence
+	// about the new machine. Keep it hidden until the active machine answers.
 	const { projects, known: projectsKnown } = projectsForMachine(
 		knownProjects,
 		config && isConfigured(config) ? machineIdentity(config) : "",
 	);
-
-	// A filter whose project the daemon no longer lists applies as "all" (#4843).
-	// Derived on every list rather than reset and written back: the project can
-	// disappear while the app is open and the stored value can land after the
-	// first list does, storage is then only ever written by a tap, a late
-	// response from a machine the user just left cannot discard the filter they
-	// picked on the new one, and the choice comes back if the project does.
 	const activeProjectId = useMemo(
 		() => resolveActiveProject(chosenProjectId, projects, projectsKnown),
 		[chosenProjectId, projects, projectsKnown],
@@ -475,42 +474,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	}, [activeProjectId, projects]);
 
 	const spawn = useCallback(
-		async ({ projectId, prompt, harness, model, mode }: SpawnOptions) => {
+		async ({ projectId, prompt, harness, model, mode, attachments }: SpawnOptions) => {
 			const resolvedMode = mode ?? "chat";
-			return trackFeature(
-				"spawn",
-				async () => {
-					const c = cfgRef.current;
-					const proj = projectId ?? targetProject();
-					if (!c || !proj) throw new Error("Pick a project first");
-					const session = await delegateTask(c, {
-						projectId: proj,
-						brief: prompt ?? "",
-						agent: harness,
-						model,
-						mode: resolvedMode,
-					});
-					await fetchAll();
-					return session;
-				},
-				{ mode: resolvedMode },
-			);
+			return trackFeature("spawn", async () => {
+				const c = cfgRef.current;
+				const proj = projectId ?? targetProject();
+				if (!c || !proj) throw new Error("Pick a project first");
+				const session = await delegateTask(c, {
+					projectId: proj,
+					brief: prompt ?? "",
+					agent: harness,
+					model,
+					mode: resolvedMode,
+					attachments,
+				});
+				await fetchAll();
+				return session;
+			}, { mode: resolvedMode });
 		},
 		[targetProject, fetchAll],
 	);
 
 	const launchConductor = useCallback(
 		async (projectId: string, clean = false, mode: SessionMode = "chat") =>
-			trackFeature(
-				"conductor",
-				async () => {
-					const c = cfgRef.current!;
-					const link = await apiLaunchOrchestrator(c, projectId, clean, mode);
-					await fetchAll();
-					return link;
-				},
-				{ mode },
-			),
+			trackFeature("conductor", async () => {
+				const c = cfgRef.current!;
+				const link = await apiLaunchOrchestrator(c, projectId, clean, mode);
+				await fetchAll();
+				return link;
+			}),
 		[fetchAll],
 	);
 
@@ -532,10 +524,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		[fetchAll],
 	);
 
+	const renameWorker = useCallback(
+		async (id: string, displayName: string) => {
+			await apiRenameSession(cfgRef.current!, id, displayName);
+			await fetchAll();
+		},
+		[fetchAll],
+	);
+
+	const setWorkerPinned = useCallback(
+		async (id: string, pinned: boolean) => {
+			await (pinned ? apiPinSession(cfgRef.current!, id) : apiUnpinSession(cfgRef.current!, id));
+			await fetchAll();
+		},
+		[fetchAll],
+	);
+
 	const restore = useCallback(
 		async (id: string) =>
 			trackFeature("restore", async () => {
 				await restoreSession(cfgRef.current!, id);
+				await fetchAll();
+			}),
+		[fetchAll],
+	);
+
+	// Distinct from restore, and the chat screen already relies on the
+	// difference: a terminated AO session is restored, a merely stopped
+	// agent/controller is resumed without resurrecting the session around it.
+	const resumeAgent = useCallback(
+		async (id: string) =>
+			trackFeature("restore", async () => {
+				await resumeSessionAgent(cfgRef.current!, id);
 				await fetchAll();
 			}),
 		[fetchAll],
@@ -550,6 +570,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 	// Memoized so the provider doesn't hand every useApp() consumer a brand-new
 	// object (causing re-renders) on each render. Re-renders now track real state changes.
+	// Stable for the life of the provider, which is what lets it sit in the memo's
+	// dependency list below without ever busting it.
+	const getLastSyncAt = useCallback(() => lastSyncAtRef.current, []);
+
 	const value = useMemo<AppState>(
 		() => ({
 			config,
@@ -567,6 +591,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			loading,
 			error,
 			errorStatus,
+			getLastSyncAt,
 			reloadConfig,
 			refresh,
 			setActiveProject,
@@ -574,12 +599,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			launchConductor,
 			merge,
 			kill,
+			renameWorker,
+			setWorkerPinned,
 			restore,
+			resumeAgent,
 			send,
 		}),
 		[
 			config,
-			activeEndpoints,
 			projects,
 			projectsKnown,
 			sessions,
@@ -592,6 +619,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			loading,
 			error,
 			errorStatus,
+			getLastSyncAt,
 			reloadConfig,
 			refresh,
 			setActiveProject,
@@ -599,7 +627,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			launchConductor,
 			merge,
 			kill,
+			renameWorker,
+			setWorkerPinned,
 			restore,
+			resumeAgent,
 			send,
 		],
 	);

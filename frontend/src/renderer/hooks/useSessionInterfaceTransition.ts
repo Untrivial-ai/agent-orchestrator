@@ -15,11 +15,13 @@ export type SessionInterfaceTransition = components["schemas"]["SessionInterface
 export type SessionInterfaceTransitionStatus =
 	components["schemas"]["SessionInterfaceTransitionStatusResponse"];
 export type SessionInterfaceTransitionPolicy = "drain" | "interrupt";
+export type SessionInterfaceTransitionHistoryPolicy = "strict" | "provider_history";
 export type SessionInterfaceMode = "chat" | "tui";
 
 type StartInterfaceTransitionInput = {
 	targetMode: SessionInterfaceMode;
 	policy: SessionInterfaceTransitionPolicy;
+	historyPolicy?: SessionInterfaceTransitionHistoryPolicy;
 };
 
 type StartInterfaceTransitionMutationInput = StartInterfaceTransitionInput & {
@@ -124,18 +126,68 @@ export function interfaceTransitionIsCancellable(transition?: SessionInterfaceTr
 	return Boolean(transition && cancellablePhases.has(transition.phase));
 }
 
+export function interfaceTransitionNeedsRestart(transition?: SessionInterfaceTransition): boolean {
+	// The daemon retains the active fence until target shutdown is proven;
+	// this is an actionable recovery state, not ongoing progress.
+	return Boolean(
+		transition &&
+			interfaceTransitionIsActive(transition) &&
+			transition.errorCode === "TARGET_STOP_UNCONFIRMED",
+	);
+}
+
 export function interfaceTransitionHasUnacknowledgedNotice(
 	transition?: SessionInterfaceTransition,
 ): boolean {
 	return Boolean(
-		transition &&
-			!transition.noticeAcknowledgedAt &&
-			(transition.phase === "failed" || transition.phase === "recovery_required"),
+		interfaceTransitionNeedsRestart(transition) ||
+			(transition &&
+				!transition.noticeAcknowledgedAt &&
+				(transition.phase === "failed" || transition.phase === "recovery_required")),
 	);
 }
 
 export function sessionInterfaceTransitionQueryKey(sessionId: string) {
 	return ["session-interface-transition", sessionId] as const;
+}
+
+function useSessionInterfaceTransitionStatusQuery(sessionId: string | undefined) {
+	return useQuery({
+		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
+		enabled: Boolean(sessionId && hasTrustedApiBaseUrl()),
+		queryFn: async () => {
+			const { data, error } = await apiClient.GET(
+				"/api/v1/sessions/{sessionId}/interface-transition",
+				{ params: { path: { sessionId: sessionId as string } } },
+			);
+			if (error) throw error;
+			return data as SessionInterfaceTransitionStatus;
+		},
+		refetchInterval: (state) => {
+			const status = state.state.data;
+			if (interfaceTransitionNeedsRestart(status?.transition)) return false;
+			if (interfaceTransitionIsActive(status?.transition)) return 250;
+			// A missing or not-yet-current native identity is transient while the
+			// terminal's session-start hook is arriving. Recheck only those readiness
+			// states so supported switches enable without polling permanently
+			// unsupported harnesses or ordinary idle sessions.
+			return status?.reasonCode === "NATIVE_SESSION_MISSING" ||
+				status?.reasonCode === "NATIVE_SESSION_UNVERIFIED"
+				? nativeSessionReadinessPoll
+				: false;
+		},
+		retry: 1,
+	});
+}
+
+export function useSessionInterfaceTransitionStatus(sessionId: string | undefined) {
+	const query = useSessionInterfaceTransitionStatusQuery(sessionId);
+	return {
+		status: query.data,
+		transition: query.data?.transition,
+		isLoading: query.isLoading,
+		statusError: query.error ? apiErrorMessage(query.error) : undefined,
+	};
 }
 
 /**
@@ -152,31 +204,7 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		attempt: number;
 		key: string;
 	}>();
-	const query = useQuery({
-		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
-		enabled: Boolean(sessionId && hasTrustedApiBaseUrl()),
-		queryFn: async () => {
-			const { data, error } = await apiClient.GET(
-				"/api/v1/sessions/{sessionId}/interface-transition",
-				{ params: { path: { sessionId: sessionId as string } } },
-			);
-			if (error) throw error;
-			return data as SessionInterfaceTransitionStatus;
-		},
-		refetchInterval: (state) => {
-			const status = state.state.data;
-			if (interfaceTransitionIsActive(status?.transition)) return 250;
-			// A missing or not-yet-current native identity is transient while the
-			// terminal's session-start hook is arriving. Recheck only those readiness
-			// states so supported switches enable without polling permanently
-			// unsupported harnesses or ordinary idle sessions.
-			return status?.reasonCode === "NATIVE_SESSION_MISSING" ||
-				status?.reasonCode === "NATIVE_SESSION_UNVERIFIED"
-				? nativeSessionReadinessPoll
-				: false;
-		},
-		retry: 1,
-	});
+	const query = useSessionInterfaceTransitionStatusQuery(sessionId);
 
 	const start = useMutation({
 		mutationKey: startInterfaceTransitionMutationKey,

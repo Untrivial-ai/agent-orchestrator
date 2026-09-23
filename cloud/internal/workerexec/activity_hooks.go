@@ -2,11 +2,31 @@ package workerexec
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
 
-const cloudHookBinary = "/usr/local/bin/ao"
+// bakedHelperPath is the helper baked into the sandbox image. It is the last
+// resort: hooks prefer the self-healed helper (hookHelperPath) because the baked
+// copy goes stale on any deploy that changes the ao binary, and the Stop hook
+// invoking a stale helper silently drops durable-restore capture.
+const bakedHelperPath = "/usr/local/bin/ao"
+
+// hookHelperPath returns the ao helper the harness hooks should invoke. The
+// worker self-heals the current helper to <dataDir>/bin/ao (see the ao-worker
+// selfupdate healHelper) and keeps it current, so hooks run the up-to-date
+// helper regardless of a stale baked copy. Falls back to the baked path when
+// the healed copy is absent (e.g. self-heal disabled) or the data dir is unset.
+func hookHelperPath(dataDir string) string {
+	if dataDir = strings.TrimSpace(dataDir); dataDir != "" {
+		healed := filepath.Join(dataDir, "bin", "ao")
+		if info, err := os.Stat(healed); err == nil && !info.IsDir() {
+			return healed
+		}
+	}
+	return bakedHelperPath
+}
 
 type activityHook struct {
 	nativeEvent string
@@ -41,17 +61,17 @@ var cursorActivityHooks = []activityHook{
 	{"beforeMCPExecution", "permission-request", ""},
 }
 
-func hookCommand(harness, event string) string {
-	return cloudHookBinary + " hooks " + harness + " " + event
+func hookCommand(binary, harness, event string) string {
+	return binary + " hooks " + harness + " " + event
 }
 
-func installClaudeActivityHooks(settings map[string]any) {
+func installClaudeActivityHooks(binary string, settings map[string]any) {
 	hooks := objectValue(settings, "hooks")
 	for _, hook := range claudeActivityHooks {
 		entry := map[string]any{
 			"hooks": []any{map[string]any{
 				"type":    "command",
-				"command": hookCommand("claude-code", hook.event),
+				"command": hookCommand(binary, "claude-code", hook.event),
 				"timeout": 5,
 			}},
 		}
@@ -62,7 +82,7 @@ func installClaudeActivityHooks(settings map[string]any) {
 			hooks,
 			hook.nativeEvent,
 			entry,
-			hookCommand("claude-code", hook.event),
+			hookCommand(binary, "claude-code", hook.event),
 		)
 	}
 }
@@ -83,10 +103,10 @@ func removeGlobalClaudeActivityHooks(settings map[string]any) {
 			for _, candidate := range commands {
 				entry, _ := candidate.(map[string]any)
 				command, _ := entry["command"].(string)
-				if strings.HasPrefix(
-					command,
-					cloudHookBinary+" hooks claude-code ",
-				) {
+				// Match on the command suffix, not a fixed binary prefix, so a
+				// hook installed with an older binary path (baked or a prior
+				// healed path) is still recognized and removed.
+				if strings.Contains(command, " hooks claude-code ") {
 					continue
 				}
 				keptCommands = append(keptCommands, candidate)
@@ -108,7 +128,7 @@ func removeGlobalClaudeActivityHooks(settings map[string]any) {
 	}
 }
 
-func installCursorActivityHooks(workspace string) error {
+func installCursorActivityHooks(binary, workspace string) error {
 	path := filepath.Join(workspace, ".cursor", "hooks.json")
 	if err := updateJSONFile(path, func(root map[string]any) {
 		if _, ok := root["version"]; !ok {
@@ -119,8 +139,8 @@ func installCursorActivityHooks(workspace string) error {
 			appendJSONHook(
 				hooks,
 				hook.nativeEvent,
-				map[string]any{"command": hookCommand("cursor", hook.event)},
-				hookCommand("cursor", hook.event),
+				map[string]any{"command": hookCommand(binary, "cursor", hook.event)},
+				hookCommand(binary, "cursor", hook.event),
 			)
 		}
 	}); err != nil {
@@ -129,11 +149,11 @@ func installCursorActivityHooks(workspace string) error {
 	return nil
 }
 
-func codexActivityHookArgs() []string {
+func codexActivityHookArgs(binary string) []string {
 	args := make([]string, 0, len(codexActivityHooks)*2)
 	for _, hook := range codexActivityHooks {
 		command := strings.ReplaceAll(
-			hookCommand("codex", hook.event),
+			hookCommand(binary, "codex", hook.event),
 			`"`,
 			`\"`,
 		)

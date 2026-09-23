@@ -1,0 +1,85 @@
+import { boardZoneOf } from "./agentsView";
+import type { DashboardSession } from "./api";
+
+export type SidebarDestinationId = "projects" | "agents" | "prs" | "settings";
+export type PrimarySidebarDestinationId = Exclude<SidebarDestinationId, "settings">;
+
+export type SidebarDestination = {
+	id: SidebarDestinationId;
+	label: string;
+	href: "/projects" | "/" | "/prs" | "/settings";
+};
+
+export const RECENT_WORKERS_LABEL = "Recent Workers";
+
+export const sidebarDestinations: readonly SidebarDestination[] = [
+	{ id: "projects", label: "Projects", href: "/projects" },
+	{ id: "agents", label: "Workers", href: "/" },
+	{ id: "prs", label: "Pull Requests", href: "/prs" },
+	{ id: "settings", label: "Settings", href: "/settings" },
+];
+
+/**
+ * The count a destination is worth badging.
+ *
+ * Only the number someone would open the app for: workers waiting on a person.
+ * A total would be decoration — the board already says how many sessions exist,
+ * and a badge that never drops to zero stops being read.
+ */
+export function sidebarDestinationBadge(
+	id: SidebarDestinationId,
+	sessions: readonly DashboardSession[],
+): number | undefined {
+	if (id !== "agents") return undefined;
+	const waiting = sidebarSessions(sessions).filter((session) => boardZoneOf(session) === "needs_you").length;
+	return waiting || undefined;
+}
+
+export function sidebarSessions(sessions: readonly DashboardSession[]): DashboardSession[] {
+	return sessions
+		.filter((session) => !session.isTerminated && session.status !== "terminated")
+		.sort((a, b) => {
+			const pinnedOrder = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+			if (pinnedOrder !== 0) return pinnedOrder;
+			return b.lastActivityAt.localeCompare(a.lastActivityAt);
+		});
+}
+
+export function activeSidebarDestination(pathname: string): SidebarDestinationId {
+	const withoutGroup = pathname.replace(/^\/\(tabs\)/, "") || "/";
+	return sidebarDestinations.find(({ href }) => href === withoutGroup)?.id ?? "agents";
+}
+
+export function selectedPrimarySidebarDestination(
+	pathname: string,
+	previous: PrimarySidebarDestinationId,
+): PrimarySidebarDestinationId {
+	const active = activeSidebarDestination(pathname);
+	return active === "settings" ? previous : active;
+}
+
+function normalizedPath(pathname: string): string {
+	const path = pathname.replace(/^\/\(tabs\)/, "") || "/";
+	return path.length > 1 ? path.replace(/\/$/, "") : path;
+}
+
+export function sidebarNavigationSettled(pendingPath: string | null, pathname: string): boolean {
+	return pendingPath !== null && normalizedPath(pendingPath) === normalizedPath(pathname);
+}
+
+type ScrollableSidebarRef = {
+	scrollTo?: (options: { y: number; animated: boolean }) => void;
+	getScrollResponder?: () => {
+		scrollTo?: (options: { y: number; animated: boolean }) => void;
+	} | null | undefined;
+};
+
+export function scrollSidebarRefToTop(ref: ScrollableSidebarRef | null | undefined) {
+	if (ref?.scrollTo) {
+		ref.scrollTo({ y: 0, animated: true });
+		return;
+	}
+	if (ref?.getScrollResponder) {
+		ref.getScrollResponder()?.scrollTo?.({ y: 0, animated: true });
+	}
+}

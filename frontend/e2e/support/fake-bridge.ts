@@ -53,7 +53,13 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 	await page.addInitScript(
 		({ version, daemonState, daemonPort, updateStatus, updateSettings }) => {
 			const unsubscribe = () => () => undefined;
+			const updateListeners = new Set<(status: UpdateStatus) => void>();
 			let currentUpdateSettings = updateSettings;
+			let currentUpdateStatus = updateStatus;
+			const emitUpdateStatus = (next: UpdateStatus) => {
+				currentUpdateStatus = next;
+				for (const listener of updateListeners) listener(next);
+			};
 			const status: DaemonStatus =
 				daemonState === "ready" ? { state: "ready", port: daemonPort } : { state: daemonState };
 			const navState = (viewId: string) => ({
@@ -154,6 +160,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setOverlayOpen: () => undefined,
 					navigate: async ({ viewId }: { viewId: string }) => navState(viewId),
 					historySuggestions: async () => [],
+					historyFavicon: async () => undefined,
 					clear: async (viewId: string) => navState(viewId),
 					goBack: async (viewId: string) => navState(viewId),
 					goForward: async (viewId: string) => navState(viewId),
@@ -199,8 +206,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					// to these whenever SessionView mounts with window.ao.browser present, so
 					// an incomplete browser shape would crash the session-detail/preview specs.
 					setAnnotationMode: async () => undefined,
+					completeAnnotation: async () => undefined,
+					discardAnnotations: async () => undefined,
+					annotationAction: async () => undefined,
 					onAnnotationSubmit: unsubscribe,
 					onAnnotationCancel: unsubscribe,
+					onAnnotationState: unsubscribe,
 					onNavState: unsubscribe,
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,
@@ -230,6 +241,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setBadge: async (_count: number) => undefined,
 					devBounce: async () => undefined,
 					onClick: unsubscribe,
+					onPlaySound: unsubscribe,
+					reportSoundFailure: () => undefined,
 				},
 				tray: {
 					setAttentionState: () => undefined,
@@ -244,6 +257,9 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					set: async (next: UpdateSettings) => {
 						currentUpdateSettings = next;
 					},
+					setMacDifferentialUpdates: async (enabled: boolean) => {
+						currentUpdateSettings = { ...currentUpdateSettings, macDifferentialUpdates: enabled };
+					},
 				},
 				uiSettings: {
 					get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -255,12 +271,19 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setRecording: async () => undefined,
 				},
 				updates: {
-					getStatus: async () => updateStatus,
+					getStatus: async () => currentUpdateStatus,
 					check: async () => undefined,
 					returnHome: async () => undefined,
 					download: async () => undefined,
 					install: async () => undefined,
-					onStatus: unsubscribe,
+					isPostUpdateRelaunch: async () => false,
+					relaunch: async () => undefined,
+					onStatus: (listener: (status: UpdateStatus) => void) => {
+						updateListeners.add(listener);
+						return () => {
+							updateListeners.delete(listener);
+						};
+					},
 					onTelemetry: unsubscribe,
 				},
 				// UpdatesSection calls featureBuilds.getActive() immediately on mount; an
@@ -269,10 +292,20 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					list: async () => [],
 					getActive: async () => null,
 				},
+				remotes: {
+					list: async () => [],
+					add: async () => "offline" as const,
+					update: async () => "offline" as const,
+					remove: async () => undefined,
+					probe: async () => "offline" as const,
+					request: async () => ({ status: 0, body: null }),
+				},
 				cloud: {
 					getSession: async () => null,
 					signIn: async () => undefined,
 					signOut: async () => undefined,
+					cancelProviderAuth: async () => undefined,
+					connectProviderAuth: async () => undefined,
 					localAuthAvailable: async () => false,
 					localRegister: async () => {
 						throw new Error("local auth is unavailable in e2e");
@@ -289,6 +322,9 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onStreamEvent: unsubscribe,
 				},
 			} satisfies AoBridge;
+			(window as unknown as { __aoFakeUpdates: { setStatus: (status: UpdateStatus) => void } }).__aoFakeUpdates = {
+				setStatus: emitUpdateStatus,
+			};
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
 		{ version, daemonState, daemonPort, updateStatus, updateSettings },
@@ -357,9 +393,14 @@ export type FakeAgentController = {
 	notify: (n: { id: string; type: string; title: string; body?: string; sessionId?: string }) => void;
 };
 
+export type FakeUpdateController = {
+	setStatus: (status: UpdateStatus) => void;
+};
+
 declare global {
 	interface Window {
 		__aoFakeAgent?: FakeAgentController;
+		__aoFakeUpdates?: FakeUpdateController;
 	}
 }
 
@@ -692,6 +733,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					navigate: async ({ viewId, url }: { viewId: string; url: string }) =>
 						state.browserError ? navState(viewId, "", state.browserError) : navState(viewId, url),
 					historySuggestions: async () => [],
+					historyFavicon: async () => undefined,
 					clear: async (viewId: string) => navState(viewId),
 					goBack: async (viewId: string) => navState(viewId),
 					goForward: async (viewId: string) => navState(viewId),
@@ -737,8 +779,12 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					// to these whenever SessionView mounts with window.ao.browser present, so
 					// an incomplete browser shape would crash the session-detail/preview specs.
 					setAnnotationMode: async () => undefined,
+					completeAnnotation: async () => undefined,
+					discardAnnotations: async () => undefined,
+					annotationAction: async () => undefined,
 					onAnnotationSubmit: unsubscribe,
 					onAnnotationCancel: unsubscribe,
+					onAnnotationState: unsubscribe,
 					onNavState: unsubscribe,
 					onTabsState: unsubscribe,
 					onAgentActivity: unsubscribe,
@@ -768,12 +814,21 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					setBadge: async (_count: number) => undefined,
 					devBounce: async () => undefined,
 					onClick: unsubscribe,
+					onPlaySound: unsubscribe,
+					reportSoundFailure: () => undefined,
 				},
 				tray: { setAttentionState: () => undefined, onOpenSession: unsubscribe },
 				appState: { getMigration: async () => ({ status: "completed" }), setMigration: async () => undefined },
 				updateSettings: {
-					get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
+					get: async () => ({
+						enabled: false,
+						channel: "latest",
+						nightlyAck: false,
+						feature: null,
+						macDifferentialUpdates: false,
+					}),
 					set: async () => undefined,
+					setMacDifferentialUpdates: async () => undefined,
 				},
 				uiSettings: {
 					get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -790,6 +845,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					returnHome: async () => undefined,
 					download: async () => undefined,
 					install: async () => undefined,
+					isPostUpdateRelaunch: async () => false,
+					relaunch: async () => undefined,
 					onStatus: unsubscribe,
 					onTelemetry: unsubscribe,
 				},
@@ -799,10 +856,20 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					list: async () => [],
 					getActive: async () => null,
 				},
+				remotes: {
+					list: async () => [],
+					add: async () => "offline" as const,
+					update: async () => "offline" as const,
+					remove: async () => undefined,
+					probe: async () => "offline" as const,
+					request: async () => ({ status: 0, body: null }),
+				},
 				cloud: {
 					getSession: async () => null,
 					signIn: async () => undefined,
 					signOut: async () => undefined,
+					cancelProviderAuth: async () => undefined,
+					connectProviderAuth: async () => undefined,
 					localAuthAvailable: async () => false,
 					localRegister: async () => {
 						throw new Error("local auth is unavailable in e2e");

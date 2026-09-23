@@ -76,6 +76,17 @@ describe("preload repository branch bridge", () => {
 	});
 });
 
+describe("preload Developer Mode updater bridge", () => {
+	it("sends only the updater eligibility boolean to the main process", async () => {
+		await exposedBridge().updateSettings.setMacDifferentialUpdates(true);
+
+		expect(electronMocks.invoke).toHaveBeenCalledWith(
+			"updateSettings:setMacDifferentialUpdates",
+			true,
+		);
+	});
+});
+
 describe("preload telemetry generation bridge", () => {
 	it("tags captures with the latest broadcast generation without a renderer reload", async () => {
 		telemetryPolicyBroadcastListener?.({}, { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true });
@@ -313,6 +324,7 @@ describe("preload browser profile bridge", () => {
 			},
 		});
 		await bridge.browser.historySuggestions({ viewId: "1:worker-1", query: "git" });
+		await bridge.browser.historyFavicon({ viewId: "1:worker-1", url: "https://github.com/openai" });
 		await bridge.browser.captureScreenshot("1:worker-1");
 		await bridge.browserProfiles.list();
 		await bridge.browserProfiles.create("Work");
@@ -333,14 +345,15 @@ describe("preload browser profile bridge", () => {
 		expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, "browser:profile:menu", expect.objectContaining({ viewId: "1:worker-1" }));
 		expect(electronMocks.invoke).toHaveBeenNthCalledWith(3, "browser:profile:select", expect.objectContaining({ viewId: "1:worker-1", profileId: null }));
 		expect(electronMocks.invoke).toHaveBeenNthCalledWith(4, "browser:history:suggest", { viewId: "1:worker-1", query: "git" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(5, "browser:captureScreenshot", "1:worker-1");
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(6, "browserProfiles:list");
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(7, "browserProfiles:create", { name: "Work" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(8, "browserProfiles:rename", { id: "profile-id", name: "Personal" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(9, "browserProfiles:clear", { id: "profile-id" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(10, "browserProfiles:delete", { id: "profile-id" });
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(11, "browserProfiles:import:discover");
-		expect(electronMocks.invoke).toHaveBeenNthCalledWith(12, "browserProfiles:import:start", expect.objectContaining({ destination: { mode: "merge", name: "Work" } }));
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(5, "browser:history:favicon", { viewId: "1:worker-1", url: "https://github.com/openai" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(6, "browser:captureScreenshot", "1:worker-1");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(7, "browserProfiles:list");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(8, "browserProfiles:create", { name: "Work" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(9, "browserProfiles:rename", { id: "profile-id", name: "Personal" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(10, "browserProfiles:clear", { id: "profile-id" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(11, "browserProfiles:delete", { id: "profile-id" });
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(12, "browserProfiles:import:discover");
+		expect(electronMocks.invoke).toHaveBeenNthCalledWith(13, "browserProfiles:import:start", expect.objectContaining({ destination: { mode: "merge", name: "Work" } }));
 	});
 
 	it("validates profile-management event payloads and removes wrapped listeners", () => {

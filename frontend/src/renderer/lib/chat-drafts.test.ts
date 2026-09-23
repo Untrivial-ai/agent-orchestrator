@@ -2,20 +2,31 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
 	acknowledgeChatComposerMutation,
+	acknowledgeChatInlineEditMutation,
 	activateChatDraftScope,
 	beginChatComposerMutation,
+	beginChatInlineEditMutation,
 	cancelChatComposerMutation,
+	cancelChatInlineEditMutation,
 	clearAcceptedChatComposer,
+	clearAcceptedChatInlineEdit,
 	clearRejectedChatComposerDelivery,
+	clearRejectedChatInlineEditDelivery,
+	clearUncertainChatInlineEditDelivery,
 	clearUncertainChatComposerDelivery,
 	finishChatComposerMutation,
+	finishChatInlineEditMutation,
 	getChatComposerMutation,
+	getChatInlineEditMutation,
 	markChatComposerDeliveryAccepted,
+	markChatInlineEditDeliveryAccepted,
 	prepareChatComposerDelivery,
+	prepareChatInlineEditDelivery,
 	readChatSessionDraft,
 	subscribeChatDraftRuntime,
 	writeChatAttachments,
 	writeChatComposerText,
+	writeChatInlineEdit,
 	type DraftStorage,
 	type ChatDraftScope,
 } from "./chat-drafts";
@@ -37,6 +48,138 @@ class MemoryStorage implements DraftStorage {
 }
 
 describe("Chat draft storage", () => {
+	it("lets authoritative recreation purge once while every late obsolete callback fails closed", () => {
+		const storage = new MemoryStorage();
+		const first: ChatDraftScope = {
+			sessionId: "session-recreated",
+			incarnation: "2026-08-25T09:00:00.000Z",
+		};
+		const replacement: ChatDraftScope = {
+			sessionId: first.sessionId,
+			incarnation: "2026-08-26T09:00:00.000Z",
+		};
+		expect(activateChatDraftScope(first, storage)).toMatchObject({ ok: true });
+		writeChatComposerText(first, "belongs to deleted session", storage);
+		writeChatAttachments(
+			first,
+			[
+				{
+					id: "old-attachment",
+					path: ".ao/attachments/old.png",
+					name: "old.png",
+					mimeType: "image/png",
+					bytes: 10,
+				},
+			],
+			storage,
+		);
+		const oldSend = prepareChatComposerDelivery(
+			first,
+			{
+				kind: "steer",
+				composerText: "belongs to deleted session",
+				attachments: [],
+				requestText: "belongs to deleted session",
+				clientMessageId: "old-unresolved-delivery",
+			},
+			storage,
+		);
+		const oldEdit = prepareChatInlineEditDelivery(
+			first,
+			{
+				turnId: "old-turn",
+				text: "old edit",
+				content: [],
+				clientMessageId: "old-edit-delivery",
+			},
+			storage,
+		);
+		expect(oldSend.ok).toBe(true);
+		expect(oldEdit.ok).toBe(true);
+		expect(beginChatComposerMutation(first)).toBeTypeOf("symbol");
+		expect(beginChatInlineEditMutation(first)).toBeTypeOf("symbol");
+
+		expect(activateChatDraftScope(replacement, storage)).toMatchObject({
+			ok: true,
+			replaced: true,
+		});
+		expect(writeChatComposerText(replacement, "replacement draft", storage).ok).toBe(true);
+		expect(
+			writeChatAttachments(
+				replacement,
+				[
+					{
+						id: "new-attachment",
+						path: ".ao/attachments/new.png",
+						name: "new.png",
+						mimeType: "image/png",
+						bytes: 20,
+					},
+				],
+				storage,
+			).ok,
+		).toBe(true);
+		expect(
+			writeChatInlineEdit(
+				replacement,
+				{ turnId: "new-turn", text: "replacement edit", content: [] },
+				storage,
+			).ok,
+		).toBe(true);
+
+		// These model late FileReader/staging, send, edit, and stale-render callbacks
+		// from the deleted incarnation after the replacement already owns storage.
+		expect(writeChatComposerText(first, "late old text", storage).ok).toBe(false);
+		expect(
+			writeChatAttachments(
+				first,
+				[
+					{
+						id: "late-old-attachment",
+						path: ".ao/attachments/late-old.png",
+						name: "late-old.png",
+						mimeType: "image/png",
+						bytes: 30,
+					},
+				],
+				storage,
+			).ok,
+		).toBe(false);
+		expect(
+			markChatComposerDeliveryAccepted(
+				first,
+				"old-unresolved-delivery",
+				oldSend.mutation!.revision,
+				storage,
+			).ok,
+		).toBe(false);
+		expect(
+			markChatInlineEditDeliveryAccepted(
+				first,
+				"old-edit-delivery",
+				oldEdit.mutation!.revision,
+				storage,
+			).ok,
+		).toBe(false);
+		expect(activateChatDraftScope(first, storage)).toMatchObject({
+			ok: false,
+			reason: "obsolete",
+		});
+
+		const restored = readChatSessionDraft(replacement, storage);
+		expect(restored).toMatchObject({
+			sessionId: replacement.sessionId,
+			incarnation: replacement.incarnation,
+			composer: {
+				text: "replacement draft",
+				attachments: [{ id: "new-attachment", path: ".ao/attachments/new.png" }],
+			},
+			inlineEdit: { turnId: "new-turn", text: "replacement edit" },
+		});
+		expect(restored.composer.delivery).toBeUndefined();
+		expect(getChatComposerMutation(first)).toEqual({ pending: false });
+		expect(getChatInlineEditMutation(first)).toEqual({ pending: false });
+	});
 
 	it("keeps both incarnations fail closed until an interrupted authoritative purge finishes", () => {
 		const backing = new MemoryStorage();
@@ -77,6 +220,51 @@ describe("Chat draft storage", () => {
 		expect(writeChatComposerText(first, "still obsolete", backing).ok).toBe(false);
 	});
 
+	it("purges retained receipts when an authoritative incarnation replaces their scope", () => {
+		const storage = new MemoryStorage();
+		const first: ChatDraftScope = {
+			sessionId: "session-retained-receipts",
+			incarnation: "2026-08-25T09:00:00.000Z",
+		};
+		const replacement: ChatDraftScope = {
+			sessionId: first.sessionId,
+			incarnation: "2026-08-26T09:00:00.000Z",
+		};
+		expect(activateChatDraftScope(first, storage)).toMatchObject({ ok: true });
+
+		const composerRevision = writeChatComposerText(first, "accepted", storage).draft.composer
+			.revision;
+		const composerToken = beginChatComposerMutation(first)!;
+		finishChatComposerMutation(
+			first,
+			composerToken,
+			composerRevision,
+			clearAcceptedChatComposer(first, composerRevision, storage),
+		);
+		const inlineRevision = writeChatInlineEdit(
+			first,
+			{ turnId: "turn-1", text: "accepted edit", content: [] },
+			storage,
+		).draft.inlineEdit!.revision;
+		const inlineToken = beginChatInlineEditMutation(first)!;
+		finishChatInlineEditMutation(
+			first,
+			inlineToken,
+			inlineRevision,
+			clearAcceptedChatInlineEdit(first, inlineRevision, storage),
+		);
+		expect(getChatComposerMutation(first).accepted).toBeDefined();
+		expect(getChatInlineEditMutation(first).accepted).toBeDefined();
+
+		expect(activateChatDraftScope(replacement, storage)).toMatchObject({
+			ok: true,
+			replaced: true,
+			previousIncarnation: first.incarnation,
+		});
+		expect(getChatComposerMutation(first)).toEqual({ pending: false });
+		expect(getChatInlineEditMutation(first)).toEqual({ pending: false });
+	});
+
 	it("warned abandon clears only an uncertain steer journal", () => {
 		const storage = new MemoryStorage();
 		const scope: ChatDraftScope = { sessionId: "session-abandon", incarnation: "one" };
@@ -114,6 +302,44 @@ describe("Chat draft storage", () => {
 		});
 		expect(readChatSessionDraft(scope, storage).composer.delivery).toBeUndefined();
 	});
+	it("round-trips independent composer, attachment, and inline-edit state per session", () => {
+		const storage = new MemoryStorage();
+		writeChatComposerText("session/a", "composer A", storage);
+		writeChatAttachments(
+			"session/a",
+			[
+				{
+					id: "attachment-a",
+					path: ".ao/attachments/attachment-a.png",
+					name: "a.png",
+					mimeType: "image/png",
+					bytes: 4,
+				},
+			],
+			storage,
+		);
+		writeChatInlineEdit(
+			"session/a",
+			{
+				turnId: "turn-a",
+				text: "edit A",
+				content: [{ type: "image", name: "a.png" }],
+			},
+			storage,
+		);
+		writeChatComposerText("session/b", "composer B", storage);
+
+		const sessionA = readChatSessionDraft("session/a", storage);
+		expect(sessionA.composer.text).toBe("composer A");
+		expect(sessionA.composer.attachments).toEqual([
+			expect.objectContaining({
+				id: "attachment-a",
+				path: ".ao/attachments/attachment-a.png",
+			}),
+		]);
+		expect(sessionA.inlineEdit).toEqual(expect.objectContaining({ turnId: "turn-a", text: "edit A" }));
+		expect(readChatSessionDraft("session/b", storage).composer.text).toBe("composer B");
+	});
 
 	it("does not clear a composer revision changed while an accepted send was pending", () => {
 		const storage = new MemoryStorage();
@@ -136,6 +362,34 @@ describe("Chat draft storage", () => {
 			cleared: true,
 		});
 		expect(readChatSessionDraft("session-a", storage).composer.text).toBe("");
+	});
+
+	it("clears inline-edit metadata without touching the independent composer", () => {
+		const storage = new MemoryStorage();
+		writeChatComposerText("session-a", "keep composer", storage);
+		writeChatInlineEdit("session-a", { turnId: "turn-a", text: "discard edit", content: [] }, storage);
+
+		expect(writeChatInlineEdit("session-a", undefined, storage).ok).toBe(true);
+		const restored = readChatSessionDraft("session-a", storage);
+		expect(restored.inlineEdit).toBeUndefined();
+		expect(restored.composer.text).toBe("keep composer");
+	});
+
+	it("does not clear a newer inline edit when an older accepted edit completes", () => {
+		const storage = new MemoryStorage();
+		const accepted = writeChatInlineEdit(
+			"session-a",
+			{ turnId: "turn-a", text: "submitted edit", content: [] },
+			storage,
+		).draft.inlineEdit?.revision;
+		expect(accepted).toBeTypeOf("string");
+		writeChatInlineEdit("session-a", { turnId: "turn-a", text: "newer remounted edit", content: [] }, storage);
+
+		expect(clearAcceptedChatInlineEdit("session-a", accepted!, storage)).toMatchObject({
+			ok: true,
+			cleared: false,
+		});
+		expect(readChatSessionDraft("session-a", storage).inlineEdit?.text).toBe("newer remounted edit");
 	});
 
 	it("rejects corrupt and foreign-session records", () => {
@@ -409,6 +663,168 @@ describe("Chat draft storage", () => {
 		expect(restored.composer.delivery).toBeUndefined();
 	});
 
+	it("persists and accepts an inline-edit delivery with one stable client id", () => {
+		const storage = new MemoryStorage();
+		const prepared = prepareChatInlineEditDelivery(
+			"session-edit-proof",
+			{
+				turnId: "turn-1",
+				text: "durable edit",
+				content: [],
+				clientMessageId: "edit-proof-1",
+			},
+			storage,
+		);
+
+		expect(prepared).toMatchObject({
+			ok: true,
+			mutation: {
+				state: "dispatching",
+				turnId: "turn-1",
+				requestText: "durable edit",
+				clientMessageId: "edit-proof-1",
+			},
+		});
+		expect(
+			markChatInlineEditDeliveryAccepted(
+				"session-edit-proof",
+				"edit-proof-1",
+				prepared.mutation!.revision,
+				storage,
+			),
+		).toMatchObject({ ok: true });
+		expect(readChatSessionDraft("session-edit-proof", storage).inlineEditDelivery?.state).toBe(
+			"accepted",
+		);
+	});
+
+	it("clears only a definitively rejected inline-edit journal", () => {
+		const storage = new MemoryStorage();
+		const prepared = prepareChatInlineEditDelivery(
+			"session-edit-rejected",
+			{
+				turnId: "turn-1",
+				text: "keep rejected edit",
+				content: [],
+				clientMessageId: "edit-rejected-1",
+			},
+			storage,
+		);
+		expect(prepared.ok).toBe(true);
+
+		expect(
+			clearRejectedChatInlineEditDelivery(
+				"session-edit-rejected",
+				"edit-rejected-1",
+				prepared.mutation!.revision,
+				storage,
+			),
+		).toMatchObject({ ok: true });
+		const restored = readChatSessionDraft("session-edit-rejected", storage);
+		expect(restored.inlineEdit?.text).toBe("keep rejected edit");
+		expect(restored.inlineEditDelivery).toBeUndefined();
+	});
+
+	it("explicitly abandons only an uncertain inline-edit journal", () => {
+		const storage = new MemoryStorage();
+		const prepared = prepareChatInlineEditDelivery(
+			"session-edit-uncertain",
+			{
+				turnId: "turn-1",
+				text: "possibly delivered edit",
+				content: [{ type: "image", name: "preserved.png" }],
+				clientMessageId: "edit-uncertain-1",
+			},
+			storage,
+		);
+		expect(prepared.ok).toBe(true);
+
+		expect(
+			clearUncertainChatInlineEditDelivery(
+				"session-edit-uncertain",
+				"edit-uncertain-1",
+				prepared.mutation!.revision,
+				storage,
+			),
+		).toMatchObject({ ok: true });
+		const restored = readChatSessionDraft("session-edit-uncertain", storage);
+		expect(restored.inlineEdit).toMatchObject({
+			turnId: "turn-1",
+			text: "possibly delivered edit",
+			content: [{ type: "image", name: "preserved.png" }],
+		});
+		expect(restored.inlineEditDelivery).toBeUndefined();
+	});
+
+	it("clears only the accepted delivery journal when a later inline edit exists", () => {
+		const storage = new MemoryStorage();
+		const prepared = prepareChatInlineEditDelivery(
+			"session-later-edit",
+			{
+				turnId: "turn-1",
+				text: "submitted edit",
+				content: [],
+				clientMessageId: "submitted-edit-1",
+			},
+			storage,
+		);
+		expect(prepared.ok).toBe(true);
+		writeChatInlineEdit(
+			"session-later-edit",
+			{ turnId: "turn-1", text: "newer edit", content: [] },
+			storage,
+		);
+
+		expect(
+			clearAcceptedChatInlineEdit(
+				"session-later-edit",
+				prepared.mutation!.revision,
+				storage,
+			),
+		).toMatchObject({ ok: true, cleared: false });
+		const restored = readChatSessionDraft("session-later-edit", storage);
+		expect(restored.inlineEdit?.text).toBe("newer edit");
+		expect(restored.inlineEditDelivery).toBeUndefined();
+	});
+
+	it("keeps only in-flight mutation ownership across remounts and evicts it once settled", () => {
+		const storage = new MemoryStorage();
+		const sessionId = "runtime-session-a";
+		const revision = writeChatComposerText(sessionId, "send once", storage).draft.composer.revision;
+		const unsubscribeFirstMount = subscribeChatDraftRuntime(sessionId, () => undefined);
+		const token = beginChatComposerMutation(sessionId);
+		expect(token).toBeTypeOf("symbol");
+		expect(beginChatComposerMutation(sessionId)).toBeUndefined();
+		expect(getChatComposerMutation(sessionId).pending).toBe(true);
+		expect(getChatComposerMutation("runtime-session-b").pending).toBe(false);
+
+		unsubscribeFirstMount();
+		expect(getChatComposerMutation(sessionId).pending).toBe(true);
+		const unsubscribeRemount = subscribeChatDraftRuntime(sessionId, () => undefined);
+		cancelChatComposerMutation(sessionId, Symbol("stale"));
+		expect(getChatComposerMutation(sessionId).pending).toBe(true);
+		const result = clearAcceptedChatComposer(sessionId, revision, storage);
+		finishChatComposerMutation(sessionId, token!, revision, result);
+		expect(getChatComposerMutation(sessionId)).toMatchObject({
+			pending: false,
+			accepted: { revision, result: { ok: true, cleared: true } },
+		});
+
+		const inlineToken = beginChatInlineEditMutation(sessionId);
+		expect(inlineToken).toBeTypeOf("symbol");
+		expect(getChatInlineEditMutation(sessionId).pending).toBe(true);
+		cancelChatInlineEditMutation(sessionId, inlineToken!);
+		expect(getChatInlineEditMutation(sessionId)).toEqual({ pending: false });
+
+		acknowledgeChatComposerMutation(
+			sessionId,
+			getChatComposerMutation(sessionId).accepted!.sequence,
+		);
+		unsubscribeRemount();
+		expect(getChatComposerMutation(sessionId)).toEqual({ pending: false });
+		expect(getChatInlineEditMutation(sessionId)).toEqual({ pending: false });
+	});
+
 	it("keeps an accepted send when the old passive cleanup runs before the replacement subscribes", () => {
 		const storage = new MemoryStorage();
 		const sessionId = "runtime-old-cleanup-before-new-subscribe";
@@ -499,6 +915,62 @@ describe("Chat draft storage", () => {
 		expect(getChatComposerMutation(sessionId)).toEqual({ pending: false });
 	});
 
+	it("keeps more than 64 delayed composer and inline handoffs until each replacement acknowledges", () => {
+		const storage = new MemoryStorage();
+		const sessionIds = Array.from(
+			{ length: 65 },
+			(_, index) => `runtime-delayed-handoff-${index}`,
+		);
+		for (const sessionId of sessionIds) {
+			const composerRevision = writeChatComposerText(sessionId, "accepted", storage).draft.composer
+				.revision;
+			const inlineRevision = writeChatInlineEdit(
+				sessionId,
+				{ turnId: "turn-1", text: "accepted edit", content: [] },
+				storage,
+			).draft.inlineEdit!.revision;
+			const unsubscribeOldSurface = subscribeChatDraftRuntime(sessionId, () => undefined);
+			const composerToken = beginChatComposerMutation(sessionId)!;
+			const inlineToken = beginChatInlineEditMutation(sessionId)!;
+			// The replacement has rendered from the in-flight snapshot, but its passive
+			// subscription is deliberately delayed until every request below settles.
+			expect(getChatComposerMutation(sessionId)).toEqual({ pending: true });
+			expect(getChatInlineEditMutation(sessionId)).toEqual({ pending: true });
+			finishChatComposerMutation(
+				sessionId,
+				composerToken,
+				composerRevision,
+				clearAcceptedChatComposer(sessionId, composerRevision, storage),
+			);
+			finishChatInlineEditMutation(
+				sessionId,
+				inlineToken,
+				inlineRevision,
+				clearAcceptedChatInlineEdit(sessionId, inlineRevision, storage),
+			);
+			unsubscribeOldSurface();
+		}
+
+		for (const sessionId of sessionIds) {
+			const unsubscribeReplacement = subscribeChatDraftRuntime(sessionId, () => undefined);
+			const acceptedComposer = getChatComposerMutation(sessionId).accepted;
+			const acceptedInline = getChatInlineEditMutation(sessionId).accepted;
+			expect(acceptedComposer).toBeDefined();
+			expect(acceptedInline).toBeDefined();
+			acknowledgeChatComposerMutation(sessionId, acceptedComposer!.sequence);
+			expect(getChatComposerMutation(sessionId)).toEqual({ pending: false });
+			expect(getChatInlineEditMutation(sessionId).accepted).toBe(acceptedInline);
+			acknowledgeChatInlineEditMutation(sessionId, acceptedInline!.sequence);
+			expect(getChatInlineEditMutation(sessionId)).toEqual({ pending: false });
+			unsubscribeReplacement();
+
+			const unsubscribeLaterMount = subscribeChatDraftRuntime(sessionId, () => undefined);
+			expect(getChatComposerMutation(sessionId)).toEqual({ pending: false });
+			expect(getChatInlineEditMutation(sessionId)).toEqual({ pending: false });
+			unsubscribeLaterMount();
+		}
+	});
+
 	it("evicts an acknowledged failed-clear receipt after the final subscriber leaves", () => {
 		const backing = new MemoryStorage();
 		const sessionId = "runtime-failed-clear";
@@ -528,6 +1000,53 @@ describe("Chat draft storage", () => {
 		);
 		unsubscribe();
 		expect(getChatComposerMutation(sessionId)).toEqual({ pending: false });
+	});
+
+	it("waits for every mutation receipt to be acknowledged before evicting an unmounted runtime", () => {
+		const storage = new MemoryStorage();
+		const sessionId = "runtime-two-pending-mutations";
+		const composerRevision = writeChatComposerText(sessionId, "send once", storage).draft
+			.composer.revision;
+		const inlineRevision = writeChatInlineEdit(
+			sessionId,
+			{ turnId: "turn-1", text: "edit once", content: [] },
+			storage,
+		).draft.inlineEdit!.revision;
+		const unsubscribe = subscribeChatDraftRuntime(sessionId, () => undefined);
+		const composerToken = beginChatComposerMutation(sessionId)!;
+		const inlineToken = beginChatInlineEditMutation(sessionId)!;
+		unsubscribe();
+
+		finishChatComposerMutation(
+			sessionId,
+			composerToken,
+			composerRevision,
+			clearAcceptedChatComposer(sessionId, composerRevision, storage),
+		);
+		expect(getChatComposerMutation(sessionId).accepted?.revision).toBe(composerRevision);
+		expect(getChatInlineEditMutation(sessionId).pending).toBe(true);
+
+		finishChatInlineEditMutation(
+			sessionId,
+			inlineToken,
+			inlineRevision,
+			clearAcceptedChatInlineEdit(sessionId, inlineRevision, storage),
+		);
+		expect(getChatComposerMutation(sessionId).accepted?.revision).toBe(composerRevision);
+		expect(getChatInlineEditMutation(sessionId).accepted?.revision).toBe(inlineRevision);
+
+		acknowledgeChatComposerMutation(
+			sessionId,
+			getChatComposerMutation(sessionId).accepted!.sequence,
+		);
+		expect(getChatComposerMutation(sessionId)).toEqual({ pending: false });
+		expect(getChatInlineEditMutation(sessionId).accepted?.revision).toBe(inlineRevision);
+		acknowledgeChatInlineEditMutation(
+			sessionId,
+			getChatInlineEditMutation(sessionId).accepted!.sequence,
+		);
+		expect(getChatComposerMutation(sessionId)).toEqual({ pending: false });
+		expect(getChatInlineEditMutation(sessionId)).toEqual({ pending: false });
 	});
 
 	it("does not let a deleted runtime's late unsubscribe evict a later in-flight owner", () => {
