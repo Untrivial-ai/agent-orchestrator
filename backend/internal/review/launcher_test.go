@@ -1024,8 +1024,8 @@ func TestLauncherPreflightAgentAuthUnauthorizedBlocksReviewer(t *testing.T) {
 		WithAgentAuth(fakeAgentAuthResolver{status: ports.AgentAuthStatusUnauthorized, ok: true}),
 	)
 
-	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "agent auth catalog") {
-		t.Fatalf("err = %v, want agent auth catalog failure", err)
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); !errors.Is(err, ports.ErrChatAuthRequired) {
+		t.Fatalf("err = %v, want ErrChatAuthRequired", err)
 	}
 }
 

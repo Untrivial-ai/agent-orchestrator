@@ -247,7 +247,7 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 		return err
 	}
 	if authKnown && authStatus == ports.AgentAuthStatusUnauthorized {
-		return fmt.Errorf("agent auth catalog reports reviewer harness %q is unauthorized", harness)
+		return fmt.Errorf("reviewer harness %q: %w", harness, ports.ErrChatAuthRequired)
 	}
 	if pf, ok := reviewer.(preflightReviewer); ok {
 		if err := pf.ReviewPreflight(ctx, workspacePath); err != nil {
