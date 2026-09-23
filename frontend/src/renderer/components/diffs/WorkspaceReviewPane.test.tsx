@@ -16,7 +16,7 @@ vi.mock("../../lib/api-client", () => ({
 }));
 
 vi.mock("@pierre/diffs", () => ({
-	parsePatchFiles: (patch: string) => [{ files: [{ name: patch.includes("README.md") ? "README.md" : "src/App.tsx", type: "changed" }] }],
+	parsePatchFiles: (patch: string) => patch ? [{ files: [{ name: patch.includes("README.md") ? "README.md" : "src/App.tsx", type: "changed" }] }] : [],
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
@@ -48,6 +48,15 @@ function workspace(files: WorkspaceFilesResponse["files"]): WorkspaceFilesRespon
 		summary: { additions: 1, deletions: 1, files: files.length },
 		truncated: false,
 	};
+}
+
+// A workspace project (multi-repository) session leaves every git-state section
+// and the commit list empty, so its review can only ask for the combined scope.
+function workspaceProject(files: WorkspaceFilesResponse["files"]): WorkspaceFilesResponse {
+	const data = workspace([]);
+	data.files = files;
+	data.summary.files = files.length;
+	return data;
 }
 
 function committedWorkspace(files: WorkspaceFilesResponse["files"]): WorkspaceFilesResponse {
@@ -362,6 +371,33 @@ describe("WorkspaceReviewPane", () => {
 
 		await waitFor(() => expect(postMock).toHaveBeenCalled());
 		expect(postMock.mock.calls[0]?.[1]?.body.paths).toEqual(["src/App.tsx"]);
+	});
+
+	it("renders a child repository diff and offers retry for a file its settled group left out", async () => {
+		const data = workspaceProject([
+			{ path: "alpha/README.md", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "alpha-1" },
+			{ path: "beta/workspace-test.txt", status: "added", additions: 1, deletions: 0, size: 20, binary: false, fileFingerprint: "beta-1" },
+		]);
+		const onOpenFile = vi.fn();
+		postMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [
+					{ repository: "alpha", patch: "diff --git a/README.md b/README.md\n", truncated: false, includedPaths: ["alpha/README.md"], deferred: [] },
+					{ repository: "beta", patch: "", truncated: false, includedPaths: ["beta/workspace-test.txt"], deferred: [] },
+				],
+			},
+		});
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={onOpenFile} sessionId="sess-1" split={false} />);
+
+		expect(await screen.findByText("alpha/README.md")).toBeInTheDocument();
+		expect(await screen.findByText("Unable to load this diff.")).toBeInTheDocument();
+		expect(screen.queryByText("Loading diff...")).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(2));
+		await userEvent.click(screen.getByRole("button", { name: "File" }));
+		expect(onOpenFile).toHaveBeenCalledWith("beta/workspace-test.txt", expect.objectContaining({ mode: "file", scope: "combined" }));
 	});
 
 	it("defers lockfile patches until the user explicitly loads them", async () => {

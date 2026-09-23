@@ -88,6 +88,27 @@ func TestSessionPersistsReviewerHarness(t *testing.T) {
 	}
 }
 
+func TestSessionPersistsResolvedEffort(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	created, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Metadata.Effort = "high"
+	if err := s.UpdateSession(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session = %v, %v", ok, err)
+	}
+	if got.Metadata.Effort != "high" {
+		t.Fatalf("effort = %q, want high", got.Metadata.Effort)
+	}
+}
+
 func TestSessionPersistsDiffBaseMetadata(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -130,6 +151,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	rec.Metadata.LatestUserPrompt = "Please finish the duplicate-listener test."
 	rec.Metadata.LatestUserPromptAt = rec.CreatedAt.Add(time.Minute)
 	rec.Metadata.LatestAssistantUpdate = "The generation fence is implemented; the test is unfinished."
+	rec.Metadata.LatestAssistantUpdateAt = rec.CreatedAt.Add(2 * time.Minute)
+	rec.Metadata.NativeIdentityObservedAt = rec.CreatedAt.Add(3 * time.Minute)
 	rec.Metadata.NativeTranscriptPath = "/ao/transcripts/claude/session.jsonl"
 	rec.Metadata.AgentSessionID = "native-session-1"
 	rec.Metadata.AgentSessionIDLaunchID = "launch-1"
@@ -149,6 +172,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	if got.Metadata.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
 		!got.Metadata.LatestUserPromptAt.Equal(rec.Metadata.LatestUserPromptAt) ||
 		got.Metadata.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
+		!got.Metadata.LatestAssistantUpdateAt.Equal(rec.Metadata.LatestAssistantUpdateAt) ||
+		!got.Metadata.NativeIdentityObservedAt.Equal(rec.Metadata.NativeIdentityObservedAt) ||
 		got.Metadata.NativeTranscriptPath != rec.Metadata.NativeTranscriptPath ||
 		got.Metadata.AgentSessionIDLaunchID != rec.Metadata.AgentSessionIDLaunchID ||
 		got.Metadata.ConversationCheckpointState != rec.Metadata.ConversationCheckpointState ||
@@ -161,6 +186,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	got.Metadata.LatestUserPrompt = "Now run the focused tests."
 	got.Metadata.LatestUserPromptAt = got.Metadata.LatestUserPromptAt.Add(time.Minute)
 	got.Metadata.LatestAssistantUpdate = "The regression test has been added."
+	got.Metadata.LatestAssistantUpdateAt = got.Metadata.LatestAssistantUpdateAt.Add(time.Minute)
+	got.Metadata.NativeIdentityObservedAt = got.Metadata.NativeIdentityObservedAt.Add(time.Minute)
 	got.Metadata.NativeTranscriptPath = "/ao/transcripts/codex/session.jsonl"
 	got.Metadata.AgentSessionIDLaunchID = "launch-2"
 	got.Metadata.ConversationCheckpointState = domain.ConversationCheckpointPrompt
@@ -178,6 +205,8 @@ func TestSessionPersistsDeterministicHandoffInputs(t *testing.T) {
 	if updated.Metadata.LatestUserPrompt != got.Metadata.LatestUserPrompt ||
 		!updated.Metadata.LatestUserPromptAt.Equal(got.Metadata.LatestUserPromptAt) ||
 		updated.Metadata.LatestAssistantUpdate != got.Metadata.LatestAssistantUpdate ||
+		!updated.Metadata.LatestAssistantUpdateAt.Equal(got.Metadata.LatestAssistantUpdateAt) ||
+		!updated.Metadata.NativeIdentityObservedAt.Equal(got.Metadata.NativeIdentityObservedAt) ||
 		updated.Metadata.NativeTranscriptPath != got.Metadata.NativeTranscriptPath ||
 		updated.Metadata.AgentSessionIDLaunchID != got.Metadata.AgentSessionIDLaunchID ||
 		updated.Metadata.ConversationCheckpointState != got.Metadata.ConversationCheckpointState ||
@@ -749,6 +778,24 @@ func TestSessionRenameUpdatesDisplayName(t *testing.T) {
 		t.Fatalf("rename not persisted: %+v", got)
 	}
 
+	if changed, err := s.RenameSessionIfDisplayName(ctx, r.ID, "stale name", "Generated title", renamedAt.Add(time.Minute)); err != nil || changed {
+		t.Fatalf("conditional stale rename: changed=%v err=%v", changed, err)
+	}
+	if changed, err := s.RenameSessionIfDisplayName(ctx, r.ID, "Fix flaky tests", "Generated title", renamedAt.Add(time.Minute)); err != nil || !changed {
+		t.Fatalf("conditional rename: changed=%v err=%v", changed, err)
+	}
+	got, _, _ = s.GetSession(ctx, r.ID)
+	if got.DisplayName != "Generated title" {
+		t.Fatalf("conditional rename not persisted: %+v", got)
+	}
+	got.IsTerminated = true
+	if err := s.UpdateSession(ctx, got); err != nil {
+		t.Fatalf("terminate session: %v", err)
+	}
+	if changed, err := s.RenameSessionIfDisplayName(ctx, r.ID, "Generated title", "Too late", renamedAt.Add(2*time.Minute)); err != nil || changed {
+		t.Fatalf("conditional terminated rename: changed=%v err=%v", changed, err)
+	}
+
 	ok, err = s.RenameSession(ctx, "mer-missing", "Missing", renamedAt)
 	if err != nil {
 		t.Fatalf("rename missing: %v", err)
@@ -990,6 +1037,35 @@ func TestPRCRUD(t *testing.T) {
 	}
 }
 
+func TestGetPRByNumberPrefersActiveRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	now := time.Now().UTC().Truncate(time.Second)
+	closed := domain.PullRequest{
+		URL: "https://github.com/acme/closed/pull/7", SessionID: r.ID, Number: 7,
+		Closed: true, UpdatedAt: now.Add(time.Minute), StateChangedAt: now.Add(time.Minute),
+	}
+	active := domain.PullRequest{
+		URL: "https://github.com/acme/active/pull/7", SessionID: r.ID, Number: 7,
+		UpdatedAt: now, StateChangedAt: now,
+	}
+	if err := s.WritePR(ctx, closed, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WritePR(ctx, active, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetPRByNumber(ctx, 7)
+	if err != nil || !ok {
+		t.Fatalf("GetPRByNumber: ok=%v err=%v", ok, err)
+	}
+	if got.URL != active.URL {
+		t.Fatalf("selected %q, want active %q", got.URL, active.URL)
+	}
+}
+
 func TestWriteSCMObservationPersistsAuthorAvatarURL(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1202,6 +1278,44 @@ func TestMarkPRCommentResolved(t *testing.T) {
 	}
 	if updated {
 		t.Fatal("MarkPRCommentResolved missing updated = true, want false")
+	}
+}
+
+func TestMarkPRReviewThreadResolved(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	now := time.Now().UTC().Truncate(time.Second)
+	pr := domain.PullRequest{URL: "https://github.com/o/r/pull/1", SessionID: r.ID, Number: 1, UpdatedAt: now}
+	if err := s.WriteSCMObservation(ctx, pr, nil, nil,
+		[]domain.PullRequestReviewThread{
+			{ThreadID: "thread-1", UpdatedAt: now},
+			{ThreadID: "thread-2", UpdatedAt: now},
+		},
+		[]domain.PullRequestComment{
+			{ID: "comment-1", ThreadID: "thread-1", Body: "fix", CreatedAt: now},
+			{ID: "comment-2", ThreadID: "thread-2", Body: "keep", CreatedAt: now},
+		}, ports.ReviewWriteReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.MarkPRReviewThreadResolved(ctx, pr.URL, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := s.ListPRReviewThreads(ctx, pr.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments, err := s.ListPRComments(ctx, pr.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 2 || !threads[0].Resolved || threads[1].Resolved {
+		t.Fatalf("threads = %+v, want only thread-1 resolved", threads)
+	}
+	if len(comments) != 2 || !comments[0].Resolved || comments[1].Resolved {
+		t.Fatalf("comments = %+v, want only comment-1 resolved", comments)
 	}
 }
 

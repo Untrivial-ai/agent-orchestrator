@@ -25,8 +25,9 @@ type cachedProfile struct {
 }
 
 type cachedOrganization struct {
-	displayName string
-	expiresAt   time.Time
+	displayName  string
+	capabilities []string
+	expiresAt    time.Time
 }
 
 func NewWorkOSProfileResolver(apiKey string, client *http.Client) (ProfileResolver, error) {
@@ -153,17 +154,17 @@ func newWorkOSOrganizationResolver(
 	var mutex sync.Mutex
 	cache := make(map[string]cachedOrganization)
 
-	return func(ctx context.Context, organizationID string) (string, error) {
+	return func(ctx context.Context, organizationID string) (string, []string, error) {
 		organizationID = strings.TrimSpace(organizationID)
 		if organizationID == "" {
-			return "", errors.New("WorkOS organization ID is required")
+			return "", nil, errors.New("WorkOS organization ID is required")
 		}
 		now := time.Now()
 		mutex.Lock()
 		cached, ok := cache[organizationID]
 		mutex.Unlock()
 		if ok && now.Before(cached.expiresAt) {
-			return cached.displayName, nil
+			return cached.displayName, cached.capabilities, nil
 		}
 
 		request, err := http.NewRequestWithContext(
@@ -173,42 +174,73 @@ func newWorkOSOrganizationResolver(
 			http.NoBody,
 		)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		request.Header.Set("Authorization", "Bearer "+apiKey)
 		response, err := client.Do(request)
 		if err != nil {
-			return "", fmt.Errorf("get WorkOS organization: %w", err)
+			return "", nil, fmt.Errorf("get WorkOS organization: %w", err)
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("get WorkOS organization: status %d", response.StatusCode)
+			return "", nil, fmt.Errorf("get WorkOS organization: status %d", response.StatusCode)
 		}
 		var organization struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID       string            `json:"id"`
+			Name     string            `json:"name"`
+			Metadata map[string]string `json:"metadata"`
 		}
 		if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&organization); err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if strings.TrimSpace(organization.ID) != organizationID {
-			return "", errors.New("WorkOS organization response did not match token")
+			return "", nil, errors.New("WorkOS organization response did not match token")
 		}
 		displayName := strings.TrimSpace(organization.Name)
 		if displayName == "" {
 			displayName = "WorkOS organization"
 		}
+		capabilities := parseOrganizationCapabilities(organization.Metadata)
 		mutex.Lock()
 		trimCache(cache, func(organization cachedOrganization) bool {
 			return !now.Before(organization.expiresAt)
 		})
 		cache[organizationID] = cachedOrganization{
-			displayName: displayName,
-			expiresAt:   now.Add(5 * time.Minute),
+			displayName:  displayName,
+			capabilities: capabilities,
+			expiresAt:    now.Add(5 * time.Minute),
 		}
 		mutex.Unlock()
-		return displayName, nil
+		return displayName, capabilities, nil
 	}, nil
+}
+
+// parseOrganizationCapabilities reads entitlement flags from a WorkOS
+// organization's metadata. WorkOS metadata is a flat string map, so capabilities
+// are set as a single comma-separated "capabilities" key (e.g. "coder" or
+// "coder,feature-x"). Values are lowercased, trimmed, and de-duplicated.
+func parseOrganizationCapabilities(metadata map[string]string) []string {
+	raw := strings.TrimSpace(metadata["capabilities"])
+	if raw == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	capabilities := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		capability := strings.ToLower(strings.TrimSpace(part))
+		if capability == "" {
+			continue
+		}
+		if _, duplicate := seen[capability]; duplicate {
+			continue
+		}
+		seen[capability] = struct{}{}
+		capabilities = append(capabilities, capability)
+	}
+	if len(capabilities) == 0 {
+		return nil
+	}
+	return capabilities
 }
 
 func trimCache[T any](cache map[string]T, expired func(T) bool) {

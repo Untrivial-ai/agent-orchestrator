@@ -100,12 +100,12 @@ export function attachAppShortcuts(
 			target.send(TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, fontSizeDelta);
 			return;
 		}
-		if (input.isAutoRepeat) return;
 		// Let the renderer's capture listener receive application-owned chords
 		// while the user is recording a replacement binding.
 		if (isRecording()) return;
 		if (
 			onShortcut &&
+			!input.isAutoRepeat &&
 			matchesAppShortcut("toggle-browser-devtools", chord, isMac, getOverrides()) &&
 			shouldHandle("toggle-browser-devtools", chord)
 		) {
@@ -117,9 +117,20 @@ export function attachAppShortcuts(
 		const match = appShortcutChannel(chord, isMac, getOverrides());
 		if (!match) return;
 		const [id, channel] = match;
-		if (!shouldHandle(id, chord)) return;
+		if (!shouldHandle(id, chord)) {
+			// Browser context owns these chords. Consume them so a racing shell
+			// listener cannot open/close a terminal from the same keypress, and so
+			// Chromium does not treat ⌘T as an unhandled accelerator.
+			if (id === "new-shell-terminal" || id === "close-shell-terminal") {
+				event.preventDefault();
+			}
+			return;
+		}
 
 		event.preventDefault();
+		// Consume repeats without re-firing: a held ⌘W must stay a single close,
+		// never a fall-through to the menu's Close item.
+		if (input.isAutoRepeat) return;
 		if (focusTarget) target.focus();
 		target.send(channel);
 	});

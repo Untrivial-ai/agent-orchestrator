@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -79,7 +80,7 @@ func TestRunInstallScriptCancellationCleansUp(t *testing.T) {
 		t.Fatal("expected cancellation")
 	}
 	entries, readErr := os.ReadDir(filepath.Join(dataDir, "installers", "tmp"))
-	if readErr != nil || len(entries) != 0 {
+	if (readErr != nil && !errors.Is(readErr, os.ErrNotExist)) || len(entries) != 0 {
 		t.Fatalf("temporary scripts remain after cancellation: %v, %v", entries, readErr)
 	}
 }

@@ -739,7 +739,7 @@ export function parseAgentBrowserJSON(stdout: string): AgentBrowserJSONResult {
 	const result: Record<string, unknown> = isRecord(envelope.data) ? { ...envelope.data } : { value: envelope.data };
 	// `_boundary` is native-output metadata. Never forward a page-shaped field
 	// with the same name as trusted metadata, but preserve the root field emitted
-	// by agent-browser 0.33.1 so downstream adapters retain its nonce and origin.
+	// by agent-browser 0.38.1 so downstream adapters retain its nonce and origin.
 	delete result._boundary;
 	if (boundary) result._boundary = boundary;
 	return { ...result, untrustedExternalContent: true };

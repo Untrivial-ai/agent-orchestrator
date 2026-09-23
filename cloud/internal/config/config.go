@@ -42,12 +42,19 @@ type Config struct {
 	// provider and a client can pick per session. Single-provider deployments
 	// leave it as just the default and are unchanged.
 	AvailableSandboxProviders []string
-	AllowAnonymousCheckout    bool
-	ProviderSecretKey         []byte
-	Release                   string
-	RepositoryBrokerURL       string
-	RepositoryBrokerToken     string
-	EnvironmentControlToken   string
+	// CapabilityGatedProviders lists sandbox providers that require a matching
+	// organization capability (seeded from WorkOS org metadata) before a client
+	// may select them. Empty by default, so every offered provider is ungated
+	// and behavior is unchanged; set AO_CLOUD_CAPABILITY_GATED_PROVIDERS
+	// (comma-separated, e.g. "coder") to turn the gate on once the entitled
+	// organizations have been flagged in WorkOS.
+	CapabilityGatedProviders []string
+	AllowAnonymousCheckout   bool
+	ProviderSecretKey        []byte
+	Release                  string
+	RepositoryBrokerURL      string
+	RepositoryBrokerToken    string
+	EnvironmentControlToken  string
 
 	// PublicURL is the origin a sandbox worker dials back to. A worker opens
 	// no inbound port, so this is the only way it can reach the control plane.
@@ -80,6 +87,10 @@ type Config struct {
 	// replaces the input/output polling loops. Off means the polled
 	// store-and-forward behavior, byte for byte.
 	TerminalStreamEnabled bool
+	// TerminalRelayEnabled forwards terminal output to an attached browser
+	// directly from the worker stream, before the same frame is mirrored to
+	// durable replay storage.
+	TerminalRelayEnabled bool
 
 	NodeOpsBaseURL       string
 	NodeOpsAPIKey        string
@@ -182,10 +193,12 @@ func Load() (Config, error) {
 		LocalSessionTTL:        durationEnv("AO_CLOUD_LOCAL_SESSION_TTL", 24*time.Hour),
 		AllowAnonymousCheckout: boolEnv("AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT", false),
 		TerminalStreamEnabled:  boolEnv("AO_CLOUD_TERMINAL_STREAM", false),
+		TerminalRelayEnabled:   boolEnv("AO_CLOUD_TERMINAL_RELAY", false),
 		SandboxProvider: strings.ToLower(
 			envOrDefault("AO_CLOUD_SANDBOX_PROVIDER", defaultSandboxProvider(hosted)),
 		),
-		Release: strings.TrimSpace(os.Getenv("AO_CLOUD_RELEASE")),
+		CapabilityGatedProviders: lowerCSVList(os.Getenv("AO_CLOUD_CAPABILITY_GATED_PROVIDERS")),
+		Release:                  strings.TrimSpace(os.Getenv("AO_CLOUD_RELEASE")),
 		RepositoryBrokerURL: strings.TrimRight(
 			strings.TrimSpace(os.Getenv("AO_CLOUD_REPOSITORY_BROKER_URL")), "/",
 		),
@@ -472,6 +485,9 @@ func Load() (Config, error) {
 	if cfg.IdlePauseInterval <= 0 {
 		return Config{}, errors.New("AO_CLOUD_IDLE_PAUSE_INTERVAL must be positive")
 	}
+	if cfg.TerminalRelayEnabled && !cfg.TerminalStreamEnabled {
+		return Config{}, errors.New("AO_CLOUD_TERMINAL_RELAY requires AO_CLOUD_TERMINAL_STREAM")
+	}
 	if cfg.IdlePauseThreshold < time.Minute {
 		return Config{}, errors.New("AO_CLOUD_IDLE_PAUSE_THRESHOLD must be at least 1m")
 	}
@@ -651,6 +667,22 @@ func resolveAvailableProviders(defaultProvider string, hosted bool) ([]string, e
 		}
 	}
 	return list, nil
+}
+
+// lowerCSVList parses a comma-separated env value into a lowercased, trimmed,
+// de-duplicated slice. A blank value yields nil.
+func lowerCSVList(raw string) []string {
+	seen := map[string]bool{}
+	var list []string
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		list = append(list, value)
+	}
+	return list
 }
 
 // providersRequireWorkerHome reports whether any available provider launches a

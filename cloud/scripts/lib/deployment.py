@@ -62,10 +62,59 @@ PROVIDER_ENV_NAMES = set(NODEOPS_SECRET_ENV) | set(CODER_SECRET_ENV) | {
     "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS",
 }
 PROVIDER_AUTO_PAUSE_ENV = "AO_CLOUD_NODEOPS_AUTO_PAUSE_MINUTES"
+NODEOPS_PLAINTEXT_ENV = {"AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS"}
 WORKER_BINARY_PATH = "/ao-worker"
 WORKER_HELPER_BINARY_PATH = "/ao"
 _DIGEST_IMAGE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 _DURATION_PART = re.compile(r"(\d+)(ms|s|m|h)")
+
+
+def resolve_sandbox_providers(
+    sandbox_provider: str, sandbox_providers: list[str] | None
+) -> list[str]:
+    """The full set of sandbox providers a control-plane task serves.
+
+    A single-provider deployment passes sandbox_providers=None and gets exactly
+    [sandbox_provider], preserving the historical behavior. A multi-provider
+    deployment (for example nodeops,coder) passes every provider it offers so
+    all of their secrets are plumbed and preserved, and the primary
+    (sandbox_provider) must be one of them.
+    """
+    providers = list(sandbox_providers) if sandbox_providers else [sandbox_provider]
+    seen: list[str] = []
+    for provider in providers:
+        if provider not in PROVIDER_SECRET_ENV:
+            raise ValueError(f"unsupported hosted sandbox provider: {provider}")
+        if provider not in seen:
+            seen.append(provider)
+    if sandbox_provider not in seen:
+        raise ValueError(
+            "primary sandbox provider "
+            f"{sandbox_provider!r} must be one of the available providers "
+            f"{seen}"
+        )
+    return seen
+
+
+def _inactive_provider_env_names(providers: list[str]) -> set[str]:
+    """Provider env/secret names to prune: those of providers NOT in the set.
+
+    Names belonging to an available provider are kept so a multi-provider task
+    retains, for example, its coder secrets during a nodeops-primary deploy.
+    """
+    keep: set[str] = set()
+    for provider in providers:
+        keep |= set(PROVIDER_SECRET_ENV[provider])
+    if "nodeops" in providers:
+        keep |= NODEOPS_PLAINTEXT_ENV
+    return PROVIDER_ENV_NAMES - keep
+
+
+def _required_provider_secrets(providers: list[str]) -> set[str]:
+    required: set[str] = set()
+    for provider in providers:
+        required |= set(PROVIDER_SECRET_ENV[provider])
+    return required
 
 
 def secret_environment(secret_arn: str, fields: dict[str, str]) -> dict[str, str]:
@@ -205,6 +254,7 @@ def build_task_definition(
     runtime_database_user: str = "",
     worker_image: str = "",
     sandbox_provider: str = "nodeops",
+    sandbox_providers: list[str] | None = None,
     environment_overrides: dict[str, str] | None = None,
     secret_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -233,6 +283,11 @@ def build_task_definition(
     secret_overrides = secret_overrides or {}
     if sandbox_provider not in PROVIDER_SECRET_ENV:
         raise ValueError(f"unsupported hosted sandbox provider: {sandbox_provider}")
+    providers = resolve_sandbox_providers(sandbox_provider, sandbox_providers)
+    # Prune only the env/secret names of providers this task does NOT serve, so a
+    # multi-provider task keeps every available provider's secrets (a
+    # nodeops-primary deploy must not drop coder credentials, and vice versa).
+    prune_names = _inactive_provider_env_names(providers)
     if (
         PROVIDER_AUTO_PAUSE_ENV in environment_overrides
         or PROVIDER_AUTO_PAUSE_ENV in secret_overrides
@@ -242,7 +297,7 @@ def build_task_definition(
         item["name"]: item["value"]
         for item in container.get("environment", [])
         if item["name"] != PROVIDER_AUTO_PAUSE_ENV
-        and item["name"] not in PROVIDER_ENV_NAMES
+        and item["name"] not in prune_names
     }
     values["AO_CLOUD_RELEASE"] = release
     if container_name == "control-plane":
@@ -254,6 +309,9 @@ def build_task_definition(
                 "AO_CLOUD_LOCAL_AUTH": "false",
                 "AO_CLOUD_MIGRATE_ON_STARTUP": "false",
                 "AO_CLOUD_SANDBOX_PROVIDER": sandbox_provider,
+                "AO_CLOUD_SANDBOX_PROVIDERS": ",".join(providers),
+                "AO_CLOUD_TERMINAL_STREAM": "1",
+                "AO_CLOUD_TERMINAL_RELAY": "1",
                 "AO_CLOUD_WORKER_BINARY_PATH": WORKER_BINARY_PATH,
                 "AO_CLOUD_WORKER_HELPER_BINARY_PATH": WORKER_HELPER_BINARY_PATH,
             }
@@ -269,12 +327,12 @@ def build_task_definition(
         item["name"]: item["valueFrom"]
         for item in container.get("secrets", [])
         if item["name"] != PROVIDER_AUTO_PAUSE_ENV
-        and item["name"] not in PROVIDER_ENV_NAMES
+        and item["name"] not in prune_names
     }
     secrets.update(secret_overrides)
     if container_name == "control-plane":
-        required_secrets = set(WORKER_SECRET_ENV) | set(
-            PROVIDER_SECRET_ENV[sandbox_provider]
+        required_secrets = set(WORKER_SECRET_ENV) | _required_provider_secrets(
+            providers
         )
         missing = sorted(required_secrets - secrets.keys())
         if missing:
@@ -342,15 +400,32 @@ def validate_task_artifacts(
         raise ValueError("task definition does not use packaged /ao helper")
     if PROVIDER_AUTO_PAUSE_ENV in environment:
         raise ValueError("task definition configures provider auto-pause")
+    if environment.get("AO_CLOUD_TERMINAL_STREAM") != "1":
+        raise ValueError("task definition does not enable terminal streaming")
+    if environment.get("AO_CLOUD_TERMINAL_RELAY") != "1":
+        raise ValueError("task definition does not enable terminal relay")
     sandbox_provider = environment.get("AO_CLOUD_SANDBOX_PROVIDER", "")
     if sandbox_provider not in PROVIDER_SECRET_ENV:
         raise ValueError("task definition uses an unsupported sandbox provider")
+    # The task may serve more than one provider; require every available
+    # provider's secrets and reject only providers it does not serve.
+    providers_env = environment.get("AO_CLOUD_SANDBOX_PROVIDERS", "")
+    providers = [
+        provider.strip()
+        for provider in providers_env.split(",")
+        if provider.strip()
+    ] or [sandbox_provider]
+    for provider in providers:
+        if provider not in PROVIDER_SECRET_ENV:
+            raise ValueError("task definition uses an unsupported sandbox provider")
+    if sandbox_provider not in providers:
+        raise ValueError(
+            "task definition primary provider is not in its available providers"
+        )
     secrets = {
         item["name"]: item["valueFrom"] for item in container.get("secrets", [])
     }
-    required_secrets = set(WORKER_SECRET_ENV) | set(
-        PROVIDER_SECRET_ENV[sandbox_provider]
-    )
+    required_secrets = set(WORKER_SECRET_ENV) | _required_provider_secrets(providers)
     missing = sorted(required_secrets - secrets.keys())
     if missing:
         raise ValueError(
@@ -360,8 +435,9 @@ def validate_task_artifacts(
         *(
             set(fields)
             for provider, fields in PROVIDER_SECRET_ENV.items()
-            if provider != sandbox_provider
-        )
+            if provider not in providers
+        ),
+        set(),
     )
     retained = sorted(other_provider_secrets & secrets.keys())
     if retained:
@@ -412,8 +488,8 @@ def validate_service(
     expected_task_definition: str | None = None,
 ) -> None:
     desired = service.get("desiredCount", 0)
-    if desired < 2:
-        raise ValueError(f"desired task count is {desired}, expected at least 2")
+    if desired != 1:
+        raise ValueError(f"desired task count is {desired}, expected exactly 1")
     if service.get("pendingCount") != 0:
         raise ValueError("service has pending tasks")
     if service.get("runningCount") != desired:

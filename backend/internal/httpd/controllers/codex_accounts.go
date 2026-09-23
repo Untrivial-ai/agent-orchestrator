@@ -22,7 +22,7 @@ import (
 // CodexAccountService is the HTTP controller's account-management boundary.
 type CodexAccountService interface {
 	CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error)
-	EnsureCodexAccounts(context.Context, []string, bool) (agentsvc.CodexAccounts, error)
+	EnsureCodexAccounts(context.Context, []string, agentsvc.CodexAccountEnsureOptions) (agentsvc.CodexAccounts, error)
 	ConsumeCodexAccountResetCredit(context.Context, string, string) (agentsvc.CodexAccounts, error)
 	SubscribeCodexAccounts(context.Context) (<-chan agentsvc.CodexAccounts, error)
 	OpenCodexAccountLoginTerminal(context.Context) (agentsvc.CodexAccountLoginTerminalStart, error)
@@ -32,7 +32,7 @@ type CodexAccountService interface {
 	VerifyCodexAccountLogin(context.Context, string) (domain.CodexAccountLoginOperation, error)
 	CancelCodexAccountLogin(context.Context, string) (domain.CodexAccountLoginOperation, error)
 	StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error)
-	RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
+	GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
 }
 
 // CodexAccountsController exposes cached accounts, login, switching, and events.
@@ -50,7 +50,20 @@ func (c *CodexAccountsController) Register(r chi.Router) {
 	r.Post("/agents/codex/accounts/login-operations/{operationId}/verify", c.verifyLogin)
 	r.Post("/agents/codex/accounts/login-operations/{operationId}/cancel", c.cancelLogin)
 	r.Post("/agents/codex/account-switches", c.startSwitch)
-	r.Post("/agents/codex/account-switches/{switchId}/recover", c.recoverSwitch)
+	r.Get("/agents/codex/account-switches/{switchId}", c.getSwitch)
+}
+
+func (c *CodexAccountsController) getSwitch(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/codex/account-switches/{switchId}")
+		return
+	}
+	result, err := c.Svc.GetCodexAccountSwitch(r.Context(), strings.TrimSpace(chi.URLParam(r, "switchId")))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, newCodexSwitchResponse(result))
 }
 
 func (c *CodexAccountsController) consumeResetCredit(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +102,9 @@ func (c *CodexAccountsController) startSwitch(w http.ResponseWriter, r *http.Req
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "IDEMPOTENCY_KEY_REQUIRED", "Idempotency key is required", nil)
 		return
 	}
-	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{TargetAccountID: request.TargetAccountID, ExpectedAccountRevision: request.ExpectedAccountRevision, IdempotencyKey: request.IdempotencyKey})
+	result, err := c.Svc.StartCodexAccountSwitch(r.Context(), ports.CodexAccountSwitchConfig{
+		TargetAccountID: request.TargetAccountID, IdempotencyKey: request.IdempotencyKey,
+	})
 	if err != nil {
 		writeCodexAccountSwitchError(w, r, err)
 		return
@@ -97,29 +112,10 @@ func (c *CodexAccountsController) startSwitch(w http.ResponseWriter, r *http.Req
 	envelope.WriteJSON(w, http.StatusAccepted, newCodexSwitchResponse(result))
 }
 
-func (c *CodexAccountsController) recoverSwitch(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/codex/account-switches/{switchId}/recover")
-		return
-	}
-	result, err := c.Svc.RecoverCodexAccountSwitch(r.Context(), strings.TrimSpace(chi.URLParam(r, "switchId")))
-	if err != nil {
-		writeCodexAccountSwitchError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, newCodexSwitchResponse(result))
-}
-
 func writeCodexAccountSwitchError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	case errors.Is(err, ports.ErrCodexAccountSwitchNotFound):
-		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "CODEX_ACCOUNT_SWITCH_NOT_FOUND", "Codex account switch not found", nil)
 	case errors.Is(err, ports.ErrCodexAccountAlreadyActive):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_ACCOUNT_ALREADY_ACTIVE", "This Codex account is already active", nil)
-	case errors.Is(err, ports.ErrCodexActiveAccountUnavailable):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_ACCOUNT_AUTH_UNVERIFIED", "The device's current Codex account is not available for switching", nil)
-	case errors.Is(err, ports.ErrCodexAccountRevisionConflict):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_ACCOUNT_REVISION_CONFLICT", "The active Codex account changed", nil)
 	case errors.Is(err, ports.ErrCodexAccountSwitchInProgress):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_ACCOUNT_SWITCH_IN_PROGRESS", "A Codex account switch is already in progress", nil)
 	case errors.Is(err, ports.ErrCodexAccountSwitchIdempotencyConflict):
@@ -128,8 +124,6 @@ func writeCodexAccountSwitchError(w http.ResponseWriter, r *http.Request, err er
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_GLOBAL_CREDENTIAL_STORE_UNSUPPORTED", "Device-global Codex account switching requires file-backed credentials", nil)
 	case errors.Is(err, ports.ErrCodexGlobalAccountChanged):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_GLOBAL_ACCOUNT_CHANGED", "The device Codex account changed during switching", nil)
-	case errors.Is(err, ports.ErrCodexRunningSessionNotResumable):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_RUNNING_SESSION_NOT_RESUMABLE", "A running AO Codex session cannot be resumed exactly", nil)
 	case errors.Is(err, ports.ErrCodexAccountLoginInProgress):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_ACCOUNT_LOGIN_IN_PROGRESS", "Finish or close the Codex account login before switching accounts", nil)
 	default:
@@ -165,7 +159,10 @@ func (c *CodexAccountsController) ensure(w http.ResponseWriter, r *http.Request)
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	result, err := c.Svc.EnsureCodexAccounts(r.Context(), request.AccountIDs, request.IncludeUsage)
+	result, err := c.Svc.EnsureCodexAccounts(r.Context(), request.AccountIDs, agentsvc.CodexAccountEnsureOptions{
+		IncludeUsage: request.IncludeUsage, ForceAuthentication: request.ForceAuthentication,
+		ForceDeviceReconciliation: request.ForceDeviceReconciliation,
+	})
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return

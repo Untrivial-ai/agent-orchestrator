@@ -127,6 +127,23 @@ export interface CloudCpCreateProjectRequest {
 	/** 1-255 characters. */
 	defaultBranch: string;
 	config?: Record<string, unknown>;
+	/**
+	 * Optional coder dev-kit config chosen at project setup (template picker +
+	 * size/startup + extra repos). Stored on the project; every coder session of
+	 * the project inherits it. Absent = default template, single repo.
+	 */
+	coder?: CloudCpProjectCoderConfig;
+}
+
+export interface CloudCpProjectCoderConfig {
+	/** Coder template UUID from GET /orgs/{orgId}/sandbox/coder/templates. Omit for the default template. */
+	templateId?: string;
+	/** t-shirt size the template maps to a VM SKU. Only with a non-default template. */
+	size?: "small" | "medium" | "large";
+	/** Optional shell snippet the template runs after checkout. Only with a non-default template. */
+	startupScript?: string;
+	/** Additional repositories every session of the project clones alongside the primary repo. */
+	extraRepos?: CloudCpSessionRepo[];
 }
 
 /** PATCH /orgs/{orgId}/projects/{projectId} */
@@ -182,6 +199,28 @@ export interface CloudCpCreateSessionRequest {
 	provider?: string;
 }
 
+export interface CloudCpSessionRepo {
+	url: string;
+	branch?: string;
+}
+
+/** GET /orgs/{orgId}/sandbox/coder/templates */
+export interface CloudCpCoderTemplate {
+	id: string;
+	name: string;
+	displayName: string;
+	description: string;
+	icon: string;
+	// The per-workspace coder_parameter names this template declares (e.g.
+	// "size", "startup_script"). The picker only offers a control when its
+	// parameter is present, so a template that declares none shows no form.
+	parameters: string[];
+}
+
+export interface CloudCpCoderTemplatesResponse {
+	templates: CloudCpCoderTemplate[];
+}
+
 export interface CloudCpSession {
 	id: string;
 	orgId: string;
@@ -201,6 +240,14 @@ export interface CloudCpSession {
 	runtimeState?: string;
 	runtimeError?: string;
 	isTerminated: boolean;
+	/**
+	 * Highest worker epoch the session has minted for its agent terminal. It
+	 * advances on every fresh worker connection (resume from idle-pause,
+	 * restore, re-provision), so the terminal can key on it and re-attach to the
+	 * live agent instead of the dead epoch's exited terminal. Absent/0 when no
+	 * worker has connected yet.
+	 */
+	workerEpoch?: number;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -212,6 +259,191 @@ export interface CloudCpSessionResponse {
 export interface CloudCpSessionListResponse {
 	items: CloudCpSession[];
 	page: CloudCpPageInfo;
+}
+
+// ---------------------------------------------------------------------------
+// Docker workspace review (`workspace_handlers.go`)
+// ---------------------------------------------------------------------------
+
+/** One changed file in a cloud workspace. */
+export interface CloudCpWorkspaceDiffFile {
+	path: string;
+	status: "unmodified" | "modified" | "added" | "deleted" | "renamed" | "untracked" | "copied" | "changed";
+	additions: number;
+	deletions: number;
+	binary: boolean;
+}
+
+/** Changed-file summary, compared with the session's HEAD. */
+export interface CloudCpWorkspaceDiff {
+	files: CloudCpWorkspaceDiffFile[];
+	diffBaseRef: string;
+	diffBaseSha?: string;
+	truncated: { combined: boolean; stats: boolean };
+}
+
+/** Selected-file review details. */
+export interface CloudCpWorkspaceDiffFileDetail extends CloudCpWorkspaceDiffFile {
+	size: number;
+	deleted: boolean;
+	content: string;
+	contentTruncated: boolean;
+	diff: string;
+	diffTruncated: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Provider-neutral workspace review (`workspace_review_handlers.go`)
+// ---------------------------------------------------------------------------
+
+export type CloudCpWorkspaceReviewScope = "combined" | "committed" | "staged" | "unstaged" | "untracked";
+export type CloudCpWorkspaceReviewStatus = "unmodified" | "modified" | "added" | "deleted" | "renamed" | "copied" | "untracked";
+export type CloudCpWorkspaceReviewSide = "before" | "after";
+
+export interface CloudCpWorkspaceReviewFileSummary {
+	path: string;
+	previousPath?: string;
+	status: CloudCpWorkspaceReviewStatus;
+	additions: number;
+	deletions: number;
+	size: number;
+	binary: boolean;
+	editable: boolean;
+	fileFingerprint: string;
+}
+
+export interface CloudCpWorkspaceReviewSections {
+	staged: CloudCpWorkspaceReviewFileSummary[];
+	unstaged: CloudCpWorkspaceReviewFileSummary[];
+	untracked: CloudCpWorkspaceReviewFileSummary[];
+	committed: CloudCpWorkspaceReviewFileSummary[];
+}
+
+export interface CloudCpWorkspaceReviewCommit {
+	sha: string;
+	subject: string;
+	author: string;
+	timestamp: string;
+	files: CloudCpWorkspaceReviewFileSummary[];
+}
+
+export interface CloudCpWorkspaceReviewResponse {
+	workspaceVersion: string;
+	compareBaseSha?: string;
+	compareBaseRef?: string;
+	compareMode?: "base" | "head_fallback";
+	files: CloudCpWorkspaceReviewFileSummary[];
+	truncated: boolean;
+	sections: CloudCpWorkspaceReviewSections;
+	commits: CloudCpWorkspaceReviewCommit[];
+	summary: { files: number; additions: number; deletions: number };
+	ahead?: number;
+	behind?: number;
+}
+
+export interface CloudCpWorkspaceReviewFileQuery {
+	path: string;
+	scope?: CloudCpWorkspaceReviewScope;
+	commitSha?: string;
+}
+
+export interface CloudCpWorkspaceReviewFileResponse extends CloudCpWorkspaceReviewFileSummary {
+	deleted: boolean;
+	imageMediaType?: string;
+	content: string;
+	contentTruncated: boolean;
+	diff: string;
+	diffTruncated: boolean;
+	compareBaseSha?: string;
+	compareBaseRef?: string;
+	compareMode?: "base" | "head_fallback";
+	workspaceVersion: string;
+	historical?: boolean;
+}
+
+export interface CloudCpWorkspaceReviewDiffsRequest {
+	scope: CloudCpWorkspaceReviewScope;
+	paths: string[];
+	contextLines: number;
+	ignoreWhitespace: boolean;
+	workspaceVersion?: string;
+	commitSha?: string;
+}
+
+export interface CloudCpWorkspaceReviewDiffsResponse {
+	workspaceVersion: string;
+	groups: Array<{
+		repository?: string;
+		patch: string;
+		truncated: boolean;
+		includedPaths: string[];
+		deferred: Array<{ path: string; reason: "binary" | "oversized" | "generated" | "long_line" | "budget_exceeded" }>;
+		errors: Array<{ code: string; message: string }>;
+	}>;
+}
+
+export interface CloudCpWorkspaceReviewRevisionQuery {
+	path: string;
+	scope?: CloudCpWorkspaceReviewScope;
+	side?: CloudCpWorkspaceReviewSide;
+	workspaceVersion?: string;
+	expectedRevision?: string;
+	commitSha?: string;
+}
+
+export interface CloudCpWorkspaceReviewRevisionResponse {
+	path: string;
+	side: CloudCpWorkspaceReviewSide;
+	revision?: string;
+	workspaceVersion: string;
+	mediaType?: string;
+	encoding?: string;
+	size: number;
+	exists: boolean;
+	binary: boolean;
+	truncated: boolean;
+	content: string;
+}
+
+export interface CloudCpWorkspaceReviewTreeResponse {
+	path: string;
+	entries: Array<{
+		name: string;
+		path: string;
+		type: "file" | "dir";
+		status?: CloudCpWorkspaceReviewStatus;
+		hasChanges?: boolean;
+		size?: number;
+		binary?: boolean;
+	}>;
+	truncated: boolean;
+}
+
+export interface CloudCpWorkspaceReviewSearchQuery {
+	query: string;
+	cursor?: string;
+	limit?: number;
+}
+
+export interface CloudCpWorkspaceReviewSearchResponse {
+	query: string;
+	results: Array<Pick<CloudCpWorkspaceReviewFileSummary, "path" | "status" | "size" | "binary" | "fileFingerprint">>;
+	nextCursor?: string;
+	truncated: boolean;
+}
+
+export interface CloudCpWorkspaceReviewWriteRequest {
+	path: string;
+	content: string;
+	expectedFileFingerprint: string;
+}
+
+export interface CloudCpWorkspaceReviewWriteResponse {
+	path: string;
+	content: string;
+	size: number;
+	fileFingerprint: string;
+	workspaceVersion: string;
 }
 
 /** One pull request on a children listing (GET .../sessions/{id}/children). */
@@ -259,6 +491,18 @@ export interface CloudCpResumeSessionResponse {
 		sandboxProvider: string;
 		desiredState: string;
 		observedState: string;
+	};
+}
+
+/**
+ * POST /orgs/{orgId}/sessions/{sessionId}/restore responds 202: a deleted
+ * session is re-provisioned with its conversation and work intact, and the
+ * reconciler owns bringing it back — the response only echoes the new intent.
+ */
+export interface CloudCpRestoreSessionResponse {
+	session: {
+		id: string;
+		desiredState: string;
 	};
 }
 
@@ -333,7 +577,8 @@ export type CloudCpAgentProvider = "claude-code" | "codex" | "cursor";
 /**
  * Credential types by provider (`validAgentCredentialType`):
  * claude-code accepts "api_key" | "oauth_token"; codex accepts
- * "api_key" | "access_token"; cursor accepts "api_key".
+ * "api_key" | "access_token" | "auth_json" (the opaque result of a
+ * ChatGPT subscription login); cursor accepts "api_key".
  */
 export interface CloudCpPutAgentConnectionRequest {
 	credentialType: string;
@@ -345,6 +590,15 @@ export interface CloudCpPutAgentConnectionRequest {
 export interface CloudCpPutGitHubPATRequest {
 	/** Raw GitHub personal access token; stored encrypted and never echoed. */
 	secret: string;
+}
+
+/** POST /me/github-pat/validate-saved-repository */
+export interface CloudCpValidateRepositoryAccessRequest {
+	repositoryUrl: string;
+}
+
+export interface CloudCpValidateRepositoryAccessResponse {
+	writeAccess: boolean;
 }
 
 export interface CloudCpProviderConnection {
@@ -366,4 +620,17 @@ export interface CloudCpProviderConnectionsResponse {
 /** PUT /orgs/{orgId}/provider-connections/agents/{agent} */
 export interface CloudCpProviderConnectionResponse {
 	providerConnection: CloudCpProviderConnection;
+}
+
+/** GET /me/github/repos */
+export interface CloudCpGitHubRepo {
+	name: string;
+	fullName: string;
+	private: boolean;
+	defaultBranch: string;
+	cloneUrl: string;
+}
+
+export interface CloudCpGitHubReposResponse {
+	repos: CloudCpGitHubRepo[];
 }

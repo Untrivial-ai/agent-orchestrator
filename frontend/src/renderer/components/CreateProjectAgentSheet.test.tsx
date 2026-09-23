@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
@@ -7,6 +7,7 @@ import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { CreateProjectAgentSheet, RequiredAgentField } from "./CreateProjectAgentSheet";
 import { TooltipProvider } from "./ui/tooltip";
+import { useUiStore } from "../stores/ui-store";
 
 function renderSheet(
 	onSubmit = vi.fn().mockResolvedValue(undefined),
@@ -79,6 +80,117 @@ describe("CreateProjectAgentSheet", () => {
 		await userEvent.click(screen.getByLabelText("Agent"));
 
 		expect(await screen.findByRole("listbox")).toHaveClass("max-h-select-menu-max!");
+	});
+
+	it.each(["chip", "settings-row"] as const)("uses the fixed compact width for the %s agent menu", async (variant) => {
+		render(
+			<RequiredAgentField
+				id="agent"
+				label="Agent"
+				onChange={() => undefined}
+				placeholder="Choose agent"
+				value="claude-code"
+				variant={variant}
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Agent" }));
+
+		expect(screen.getByRole("menu")).toHaveClass(
+			"w-56!",
+			"min-w-56!",
+			"max-w-56!",
+		);
+	});
+
+	it.each(["stacked", "chip", "settings-row"] as const)("%s lists only ready agents and opens Harness without changing a saved selection", async (variant) => {
+		const onChange = vi.fn();
+		useUiStore.setState({ settingsModal: null });
+		render(<RequiredAgentField
+			id="agent" label="Agent" placeholder="Choose agent" value="codex" variant={variant} onChange={onChange}
+			agents={[
+				agentReadiness("claude-code", "Claude Code", { freshness: "stale" }),
+				agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+				agentReadiness("aider", "Aider", { authentication: "not_applicable" }),
+				agentReadiness("cursor", "Cursor", { installation: "not_installed" }),
+				agentReadiness("opencode", "OpenCode", { authentication: "unknown" }),
+			]}
+		/>);
+		const trigger = screen.getByLabelText("Agent");
+		expect(trigger).toHaveTextContent("Codex");
+		expect(trigger).toHaveTextContent("Needs setup");
+		expect(screen.queryByRole("button", { name: "Log in" })).not.toBeInTheDocument();
+		await userEvent.click(trigger);
+		const role = variant === "stacked" ? "option" : "menuitem";
+		expect(screen.getByRole(role, { name: /Claude Code/ })).toBeInTheDocument();
+		expect(screen.getByRole(role, { name: /Aider/ })).toBeInTheDocument();
+		for (const name of [/Codex/, /Cursor/, /OpenCode/]) expect(screen.queryByRole(role, { name })).not.toBeInTheDocument();
+		await userEvent.keyboard("{End}{Enter}");
+		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness", focusAgentId: "codex" }));
+		expect(onChange).not.toHaveBeenCalled();
+		expect(trigger).toHaveTextContent("Codex");
+	});
+
+	it("preserves cloud agent choices without offering local Harness management", async () => {
+		render(<RequiredAgentField id="agent" label="Agent" placeholder="Choose agent" value="" manageAgents={false} variant="chip" onChange={() => undefined}
+			agents={[agentReadiness("codex", "Codex", { authentication: "unknown" })]} />);
+		await userEvent.click(screen.getByLabelText("Agent"));
+		expect(screen.getByRole("menuitem", { name: /Codex/ })).not.toHaveAttribute("aria-disabled", "true");
+		expect(screen.queryByRole("menuitem", { name: "Manage agents…" })).not.toBeInTheDocument();
+	});
+
+	it("keeps agent management available with an empty ready list", async () => {
+		const onChange = vi.fn();
+		useUiStore.setState({ settingsModal: null });
+		render(<RequiredAgentField id="agent" label="Agent" placeholder="Choose agent" value="" onChange={onChange} agents={[]} />);
+		await userEvent.click(screen.getByLabelText("Agent"));
+		expect(screen.getByText("No agents ready")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("option", { name: "Manage agents…" }));
+		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness" }));
+		expect(onChange).not.toHaveBeenCalled();
+	});
+
+	it("keeps fallback agents usable until a readiness snapshot arrives", async () => {
+		render(<RequiredAgentField id="agent" label="Agent" placeholder="Choose agent" value="codex" variant="settings-row" onChange={() => undefined} />);
+
+		const trigger = screen.getByRole("button", { name: "Agent" });
+		expect(trigger).toHaveTextContent("Codex");
+		expect(trigger).not.toHaveTextContent("Needs setup");
+		await userEvent.click(trigger);
+		expect(screen.getByRole("menuitem", { name: /Claude Code/ })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeInTheDocument();
+		expect(screen.queryByText("No agents ready")).not.toBeInTheDocument();
+	});
+
+	it("opens management for a selected create-project agent without losing the selection", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		queryClient.setQueryData(agentReadinessQueryKey, {
+			agents: [agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex")],
+		});
+		renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
+		const worker = screen.getByRole("combobox", { name: "Worker agent" });
+		expect(worker).toHaveTextContent("Claude Code");
+		await chooseOption(worker, "Codex");
+
+		act(() => {
+			queryClient.setQueryData(agentReadinessQueryKey, {
+				agents: [
+					agentReadiness("claude-code", "Claude Code"),
+					agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+				],
+			});
+		});
+		await userEvent.click(worker);
+		await userEvent.click(screen.getByRole("option", { name: "Manage agents…" }));
+		await waitFor(() => expect(useUiStore.getState().settingsModal).not.toBeNull());
+		expect(useUiStore.getState().settingsModal).toEqual({
+			scope: "global",
+			section: "harness",
+			focusAgentId: "codex",
+		});
+
+		act(() => useUiStore.getState().closeSettings());
+		expect(worker).toHaveTextContent("Codex");
 	});
 
 	it("creates without intake when the toggle is left off", async () => {

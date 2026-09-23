@@ -55,13 +55,7 @@ func TestStandaloneProjectColumnsAreNullable(t *testing.T) {
 }
 
 func TestStandaloneMigrationConvertsLegacyScratchOwnership(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 122)
+	db := openMigratedDatabaseCopy(t, 122)
 
 	const timestamp = "2026-09-02T12:00:00Z"
 	if _, err := db.Exec(`

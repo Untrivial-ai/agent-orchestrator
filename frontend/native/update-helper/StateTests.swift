@@ -11,8 +11,22 @@ struct StateTests {
         let valid = try completion("{\"version\":\"1.2.3\",\"appPath\":\"/Applications/AO.app\",\"parentPID\":123,\"startedAt\":1000,\"pid\":456}")
         assert(state.stage(now: 1001, parentAlive: true, completion: nil, failure: nil) == .closing)
         assert(state.stage(now: 1001, parentAlive: false, completion: nil, failure: nil) == .installing)
-        if case .recovery = state.stage(now: 31_000, parentAlive: true, completion: nil, failure: nil) {} else { fatalError("closing deadline") }
+        // A slow-but-healthy close stays hidden well past the old 30s cutoff.
+        assert(state.stage(now: 31_000, parentAlive: true, completion: nil, failure: nil) == .closing)
+        assert(state.stage(now: 120_000, parentAlive: false, completion: nil, failure: nil) == .installing)
+        // Only a genuinely stuck update surfaces a window: no close after 3 minutes,
+        if case .recovery = state.stage(now: 181_000, parentAlive: true, completion: nil, failure: nil) {} else { fatalError("closing deadline") }
+        // or no reopen after 3 minutes.
         if case .recovery = state.stage(now: 181_000, parentAlive: false, completion: nil, failure: nil) {} else { fatalError("restart deadline") }
+        // The healthy close-and-reopen stages must never present a window; only
+        // the stall/failure stages do. This is the seam that the window-hiding
+        // fix hangs on, so assert it directly.
+        assert(UpdateStage.closing.presentsWindow == false)
+        assert(UpdateStage.installing.presentsWindow == false)
+        assert(UpdateStage.complete.presentsWindow == false)
+        assert(UpdateStage.legacyComplete.presentsWindow == false)
+        assert(UpdateStage.recovery("x").presentsWindow == true)
+        assert(UpdateStage.reopened.presentsWindow == true)
         state.keepWaiting(now: 190_000)
         assert(state.stage(now: 190_001, parentAlive: false, completion: nil, failure: nil) == .installing)
         assert(state.stage(now: 190_001, parentAlive: true, completion: valid, failure: nil) == .closing)

@@ -334,7 +334,7 @@ describe("Chat message timestamps", () => {
 		);
 
 		expect(screen.getByLabelText(/^Sent Yesterday · \d{2}:\d{2}$/)).toBeInTheDocument();
-		expect(screen.getByLabelText(/^Sent [A-Z][a-z]{2} \d{1,2}, \d{4}$/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/^Sent .+\d{4}$/)).toBeInTheDocument();
 	});
 });
 
@@ -396,6 +396,29 @@ describe("ChatWorkspace timeline", () => {
 		render(<ChatWorkspace snapshot={durable} localEchos={localEchos} />);
 
 		expect(screen.getAllByText("Already durable")).toHaveLength(1);
+	});
+
+	it("resolves a relative image in agent prose against this session workspace", () => {
+		const snapshot = idleSnapshot(chatFixtureEmpty);
+		snapshot.items.push({
+			kind: "message",
+			id: "assistant-image",
+			turnId: "turn-image",
+			sequence: 1,
+			revision: 0,
+			role: "assistant",
+			origin: "provider",
+			text: "![screenshot](docs/screenshot.png)",
+			streaming: false,
+			createdAt: "2026-09-09T00:00:00Z",
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		const src = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+		const url = new URL(src, "http://127.0.0.1");
+		expect(url.pathname).toBe(`/api/v1/sessions/${encodeURIComponent(snapshot.sessionId)}/workspace/file/blob`);
+		expect(url.searchParams.get("path")).toBe("docs/screenshot.png");
 	});
 
 	it("makes composer and history controls inert while a durable agent switch owns input", () => {
@@ -688,6 +711,65 @@ describe("ChatWorkspace timeline", () => {
 
 		fireEvent.click(screen.getByRole("log", { name: "Conversation" }));
 		expect(selection?.isCollapsed).toBe(false);
+	});
+
+	function withUserInput(status: "pending" | "completed") {
+		const snapshot = structuredClone(chatFixture);
+		snapshot.turns[0] = { ...snapshot.turns[0], state: "running" };
+		snapshot.items = snapshot.items.filter(
+			(item) =>
+				!(
+					item.kind === "activity" &&
+					item.activityKind === "approval" &&
+					item.status === "pending"
+				),
+		);
+		snapshot.items.push({
+			kind: "activity",
+			id: "input-1",
+			sequence: 100,
+			revision: 1,
+			turnId: "turn-1",
+			activityKind: "user_input",
+			status,
+			summary: "Choose a direction",
+			requestId: "input-1",
+			detail: {
+				inputMode: "form",
+				message: "Choose a direction",
+				schema: {
+					type: "object",
+					properties: {
+						question_0: {
+							type: "string",
+							title: "Which harness?",
+							oneOf: [{ const: "acp", title: "ACP" }],
+						},
+					},
+				},
+			},
+			createdAt: "2026-08-24T00:00:00Z",
+		});
+		return snapshot;
+	}
+
+	it("docks a pending question on the composer instead of the transcript", () => {
+		render(<ChatWorkspace snapshot={withUserInput("pending")} onResolveInput={vi.fn()} />);
+
+		expect(screen.getByTestId("elicitation-composer-dock")).toBeInTheDocument();
+		expect(screen.getByRole("group", { name: "Agent question" })).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("log", { name: "Conversation" })).queryByText("Which harness?"),
+		).not.toBeInTheDocument();
+	});
+
+	it("leaves nothing behind once a question is answered", () => {
+		render(<ChatWorkspace snapshot={withUserInput("completed")} onResolveInput={vi.fn()} />);
+
+		expect(screen.queryByTestId("elicitation-composer-dock")).not.toBeInTheDocument();
+		expect(screen.queryByRole("group", { name: "Agent question" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Which harness?")).not.toBeInTheDocument();
+		expect(screen.queryByText("Choose a direction")).not.toBeInTheDocument();
 	});
 
 	it("does not interrupt while an elicitation is open", () => {
@@ -1593,6 +1675,43 @@ describe("ChatWorkspace timeline", () => {
 });
 
 describe("automation reports", () => {
+	it("renders browser annotation transport as a compact feedback card", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const message: ConversationMessage = {
+			...source,
+			text: `<browser_annotations>
+Browser feedback
+Page: Google
+URL: https://www.google.com/
+Annotations: 1
+
+Annotation 1 (adjustment):
+Target: div.badge
+Selector: body > div.badge
+Dimensions: 120×24
+Requested visual changes:
+- Text color: "rgb(0, 0, 0)" → "#d7193f"
+- Background: "transparent" → "#32c873"
+
+Reference screenshots:
+- .ao/attachments/browser.png
+
+Task: Address the feedback below according to its wording. Visual adjustments are already previewed in AO's shared browser and describe the intended result.
+</browser_annotations>`,
+		};
+
+		render(<OriginMessage message={message} />);
+
+		expect(screen.getByText("Browser feedback")).toBeInTheDocument();
+		expect(screen.getByText("1 annotation on Google")).toBeInTheDocument();
+		expect(screen.getByText("2 visual changes")).toBeInTheDocument();
+		expect(screen.getByText("div.badge")).toBeInTheDocument();
+		expect(screen.getByText("1 reference screenshot")).toBeInTheDocument();
+		expect(screen.queryByText(/body > div\.badge/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Task: Address/)).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Show full report" })).not.toBeInTheDocument();
+	});
+
 	it("collapses a long report until the reader asks to expand it", async () => {
 		const user = userEvent.setup();
 		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
@@ -2929,6 +3048,37 @@ describe("ChatWorkspace reviewer tabs", () => {
 		expect(onOpenReviewerTerminal).toHaveBeenCalledWith(reviewerTerminal);
 	});
 
+	it("removes the active highlight from the reviewer while a workspace file is selected", () => {
+		render(
+			<ChatWorkspace
+				reviewerTarget={reviewerTarget}
+				reviewerTerminal={reviewerTerminal}
+				session={chatSession}
+				snapshot={idleSnapshot()}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button aria-selected="true" role="tab">README.md</button>,
+						onSelect: vi.fn(),
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("hides and inerts the worker conversation while a typed reviewer owns the body", () => {
+		render(<ChatWorkspace snapshot={idleSnapshot()} reviewerChatSelected session={chatSession} />);
+
+		const workerConversation = screen.getByTestId("chat-conversation-panel");
+		expect(workerConversation).toHaveAttribute("hidden");
+		expect(workerConversation).toHaveAttribute("aria-hidden", "true");
+		expect(workerConversation).toHaveAttribute("inert");
+	});
+
 	it("keeps the chat draft, attachments, edit, and scroll state mounted while Reviewer is selected", async () => {
 		const user = userEvent.setup();
 		const common = {
@@ -3351,6 +3501,27 @@ describe("ChatWorkspace shell tabs", () => {
 		expect(closeShellTerminalShortcutStates.at(-1)).toBe(true);
 		act(() => [...closeShellTerminalListeners][0]?.());
 		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	it("removes the active highlight from a shell while a workspace file is selected", () => {
+		render(
+			<ChatWorkspace
+				snapshot={idleSnapshot()}
+				shellTerminals={shells}
+				shellTarget={shellTarget("shell-2")}
+				workspaceActiveTabKey="file:README.md"
+				workspaceTabs={[
+					{
+						key: "file:README.md",
+						content: <button aria-selected="true" role="tab">README.md</button>,
+						onSelect: vi.fn(),
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("tab", { name: "second shell" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
 	});
 });
 

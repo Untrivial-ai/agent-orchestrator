@@ -140,7 +140,77 @@ describe("plan", () => {
 });
 
 describe("provider state chrome", () => {
-	it("puts the credential demand above everything else that is wrong", () => {
+	it.each(["completion", "notification", "both"])("keeps the %s failure in chat while preserving sign-in guidance", (source) => {
+		const reason = "Provider access denied.\n\nContact your administrator.";
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureReauth,
+			account: { ...chatFixtureReauth.account, reauthReason: reason },
+			turns: chatFixtureReauth.turns.map((turn) =>
+				turn.id === "turn-2" ? { ...turn, state: "failed", errorMessage: source === "notification" ? undefined : reason } : turn,
+			),
+			items: [
+				...chatFixtureReauth.items.filter(
+					(item) => !(item.kind === "activity" && item.detail?.event === "auth.reauth_required"),
+				),
+				{
+					kind: "activity",
+					id: "transient-provider-failure",
+					turnId: "turn-2",
+					sequence: chatFixtureReauth.latestSequence + 1,
+					revision: 1,
+					activityKind: "system",
+					status: "failed",
+					summary: "Provider access denied.",
+					detail: { event: "provider.failure", text: "Contact your administrator." },
+					createdAt: "2026-08-03T00:00:00Z",
+				},
+				{
+					kind: "activity",
+					id: "earlier-recovered-warning",
+					turnId: "turn-2",
+					sequence: chatFixtureReauth.latestSequence + 2,
+					revision: 1,
+					activityKind: "system",
+					status: "completed",
+					summary: "Earlier recovered warning",
+					detail: { event: "provider.failure" },
+					createdAt: "2026-08-03T00:00:00Z",
+				},
+			],
+			latestSequence: chatFixtureReauth.latestSequence + 2,
+		};
+		if (source !== "completion") {
+			snapshot.items.push({
+				kind: "activity", id: "terminal-error", turnId: "turn-2",
+				sequence: ++snapshot.latestSequence, revision: 1,
+				activityKind: "error", status: "failed", summary: reason,
+				createdAt: "2026-08-03T00:00:00Z",
+			});
+		}
+		const { rerender } = render(<ChatWorkspace snapshot={snapshot} />);
+		expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to keep going");
+		expect(screen.getByRole("alert")).toHaveTextContent("login");
+		expect(screen.getByRole("alert")).not.toHaveTextContent("Provider access denied");
+		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+		expect(screen.getByText(/Contact your administrator/)).toBeInTheDocument();
+		expect(screen.getByText("Earlier recovered warning")).toBeInTheDocument();
+
+		rerender(<ChatWorkspace snapshot={structuredClone(snapshot)} />);
+		expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to keep going");
+		expect(screen.getByRole("alert")).toHaveTextContent("login");
+		expect(screen.getByRole("alert")).not.toHaveTextContent("Provider access denied");
+		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+
+		rerender(
+			<ChatWorkspace
+				snapshot={{ ...snapshot, account: { ...snapshot.account, reauthReason: "Session expired." } }}
+			/>,
+		);
+		expect(screen.getAllByText(/Provider access denied/)).toHaveLength(1);
+		expect(screen.getByRole("alert")).toHaveTextContent("Session expired.");
+	});
+
+	it("keeps credential recovery available when the failure is not in loaded history", () => {
 		render(<ChatWorkspace snapshot={chatFixtureReauth} />);
 		expect(screen.getByRole("alert")).toHaveTextContent(/Sign in again to keep going/);
 	});

@@ -6,6 +6,7 @@ import {
 	findProjectOrchestrator,
 	newestActiveOrchestrator,
 	orchestratorHealth,
+	sessionAgentExited,
 	sessionIsActive,
 	sessionNeedsAttention,
 	toAgentProvider,
@@ -110,6 +111,23 @@ describe("sessionIsActive", () => {
 		expect(sessionIsActive(sessionWith({ status: "pr_open" }))).toBe(true);
 		expect(sessionIsActive(sessionWith({ status: "exited" }))).toBe(true);
 	});
+});
+
+describe("sessionAgentExited", () => {
+	it.each([undefined, false])(
+		"rejects a terminated status when isTerminated is %s",
+		(isTerminated) => {
+			expect(
+				sessionAgentExited(
+					sessionWith({
+						status: "terminated",
+						isTerminated,
+						activity: { state: "exited", lastActivityAt: "2026-09-21T00:00:00Z" },
+					}),
+				),
+			).toBe(false);
+		},
+	);
 });
 
 describe("findProjectOrchestrator", () => {

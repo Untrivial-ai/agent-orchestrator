@@ -1096,7 +1096,7 @@ func TestInterfaceTransitionTUIToChatStopsBeforeStartingAndReusesNativeConversat
 	if chat.start.ProviderConversationID != "native-1" {
 		t.Fatalf("provider conversation = %q, want native-1", chat.start.ProviderConversationID)
 	}
-	if !chat.start.RequireNativeHistory {
+	if chat.start.HistoryMode != ports.ChatHistoryRequired {
 		t.Fatal("TUI to Chat handoff did not require native history replay")
 	}
 	if got := chat.start.Env[EnvBrowserCapability]; got != "transition-chat-token" {
@@ -1195,6 +1195,12 @@ func TestInterfaceTransitionReportsNativeHistoryReplayFailure(t *testing.T) {
 		wantStarts int
 	}{
 		{name: "unavailable", err: ports.ErrChatHistoryUnavailable, code: "TARGET_HISTORY_UNAVAILABLE", wantStarts: 1},
+		{name: "load rejected", err: ports.ErrChatHistoryLoadFailed, code: "TARGET_HISTORY_LOAD_FAILED", wantStarts: 1},
+		// The reporter's shape: AO's settle deadline expired while the provider
+		// kept answering session/load with -32603. Not retried with a second target.
+		{name: "load rejected after unsettled wait", err: fmt.Errorf("wait for settled native conversation history: %w: %w",
+			ports.ErrChatHistoryUnsettled, fmt.Errorf("%w: %w", context.DeadlineExceeded, ports.ErrChatHistoryLoadFailed)),
+			code: "TARGET_HISTORY_LOAD_FAILED", wantStarts: 1},
 		{name: "unsettled", err: ports.ErrChatHistoryUnsettled, code: "TARGET_HISTORY_UNSETTLED", wantStarts: 2},
 		{name: "legacy text mismatch", err: &ports.ChatHistoryUnsettledError{Dimensions: []ports.ChatHistoryMismatchDimension{
 			ports.ChatHistoryMismatchUntrustedUserText,
@@ -1723,6 +1729,67 @@ func TestInterfaceTransitionTUIToChatPreservesAVisibleDraftEvenAfterFreshIdle(t 
 	case <-gate.released:
 	case <-time.After(time.Second):
 		t.Fatal("terminal input gate remained closed after draft detection")
+	}
+}
+
+func TestInterfaceTransitionTUIToChatIgnoresATransientComposerDraft(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	now := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	// Providers repaint non-dim chrome through the composer borders between
+	// stable frames. A draft claim that vanishes on the next capture is chrome,
+	// not human input, and must not fail the switch.
+	runtime.outputs = []string{
+		draftTerminalOutput, draftTerminalOutput,
+		idleTerminalOutput, idleTerminalOutput, idleTerminalOutput,
+	}
+	manager.SetTerminalInputGate(&transitionInputGate{
+		acquired: make(chan string, 1),
+		released: make(chan string, 1),
+	})
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
+	}
+}
+
+func TestInterfaceTransitionTUIToChatIgnoresASingleDraftFrameBetweenIdleCaptures(t *testing.T) {
+	manager, store, runtime, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	useFastInterfaceTransitionTimings(manager)
+	manager.agents = singleAgent{agent: transitionSurfaceAgent{}}
+	now := time.Now()
+	rec := store.sessions["session-1"]
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now.Add(-time.Minute)}
+	store.sessions["session-1"] = rec
+	runtime.aliveByHandle = map[string]bool{"runtime-1": true}
+	runtime.outputs = []string{
+		idleTerminalOutput, draftTerminalOutput, idleTerminalOutput,
+		idleTerminalOutput, idleTerminalOutput,
+	}
+	manager.SetTerminalInputGate(&transitionInputGate{
+		acquired: make(chan string, 1),
+		released: make(chan string, 1),
+	})
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain, domain.SessionInterfaceTransitionHistoryStrict)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
 	}
 }
 
@@ -2683,6 +2750,92 @@ func TestInterfaceTransitionChatToTUIInterruptsThenStopsBeforeStarting(t *testin
 	}
 	if !status.Supported || status.TargetMode != domain.SessionModeChat {
 		t.Fatalf("resumed TUI is not immediately switchable: %+v", status)
+	}
+	if runtime.created != 1 {
+		t.Fatalf("terminal runtime created %d times, want 1", runtime.created)
+	}
+	if got := fmt.Sprint(*log); got != "[prepare:chat:interrupt stop:chat start:tui]" {
+		t.Fatalf("controller order = %s", got)
+	}
+}
+
+// modelRecordingTransitionAgent records the restore config the TUI rebuild
+// hands the harness, so a Chat-to-TUI handoff test can assert which model the
+// rebuilt terminal resumes with.
+type modelRecordingTransitionAgent struct {
+	transitionAgent
+	mu             sync.Mutex
+	restoreConfigs []ports.RestoreConfig
+}
+
+func (a *modelRecordingTransitionAgent) GetRestoreCommand(_ context.Context, cfg ports.RestoreConfig) ([]string, bool, error) {
+	a.mu.Lock()
+	a.restoreConfigs = append(a.restoreConfigs, cfg)
+	a.mu.Unlock()
+	if cfg.Session.Metadata[ports.MetadataKeyAgentSessionID] == "" {
+		return nil, false, nil
+	}
+	return []string{"resume"}, true, nil
+}
+
+func (a *modelRecordingTransitionAgent) restores() []ports.RestoreConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]ports.RestoreConfig(nil), a.restoreConfigs...)
+}
+
+// TestInterfaceTransitionChatToTUIRebuildUsesChatModel is the regression for
+// the ChatUI ↔ TUI model-persistence bug (#4893), including the handoff race
+// where the old terminal is still closing: the transition interrupts and stops
+// the Chat source before starting the TUI target, and the rebuilt TUI harness
+// restore command must carry the model the user picked in ChatUI — refreshed
+// from the session's durable metadata, not the project default — while still
+// resuming the SAME native conversation.
+func TestInterfaceTransitionChatToTUIRebuildUsesChatModel(t *testing.T) {
+	manager, store, runtime, _, log := newTransitionManager(t, domain.SessionModeChat)
+	// The project default would otherwise win: the ChatUI choice persisted on
+	// the session must take precedence in the rebuilt TUI restore command.
+	store.projects["proj"] = domain.ProjectRecord{
+		ID: "proj", Path: "/repo",
+		Config: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "project-default-model"}},
+	}
+	seedSessionModel := store.sessions["session-1"]
+	seedSessionModel.Metadata.Model = "5.6-luna"
+	store.sessions["session-1"] = seedSessionModel
+	agent := &modelRecordingTransitionAgent{}
+	manager.agents = singleAgent{agent: agent}
+
+	transition, err := manager.StartInterfaceTransition(context.Background(), "session-1", domain.SessionModeTUI,
+		domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %s, error = %s", settled.Phase, settled.ErrorDetail)
+	}
+
+	// The preflight and the rebuild both resume with the ChatUI model — every
+	// restore command the handoff builds (target preflight happens while the
+	// old terminal is still closing, then the rebuild itself) carries it.
+	restores := agent.restores()
+	if len(restores) != 2 {
+		t.Fatalf("harness restore calls = %d, want 2 (target preflight + rebuild)", len(restores))
+	}
+	for i, cfg := range restores {
+		if cfg.Config.Model != "5.6-luna" {
+			t.Fatalf("restore call %d model = %q, want the ChatUI choice 5.6-luna", i, cfg.Config.Model)
+		}
+	}
+
+	// History is preserved across the handoff: same native conversation, no new
+	// session, and the terminal was rebuilt exactly once.
+	rec := store.sessions["session-1"]
+	if rec.Mode != domain.SessionModeTUI {
+		t.Fatalf("mode = %s, want tui", rec.Mode)
+	}
+	if rec.Metadata.AgentSessionID != "native-1" {
+		t.Fatalf("agent session = %q, want native-1 (conversation must be preserved)", rec.Metadata.AgentSessionID)
 	}
 	if runtime.created != 1 {
 		t.Fatalf("terminal runtime created %d times, want 1", runtime.created)

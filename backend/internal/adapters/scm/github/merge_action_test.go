@@ -117,7 +117,7 @@ func TestResolveReviewThread_UsesGraphQLMutation(t *testing.T) {
 		if !strings.Contains(body.Query, "resolveReviewThread") || body.Variables["threadId"] != "thread-1" {
 			t.Fatalf("body = %#v", body)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"resolveReviewThread": map[string]any{"thread": map[string]any{"id": "thread-1"}}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"resolveReviewThread": map[string]any{"thread": map[string]any{"id": "thread-1", "isResolved": true}}}})
 	})
 
 	err := newProviderForTest(t, f).ResolveReviewThread(ctx(), ports.SCMReviewResolveRequest{
@@ -126,5 +126,60 @@ func TestResolveReviewThread_UsesGraphQLMutation(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestResolveReviewThread_RejectsMissingResolutionConfirmation(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodPost, "/graphql", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"resolveReviewThread": map[string]any{
+				"thread": map[string]any{"id": "thread-1"},
+			}},
+		})
+	})
+
+	err := newProviderForTest(t, f).ResolveReviewThread(ctx(), ports.SCMReviewResolveRequest{
+		PR:       validMergeRequest().PR,
+		ThreadID: "thread-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not confirmed resolved") {
+		t.Fatalf("error = %v, want a missing confirmation error", err)
+	}
+}
+
+func TestResolveReviewThread_RejectsUnconfirmedMutation(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodPost, "/graphql", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"resolveReviewThread": map[string]any{"thread": nil}},
+		})
+	})
+
+	err := newProviderForTest(t, f).ResolveReviewThread(ctx(), ports.SCMReviewResolveRequest{
+		PR:       validMergeRequest().PR,
+		ThreadID: "thread-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "returned no thread") {
+		t.Fatalf("error = %v, want an unconfirmed mutation error", err)
+	}
+}
+
+func TestResolveReviewThread_RejectsUnresolvedMutation(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodPost, "/graphql", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"resolveReviewThread": map[string]any{
+				"thread": map[string]any{"id": "thread-1", "isResolved": false},
+			}},
+		})
+	})
+
+	err := newProviderForTest(t, f).ResolveReviewThread(ctx(), ports.SCMReviewResolveRequest{
+		PR:       validMergeRequest().PR,
+		ThreadID: "thread-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not confirmed resolved") {
+		t.Fatalf("error = %v, want an unresolved mutation error", err)
 	}
 }

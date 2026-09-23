@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { ProjectPickerSheet } from "../../lib/ProjectPickerSheet";
 import { releaseSheetResult, takeSheetResult } from "../../lib/sheetResult";
 import { useApp } from "../../lib/store";
+import { backOr } from "../../lib/backNavigation";
 
 // The project picker, as a native form sheet. Opened from the board's
 // ProjectSwitcher, Settings and the spawn screen — see `openProjectSheet`.
@@ -29,8 +30,10 @@ export default function ProjectSheetRoute() {
 			includeAll={includeAll !== "0"}
 			title={title}
 			subtitle={subtitle}
-			onClose={() => router.back()}
+			onClose={() => backOr(router)}
 			onSelect={(id) => takeSheetResult<string>(resultKey)?.(id)}
 		/>
 	);
 }
+
+export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

@@ -132,8 +132,12 @@ export function AgentModelPicker({
 			customModelEntry={customModelEntry}
 			agentLabel={agentLabel}
 			onRefresh={refreshCatalog}
+			refreshing={catalog?.refreshState === "queued" || catalog?.refreshState === "refreshing"}
+			lastSuccessAt={catalog?.lastSuccessAt}
+			refreshError={catalog?.refreshError}
+			retryAt={catalog?.retryAt}
 			disabled={disabled || agentId === ""}
-			emptyLabel={query.isFetching ? t("settings.models.loading") : noOverrideLabel}
+			emptyLabel={query.isFetching && !catalog ? t("settings.models.loading") : noOverrideLabel}
 			onChange={selectCatalogModel}
 			onCustom={selectCustomModel}
 			compact

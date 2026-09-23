@@ -38,13 +38,9 @@ export const NO_PROJECTS_KNOWN: KnownProjects = { machine: "", projects: [], kno
  * change, so a failing tick costs no re-render.
  *
  * `activeMachine` is the machine the app is on NOW, and an answer from any other
- * one is dropped whole. fetchAll has no staleness guard, so a request already in
- * flight when the user re-pairs still lands: recording it as its own machine's
- * is not enough, because it DISPLACES the list the current machine had just
- * given us, and the current machine's next failed /projects then finds nothing
- * retained for itself and goes unknown — resurrecting the very filter this
- * fixes. Dropping it keeps the guarantee to "the last list THIS machine gave
- * us, until this machine gives us another" (#5058 review, round 2).
+ * one is dropped whole. The store also rejects stale poll results, but keeping
+ * this invariant here prevents any other caller from displacing the current
+ * machine's retained list with an answer from the machine the user left.
  */
 export function retainProjects(
 	prev: KnownProjects,
@@ -112,6 +108,29 @@ export function resolveActiveProject(
 	// still have sessions this filter would hide.
 	if (!projectsKnown) return activeProjectId;
 	return projects.some((p) => p.id === activeProjectId) ? activeProjectId : ALL_PROJECTS;
+}
+
+/**
+ * Keep the spawn sheet on a live project without clearing a choice before the
+ * daemon has supplied a project list. A deleted selection falls through to the
+ * route, board filter, or sole remaining project instead of being posted as a
+ * dead project id.
+ */
+export function resolveSpawnProject(
+	currentProjectId: string | null,
+	routeProjectId: string | undefined,
+	activeProjectId: string,
+	projects: readonly { id: string }[],
+	projectsKnown: boolean,
+): string | null {
+	if (
+		currentProjectId
+		&& resolveActiveProject(currentProjectId, projects, projectsKnown) === currentProjectId
+	) return currentProjectId;
+	if (routeProjectId && projects.some((project) => project.id === routeProjectId)) return routeProjectId;
+	const active = resolveActiveProject(activeProjectId, projects, projectsKnown);
+	if (active !== ALL_PROJECTS) return active;
+	return projects.length === 1 ? projects[0].id : null;
 }
 
 /**

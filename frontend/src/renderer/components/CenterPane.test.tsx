@@ -260,7 +260,7 @@ describe("CenterPane toolbar session label", () => {
 
 		await user.dblClick(screen.getByRole("tab", { name: /^do the thing/ }));
 		const input = screen.getByRole("textbox", { name: "Rename do the thing" });
-		expect(input).toHaveAttribute("maxlength", "20");
+		expect(input).toHaveAttribute("maxlength", "100");
 		await user.clear(input);
 		if (nextName) await user.type(input, nextName);
 		await user.keyboard("{Enter}");
@@ -794,6 +794,45 @@ describe("CenterPane toolbar session label", () => {
 		expect(onClose).toHaveBeenCalledOnce();
 	});
 
+	it("removes the active highlight from a shell while a workspace file is selected", () => {
+		const [shell] = makeShells(1);
+		renderCenterPane({
+			session: worker,
+			shellTerminals: [shell],
+			terminalTarget: { generation: shell.createdAt, kind: "shell", handleId: shell.handleId, title: shell.title },
+			workspaceActiveTabKey: "file:README.md",
+			workspaceTabs: [
+				{
+					key: "file:README.md",
+					content: <button aria-selected="true" role="tab">README.md</button>,
+					onSelect: vi.fn(),
+				},
+			],
+		});
+
+		expect(screen.getByRole("tab", { name: shell.title })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("removes the active highlight from the reviewer while a workspace file is selected", () => {
+		renderCenterPane({
+			session: worker,
+			reviewerTerminal: { handleId: "review-sess-1", harness: "codex" },
+			terminalTarget: { kind: "reviewer", handleId: "review-sess-1", harness: "codex", sessionId: worker.id },
+			workspaceActiveTabKey: "file:README.md",
+			workspaceTabs: [
+				{
+					key: "file:README.md",
+					content: <button aria-selected="true" role="tab">README.md</button>,
+					onSelect: vi.fn(),
+				},
+			],
+		});
+
+		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "false");
+		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
+
 	it("cycles from the session terminal to its next shell tab", () => {
 		const [shell] = makeShells(1);
 		const onSelectShellTerminal = vi.fn();
@@ -886,6 +925,24 @@ describe("CenterPane toolbar session label", () => {
 
 		fireEvent.click(reviewerTab);
 		expect(onSelectReviewerTerminal).toHaveBeenCalledWith({ handleId: "review-sess-1", harness: "codex" });
+	});
+
+	it("keeps the TUI tab strip and return path when a typed reviewer is selected", () => {
+		const onSelectSessionTerminal = vi.fn();
+		renderCenterPane({
+			session: worker,
+			reviewerChat: { reviewId: "review-1", harness: "codex" },
+			reviewerChatSelected: true,
+			reviewerChatContent: <div data-testid="reviewer-chat-content">reviewer chat</div>,
+			onSelectSessionTerminal,
+		});
+
+		expect(screen.getByTestId("session-workspace-topbar")).toBeInTheDocument();
+		expect(screen.getByTestId("reviewer-chat-content")).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "true");
+
+		fireEvent.click(screen.getByRole("tab", { name: /^do the thing/ }));
+		expect(onSelectSessionTerminal).toHaveBeenCalledOnce();
 	});
 
 	it("leaves terminal creation out of the terminal strip", () => {

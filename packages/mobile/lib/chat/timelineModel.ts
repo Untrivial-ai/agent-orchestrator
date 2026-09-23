@@ -1,9 +1,11 @@
 import type {
 	ConversationActivity,
 	ConversationItem,
+	ConversationMessage,
 	ConversationSnapshot,
 	ConversationTurn,
 } from "./types";
+import { stagedAttachmentParts } from "./messageAttachments";
 
 export type ConversationGroup = {
 	key: string;
@@ -30,10 +32,27 @@ export type ConversationTimelineRenderPlan =
 	| { kind: "empty"; inverted: false; groups: [] }
 	| { kind: "list"; inverted: true; groups: ConversationGroup[] };
 
+export type QueuedConversationMessage = { turnId: string; message: ConversationMessage };
+
+/** Queued prompts stay next to the composer until they are actually dispatched. */
+export function queuedConversationMessages(snapshot: ConversationSnapshot): QueuedConversationMessage[] {
+	const queuedTurnIds = new Set(snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id));
+	return snapshot.items.flatMap((item) =>
+		item.kind === "message" &&
+		item.role === "user" &&
+		item.origin === "human" &&
+		item.turnId &&
+		queuedTurnIds.has(item.turnId)
+			? [{ turnId: item.turnId, message: item }]
+			: [],
+	);
+}
+
 /** Keep conversation signal while removing provider telemetry/noise. */
 export function readableConversationItems(snapshot: ConversationSnapshot): ConversationItem[] {
 	const plannedTurns = new Set(snapshot.turns.filter((turn) => turn.plan?.steps.length).map((turn) => turn.id));
-	return snapshot.items.filter((item) => item.kind === "message" || (
+	const queuedTurnIds = new Set(snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id));
+	return snapshot.items.filter((item) => !item.turnId || !queuedTurnIds.has(item.turnId)).filter((item) => item.kind === "message" || (
 		item.activityKind !== "usage" &&
 		item.activityKind !== "reasoning" &&
 		!(item.activityKind === "plan" && item.turnId && plannedTurns.has(item.turnId))
@@ -96,11 +115,18 @@ export function conversationMarkers(snapshot: ConversationSnapshot): Conversatio
 		const human = group.items.find((item) => item.kind === "message" && item.role === "user" && item.origin === "human");
 		const assistant = [...group.items].reverse().find((item) => item.kind === "message" && item.role === "assistant" && item.text.trim());
 		const activity = group.items.find((item): item is ConversationActivity => item.kind === "activity");
-		const title = previewText(human?.kind === "message" ? human.text : activity?.summary || "Conversation update", 120);
+		const title = previewText(human?.kind === "message" ? humanMessageTitle(human.text) : activity?.summary || "Conversation update", 120);
 		const detailSource = assistant?.kind === "message" ? assistant.text : activity?.detail?.text || activity?.summary;
 		const detail = detailSource ? previewText(String(detailSource), 240) : undefined;
 		return { key: group.key, sequence: group.anchor, title, detail: detail && detail !== title ? detail : undefined, state: group.turn?.state };
 	});
+}
+
+/** A marker names what the human wrote, not the staged-path list AO appended. */
+function humanMessageTitle(text: string): string {
+	const { body, attachments } = stagedAttachmentParts(text);
+	if (attachments.length === 0) return text;
+	return body.trim() || (attachments.length === 1 ? "1 attachment" : `${attachments.length} attachments`);
 }
 
 export function canRollbackTurn(snapshot: ConversationSnapshot, turn: ConversationTurn): boolean {

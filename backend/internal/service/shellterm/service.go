@@ -86,6 +86,14 @@ type Service struct {
 	onSessionGateWait func(domain.SessionID)
 }
 
+// IsShellTerminalChildAlive reports whether the command inside a shell
+// terminal is still running. Detached terminal hosts may outlive their child
+// to retain scrollback, so callers that coordinate a command workflow must use
+// this instead of treating host liveness as command liveness.
+func (s *Service) IsShellTerminalChildAlive(ctx context.Context, handleID string) (bool, error) {
+	return s.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: strings.TrimSpace(handleID)})
+}
+
 // sessionGate is the admission/teardown barrier for one session's scoped
 // shell terminals. It is held for the ENTIRE span from BeginSessionTeardown
 // through the release function it returns on success — deliberately crossing
@@ -733,9 +741,10 @@ func (s *Service) resolveShellTerminalWorkingDir(ctx context.Context, projectID 
 		if err != nil {
 			return "", "", fmt.Errorf("open shell terminal: resolve session %s: %w", sessionID, err)
 		}
-		if sessionProjectID != "" {
-			projectID = sessionProjectID
-		}
+		// The session is authoritative even when it is standalone. Keeping a
+		// caller-supplied UI sentinel here would violate shell_terminals'
+		// project foreign key after the PTY has already been created.
+		projectID = sessionProjectID
 		if workspacePath != "" {
 			return workspacePath, projectID, nil
 		}
