@@ -84,3 +84,37 @@ func TestAgentModelCatalogWriteEmitsProjectScopedDatabaseChange(t *testing.T) {
 		t.Fatalf("events = %#v", events)
 	}
 }
+
+func TestGlobalAgentModelCatalogWriteEmitsChangeForEveryActiveProject(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, project := range []domain.ProjectRecord{
+		{ID: "project-a", Path: t.TempDir(), RegisteredAt: now},
+		{ID: "project-b", Path: t.TempDir(), RegisteredAt: now},
+	} {
+		if err := store.UpsertProject(ctx, project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.UpsertAgentModelCatalog(ctx, ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: `{}`, FetchedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.EventsAfter(ctx, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want one global catalog invalidation per active project", events)
+	}
+	byProject := make(map[string]cdc.Event, len(events))
+	for _, event := range events {
+		byProject[event.ProjectID] = event
+	}
+	for _, projectID := range []string{"project-a", "project-b"} {
+		event, ok := byProject[projectID]
+		if !ok || event.Type != cdc.EventSessionUpdated || string(event.Payload) != `{"kind":"model_catalog","agentId":"codex","projectId":"`+projectID+`"}` {
+			t.Fatalf("event for %s = %#v", projectID, event)
+		}
+	}
+}

@@ -153,6 +153,7 @@ var shippedMigrations = map[int64]string{
 	148: "0148_notification_dismissal.sql",
 	149: "0149_reviewer_chat_conversations.sql",
 	150: "0150_agent_model_catalog_cache_state.sql",
+	151: "0151_global_agent_model_catalog_cdc.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

@@ -237,7 +237,7 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 		if ctx.Err() != nil {
 			return
 		}
-		if force || catalogNeedsRevalidation(record.LastSuccessAt, s.now()) || record.RefreshState == "error" {
+		if force || catalogNeedsRevalidation(record.LastSuccessAt, s.now()) || record.RefreshState != "idle" {
 			jobs <- record
 		}
 	}
@@ -319,9 +319,10 @@ func (s *Service) Models(ctx context.Context, agentID, _ string, refresh bool) (
 		if ok {
 			cached.Catalog = applyCustomModelEntryPolicy(cached.Catalog, s.discoverer.Manual(agentID))
 			due := catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
+			needsRecovery := cached.RefreshState == "refreshing"
 			retriesExhausted := modelCatalogRetriesExhausted(cached)
-			cached.Catalog.RefreshRecommended = !retriesExhausted && (due || cached.RefreshState == "error" || cached.RefreshState == "queued")
-			if !retriesExhausted && due && (cached.RetryAt.IsZero() || !s.now().Before(cached.RetryAt)) {
+			cached.Catalog.RefreshRecommended = !retriesExhausted && (due || needsRecovery || cached.RefreshState == "error" || cached.RefreshState == "queued")
+			if !retriesExhausted && (due || needsRecovery) && (cached.RetryAt.IsZero() || !s.now().Before(cached.RetryAt)) {
 				go func() { _, _ = s.RevalidateModels(s.ctx, agentID, "") }()
 			} else if !due || retriesExhausted {
 				go s.revalidateChangedInputs(agentID, cached.BinaryVersion)
@@ -494,7 +495,7 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	// either the executable or the configuration behind it invalidates the cache.
 	version := s.discoverer.CatalogFingerprint(ctx, request)
 	inputsChanged := hasCached && cached.BinaryVersion != version
-	explicitlyInvalidated := hasCached && cached.RefreshState == "queued"
+	explicitlyInvalidated := hasCached && (cached.RefreshState == "queued" || cached.RefreshState == "refreshing")
 	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version {
 		// A command-backed catalog can drift without the binary or its config
 		// changing (a provider adds a model), which no fingerprint can see. Ask
@@ -531,14 +532,18 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	discovered, discoverErr := s.discoverer.Discover(ctx, request)
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
+	persistCtx := s.ctx
+	if persistCtx == nil {
+		persistCtx = context.Background()
+	}
 	if discoverErr != nil {
 		if hasCached {
 			cached.Catalog.Stale = true
 			cached.Catalog.Warning = discoverErr.Error()
 			cached.Catalog.RefreshRecommended = true
-			if err := s.saveFailedCatalog(ctx, cached, cached.Catalog, generation); err != nil {
+			if err := s.saveFailedCatalog(persistCtx, cached, cached.Catalog, generation); err != nil {
 				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
-			} else if updated, ok, _ := s.cachedCatalog(ctx, agentID); ok {
+			} else if updated, ok, _ := s.cachedCatalog(persistCtx, agentID); ok {
 				return updated.Catalog, nil
 			}
 			return cached.Catalog, nil
@@ -547,9 +552,9 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 			discovered.Stale = true
 			discovered.Warning = discoverErr.Error()
 			discovered.RefreshRecommended = true
-			if err := s.saveFailedCatalog(ctx, cached, discovered, generation); err != nil {
+			if err := s.saveFailedCatalog(persistCtx, cached, discovered, generation); err != nil {
 				discovered.Warning = appendCacheWarning(discovered.Warning)
-			} else if updated, ok, _ := s.cachedCatalog(ctx, agentID); ok {
+			} else if updated, ok, _ := s.cachedCatalog(persistCtx, agentID); ok {
 				return updated.Catalog, nil
 			}
 			return discovered, nil
@@ -559,8 +564,8 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 		fallback.Stale = true
 		fallback.Warning = discoverErr.Error()
 		fallback.RefreshRecommended = true
-		if err := s.saveFailedCatalog(ctx, decodedCatalog{Catalog: fallback}, fallback, generation); err == nil {
-			if updated, found, _ := s.cachedCatalog(ctx, agentID); found {
+		if err := s.saveFailedCatalog(persistCtx, decodedCatalog{Catalog: fallback}, fallback, generation); err == nil {
+			if updated, found, _ := s.cachedCatalog(persistCtx, agentID); found {
 				return updated.Catalog, nil
 			}
 		}
@@ -575,7 +580,7 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	discovered.RefreshError = ""
 	discovered.RetryAt = nil
 	discovered.RefreshRecommended = false
-	if err := s.saveCatalog(ctx, discovered, generation, 0); err != nil {
+	if err := s.saveCatalog(persistCtx, discovered, generation, 0); err != nil {
 		discovered.Warning = appendCacheWarning(discovered.Warning)
 	}
 	return discovered, nil

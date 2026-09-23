@@ -539,6 +539,52 @@ func TestModelDiscoveryStopsOnServiceShutdown(t *testing.T) {
 	}
 }
 
+func TestRefreshTimeoutPersistsFailureInsteadOfLeavingRefreshing(t *testing.T) {
+	previousTimeout := modelCatalogLoadTimeout
+	modelCatalogLoadTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { modelCatalogLoadTimeout = previousTimeout })
+	serviceCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	now := time.Now().UTC()
+	record := cachedModelRecord(t, "codex", "", now, false)
+	record.BinaryVersion = "v1"
+	record.LastSuccessAt = now
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{"codex\x00": record}}
+	discoverer := &cancelAwareModelDiscoverer{started: make(chan struct{})}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
+	svc.ctx = serviceCtx
+
+	if _, err := svc.Models(context.Background(), "codex", "project-a", true); err != nil {
+		t.Fatal(err)
+	}
+	stored, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", "")
+	if err != nil || !ok {
+		t.Fatalf("cached timeout = (%#v, %v, %v)", stored, ok, err)
+	}
+	if stored.RefreshState != "error" || stored.RefreshError == "" {
+		t.Fatalf("refresh state = (%q, %q), want durable error", stored.RefreshState, stored.RefreshError)
+	}
+}
+
+func TestStartupPrefetchRecoversPersistedRefreshingCatalog(t *testing.T) {
+	now := time.Now().UTC()
+	record := cachedModelRecord(t, "codex", "", now, false)
+	record.LastSuccessAt = now
+	record.RefreshState = "refreshing"
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{"codex\x00": record}}
+	discoverer := successfulModelDiscoverer()
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("codex", "Codex", nil)}, cache, nil, discoverer)
+
+	svc.prefetchModelCatalogs(context.Background(), false)
+	if got := discoverer.discoverCalls.Load(); got != 1 {
+		t.Fatalf("discoveries = %d, want persisted refreshing state recovered", got)
+	}
+	stored, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", "")
+	if err != nil || !ok || stored.RefreshState != "idle" {
+		t.Fatalf("recovered cache = (%#v, %v, %v), want idle", stored, ok, err)
+	}
+}
+
 func (f *fakeModelDiscoverer) CatalogFingerprint(_ context.Context, request ports.AgentModelDiscoveryRequest) string {
 	f.fingerprintRequests.Add(1)
 	f.lastFingerprintRequest.Store(&request)
