@@ -21,6 +21,14 @@ describe("streaming response layout", () => {
 	});
 });
 
+describe("empty conversation", () => {
+	it("uses the AO mascot instead of a generic chat icon", () => {
+		const emptyConversation = source.slice(source.indexOf("function EmptyConversation"), source.indexOf("function Action"));
+		expect(emptyConversation).toContain("<MascotLamp size={48} />");
+		expect(emptyConversation).not.toContain('name="message-circle"');
+	});
+});
+
 describe("elicitation typography", () => {
 	it("matches the question to regular assistant copy", () => {
 		// The family is required next to every weight now, so this pins the parts

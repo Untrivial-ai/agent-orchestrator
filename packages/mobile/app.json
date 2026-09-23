@@ -67,6 +67,7 @@
 		},
 		"plugins": [
 			"expo-router",
+			"./plugins/withCircleDashedCheck",
 			[
 				"expo-navigation-bar",
 				{
